@@ -22,6 +22,7 @@ import {
   DEFAULT_REFRESH_ROTATION_WAIT_MS,
 } from "../account/accountAuthService";
 import { BOOTSTRAP_TOKEN_KEY } from "../sync/brainProjectActionsSyncHandler";
+import { GITHUB_APP_USER_TOKEN_KEY } from "../../../../desktop/src/main/services/github/githubAppUserAuthService";
 import {
   createMacKeychainMaterialResolver,
   resolveMacKeychainMaterialOutcome,
@@ -909,6 +910,22 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(raw).toContain("ADE_SAFE_STORAGE_CREDENTIALS_V1");
   });
 
+  it("leaves the GitHub App user token where the brain and the CLI read it", () => {
+    // Two copies of this record means two processes refreshing one rotating
+    // refresh token, and GitHub answers a reused refresh token by revoking the
+    // credential.
+    const brainWrite = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    brainWrite.setSync("github.appUserToken.v1", JSON.stringify({ accessToken: "ghu_brain" }));
+
+    const desktopStore = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    desktopStore.getSync("linear.token.v1");
+
+    const brainRead = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    expect(brainRead.getSync("github.appUserToken.v1")).toContain("ghu_brain");
+    const safeFile = fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8");
+    expect(safeFile).not.toContain("ghu_brain");
+  });
+
   it("leaves the brain-readable account session in the legacy file store", () => {
     // The ADE brain (com.ade.runtime) and the CLI cannot read the Electron-only
     // safeStorage file. Migrating the account session into it and deleting the
@@ -979,9 +996,12 @@ describe("ElectronSafeStorageCredentialStore", () => {
     // This process cannot obtain the OS material the ciphertext was sealed with
     // (locked/denied keychain), so it falls back to the bare machine key, which
     // does not decrypt either — the exact shape that reads as an empty store.
+    // `peerMayHoldMaterial` is declared rather than inherited from the test
+    // host: no peer can open this one either, which is what makes it a plain
+    // decrypt failure below on macOS and Linux alike.
     const undecryptableLegacyStore = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterial: { read: () => null },
+      keyMaterial: { read: () => null, peerMayHoldMaterial: false },
     });
     expect(undecryptableLegacyStore.readAllForMigration()).toEqual({});
     expect(undecryptableLegacyStore.getLastReadState()).toBe("unreadable");
@@ -992,6 +1012,10 @@ describe("ElectronSafeStorageCredentialStore", () => {
     });
 
     expect(store.getSync("linear.token.v1")).toBeNull();
+    // …and it says so. A `null` here is indistinguishable from "never stored",
+    // which is how a corrupted store reached the UI as a fresh install.
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(store.getLastReadFailureReason()).toBe("decrypt_failure");
 
     // Nothing written, nothing deleted: the credentials stay recoverable.
     expect(fs.existsSync(safePath)).toBe(false);
@@ -1002,6 +1026,31 @@ describe("ElectronSafeStorageCredentialStore", () => {
       keyMaterial: { read: () => Buffer.from("os-material-A") },
     });
     expect(recovered.getSync("linear.token.v1")).toBe("lin_secret");
+  });
+
+  it("keeps the legacy store's own reason for an unreadable migration source", () => {
+    // The launchd-brain shape: the legacy file is sealed with OS material this
+    // process cannot obtain, but a PEER process can. That is
+    // `no_os_key_material`, which is recoverable — reporting it as
+    // `decrypt_failure` puts the wrong repair in front of a user whose
+    // credentials are all still there.
+    sealLegacyOsBoundStore(tempDir, { "linear.token.v1": "lin_secret" }, Buffer.from("os-material-A"));
+    const legacyStore = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
+    });
+    expect(legacyStore.readAllForMigration()).toEqual({});
+    expect(legacyStore.getLastReadFailureReason()).toBe("no_os_key_material");
+
+    const store = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage,
+      legacyStore,
+    });
+
+    expect(store.getSync("linear.token.v1")).toBeNull();
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(store.getLastReadFailureReason()).toBe("no_os_key_material");
   });
 
   it("still moves and removes a legacy file that is already safeStorage-encrypted", () => {
@@ -1047,6 +1096,9 @@ describe("ElectronSafeStorageCredentialStore", () => {
     // Asserted against the real constant: renaming it in the sync handler must
     // fail here instead of silently moving the token into safeStorage.
     expect(isFileBackedCredentialKey(BOOTSTRAP_TOKEN_KEY)).toBe(true);
+    // Same rationale, one incident later: two copies of the GitHub App token
+    // means two processes refreshing one rotating refresh token.
+    expect(isFileBackedCredentialKey(GITHUB_APP_USER_TOKEN_KEY)).toBe(true);
     expect(isFileBackedCredentialKey("linear.token.v1")).toBe(false);
   });
 

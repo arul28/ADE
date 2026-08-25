@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { X } from "@phosphor-icons/react";
 
 import { cn } from "../../ui/cn";
@@ -6,6 +7,7 @@ import {
   pauseToast,
   resumeToast,
   useToasts,
+  type Toast,
   type ToastTone,
 } from "./toastStore";
 
@@ -41,67 +43,96 @@ export function ToastStack() {
 
   return (
     <>
-      {toasts.map((toast) => {
-        const tone = toneClasses(toast.tone);
-        return (
-          <div
-            key={toast.id}
-            className={cn(
-              "ade-toast-enter pointer-events-auto overflow-hidden rounded-xl border px-3 py-3 shadow-float backdrop-blur",
-              tone.panel,
-            )}
-            onMouseEnter={() => pauseToast(toast.id)}
-            onMouseLeave={() => resumeToast(toast.id)}
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  {toast.colorDot ? (
-                    <span
-                      className="h-1.5 w-1.5 shrink-0 rounded-full"
-                      style={{ backgroundColor: toast.colorDot }}
-                    />
-                  ) : null}
-                  <div className="min-w-0 truncate text-[13px] font-medium leading-tight text-fg">
-                    {toast.title}
-                  </div>
-                </div>
-                {toast.message ? (
-                  <div className="mt-1.5 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">
-                    {toast.message}
-                  </div>
-                ) : null}
-                {toast.action ? (
-                  <div className="mt-2">
-                    <button
-                      type="button"
-                      className={cn(
-                        "inline-flex items-center text-[11px] font-medium transition-colors",
-                        tone.action,
-                      )}
-                      onClick={() => {
-                        toast.action?.onClick();
-                        dismissToast(toast.id);
-                      }}
-                    >
-                      {toast.action.label} -&gt;
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                onClick={() => dismissToast(toast.id)}
-                aria-label="Dismiss notification"
-                title="Dismiss"
-              >
-                <X size={12} weight="bold" aria-hidden />
-              </button>
+      {toasts.map((toast) => (
+        <ToastCard key={toast.id} toast={toast} />
+      ))}
+    </>
+  );
+}
+
+/**
+ * One card, and the only place that can say a toast is really on screen.
+ *
+ * Split out of the map purely so `onRendered` can be an effect: it has to run
+ * after React commits this card, which is the difference between "queued" and
+ * "shown" for the callers that report delivery upstream.
+ */
+function ToastCard({ toast }: { toast: Toast }) {
+  const onRendered = toast.onRendered;
+  useEffect(() => {
+    onRendered?.();
+  }, [onRendered]);
+
+  const tone = toneClasses(toast.tone);
+  return (
+    <div
+      className={cn(
+        "ade-toast-enter pointer-events-auto overflow-hidden rounded-xl border px-3 py-3 shadow-float backdrop-blur",
+        tone.panel,
+      )}
+      onMouseEnter={() => pauseToast(toast.id)}
+      onMouseLeave={() => resumeToast(toast.id)}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            {toast.colorDot ? (
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ backgroundColor: toast.colorDot }}
+              />
+            ) : null}
+            <div className="min-w-0 truncate text-[13px] font-medium leading-tight text-fg">
+              {toast.title}
             </div>
           </div>
-        );
-      })}
-    </>
+          {toast.message ? (
+            <div className="mt-1.5 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">
+              {toast.message}
+            </div>
+          ) : null}
+          {toast.action || toast.secondaryAction ? (
+            <div className="mt-2 flex items-center gap-3">
+              {toast.action ? (
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex items-center text-[11px] font-medium transition-colors",
+                    tone.action,
+                  )}
+                  onClick={() => {
+                    toast.action?.onClick();
+                    dismissToast(toast.id);
+                  }}
+                >
+                  {toast.action.label} -&gt;
+                </button>
+              ) : null}
+              {toast.secondaryAction ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center text-[11px] font-medium text-muted-fg transition-colors hover:text-fg"
+                  onClick={() => {
+                    toast.secondaryAction?.onClick();
+                    dismissToast(toast.id);
+                  }}
+                >
+                  {toast.secondaryAction.label}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+          onClick={() => dismissToast(toast.id)}
+          aria-label="Dismiss notification"
+          title="Dismiss"
+        >
+          <X size={12} weight="bold" aria-hidden />
+        </button>
+      </div>
+    </div>
   );
 }

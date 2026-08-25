@@ -8,6 +8,7 @@ import { codedError } from "../../../shared/codedError";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
+import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
   EVENT_LOG_RETENTION_DAYS,
@@ -59,6 +60,7 @@ export type KvDbOpenErrorCode =
   | "db_integrity"
   | "migration_incomplete"
   | "migration_unknown_state"
+  | "storage_read_failed"
   | "unknown";
 
 const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
@@ -67,10 +69,23 @@ const KV_DB_OPEN_ERROR_CODES = new Set<KvDbOpenErrorCode>([
   "db_integrity",
   "migration_incomplete",
   "migration_unknown_state",
+  "storage_read_failed",
   "unknown",
 ]);
 
-export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
+/**
+ * Buckets an open failure into the code the recovery UI keys on.
+ *
+ * `options.path` is the database file being opened, and is required so that no
+ * caller forgets it by omission: SQLite errors rarely carry a path of their
+ * own, and the storage classifier needs one both to corroborate a bare errno
+ * and to name the cloud provider behind a Windows on-demand placeholder. Pass
+ * `null` only when the path is genuinely unknown.
+ */
+export function classifySqliteOpenError(
+  error: unknown,
+  options: { path: string | null },
+): KvDbOpenErrorCode {
   const explicitCode = error && typeof error === "object" && "code" in error
     ? String((error as { code?: unknown }).code)
     : "";
@@ -80,6 +95,11 @@ export function classifySqliteOpenError(error: unknown): KvDbOpenErrorCode {
 
   const message = error instanceof Error ? error.message : String(error);
   if (isNoSpaceError(error) || /SQLITE_FULL/i.test(message)) return "disk_full";
+  // Ahead of the integrity bucket: an unreadable file is not a corrupt one, and
+  // offering to "repair" a placeholder would rewrite data ADE cannot even read.
+  // One classifier decides this for the whole app — the brain's sync-host loop
+  // reaches the same verdict through the same function.
+  if (classifyStorageFault(error, { path: options.path })) return "storage_read_failed";
   if (/malformed|not a database|integrity/i.test(message)) return "db_integrity";
   return "unknown";
 }
@@ -1356,6 +1376,9 @@ function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
   if (rawHasTable(db, "session_linear_issues")) {
     runStatement(db, `delete from session_linear_issues where session_id in (${placeholders})`, retiredSessionIds);
   }
+  if (rawHasTable(db, "session_github_issues")) {
+    runStatement(db, `delete from session_github_issues where session_id in (${placeholders})`, retiredSessionIds);
+  }
   if (rawHasTable(db, "pull_request_chat_sessions")) {
     runStatement(db, `delete from pull_request_chat_sessions where session_id in (${placeholders})`, retiredSessionIds);
   }
@@ -2124,6 +2147,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   } catch {
     // best-effort migration; duplicates will be coalesced on the next upsert.
   }
+
+  db.run(`
+    create table if not exists session_github_issues (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      lane_id text,
+      issue_id text not null,
+      issue_json text not null,
+      role text not null,
+      source text not null,
+      include_in_pr integer not null default 1,
+      close_on_merge integer not null default 1,
+      evidence_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    )
+  `);
+  db.run("create index if not exists idx_session_github_issues_session on session_github_issues(project_id, session_id)");
+  db.run("create index if not exists idx_session_github_issues_lane on session_github_issues(project_id, lane_id)");
+  db.run("create index if not exists idx_session_github_issues_issue on session_github_issues(project_id, issue_id)");
 
   db.run(`
     create table if not exists lane_branch_profiles (

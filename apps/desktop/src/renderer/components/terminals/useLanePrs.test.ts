@@ -151,7 +151,7 @@ describe("buildLanePrsByLaneId", () => {
     expect(result.get("lane-1")?.[0]?.stack).toEqual(expect.objectContaining({ number: 18 }));
   });
 
-  it("keeps a new GitHub-only PR visible alongside retained lane history", () => {
+  it("keeps a new GitHub-only PR visible without previous-branch history", () => {
     const result = buildLanePrsByLaneId({
       lanes: [lane()],
       prs: [mappedPr({ headBranch: "feature/old" })],
@@ -163,18 +163,28 @@ describe("buildLanePrsByLaneId", () => {
       })],
     });
 
-    expect(result.get("lane-1")?.map((pr) => pr.githubPrNumber)).toEqual([91, 92]);
+    expect(result.get("lane-1")?.map((pr) => pr.githubPrNumber)).toEqual([92]);
     expect(result.get("lane-1")?.find((pr) => pr.githubPrNumber === 92)?.unmapped).toBe(true);
   });
 
-  it("retains mapped rows from an old lane branch as history", () => {
+  it("does not project mapped rows from an old lane branch into Work", () => {
     const result = buildLanePrsByLaneId({
       lanes: [lane()],
       prs: [mappedPr({ headBranch: "feature/old" })],
       githubPrs: [],
     });
 
-    expect(result.get("lane-1")?.map((pr) => pr.githubPrNumber)).toEqual([91]);
+    expect(result.has("lane-1")).toBe(false);
+  });
+
+  it("does not show a PR tag for primary while it is on its base branch", () => {
+    const result = buildLanePrsByLaneId({
+      lanes: [lane({ laneType: "primary", branchRef: "main", baseRef: "main" })],
+      prs: [mappedPr({ headBranch: "feature/stack-ui", state: "merged" })],
+      githubPrs: [githubPr({ headBranch: "feature/stack-ui", state: "merged" })],
+    });
+
+    expect(result.has("lane-1")).toBe(false);
   });
 });
 

@@ -242,7 +242,7 @@ export function buildDegradedProjectlessSyncSnapshot(args: {
     relay: { accountSignedIn: false, wssUrl: null, status: null },
     accountDirectory: args.accountDirectory
       ?? createSyncAccountDirectoryHealth(
-        "sync_disabled",
+        "sync_not_started",
         "Account-directory publishing is not enabled in this brain.",
       ),
   });

@@ -15,16 +15,44 @@ import { dirname, resolve } from "node:path";
  * relay hand-off has no URL to call, and an `ACTIVITY_RELAY` service binding
  * cannot supply one (it is only the transport).
  *
- * `DIRECTORY_AUTH_SECRET` is a wrangler SECRET, so it is read from
- * `wrangler secret list`; `PUSH_RELAY_URL` is a plain var, so it is read from
- * the committed `wrangler.jsonc`. The deploy entry point passes the exact
- * environment it is about to publish: wrangler environments do not inherit
- * secrets, and a production deploy must not be blocked by an unrelated local
- * development environment that is intentionally unconfigured.
+ * The Clerk trio is checked for exactly the same reason, one failure shape
+ * further in: `resolveCallerToken` throws "authentication unavailable" when any
+ * of `CLERK_JWKS_URL` / `CLERK_ISSUER` / `CLERK_OAUTH_CLIENT_ID` is blank, so a
+ * deploy missing one answers 503 on EVERY authenticated route and on the whole
+ * `/device/*` sign-in flow — while `/health` stays green, which is precisely the
+ * shape of the 2026-08-06 incident this preflight exists to prevent.
+ * `WEB_CLIENT_ORIGIN` earns a hard failure too: it has no code default, and
+ * without it no `access-control-allow-origin` is emitted, so the browser client
+ * at app.ade-app.dev is blocked outright.
+ *
+ * `ONLINE_WINDOW_MS` and `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` are deliberately NOT
+ * hard requirements: both have code defaults equal to the committed values
+ * (`DEFAULT_ONLINE_WINDOW_MS` = 90_000, `DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT`
+ * = 400), so their absence changes no behavior — the diagnostics cost ceiling
+ * still applies at 400/day. Blocking a deploy on them would be a false gate.
+ * They warn instead, including when they are set to something the Worker cannot
+ * parse, because that silently falls back to the default rather than erroring.
+ *
+ * Secrets are read from `wrangler secret list` BY NAME ONLY — this never reads,
+ * prints, or logs a secret value. Vars are read from the committed
+ * `wrangler.jsonc`. The deploy entry point passes the exact environment it is
+ * about to publish: wrangler environments inherit neither vars nor secrets, and
+ * a production deploy must not be blocked by an unrelated local development
+ * environment that is intentionally unconfigured.
  */
 
-export const REQUIRED_SECRETS = ["DIRECTORY_AUTH_SECRET"];
-export const REQUIRED_VARS = ["PUSH_RELAY_URL"];
+export const REQUIRED_SECRETS = [
+  "DIRECTORY_AUTH_SECRET",
+  "CLERK_JWKS_URL",
+  "CLERK_ISSUER",
+  "CLERK_OAUTH_CLIENT_ID",
+];
+export const REQUIRED_VARS = ["PUSH_RELAY_URL", "WEB_CLIENT_ORIGIN"];
+/** Have code defaults: missing (or unparseable) is a warning, never a failure. */
+export const DEFAULTED_VARS = [
+  { name: "ONLINE_WINDOW_MS", codeDefault: "90000" },
+  { name: "DIAGNOSTICS_DAILY_GLOBAL_LIMIT", codeDefault: "400" },
+];
 export const ENVIRONMENTS = ["default", "production"];
 
 export class DeploymentConfigError extends Error {
@@ -83,6 +111,7 @@ function varsForEnvironment(config, environment) {
  * @param {object} args
  * @param {(environment: string) => Iterable<string>} args.listSecretNames
  * @param {() => object} args.readConfig
+ * @returns {{ warnings: string[] }} Non-blocking notes about defaulted vars.
  */
 export function verifyDirectoryDeploymentConfig(args) {
   const environments = args.environments ?? ENVIRONMENTS;
@@ -104,17 +133,39 @@ export function verifyDirectoryDeploymentConfig(args) {
     }
   }
   const config = args.readConfig();
+  const warnings = [];
   for (const environment of environments) {
     const vars = varsForEnvironment(config, environment);
-    const missingVars = REQUIRED_VARS.filter(
-      (name) => typeof vars[name] !== "string" || !vars[name].trim(),
-    );
+    const missingVars = REQUIRED_VARS.filter((name) => !isConfiguredVar(vars[name]));
     if (missingVars.length > 0) {
       throw new DeploymentConfigError(
         `missing Worker vars for the ${environment} environment: ${missingVars.join(", ")}`,
       );
     }
+    for (const { name, codeDefault } of DEFAULTED_VARS) {
+      if (!isConfiguredVar(vars[name])) {
+        warnings.push(
+          `${name} is not set for the ${environment} environment; the Worker will use its code default of ${codeDefault}.`,
+        );
+      } else if (!isNonNegativeNumber(vars[name])) {
+        // The Worker parses these with Number() and silently falls back, so a
+        // typo here reads as "configured" while doing nothing.
+        warnings.push(
+          `${name} for the ${environment} environment is not a non-negative number; the Worker will ignore it and use ${codeDefault}.`,
+        );
+      }
+    }
   }
+  return { warnings };
+}
+
+function isConfiguredVar(value) {
+  return typeof value === "string" && Boolean(value.trim());
+}
+
+function isNonNegativeNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0;
 }
 
 /**
@@ -192,12 +243,13 @@ function main() {
     "..",
     "wrangler.jsonc",
   );
+  let warnings = [];
   try {
-    verifyDirectoryDeploymentConfig({
+    ({ warnings } = verifyDirectoryDeploymentConfig({
       environments,
       listSecretNames: wranglerSecretNames,
       readConfig: () => parseJsonc(readFileSync(configPath, "utf8")),
-    });
+    }));
   } catch (error) {
     console.error(
       `Account directory deployment preflight failed: ${
@@ -206,8 +258,9 @@ function main() {
     );
     process.exit(1);
   }
+  for (const warning of warnings) console.warn(`Account directory deployment preflight: ${warning}`);
   console.log(
-    `Account directory relay hand-off configuration is complete for the ${environments.join(" and ")} environment${environments.length === 1 ? "" : "s"}.`,
+    `Account directory authentication and relay hand-off configuration is complete for the ${environments.join(" and ")} environment${environments.length === 1 ? "" : "s"}.`,
   );
 }
 

@@ -209,21 +209,53 @@ export function renderWindowsServiceLauncher(
     }`,
     `$heartbeatStaleMs = ${Math.max(30_000, Math.floor(options.heartbeatStaleMs ?? BRAIN_HEARTBEAT_STALE_MS))}`,
     `$heartbeatPollMs = ${Math.max(1_000, Math.floor(options.heartbeatPollMs ?? BRAIN_HEARTBEAT_INTERVAL_MS))}`,
-    // Returns the heartbeat age in ms when the brain has clearly stopped
+    // The same runtime override the macOS watchdog reads
+    // (`resolveBrainHeartbeatStaleMs` in
+    // `src/services/runtime/brainWatchdogCheck.ts`), with the same rules: a
+    // positive integer wins, anything else keeps the rendered default, and the
+    // result never drops below 30s -- under the beat interval the watchdog
+    // would fire on every ordinary gap. The regex mirrors `Number.parseInt`,
+    // which reads the leading digits and ignores the rest.
+    //
+    // The pickup differs from macOS, and only here: the macOS checker is a
+    // fresh process every 60s, so it sees a changed machine variable at the
+    // next check. This supervisor reads the variable once at start, so a
+    // changed value applies after the brain service restarts.
+    //
+    // No poll-interval override: macOS has none, and parity means staleness
+    // only.
+    "$staleOverrideRaw = $env:ADE_BRAIN_HEARTBEAT_STALE_MS",
+    "if ($staleOverrideRaw -match '^\\s*[+-]?\\d+') {",
+    "  $staleOverrideMs = [long]0",
+    "  if ([long]::TryParse($Matches[0].Trim(), [ref]$staleOverrideMs) -and $staleOverrideMs -gt 0) {",
+    "    $heartbeatStaleMs = [Math]::Max(30000, $staleOverrideMs)",
+    "  }",
+    "}",
+    // Computed AFTER the override so the sleep floor rescales with it.
+    // How late this supervisor's own poll may be before the machine counts as
+    // having been suspended. Mirrors `brainWatcherSuspendFloorMs`, the rule the
+    // macOS watchdog applies, so both platforms judge sleep the same way.
+    "$watcherSuspendFloorMs = [Math]::Max($heartbeatStaleMs, $heartbeatPollMs * 3)",
+    // Returns the STALE BEAT'S OWN timestamp when the brain has clearly stopped
     // beating, and $null for every other outcome -- absent file, unreadable
     // file, a beat from a different pid, a clock step that puts the beat in the
     // future. Only a beat that is BOTH stale and owned by this exact child is a
-    // wedge; everything else means "no judgement available", never "kill it".
-    "function Test-BrainWedged([int]$runtimePid) {",
+    // wedge candidate; everything else means "no judgement available", never
+    // "kill it".
+    //
+    // The timestamp rather than the age, because the caller has to recognise
+    // the SAME beat across two polls, and an age changes between them while a
+    // timestamp does not.
+    "function Get-StaleBeatTs([int]$runtimePid, [long]$nowMs) {",
     "  if ([string]::IsNullOrEmpty($heartbeatPath)) { return $null }",
     "  try {",
     "    if (-not (Test-Path -LiteralPath $heartbeatPath)) { return $null }",
     "    $beat = (Get-Content -LiteralPath $heartbeatPath -Raw -ErrorAction Stop) | ConvertFrom-Json",
     "    if ($null -eq $beat -or $null -eq $beat.ts -or $null -eq $beat.pid) { return $null }",
     "    if ([int]$beat.pid -ne $runtimePid) { return $null }",
-    "    $ageMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [long]$beat.ts",
+    "    $ageMs = $nowMs - [long]$beat.ts",
     "    if ($ageMs -le $heartbeatStaleMs) { return $null }",
-    "    return $ageMs",
+    "    return [long]$beat.ts",
     "  } catch { return $null }",
     "}",
     "function Write-WedgeBreadcrumb([long]$ageMs) {",
@@ -321,8 +353,51 @@ export function renderWindowsServiceLauncher(
     // restarts it exactly as it would after any other exit. This is the Windows
     // equivalent of the `com.ade.watchdog` launch agent, folded into the
     // supervisor that is already running rather than added as a Scheduled Task.
+    //
+    // A kill needs three facts, not one: the beat is stale, this supervisor was
+    // awake to watch it go stale, and a previous poll already saw this same
+    // beat stale. The two extra facts are what modern standby costs: the
+    // machine suspends this loop and the brain together, and on wake a beat
+    // that is 40 minutes old describes the suspension, not a wedge. Judging on
+    // the beat's age alone is what killed healthy brains on macOS, and this
+    // loop had the identical bug.
+    "      $lastPollAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
+    "      $confirmedStaleBeatTs = $null",
     "      while (-not $process.WaitForExit($heartbeatPollMs)) {",
-    "        $wedgeAgeMs = Test-BrainWedged $process.Id",
+    // One clock read per poll, shared by the gap and the age, so the two can
+    // never disagree about when "now" was.
+    "        $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()",
+    "        $watcherGapMs = $nowMs - $lastPollAtMs",
+    "        $lastPollAtMs = $nowMs",
+    "        $wedgeAgeMs = $null",
+    "        $staleBeatTs = Get-StaleBeatTs -runtimePid $process.Id -nowMs $nowMs",
+    "        if ($null -eq $staleBeatTs) { $confirmedStaleBeatTs = $null } else {",
+    "          $beatAgeMs = $nowMs - $staleBeatTs",
+    // Rule A. This supervisor's own lateness is the only sleep evidence that
+    // needs nothing from the process under suspicion. A gap at least as long as
+    // the beat's age explains the whole silence; a brain that went quiet days
+    // before a ten-minute nap is not explained by it, and still dies.
+    //
+    // Rule B, the `elseif`. Second strike: the previous poll must have seen THIS
+    // beat, same timestamp, already stale. A brain the OS merely stopped
+    // scheduling beats again long before the next poll, so it never reaches the
+    // kill; a wedged one is still sitting on the same beat one cadence later.
+    //
+    // Each `}` keeps its `elseif`/`else` on the same line. Splitting them would
+    // also parse HERE, because this array is joined with CRLF into a script
+    // file and PowerShell keeps looking for the branch after the newline. It
+    // would NOT parse in the `"; "`-joined `-Command` builders further down
+    // this file, where the whole program is one line. Writing branches the same
+    // way everywhere means the form never has to be re-checked against the way
+    // a given script is fed to PowerShell.
+    "          if ($watcherGapMs -ge $watcherSuspendFloorMs -and $beatAgeMs -le ($watcherGapMs + $heartbeatStaleMs)) {",
+    "            Write-SupervisorLog \"machine slept pid=$($process.Id) heartbeatAgeMs=$beatAgeMs watcherGapMs=$watcherGapMs; not a wedge\"",
+    "            $confirmedStaleBeatTs = $null",
+    "          } elseif ($confirmedStaleBeatTs -ne $staleBeatTs) {",
+    "            Write-SupervisorLog \"brain heartbeat is stale pid=$($process.Id) heartbeatAgeMs=$beatAgeMs; waiting for a second check before acting\"",
+    "            $confirmedStaleBeatTs = $staleBeatTs",
+    "          } else { $wedgeAgeMs = $beatAgeMs }",
+    "        }",
     "        if ($null -ne $wedgeAgeMs) {",
     "          Write-SupervisorLog \"brain stopped responding pid=$($process.Id) heartbeatAgeMs=$wedgeAgeMs; stopping it\"",
     "          Write-WedgeBreadcrumb $wedgeAgeMs",

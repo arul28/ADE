@@ -388,7 +388,11 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
       ...(local.disallowedTools ? { disallowedTools: local.disallowedTools } : {}),
       local: {
         cwd: args.cwd,
-        sandboxOptions: { enabled: local.sandboxEnabled },
+        // See CursorSdkSandboxDirective: an explicit `false` makes the SDK skip
+        // the user's ~/.cursor/sandbox.json, so absence is not the same as off.
+        ...(local.sandboxDirective === "inherit"
+          ? {}
+          : { sandboxOptions: { enabled: local.sandboxDirective === "enable" } }),
         autoReview: local.autoReview,
       },
     };

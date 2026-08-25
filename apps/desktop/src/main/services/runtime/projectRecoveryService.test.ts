@@ -286,6 +286,69 @@ describe("ProjectRecoveryService.diagnose", () => {
 
     expect(diagnosis.state).toBe("socket_owned_by_other");
   });
+
+  it("announces a terminal diagnosis with the code that produced it", async () => {
+    const onTerminalDiagnosis = vi.fn();
+    const service = createProjectRecoveryService(deps({
+      statfs: vi.fn(async () => ({ bavail: GIB / 2, bsize: 1 })),
+      onTerminalDiagnosis,
+    }));
+    const root = tempRoot();
+
+    await service.diagnose(root);
+
+    expect(onTerminalDiagnosis).toHaveBeenCalledWith({ code: "disk_full", projectRoot: root });
+  });
+
+  it("stays quiet for a healthy project and for a brain that is still starting", async () => {
+    const onTerminalDiagnosis = vi.fn();
+    const healthy = createProjectRecoveryService(deps({
+      probeSocket: vi.fn(async () => true),
+      pingEndpoint: vi.fn(async () => true),
+      onTerminalDiagnosis,
+    }));
+    await healthy.diagnose(tempRoot());
+
+    const starting = createProjectRecoveryService(deps({
+      connectionPool: pool(status({
+        serviceHealth: {
+          state: "running" as const,
+          installed: true,
+          running: true,
+          path: null,
+          message: null,
+          checkedAt: null,
+        },
+        serviceInstall: {
+          state: "installed" as const,
+          attempted: true,
+          path: null,
+          message: null,
+          exitCode: null,
+          updatedAt: null,
+          attemptStartedAt: new Date(NOW - 1_000).toISOString(),
+        },
+      })),
+      onTerminalDiagnosis,
+    }));
+    const startingDiagnosis = await starting.diagnose(tempRoot());
+
+    expect(startingDiagnosis.state).toBe("brain_starting");
+    // A booting brain is not a failure yet; reporting it would spend the day's
+    // budget on something that fixes itself seconds later.
+    expect(onTerminalDiagnosis).not.toHaveBeenCalled();
+  });
+
+  it("keeps the diagnosis when the listener throws", async () => {
+    const service = createProjectRecoveryService(deps({
+      statfs: vi.fn(async () => ({ bavail: GIB / 2, bsize: 1 })),
+      onTerminalDiagnosis: () => {
+        throw new Error("listener exploded");
+      },
+    }));
+
+    await expect(service.diagnose(tempRoot())).resolves.toMatchObject({ state: "disk_full" });
+  });
 });
 
 describe("ProjectRecoveryService.repair", () => {

@@ -35,8 +35,9 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles, excludes SDK-origin transcripts, and collapses continuation chains to their leaf. |
 | `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from `CODEX_HOME/state_5.sqlite` (default `~/.codex`): top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when the thread store is unusable. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. |
-| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `~/.factory/sessions/<escaped-cwd>/`, one record per session id, using the `session_start` row for id/cwd/title. |
+| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`), one record per session id, using the `session_start` row for id/cwd/title. |
 | `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts` | Discovers OpenCode sessions by running `opencode session list --pure --format json --max-count <N>` in the requested/project cwd. |
+| `apps/desktop/src/main/services/externalSessions/providerSessionHandles.ts` | Maps a provider session id back to the files that hold it. The Claude / Codex / Droid roots come from `shared/providerConfigHomes.ts` so `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `FACTORY_HOME_OVERRIDE` are all honoured — and honoured with the right shape, since only the first two name a directory while `FACTORY_HOME_OVERRIDE` replaces the HOME that `.factory` is appended to. |
 | `apps/desktop/src/main/services/externalSessions/importedSessionStore.ts` | Machine-local durable log of every import (`<ADE_HOME>/external-sessions/imported.json`), the only imported-marking source that survives deleting the ADE session and the only one that knows a fork's new provider id. |
 | `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`) and returns the session ids whose pid is still alive, for `possiblyActive`. |
 | `apps/desktop/src/main/services/externalSessions/claudeSessionTransplant.ts` | Non-destructive Claude transcript transplant. For forks it copies JSONL rows, rekeys `sessionId`, hard-links without clobbering, and leaves the source untouched; for moves it can link/unlink when requested by other callers. |
@@ -583,8 +584,10 @@ flag.
 
 ### Droid
 
-Droid stores sessions under `~/.factory/sessions/<escaped-cwd>/*.jsonl`. The
-first row must be `session_start`; ADE reads id, cwd, and title there. Current
+Droid stores sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/*.jsonl`
+— `~/.factory` unless `FACTORY_HOME_OVERRIDE` is set, in which case that variable
+replaces the HOME `.factory` is appended to rather than naming the directory
+itself (`shared/providerConfigHomes.ts`). The first row must be `session_start`; ADE reads id, cwd, and title there. Current
 Droid rows can omit a start timestamp, so creation time falls back to the first
 timestamped message. `"New Session"` is a placeholder title and becomes null.
 The `<id>.settings.json` sidecar holds model/mode, and `sessions-index.json` is

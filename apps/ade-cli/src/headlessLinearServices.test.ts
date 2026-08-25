@@ -35,7 +35,10 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
 }));
 
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { makeStoredAppUserToken } from "../../desktop/src/main/services/github/githubAppUserAuth.testFixtures";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
+import { resetGitHubServiceHealthCache } from "../../desktop/src/main/services/github/githubStatusPage";
 import {
   clearGithubCredentialHealth,
   githubCredentialCooldown,
@@ -185,6 +188,55 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  // The renderer reaches GitHub through whichever service owns the project, so
+  // corroboration applied only to the desktop in-process service left the whole
+  // outage attribution dead in the shipping, runtime-backed (brain) build.
+  it("corroborates a GitHub server error against the status page", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-outage-"));
+    const statusPagePayload = {
+      status: { indicator: "major", description: "Partial System Outage" },
+      components: [{ id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" }],
+      incidents: [{ name: "Incident with GitHub.com", shortlink: "https://stspg.io/live", resolved_at: null }],
+    };
+    const statusPageCalls: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("githubstatus.com")) statusPageCalls.push(url);
+      if (url.includes("githubstatus.com")) {
+        return new Response(JSON.stringify(statusPagePayload), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // Every api.github.com call fails the way GitHub fails during an incident.
+      return new Response("No server is currently available to service your request.", { status: 503 });
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+    try {
+      githubService.setToken("ghp_outage_token");
+      const status = await githubService.getStatus({ forceRefresh: true });
+
+      expect(status.authFailure?.kind).toBe("service_unavailable");
+      expect(status.serviceHealth?.affected.map((entry) => entry.surface)).toEqual(["api"]);
+      expect(status.serviceHealth?.incidentUrl).toBe("https://stspg.io/live");
+      expect(statusPageCalls).toHaveLength(1);
+    } finally {
+      // Module-level cache: leaving it warm would silently change what the
+      // sibling status-lookup tests observe.
+      resetGitHubServiceHealthCache();
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
   it("does not let an invalidated GitHub status lookup overwrite the newer cache", async () => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousFetch = globalThis.fetch;
@@ -231,6 +283,51 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("times out a response body that stalls after headers arrive", async () => {
+    // The header timer is cleared the moment headers land, so a body that
+    // stalls mid-stream used to leave the read pending forever: the transport
+    // failure was never recorded and the poller tick that awaited it never
+    // completed. The desktop owner has always bounded this phase.
+    vi.useFakeTimers();
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-body-timeout-", {
+      emptyGhConfig: true,
+    });
+    const previousFetch = globalThis.fetch;
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      // Headers arrive; the body never does, until the request is aborted.
+      const signal = init?.signal;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        text: () => new Promise<string>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            const error = new Error("The operation was aborted");
+            error.name = "AbortError";
+            reject(error);
+          }, { once: true });
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+    try {
+      githubService.setToken("ghp_body_timeout_token");
+      const pending = githubService.apiRequest({ method: "GET", path: "/user" });
+      const settled = pending.then(() => "resolved").catch((error: unknown) => String(error));
+      await vi.advanceTimersByTimeAsync(120_000);
+      await expect(settled).resolves.toContain("response body timed out");
+    } finally {
+      globalThis.fetch = previousFetch;
+      vi.useRealTimers();
+      environment.restore?.();
+    }
+  });
+
   it("clears only changed PAT health when headless credentials change", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-pat-health-", {
       emptyGhConfig: true,
@@ -273,6 +370,48 @@ describe("headlessLinearServices", () => {
       expect(githubCredentialCooldown(newPatCandidate)).toBeNull();
       expect(githubCredentialCooldown(environmentCandidate)).not.toBeNull();
     } finally {
+      environment.restore();
+    }
+  });
+
+  // A PAT saved over an unreadable store re-seals it with a key this process
+  // holds, so the "ADE can't read your saved sign-in" verdict is stale the
+  // moment the write lands. Without clearing it there, every later read
+  // short-circuits on the in-memory override and never re-reads the store, so
+  // the status kept reporting a broken store forever after the user fixed it.
+  it("stops reporting an unreadable credential store after a replacement PAT is saved", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-store-recovery-", {
+      emptyGhConfig: true,
+    });
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-oauth-scopes": "repo, workflow",
+      },
+    })) as unknown as typeof fetch;
+    try {
+      const { secretsDir } = resolveMachineAdeLayout();
+      fs.mkdirSync(secretsDir, { recursive: true });
+      // An undecryptable store returns an EMPTY view instead of throwing, which
+      // is exactly why the read state has to be tracked separately.
+      fs.writeFileSync(path.join(secretsDir, "credentials.json.enc"), "not-json", "utf8");
+      const githubService = createHeadlessGitHubService(
+        "/tmp/ade-project",
+        { debug() {}, info() {}, warn() {}, error() {} } as any,
+      );
+
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        credentialStoreUnreadable: true,
+      });
+
+      githubService.setToken("ghp_replacement_token");
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        credentialStoreUnreadable: false,
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
       environment.restore();
     }
   });
@@ -1506,21 +1645,20 @@ describe("headlessLinearServices", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-", {
       emptyGhConfig: true,
     });
-    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
+    // GitHub's real answer for a rejected refresh token: HTTP 200 with an error
+    // body. Only a definitive code like this one may write the credential off.
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
-      error: "bad_verification_code",
+      error: "bad_refresh_token",
       error_description: "Bad credentials",
     }), {
-      status: 400,
+      status: 200,
       headers: { "content-type": "application/json" },
     })) as unknown as typeof fetch;
     const githubService = createHeadlessGitHubService(
@@ -1555,22 +1693,19 @@ describe("headlessLinearServices", () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-fallback-", {
       emptyGhConfig: true,
     });
-    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
     globalThis.fetch = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
-        error: "bad_verification_code",
+        error: "bad_refresh_token",
         error_description: "Bad credentials",
       }), {
-        status: 400,
+        status: 200,
         headers: { "content-type": "application/json" },
       }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ login: "bob" }), {
@@ -1632,6 +1767,68 @@ describe("headlessLinearServices", () => {
       await expect(githubService.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
       await expect(githubService.getGitTransportTokenOrThrowAsync())
         .resolves.toBe("github_pat_read_only_contents");
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("resolves the GitHub App credential once per window instead of per request", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-app-window-", {
+      emptyGhConfig: true,
+    });
+    // An access token past its life, so every resolution that is not cached
+    // costs a refresh POST — the traffic that rate-limited GitHub for the user.
+    new EncryptedFileCredentialStore().setSync(
+      "github.appUserToken.v1",
+      makeStoredAppUserToken(),
+    );
+    const requestedUrls: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      requestedUrls.push(String(input));
+      if (String(input) === "https://github.com/login/oauth/access_token") {
+        // The refresh must SUCCEED, or the failure writes a backoff that blocks
+        // every later resolution on its own — and the assertion below would
+        // hold with the cache deleted. The rotated access token is stale on
+        // arrival for the same reason: a long-lived one would make the next
+        // resolution skip the POST because the token is fresh, not because the
+        // cache answered. With this response, only the cache can hold the count
+        // down (2 with it, 3 without).
+        return new Response(
+          JSON.stringify({
+            access_token: "ghu_fresh",
+            token_type: "bearer",
+            expires_in: 1,
+            refresh_token: "ghr_rotated",
+            refresh_token_expires_in: 15_811_200,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ login: "octocat" }), {
+        status: 200,
+        headers: { "content-type": "application/json", "x-oauth-scopes": "" },
+      });
+    }) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({ token: null, ghCliPath: null, ghAuthError: null }),
+      },
+    );
+
+    try {
+      await githubService.getStatus();
+      await githubService.getAppInstallationStatus({ owner: "acme", name: "repo" });
+      await githubService.getStatus();
+
+      const refreshPosts = requestedUrls
+        .filter((url) => url === "https://github.com/login/oauth/access_token");
+      // Two, not three: both status reads share ONE resolution through the
+      // window, and the installation check resolves the App credential on its
+      // own path, which this cache does not cover. Without the cache the two
+      // status reads refresh separately and this is three.
+      expect(refreshPosts).toHaveLength(2);
     } finally {
       environment.restore();
     }

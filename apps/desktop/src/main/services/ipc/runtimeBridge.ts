@@ -82,6 +82,7 @@ type RuntimeBridgeArgs = {
     binding: OpenProjectBinding | null;
     openProjectTabs?: ProjectInfo[];
     pendingLocalProjectRoots?: string[];
+    knownLocalProjectRoots?: string[];
   };
   authorizeLocalRuntimeRoot?: (
     session: WindowRuntimeSession | null | undefined,
@@ -232,6 +233,14 @@ function collectAuthorizedLocalRuntimeRoots(
     addRoot(project.rootPath);
   }
   for (const rootPath of session?.pendingLocalProjectRoots ?? []) {
+    addRoot(rootPath);
+  }
+  // Local roots this window opened earlier in the session stay authorized after
+  // the tab rebinds to another machine: a chat pinned to "This computer" is a
+  // per-lane fact, and the window losing its local binding does not make that
+  // lane someone else's. Still window-scoped and still only roots the window
+  // opened itself — never a renderer-supplied path.
+  for (const rootPath of session?.knownLocalProjectRoots ?? []) {
     addRoot(rootPath);
   }
 

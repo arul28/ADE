@@ -39,14 +39,15 @@ struct WorkArtifactVideoPlayerView: View {
 struct WorkArtifactView: View {
   let artifact: ComputerUseArtifactSummary
   let content: WorkLoadedArtifactContent?
+  let isExpanded: Bool
+  let onToggle: () -> Void
   let onAppear: () -> Void
   let onOpenImage: (UIImage) -> Void
-  @State private var isExpanded = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Button {
-        isExpanded.toggle()
+        onToggle()
       } label: {
         HStack(spacing: 8) {
           Image(systemName: workArtifactKindIcon(artifact))

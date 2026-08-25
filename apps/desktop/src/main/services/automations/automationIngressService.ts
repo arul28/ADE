@@ -773,13 +773,25 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
   };
 
-  const enterHostedAuthPending = (message: string): void => {
+  /**
+   * Records that the GitHub App credential is unusable, and paces the next
+   * attempt.
+   *
+   * Separate from `enterHostedAuthPending` because a signed-in machine can still
+   * poll the relay with its account token, so the failure must not disable the
+   * subscription — but it must still start the cooldown, which is what stops the
+   * poll loop asking for the same broken credential every thirty seconds.
+   */
+  const noteHostedAuthFailure = (message: string): void => {
     hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
+    if (hostedAuthPendingLogged) return;
+    hostedAuthPendingLogged = true;
+    args.logger.info("automations.github_relay_auth_pending", { error: message });
+  };
+
+  const enterHostedAuthPending = (message: string): void => {
+    noteHostedAuthFailure(message);
     disableRelaySubscription();
-    if (!hostedAuthPendingLogged) {
-      hostedAuthPendingLogged = true;
-      args.logger.info("automations.github_relay_auth_pending", { error: message });
-    }
     updateGithubRelayStatus({
       healthy: false,
       status: "disabled",
@@ -873,17 +885,25 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       }
 
       let githubAppUserToken: string | null = null;
-      if (!useLegacyProjectRoute) {
+      // A signed-in machine reaches this line during the cooldown, because the
+      // account token can still carry the poll. Asking for the App token anyway
+      // is what turned one broken credential into a request every thirty
+      // seconds, so the cooldown gates the LOOKUP, not just the subscription.
+      const appTokenLookupPaused = !useLegacyProjectRoute
+        && Date.now() < hostedAuthPendingUntilMs;
+      if (!useLegacyProjectRoute && !appTokenLookupPaused) {
         try {
           githubAppUserToken = ((await run.wait(Promise.resolve(
             args.githubService?.getAppUserTokenForRelay(),
           ))) ?? "").trim() || null;
         } catch (error) {
           if (error instanceof GithubRelayPollSupersededError) throw error;
+          const message = error instanceof Error ? error.message : String(error);
           if (!accountAccessToken) {
-            enterHostedAuthPending(error instanceof Error ? error.message : String(error));
+            enterHostedAuthPending(message);
             return;
           }
+          noteHostedAuthFailure(message);
         }
       }
       const hostedAuth = useLegacyProjectRoute
@@ -893,8 +913,15 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         enterHostedAuthPending(hostedAuth.error);
         return;
       }
-      hostedAuthPendingUntilMs = 0;
-      hostedAuthPendingLogged = false;
+      if (hostedAuth && !hostedAuth.ok) {
+        // While the lookup is paused there is no new failure to record, and
+        // re-stamping the deadline on every poll would push it out forever —
+        // the App credential would never be tried again.
+        if (!appTokenLookupPaused) noteHostedAuthFailure(hostedAuth.error);
+      } else {
+        hostedAuthPendingUntilMs = 0;
+        hostedAuthPendingLogged = false;
+      }
       const authToken = useLegacyProjectRoute
         ? legacyAuthToken
         : hostedAuth?.ok
@@ -1178,8 +1205,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
 
     async pollNow() {
       // Explicit polls (e.g. right after the user authorizes the GitHub App)
-      // bypass the auth-pending cooldown.
+      // bypass the auth-pending cooldown. The "logged once" latch is released
+      // with it: a repair that did not take is a new fact, and the log line
+      // saying so must not be suppressed by the failure it replaced.
       hostedAuthPendingUntilMs = 0;
+      hostedAuthPendingLogged = false;
       clearRelayPollRetryTimer();
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;

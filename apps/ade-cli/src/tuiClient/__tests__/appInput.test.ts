@@ -67,6 +67,7 @@ import {
   resolveTuiUnprocessedMessageRequest,
   resolveTuiUnprocessedMessageDraft,
   shouldHandlePendingQuestionKey,
+  resolveChatEscapeAction,
   resolveModelPickerEscape,
   nextModelPickerProviderTabKey,
   gridTabNavigationTarget,
@@ -1727,6 +1728,42 @@ describe("model picker escape handling", () => {
   it("closes chat model pickers and returns new-chat model pickers to setup", () => {
     expect(resolveModelPickerEscape(picker)).toEqual({ kind: "close" });
     expect(resolveModelPickerEscape({ ...picker, surface: "new-chat" })).toEqual({ kind: "return-new-chat" });
+  });
+});
+
+describe("chat escape precedence", () => {
+  const base = {
+    pane: "chat",
+    textInputActive: true,
+    modified: false,
+    composerTriggerOpen: false,
+    chatSelectionActive: false,
+    vimModeEnabled: false,
+  };
+
+  it("closes the @/slash palette before vim mode or a mouse selection consumes Esc", () => {
+    // The palette footer advertises "Esc close", so it must win even when vim
+    // mode would otherwise swallow every Esc in the composer.
+    expect(resolveChatEscapeAction({ ...base, composerTriggerOpen: true, vimModeEnabled: true }))
+      .toBe("dismiss-composer-trigger");
+    expect(resolveChatEscapeAction({ ...base, composerTriggerOpen: true, chatSelectionActive: true }))
+      .toBe("dismiss-composer-trigger");
+  });
+
+  it("falls back to the selection and vim consumers once no palette is open", () => {
+    expect(resolveChatEscapeAction({ ...base, chatSelectionActive: true, vimModeEnabled: true }))
+      .toBe("clear-chat-selection");
+    expect(resolveChatEscapeAction({ ...base, vimModeEnabled: true })).toBe("vim-normal");
+    expect(resolveChatEscapeAction(base)).toBe(null);
+  });
+
+  it("leaves Esc to the generic handlers outside the chat composer", () => {
+    expect(resolveChatEscapeAction({ ...base, pane: "details", composerTriggerOpen: true })).toBe(null);
+    expect(resolveChatEscapeAction({ ...base, textInputActive: false, vimModeEnabled: true })).toBe(null);
+    expect(resolveChatEscapeAction({ ...base, modified: true, vimModeEnabled: true })).toBe(null);
+    // A mouse selection is cleared from any pane, matching the pre-existing branch.
+    expect(resolveChatEscapeAction({ ...base, pane: "details", chatSelectionActive: true }))
+      .toBe("clear-chat-selection");
   });
 });
 

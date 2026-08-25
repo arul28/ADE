@@ -56,6 +56,21 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /issue commands to the right pane", () => {
+    const parsed = parseCommand("/issue attach ADE-123");
+    expect(parsed?.name).toBe("/issue attach");
+    expect(parsed?.args).toBe("ADE-123");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/issue")).toContainEqual(expect.objectContaining({
+      name: "/issue",
+      source: "ade",
+      description: "Attach, list, or detach Linear and GitHub issues",
+    }));
+    expect(parseCommand("/issue list")?.name).toBe("/issue list");
+    expect(parseCommand("/issue detach ade/app#42")?.name).toBe("/issue detach");
+    expect(parseCommand("/issue detach ade/app#42")?.args).toBe("ade/app#42");
+  });
+
   it("parses /pr update-branch as a multi-word ADE command with a strategy arg", () => {
     const withStrategy = parseCommand("/pr update-branch rebase");
     expect(withStrategy?.name).toBe("/pr update-branch");
@@ -228,6 +243,17 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /cloud to the ADE Code right pane", () => {
+    const parsed = parseCommand("/cloud");
+    expect(parsed?.spec?.name).toBe("/cloud");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/clo")).toContainEqual(expect.objectContaining({
+      name: "/cloud",
+      source: "ade",
+      description: "List Cursor Cloud agents for this project",
+    }));
+  });
+
   it("routes runtime commands to chat", () => {
     const parsed = parseCommand("/ship now", [
       { name: "/ship", description: "Ship it", source: "sdk" },
@@ -369,6 +395,22 @@ describe("commands", () => {
     expect(goalRows).toEqual([
       expect.objectContaining({ description: "Set, clear, or inspect the active chat goal" }),
     ]);
+  });
+
+  it("offers each /steer dispatch command exactly where the provider accepts that mode", () => {
+    // Gating is derived from ACTIVE_TURN_DISPATCH_MODES, not restated: Claude
+    // takes inline + interrupt, Cursor only interrupt, everything else stages.
+    const steerRows = (provider: string) => paletteCommands("/steer", [], { provider })
+      .map((row) => row.name);
+    expect(steerRows("claude")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
+    expect(steerRows("cursor")).toContain("/steer interrupt");
+    expect(steerRows("cursor")).not.toContain("/steer send");
+    for (const provider of ["codex", "droid", "opencode"]) {
+      expect(steerRows(provider)).not.toContain("/steer send");
+      expect(steerRows(provider)).not.toContain("/steer interrupt");
+      // The provider-agnostic staging commands stay available everywhere.
+      expect(steerRows(provider)).toEqual(expect.arrayContaining(["/steer edit", "/steer cancel"]));
+    }
   });
 
   it("filters provider-specific ADE commands outside supported chats", () => {

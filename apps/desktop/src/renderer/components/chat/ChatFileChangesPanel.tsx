@@ -16,6 +16,7 @@ import type {
 import { AdeDiffViewer } from "../shared/AdeDiffViewer";
 import { cn } from "../ui/cn";
 import { BottomDrawerSection } from "./BottomDrawerSection";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
   CHAT_CARD_WIDTH_CLASS,
   ChatCardDiffStat,
@@ -196,6 +197,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   className,
   maxHeight = 400,
 }: FileChangesBrowserProps) {
+  const scope = useChatRuntimeScope();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loadingPath, setLoadingPath] = useState<string | null>(null);
   const diffCache = useRef<Map<string, FileDiff>>(new Map());
@@ -235,7 +237,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       setActiveDiffLoadState("loading");
 
       try {
-        const diff = await window.ade.agentChat.getTurnFileDiff(args);
+        const diff = await window.ade.agentChat.getTurnFileDiff(args, scope.pin);
         if (latestDiffRequestKey.current !== cacheKey) return;
         if (!diff) {
           setActiveDiff(null);
@@ -255,7 +257,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
         }
       }
     },
-    [sessionId, files],
+    [files, scope.pin, sessionId],
   );
 
   if (!files.length) return null;

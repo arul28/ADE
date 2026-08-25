@@ -35,6 +35,7 @@ import {
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import {
   rememberRuntimeCatalog,
   resetModelPickerRuntimeCatalogForTests,
@@ -101,7 +102,11 @@ vi.mock("./ChatIosSimulatorPanel", () => {
 vi.mock("./ChatAppControlPanel", () => {
   const ReactMod = require("react") as typeof React;
   return {
-    ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "App Control panel mounted"),
+    ChatAppControlPanel: (props: { runtimePin?: { key: string } | null }) => ReactMod.createElement(
+      "div",
+      { "data-testid": "app-control-panel", "data-runtime-pin": props?.runtimePin?.key ?? "" },
+      "App Control panel mounted",
+    ),
   };
 });
 
@@ -240,6 +245,16 @@ function buildStatusStartedTranscript(sessionId: string): string {
   })}\n`;
 }
 
+const WORK_PANE_CATALOG_SCOPE = "local:/tmp/project-under-test";
+
+function rememberWorkPaneCatalog(catalog: AgentChatModelCatalog): void {
+  rememberRuntimeCatalog(catalog, {
+    mode: "cached",
+    scopeKey: WORK_PANE_CATALOG_SCOPE,
+  });
+  descriptorsFromAgentChatModelCatalog(catalog, undefined, WORK_PANE_CATALOG_SCOPE);
+}
+
 function seedRuntimeModelCatalog(): void {
   rememberRuntimeCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
@@ -344,7 +359,7 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
     serviceTiers: ["fast"],
     cursorAvailability: { cli: true, sdk: true },
   });
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "cursor",
@@ -373,7 +388,7 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return { modelId: model.id, fastAlias: "composer-2.5-speed-fast" };
 }
 
@@ -390,7 +405,7 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
       { modelId: concreteModel, reasoningEffort: "medium", fastMode: true },
     ],
   });
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "cursor",
@@ -421,13 +436,13 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return { modelId: model.id, concreteModel };
 }
 
 function seedFastOpenCodeRuntimeModelCatalog(): string {
   const modelId = "opencode/openai/gpt-5.4";
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "opencode",
@@ -454,7 +469,7 @@ function seedFastOpenCodeRuntimeModelCatalog(): string {
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return modelId;
 }
 
@@ -922,7 +937,7 @@ const originalNavigatorPlatform = window.navigator.platform;
 const originalMatchMedia = window.matchMedia;
 const LOCAL_PROJECT_BINDING: OpenProjectBinding = {
   kind: "local",
-  key: "local:/tmp/project-under-test",
+  key: WORK_PANE_CATALOG_SCOPE,
   rootPath: "/tmp/project-under-test",
   displayName: "project-under-test",
   gitOriginUrl: null,
@@ -1205,6 +1220,7 @@ function renderAutoCreateDraftPane(args?: {
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   onDraftMachineChange?: React.ComponentProps<typeof AgentChatPane>["onDraftMachineChange"];
+  onImportedSession?: React.ComponentProps<typeof AgentChatPane>["onImportedSession"];
   initialDraftMachineId?: string | null;
   lanes?: any[];
   project?: { rootPath: string; displayName?: string };
@@ -1253,6 +1269,7 @@ function renderAutoCreateDraftPane(args?: {
                 initialDraftMachineId={args?.initialDraftMachineId}
                 onSessionCreated={args?.onSessionCreated}
                 onLaunchCliSession={args?.onLaunchCliSession}
+                onImportedSession={args?.onImportedSession}
               />
               <LocationProbe />
             </>
@@ -1869,6 +1886,25 @@ describe("AgentChatPane pane reserve", () => {
     expect(await screen.findByAltText("ADE")).toBeTruthy();
     expect(readLeftReserve(container)).toBe("0px");
   });
+
+  it("never persists a phantom-open PR pane from the draft surface's PR pill", async () => {
+    installAdeMocks({ sessions: [] });
+    seedDrawerStore();
+    // Regression: the draft surface renders no PR pane (no selected session),
+    // so its header pill must fall back to the toolbar's inline menu instead
+    // of toggling persisted open state for a pane that cannot appear here.
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId="lane-1" hideSessionTabs onSessionCreated={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByAltText("ADE")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "PR" }));
+    await act(async () => {});
+
+    expect(readChatCompanionUiState("draft:lane-1").prPaneOpen).toBe(false);
+  });
 });
 
 describe("AgentChatPane companion drawers", () => {
@@ -2159,7 +2195,7 @@ describe("AgentChatPane companion drawers", () => {
     fireEvent.change(restoreSelect, { target: { value: "archived-session" } });
 
     await waitFor(() => {
-      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" });
+      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" }, null);
     });
   });
 
@@ -2223,7 +2259,7 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         steerId: "steer-unprocessed",
         action: "run_next",
-      });
+      }, null);
     });
   });
 
@@ -2254,7 +2290,7 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         steerId: "steer-unprocessed",
         action: "dismiss",
-      });
+      }, null);
     });
   });
 
@@ -2292,12 +2328,12 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         turnId: "turn-1",
         action: "restart_resume",
-      });
+      }, null);
       expect(recoverCodexTurn).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         turnId: "turn-1",
         action: "restart_resume_thread",
-      });
+      }, null);
     });
   });
 
@@ -2450,7 +2486,7 @@ describe("AgentChatPane submit recovery", () => {
           },
         }],
         metadata: { source: "auth-retry-test" },
-      });
+      }, null);
     });
   });
 
@@ -3176,7 +3212,7 @@ describe("AgentChatPane submit recovery", () => {
         itemId: "approval-1",
         decision: "decline",
         responseText: "Add the rollback risks before implementation.",
-      });
+      }, null);
     });
     expect(send).not.toHaveBeenCalled();
     expect(steer).not.toHaveBeenCalled();
@@ -3275,7 +3311,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Ship the transcript cleanup.",
         displayText: "Ship the transcript cleanup.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -3297,7 +3333,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
-      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
     });
   });
@@ -3355,7 +3391,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Ship the optimistic bubble.",
-      }));
+      }), null);
     });
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
 
@@ -3378,7 +3414,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Open the simulator screen in preview.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
 
@@ -3499,7 +3535,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Stop checking docs and just drive the browser.",
         displayText: "Stop checking docs and just drive the browser.",
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -3531,6 +3567,7 @@ describe("AgentChatPane submit recovery", () => {
           displayText: "Fold this into the live turn.",
           dispatchMode: "inline",
         }),
+        null,
       );
     });
     expect(dispatchSteer).not.toHaveBeenCalled();
@@ -3599,7 +3636,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         steerId: "steer-edit",
         requireQueued: true,
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
       expect(screen.queryByText("queued.md")).toBeNull();
     });
@@ -3642,6 +3679,7 @@ describe("AgentChatPane submit recovery", () => {
           displayText: "Actually, do this instead.",
           dispatchMode: "interrupt",
         }),
+        null,
       );
     });
     expect(dispatchSteer).not.toHaveBeenCalled();
@@ -3849,7 +3887,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Keep shipping the fix.",
-      }));
+      }), null);
     });
     send.mockClear();
 
@@ -3873,7 +3911,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Continue in a new turn.",
-      }));
+      }), null);
     });
   });
 
@@ -3932,7 +3970,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Retry the original prompt.",
-      }));
+      }), null);
     });
     expect((await screen.findByRole("alert")).textContent).toContain(
       "A turn is already active in this thread. Wait for it to finish before retrying.",
@@ -4104,11 +4142,11 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
         displayText: "Recover by starting a new turn.",
-      });
+      }, null);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -4133,7 +4171,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Please keep going.",
         displayText: "Please keep going.",
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -4191,7 +4229,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         interactionMode: "plan",
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -4203,7 +4241,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Just plan the implementation.",
         interactionMode: "plan",
-      }));
+      }), null);
     });
   });
 
@@ -4246,7 +4284,7 @@ describe("AgentChatPane submit recovery", () => {
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
         codexConfigSource: "flags",
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -4264,7 +4302,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Make the change now.",
-      }));
+      }), null);
     });
   });
 
@@ -4304,7 +4342,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         fastMode: true,
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -4319,7 +4357,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Use the faster tier.",
-      }));
+      }), null);
     });
   });
 
@@ -4348,7 +4386,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         reasoningEffort: "high",
-      });
+      }, null);
     });
   });
 
@@ -4774,7 +4812,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }));
+      }), null);
     });
     expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
     expect(warmupModel).not.toHaveBeenCalled();
@@ -4799,7 +4837,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(warmupModel).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      });
+      }, null);
     });
   });
 
@@ -4832,7 +4870,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }));
+      }), null);
     });
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
@@ -5059,7 +5097,7 @@ describe("AgentChatPane submit recovery", () => {
         codexConfigSource: "flags",
         cursorModeId: "agent",
         cursorConfigValues: {},
-      }));
+      }), null);
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
     });
   });
@@ -5150,7 +5188,7 @@ describe("AgentChatPane submit recovery", () => {
         mode: "brief",
         claudePermissionMode: "plan",
         permissionMode: "plan",
-      }));
+      }), null);
     });
   });
 
@@ -5193,7 +5231,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         targetModelId: "anthropic/claude-sonnet-5",
         mode: "fork",
-      }));
+      }), null);
     });
   });
 
@@ -5269,7 +5307,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         targetModelId: "anthropic/claude-sonnet-5",
         mode: "fork",
-      }));
+      }), null);
     });
   });
 
@@ -5324,12 +5362,189 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }));
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }), null);
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
         mode: "brief",
         targetLaneId: "lane-created",
-      }));
+      }), null);
+    });
+  });
+
+  /**
+   * Handoff is a fact about the machine the CHAT runs on, not about whichever
+   * project this tab happens to be bound to. A Work tab unions chats from every
+   * machine, so a local chat is routinely viewed from a remote-bound tab — and
+   * the cross-machine card used to be disabled purely because of that tab.
+   */
+  it("offers cross-machine handoff for a local chat viewed from a remote-bound tab", async () => {
+    const session = buildSession("session-local", { status: "idle", laneId: "lane-local" });
+    installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/Volumes/work/project-under-test", displayName: "project-under-test" } as any,
+      // The TAB is bound to a remote machine…
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-studio:project-studio",
+        targetId: "target-studio",
+        projectId: "project-studio",
+        runtimeName: "Mac Studio",
+        displayName: "project-under-test",
+        rootPath: "/Volumes/work/project-under-test",
+      } as any,
+      // …while this chat's lane lives on this Mac.
+      crossMachineLanesByMachineId: {
+        local: {
+          machineId: "local",
+          machineName: "This Mac",
+          targetId: null,
+          projectId: null,
+          binding: LOCAL_PROJECT_BINDING,
+          online: true,
+          lanes: [{
+            id: "lane-local",
+            name: "local lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/local-lane",
+            worktreePath: "/tmp/project-under-test/.ade/worktrees/local-lane",
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+
+    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
+    expect((card as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/cross-machine handoff/i)).toBeNull();
+  });
+
+  /**
+   * The reverse: the chat itself lives on another machine. Only that machine can
+   * package its history, so the card stays off — and says which machine to open.
+   */
+  it("blocks cross-machine handoff for a chat pinned to another machine and names it", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test", displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+
+    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
+    expect((card as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
+  });
+
+  /**
+   * The auto-created lane has to be made on the chat's machine: the pinned
+   * handoff that follows rejects a lane the runtime it targets has never heard
+   * of ("Unknown or unavailable lane").
+   */
+  it("auto-creates the brief handoff's lane on the chat's machine", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    const { handoff, createLane } = installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test", displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
+    fireEvent.click(await screen.findByText("Auto-create lane"));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(createLane).toHaveBeenCalledWith(
+        expect.objectContaining({ name: expect.any(String) }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
+      expect(handoff).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "brief", targetLaneId: "lane-created" }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
     });
   });
 
@@ -5367,7 +5582,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         mode: "brief",
         targetLaneId: "lane-2",
-      }));
+      }), null);
     });
   });
 
@@ -5422,7 +5637,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "Ship the instant route fix.",
         displayText: "Ship the instant route fix.",
-      }));
+      }), null);
       expect(writeClipboardText).toHaveBeenCalledWith("Ship the instant route fix.");
     });
   });
@@ -5486,7 +5701,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }));
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }), null);
       expect(writeClipboardText).toHaveBeenCalledWith("Copy quietly.");
     });
   });
@@ -5519,7 +5734,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         text: "Do not copy this prompt.",
-      }));
+      }), null);
     });
     expect(writeClipboardText).not.toHaveBeenCalled();
   });
@@ -5560,7 +5775,7 @@ describe("AgentChatPane submit recovery", () => {
         expect(send).toHaveBeenCalledWith(expect.objectContaining({
           sessionId: "created-session",
           text: "Keep sending despite callback failure.",
-        }));
+        }), null);
       });
       await waitFor(() => {
         expect(consoleError).toHaveBeenCalledWith("notifySessionCreated failed:", expect.any(Error));
@@ -5906,6 +6121,26 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
+  });
+
+  it("keeps external import available when Auto-create is selected", async () => {
+    installAdeMocks({ sessions: [] });
+    const list = vi.fn().mockResolvedValue([]);
+    (window.ade as any).externalSessions = {
+      list,
+      import: vi.fn(),
+    };
+    renderAutoCreateDraftPane({
+      onImportedSession: vi.fn(),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import an external CLI session" }));
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(await screen.findByText("No chats found")).toBeTruthy();
+    expect(list.mock.calls.every(([args]) => args.laneId === "lane-1")).toBe(true);
   });
 
   it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {
@@ -7974,7 +8209,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "Ship it.",
-      }));
+      }), null);
     });
 
     expect(await screen.findByText("Fresh session reply")).toBeTruthy();
@@ -8143,8 +8378,8 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-      }));
-      expect(window.ade.agentChat.getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      }), null);
+      expect(window.ade.agentChat.getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
     });
   });
@@ -8193,7 +8428,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-      }));
+      }), null);
       expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
     });
   });
@@ -8316,7 +8551,7 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(backgroundTab);
     await waitFor(() => {
-      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }), null);
     });
 
     fireEvent.click(primaryTab);
@@ -8336,7 +8571,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(backgroundTab);
 
     expect(await screen.findByText("Recovered from transcript on revisit")).toBeTruthy();
-    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }), null);
   });
 
   it("subscribes to live chat events before reading the authoritative history snapshot", async () => {
@@ -8397,7 +8632,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     expect(await screen.findByText("Visible inactive grid tile loaded")).toBeTruthy();
-    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }), null);
   });
 
   it("keeps the Claude login prompt pinned in compact grid tiles", async () => {
@@ -8547,7 +8782,7 @@ describe("AgentChatPane submit recovery", () => {
       });
 
       expect(screen.getByText("Recovered grid tile output")).toBeTruthy();
-      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }), null);
     } finally {
       vi.useRealTimers();
     }
@@ -10263,20 +10498,21 @@ describe("AgentChatPane per-chat runtime routing", () => {
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
 
-  it("does not mount machine-control panels against the globally bound runtime for a foreign chat", async () => {
+  it("routes machine-control panels to the chat's machine instead of refusing them", async () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
     installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
 
     renderPane(session);
 
+    // Support is asked of the chat's machine, not the tab's.
+    await waitFor(() => expect(window.ade.appControl.getStatus).toHaveBeenCalledWith(machineB));
+
     const appControlButton = (await screen.findAllByRole("button", { name: "Open App Control drawer" }))[0]!;
     fireEvent.click(appControlButton);
 
-    expect(screen.queryByTestId("app-control-panel")).toBeNull();
-    expect(screen.getByText(
-      "Switch this project tab to machine-b before using this tool. Chat and attachments remain pinned to that machine.",
-    )).toBeTruthy();
+    const panel = await screen.findByTestId("app-control-panel");
+    expect(panel.getAttribute("data-runtime-pin")).toBe(machineB.key);
   });
 
   it("pins This computer history and live events while the project tab stays remote-bound", async () => {
@@ -10307,9 +10543,11 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
-    // No pin argument at all — byte-for-byte the pre-routing call.
+    // A null pin — the unpinned path. Preload branches on `if (pin)`, so this
+    // routes exactly as the pre-routing call did.
     expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-a" }),
+      null,
     );
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
@@ -10405,6 +10643,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
+      null,
     ));
     expect(getEventHistory).not.toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
@@ -10424,6 +10663,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
     expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-b" }),
+      null,
     );
   });
 
@@ -10577,7 +10817,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     const model = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud", {
       cursorAvailability: { cli: true, sdk: true },
     });
-    rememberRuntimeCatalog({
+    rememberWorkPaneCatalog({
       fetchedAt: "2026-05-22T00:00:00.000Z",
       groups: [{
         key: "cursor",
@@ -10606,7 +10846,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
           }],
         }],
       }],
-    } as AgentChatModelCatalog, { mode: "cached" });
+    } as AgentChatModelCatalog);
     return model.id;
   }
 

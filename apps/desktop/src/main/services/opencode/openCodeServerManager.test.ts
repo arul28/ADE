@@ -580,6 +580,10 @@ describe("openCodeServerManager", () => {
     expect(spec.env.XDG_RUNTIME_DIR).toBe("/tmp/ade-opencode-test-home/xdg-v1/runtime");
     expect(spec.env.OPENCODE_CONFIG_DIR).toBe("/tmp/ade-opencode-test-home/xdg-v1/config/opencode");
     expect(spec.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe("1");
+    // This builder rebuilds the env from scratch and drops every OPENCODE_* var,
+    // so the suppression set on the user path does not reach an isolated lead —
+    // without it the lead's server self-updates the binary ADE pins.
+    expect(spec.env.OPENCODE_DISABLE_AUTOUPDATE).toBe("1");
     expect(spec.env.OPENCODE_CONFIG_CONTENT).toBe(JSON.stringify(config));
     expect(spec.env.ADE_OPENCODE_MANAGED).toBe("1");
     expect(spec.env.ADE_OPENCODE_OWNER_PID).toBe(String(process.pid));

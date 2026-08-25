@@ -22,6 +22,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -65,10 +66,10 @@ import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
 import {
-  buildSyncCloudRelayStatus,
   createSyncCloudRelayStore,
   type SyncCloudRelayStore,
 } from "./syncCloudRelayStore";
+import { buildSyncCloudRelayStatus } from "./syncCloudRelayStatus";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
@@ -141,6 +142,7 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
   pushPublisherService?: PushPublisherService | null;
@@ -541,6 +543,10 @@ export function createSyncService(args: SyncServiceArgs) {
   });
   const cloudRelayStore = args.cloudRelayStore ?? createSyncCloudRelayStore({
     filePath: path.join(pairingStateDir, CLOUD_RELAY_FILE),
+    // Identity mints, rotations, and backup recoveries are logged wherever the
+    // store is built: a machine key that changes with no record is how a live
+    // computer turned into a phantom row its owner deleted.
+    logger: args.logger,
   });
   const accountAuthService = args.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => [args.projectRoot],
@@ -722,6 +728,7 @@ export function createSyncService(args: SyncServiceArgs) {
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
@@ -864,6 +871,7 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
       agentChatService: args.agentChatService,
+      cursorCloudFleetService: args.cursorCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,
       orchestrationService: args.orchestrationService,
       pushPublisherService: args.pushPublisherService,
@@ -1398,7 +1406,7 @@ export function createSyncService(args: SyncServiceArgs) {
       let accountDirectory: SyncAccountDirectoryHealth;
       try {
         accountDirectory = args.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
-          "sync_disabled",
+          "sync_not_started",
           "Account-directory publishing is not enabled in this runtime.",
         );
       } catch {

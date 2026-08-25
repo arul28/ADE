@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { AgentChatClaudeOutputStyle, AgentChatClaudePlugin } from "../../../shared/types/chat";
+import { pathKey, pathsEqual } from "../shared/pathCompare";
+import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { writeTextAtomic } from "../shared/utils";
 
 const MAX_ANCESTOR_DEPTH = 25;
@@ -45,6 +47,7 @@ type ClaudePluginManifest = {
 
 type ClaudeSettingsLocal = Record<string, unknown> & {
   outputStyle?: unknown;
+  workflowSizeGuideline?: unknown;
   enabledPlugins?: unknown;
 };
 
@@ -158,7 +161,7 @@ function pathsOverlap(left: string, right: string): boolean {
 }
 
 function installedClaudePluginPaths(cwd: string, enabledKeys: Set<string>, enabledNames: Set<string>): string[] {
-  const registry = readJsonObject(path.join(os.homedir(), ".claude", "plugins", "installed_plugins.json"));
+  const registry = readJsonObject(path.join(claudeConfigHome({ homeDir: os.homedir() }), "plugins", "installed_plugins.json"));
   const plugins = isRecord(registry?.plugins) ? registry.plugins : null;
   if (!plugins) return [];
 
@@ -211,15 +214,31 @@ function ancestorClaudeRoots(cwd: string): string[] {
 function claudeRootsByPrecedence(cwd: string): string[] {
   const roots: string[] = [];
   const seen = new Set<string>();
-  const home = path.resolve(os.homedir());
   const addRoot = (root: string): void => {
-    if (seen.has(root)) return;
-    seen.add(root);
+    // Keyed, not raw: Windows reaches the same directory through more than one
+    // spelling, and a duplicate root would shadow the tier below it.
+    const key = pathKey(root);
+    if (seen.has(key)) return;
+    seen.add(key);
     roots.push(root);
   };
 
-  for (const root of ancestorClaudeRoots(cwd)) addRoot(root);
-  addRoot(path.join(home, ".claude"));
+  // Passed explicitly so that os.homedir() spies reach the shared helper, which
+  // imports `homedir` by name.
+  const homeDir = os.homedir();
+  const userRoot = claudeConfigHome({ homeDir });
+  const realHomeRoot = path.join(path.resolve(homeDir), ".claude");
+  // A lane normally sits under $HOME, so the ancestor walk reaches ~/.claude and
+  // would rank it as a project tier ABOVE the user tier. That is wrong whenever
+  // CLAUDE_CONFIG_DIR moved the user tier elsewhere: the stale real ~/.claude
+  // would outrank the directory the CLI actually reads.
+  const skipRealHomeRoot = !pathsEqual(userRoot, realHomeRoot);
+
+  for (const root of ancestorClaudeRoots(cwd)) {
+    if (skipRealHomeRoot && pathsEqual(root, realHomeRoot)) continue;
+    addRoot(root);
+  }
+  addRoot(userRoot);
   return roots;
 }
 
@@ -343,11 +362,15 @@ export function discoverClaudeOutputStyles(cwd: string): AgentChatClaudeOutputSt
   for (const style of CLAUDE_BUILT_IN_OUTPUT_STYLES) add(style);
 
   const roots = claudeRootsByPrecedence(cwd);
-  const homeClaudeRoot = path.resolve(os.homedir(), ".claude");
+  const homeClaudeRoot = claudeConfigHome({ homeDir: os.homedir() });
   const cwdClaudeRoot = path.resolve(cwd, ".claude");
   for (const root of roots) {
     const resolvedRoot = path.resolve(root);
-    const source = resolvedRoot === cwdClaudeRoot ? "project" : resolvedRoot === homeClaudeRoot ? "user" : "project";
+    // Keyed, like the precedence walk: raw comparison mislabels a case-variant
+    // root as "project" on the platforms where the two are the same directory.
+    const source = pathsEqual(resolvedRoot, cwdClaudeRoot)
+      ? "project"
+      : pathsEqual(resolvedRoot, homeClaudeRoot) ? "user" : "project";
     for (const style of discoverOutputStyleFiles(path.join(root, "output-styles"), source)) add(style);
   }
 
@@ -370,8 +393,7 @@ export function claudeSettingsLocalPath(cwd: string): string {
   return path.join(cwd, ".claude", "settings.local.json");
 }
 
-export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
-  const settingsPath = claudeSettingsLocalPath(cwd);
+function readClaudeSettingsFile(settingsPath: string): ClaudeSettingsLocal {
   try {
     const raw = fs.readFileSync(settingsPath, "utf8");
     const parsed = JSON.parse(raw);
@@ -383,8 +405,40 @@ export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
   }
 }
 
-export function readClaudeOutputStyleSelection(cwd: string): string {
-  return maybeString(readClaudeSettingsLocal(cwd).outputStyle) ?? "Default";
+export function readClaudeSettingsLocal(cwd: string): ClaudeSettingsLocal {
+  return readClaudeSettingsFile(claudeSettingsLocalPath(cwd));
+}
+
+/**
+ * First value for `key` across the same settings files, in the same order, that
+ * the Agent SDK itself resolves with `settingSources: ["user", "project", "local"]`:
+ * lane `settings.local.json`, lane `settings.json`, each ancestor root, then
+ * `~/.claude`. Returns null when no file declares the key.
+ *
+ * See providerConfigHomes.ts for why absence must stay absent.
+ */
+function readClaudeSettingsValue(cwd: string, key: string): string | null {
+  for (const root of claudeRootsByPrecedence(cwd)) {
+    for (const fileName of ["settings.local.json", "settings.json"]) {
+      const value = maybeString(readClaudeSettingsFile(path.join(root, fileName))[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * The output style the user selected, or null when no settings file names one.
+ * Null means "ADE has no opinion" — never "Default", which is a real style that
+ * would suppress a globally configured one.
+ */
+export function readClaudeOutputStyleSelection(cwd: string): string | null {
+  return readClaudeSettingsValue(cwd, "outputStyle");
+}
+
+/** The workflow size guideline the user configured, or null when none is set. */
+export function readClaudeWorkflowSizeGuideline(cwd: string): string | null {
+  return readClaudeSettingsValue(cwd, "workflowSizeGuideline");
 }
 
 export function writeClaudeOutputStyleSelection(cwd: string, outputStyle: string): string {

@@ -46,11 +46,13 @@ import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../..
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
+import { readProcessStartTimeMs } from "../processes/processStartTime";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
+  LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS,
   LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
   LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
@@ -723,6 +725,81 @@ export function readLocalRuntimeInfo(value: unknown): {
   };
 }
 
+/**
+ * Longest an update window may suppress opportunistic repair on its own.
+ *
+ * The window is opened by the updater and closed when its transaction
+ * settles, but a transaction that never settles must not disable recovery for
+ * the rest of the session, so the window also expires by itself.
+ */
+export const LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS = 120_000;
+
+/** Told to callers whose connect attempt was refused while an update runs. */
+export const LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE =
+  "ADE is applying an update. The background service is restarting.";
+
+const SERVICE_REPAIR_BACKOFF_MS = [0, 5_000, 15_000, 30_000, 60_000] as const;
+
+/**
+ * How long to wait before the next opportunistic service repair, given how
+ * many have already run since the service last answered compatibly.
+ *
+ * The first repair is immediate, because genuine recovery has to be fast: a
+ * user whose brain just died waits for exactly one install. Every repair after
+ * that buys less and costs a CLI process, so they spread out and stop at one a
+ * minute. A machine whose runtime keeps answering with the wrong identity —
+ * the shape an update leaves behind — used to get one installer per connect
+ * attempt, which is one per failing action poll.
+ */
+export function serviceRepairBackoffMs(attempts: number): number {
+  const index = Math.min(Math.max(attempts, 0), SERVICE_REPAIR_BACKOFF_MS.length - 1);
+  return SERVICE_REPAIR_BACKOFF_MS[index];
+}
+
+/**
+ * What the machine endpoint said about itself, plus what this app expected to
+ * hear. `probeMachineRuntimeIdentity` below answers this shape so the update
+ * transaction can check the identity of the service that answered instead of
+ * trusting a bare `ok`.
+ */
+export type MachineRuntimeIdentity = {
+  /** The pool's own compatibility verdict for the runtime that answered. */
+  ok: boolean;
+  version: string | null;
+  buildHash: string | null;
+  pid: number | null;
+  /** Build hash of the CLI this app ships, when it can be computed. */
+  expectedBuildHash: string | null;
+  /** True when a NEWER protocol-compatible brain answered; never bounce it. */
+  compatibleNewer: boolean;
+  detail: string;
+};
+
+/**
+ * How long a recorded identity mismatch may be trusted to still name a real
+ * process.
+ *
+ * A pid alone does not identify a process: the OS recycles pid numbers, so a
+ * long-lived record eventually points at something unrelated. On POSIX the
+ * start-time check below is the real guard and this is a second one; on Windows
+ * there is no `ps`, so this age limit is the only guard there. Ten minutes is
+ * far longer than an update's restart step and far shorter than the window in
+ * which a busy machine wraps its pid space.
+ */
+const RUNTIME_IDENTITY_MISMATCH_MAX_AGE_MS = 10 * 60_000;
+
+function isRuntimePidAlive(pid: number | null): boolean {
+  if (pid == null || !Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but belongs to someone else. Both
+    // platforms report a gone process as ESRCH.
+    return (error as NodeJS.ErrnoException | null)?.code === "EPERM";
+  }
+}
+
 export function computeLocalRuntimeBuildHash(cliPath = resolveCliScriptPath()): string | null {
   try {
     const content = fs.readFileSync(cliPath);
@@ -829,8 +906,30 @@ function closeRuntimeClient(client: RuntimeRpcClient): void {
 // messages (see RuntimeRpcClient.failConnection). A drop happens whenever the
 // daemon restarts or is recycled — e.g. when a desktop rebuild changes the
 // expected build hash and the running daemon is deemed incompatible.
+const LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN = /Remote ADE service connection (closed|failed)/i;
+
+// A `Remote ADE service method X failed (code …)` error is the daemon's own
+// JSON-RPC reply: the socket answered, so whatever went wrong is the brain's,
+// not the transport's. This is checked first and wins, because a brain-side
+// message can quote a transport sentence verbatim — and retrying a brain-side
+// failure would re-run a non-idempotent action against a healthy daemon.
+const LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN = /^Remote ADE service method \S+ failed[\s(:]/i;
+
+// Socket-level codes that mean the connection went away mid-call. Read from
+// `Error.code`, never from message text, so a forwarded application message
+// that happens to mention ECONNRESET cannot buy itself a retry.
+const LOCAL_RUNTIME_TRANSPORT_ERROR_CODES = new Set([
+  "ECONNRESET",
+  "ECONNABORTED",
+  "EPIPE",
+  "ENOTCONN",
+]);
+
 export function isLocalRuntimeConnectionDropped(error: Error): boolean {
-  return /Remote ADE service connection (closed|failed)/i.test(error.message);
+  if (LOCAL_RUNTIME_RPC_METHOD_FAILURE_PATTERN.test(error.message)) return false;
+  const code = (error as Error & { code?: unknown }).code;
+  if (typeof code === "string" && LOCAL_RUNTIME_TRANSPORT_ERROR_CODES.has(code)) return true;
+  return LOCAL_RUNTIME_TRANSPORT_DROP_PATTERN.test(error.message);
 }
 
 // Conservative mirror of the preload's isReadOnlyRuntimeAction. Only these
@@ -992,6 +1091,29 @@ export class LocalRuntimeConnectionPool {
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private isolatedModeActive = false;
   private lastIsolatedServiceRepairMs = 0;
+  // How many opportunistic service repairs have run since the machine service
+  // last answered compatibly, and when the last one started. Together they are
+  // the backoff: see `serviceRepairBackoffMs`.
+  private serviceRepairAttempts = 0;
+  private lastServiceRepairAtMs = 0;
+  // The last runtime that answered the machine endpoint with the wrong
+  // identity. The update transaction reads it to tell "a new brain answered"
+  // apart from "a new brain answered AND the old one is still running".
+  private lastRuntimeIdentityMismatch: {
+    pid: number | null;
+    version: string | null;
+    buildHash: string | null;
+    observedAt: string;
+    /**
+     * OS-reported start time of `pid` when the mismatch was recorded, so a
+     * recycled pid number cannot pass for the process that answered. Null when
+     * the platform cannot tell (Windows, or `ps` unavailable).
+     */
+    startedAtMs: number | null;
+  } | null = null;
+  // Wall clock after which an update window stops suppressing repair. Zero
+  // means no update is being applied.
+  private updateWindowUntilMs = 0;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private readonly projectRegistrationsByRoot = new Map<string, {
@@ -1690,7 +1812,14 @@ export class LocalRuntimeConnectionPool {
   }
 
   async activitySummary(): Promise<RuntimeActivitySummary> {
-    return await this.callSync<RuntimeActivitySummary>("runtime.activitySummary");
+    // Explicitly bounded: see LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS. The
+    // client's ten-minute default is a work budget for real work, and counting
+    // in-memory turns is not that — it is the keep-awake poll's clock.
+    return await this.callSync<RuntimeActivitySummary>(
+      "runtime.activitySummary",
+      {},
+      { timeoutMs: LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS },
+    );
   }
 
   async syncStatusForRoot(rootPath: string, args: SyncGetStatusArgs = {}): Promise<SyncRoleSnapshot> {
@@ -2107,6 +2236,79 @@ export class LocalRuntimeConnectionPool {
       && isRuntimeProtocolCompatible(runtimeInfo);
   }
 
+  private noteRuntimeIdentityMismatch(
+    runtimeInfo: ReturnType<typeof readLocalRuntimeInfo>,
+  ): void {
+    const previous = this.lastRuntimeIdentityMismatch;
+    // A failing action poll re-runs this on every attempt. Spawning `ps` each
+    // time buys nothing: the same pid answering with the same build is the same
+    // process, so keep the start time already read and refresh only when it was
+    // observed.
+    const sameProcess = previous != null
+      && previous.pid === runtimeInfo.pid
+      && previous.buildHash === runtimeInfo.buildHash;
+    // A cached null is a FAILED probe (`ps` timed out, or the pid was already
+    // gone), not a fact about the process — keeping it forever would disable
+    // the recycled-pid guard for that record. Re-probe a null at most once per
+    // 30 s so a transient failure heals without paying a spawn per poll.
+    const reuseCached = sameProcess
+      && (previous.startedAtMs != null
+        || Date.now() - Date.parse(previous.observedAt) < 30_000);
+    const startedAtMs = reuseCached
+      ? previous.startedAtMs
+      : runtimeInfo.pid == null
+        ? null
+        : readProcessStartTimeMs(runtimeInfo.pid);
+    this.lastRuntimeIdentityMismatch = {
+      pid: runtimeInfo.pid,
+      version: runtimeInfo.version,
+      buildHash: runtimeInfo.buildHash,
+      observedAt: new Date().toISOString(),
+      startedAtMs,
+    };
+  }
+
+  /**
+   * The pre-update runtime that answered with the wrong identity, if it is
+   * still running. Read by the update transaction: a replacement brain
+   * answering the socket does not prove the old one died, and a survivor keeps
+   * the machine-wide sync-host lease that makes the new one useless.
+   *
+   * A bare "is this pid alive?" is not enough to answer that. The OS recycles
+   * pid numbers, so an unrelated process that inherited the number would be
+   * reported as the surviving brain — and the update transaction would spend
+   * both of its restarts and then report a successful update as failed. So the
+   * record has to still name the SAME process: same start time on POSIX, and
+   * young enough to be believable on every platform.
+   */
+  getStaleMismatchedRuntime(): { pid: number; version: string | null } | null {
+    const mismatch = this.lastRuntimeIdentityMismatch;
+    if (!mismatch?.pid) return null;
+    // A newer brain is never "stale". The desktop is allowed to run beside one
+    // and an update must not go looking for it to kill.
+    if (compareRuntimeVersionStrings(mismatch.version, this.appVersion) === 1) return null;
+    const observedAtMs = Date.parse(mismatch.observedAt);
+    if (
+      !Number.isFinite(observedAtMs)
+      || Date.now() - observedAtMs > RUNTIME_IDENTITY_MISMATCH_MAX_AGE_MS
+    ) {
+      return null;
+    }
+    if (!isRuntimePidAlive(mismatch.pid)) return null;
+    // Null on either side means the platform could not tell, and the age check
+    // above is then the only guard. A reading on both sides that disagrees is
+    // a recycled pid: a different process now holds the number.
+    const startedAtMs = readProcessStartTimeMs(mismatch.pid);
+    if (
+      mismatch.startedAtMs != null
+      && startedAtMs != null
+      && startedAtMs !== mismatch.startedAtMs
+    ) {
+      return null;
+    }
+    return { pid: mismatch.pid, version: mismatch.version };
+  }
+
   private runtimeCompatibilityError(
     socketPath: string,
     runtimeInfo: ReturnType<typeof readLocalRuntimeInfo>,
@@ -2139,6 +2341,7 @@ export class LocalRuntimeConnectionPool {
           protocolVersion: runtimeInfo.protocolVersion,
         });
       } else {
+        this.noteRuntimeIdentityMismatch(runtimeInfo);
         return new LocalRuntimeCompatibilityError(
           `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
           runtimeInfo,
@@ -2157,6 +2360,7 @@ export class LocalRuntimeConnectionPool {
         expectedBuildHash,
         runtimePid: runtimeInfo.pid,
       });
+      this.noteRuntimeIdentityMismatch(runtimeInfo);
       return new LocalRuntimeCompatibilityError(
         "ADE service build does not match the packaged desktop runtime.",
         runtimeInfo,
@@ -2180,38 +2384,84 @@ export class LocalRuntimeConnectionPool {
   }
 
   /**
-   * Side-effect-free health probe of the machine's background service: does it
-   * answer on the machine endpoint, and is it running code this app can talk
-   * to? The same compatibility rules the pool connects by decide the answer, so
-   * a service still running the pre-update build reads unhealthy here.
+   * Side-effect-free identity probe of the machine's background service: does
+   * it answer on the machine endpoint, is it running code this app can talk to,
+   * and who exactly answered? The same compatibility rules the pool connects by
+   * decide `ok`, so a service still running the pre-update build reads
+   * unhealthy here.
+   *
+   * `ok` alone cannot answer "did this update leave the right runtime
+   * behind?": a socket that answers correctly a second after a mismatched
+   * runtime answered on it is the shape of a replacement brain standing beside
+   * a survivor. The caller needs the version, the build hash and the pid to
+   * tell those apart, so the probe reports them.
    *
    * Platform-agnostic: the endpoint is whatever `resolveMachineAdeLayout`
    * reports, which is a unix socket on macOS/Linux and a named pipe on Windows.
    */
-  async probeMachineRuntimeHealth(): Promise<{
-    ok: boolean;
-    version: string | null;
-    detail: string;
-  }> {
+  async probeMachineRuntimeIdentity(): Promise<MachineRuntimeIdentity> {
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim()
       || resolveMachineAdeLayout().socketPath;
+    const expectedBuildHash = computeLocalRuntimeBuildHash();
     const probe = await this.probeRuntimeCompatibility(socketPath);
     if (!probe) {
       return {
         ok: false,
         version: null,
+        buildHash: null,
+        pid: null,
+        expectedBuildHash,
+        compatibleNewer: false,
         detail: `No answer from the background service at ${socketPath}.`,
       };
     }
-    const version = probe.runtimeInfo.version;
+    const { version, buildHash, pid } = probe.runtimeInfo;
+    const base = {
+      version,
+      buildHash,
+      pid,
+      expectedBuildHash,
+      compatibleNewer: probe.compatibleNewer,
+    };
     if (probe.error) {
-      return { ok: false, version, detail: probe.error.message };
+      return { ...base, ok: false, detail: probe.error.message };
     }
     return {
+      ...base,
       ok: true,
-      version,
       detail: version ? `Background service is running ${version}.` : "",
     };
+  }
+
+  /**
+   * Suppresses opportunistic service repair while an update is being applied.
+   *
+   * During an update the desktop and the background service are deliberately
+   * out of step: the updater removes the service, swaps the app, reinstalls
+   * and restarts. Every one of those moments looks to the pool exactly like a
+   * broken machine, so the pool used to answer them the way it answers a
+   * broken machine — by reinstalling the service the updater had just removed,
+   * once per connect attempt. That restarted the OLD brain mid-update and left
+   * it running beside the new one. The updater owns this window; the pool
+   * waits it out instead of fighting it.
+   */
+  beginUpdateWindow(reason: string, maxMs = LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS): void {
+    this.updateWindowUntilMs = Date.now() + Math.max(0, maxMs);
+    this.logger.info("local_runtime.update_window_started", { reason, maxMs });
+  }
+
+  endUpdateWindow(reason: string): void {
+    if (this.updateWindowUntilMs === 0) return;
+    this.updateWindowUntilMs = 0;
+    this.logger.info("local_runtime.update_window_ended", { reason });
+  }
+
+  private isUpdateWindowActive(): boolean {
+    if (this.updateWindowUntilMs === 0) return false;
+    if (Date.now() < this.updateWindowUntilMs) return true;
+    this.updateWindowUntilMs = 0;
+    this.logger.warn("local_runtime.update_window_expired", {});
+    return false;
   }
 
   private async probeRuntimeCompatibility(socketPath: string): Promise<{
@@ -2252,6 +2502,18 @@ export class LocalRuntimeConnectionPool {
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || layout.socketPath;
     const existing = await this.tryConnect(socketPath);
     if (existing) return existing;
+
+    // An update deliberately removes the service before swapping the app, so
+    // a missing endpoint during the window is the update working, not a
+    // machine to recover. Repairing it here reinstalls what the updater
+    // removed and starts a pre-update brain that then outlives the update.
+    if (this.isUpdateWindowActive()) {
+      this.logger.info("local_runtime.connect_deferred_for_update", {
+        socketPath,
+        reason: "missing",
+      });
+      throw new Error(LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE);
+    }
 
     const repaired = await this.tryRepairServiceConnection(socketPath, "missing");
     if (repaired) return repaired;
@@ -2346,6 +2608,18 @@ export class LocalRuntimeConnectionPool {
           });
           return await this.startIsolatedRuntime(socketPath, error);
         }
+        // Mid-update the endpoint is expected to answer on the old build for a
+        // moment. Neither repairing nor starting an isolated runtime helps
+        // there, and both add a brain the update then has to clean up.
+        if (this.isUpdateWindowActive()) {
+          this.logger.info("local_runtime.connect_deferred_for_update", {
+            socketPath,
+            reason: "incompatible",
+            runtimePid: error.pid,
+            runtimeVersion: error.runtimeVersion,
+          });
+          throw new Error(LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE);
+        }
         const repaired = await this.tryRepairServiceConnection(socketPath, "incompatible", error);
         if (repaired) return repaired;
         const releaseBuildBlock = this.releaseBuildOutputRuntimeBlock();
@@ -2378,9 +2652,33 @@ export class LocalRuntimeConnectionPool {
     compatibilityError?: LocalRuntimeCompatibilityError,
   ): Promise<LocalRuntimeConnection | null> {
     if (!this.options.preferServiceRepair) return null;
+    if (this.isUpdateWindowActive()) {
+      this.logger.info("local_runtime.service_repair_suppressed", {
+        socketPath,
+        reason,
+        cause: "update_in_progress",
+      });
+      return null;
+    }
+    const now = Date.now();
+    const backoffMs = serviceRepairBackoffMs(this.serviceRepairAttempts);
+    const sinceLastMs = now - this.lastServiceRepairAtMs;
+    if (this.serviceRepairAttempts > 0 && sinceLastMs < backoffMs) {
+      this.logger.info("local_runtime.service_repair_throttled", {
+        socketPath,
+        reason,
+        attempts: this.serviceRepairAttempts,
+        sinceLastMs,
+        nextAttemptInMs: backoffMs - sinceLastMs,
+      });
+      return null;
+    }
+    this.serviceRepairAttempts += 1;
+    this.lastServiceRepairAtMs = now;
     this.logger.info("local_runtime.service_repair_attempt", {
       socketPath,
       reason,
+      attempt: this.serviceRepairAttempts,
       pid: compatibilityError?.pid ?? null,
       message: compatibilityError?.message ?? null,
     });
@@ -2572,6 +2870,13 @@ export class LocalRuntimeConnectionPool {
 
   private async retryServiceInstallForIsolatedRecovery(): Promise<void> {
     if (!this.options.preferServiceRepair) return;
+    if (this.isUpdateWindowActive()) {
+      this.logger.info("local_runtime.service_repair_suppressed", {
+        reason: "isolated_recovery",
+        cause: "update_in_progress",
+      });
+      return;
+    }
     if (this.serviceInstallStatus.state === "skipped" || this.serviceInstallStatus.state === "installing") return;
     const now = Date.now();
     if (now - this.lastIsolatedServiceRepairMs < 60_000) return;
@@ -2620,6 +2925,16 @@ export class LocalRuntimeConnectionPool {
   private noteConnectedRuntime(isMachineService: boolean): void {
     if (!isMachineService) return;
     this.serviceStartupStreakStartedAt = null;
+    // The service answered on compatible code, so the repair budget starts
+    // over: the next real breakage gets its immediate first install.
+    this.serviceRepairAttempts = 0;
+    this.lastServiceRepairAtMs = 0;
+    // Connecting to a compatible runtime does not prove the mismatched one
+    // died — that is the whole shape this record exists to report — so it is
+    // dropped only once the process behind it is actually gone.
+    if (this.lastRuntimeIdentityMismatch && !isRuntimePidAlive(this.lastRuntimeIdentityMismatch.pid)) {
+      this.lastRuntimeIdentityMismatch = null;
+    }
   }
 
   private async connectClient(

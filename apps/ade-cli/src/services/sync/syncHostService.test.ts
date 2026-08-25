@@ -4945,6 +4945,14 @@ describe("sync host account authentication", () => {
           code: "repair_required",
           message: (stale.payload as { message: string }).message,
         });
+        const unknownAgain = await harness.pairedHello("unknown-device-hello-2", {
+          deviceId: "device-this-machine-never-paired",
+          secret: "still-not-the-secret",
+        });
+        expect(unknownAgain.payload).toMatchObject({
+          code: "repair_required",
+          message: (stale.payload as { message: string }).message,
+        });
       } finally {
         await harness.cleanup();
       }
@@ -5954,6 +5962,10 @@ describe("CTO-gated Linear sync commands", () => {
         "prs.unstackGithubStack",
         "ai.openCursorCloudChat",
         "ai.watchCursorCloudMirror",
+        "ai.cursorCloudFleet",
+        "ai.cursorCloudResolveLane",
+        "ai.cursorCloudPullIntoLane",
+        "ai.cursorCloudStopRun",
         "chat.listPromptStashes",
         "chat.createPromptStash",
         "chat.deletePromptStash",
@@ -5968,6 +5980,10 @@ describe("CTO-gated Linear sync commands", () => {
       const viewerBlockedActions = new Set<string>([
         "cto.setLinearToken",
         "cto.clearLinearToken",
+        // Lane resolution can import a lane and pull mutates worktrees —
+        // both are host state mutations refused to read-only viewers.
+        "ai.cursorCloudResolveLane",
+        "ai.cursorCloudPullIntoLane",
       ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {

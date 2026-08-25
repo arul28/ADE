@@ -5265,13 +5265,24 @@ async function runTool(args: {
   if (name === "pr_get_review_comments") {
     const prId = assertNonEmptyString(toolArgs.prId, "prId");
     const prSvc = requirePrService(runtime);
+    // A failed thread read is reported, not flattened to `[]`. Swallowing it
+    // let "GitHub refused" render as "No actionable PR comments." — the same
+    // failure-reads-as-empty conflation this lane removed from `getChecks`, and
+    // the one an agent reads right before deciding a PR is clean.
+    let reviewThreadsUnavailable: string | null = null;
     const [comments, reviews, checks, reviewThreads] = await Promise.all([
       prSvc.getComments(prId),
       prSvc.getReviews(prId),
       prSvc.getChecks(prId),
-      prSvc.getReviewThreads(prId).catch(() => []),
+      prSvc.getReviewThreads(prId).catch((error: unknown) => {
+        reviewThreadsUnavailable = error instanceof Error ? error.message : String(error);
+        return [];
+      }),
     ]);
-    return summarizePrReviewComments(prId, comments, reviews, checks, reviewThreads);
+    return {
+      ...summarizePrReviewComments(prId, comments, reviews, checks, reviewThreads),
+      ...(reviewThreadsUnavailable ? { reviewThreadsUnavailable } : {}),
+    };
   }
 
   if (name === "pr_rerun_failed_checks") {

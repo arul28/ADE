@@ -23,8 +23,25 @@ export type ToastInput = {
   /** CSS color for the small lane dot rendered before the title. */
   colorDot?: string;
   action?: ToastAction;
+  /**
+   * A second, quieter action beside the first. Added for notices that offer
+   * both "look at this" and "stop doing this"; most toasts want neither or one.
+   */
+  secondaryAction?: ToastAction;
   /** Auto-dismiss delay; <= 0 or non-finite keeps the toast until dismissed. */
   durationMs?: number;
+  /**
+   * Fires once `ToastStack` has actually committed this toast to the DOM.
+   *
+   * Queueing a toast is not the same as showing one: `showToast` only mutates
+   * this module, and React has not rendered anything at the point it returns. A
+   * caller that has to state truthfully that the user was shown something —
+   * `useAutoDiagnosticsToast`, which tells main it may stop offering a notice —
+   * has to wait for the commit, so the render path reports it rather than the
+   * queue path guessing. Re-fires when a toast is replaced in place with a new
+   * callback, which is what makes a repeated notice acknowledge again.
+   */
+  onRendered?: () => void;
 };
 
 export type Toast = {
@@ -34,7 +51,9 @@ export type Toast = {
   tone: ToastTone;
   colorDot?: string;
   action?: ToastAction;
+  secondaryAction?: ToastAction;
   durationMs: number;
+  onRendered?: () => void;
 };
 
 /** Merge-patch shape for {@link updateToast}. */
@@ -114,7 +133,9 @@ export function showToast(input: ToastInput): string {
     tone: input.tone ?? "info",
     colorDot: input.colorDot,
     action: input.action,
+    secondaryAction: input.secondaryAction,
     durationMs,
+    onRendered: input.onRendered,
   };
 
   const existingIndex = toasts.findIndex((t) => t.id === id);

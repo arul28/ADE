@@ -6432,8 +6432,8 @@ final class ADETests: XCTestCase {
         ('pr-one', '2026-04-22T00:30:00.000Z'),
         ('pr-two', '2026-04-22T00:40:00.000Z');
       insert into pr_groups(id, project_id, group_type, name, target_branch, created_at) values
-        ('group-one', 'project-1', 'queue', 'Project one queue', 'main', '2026-04-22T00:30:00.000Z'),
-        ('group-two', 'project-2', 'queue', 'Project two queue', 'main', '2026-04-22T00:40:00.000Z');
+        ('group-one', 'project-1', 'integration', 'Project one integration', 'main', '2026-04-22T00:30:00.000Z'),
+        ('group-two', 'project-2', 'integration', 'Project two integration', 'main', '2026-04-22T00:40:00.000Z');
       insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values
         ('member-one', 'group-one', 'pr-one', 'lane-one', 0, 'source'),
         ('member-two', 'group-two', 'pr-two', 'lane-two', 0, 'source');
@@ -11560,7 +11560,11 @@ final class ADETests: XCTestCase {
       ),
     ]
 
-    XCTAssertEqual(filterPullRequestListItems(items, query: "review", state: .all).map(\.id), ["pr-1"])
+    // Search is a substring match over title/branches/lane/repo, so "review"
+    // matches pr-1 ("Improve review timeline") and pr-2 ("Draft review
+    // workflow") while excluding pr-3 — narrowing to one row is the job of the
+    // state filter, asserted below.
+    XCTAssertEqual(filterPullRequestListItems(items, query: "review", state: .all).map(\.id), ["pr-1", "pr-2"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .draft).map(\.id), ["pr-2"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "cleanup", state: .merged).map(\.id), ["pr-3"])
     XCTAssertEqual(filterPullRequestListItems(items, query: "", state: .open).map(\.id), ["pr-1"])
@@ -13323,7 +13327,7 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testWorkChatActiveTurnUsesSteerAndClaudeOnlyManualDispatch() {
+  func testWorkChatActiveTurnUsesSteerAndPerProviderManualDispatch() {
     let activeSummary = makeAgentChatSessionSummary(provider: "codex", status: "active")
     XCTAssertTrue(workChatShouldSteerActiveTurn(session: nil, summary: activeSummary))
 
@@ -13333,11 +13337,107 @@ final class ADETests: XCTestCase {
     let runningTerminal = makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")
     XCTAssertTrue(workChatShouldSteerActiveTurn(session: runningTerminal, summary: nil))
 
+    // Claude can promote a staged row either way; Cursor's SDK has no mid-run
+    // message API, so it gets interrupt only; Codex has neither.
     let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
-    XCTAssertTrue(workChatSupportsManualSteerDispatch(session: nil, summary: claudeSummary))
-    XCTAssertTrue(workChatSupportsManualSteerDispatch(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil))
-    XCTAssertFalse(workChatSupportsManualSteerDispatch(session: nil, summary: activeSummary))
-    XCTAssertFalse(workChatSupportsManualSteerDispatch(session: makeTerminalSessionSummary(toolType: "cursor"), summary: nil))
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary), [.inline, .interrupt])
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil),
+      [.inline, .interrupt]
+    )
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary), [])
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(
+        session: makeTerminalSessionSummary(toolType: "cursor"),
+        summary: nil
+      ),
+      [.interrupt]
+    )
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
+  }
+
+  /// The mode the user picked has to ride `chat.steer` itself. When it did not,
+  /// the message was staged first and promoted by a second round-trip — and the
+  /// branch that resends after a "turn already active" rejection never made that
+  /// second call, so a Send-now tap silently became a queued message.
+  func testWorkChatAtomicSteerDispatchModeMatchesDesktopValues() {
+    let claudeModes = WorkActiveSendCapability.forProvider("claude").atomicDispatchModes
+
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: claudeModes),
+      "inline"
+    )
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: claudeModes),
+      "interrupt"
+    )
+    // Queue is the absence of an atomic dispatch, not a third wire value.
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .queue, dispatchModes: claudeModes))
+
+    // Cursor has no inline channel; asking for one must not put a value the host
+    // would reject on the wire.
+    let cursorModes = WorkActiveSendCapability.forProvider("cursor").atomicDispatchModes
+    XCTAssertEqual(
+      workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: cursorModes),
+      "interrupt"
+    )
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursorModes))
+
+    // Codex has neither, and an empty list is also what a host that predates
+    // `chat.dispatchSteer` resolves to — the gate the composer and the staged
+    // strip share. Either way the steer goes out plain.
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: []))
+    XCTAssertNil(workChatAtomicSteerDispatchMode(deliveryMode: .interrupt, dispatchModes: []))
+  }
+
+  /// The host validates `dispatchMode` as a string literal, so the field has to
+  /// be absent — not null, not "queue" — for a plain staged steer.
+  func testAgentChatSteerRequestEncodesDispatchModeOnlyWhenSet() throws {
+    let encoder = JSONEncoder()
+
+    let plain = try XCTUnwrap(
+      try JSONSerialization.jsonObject(
+        with: encoder.encode(AgentChatSteerRequest(sessionId: "chat-1", text: "hi"))
+      ) as? [String: Any]
+    )
+    XCTAssertNil(plain["dispatchMode"], "A staged steer must not carry the field at all")
+    XCTAssertEqual(plain["sessionId"] as? String, "chat-1")
+
+    let atomic = try XCTUnwrap(
+      try JSONSerialization.jsonObject(
+        with: encoder.encode(
+          AgentChatSteerRequest(sessionId: "chat-1", text: "hi", dispatchMode: "interrupt")
+        )
+      ) as? [String: Any]
+    )
+    XCTAssertEqual(atomic["dispatchMode"] as? String, "interrupt")
+  }
+
+  /// Guards the hand mirror of the desktop's `ACTIVE_TURN_DISPATCH_MODES` table
+  /// in `shared/types/chat.ts`. Menu order is load-bearing: the first entry is
+  /// the provider's default, and a queue-only provider hides the picker.
+  func testWorkActiveSendCapabilityMirrorsDesktopDispatchTable() {
+    let claude = WorkActiveSendCapability.forProvider("claude")
+    XCTAssertEqual(claude.modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(claude.defaultMode, .inline)
+    XCTAssertFalse(claude.interruptContinues)
+
+    let cursor = WorkActiveSendCapability.forProvider("cursor")
+    XCTAssertEqual(cursor.modes, [.interrupt, .queue])
+    XCTAssertEqual(cursor.defaultMode, .interrupt)
+    XCTAssertTrue(cursor.interruptContinues)
+    XCTAssertEqual(cursor.agentLabel, "Cursor")
+
+    // Family collapse: a labelled variant must not fall through to queue-only.
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("claude-code").modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("anthropic").modes, [.inline, .queue, .interrupt])
+    XCTAssertEqual(WorkActiveSendCapability.forProvider("cursor-agent").modes, [.interrupt, .queue])
+
+    for provider in ["codex", "droid", "opencode", "pi", ""] {
+      let capability = WorkActiveSendCapability.forProvider(provider)
+      XCTAssertEqual(capability.modes, [.queue], "expected queue-only for \(provider)")
+      XCTAssertEqual(capability.atomicDispatchModes, [], "expected no atomic dispatch for \(provider)")
+    }
   }
 
   func testSyncChatMessageDeliveryParsesQueuedSteerResult() {
@@ -13775,7 +13875,7 @@ final class ADETests: XCTestCase {
 
     try database.executeSqlForTesting("""
       insert into pr_groups(id, project_id, group_type, name, target_branch, created_at)
-      values ('group-1', 'project-1', 'queue', 'Queue rollout', 'main', '2026-03-17T00:15:00.000Z');
+      values ('group-1', 'project-1', 'integration', 'Integration rollout', 'main', '2026-03-17T00:15:00.000Z');
     """)
     try database.executeSqlForTesting("""
       insert into pr_group_members(id, group_id, pr_id, lane_id, position, role)
@@ -15264,9 +15364,182 @@ final class ADETests: XCTestCase {
     ), 0)
   }
 
+  // MARK: - Work chat transcript scroll policy
+
+  func testProgrammaticScrollWaitsForTheWholeInteractionNotJustTheDrag() {
+    XCTAssertTrue(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: false))
+    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: true, scrollPhaseUserDriven: false))
+    // Finger-up ends the drag gesture, but the fling it launched still owns the
+    // offset. Writing here is what killed flings mid-deceleration.
+    XCTAssertFalse(workChatMayWriteScrollOffset(dragActive: false, scrollPhaseUserDriven: true))
+
+    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.tracking))
+    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.interacting))
+    XCTAssertTrue(workChatScrollPhaseIsUserDriven(.decelerating))
+    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.idle))
+    // `.animating` is OUR animation. Treating it as the reader's would let one
+    // programmatic scroll suppress the next one.
+    XCTAssertFalse(workChatScrollPhaseIsUserDriven(.animating))
+  }
+
+  func testShortTranscriptRendersFromTheTop() {
+    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: true), .topLeading)
+    XCTAssertEqual(workChatTranscriptContentAlignment(contentFitsViewport: false), .bottomLeading)
+  }
+
+  func testPrependCorrectionBailsOutWhenTheProbeDescribesAnotherRow() {
+    let anchor = WorkChatPrependAnchor(
+      rowId: "message-42",
+      rowY: 100,
+      offsetY: 500,
+      remainingAttempts: workChatPrependAnchorAttempts
+    )
+
+    // The probe is measuring some other row, so it says nothing about the
+    // anchored one. Falling through with a zero row shift would reduce the
+    // correction to the reader's own scroll delta and apply it a second time.
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-99", y: 340),
+        currentOffsetY: 740,
+        mayWriteScrollOffset: true
+      ),
+      .retry
+    )
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: nil,
+        currentOffsetY: 740,
+        mayWriteScrollOffset: true
+      ),
+      .retry
+    )
+  }
+
+  func testPrependCorrectionIsolatesTheInsertionFromTheReadersOwnScrolling() {
+    let anchor = WorkChatPrependAnchor(
+      rowId: "message-42",
+      rowY: 100,
+      offsetY: 500,
+      remainingAttempts: workChatPrependAnchorAttempts
+    )
+    // 900pt inserted above while the reader scrolled 240pt: the row moves
+    // 900 - 240 and the offset moves 240, so the sum is the insertion.
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 + 900 - 240),
+        currentOffsetY: 500 + 240,
+        mayWriteScrollOffset: true
+      ),
+      .apply(900)
+    )
+    // A pure scroll with no prepend sums to zero and correctly restores nothing.
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 100 - 240),
+        currentOffsetY: 500 + 240,
+        mayWriteScrollOffset: true
+      ),
+      .retry
+    )
+  }
+
+  func testPrependCorrectionWaitsOutTheReaderWithoutSpendingAnAttempt() {
+    let anchor = WorkChatPrependAnchor(
+      rowId: "message-42",
+      rowY: 100,
+      offsetY: 500,
+      remainingAttempts: 1
+    )
+    XCTAssertEqual(
+      workChatPrependCorrection(
+        anchor: anchor,
+        probed: WorkChatPrependProbeSample(rowId: "message-42", y: 1_000),
+        currentOffsetY: 500,
+        mayWriteScrollOffset: false
+      ),
+      .wait
+    )
+  }
+
+  func testOverlappingPrependsKeepTheAnchorThatAccumulatesBoth() {
+    // Second page lands while the first correction is still open. Re-arming on
+    // the new first row would measure only the second insertion and leave the
+    // first one uncorrected.
+    XCTAssertEqual(
+      workChatPrependArmDecision(
+        previousFirstId: "message-20",
+        nextFirstId: "message-10",
+        previousVisibleCount: 40,
+        nextVisibleCount: 60,
+        existingAnchorRowId: "message-42",
+        anchorRowStillVisible: true,
+        previousFirstRowStillVisible: true,
+        probeRowId: "message-42",
+        probeRowY: 220
+      ),
+      .extendExistingAnchorWindow
+    )
+    // Unless the anchored row is gone, in which case there is nothing left to
+    // measure against.
+    XCTAssertEqual(
+      workChatPrependArmDecision(
+        previousFirstId: "message-20",
+        nextFirstId: "message-10",
+        previousVisibleCount: 40,
+        nextVisibleCount: 60,
+        existingAnchorRowId: "message-42",
+        anchorRowStillVisible: false,
+        previousFirstRowStillVisible: true,
+        probeRowId: "message-42",
+        probeRowY: 220
+      ),
+      .retireAnchor
+    )
+  }
+
+  func testPrependAnchorOnlyArmsOnAGenuineInsertionAbove() {
+    func decision(
+      previousFirstId: String? = "message-20",
+      nextFirstId: String? = "message-10",
+      previousVisibleCount: Int = 40,
+      nextVisibleCount: Int = 60,
+      previousFirstRowStillVisible: Bool = true,
+      probeRowId: String? = "message-20",
+      probeRowY: CGFloat? = 180
+    ) -> WorkChatPrependArmDecision {
+      workChatPrependArmDecision(
+        previousFirstId: previousFirstId,
+        nextFirstId: nextFirstId,
+        previousVisibleCount: previousVisibleCount,
+        nextVisibleCount: nextVisibleCount,
+        existingAnchorRowId: nil,
+        anchorRowStillVisible: false,
+        previousFirstRowStillVisible: previousFirstRowStillVisible,
+        probeRowId: probeRowId,
+        probeRowY: probeRowY
+      )
+    }
+
+    XCTAssertEqual(decision(), .arm(rowId: "message-20", rowY: 180))
+    // Appended, not prepended: the list grew but still leads with the same row.
+    XCTAssertEqual(decision(nextFirstId: "message-20"), .ignore)
+    // Rows replaced rather than inserted.
+    XCTAssertEqual(decision(nextVisibleCount: 40), .ignore)
+    // The leading row is gone, so this is not a prepend.
+    XCTAssertEqual(decision(previousFirstRowStillVisible: false), .ignore)
+    // The probe was measuring a different row, so there is no "before" position.
+    XCTAssertEqual(decision(probeRowId: "message-77"), .ignore)
+    XCTAssertEqual(decision(probeRowY: nil), .ignore)
+  }
+
   func testMobileChatHistoryTriggerAndRenderCapStayBounded() {
     XCTAssertTrue(workChatShouldRequestOlderHistory(
-      topY: -120,
+      distanceFromTop: 120,
       triggerArmed: true,
       loading: false,
       hasError: false,
@@ -15274,7 +15547,7 @@ final class ADETests: XCTestCase {
       hasHostHistory: true
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: -500,
+      distanceFromTop: 500,
       triggerArmed: true,
       loading: false,
       hasError: false,
@@ -15282,7 +15555,7 @@ final class ADETests: XCTestCase {
       hasHostHistory: false
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: 0,
+      distanceFromTop: 0,
       triggerArmed: false,
       loading: false,
       hasError: false,
@@ -15290,7 +15563,7 @@ final class ADETests: XCTestCase {
       hasHostHistory: false
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: 0,
+      distanceFromTop: 0,
       triggerArmed: true,
       loading: true,
       hasError: false,
@@ -15298,11 +15571,47 @@ final class ADETests: XCTestCase {
       hasHostHistory: true
     ))
     XCTAssertFalse(workChatShouldRequestOlderHistory(
-      topY: 0,
+      distanceFromTop: 0,
       triggerArmed: true,
       loading: false,
       hasError: true,
       hasBufferedEntries: false,
+      hasHostHistory: true
+    ))
+    // A dropped host page must not strand the reader on top of history the
+    // phone already holds: revealing buffered entries costs no network, and
+    // gating it on the failure is what froze scroll-back after one timeout.
+    XCTAssertTrue(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: true,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: true
+    ))
+    XCTAssertTrue(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: true,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    // A failure still cannot outrank the states that mean "not now".
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: true,
+      loading: true,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: true
+    ))
+    XCTAssertFalse(workChatShouldRequestOlderHistory(
+      distanceFromTop: 0,
+      triggerArmed: false,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
       hasHostHistory: true
     ))
 
@@ -15333,6 +15642,22 @@ final class ADETests: XCTestCase {
       hasError: true,
       hasBufferedEntries: false,
       hasHostHistory: true
+    ))
+    // A transcript that fits the viewport cannot be scrolled, so there is no
+    // gesture that re-arms anything. Buffered rows have to stay reachable.
+    XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: false,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: false
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      loading: true,
+      hasError: true,
+      hasBufferedEntries: true,
+      hasHostHistory: false
     ))
     XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
@@ -16830,6 +17155,29 @@ final class ADETests: XCTestCase {
     settledChat.settledAt = "2026-04-20T00:02:55.000Z"
     settledChat.statusNote = "All checks passed"
 
+    // "awaiting" is NOT a persisted session status. `TerminalSessionStatus` is
+    // running | completed | failed | disposed | detached — the "awaiting-input"
+    // spelling belongs to the roster RUNTIME BUCKET vocabulary
+    // (`RemoteRosterModels`), which is a different axis. This fixture used to
+    // set `status: "awaiting_input"` with `runtimeState: "exited"`, a row the
+    // wire cannot produce, and it only ever passed because the drawer used to
+    // read the status word. A chat that is genuinely blocked on you is a LIVE
+    // chat carrying a structured ask, which is what this now models — and it
+    // exercises the pending-item tier, distinct from `explicitAttention`'s
+    // `attentionRequestedAt` tier, so the two awaiting paths stay covered.
+    var awaitingChat = makeTerminalSessionSummary(
+      id: "awaiting-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Mobile awaiting chat",
+      lastOutputPreview: "Approval needed",
+      startedAt: "2026-04-20T00:02:30.000Z"
+    )
+    awaitingChat.pendingInputItemId = "approval-1"
+
     var failedTurnChat = makeTerminalSessionSummary(
       id: "failed-turn-chat",
       laneId: "lane-1",
@@ -16886,17 +17234,6 @@ final class ADETests: XCTestCase {
         startedAt: "2026-04-20T00:02:15.000Z"
       ),
       makeTerminalSessionSummary(
-        id: "awaiting-chat",
-        laneId: "lane-1",
-        laneName: "Primary",
-        toolType: "codex-chat",
-        runtimeState: "exited",
-        status: "awaiting_input",
-        title: "Mobile awaiting chat",
-        lastOutputPreview: "Approval needed",
-        startedAt: "2026-04-20T00:02:30.000Z"
-      ),
-      makeTerminalSessionSummary(
         id: "failed-shell",
         laneId: "lane-1",
         laneName: "Primary",
@@ -16907,6 +17244,7 @@ final class ADETests: XCTestCase {
         startedAt: "2026-04-20T00:03:00.000Z"
       ),
       explicitAttention,
+      awaitingChat,
       settledChat,
       failedTurnChat,
     ])
@@ -16931,6 +17269,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(awaiting.status, "awaiting-input")
     XCTAssertEqual(awaiting.title, "Mobile awaiting chat")
     XCTAssertTrue(awaiting.awaitingInput)
+    XCTAssertEqual(awaiting.pendingInputItemId, "approval-1")
     let explicit = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "explicit-attention-chat" }))
     XCTAssertEqual(explicit.status, "awaiting-input")
     XCTAssertTrue(explicit.awaitingInput)
@@ -18688,6 +19027,47 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(steers.isEmpty)
   }
 
+  /// The staged strip is now the "you queued this" surface and nothing else. An
+  /// atomically dispatched send writes a user message with an immediate
+  /// delivery state (or none at all) and must never produce a strip entry —
+  /// that was the visible symptom of the old two-step send, where every
+  /// active-turn message flashed through the strip on its way out.
+  func testDerivePendingWorkSteersIgnoresNonQueuedDeliveries() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "folded into the turn", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "inline", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "plain send", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:03.000Z",
+        sequence: 3,
+        event: .userMessage(text: "interrupted with this", attachments: nil, turnId: "turn-2", steerId: "steer-2", deliveryState: "delivered", processed: nil)
+      ),
+    ]
+
+    XCTAssertTrue(derivePendingWorkSteers(from: transcript).isEmpty)
+
+    // ...and one the user actually queued still shows up.
+    let queued = transcript + [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 4,
+        event: .userMessage(text: "wait for the turn", attachments: nil, turnId: "turn-2", steerId: "steer-3", deliveryState: "queued", processed: nil)
+      ),
+    ]
+    XCTAssertEqual(derivePendingWorkSteers(from: queued).map(\.id), ["steer-3"])
+  }
+
   func testMergeWorkChatTranscriptsReplacesQueuedSteerEditInPlace() {
     let base = [
       WorkChatEnvelope(
@@ -18878,7 +19258,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(rendered.count, 3)
     XCTAssertTrue(rendered.allSatisfy { $0.sourceEntryId == entry.id })
     XCTAssertEqual(Set(rendered.map(\.id)).count, rendered.count)
-    XCTAssertTrue(rendered.allSatisfy { $0.id.hasPrefix("message-assistant-1-markdown-block-") })
+    XCTAssertEqual(rendered.first?.id, entry.id)
+    XCTAssertTrue(rendered.dropFirst().allSatisfy { $0.id.hasPrefix("message-assistant-1-markdown-block-") })
     for row in rendered {
       guard case .assistantMarkdownBlock(let block) = row.payload else {
         return XCTFail("Expected assistant markdown block render rows.")
@@ -19095,6 +19476,309 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(preview?.isTruncated == true)
     XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
     XCTAssertEqual(preview?.totalLineCount, 5000)
+  }
+
+  func testAssistantPreviewCacheInvalidatesOnIncrementalRevisionWithoutRehashing() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming",
+      role: "assistant",
+      markdown: "Before",
+      markdownDigest: workStableDigest("Before"),
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-1"
+    )
+    let cache = WorkAssistantPreviewCache()
+
+    XCTAssertEqual(cache.preview(for: message).text, "Before")
+    XCTAssertTrue(workApplyStreamingAssistantText("Before and after", to: &message))
+    XCTAssertEqual(message.markdown, "Before and after")
+    XCTAssertEqual(message.markdownRevision, 1)
+    XCTAssertEqual(message.markdownDigest, workStableDigest("Before"), "the live path must not rescan the full text")
+    XCTAssertEqual(cache.preview(for: message).text, "Before and after")
+    XCTAssertFalse(workApplyStreamingAssistantText("Before and after", to: &message))
+    XCTAssertEqual(message.markdownRevision, 1, "duplicate replay must not cause another render refresh")
+  }
+
+  func testStreamingPreviewMetadataKeepsExactCountsAcrossAppendedDeltas() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-counts",
+      role: "assistant",
+      markdown: "First line",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-1"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\nSecond line", to: &message))
+    XCTAssertTrue(workApplyStreamingAssistantText("\nThird line", to: &message))
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+    XCTAssertEqual(message.markdownLineCount, 3)
+    XCTAssertEqual(message.markdownHasCarriageReturn, false)
+    XCTAssertEqual(message.markdownContainsFence, false)
+
+    let preview = WorkAssistantPreviewCache().preview(for: message, anchor: .tail)
+    XCTAssertEqual(preview.totalCharacterCount, message.markdown.count)
+    XCTAssertEqual(preview.totalLineCount, 3)
+    XCTAssertFalse(preview.isTruncated)
+  }
+
+  func testStreamingPreviewMetadataKeepsGraphemeCountAcrossDeltaBoundary() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-graphemes",
+      role: "assistant",
+      markdown: "Cafe",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-1"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\u{301}", to: &message))
+    XCTAssertEqual(message.markdown, "Cafe\u{301}")
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+  }
+
+  func testStreamingPreviewMetadataKeepsRegionalIndicatorPairingAcrossDeltaBoundary() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-regional-indicators",
+      role: "assistant",
+      markdown: "\u{1F1FA}",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-2"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\u{1F1F8}\u{1F1E6}\u{1F1E7}", to: &message))
+    XCTAssertEqual(message.markdown, "\u{1F1FA}\u{1F1F8}\u{1F1E6}\u{1F1E7}")
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+    XCTAssertEqual(message.markdownCharacterCount, 2)
+  }
+
+  func testStreamingPreviewMetadataKeepsEvenRegionalIndicatorDeltaAdditive() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-even-regional-indicators",
+      role: "assistant",
+      markdown: "\u{1F1FA}",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-3"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\u{1F1F8}\u{1F1E6}", to: &message))
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+    XCTAssertEqual(message.markdownCharacterCount, 2)
+  }
+
+  func testStreamingPreviewMetadataKeepsUTF8CountAcrossReplayAndCarriageReturn() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-utf8",
+      role: "assistant",
+      markdown: "Café",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-4"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\nnext", to: &message))
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+    XCTAssertFalse(workApplyStreamingAssistantText(message.markdown, to: &message))
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\r\nfinal", to: &message))
+    XCTAssertEqual(message.markdownUTF8Count, message.markdown.utf8.count)
+  }
+
+  func testIncrementalTimelineSortDetectsSameTimestampRankInversion() {
+    let first = WorkChatMessage(
+      id: "first",
+      role: "assistant",
+      markdown: "first",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "first"
+    )
+    let second = WorkChatMessage(
+      id: "second",
+      role: "assistant",
+      markdown: "second",
+      timestamp: first.timestamp,
+      turnId: "turn-1",
+      itemId: "second"
+    )
+    let timeline = [
+      WorkTimelineEntry(id: "second", timestamp: second.timestamp, rank: 1_500, payload: .message(second)),
+      WorkTimelineEntry(id: "first", timestamp: first.timestamp, rank: 2, payload: .message(first))
+    ]
+
+    XCTAssertTrue(workIncrementalTimelineNeedsSort(timeline))
+  }
+
+  func testIncrementalTailTracksNewEntryWhenFutureEchoMovesSuffix() {
+    let assistant = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      sequence: 1,
+      event: .assistantText(text: "first", turnId: "turn-1", itemId: "item-1")
+    )
+    let futureEcho = WorkLocalEchoMessage(
+      text: "queued later",
+      timestamp: "2026-03-25T00:00:03.000Z"
+    )
+    let previous = buildWorkChatTimelineSnapshot(
+      transcript: [assistant],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: [futureEcho]
+    )
+    let nextAssistant = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-03-25T00:00:02.000Z",
+      sequence: 2,
+      event: .assistantText(text: "second", turnId: "turn-1", itemId: "item-2")
+    )
+    let insertedEntry = WorkTimelineEntry(
+      id: "message-\(nextAssistant.id)",
+      timestamp: nextAssistant.timestamp,
+      rank: 1,
+      payload: .message(WorkChatMessage(
+        id: nextAssistant.id,
+        role: "assistant",
+        markdown: "second",
+        timestamp: nextAssistant.timestamp,
+        turnId: "turn-1",
+        itemId: "item-2"
+      ))
+    )
+    let sortedTimeline = (previous.timeline + [insertedEntry]).sorted { lhs, rhs in
+      if lhs.timestamp == rhs.timestamp { return lhs.rank < rhs.rank }
+      return lhs.timestamp < rhs.timestamp
+    }
+
+    let summary = workIncrementalUpdatedTailSummary(
+      previous: previous,
+      timeline: sortedTimeline,
+      previousTimelineCount: previous.timeline.count,
+      candidateEnvelopes: [nextAssistant][...],
+      newTimelineEntryIDs: [insertedEntry.id]
+    )
+
+    // The queued local echo is the sorted visible message tail, so the
+    // canonical streaming target is intentionally nil; it must not fall back
+    // to the previous assistant just because the new row moved before it.
+    XCTAssertNil(summary.latestAssistantMessageId)
+    XCTAssertTrue(summary.liveTurnEntryIds.contains(insertedEntry.id))
+  }
+
+  func testIncrementalStreamingHintClearsWhenCanonicalUserReplacesEcho() {
+    let previousAssistant = WorkChatMessage(
+      id: "assistant-previous",
+      role: "assistant",
+      markdown: "Done",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "assistant-item"
+    )
+    let canonicalUser = WorkChatMessage(
+      id: "user-canonical",
+      role: "user",
+      markdown: "Next turn",
+      timestamp: "2026-03-25T00:00:02.000Z",
+      turnId: "turn-2",
+      itemId: nil
+    )
+    let timeline = [
+      WorkTimelineEntry(
+        id: "message-\(previousAssistant.id)",
+        timestamp: previousAssistant.timestamp,
+        rank: 0,
+        payload: .message(previousAssistant)
+      ),
+      WorkTimelineEntry(
+        id: "message-\(canonicalUser.id)",
+        timestamp: canonicalUser.timestamp,
+        rank: 1,
+        payload: .message(canonicalUser)
+      ),
+    ]
+    let userEnvelope = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: canonicalUser.timestamp,
+      sequence: 2,
+      event: .userMessage(
+        text: canonicalUser.markdown,
+        attachments: nil,
+        turnId: canonicalUser.turnId,
+        steerId: nil,
+        deliveryState: nil,
+        processed: nil
+      )
+    )
+
+    let candidates = Array([userEnvelope])[...]
+    XCTAssertNil(
+      workIncrementalLatestAssistantMessageId(
+        previous: previousAssistant.id,
+        timeline: timeline,
+        candidateEnvelopes: candidates
+      )
+    )
+  }
+
+  func testIncrementalStreamingHintFollowsNewAssistantItemWithoutUserBoundary() {
+    let firstAssistant = WorkChatMessage(
+      id: "assistant-first",
+      role: "assistant",
+      markdown: "First item",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-first"
+    )
+    let secondAssistant = WorkChatMessage(
+      id: "assistant-second",
+      role: "assistant",
+      markdown: "Second item",
+      timestamp: "2026-03-25T00:00:02.000Z",
+      turnId: "turn-1",
+      itemId: "item-second"
+    )
+    let timeline = [
+      WorkTimelineEntry(
+        id: "message-\(firstAssistant.id)",
+        timestamp: firstAssistant.timestamp,
+        rank: 0,
+        payload: .message(firstAssistant)
+      ),
+      WorkTimelineEntry(
+        id: "message-\(secondAssistant.id)",
+        timestamp: secondAssistant.timestamp,
+        rank: 1,
+        payload: .message(secondAssistant)
+      ),
+    ]
+    let secondItemEnvelope = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: secondAssistant.timestamp,
+      sequence: 2,
+      event: .assistantText(
+        text: "Second item grows",
+        turnId: secondAssistant.turnId,
+        itemId: secondAssistant.itemId
+      )
+    )
+
+    XCTAssertEqual(
+      workIncrementalLatestAssistantMessageId(
+        previous: firstAssistant.id,
+        previousItemId: firstAssistant.itemId,
+        timeline: timeline,
+        candidateEnvelopes: [secondItemEnvelope][...]
+      ),
+      secondAssistant.id
+    )
   }
 
   func testWorkChatAccessibilityPreviewCapsHugeMessages() {
@@ -22762,6 +23446,218 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(summary.contains("sessionCount:2"))
   }
 
+  // MARK: - Host sleep chip (one sleep, one artifact)
+
+  /// The two halves of a host-sleep chip differ only by `status` on the wire.
+  /// iOS used to drop that field, so both arrived as plain `info` notices and
+  /// nothing could tell a pause from its resume.
+  func testHostSleepNoticeStatusBecomesNoticeKind() throws {
+    let paused = try JSONDecoder().decode(AgentChatEvent.self, from: Data("""
+    {
+      "type": "system_notice",
+      "noticeKind": "info",
+      "severity": "info",
+      "status": "host_asleep",
+      "message": "Paused — computer asleep",
+      "detail": { "hostSleep": { "sleepId": "host-sleep-1-1" } },
+      "turnId": "turn-1"
+    }
+    """.utf8))
+    guard case let .systemNotice(pausedKind, pausedMessage, _, _, _) = paused else {
+      return XCTFail("Expected a system notice")
+    }
+    XCTAssertEqual(pausedKind, .hostAsleep)
+    XCTAssertEqual(pausedMessage, "Paused — computer asleep")
+    // The kind is what carries the half all the way to the timeline.
+    guard case let .systemNotice(mappedKind, _, mappedDetail, _, _) = makeWorkChatEvent(from: paused) else {
+      return XCTFail("Expected a mapped system notice")
+    }
+    XCTAssertEqual(mappedKind, "host_asleep")
+    XCTAssertEqual(workHostSleepId(from: mappedDetail), "host-sleep-1-1")
+
+    let resumed = try JSONDecoder().decode(AgentChatEvent.self, from: Data("""
+    {
+      "type": "system_notice",
+      "noticeKind": "info",
+      "status": "host_awake",
+      "message": "Resumed · paused 4m",
+      "detail": { "hostSleep": { "sleepId": "host-sleep-1-1", "pausedMs": 240000 } }
+    }
+    """.utf8))
+    guard case let .systemNotice(resumedKind, _, _, _, _) = resumed else {
+      return XCTFail("Expected a system notice")
+    }
+    XCTAssertEqual(resumedKind, .hostAwake)
+
+    // Any other status is somebody else's business and must not be rewritten.
+    let other = try JSONDecoder().decode(AgentChatEvent.self, from: Data("""
+    {
+      "type": "system_notice",
+      "noticeKind": "warning",
+      "status": "subagent_spawned",
+      "message": "Subagent spawned"
+    }
+    """.utf8))
+    guard case let .systemNotice(otherKind, _, _, _, _) = other else {
+      return XCTFail("Expected a system notice")
+    }
+    XCTAssertEqual(otherKind, .warning)
+  }
+
+  /// Desktop's contract is "one sleep, one artifact": the resumed half replaces
+  /// the paused half on the same row instead of stacking under it.
+  func testHostSleepPausedAndResumedFoldIntoOneCard() throws {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:00:01.000Z",
+        sequence: 1,
+        event: .systemNotice(
+          kind: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: "{\n  \"hostSleep\" : {\n    \"sleepId\" : \"host-sleep-1-1\"\n  }\n}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:04:01.000Z",
+        sequence: 2,
+        event: .systemNotice(
+          kind: "host_awake",
+          message: "Resumed · paused 4m",
+          detail: "{\n  \"hostSleep\" : {\n    \"sleepId\" : \"host-sleep-1-1\",\n    \"pausedMs\" : 240000\n  }\n}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript)
+
+    XCTAssertEqual(cards.count, 1)
+    let card = try XCTUnwrap(cards.first)
+    XCTAssertEqual(card.id, "host-sleep:chat-1:host-sleep-1-1")
+    // The host writes the label; the chip never invents its own words.
+    XCTAssertEqual(card.title, "Resumed · paused 4m")
+    XCTAssertEqual(card.icon, "play.circle")
+    // The sleep id is plumbing — it must never reach the user as a JSON blob.
+    XCTAssertNil(card.body)
+    XCTAssertTrue(card.bullets.isEmpty)
+  }
+
+  /// A second sleep in the same chat is a second artifact, not an overwrite of
+  /// the first one's resolved chip.
+  func testHostSleepDistinctSleepIdsKeepSeparateCards() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:00:01.000Z",
+        sequence: 1,
+        event: .systemNotice(
+          kind: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\"}}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:04:01.000Z",
+        sequence: 2,
+        event: .systemNotice(
+          kind: "host_awake",
+          message: "Resumed · paused 4m",
+          detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\"}}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-08-17T00:09:01.000Z",
+        sequence: 3,
+        event: .systemNotice(
+          kind: "host_asleep",
+          message: "Paused — computer asleep",
+          detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-2-2\"}}",
+          turnId: "turn-1",
+          steerId: nil
+        )
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript)
+
+    XCTAssertEqual(cards.map(\.id), [
+      "host-sleep:chat-1:host-sleep-1-1",
+      "host-sleep:chat-1:host-sleep-2-2",
+    ])
+    XCTAssertEqual(cards.last?.icon, "moon.zzz")
+  }
+
+  /// A chat reopened from persisted history must fold the same way a live one
+  /// does — the replay parser reads raw JSON and never sees `AgentChatEvent`.
+  func testHostSleepFoldsOnPersistedTranscriptReplay() throws {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-08-17T00:00:01.000Z","sequence":1,"event":{"type":"system_notice","noticeKind":"info","status":"host_asleep","message":"Paused — computer asleep","detail":{"hostSleep":{"sleepId":"host-sleep-9-1"}},"turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-08-17T00:00:41.000Z","sequence":2,"event":{"type":"system_notice","noticeKind":"info","status":"host_awake","message":"Resumed · paused 40s","detail":{"hostSleep":{"sleepId":"host-sleep-9-1","pausedMs":40000}},"turnId":"turn-1"}}
+    """
+
+    let cards = buildWorkEventCards(from: parseWorkChatTranscript(raw))
+
+    XCTAssertEqual(cards.count, 1)
+    let card = try XCTUnwrap(cards.first)
+    XCTAssertEqual(card.id, "host-sleep:chat-1:host-sleep-9-1")
+    XCTAssertEqual(card.title, "Resumed · paused 40s")
+  }
+
+  /// The fold is otherwise last-wins, and `buildWorkEventCards` does not sort
+  /// its input. If the paused half is folded in second — a replay whose
+  /// sequence numbering inverts the pair, or a clock corrected across the wake
+  /// — last-wins would leave "Paused — computer asleep" on a machine that is
+  /// demonstrably awake. Resumed outranks paused whatever the arrival order.
+  func testHostSleepResumedHalfWinsWhenPausedArrivesLast() throws {
+    let paused = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-08-17T00:00:01.000Z",
+      sequence: 2,
+      event: .systemNotice(
+        kind: "host_asleep",
+        message: "Paused — computer asleep",
+        detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\"}}",
+        turnId: "turn-1",
+        steerId: nil
+      )
+    )
+    let resumed = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-08-17T00:00:41.000Z",
+      sequence: 1,
+      event: .systemNotice(
+        kind: "host_awake",
+        message: "Resumed · paused 40s",
+        detail: "{\"hostSleep\":{\"sleepId\":\"host-sleep-1-1\",\"pausedMs\":40000}}",
+        turnId: "turn-1",
+        steerId: nil
+      )
+    )
+
+    let inverted = buildWorkEventCards(from: [resumed, paused])
+    XCTAssertEqual(inverted.count, 1)
+    XCTAssertEqual(inverted.first?.title, "Resumed · paused 40s")
+    XCTAssertEqual(inverted.first?.icon, "play.circle")
+    XCTAssertEqual(inverted.first?.isInProgress, false)
+
+    // And the ordered pair still resolves the same way.
+    let ordered = buildWorkEventCards(from: [paused, resumed])
+    XCTAssertEqual(ordered.count, 1)
+    XCTAssertEqual(ordered.first?.title, "Resumed · paused 40s")
+    XCTAssertEqual(ordered.first?.isInProgress, false)
+  }
+
   // MARK: - Timeline dedup + ask_user regression tests
 
   func testBuildWorkToolCardsDedupesDuplicateToolCallsByItemId() {
@@ -23451,6 +24347,55 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.text, "half-written message for chat A")
   }
 
+  /// The active-turn send mode is a working habit, not a per-turn decision, so
+  /// it is remembered per chat across launches. Scoped per chat: a user who
+  /// always interrupts one agent must not have that applied to a chat where
+  /// they always queue.
+  func testActiveSendModeIsRememberedPerChat() {
+    let keyA = WorkActiveSendModeStore.chatKey(sessionId: "sess-A-\(UUID().uuidString)")
+    let keyB = WorkActiveSendModeStore.chatKey(sessionId: "sess-B-\(UUID().uuidString)")
+    defer {
+      WorkActiveSendModeStore.clear(keyA)
+      WorkActiveSendModeStore.clear(keyB)
+    }
+
+    XCTAssertNil(WorkActiveSendModeStore.load(keyA), "An untouched chat has no preference")
+
+    WorkActiveSendModeStore.save(.interrupt, for: keyA)
+    XCTAssertEqual(WorkActiveSendModeStore.load(keyA), .interrupt)
+    XCTAssertNil(WorkActiveSendModeStore.load(keyB), "Preferences must not leak between chats")
+
+    WorkActiveSendModeStore.save(.queue, for: keyA)
+    XCTAssertEqual(WorkActiveSendModeStore.load(keyA), .queue, "The latest pick wins")
+
+    // A composer that renders before its session id resolves must not write
+    // every chat's preference into one shared bucket.
+    XCTAssertEqual(WorkActiveSendModeStore.chatKey(sessionId: "   "), "")
+    WorkActiveSendModeStore.save(.inline, for: "")
+    XCTAssertNil(WorkActiveSendModeStore.load(""))
+  }
+
+  /// A remembered mode is only restorable when the chat's current provider can
+  /// honor it — Cursor has no inline channel, so a mode carried over from a
+  /// Claude chat has to fall back to that provider's default rather than being
+  /// sent and rejected by the host.
+  func testRememberedSendModeFallsBackWhenProviderCannotHonorIt() {
+    let cursor = WorkActiveSendCapability.forProvider("cursor")
+    XCTAssertFalse(cursor.modes.contains(.inline))
+    XCTAssertEqual(cursor.defaultMode, .interrupt)
+
+    let codex = WorkActiveSendCapability.forProvider("codex")
+    XCTAssertEqual(codex.modes, [.queue])
+    XCTAssertFalse(codex.modes.contains(.interrupt))
+    XCTAssertEqual(codex.defaultMode, .queue)
+
+    // And the wire value for an unhonorable mode is always nil, so nothing the
+    // fallback misses can still reach the host.
+    XCTAssertNil(
+      workChatAtomicSteerDispatchMode(deliveryMode: .inline, dispatchModes: cursor.atomicDispatchModes)
+    )
+  }
+
   /// A question marked `isSecret` renders its freeform in a `SecureField`, and
   /// the resolved card refuses to echo the answer back. When such a question
   /// also carries options, the CHOSEN OPTION is the secret answer — persisting
@@ -23585,6 +24530,224 @@ final class ADETests: XCTestCase {
     }
     XCTAssertEqual(group.members.count, 1)
     XCTAssertEqual(card.id, "tool-1")
+  }
+
+  func testIncrementalReasoningMetadataUpdatesOneVisibleCard() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    var timeline: [WorkTimelineEntry] = []
+
+    XCTAssertTrue(workIncrementalApplyLiveMetadata(first, to: &timeline))
+    XCTAssertTrue(workIncrementalApplyLiveMetadata(second, to: &timeline))
+    XCTAssertEqual(timeline.count, 1)
+    guard case .eventCard(let card) = timeline.first?.payload else {
+      return XCTFail("Expected the reasoning envelope to own an event card")
+    }
+    XCTAssertEqual(card.kind, "reasoning")
+    XCTAssertTrue(card.body?.contains("First thought.") == true)
+    XCTAssertTrue(card.body?.contains("Second thought.") == true)
+    XCTAssertEqual(workIncrementalEventCards(from: timeline), [card])
+  }
+
+  func testIncrementalReasoningDeclinesAfterCanonicalPhaseCollapse() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    let third = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:03.000Z",
+      sequence: 3,
+      event: .reasoning(text: "Third thought.", turnId: "turn-1", itemId: "reasoning-3", summaryIndex: nil)
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first, second],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertTrue(
+      snapshot.timeline.contains { $0.id.hasPrefix("activity-phase-reasoning:") },
+      "the fixture must exercise the canonical collapsed phase"
+    )
+
+    var timeline = snapshot.timeline
+    XCTAssertFalse(workIncrementalApplyLiveMetadata(third, to: &timeline))
+    XCTAssertEqual(timeline, snapshot.timeline, "a raw event must not be appended beside a collapsed phase")
+  }
+
+  func testIncrementalReasoningHistoricalPhaseDoesNotBlockLaterTurn() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    let laterUser = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:00.000Z",
+      sequence: 3,
+      event: .userMessage(
+        text: "Next turn",
+        attachments: nil,
+        turnId: "turn-2",
+        steerId: nil,
+        deliveryState: nil,
+        processed: nil
+      )
+    )
+    let laterReasoning = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:01.000Z",
+      sequence: 4,
+      event: .reasoning(text: "Later thought.", turnId: "turn-2", itemId: "reasoning-3", summaryIndex: nil)
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first, second, laterUser],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertTrue(snapshot.timeline.contains { $0.id.hasPrefix("activity-phase-reasoning:") })
+
+    var timeline = snapshot.timeline
+    XCTAssertTrue(
+      workIncrementalApplyLiveMetadata(laterReasoning, to: &timeline),
+      "a historical collapsed phase must not force every later turn through a full rebuild"
+    )
+  }
+
+  func testIncrementalReasoningReplayDeclinesWhenHistoricalCardIsCollapsed() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    let laterUser = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:00.000Z",
+      sequence: 3,
+      event: .userMessage(
+        text: "Next turn",
+        attachments: nil,
+        turnId: "turn-2",
+        steerId: nil,
+        deliveryState: nil,
+        processed: nil
+      )
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first, second, laterUser],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let historicalCardId = workIncrementalEventCard(for: first)?.id
+    XCTAssertNotNil(historicalCardId)
+    XCTAssertTrue(snapshot.eventCards.contains { $0.id == historicalCardId })
+    XCTAssertTrue(snapshot.timeline.contains { $0.id.hasPrefix("activity-phase-reasoning:") })
+
+    let replay = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:01:01.000Z",
+      sequence: 4,
+      event: .reasoning(text: "First thought, replayed.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    var timeline = snapshot.timeline
+    var eventCards = snapshot.eventCards
+    XCTAssertFalse(
+      workIncrementalApplyLiveMetadata(replay, to: &timeline, eventCards: &eventCards),
+      "a replay for a collapsed historical card must use the canonical rebuild"
+    )
+    XCTAssertEqual(timeline, snapshot.timeline)
+  }
+
+  func testIncrementalReasoningDeclinesAtCollapseThreshold() {
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: nil)
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:02.000Z",
+      sequence: 2,
+      event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "reasoning-2", summaryIndex: nil)
+    )
+    var timeline: [WorkTimelineEntry] = []
+
+    XCTAssertTrue(workIncrementalApplyLiveMetadata(first, to: &timeline))
+    XCTAssertFalse(workIncrementalApplyLiveMetadata(second, to: &timeline))
+    XCTAssertEqual(timeline.count, 1, "the fast path must not append a raw row before canonical collapse")
+  }
+
+  func testLongMiddleReplacementChangesFullTimelineSnapshotSignature() {
+    let prefix = String(repeating: "a", count: 700)
+    let suffix = String(repeating: "b", count: 700)
+    let firstText = prefix + "A" + suffix
+    let secondText = prefix + "B" + suffix
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-04-20T00:00:01.000Z",
+      sequence: 1,
+      event: .assistantText(text: firstText, turnId: "turn-1", itemId: "message-1")
+    )
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: first.timestamp,
+      sequence: first.sequence,
+      event: .assistantText(text: secondText, turnId: "turn-1", itemId: "message-1")
+    )
+
+    let firstSnapshot = buildWorkChatTimelineSnapshot(
+      transcript: [first],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let secondSnapshot = buildWorkChatTimelineSnapshot(
+      transcript: [second],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertNotEqual(
+      firstSnapshot.signature,
+      secondSnapshot.signature,
+      "A same-length middle replacement must invalidate the full snapshot"
+    )
   }
 
   func testBuildWorkTimelineKeepsMalformedAskUserFallbackOnMobile() {
@@ -24371,6 +25534,175 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(merged, [duplicate, duplicate, newest])
   }
 
+  func testWorkTranscriptMergeKeepsDistinctStableIdsWithIdenticalVisibleText() {
+    let olderRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a",
+      itemId: "item-a"
+    )
+    let newerRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-b",
+      itemId: "item-b"
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [olderRow], newer: [newerRow]),
+      [olderRow, newerRow]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [olderRow], newer: [newerRow]),
+      [olderRow, newerRow]
+    )
+  }
+
+  func testWorkTranscriptMergeDoesNotDuplicateRowWhenRefreshAddsStableIds() {
+    let cachedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let refreshedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a",
+      itemId: "item-a"
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [cachedRow], newer: [refreshedRow]),
+      [refreshedRow]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [cachedRow], newer: [refreshedRow]),
+      [refreshedRow]
+    )
+  }
+
+  func testWorkTranscriptStableUpgradeMatchesFrameWhenTextChanges() {
+    let cachedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "draft answer",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let refreshedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed answer",
+      timestamp: cachedRow.timestamp,
+      turnId: cachedRow.turnId,
+      messageId: "message-a"
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [cachedRow], newer: [refreshedRow]),
+      [refreshedRow]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [cachedRow], newer: [refreshedRow]),
+      [refreshedRow]
+    )
+  }
+
+  func testWorkTranscriptStableUpgradeDoesNotCollapseRepeatedIdlessFrames() {
+    let first = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same frame",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let second = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same frame",
+      timestamp: first.timestamp,
+      turnId: first.turnId
+    )
+    let refreshed = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed frame",
+      timestamp: first.timestamp,
+      turnId: first.turnId,
+      messageId: "message-a"
+    )
+
+    // The global merge intentionally deduplicates identical id-less legacy
+    // rows. Page-occurrence merging below is the physical-row-preserving path
+    // used for repeated transcript pages.
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [first, second], newer: [refreshed]),
+      [refreshed]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [first, second], newer: [refreshed]),
+      [first, second, refreshed]
+    )
+  }
+
+  func testWorkTranscriptMergeUsesStableIdWhenStreamingTextChanges() {
+    let draft = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "draft answer",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a"
+    )
+    let completed = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed answer",
+      timestamp: draft.timestamp,
+      turnId: draft.turnId,
+      messageId: draft.messageId
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [draft], newer: [completed]),
+      [draft]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [draft], newer: [completed]),
+      [completed]
+    )
+  }
+
+  func testWorkTranscriptPageOccurrenceMergeReplacesStableOverlapWithoutCollapsingIdlessRows() {
+    let repeated = AgentChatTranscriptEntry(
+      role: "user",
+      text: "same physical payload",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let draft = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "draft answer",
+      timestamp: "2026-07-24T10:01:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a"
+    )
+    let completed = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed answer",
+      timestamp: draft.timestamp,
+      turnId: draft.turnId,
+      messageId: draft.messageId
+    )
+
+    let merged = mergeWorkTranscriptPageOccurrences(
+      older: [repeated, repeated, draft],
+      newer: [repeated, completed]
+    )
+
+    XCTAssertEqual(merged, [repeated, repeated, completed])
+  }
+
   func testRestoredByteCursorTranscriptCacheRehydratesOrderedIndexStore() {
     let oldest = AgentChatTranscriptEntry(
       role: "user",
@@ -24787,12 +26119,15 @@ final class RosterDeltaTests: XCTestCase {
       }
       """.utf8)
     let cleanExit = try JSONDecoder().decode(RemoteRosterChat.self, from: cleanExitData)
+    XCTAssertEqual(cleanExit.exitCode, 0)
+    // Process completion is not a lifecycle declaration: settle is declared-only
+    // (`settledAt`), so a clean exit with no declaration rests at `.ended`.
     XCTAssertEqual(
       workCanonicalSessionState(
         session: cleanExit.asTerminalSessionSummary(laneName: "Feature"),
         summary: nil
       ).phase,
-      .settled
+      .ended
     )
 
     let legacyData = Data("""

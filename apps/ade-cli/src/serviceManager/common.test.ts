@@ -23,6 +23,7 @@ import {
   type AdeServiceCommand,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
+  MATERIALIZE_DATALESS_FILES_KEY,
 } from "./common";
 
 describe("serviceManagerOwnsRuntimeRecovery", () => {
@@ -745,6 +746,23 @@ describe("launchd service rendering", () => {
       `<string>${path.join("/Users/example/'ade'", "runtime", "launchd.err.log").replace(/'/g, "&apos;")}</string>`,
     );
   });
+
+  it("grants the brain the policy it needs to read cloud-evicted project files", () => {
+    const plist = renderLaunchdPlist({
+      command: "/Applications/ADE.app/Contents/MacOS/ade",
+      args: ["serve"],
+    }, "/Users/example");
+
+    // Without this key macOS refuses to download a dataless placeholder for
+    // this job and `read(2)` answers EDEADLK, which libuv reports as the
+    // unnamed "Unknown system error -11".
+    expect(plist).toContain(`<key>${MATERIALIZE_DATALESS_FILES_KEY}</key>`);
+    // The brain is on the blocking path of every user action, so it must not
+    // take launchd's default CPU and I/O throttling.
+    expect(plist).toContain("<key>ProcessType</key>");
+    expect(plist).toContain("<string>Interactive</string>");
+    expect(plist).toContain("<key>LowPriorityIO</key>");
+  });
 });
 
 describe("parsePsElapsedMs", () => {
@@ -835,6 +853,51 @@ describe("launchd service install", () => {
       // path, so it has to arm one too.
       { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
       { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
+    ]);
+  });
+
+  it("rewrites a healthy launch agent that predates the materialization policy", async () => {
+    const homeDir = makeTempHome("ade-launchd-materialize-");
+    const servicePath = launchAgentPath(homeDir);
+    const current = renderLaunchdPlist(serviceCommand, homeDir);
+    const legacy = current
+      .replace("  <key>ProcessType</key>\n  <string>Interactive</string>\n", "")
+      .replace(`  <key>${MATERIALIZE_DATALESS_FILES_KEY}</key>\n  <true/>\n`, "")
+      .replace("  <key>LowPriorityIO</key>\n  <false/>\n", "");
+    expect(legacy).not.toBe(current);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, legacy, "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      // The installed brain is running and answering. Every existing macOS
+      // install is in exactly this state, so out-of-date plist content is the
+      // only thing that can carry the new policy to them.
+      responsivenessProbe: () => true,
+      currentPid: 9999,
+      parentPid: () => null,
+      handoverPidAlive: () => false,
+      terminateDeps: { kill: () => {}, pidAlive: () => false },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fs.readFileSync(servicePath, "utf8")).toBe(current);
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "print",
+      "unload",
+      "-axo",
+      "load",
+      "unload",
+      "load",
     ]);
   });
 
@@ -1556,6 +1619,19 @@ describe("renderWatchdogLaunchdPlist", () => {
     expect(plist).not.toContain("<key>KeepAlive</key>");
   });
 
+  it("can read a heartbeat file the cloud has evicted", () => {
+    const plist = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir: "/Users/example",
+    });
+    // A heartbeat this agent cannot read yields no verdict at all, so a storage
+    // policy would leave it permanently blind to a wedged brain.
+    expect(plist).toContain(`<key>${MATERIALIZE_DATALESS_FILES_KEY}</key>`);
+    // Nothing waits on a once-a-minute check, so it claims no app-grade
+    // resource exemption the way the brain does.
+    expect(plist).not.toContain("<key>ProcessType</key>");
+  });
+
   it("refuses an interval short enough to thrash", () => {
     const plist = renderWatchdogLaunchdPlist({
       command: watchdogServiceCommand,
@@ -1580,6 +1656,27 @@ describe("installLaunchdWatchdogAgent", () => {
     expect(result.installed).toBe(true);
     expect(fs.existsSync(servicePath)).toBe(true);
     expect(calls.map((call) => call.args[0])).toEqual(["unload", "load"]);
+  });
+
+  it("rewrites an agent that predates the materialization policy", () => {
+    const homeDir = makeTempHome("ade-watchdog-home-");
+    const servicePath = watchdogLaunchAgentPath(homeDir);
+    const current = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir,
+    });
+    const legacy = current.replace(`  <key>${MATERIALIZE_DATALESS_FILES_KEY}</key>\n  <true/>\n`, "");
+    expect(legacy).not.toBe(current);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, legacy, "utf8");
+
+    installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: spawnSequence([], []),
+    });
+
+    expect(fs.readFileSync(servicePath, "utf8")).toBe(current);
   });
 
   it("reports a load failure instead of claiming the agent is armed", () => {

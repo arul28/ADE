@@ -229,7 +229,7 @@ function localPermissionFingerprint(policy: CursorSdkPermissionPolicy): string {
     tools: local.tools ?? null,
     disallowedTools: local.disallowedTools ?? null,
     autoReview: local.autoReview,
-    sandboxEnabled: local.sandboxEnabled,
+    sandboxDirective: local.sandboxDirective,
   });
 }
 
@@ -245,7 +245,10 @@ function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeM
     local: {
       cwd: init.laneRoot,
       settingSources: cursorSdkSettingSources(init.policy),
-      sandboxOptions: { enabled: local.sandboxEnabled },
+      // See CursorSdkSandboxDirective: absent is a third state, not a falsy off.
+      ...(local.sandboxDirective === "inherit"
+        ? {}
+        : { sandboxOptions: { enabled: local.sandboxDirective === "enable" } }),
       autoReview: local.autoReview,
       enableAgentRetries: true,
     },
@@ -273,7 +276,7 @@ async function applyLocalAgentOptions(): Promise<AgentOptionsWithAdeMode> {
     lastLocalPermissionFingerprint = fingerprint;
     return options;
   } catch (error) {
-    if (!options.local?.sandboxOptions?.enabled || !isCursorSdkSandboxUnsupportedError(error)) {
+    if (!isCursorSdkSandboxUnsupportedError(error) || !sandboxSupported) {
       throw error;
     }
     sandboxSupported = false;
@@ -509,7 +512,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       useHttp1ForAgent,
       mode: agentOptions.mode ?? null,
       autoReview: agentOptions.local?.autoReview === true,
-      sandboxEnabled: agentOptions.local?.sandboxOptions?.enabled === true,
+      sandboxDirective: buildCursorSdkLocalRunOptions(init.policy, { sandboxSupported }).sandboxDirective,
       tools: agentOptions.tools ?? null,
       disallowedTools: agentOptions.disallowedTools ?? null,
     },

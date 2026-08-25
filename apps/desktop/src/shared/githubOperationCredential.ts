@@ -9,6 +9,22 @@ import type {
 } from "./types/git";
 import { getGitHubTokenAccessState } from "./githubScopes";
 
+/**
+ * How long a resolved GitHub credential is reused before it is read again.
+ *
+ * Shared by the desktop service and its headless twin, at the granularity each
+ * one caches: the desktop service reuses the WHOLE credential inventory, while
+ * the headless twin caches only the App-token lookup so the `gh` CLI and PAT
+ * reads keep answering live. Both hold their entry in an
+ * `createExpiringPromiseCache` from `./expiringPromiseCache`.
+ *
+ * The window exists because resolving the App credential on an expired access
+ * token is a refresh POST, and every status read, PR call and relay poll asks
+ * for one. The headless side had no window at all, which made the brain the
+ * loudest refresher on the machine.
+ */
+export const GITHUB_CREDENTIAL_CACHE_TTL_MS = 30_000;
+
 export type GithubOperationCredentialSource = GitHubCredentialSource;
 export type GithubOperationCredentialCapability = GitHubCredentialCapability;
 
@@ -314,7 +330,14 @@ export async function resolveGithubStatusCredentials<
       }
       failures.push({ candidate, ...result });
       args.onRejectedProbe(candidate, result, { repositoryAccessFailure, phase: "read" });
-      if (result.authFailure.kind === "network" || result.authFailure.kind === "unknown") break;
+      if (
+        result.authFailure.kind === "network"
+        || result.authFailure.kind === "unknown"
+        // GitHub returning 5xx says nothing about this credential, so the next
+        // one in the chain would fail identically. Stop instead of multiplying
+        // load against a service that is already failing.
+        || result.authFailure.kind === "service_unavailable"
+      ) break;
       continue;
     }
     const candidateCapabilities = args.capabilities(candidate, result.value);
@@ -369,6 +392,10 @@ export async function resolveGithubStatusCredentials<
       if (!result.ok) {
         const repositoryAccessFailure = args.isRepositoryAccessFailure(result);
         args.onRejectedProbe(candidate, result, { repositoryAccessFailure, phase: "write" });
+        // Same reasoning as the read chain: a GitHub 5xx says nothing about
+        // this credential, so the next one fails identically. Stop instead of
+        // adding load to a service that is already failing.
+        if (result.authFailure.kind === "service_unavailable") break;
         continue;
       }
       successfulProbes.set(candidate.token, result.value);

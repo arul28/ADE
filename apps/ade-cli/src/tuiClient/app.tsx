@@ -15,14 +15,22 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  activeTurnInterruptContinues,
+  supportsActiveTurnDispatchMode,
+  unsupportedActiveTurnDispatchModeMessage,
+} from "../../../desktop/src/shared/types/chat";
+import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
+import {
   composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
+  isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
+  type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
 import { isChatMentionTokenBody } from "../../../desktop/src/shared/chatMentions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
@@ -92,6 +100,7 @@ import {
   toggleModelPickerFavorite,
   getOpenCodeRuntimeDiagnostics,
   watchCursorCloudMirror,
+  getCursorCloudFleet,
   getSlashCommands,
   getScheduledWorkState,
   getStoredApiKeyProviders,
@@ -361,9 +370,11 @@ import {
 } from "./externalSessionBrowser";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
+import { executeIssueToolRequest } from "./issueCommands";
 import {
   formatLinearIssueComments,
   derivePrMergeReadiness,
+  formatCursorCloudFleetRows,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
@@ -371,6 +382,7 @@ import {
   formatPrReview,
   formatPrSummary,
   formatSystemDetails,
+  CURSOR_CLOUD_PANE_NOTE,
 } from "./rightPaneFormatters";
 import {
   buildFeedbackDraftInput,
@@ -677,6 +689,38 @@ export function formatLaneReclaimPreview(risk: LaneReclaimRisk): string {
     "",
     nextCommand,
   ].join("\n");
+}
+
+// Three different features want Esc while the chat composer has focus, so the
+// order between them is a product decision rather than an accident of where the
+// branches happen to sit in the key handler. Resolved in one pure place so the
+// precedence is testable and stays explicit:
+//   1. the @/slash palette — it floats over the composer and advertises
+//      "Esc close", so the visible affordance wins;
+//   2. an active chat mouse selection;
+//   3. vim insert -> normal.
+// Each is one Esc: with the palette open and vim on, the first Esc only closes
+// the palette and a second Esc then switches vim to normal.
+export type ChatEscapeAction =
+  | "dismiss-composer-trigger"
+  | "clear-chat-selection"
+  | "vim-normal"
+  | null;
+
+export function resolveChatEscapeAction(args: {
+  pane: string;
+  textInputActive: boolean;
+  modified: boolean;
+  composerTriggerOpen: boolean;
+  chatSelectionActive: boolean;
+  vimModeEnabled: boolean;
+}): ChatEscapeAction {
+  if (args.pane === "chat" && args.composerTriggerOpen) return "dismiss-composer-trigger";
+  if (args.chatSelectionActive) return "clear-chat-selection";
+  if (args.pane === "chat" && args.textInputActive && args.vimModeEnabled && !args.modified) {
+    return "vim-normal";
+  }
+  return null;
 }
 
 export type ModelPickerEscapeAction =
@@ -1679,7 +1723,11 @@ export function isNewChatSetupPane(pane: RightPaneContent): boolean {
 
 function formatOutputStyles(styles: Awaited<ReturnType<typeof listClaudeOutputStyles>>, activeStyle?: string | null): string {
   if (!styles.length) return "No Claude output styles were found.";
-  const activeKey = activeStyle?.trim().toLowerCase() ?? "";
+  // A session carries no output style until a settings file names one — ADE no
+  // longer substitutes a value into the SDK options. For the *listing* only, an
+  // unset selection still reads as Claude's own "Default", which is what the
+  // desktop's `/output-style` handler shows. Display, never written back.
+  const activeKey = (activeStyle?.trim() || "Default").toLowerCase();
   return [
     "Claude output styles:",
     "",
@@ -5251,7 +5299,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     }
   }, [applyDrawerChatSelection, openRemoteSession, selectActiveLaneId]);
-  const activeComposerTrigger = useMemo(() => {
+  const liveComposerTrigger = useMemo(() => {
     if (activePane !== "chat") return null;
     const trigger = detectComposerTrigger(prompt, promptCursor);
     if (!trigger) return null;
@@ -5267,6 +5315,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       isMention: confirmedMention,
     }) ? null : trigger;
   }, [activePane, prompt, promptCursor, selectedMentions]);
+  // Esc closes the @/slash palette, and it must stay closed while the user
+  // keeps typing that same token — suggestion search only narrows, so the
+  // menu the user just dismissed would otherwise reopen on the next keystroke.
+  // Backspacing out of the dismissed query, editing it into a different one,
+  // or starting a fresh trigger elsewhere all reopen normally.
+  const [dismissedComposerTrigger, setDismissedComposerTrigger] = useState<ComposerTriggerDismissal | null>(null);
+  const activeComposerTrigger = useMemo(() => (
+    liveComposerTrigger && isComposerTriggerDismissed(liveComposerTrigger, dismissedComposerTrigger)
+      ? null
+      : liveComposerTrigger
+  ), [dismissedComposerTrigger, liveComposerTrigger]);
+  useEffect(() => {
+    if (!dismissedComposerTrigger) return;
+    if (liveComposerTrigger && isComposerTriggerDismissed(liveComposerTrigger, dismissedComposerTrigger)) return;
+    setDismissedComposerTrigger(null);
+  }, [dismissedComposerTrigger, liveComposerTrigger]);
   const activeMentionRange = useMemo(() => (
     activeComposerTrigger?.type === "at"
       ? { start: activeComposerTrigger.start, query: activeComposerTrigger.query }
@@ -10286,8 +10350,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // A full steer queue drops the message server-side. Surface it the same way
       // the primary messageSession path does — throw so submitPrompt restores the
       // typed text and shows an error — instead of falsely implying it was sent.
+      // Every queue-bearing runtime can hit this (Claude, Cursor, Droid,
+      // OpenCode), so the message names the session's own agent.
       if (result.reason === "queue_full") {
-        throw new Error("The Claude steer queue is full; the message was not queued.");
+        const agentLabel = providerDisplayLabel(
+          sessions.find((session) => session.sessionId === sessionId)?.provider,
+          "agent",
+        );
+        throw new Error(`The ${agentLabel} steer queue is full; the message was not queued.`);
       }
       if (result.queued) {
         addNotice("Staged message — sends after the current turn.", "info");
@@ -10446,10 +10516,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Deliberately above the `!conn` gate: the report reads local files only,
       // so it still answers while the runtime is unreachable — the state a bug
       // report is most worth filing from.
+      // `--send` too: the CLI spelling is the one half these users already know,
+      // including alongside other flags they may carry over (`--open --send`).
+      const wantsSend = args
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .some((argument) => /^--?send$/.test(argument) || argument === "send");
       try {
-        const { buildTuiDiagnosticReport } = await import("./reportIssue");
+        const { buildTuiDiagnosticReport, sendTuiDiagnosticReport } = await import("./reportIssue");
         const built = buildTuiDiagnosticReport({ projectRoot: project.projectRoot });
+        // Shown before anything is sent, so the file path and the issue URL are
+        // in hand no matter how the upload goes.
         setRightPane({ kind: "details", title: "Report issue", body: built.body });
+        if (!wantsSend) return;
+        addNotice("Sending the report to ADE…", "info");
+        const sent = await sendTuiDiagnosticReport(built);
+        setRightPane({ kind: "details", title: "Report issue", body: sent.body });
+        addNotice(sent.notice, sent.result.ok ? "success" : "error");
       } catch (error) {
         setRightPane({
           kind: "details",
@@ -10592,6 +10676,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({
           kind: "details",
           title: "Machines",
+          body: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (name === "/cloud") {
+      setRightPane({
+        kind: "list",
+        title: "Cloud agents",
+        rows: [],
+        emptyText: "Loading Cursor Cloud agents…",
+      });
+      setRightOpen(true);
+      try {
+        const fleet = await getCursorCloudFleet(conn);
+        setRightPane({
+          kind: "list",
+          title: fleet.items.length ? `Cloud agents · ${fleet.items.length}` : "Cloud agents",
+          rows: formatCursorCloudFleetRows(fleet.items),
+          emptyText: "No Cursor Cloud agents for this project.",
+          footnote: CURSOR_CLOUD_PANE_NOTE,
+        });
+      } catch (error) {
+        setRightPane({
+          kind: "details",
+          title: "Cloud agents",
           body: error instanceof Error ? error.message : String(error),
         });
       }
@@ -10812,10 +10922,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/steer") {
+      // Which dispatch commands this pane advertises comes off the canonical
+      // per-provider table (desktop shared/types/chat.ts), the same source the
+      // /steer commands and the desktop staged strip read — Claude offers both,
+      // Cursor only the interrupt, everything else stages until the turn ends.
+      const steerProvider = activeSession?.provider;
+      const dispatchHint = [
+        supportsActiveTurnDispatchMode(steerProvider, "inline") ? "/steer send" : null,
+        supportsActiveTurnDispatchMode(steerProvider, "interrupt") ? "/steer interrupt" : null,
+      ].filter((entry): entry is string => entry != null);
+      const hintLine = pendingSteers.length
+        ? dispatchHint.length
+          ? `${dispatchHint.join(" · ")} · /steer edit · /steer cancel`
+          : "Sends when the current turn finishes · /steer edit · /steer cancel"
+        : null;
       const body = pendingSteers.length
-        ? pendingSteers
-            .map((steer, index) => `${index + 1}. ${steer.text}`)
-            .join("\n")
+        ? [
+            pendingSteers.map((steer, index) => `${index + 1}. ${steer.text}`).join("\n"),
+            ...(hintLine ? ["", hintLine] : []),
+          ].join("\n")
         : "No staged steer messages are waiting.";
       setRightPane({ kind: "details", title: "Staged messages", body });
       return;
@@ -11425,6 +11550,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const result = await conn.tool(request.toolName, request.args);
       setRightPane({ kind: "details", title: request.title, body: renderObject(result, 24) });
+      return;
+    }
+    if (name === "/issue" || name.startsWith("/issue ")) {
+      const issueInput = `${name.slice("/issue".length)} ${args}`.trim();
+      await executeIssueToolRequest(issueInput, {
+        sessionId: sessionId ?? null,
+        conn,
+        setDetails: (title, body) => setRightPane({ kind: "details", title, body }),
+        notifySuccess: (message) => addNotice(message, "success"),
+        render: renderObject,
+      });
       return;
     }
     if (name === "/feedback") {
@@ -12133,12 +12269,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (name === "/steer send" || name === "/steer interrupt") {
-        if (activeSession?.provider !== "claude") {
-          addNotice("Only Claude staged messages support send-now and interrupt dispatch.", "error");
+        // Which modes each provider honors lives in one table (desktop
+        // shared/types/chat.ts); this branch only maps commands onto it.
+        const provider = activeSession?.provider;
+        const mode = name === "/steer send" ? "inline" : "interrupt";
+        if (!supportsActiveTurnDispatchMode(provider, mode)) {
+          addNotice(unsupportedActiveTurnDispatchModeMessage(provider, mode), "error");
           return;
         }
-        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, name === "/steer send" ? "inline" : "interrupt");
-        addNotice(name === "/steer send" ? "Sent staged message into the active Claude turn." : "Interrupting Claude to run the staged message.", "info");
+        const agentLabel = providerDisplayLabel(provider, "the agent");
+        // Cursor's interrupt cancels the run and resends on the same thread, so
+        // it continues rather than starting something new — same wording the
+        // desktop composer and iOS use, off the same shared fact.
+        const interruptContinues = activeTurnInterruptContinues(provider);
+        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
+        addNotice(
+          mode === "inline"
+            ? `Sent staged message into the active ${agentLabel} turn.`
+            : interruptContinues
+              ? `Interrupting ${agentLabel} and continuing with the staged message.`
+              : `Interrupting ${agentLabel} to run the staged message.`,
+          "info",
+        );
         await refreshState();
         return;
       }
@@ -15474,18 +15626,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
-    if (key.escape && chatMouseSelectionRef.current) {
-      stopChatSelectionEdgeScroll();
-      chatSelectionAnchorRef.current = null;
-      updateChatMouseSelection(null);
-      return;
-    }
-
-    if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
-      if (key.escape) {
+    // Single arbitration point for the three composer-adjacent Esc consumers —
+    // see resolveChatEscapeAction for the precedence and why. Keeping it ahead
+    // of both the vim block and the generic Esc chain is what makes the
+    // palette's advertised "Esc close" actually reachable with vim mode on.
+    if (key.escape) {
+      const chatEscapeAction = resolveChatEscapeAction({
+        pane,
+        textInputActive,
+        modified: Boolean(key.ctrl || key.meta),
+        composerTriggerOpen: Boolean(activeComposerTrigger),
+        chatSelectionActive: Boolean(chatMouseSelectionRef.current),
+        vimModeEnabled,
+      });
+      if (chatEscapeAction === "dismiss-composer-trigger" && activeComposerTrigger) {
+        // Recording the dismissal is what makes the palette stay closed as the
+        // user finishes typing the token instead of reopening on the very next
+        // keystroke.
+        setDismissedComposerTrigger({
+          type: activeComposerTrigger.type,
+          start: activeComposerTrigger.start,
+          query: activeComposerTrigger.query,
+        });
+        return;
+      }
+      if (chatEscapeAction === "clear-chat-selection") {
+        stopChatSelectionEdgeScroll();
+        chatSelectionAnchorRef.current = null;
+        updateChatMouseSelection(null);
+        return;
+      }
+      if (chatEscapeAction === "vim-normal") {
         setVimMode("normal");
         return;
       }
+    }
+
+    if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
       if (vimMode === "normal") {
         if (input === "i" || input === "a") {
           setVimMode("insert");
@@ -17316,7 +17493,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           Retrying automatically · r retry now · Ctrl+C quit
         </Text>
         <Text color={theme.color.mutedFg} dimColor>
-          Run ade report-issue --open in another terminal to prepare a report you can post. Personal information is removed.
+          Run ade report-issue --open --send in another terminal to send a report to ADE and post it. Personal information is removed.
         </Text>
       </Box>
     );

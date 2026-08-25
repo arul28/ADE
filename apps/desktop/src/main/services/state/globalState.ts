@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AppWelcomeVideoState,
   AutoUpdatePreferences,
+  KeepAwakePreferences,
   OpenProjectBinding,
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
@@ -56,6 +57,19 @@ export type FailedInstallAttempts = {
   lastFailedAt: string;
 };
 
+/**
+ * Records that startup has already settled Terminal access to the `ade`
+ * command on this machine, so it is never attempted a second time. Removing the
+ * binary or the shell PATH line afterwards is a deliberate act, and this marker
+ * is what stops the next launch from silently undoing it.
+ */
+export type AdeCliAutoInstall = {
+  completedAt: string;
+  /** `installed` = ADE placed it; `already-available` = another install owns it. */
+  outcome: "installed" | "already-available";
+  command: string;
+};
+
 export type GlobalState = {
   lastProjectRoot?: string;
   lastRemoteProjectBinding?: Extract<OpenProjectBinding, { kind: "remote" }> & {
@@ -66,7 +80,11 @@ export type GlobalState = {
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;
   failedInstallAttempts?: FailedInstallAttempts;
   autoUpdatePreferences?: AutoUpdatePreferences;
+  /** Whether ADE may hold this machine awake while agents run. Default: never. */
+  keepAwakePreferences?: KeepAwakePreferences;
   welcomeVideo?: AppWelcomeVideoState;
+  /** Set once Terminal access to `ade` has been settled; see `AdeCliAutoInstall`. */
+  adeCliAutoInstall?: AdeCliAutoInstall;
 };
 
 export function readGlobalState(filePath: string): GlobalState {

@@ -33,7 +33,7 @@ import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
 import { ProviderSetupBanner } from "./providerEmptyState";
 import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
-import type { AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
+import type { AgentChatModelCatalogRefreshProvider, OpenProjectBinding } from "../../../../shared/types";
 import { refreshProviderForFamily } from "./runtimeCatalogCache";
 
 const MODEL_ROW_ESTIMATED_HEIGHT = 44;
@@ -174,6 +174,8 @@ export type ModelPickerContentProps = {
    */
   fastMode?: boolean;
   onFastModeChange?: (next: boolean) => void;
+  /** Prompt-box / chat machine for OpenCode-installed and auth probes. */
+  runtimePin?: OpenProjectBinding | null;
 };
 
 export const ModelPickerContent = memo(function ModelPickerContent({
@@ -195,6 +197,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   registryFilter,
   fastMode = false,
   onFastModeChange,
+  runtimePin = null,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
   // Reference it so unused-var lint stays quiet, and so future code paths
@@ -212,6 +215,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const internalAuth = useProviderAuthStatus({
     loadStatus: !hasExternalAuthStatus,
     ...(allowCliOnlyModels ? { allowCliOnlyModels: true } : {}),
+    ...(runtimePin ? { runtimePin } : {}),
   });
 
   const recentSet = useMemo(() => new Set(recents), [recents]);

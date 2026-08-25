@@ -17,6 +17,14 @@ enum LinearRoute: Hashable {
 struct LinearIssueListScreen: View {
   @ObservedObject var store: LinearPaneStore
   var onClose: () -> Void = {}
+  var onAttachIssue: ((NormalizedLinearIssue) -> Void)? = nil
+
+  private enum Mode {
+    case browse
+    case attach
+  }
+
+  private var mode: Mode { onAttachIssue == nil ? .browse : .attach }
 
   /// User overrides for group collapse state. Completed groups collapse by
   /// default, while all other groups open until the user toggles them.
@@ -57,7 +65,7 @@ struct LinearIssueListScreen: View {
     .onChange(of: store.statePreset) { _, _ in store.scheduleReload() }
     .onChange(of: store.projectId) { _, _ in store.scheduleReload() }
     .onChange(of: store.priority) { _, _ in store.scheduleReload() }
-    .navigationTitle(store.workspaceTitle)
+    .navigationTitle(mode == .browse ? store.workspaceTitle : "Attach issue")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar { linearToolbar }
   }
@@ -90,10 +98,21 @@ struct LinearIssueListScreen: View {
       Section {
         if !collapsed {
           ForEach(group.issues) { issue in
-            NavigationLink(value: LinearRoute.issue(issue)) {
-              LinearIssueRow(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+            switch mode {
+            case .attach:
+              Button {
+                onAttachIssue?(issue)
+              } label: {
+                LinearIssueRow(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+              }
+              .buttonStyle(.plain)
+              .listRowBackground(Color.clear)
+            case .browse:
+              NavigationLink(value: LinearRoute.issue(issue)) {
+                LinearIssueRow(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
+              }
+              .listRowBackground(Color.clear)
             }
-            .listRowBackground(Color.clear)
           }
         }
       } header: {

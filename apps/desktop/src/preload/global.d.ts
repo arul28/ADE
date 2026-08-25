@@ -29,6 +29,9 @@ import type {
   AppNavigationRequest,
   AppZoomCommand,
   AutoUpdatePreferences,
+  KeepAwakeFixResult,
+  KeepAwakeLevel,
+  KeepAwakeSnapshot,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -262,6 +265,9 @@ import type {
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
   CursorCloudWatchMirrorRequest,
+  CursorCloudFleetResult,
+  CursorCloudFleetEvent,
+  CursorCloudPullIntoLaneResult,
   CursorAgentUsage,
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
@@ -295,6 +301,7 @@ import type {
   CtoGetLinearIssuePickerDataResult,
   CtoSearchLinearIssuesArgs,
   CtoSearchLinearIssuesResult,
+  CtoLinearIssueComment,
   CtoSetLinearOAuthClientArgs,
   CtoStartLinearOAuthResult,
   CtoGetLinearOAuthSessionArgs,
@@ -342,6 +349,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -460,6 +468,7 @@ import type {
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneSummary,
   ImportBranchLaneArgs,
@@ -522,6 +531,7 @@ import type {
   SuggestResolverTargetResult,
   SessionDeltaSummary,
   SessionLifecycleSettings,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   SessionSettleOverride,
   SessionWakeReason,
@@ -619,6 +629,7 @@ import type {
   IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
+  IosSimulatorPrivacyPane,
   IosSimulatorScreenshot,
   IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
@@ -628,6 +639,9 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorWindowCaptureSessionHint,
+  IosSimulatorWindowSourcesResult,
+  IosSimulatorWindowState,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlEventPayload,
@@ -708,11 +722,8 @@ import type {
   SearchQueryArgs,
   SearchQueryResult,
   SearchRebuildResult,
-  IosSimulatorPrivacyPane,
-  IosSimulatorWindowCaptureSessionHint,
-  IosSimulatorWindowSourcesResult,
-  IosSimulatorWindowState,
 } from "../shared/types";
+import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   MaintenanceRunReport,
@@ -724,7 +735,13 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
-import type { DiagnosticReportPayload, DiagnosticReportRequestPayload } from "../shared/types/diagnostics";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendResult,
+  DiagnosticsSharingStatus,
+} from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
 import type {
   ProductAnalyticsCapture,
@@ -898,11 +915,38 @@ declare global {
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
       };
       /**
-       * Absent on older preloads: every call site must tolerate `undefined`
-       * and simply not offer the button.
+       * Optional as a GROUP, because an older preload has no `diagnostics` at
+       * all: every call site must tolerate `undefined` and simply not offer the
+       * button. The members inside are not optional — they all shipped
+       * together, so a build that exposes the group exposes all of them, and
+       * marking them individually optional would only teach call sites to write
+       * `?.()` chains that can never fire.
        */
       diagnostics?: {
         openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
+        /**
+         * Ask main to consider ONE automatic send for a failure the renderer
+         * detected. Main owns the setting and the budget, so this is a request,
+         * not an instruction, and its answer is deliberately uninteresting.
+         */
+        autoReport: (context: DiagnosticReportRequestPayload) => Promise<void>;
+        /**
+         * The one member here that IS individually optional, and the exception
+         * proves the group's rule: `diagnostics` shipped before this existed,
+         * so a preload that exposes the group need not expose this. The
+         * settings control checks for it and hides itself rather than offering
+         * a button that cannot work.
+         */
+        sendManual?: () => Promise<DiagnosticsManualSendResult>;
+        getSharing: () => Promise<DiagnosticsSharingStatus>;
+        setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
+        revealReport: (reportPath: string) => Promise<void>;
+        onAutoSent: (cb: (payload: DiagnosticsAutoSentPayload) => void) => () => void;
+        /**
+         * Confirms these references reached the screen, so main stops offering
+         * them on the next subscribe. Called after the toast is rendered.
+         */
+        ackAutoSent: (references: string[]) => Promise<void>;
       };
       recovery: {
         diagnose: (projectRoot: string) => Promise<ProjectRecoveryDiagnosis>;
@@ -1034,7 +1078,7 @@ declare global {
           refreshOpenCodeInventory?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<AiSettingsStatus>;
         getOpenCodeRuntimeDiagnostics: () => Promise<OpenCodeRuntimeSnapshot>;
-        isOpenCodeInstalled: () => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
+        isOpenCodeInstalled: (pin?: OpenProjectBinding | null) => Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }>;
         getToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         ensureToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => () => void;
@@ -1123,6 +1167,22 @@ declare global {
         cursorCloudWatchMirror: (
           args: CursorCloudWatchMirrorRequest,
         ) => Promise<void>;
+        cursorCloudFleet: (args?: {
+          includeArchived?: boolean;
+          limit?: number;
+        }) => Promise<CursorCloudFleetResult>;
+        cursorCloudPullIntoLane: (
+          agentId: string,
+        ) => Promise<CursorCloudPullIntoLaneResult>;
+        cursorCloudResolveLane: (
+          agentId: string,
+        ) => Promise<{ laneId: string; laneName: string; created: boolean }>;
+        cursorCloudStopRun: (
+          agentId: string,
+        ) => Promise<{ stopped: boolean }>;
+        onCursorCloudFleetEvent: (
+          cb: (event: CursorCloudFleetEvent) => void,
+        ) => () => void;
       };
       transcription: {
         transcribe: (
@@ -1544,6 +1604,17 @@ declare global {
         detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
         listLinearIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionLinearIssueLink[]>;
         listLinearIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionLinearIssueLink[]>;
+        attachGitHubIssueToSession: (args: {
+          chatSessionId: string;
+          issues: LaneGitHubIssue[];
+          role?: string;
+          source?: string;
+          includeInPr?: boolean;
+          closeOnMerge?: boolean;
+        }) => Promise<SessionGitHubIssueLink[]>;
+        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
+        listGitHubIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionGitHubIssueLink[]>;
+        listGitHubIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionGitHubIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
         rebaseStart: (args: RebaseStartArgs) => Promise<RebaseStartResult>;
         rebasePush: (args: RebasePushArgs) => Promise<RebaseRun>;
@@ -1738,12 +1809,15 @@ declare global {
         ) => Promise<AgentChatHandoffResult>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatPrepareCrossMachineHandoffResult>;
         validateCrossMachineSource: (
           args: AgentChatValidateCrossMachineSourceArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         markCrossMachineHandoff: (
           args: AgentChatMarkCrossMachineHandoffArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         steer: (
@@ -1970,6 +2044,11 @@ declare global {
             pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
         };
+        readTranscript: (args: {
+          sessionId: string;
+          limit?: number;
+          since?: string;
+        }) => Promise<unknown>;
       };
       computerUse: {
         listArtifacts: (
@@ -1981,76 +2060,109 @@ declare global {
         ) => Promise<ComputerUseOwnerSnapshot>;
         deleteArtifacts: (
           args: ComputerUseArtifactDeleteArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ComputerUseArtifactDeleteResult>;
         listBrokenArtifacts: (args?: {
           limit?: number;
         }) => Promise<ComputerUseArtifactBrokenRecord[]>;
         pruneBrokenArtifacts: () => Promise<ComputerUseArtifactDeleteResult>;
-        recoverArtifact: (args: {
-          artifactId: string;
-        }) => Promise<ComputerUseArtifactView>;
+        recoverArtifact: (
+          args: { artifactId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ComputerUseArtifactView>;
         updateArtifactReview: (
           args: ComputerUseArtifactReviewArgs,
         ) => Promise<ComputerUseArtifactView>;
-        readArtifactPreview: (args: { uri: string }) => Promise<string | null>;
+        readArtifactPreview: (
+          args: { uri: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<string | null>;
         onEvent: (
           cb: (ev: ComputerUseEventPayload) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };
       iosSimulator: {
-        getStatus: () => Promise<IosSimulatorStatus>;
-        listDevices: () => Promise<IosSimulatorDevice[]>;
+        getStatus: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorStatus>;
+        listDevices: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorDevice[]>;
         listLaunchTargets: (
           args?: IosSimulatorListLaunchTargetsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorLaunchTarget[]>;
-        launch: (args?: IosSimulatorLaunchArgs) => Promise<IosSimulatorLaunchResult>;
-        attachToChatSession: (args: {
-          chatSessionId: string | null;
-          callerChatSessionId?: string | null;
-          takeOver?: boolean;
-        }) => Promise<IosSimulatorSession | null>;
+        launch: (
+          args?: IosSimulatorLaunchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorLaunchResult>;
+        attachToChatSession: (
+          args: {
+            chatSessionId: string | null;
+            callerChatSessionId?: string | null;
+            takeOver?: boolean;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorSession | null>;
         shutdown: (
           args?: IosSimulatorShutdownArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorShutdownResult>;
         screenshot: (
           args?: IosSimulatorScreenshotArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorScreenshot>;
         getScreenSnapshot: (
           args?: IosScreenSnapshotArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosScreenSnapshot>;
-        getInspectorSnapshot: (args?: {
-          deviceUdid?: string | null;
-        }) => Promise<IosInspectorSnapshot | null>;
+        getInspectorSnapshot: (
+          args?: { deviceUdid?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosInspectorSnapshot | null>;
         inspectPoint: (
           args: IosSimulatorInspectPointArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorInspectResult>;
         getPreviewCapability: (
           args?: IosSimulatorListPreviewsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorPreviewCapability>;
         listPreviewTargets: (
           args?: IosSimulatorListPreviewsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorPreviewTarget[]>;
         resolvePreviewMatch: (
           args?: IosSimulatorListPreviewsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorPreviewMatch>;
         ensurePreviewWorkspace: (
           args?: IosSimulatorEnsurePreviewWorkspaceArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorEnsurePreviewWorkspaceResult>;
         renderCurrentPreview: (
           args?: IosSimulatorRenderCurrentPreviewArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorRenderCurrentPreviewResult>;
         renderPreview: (
           args: IosSimulatorRenderPreviewArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorRenderPreviewResult>;
         openPreviewWorkspace: (
           args?: IosSimulatorOpenPreviewWorkspaceArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true; path: string }>;
         startStream: (
           args?: IosSimulatorStartStreamArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IosSimulatorStreamStatus>;
-        stopStream: () => Promise<IosSimulatorStreamStatus>;
-        getStreamStatus: () => Promise<IosSimulatorStreamStatus>;
+        stopStream: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorStreamStatus>;
+        getStreamStatus: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorStreamStatus>;
         getSimulatorWindowState: () => Promise<IosSimulatorWindowState>;
         listSimulatorWindowSources: (opts?: {
           session?: IosSimulatorWindowCaptureSessionHint | null;
@@ -2070,77 +2182,116 @@ declare global {
         revealSimulator: () => Promise<{ ok: boolean; message: string | null }>;
         // No projectRoot: tapping drives the booted device, and the service
         // never resolves a build root for it.
-        tap: (args: {
-          deviceUdid?: string | null;
-          x: number;
-          y: number;
-        }) => Promise<{ ok: true }>;
-        typeText: (args: {
-          deviceUdid?: string | null;
-          text: string;
-        }) => Promise<{ ok: true }>;
-        drag: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
-        swipe: (args: IosSimulatorDragArgs) => Promise<{ ok: true }>;
+        tap: (
+          args: { deviceUdid?: string | null; x: number; y: number },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        typeText: (
+          args: { deviceUdid?: string | null; text: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        drag: (
+          args: IosSimulatorDragArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        swipe: (
+          args: IosSimulatorDragArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
         // Mirrors the shared IosSimulatorPoint: selection matches source
         // against the caller's tree, so the lane has to ride the wire.
-        selectPoint: (args: {
-          deviceUdid?: string | null;
-          projectRoot?: string | null;
-          laneId?: string | null;
-          x: number;
-          y: number;
-        }) => Promise<IosSimulatorSelectResult>;
-        onEvent: (cb: (ev: IosSimulatorEventPayload) => void) => () => void;
+        selectPoint: (
+          args: {
+            deviceUdid?: string | null;
+            projectRoot?: string | null;
+            laneId?: string | null;
+            x: number;
+            y: number;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<IosSimulatorSelectResult>;
+        onEvent: (
+          cb: (ev: IosSimulatorEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       appControl: {
-        getStatus: () => Promise<AppControlStatus>;
-        launch: (args?: AppControlLaunchArgs) => Promise<AppControlSession>;
+        getStatus: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlStatus>;
+        launch: (
+          args?: AppControlLaunchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlSession>;
         launchInTerminal: (
           args?: AppControlLaunchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
-        connect: (args: AppControlConnectArgs) => Promise<AppControlSession>;
+        connect: (
+          args: AppControlConnectArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlSession>;
         stop: (
           args?: AppControlStopArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
-        focusWindow: () => Promise<{ ok: true }>;
-        minimizeWindow: () => Promise<{ ok: true }>;
-        screenshot: () => Promise<AppControlScreenshot>;
+        focusWindow: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        minimizeWindow: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        screenshot: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlScreenshot>;
         getSnapshot: (
           args?: AppControlSnapshotArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSnapshot>;
         inspectPoint: (
           args: AppControlInspectPointArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AppControlInspectResult>;
         selectPoint: (
           args: AppControlInspectPointArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSelectResult>;
-        click: (args: AppControlClickArgs) => Promise<{ ok: true }>;
-        typeText: (args: AppControlTypeTextArgs) => Promise<{ ok: true }>;
-        scroll: (args: {
-          x: number;
-          y: number;
-          deltaX: number;
-          deltaY: number;
-          scale?: number | null;
-          coordinateSpace?: "screenshot" | "viewport" | null;
-        }) => Promise<{ ok: true }>;
-        dispatchKey: (args: {
-          type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
-          key?: string | null;
-          code?: string | null;
-          text?: string | null;
-          modifiers?: number | null;
-        }) => Promise<{ ok: true }>;
-        listTargets: () => Promise<AppControlTarget[]>;
-        attachToTarget: (args: {
-          targetId: string;
-        }) => Promise<AppControlSession>;
-        onEvent: (cb: (ev: AppControlEventPayload) => void) => () => void;
+        click: (
+          args: AppControlClickArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        typeText: (
+          args: AppControlTypeTextArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        scroll: (
+          args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null; coordinateSpace?: "screenshot" | "viewport" | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        dispatchKey: (
+          args: { type: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key?: string | null; code?: string | null; text?: string | null; modifiers?: number | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        listTargets: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlTarget[]>;
+        attachToTarget: (
+          args: { targetId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlSession>;
+        onEvent: (
+          cb: (ev: AppControlEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       builtInBrowser: {
-        getStatus: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
+        getStatus: (
+          args?: BuiltInBrowserProjectScopeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStatus>;
         requestOriginAccess: (
           args?: BuiltInBrowserRequestOriginAccessArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserOriginAccessResult>;
         getProfileDiagnostics: () => Promise<BuiltInBrowserProfileDiagnostics>;
         listPermissions: () => Promise<BuiltInBrowserPermissionsResult>;
@@ -2149,55 +2300,104 @@ declare global {
         ) => Promise<BuiltInBrowserClearPermissionsResult>;
         showPanel: (
           args?: BuiltInBrowserOpenPanelArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
         setBounds: (
           args: BuiltInBrowserBoundsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
         attachWebview: (
           args: BuiltInBrowserAttachWebviewArgs,
         ) => Promise<BuiltInBrowserStatus>;
         navigate: (
           args: BuiltInBrowserNavigateArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
         createTab: (
           args?: BuiltInBrowserCreateTabArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
         switchTab: (
           args: BuiltInBrowserTabArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
         closeTab: (
           args: BuiltInBrowserTabArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
-        reload: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
-        goBack: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
-        goForward: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
-        stop: (args?: BuiltInBrowserTabTargetArgs) => Promise<BuiltInBrowserStatus>;
-        startInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
-        stopInspect: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserStatus>;
+        reload: (
+          args?: BuiltInBrowserTabTargetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStatus>;
+        goBack: (
+          args?: BuiltInBrowserTabTargetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStatus>;
+        goForward: (
+          args?: BuiltInBrowserTabTargetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStatus>;
+        stop: (
+          args?: BuiltInBrowserTabTargetArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStatus>;
+        startInspect: (
+          args?: BuiltInBrowserProjectScopeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStatus>;
+        stopInspect: (
+          args?: BuiltInBrowserProjectScopeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserStatus>;
         captureScreenshot: (
           args?: BuiltInBrowserTabTargetArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserScreenshot>;
         selectPoint: (
           args: BuiltInBrowserSelectPointArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserSelectResult>;
-        selectCurrent: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserSelectResult>;
-        clearSelection: (args?: BuiltInBrowserProjectScopeArgs) => Promise<{ ok: true }>;
-        onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
+        selectCurrent: (
+          args?: BuiltInBrowserProjectScopeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<BuiltInBrowserSelectResult>;
+        clearSelection: (
+          args?: BuiltInBrowserProjectScopeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        onEvent: (
+          cb: (ev: BuiltInBrowserEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       terminal: {
-        list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;
-        read: (args?: ChatTerminalReadArgs) => Promise<ChatTerminalReadResult>;
+        list: (
+          args?: ChatTerminalListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatTerminalSession[]>;
+        read: (
+          args?: ChatTerminalReadArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatTerminalReadResult>;
         preview: (
           args?: ChatTerminalPreviewArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ChatTerminalPreviewResult>;
-        write: (args: ChatTerminalWriteArgs) => Promise<{ ok: true }>;
-        signal: (args: ChatTerminalSignalArgs) => Promise<{ ok: true }>;
+        write: (
+          args: ChatTerminalWriteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
+        signal: (
+          args: ChatTerminalSignalArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true }>;
         activeForChat: (
           args: ChatTerminalActiveForChatArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ChatTerminalSession | null>;
         reattachChatCli: (
           args: ChatTerminalReattachArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ChatTerminalReattachResult>;
       };
       localhost: {
@@ -2209,9 +2409,18 @@ declare global {
         rebuildIndex: () => Promise<SearchRebuildResult>;
       };
       externalSessions: {
-        list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
-        import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
-        getDetail: (args: ExternalSessionDetailArgs) => Promise<ExternalSessionDetail>;
+        list: (
+          args?: ExternalSessionListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ExternalSessionSummary[]>;
+        import: (
+          args: ExternalSessionImportArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ExternalSessionImportResult>;
+        getDetail: (
+          args: ExternalSessionDetailArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ExternalSessionDetail>;
         watchDetail: (args: ExternalSessionDetailWatchArgs) => Promise<ExternalSessionDetail>;
         unwatchDetail: (args: { watchId: string }) => Promise<{ ok: true }>;
         onDetailUpdated: (cb: (ev: ExternalSessionDetailUpdatedEvent) => void) => () => void;
@@ -2253,9 +2462,18 @@ declare global {
         ) => () => void;
       };
       diff: {
-        getChanges: (args: GetDiffChangesArgs) => Promise<DiffChanges>;
-        getFile: (args: GetFileDiffArgs) => Promise<FileDiff>;
-        getFilePatch: (args: GetFilePatchArgs) => Promise<FilePatch>;
+        getChanges: (
+          args: GetDiffChangesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<DiffChanges>;
+        getFile: (
+          args: GetFileDiffArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<FileDiff>;
+        getFilePatch: (
+          args: GetFilePatchArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<FilePatch>;
       };
       // `pin` addresses one machine explicitly: omitted or null means "the
       // machine this project tab is bound to" (today's behavior, including the
@@ -2339,77 +2557,167 @@ declare global {
         onChange: (cb: (ev: FileChangeEvent) => void) => () => void;
       };
       git: {
-        stageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
-        stageAll: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
-        unstageFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
-        unstageAll: (args: GitBatchFileActionArgs) => Promise<GitActionResult>;
-        discardFile: (args: GitFileActionArgs) => Promise<GitActionResult>;
+        stageFile: (
+          args: GitFileActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        stageAll: (
+          args: GitBatchFileActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        unstageFile: (
+          args: GitFileActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        unstageAll: (
+          args: GitBatchFileActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        discardFile: (
+          args: GitFileActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
         restoreStagedFile: (
           args: GitFileActionArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<GitActionResult>;
-        commit: (args: GitCommitArgs) => Promise<GitActionResult>;
+        commit: (
+          args: GitCommitArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
         generateCommitMessage: (
           args: GitGenerateCommitMessageArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<GitGenerateCommitMessageResult>;
-        listRecentCommits: (args: {
-          laneId: string;
-          limit?: number;
-        }) => Promise<GitCommitSummary[]>;
-        listCommitFiles: (args: GitListCommitFilesArgs) => Promise<string[]>;
-        getCommitMessage: (args: GitGetCommitMessageArgs) => Promise<string>;
-        getCommit: (args: {
-          laneId: string;
-          commitSha: string;
-        }) => Promise<GitCommitSummary | null>;
-        isCommitInLaneHistory: (args: {
-          laneId: string;
-          commitSha: string;
-        }) => Promise<boolean>;
-        revertCommit: (args: GitRevertArgs) => Promise<GitActionResult>;
-        cherryPickCommit: (args: GitCherryPickArgs) => Promise<GitActionResult>;
-        createTag: (args: GitCreateTagArgs) => Promise<GitActionResult>;
-        resetToCommit: (args: GitResetCommitArgs) => Promise<GitActionResult>;
-        stashPush: (args: GitStashPushArgs) => Promise<GitActionResult>;
-        stashList: (args: { laneId: string }) => Promise<GitStashSummary[]>;
-        stashApply: (args: GitStashRefArgs) => Promise<GitActionResult>;
-        stashPop: (args: GitStashRefArgs) => Promise<GitActionResult>;
-        stashDrop: (args: GitStashRefArgs) => Promise<GitActionResult>;
-        stashClear: (args: { laneId: string }) => Promise<GitActionResult>;
+        listRecentCommits: (
+          args: { laneId: string; limit?: number },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitCommitSummary[]>;
+        listCommitFiles: (
+          args: GitListCommitFilesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<string[]>;
+        getCommitMessage: (
+          args: GitGetCommitMessageArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<string>;
+        getCommit: (
+          args: { laneId: string; commitSha: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitCommitSummary | null>;
+        isCommitInLaneHistory: (
+          args: { laneId: string; commitSha: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<boolean>;
+        revertCommit: (
+          args: GitRevertArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        cherryPickCommit: (
+          args: GitCherryPickArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        createTag: (
+          args: GitCreateTagArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        resetToCommit: (
+          args: GitResetCommitArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        stashPush: (
+          args: GitStashPushArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        stashList: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitStashSummary[]>;
+        stashApply: (
+          args: GitStashRefArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        stashPop: (
+          args: GitStashRefArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        stashDrop: (
+          args: GitStashRefArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        stashClear: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
         fetch: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<GitActionResult>;
-        pull: (args: GitPullArgs) => Promise<GitActionResult>;
-        undoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
-        redoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
-        getSyncStatus: (args: {
-          laneId: string;
-        }) => Promise<GitUpstreamSyncStatus>;
-        getOriginRemote: (args: {
-          laneId: string;
-        }) => Promise<{ remoteUrl: string | null; branch: string | null }>;
-        getOpenPrForBranch: (args: {
-          laneId: string;
-          branch?: string;
-        }) => Promise<{
+        pull: (
+          args: GitPullArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        undoLastHeadChange: (
+          args: GitHeadChangeActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        redoLastHeadChange: (
+          args: GitHeadChangeActionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        getSyncStatus: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitUpstreamSyncStatus>;
+        getOriginRemote: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ remoteUrl: string | null; branch: string | null }>;
+        getOpenPrForBranch: (
+          args: { laneId: string; branch?: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{
           prUrl: string | null;
           prNumber: number | null;
           title: string | null;
           headRefName: string | null;
         }>;
-        sync: (args: GitSyncArgs) => Promise<GitActionResult>;
-        push: (args: GitPushArgs) => Promise<GitActionResult>;
-        getConflictState: (laneId: string) => Promise<GitConflictState>;
-        rebaseContinue: (args: string | { laneId: string }) => Promise<GitActionResult>;
-        rebaseAbort: (args: string | { laneId: string }) => Promise<GitActionResult>;
-        mergeContinue: (args: string | { laneId: string }) => Promise<GitActionResult>;
-        mergeAbort: (args: string | { laneId: string }) => Promise<GitActionResult>;
+        sync: (
+          args: GitSyncArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        push: (
+          args: GitPushArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        getConflictState: (
+          laneId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitConflictState>;
+        rebaseContinue: (
+          args: string | { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        rebaseAbort: (
+          args: string | { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        mergeContinue: (
+          args: string | { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
+        mergeAbort: (
+          args: string | { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitActionResult>;
         listBranches: (
           args: GitListBranchesArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<GitBranchSummary[]>;
         getUserIdentity: (
           args: GitGetUserIdentityArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<GitUserIdentity>;
         checkoutBranch: (
           args: GitCheckoutBranchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<GitActionResult>;
       };
       conflicts: {
@@ -2487,7 +2795,21 @@ declare global {
           sessionId: string;
         }) => Promise<GitHubAppDeviceAuthPollResult>;
         clearAppUserAuth: () => Promise<GitHubAppUserAuthStatus>;
+        // Optional: an older remote runtime does not implement the budget read.
+        // Callers must feature-detect and fall back to their own local backoff.
+        getRequestBudget?: () => Promise<GitHubRequestBudget>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        listRepoIssues: (args?: {
+          owner?: string;
+          name?: string;
+          state?: "open" | "closed" | "all";
+          since?: string;
+        }) => Promise<GitHubIssueLike[]>;
+        getIssue: (args: {
+          owner?: string;
+          name?: string;
+          number: number;
+        }) => Promise<GitHubIssueLike | null>;
         listRepoAutolinks: (args?: {
           owner?: string;
           name?: string;
@@ -2848,6 +3170,9 @@ declare global {
         searchLinearIssues: (
           args?: CtoSearchLinearIssuesArgs,
         ) => Promise<CtoSearchLinearIssuesResult>;
+        getLinearIssueComments: (
+          args: { issueId: string },
+        ) => Promise<CtoLinearIssueComment[]>;
         setLinearOAuthClient: (
           args: CtoSetLinearOAuthClientArgs,
         ) => Promise<LinearConnectionStatus>;
@@ -2859,6 +3184,9 @@ declare global {
         runProjectScan: () => Promise<CtoRunProjectScanResult>;
         getAttention: () => Promise<CtoAttentionState>;
       };
+      keepAwakeGet: () => Promise<KeepAwakeSnapshot>;
+      keepAwakeSetLevel: (level: KeepAwakeLevel) => Promise<KeepAwakeSnapshot>;
+      keepAwakeFixSystemSleep: () => Promise<KeepAwakeFixResult>;
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateGetPreferences: () => Promise<AutoUpdatePreferences>;

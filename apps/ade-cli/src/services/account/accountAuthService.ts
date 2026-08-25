@@ -15,6 +15,10 @@ import {
   type CredentialStoreReadFailureReason,
   type SyncCredentialStore,
 } from "../credentials/credentialStore";
+import {
+  supportsAtomicCredentialUpdate,
+  updateCredentialKeySync,
+} from "../credentials/updateCredentialKey";
 import { runWithAbortSignal } from "../sync/abortSignal";
 import { createRotationJournal } from "./accountSessionRotationJournal";
 
@@ -1034,6 +1038,23 @@ export function createAccountAuthService(args: {
     else logger.info("account.session_mutation", meta);
   };
 
+  /**
+   * Reports a credential write that threw, and swallows it.
+   *
+   * Every caller below is already handling something else — a rejected grant, a
+   * development credential, a completed refresh — and the store failing is not
+   * a reason to lose that outcome or to replace the error the caller is about
+   * to raise. Each of them has a documented degraded path for "not written".
+   */
+  const warnSessionWriteFailed = (reason: string, error: unknown): void => {
+    logger.warn("account.session_write_failed", {
+      reason,
+      pid: mutationPid,
+      source: mutationSource,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+
   const readRawEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
 
   const resolveOAuthConfig = async (): Promise<AccountOAuthConfig> =>
@@ -1141,20 +1162,32 @@ export function createAccountAuthService(args: {
   };
 
   const invalidateStoredSessionIfCurrent = (raw: string): void => {
-    const updateSync = args.credentialStore.updateSync;
-    if (updateSync) {
-      // Atomic compare-and-delete: remove only the development session we
-      // observed, so a production credential a peer wrote after our read is
-      // never clobbered.
-      updateSync.call(args.credentialStore, (values) => {
-        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
-        delete values[ACCOUNT_SESSION_CREDENTIAL_KEY];
-        return true;
-      });
-    }
+    let erased = false;
+    // Atomic compare-and-delete: remove only the development session we
+    // observed, so a production credential a peer wrote after our read is
+    // never clobbered.
+    //
     // Without atomic compare-and-delete we do NOT get-then-delete — that races a
     // peer-written production replacement. The development session is simply
     // rejected on every read instead of being erased.
+    if (supportsAtomicCredentialUpdate(args.credentialStore)) {
+      try {
+        updateCredentialKeySync(
+          args.credentialStore,
+          ACCOUNT_SESSION_CREDENTIAL_KEY,
+          (current) => {
+            if (current !== raw) return undefined;
+            erased = true;
+            return null;
+          },
+        );
+      } catch (error) {
+        // A write that threw is a write that did not happen. The local
+        // rejection below still stops this process serving the session.
+        erased = false;
+        warnSessionWriteFailed("development_material_rejected", error);
+      }
+    }
     authEpoch += 1;
     lastObservedSignedIn = false;
     setSessionReadState("missing");
@@ -1162,7 +1195,9 @@ export function createAccountAuthService(args: {
       action: "delete",
       reason: "development_material_rejected",
       level: "warn",
-      outcome: args.credentialStore.updateSync ? "erased" : "rejected_locally",
+      // The real outcome of the write, not merely whether the store claimed to
+      // support one: the mutator declines when a peer replaced the record.
+      outcome: erased ? "erased" : "rejected_locally",
     });
     warnDevelopmentClerkIgnored();
   };
@@ -1279,21 +1314,29 @@ export function createAccountAuthService(args: {
       needsReauth: true,
       ...(oauthErrorCode ? { rejectedReason: oauthErrorCode } : {}),
     };
-    const updateSync = args.credentialStore.updateSync;
     let marked = false;
-    if (updateSync) {
-      // Compare-and-swap on the exact bytes we were rejected for: a replacement
-      // a peer persisted after our read must never be condemned.
-      updateSync.call(args.credentialStore, (values) => {
-        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
-        values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(rejected);
-        marked = true;
-        return true;
-      });
-    }
+    // Compare-and-swap on the exact bytes we were rejected for: a replacement
+    // a peer persisted after our read must never be condemned.
+    //
     // Without compare-and-swap the marker cannot be written safely, but this
     // process must still stop serving the dead grant. It is rejected on every
-    // local read instead.
+    // local read instead — which is also what a failed write leaves behind.
+    if (supportsAtomicCredentialUpdate(args.credentialStore)) {
+      try {
+        updateCredentialKeySync(
+          args.credentialStore,
+          ACCOUNT_SESSION_CREDENTIAL_KEY,
+          (current) => {
+            if (current !== raw) return undefined;
+            marked = true;
+            return JSON.stringify(rejected);
+          },
+        );
+      } catch (error) {
+        marked = false;
+        warnSessionWriteFailed("refresh_grant_rejected", error);
+      }
+    }
     authEpoch += 1;
     lastObservedSignedIn = false;
     setSessionReadState("missing");
@@ -1366,15 +1409,25 @@ export function createAccountAuthService(args: {
     }
   };
 
+  /**
+   * Why a rotated session did not reach the store.
+   *
+   * The two failures need opposite handling and must never be collapsed into
+   * one boolean. `superseded_by_peer` means the store now holds something
+   * NEWER, so the caller starts over and picks it up. `write_failed` means the
+   * store holds something OLDER and always will, so starting over is an
+   * infinite loop — the caller serves the credential it just obtained instead.
+   */
+  type PersistRefreshedOutcome = "persisted" | "superseded_by_peer" | "write_failed";
+
   const persistRefreshedSessionIfCurrent = (
     refreshed: AccountSessionRecord,
     expectedRaw: string,
     reason: string,
     /** Generation this exchange journaled, so only our own entry is cleared. */
     journaledTokenGeneration?: string | null,
-  ): boolean => {
-    const updateSync = args.credentialStore.updateSync;
-    if (!updateSync) {
+  ): PersistRefreshedOutcome => {
+    if (!supportsAtomicCredentialUpdate(args.credentialStore)) {
       if (args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY) !== expectedRaw) {
         // A peer persisted first, but our exchange is still over — the
         // generation we journaled is spent either way. Scoped, so a peer's
@@ -1385,29 +1438,61 @@ export function createAccountAuthService(args: {
         if (journaledTokenGeneration) {
           rotationJournal.clear("rotation_superseded", journaledTokenGeneration);
         }
-        return false;
+        return "superseded_by_peer";
       }
-      // persistSession clears the journal on the way through.
-      persistSession(refreshed, reason);
-      return true;
+      try {
+        // persistSession clears the journal on the way through.
+        persistSession(refreshed, reason);
+      } catch (error) {
+        // Same reasoning as the atomic branch below: the exchange already spent
+        // the grant, so a failed write must NOT raise and must NOT clear the
+        // journal.
+        warnSessionWriteFailed(reason, error);
+        return "write_failed";
+      }
+      return "persisted";
     }
 
     let persisted = false;
-    updateSync.call(args.credentialStore, (values) => {
-      if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== expectedRaw) return false;
-      values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
-      persisted = true;
-      return true;
-    });
+    let writeFailed = false;
+    try {
+      updateCredentialKeySync(
+        args.credentialStore,
+        ACCOUNT_SESSION_CREDENTIAL_KEY,
+        (current) => {
+          if (current !== expectedRaw) return undefined;
+          persisted = true;
+          return JSON.stringify(refreshed);
+        },
+      );
+    } catch (error) {
+      // The exchange itself succeeded. Raising here would turn a SUCCESSFUL
+      // refresh into a failed one and sign the user out of a live session.
+      persisted = false;
+      writeFailed = true;
+      warnSessionWriteFailed(reason, error);
+    }
     if (persisted) {
       lastObservedSignedIn = true;
       locallyRejectedSessionRaw = null;
       locallyRejectedSessionState = "signed_out";
       storedSessionRejected = false;
     }
-    // The exchange completed either way: our journaled generation is spent, so
-    // its entry has nothing left to protect. A peer's newer entry is untouched.
-    if (journaledTokenGeneration) {
+    const outcome: PersistRefreshedOutcome = persisted
+      ? "persisted"
+      : writeFailed
+        ? "write_failed"
+        : "superseded_by_peer";
+    // The replacement is durable, or the store already holds something newer:
+    // either way our journaled generation has nothing left to protect, and a
+    // peer's newer entry is untouched.
+    //
+    // NOT on `write_failed`. There the exchange spent the grant and the store
+    // still holds the OLD session bytes, so the next refresh POSTs a token
+    // Clerk has already consumed. The surviving entry is the ONLY thing that
+    // makes the `invalid_grant` that follows non-definitive; clearing it here
+    // signed the machine out of a session that was never revoked.
+    if (journaledTokenGeneration && outcome !== "write_failed") {
       rotationJournal.clear(
         persisted ? "rotation_persisted" : "rotation_superseded",
         journaledTokenGeneration,
@@ -1417,9 +1502,9 @@ export function createAccountAuthService(args: {
       action: "rotate",
       reason,
       tokenGeneration: accountTokenGeneration(refreshed.refreshToken),
-      outcome: persisted ? "persisted" : "superseded_by_peer",
+      outcome,
     });
-    return persisted;
+    return outcome;
   };
 
   const finishPendingSession = (
@@ -2281,71 +2366,81 @@ export function createAccountAuthService(args: {
         };
         let token: TokenResponse | null = null;
         let config: AccountOAuthConfig | null = null;
-        // Generation we journaled for this exchange. Cleared in `finally` so a
-        // network/timeout/early-return path cannot leave a live-pid journal that
-        // peers wait on forever (the sticky mutex that looks like daily logout).
-        let journaledGeneration: string | null = null;
         const accessTokenStillFresh = (session: AccountSessionRecord): boolean => {
           const expiresAtMs = Date.parse(
             accessTokenExpiresAt(session.accessToken) ?? session.expiresAt,
           );
           return Number.isFinite(expiresAtMs) && expiresAtMs > now() + ACCESS_TOKEN_REFRESH_SKEW_MS;
         };
-        try {
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            const refreshRecord = refreshSnapshot.session;
-            config = refreshRecord.oauthConfig
-              ? normalizeOAuthConfig(refreshRecord.oauthConfig)
-              : await resolveOAuthConfig();
-            const tokenGeneration = accountTokenGeneration(refreshRecord.refreshToken) ?? "";
-            // Compare-and-swap the journal before talking to Clerk. A live peer
-            // already exchanging this grant must be waited out: Clerk refresh
-            // tokens are single-use, and a second POST is what produced the
-            // daily `invalid_grant` / mark_dead sign-outs. A dead peer's journal
-            // is taken over and treated as an interrupted rotation, so the
-            // `invalid_grant` that follows is not definitive.
-            const begin = rotationJournal.tryBegin({
-              oldRefreshTokenHash: tokenGeneration,
-              userId: refreshRecord.userId,
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          const refreshRecord = refreshSnapshot.session;
+          config = refreshRecord.oauthConfig
+            ? normalizeOAuthConfig(refreshRecord.oauthConfig)
+            : await resolveOAuthConfig();
+          const tokenGeneration = accountTokenGeneration(refreshRecord.refreshToken) ?? "";
+          // Compare-and-swap the journal before talking to Clerk. A live peer
+          // already exchanging this grant must be waited out: Clerk refresh
+          // tokens are single-use, and a second POST is what produced the
+          // daily `invalid_grant` / mark_dead sign-outs. A dead peer's journal
+          // is taken over and treated as an interrupted rotation, so the
+          // `invalid_grant` that follows is not definitive.
+          const begin = rotationJournal.tryBegin({
+            oldRefreshTokenHash: tokenGeneration,
+            userId: refreshRecord.userId,
+          });
+          if (begin.kind === "peer_in_flight") {
+            const rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
+            if (rotation.kind === "rotated") return rotation.snapshot.session;
+            if (rotation.kind !== "unchanged") return null;
+            throw new Error(
+              "ADE is refreshing your account sign-in in another process. Retry in a moment.",
+            );
+          }
+          const interruptedRotation = begin.takeover;
+          try {
+            token = await postTokenForm({
+              fetchImpl,
+              tokenUrl: `${config.issuer}/oauth/token`,
+              signal: sharedSignal,
+              body: {
+                grant_type: "refresh_token",
+                refresh_token: refreshRecord.refreshToken!,
+                client_id: config.clientId,
+              },
             });
-            if (begin.kind === "peer_in_flight") {
-              const rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
-              if (rotation.kind === "rotated") return rotation.snapshot.session;
-              if (rotation.kind !== "unchanged") return null;
-              throw new Error(
-                "ADE is refreshing your account sign-in in another process. Retry in a moment.",
-              );
+            break;
+          } catch (error) {
+            if (
+              !(error instanceof AccountTokenRequestError)
+              || error.oauthErrorCode !== "invalid_grant"
+            ) {
+              throw error;
             }
-            journaledGeneration = tokenGeneration;
-            const interruptedRotation = begin.takeover;
-            try {
-              token = await postTokenForm({
-                fetchImpl,
-                tokenUrl: `${config.issuer}/oauth/token`,
-                signal: sharedSignal,
-                body: {
-                  grant_type: "refresh_token",
-                  refresh_token: refreshRecord.refreshToken!,
-                  client_id: config.clientId,
-                },
-              });
-              break;
-            } catch (error) {
-              if (
-                !(error instanceof AccountTokenRequestError)
-                || error.oauthErrorCode !== "invalid_grant"
-              ) {
-                throw error;
+            // The desktop and brain share this credential. A peer that won a
+            // rotating refresh exchange may not have persisted its replacement
+            // by the time Clerk rejects our old token, so poll before declaring
+            // the grant dead. The window out-waits the credential store's lock
+            // timeout, so a winner still queued for the lock cannot lose.
+            let rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
+            if (rotation.kind === "rotated" && attempt === 0) {
+              // A peer already persisted a usable pair. Serving it avoids a
+              // second Clerk POST that would burn their new rotating grant.
+              if (accessTokenStillFresh(rotation.snapshot.session)) {
+                return rotation.snapshot.session;
               }
-              // The desktop and brain share this credential. A peer that won a
-              // rotating refresh exchange may not have persisted its replacement
-              // by the time Clerk rejects our old token, so poll before declaring
-              // the grant dead. The window out-waits the credential store's lock
-              // timeout, so a winner still queued for the lock cannot lose.
-              let rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
+              refreshSnapshot = rotation.snapshot;
+              continue;
+            }
+            if (rotation.kind !== "unchanged") return null;
+            if (interruptedRotation) {
+              // An interrupted journal makes this rejection ambiguous: the
+              // stored token may already have been spent by the process that
+              // died. Spend one more rotation-wait cycle, then give up for this
+              // attempt WITHOUT condemning the session. Clearing the journal
+              // makes the next refresh definitive, so an actually-dead grant
+              // still reaches the needs-re-auth state one attempt later.
+              rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
               if (rotation.kind === "rotated" && attempt === 0) {
-                // A peer already persisted a usable pair. Serving it avoids a
-                // second Clerk POST that would burn their new rotating grant.
                 if (accessTokenStillFresh(rotation.snapshot.session)) {
                   return rotation.snapshot.session;
                 }
@@ -2353,104 +2448,97 @@ export function createAccountAuthService(args: {
                 continue;
               }
               if (rotation.kind !== "unchanged") return null;
-              if (interruptedRotation) {
-                // An interrupted journal makes this rejection ambiguous: the
-                // stored token may already have been spent by the process that
-                // died. Spend one more rotation-wait cycle, then give up for this
-                // attempt WITHOUT condemning the session. Clearing the journal
-                // makes the next refresh definitive, so an actually-dead grant
-                // still reaches the needs-re-auth state one attempt later.
-                rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
-                if (rotation.kind === "rotated" && attempt === 0) {
-                  if (accessTokenStillFresh(rotation.snapshot.session)) {
-                    return rotation.snapshot.session;
-                  }
-                  refreshSnapshot = rotation.snapshot;
-                  continue;
-                }
-                if (rotation.kind !== "unchanged") return null;
-                rotationJournal.clear("interrupted_rotation_inconclusive", tokenGeneration);
-                journaledGeneration = null;
-                logSessionMutation({
-                  action: "rotation_journal_interrupted",
-                  reason: "invalid_grant_not_definitive",
-                  level: "warn",
-                  oauthErrorCode: error.oauthErrorCode,
-                  tokenGeneration,
-                  outcome: "session_preserved",
-                });
-                throw error;
-              }
-              const marked = markStoredSessionRejectedIfExact(
-                refreshSnapshot.raw,
-                refreshSnapshot.session,
-                error.oauthErrorCode,
-              );
-              if (!marked && readSessionSnapshot().raw !== refreshSnapshot.raw) {
-                return null;
-              }
+              rotationJournal.clear("interrupted_rotation_inconclusive", tokenGeneration);
+              logSessionMutation({
+                action: "rotation_journal_interrupted",
+                reason: "invalid_grant_not_definitive",
+                level: "warn",
+                oauthErrorCode: error.oauthErrorCode,
+                tokenGeneration,
+                outcome: "session_preserved",
+              });
               throw error;
             }
+            const marked = markStoredSessionRejectedIfExact(
+              refreshSnapshot.raw,
+              refreshSnapshot.session,
+              error.oauthErrorCode,
+            );
+            if (!marked && readSessionSnapshot().raw !== refreshSnapshot.raw) {
+              return null;
+            }
+            throw error;
           }
-          if (!token || !config) {
-            throw new Error("ADE account session expired. Run `ade login` again.");
-          }
-          if (authEpoch !== epochAtJoin) return null;
-          const obtainedAtMs = now();
-          const refreshed = await buildSessionRecord(
+        }
+        if (!token || !config) {
+          throw new Error("ADE account session expired. Run `ade login` again.");
+        }
+        if (authEpoch !== epochAtJoin) return null;
+        const obtainedAtMs = now();
+        const refreshed = await buildSessionRecord(
+          token,
+          refreshSnapshot.session,
+          undefined,
+          config,
+          { fetchUserinfo: false, obtainedAtMs, signal: sharedSignal },
+        );
+        if (authEpoch !== epochAtJoin) return null;
+        const rotationOutcome = persistRefreshedSessionIfCurrent(
+          refreshed,
+          refreshSnapshot.raw,
+          "refresh_token_rotated",
+          accountTokenGeneration(refreshSnapshot.session.refreshToken),
+        );
+        // `persistRefreshedSessionIfCurrent` owns the journal from here: it
+        // clears the entry on `persisted` and on `superseded_by_peer`, and
+        // deliberately KEEPS it on `write_failed` — the replacement never became
+        // durable, so the entry must survive to say the stored grant may already
+        // have been spent. No other path clears it either: a POST that threw may
+        // still have spent the grant at Clerk, which is the crash window the
+        // journal exists for. The journal self-heals — the next cycle reads it
+        // as `already_ours`, so the `invalid_grant` that follows is not
+        // definitive and the two-rotation wait reaches needs_reauth one attempt
+        // later. A request that never left costs one extra non-definitive retry.
+        if (rotationOutcome === "write_failed") {
+          // The store will keep holding the OLD record, so starting over
+          // would refresh again against a grant this exchange already spent.
+          // Serve the pair we just obtained and let the next process retry.
+          return refreshed;
+        }
+        if (rotationOutcome !== "persisted") return null;
+
+        // The rotated access/refresh pair is durable before optional profile
+        // enrichment. Identity is carried from the previously verified subject,
+        // so avoidable userinfo latency cannot expose a stale refresh token to a
+        // second process.
+        let enriched: AccountSessionRecord;
+        try {
+          enriched = await buildSessionRecord(
             token,
             refreshSnapshot.session,
             undefined,
             config,
-            { fetchUserinfo: false, obtainedAtMs, signal: sharedSignal },
+            { obtainedAtMs, signal: sharedSignal },
           );
-          if (authEpoch !== epochAtJoin) return null;
-          if (!persistRefreshedSessionIfCurrent(
-            refreshed,
-            refreshSnapshot.raw,
-            "refresh_token_rotated",
-            accountTokenGeneration(refreshSnapshot.session.refreshToken),
-          )) {
-            // Persist path clears our journaled generation; skip the finally clear.
-            journaledGeneration = null;
-            return null;
-          }
-          journaledGeneration = null;
-
-          // The rotated access/refresh pair is durable before optional profile
-          // enrichment. Identity is carried from the previously verified subject,
-          // so avoidable userinfo latency cannot expose a stale refresh token to a
-          // second process.
-          let enriched: AccountSessionRecord;
-          try {
-            enriched = await buildSessionRecord(
-              token,
-              refreshSnapshot.session,
-              undefined,
-              config,
-              { obtainedAtMs, signal: sharedSignal },
-            );
-          } catch (error) {
-            if (sharedSignal.aborted) throw error;
-            // The rotated credential and verified prior subject are already
-            // durable. Optional profile enrichment must not make that successful
-            // refresh unusable.
-            return readSession() ?? refreshed;
-          }
-          if (authEpoch !== epochAtJoin) return null;
-          const refreshedRaw = JSON.stringify(refreshed);
-          return persistRefreshedSessionIfCurrent(
-            enriched,
-            refreshedRaw,
-            "refresh_profile_enriched",
-          )
-            ? enriched
-            : readSession();
-        } finally {
-          if (journaledGeneration) {
-            rotationJournal.clear("refresh_finished", journaledGeneration);
-          }
+        } catch (error) {
+          if (sharedSignal.aborted) throw error;
+          // The rotated credential and verified prior subject are already
+          // durable. Optional profile enrichment must not make that successful
+          // refresh unusable.
+          return readSession() ?? refreshed;
         }
+        if (authEpoch !== epochAtJoin) return null;
+        const refreshedRaw = JSON.stringify(refreshed);
+        // Only a peer's newer record is worth re-reading for. The rotated
+        // pair is already durable, so a failed enrichment write costs nothing
+        // but the profile fields, which this record carries anyway.
+        return persistRefreshedSessionIfCurrent(
+          enriched,
+          refreshedRaw,
+          "refresh_profile_enriched",
+        ) === "superseded_by_peer"
+          ? readSession()
+          : enriched;
       })().finally(() => {
         clearTimeout(sharedRefreshTimer);
         refreshInFlight = null;

@@ -9,6 +9,14 @@ import {
 } from "../../../../desktop/src/shared/types";
 import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import {
+  toMachinePowerRecord,
+  type MachinePowerPublication,
+  type MachinePowerRecord,
+  type MachineSleepState,
+} from "../../../../desktop/src/shared/types/power";
+import type { MachinePowerSource } from "../power/machinePowerMonitor";
+import { borrowSharedMachinePowerSource } from "../power/sharedMachinePowerMonitor";
+import {
   createAccountDirectoryCorrelationId,
   readAccountDirectoryHttpReason,
   resolveTrustedAccountDirectoryBaseUrl,
@@ -31,6 +39,7 @@ import {
 } from "../sync/machineIdentitySigningStore";
 import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import { createEpisodeAnalytics } from "./episodeAnalytics";
+import { readAccountHardwareId } from "./hardwareAnchor";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
@@ -42,16 +51,69 @@ const DEFAULT_TOKEN_TIMEOUT_MS = 10_000;
 const BODY_READ_TIMEOUT_MS = 5_000;
 const SLOW_PUBLISH_LEG_MS = 2_000;
 const PUBLISH_INFO_INTERVAL = 10;
+/**
+ * How long the pre-suspend publish is allowed to take.
+ *
+ * The OS gives a suspending machine a short, unspecified grace period, and
+ * every millisecond spent here is one the rest of the shutdown does not get.
+ * Two seconds is enough for a warm token and one HTTPS round trip, and the
+ * whole thing is best-effort: a machine that goes dark mid-request simply falls
+ * back to the client-side inference from recent silence.
+ */
+const PRE_SUSPEND_PUBLISH_BUDGET_MS = 2_000;
 export const PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS = 120_000;
+/**
+ * How long the publish leg must keep failing before it is worth a diagnostic
+ * report rather than just a coarse analytics event.
+ *
+ * Deliberately its own constant rather than a reuse of the analytics threshold
+ * above: that one is tuned to "measurable", this one to "a human would call
+ * this broken", and the analytics event's `failing_minutes` floor is coupled to
+ * its own number.
+ */
+export const PUBLISH_FAILURE_DIAGNOSTICS_THRESHOLD_MS = 5 * 60_000;
 
 export type AccountMachineRegistration = {
   machineKey: string;
   deviceId: string;
+  /**
+   * A per-account hash of this computer's OS-level machine identifier, when one
+   * can be read. See `hardwareAnchor.ts` for the recipe and for why the raw
+   * identifier never appears here.
+   *
+   * It exists because `machineKey` and `deviceId` BOTH live under `~/.ade`, so
+   * a user who wipes that directory and signs in again arrives as a machine the
+   * directory has never seen and leaves their old row behind as a phantom. This
+   * is the one identifier that survives the wipe.
+   *
+   * Optional in every direction: a host that cannot produce an anchor omits it,
+   * and a directory that predates it ignores it. It is sent on the heartbeat as
+   * well as on a deliberate pairing, because a row can only be matched later if
+   * it stored an anchor at some point — but storing one authorizes nothing on
+   * its own. Superseding still requires the same fresh-authentication proof.
+   */
+  hardwareId?: string;
   name: string;
   platform: string;
   deviceType: string;
   pubkey: string | null;
   reachableEndpoints: AdeAccountMachineEndpoint[];
+  /**
+   * This machine's battery and wall power, omitted when we could not read it.
+   * A machine with no battery reports a null `batteryPercent`, never a zero.
+   */
+  power?: MachinePowerRecord;
+  /**
+   * Whether this machine says it is awake.
+   *
+   * The interesting value is `"asleep"`, published in the beat BEFORE the
+   * machine suspends. Without it, a sleeping machine and a crashed one are the
+   * same event to everyone downstream — silence — which is how a phone came to
+   * report "Connected" to a Mac whose lid had been shut for an hour.
+   */
+  sleepState?: MachineSleepState;
+  /** Epoch ms at which `sleepState` last changed. */
+  sleepStateAt?: number;
   /**
    * Asks a compatible directory to retain its stored Relay endpoint when this
    * heartbeat catches the independently asynchronous Relay components between
@@ -237,6 +299,26 @@ function readHttpReasonBounded(response: Response): Promise<string | null> {
   return boundedBodyRead(response, readAccountDirectoryHttpReason);
 }
 
+/**
+ * Read the keys a compatible directory says it retired for THIS device.
+ *
+ * Purely additive: a directory that predates the field, or answers 204, yields
+ * an empty list and nothing downstream changes. It exists so a rotation this
+ * machine performed can be confirmed as clean — the alternative is a roster
+ * where the owner cannot tell a retired key from a live one, which is how a
+ * working MacBook came to be deleted by hand.
+ */
+async function readSupersededMachineKeysBounded(response: Response): Promise<string[]> {
+  const keys = await boundedBodyRead(response, async (bounded) => {
+    const body: unknown = await bounded.clone().json();
+    if (!body || typeof body !== "object") return null;
+    const raw = (body as Record<string, unknown>).supersededMachineKeys;
+    if (!Array.isArray(raw)) return null;
+    return raw.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "");
+  });
+  return keys ?? [];
+}
+
 function failureLegForState(
   state: SyncAccountDirectoryHealth["state"],
 ): AccountMachinePublishLeg {
@@ -377,11 +459,40 @@ export function publishedMachineName(
     : normalizedName;
 }
 
+/**
+ * Fold a power reading into a registration. Every field is dropped rather than
+ * nulled when unknown, so a host that cannot read its own power publishes a
+ * record indistinguishable from an older host's — and the directory's
+ * `coalesce` then leaves whatever it already knew intact.
+ *
+ * That only holds because `readMachinePower` answers `null` for a machine it
+ * could not read, which reaches here as `publication.power === null`. It used
+ * to answer `{ onExternalPower: true }` instead — a confident, truthy blob that
+ * sailed through this filter and republished a laptop on battery as "plugged
+ * in" on one `pmset` timeout. Anything wired in here must keep failing to null.
+ */
+function withMachinePowerPublication(
+  registration: AccountMachineRegistration,
+  publication: MachinePowerPublication | null,
+): AccountMachineRegistration {
+  if (!publication) return registration;
+  return {
+    ...registration,
+    ...(publication.power ? { power: publication.power } : {}),
+    ...(publication.sleepState ? { sleepState: publication.sleepState } : {}),
+    ...(publication.sleepState && typeof publication.sleepStateAt === "number"
+      ? { sleepStateAt: publication.sleepStateAt }
+      : {}),
+  };
+}
+
 export function buildAccountMachineRegistration(args: {
   machineKey: string;
   snapshot: AccountMachineRegistrationSnapshot;
   packageChannel?: string | null;
   publicKeyRawBase64?: string | null;
+  /** This machine's power and sleep state at the moment of the publish. */
+  powerPublication?: MachinePowerPublication | null;
 }): AccountMachineRegistration | null {
   const machineKey = args.machineKey.trim();
   const connectInfo = args.snapshot.pairingConnectInfo;
@@ -433,7 +544,7 @@ export function buildAccountMachineRegistration(args: {
   }
 
   const identity = connectInfo.hostIdentity;
-  return {
+  return withMachinePowerPublication({
     machineKey,
     deviceId: identity.deviceId,
     name: publishedMachineName(
@@ -446,7 +557,7 @@ export function buildAccountMachineRegistration(args: {
       ? `ed25519:${args.publicKeyRawBase64.trim()}`
       : null,
     reachableEndpoints: endpoints,
-  };
+  }, args.powerPublication ?? null);
 }
 
 function relayPublishStateSignature(
@@ -483,6 +594,30 @@ export function createAccountMachinePublisherService(options: {
    * user's one proof on a request that has no use for it.
    */
   consumePairingGrant?: () => string | null;
+  /**
+   * Hand the directory's `supersededMachineKeys` to the identity store, which
+   * answers with the subset this machine actually retired. Optional so small
+   * and test publishers stay unaffected; absent means "do not reconcile".
+   */
+  confirmSupersededMachineKeys?: (keys: readonly unknown[]) => string[];
+  /**
+   * The per-account hardware anchor for the signed-in owner, or null when this
+   * host has none. Called with the account id because the value is salted with
+   * it — see `hardwareAnchor.ts`.
+   *
+   * Optional so small and test publishers stay unaffected; absent means "send
+   * no anchor", which is exactly what every client did before this existed.
+   */
+  readAccountHardwareId?: (userId: string) => string | null;
+  /**
+   * This machine's power and sleep state. Optional: a publisher without one
+   * simply omits the fields, which is what an older host does anyway.
+   *
+   * Read-only by construction. The brain shares ONE monitor across the
+   * publisher, the chat service, and the desktop's suspend-forwarding RPC, so
+   * its lifecycle belongs to that shared instance and not to any consumer.
+   */
+  powerSource?: MachinePowerSource;
   directoryBaseUrl?: () => string | null | undefined;
   isSyncEnabled?: () => boolean;
   subscribeToSignIn?: (listener: () => void) => (() => void);
@@ -494,6 +629,17 @@ export function createAccountMachinePublisherService(options: {
   now?: () => number;
   logger?: AccountMachinePublisherLogger;
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
+  /**
+   * The publish leg has been failing for longer than a person would tolerate.
+   * Fired once per failure episode with the health state as the code, so
+   * automatic diagnostics can send one report for a machine that has quietly
+   * dropped out of the account directory.
+   *
+   * Carries only the code. How long it had been failing is already on the
+   * episode's log line and on the analytics event beside it, and the threshold
+   * that decides "long enough" lives here rather than in a listener.
+   */
+  onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
 }) {
   const heartbeatMs = Math.max(1_000, Math.floor(options.heartbeatMs ?? ACCOUNT_MACHINE_HEARTBEAT_MS));
   const relayStatePollMs = Math.max(
@@ -510,6 +656,26 @@ export function createAccountMachinePublisherService(options: {
   const activeControllers = new Set<AbortController>();
   let inFlight: Promise<void> | null = null;
   let triggeredPublishPending = false;
+  let unsubscribePower: (() => void) | null = null;
+
+  /**
+   * Current power state in wire shape, or null when this publisher has no
+   * source. Never throws: a power source that fails must not cost the machine
+   * its heartbeat, which is what actually keeps it reachable.
+   */
+  const readPowerPublication = (): MachinePowerPublication | null => {
+    const source = options.powerSource;
+    if (!source) return null;
+    try {
+      return {
+        power: toMachinePowerRecord(source.getPower()),
+        sleepState: source.getSleepState(),
+        sleepStateAt: source.getSleepStateAt(),
+      };
+    } catch {
+      return null;
+    }
+  };
   /**
    * Consumed by the next publish attempt, which sends `pairing: true` exactly
    * once. Held as a one-shot rather than a mode so a deliberate link can never
@@ -543,10 +709,12 @@ export function createAccountMachinePublisherService(options: {
   let successfulPublishCount = 0;
   let unsubscribeSignIn: (() => void) | null = null;
   let health = createSyncAccountDirectoryHealth(
-    "sync_disabled",
+    "sync_not_started",
     "Account-directory publishing has not started.",
   );
 
+  /** Edge-triggered like the analytics episode, on its own longer threshold. */
+  let sustainedFailureReported = false;
   const captureAnalytics = () => options.captureAnalytics;
   const publishFailureAnalytics = createEpisodeAnalytics({
     event: "ade_publish_failing",
@@ -685,7 +853,22 @@ export function createAccountMachinePublisherService(options: {
     };
     if (health.failingSinceMs == null) {
       publishFailureAnalytics.end();
-    } else if (args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS) {
+      sustainedFailureReported = false;
+    } else {
+      const failingMs = args.attemptAt - health.failingSinceMs;
+      if (!sustainedFailureReported && failingMs >= PUBLISH_FAILURE_DIAGNOSTICS_THRESHOLD_MS) {
+        // Set before the call so a throwing listener still consumes the
+        // episode: this must never become a per-attempt loop.
+        sustainedFailureReported = true;
+        try {
+          options.onSustainedFailure?.({ code: state });
+        } catch {
+          // Best effort; health recording is what matters here.
+        }
+      }
+    }
+    if (health.failingSinceMs != null
+      && args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS) {
       publishFailureAnalytics.report({
         dedupeValue: health.failingSinceMs,
         properties: {
@@ -943,6 +1126,7 @@ export function createAccountMachinePublisherService(options: {
       snapshot,
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
       publicKeyRawBase64,
+      powerPublication: readPowerPublication(),
     });
     if (!observedRegistration) {
       outcome("machine_key_unavailable", {
@@ -1042,13 +1226,29 @@ export function createAccountMachinePublisherService(options: {
         pairingGrant = null;
       }
     }
-    const registration: AccountMachineRegistration = isPairingPublish
-      ? {
-        ...registrationWithRelayHint,
-        pairing: true,
-        ...(pairingGrant ? { pairingGrant } : {}),
+    // Read here rather than in `buildAccountMachineRegistration`, because the
+    // account id is the salt and the builder has no account context — it also
+    // runs on the relay-state poll, which only compares route signatures and
+    // never sends anything. A throwing or absent reader is an ordinary "no
+    // anchor": this field must never be the reason a machine fails to publish.
+    let hardwareId: string | null = null;
+    if (options.readAccountHardwareId && accountOwnerId) {
+      try {
+        hardwareId = options.readAccountHardwareId(accountOwnerId)?.trim() || null;
+      } catch {
+        hardwareId = null;
       }
-      : registrationWithRelayHint;
+    }
+    const registration: AccountMachineRegistration = {
+      ...(isPairingPublish
+        ? {
+          ...registrationWithRelayHint,
+          pairing: true,
+          ...(pairingGrant ? { pairingGrant } : {}),
+        }
+        : registrationWithRelayHint),
+      ...(hardwareId ? { hardwareId } : {}),
+    };
     const reachableEndpointCount = registration.reachableEndpoints.length;
 
     let accessToken: string | null = null;
@@ -1164,6 +1364,26 @@ export function createAccountMachinePublisherService(options: {
         });
         warnOnce("http_error", "http", legDurations, { status: response.status });
         return;
+      }
+      // Read before draining. A directory that reports retired keys is telling
+      // this machine its rotation landed cleanly; nothing has to act on it, but
+      // an unexplained rotation is exactly what nobody could explain last time.
+      if (options.confirmSupersededMachineKeys) {
+        try {
+          const superseded = await readSupersededMachineKeysBounded(response);
+          const confirmed = superseded.length > 0
+            ? options.confirmSupersededMachineKeys(superseded)
+            : [];
+          if (confirmed.length > 0) {
+            options.logger?.info?.("account.machine_identity_superseded_confirmed", {
+              machineKey,
+              previousMachineKeys: confirmed,
+            });
+          }
+        } catch {
+          // An older directory sends no body at all; never fail a good publish
+          // over bookkeeping.
+        }
       }
       await response.body?.cancel().catch(() => {});
       lastWarning = null;
@@ -1282,6 +1502,57 @@ export function createAccountMachinePublisherService(options: {
     else run();
   };
 
+  /**
+   * Publish the current power state right now, within a hard time budget.
+   *
+   * Used for the pre-suspend beat, which is the whole point of announcing sleep
+   * at all: the directory learns the machine is going down while it can still
+   * be told, so a phone shows "Asleep" instead of a stale "Connected". It does
+   * not reuse an in-flight attempt — that request was built before the suspend
+   * and still says the machine is awake.
+   */
+  const publishPowerStateNow = async (budgetMs: number): Promise<void> => {
+    if (!started || disposed) return;
+    const deadline = now() + Math.max(250, Math.floor(budgetMs));
+    const bounded = (promise: Promise<unknown>): Promise<void> => new Promise((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, Math.max(0, deadline - now()));
+      timer.unref?.();
+      void promise.then(finish, finish);
+    });
+    if (inFlight) await bounded(inFlight);
+    if (disposed || now() >= deadline) return;
+    clearHeartbeatTimer();
+    await bounded(publishNow());
+    schedule();
+  };
+
+  /**
+   * One pre-suspend write per suspend, no matter how many callers ask for it.
+   *
+   * The suspend arrives twice by design: the power source emits it to this
+   * publisher's own subscription, and the host that announced it also awaits a
+   * bounded write so it has something real to hold the machine open for.
+   * Without coalescing those are two HTTPS round trips inside a window that
+   * barely fits one.
+   */
+  let powerPublishInFlight: Promise<void> | null = null;
+  const publishPowerStateNowOnce = (budgetMs: number): Promise<void> => {
+    const existing = powerPublishInFlight;
+    if (existing) return existing;
+    const run = publishPowerStateNow(budgetMs).finally(() => {
+      if (powerPublishInFlight === run) powerPublishInFlight = null;
+    });
+    powerPublishInFlight = run;
+    return run;
+  };
+
   const inspectRelayPublishState = async (): Promise<void> => {
     if (!started || disposed || options.isSyncEnabled?.() === false) return;
     try {
@@ -1350,11 +1621,35 @@ export function createAccountMachinePublisherService(options: {
         // settles instead of coalescing away the auth transition for 30s.
         requestTriggeredPublish();
       }) ?? null;
+      unsubscribePower = options.powerSource?.subscribe((event) => {
+        if (event.kind === "suspend") {
+          void publishPowerStateNowOnce(PRE_SUSPEND_PUBLISH_BUDGET_MS);
+          return;
+        }
+        if (event.kind === "resume") {
+          // Say "awake" at once. Waiting up to 30 s for the heartbeat would
+          // leave a woken machine reading as asleep for longer than it took to
+          // wake up.
+          requestTriggeredPublish();
+        }
+        // A battery or wall-power change rides the next heartbeat. It is worth
+        // a few seconds of staleness to keep the directory write rate exactly
+        // where it was.
+      }) ?? null;
       void publishNow().finally(schedule);
       scheduleRelayStatePoll();
     },
 
     publishNow,
+
+    /**
+     * Publish this machine's power state immediately, bounded by `budgetMs`.
+     * Exposed for hosts that learn of a suspend through their own hook and
+     * want the pre-suspend beat sent before they hand control back to the OS.
+     */
+    publishPowerStateNow(budgetMs: number = PRE_SUSPEND_PUBLISH_BUDGET_MS): Promise<void> {
+      return publishPowerStateNowOnce(budgetMs);
+    },
 
     /**
      * Register this machine as a deliberate, user-initiated link — the only
@@ -1450,6 +1745,8 @@ export function createAccountMachinePublisherService(options: {
       activeControllers.clear();
       unsubscribeSignIn?.();
       unsubscribeSignIn = null;
+      unsubscribePower?.();
+      unsubscribePower = null;
     },
   };
 }
@@ -1468,9 +1765,26 @@ export function createBrainAccountMachinePublisherService(options: {
   isSyncEnabled: () => boolean;
   getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
+  /**
+   * Passed in rather than built here, from the ONE relay store the caller
+   * already holds. Two instances over one identity file is two of everything
+   * that file protects — two backup reconcilers, two rotation-lock clients —
+   * and the machine key this publisher reports comes from the caller's instance
+   * anyway, so a private second one could confirm a supersession against a
+   * different read of the same file.
+   */
+  confirmSupersededMachineKeys: (keys: readonly unknown[]) => string[];
   directoryBaseUrl?: () => string | null | undefined;
   logger: BrainAccountMachinePublisherLogger;
   captureAnalytics?: (input: ProductAnalyticsCapture) => void;
+  /** See the same option on `createAccountMachinePublisherService`. */
+  onSustainedFailure?: (input: { code: SyncAccountDirectoryHealth["state"] }) => void;
+  /**
+   * Override the machine power source. Tests pass `null` to keep the brain's
+   * poll and gap timers out of a suite; a host with a precise suspend hook can
+   * pass its own source instead.
+   */
+  powerSource?: MachinePowerSource | null;
 }): AccountMachinePublisherService {
   const accountAuthService = getSharedAccountAuthService({
     secretsDir: options.secretsDir,
@@ -1481,7 +1795,17 @@ export function createBrainAccountMachinePublisherService(options: {
     filePath: path.join(options.secretsDir, MACHINE_IDENTITY_SIGNING_FILE_NAME),
     logger: options.logger,
   });
+  // The brain is plain Node — no Electron, no `powerMonitor` — so its sleep
+  // detection is the heartbeat gap, which needs no platform code and therefore
+  // works identically on macOS, Windows, and Linux (where there is no ADE
+  // desktop app at all). Borrowed, never built: a second monitor would mean a
+  // second poll loop and a second gap detector answering the same question
+  // differently from the one the chat service is watching.
+  const powerSource = options.powerSource === undefined
+    ? borrowSharedMachinePowerSource()
+    : options.powerSource;
   return createAccountMachinePublisherService({
+    ...(powerSource ? { powerSource } : {}),
     getAccessToken: (tokenOptions) => getSignedInAccountAccessToken(
       accountAuthService,
       tokenOptions,
@@ -1508,6 +1832,20 @@ export function createBrainAccountMachinePublisherService(options: {
     // Same shared auth service the access token comes from, so the grant a
     // device sign-in earned in this brain reaches the publish that needs it.
     consumePairingGrant: () => accountAuthService.consumePairingGrant(),
+    confirmSupersededMachineKeys: options.confirmSupersededMachineKeys,
+    // The only identity input that does not come out of `secretsDir`, which is
+    // the entire point: everything else in this composition is destroyed by the
+    // `~/.ade` wipe this anchor exists to survive. Cached for the process, so
+    // the heartbeat pays for the lookup once.
+    //
+    // The ADE home path is what keeps a Beta install from claiming Stable's
+    // row: the platform UUID underneath is shared by every ADE on the box, and
+    // the install's own home directory is the thing that differs. It is the
+    // parent of `secretsDir` by construction (`<adeHome>/secrets`), so the
+    // publisher anchors the install it actually serves rather than whatever
+    // `ADE_HOME` this process happened to launch with.
+    readAccountHardwareId: (userId) =>
+      readAccountHardwareId(userId, path.dirname(options.secretsDir)),
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
       if (explicit?.trim()) {
@@ -1524,5 +1862,6 @@ export function createBrainAccountMachinePublisherService(options: {
     subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
     logger: options.logger,
     captureAnalytics: options.captureAnalytics,
+    onSustainedFailure: options.onSustainedFailure,
   });
 }

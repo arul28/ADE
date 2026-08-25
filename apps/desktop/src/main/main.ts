@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, protocol, safeStorage } from "electron";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -16,6 +16,21 @@ for (const stream of [process.stdout, process.stderr]) {
     throw err;
   });
 }
+
+// The first durable line of the launch, and the earliest statement in this file
+// that can write one: everything below — the `ade://` claim, the single-instance
+// lock, the whole of `whenReady` — used to happen before any structured logger
+// existed, because the only one was built inside the project-open paths. A
+// report from a machine where no project ever opened had no main-process log at
+// all. Machine-scoped by construction (`~/.ade/runtime/desktop-main.jsonl`), so
+// a headless `ade report-issue` finds it too. See `machineLogger.ts`.
+logMachineEvent("info", "desktop.main_started", {
+  pid: process.pid,
+  version: app.getVersion(),
+  isPackaged: app.isPackaged,
+  packageChannel: process.env.ADE_PACKAGE_CHANNEL ?? null,
+  platform: process.platform,
+});
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
@@ -49,6 +64,11 @@ import {
 import { registerIpc } from "./services/ipc/registerIpc";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
 import { createFileLogger } from "./services/logging/logger";
+import {
+  flushMachineMainLog,
+  getMachineMainLogger,
+  logMachineEvent,
+} from "./services/logging/machineLogger";
 import {
   createProductAnalyticsService,
   defaultProductAnalyticsStateFile,
@@ -121,6 +141,7 @@ import { installEditableContextMenu } from "./editorContextMenu";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
+import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
 import { createGithubService } from "./services/github/githubService";
 import { createProjectScaffoldService } from "./services/projects/projectScaffoldService";
 import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLocalDatabase";
@@ -160,6 +181,7 @@ import {
   type RecentProjectInspection,
 } from "./services/projects/recentProjectSummary";
 import { browseProjectDirectories } from "./services/projects/projectBrowserService";
+import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
@@ -216,6 +238,7 @@ import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
   getSignedInAccountAccessToken,
+  type AccountAuthService,
 } from "../../../ade-cli/src/services/account/accountAuthService";
 import { createPushRelayClient } from "../../../ade-cli/src/services/push/pushRelayClient";
 import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/pushRegistrationStore";
@@ -231,9 +254,15 @@ import {
   isElectronSafeStorageCredentialFile,
   type SyncCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStore";
+import { adoptFileBackedCredentials } from "../../../ade-cli/src/services/credentials/credentialStoreAdoption";
+import {
+  createRoutedCredentialStore,
+  createUnavailableCredentialStore,
+} from "../../../ade-cli/src/services/credentials/credentialStoreRouting";
 import { createKeybindingsService } from "./services/keybindings/keybindingsService";
 import { createAgentToolsService } from "./services/agentTools/agentToolsService";
 import { createAdeCliService } from "./services/cli/adeCliService";
+import { runAdeCliAutoInstall } from "./services/cli/adeCliAutoInstall";
 import { createDevToolsService } from "./services/devTools/devToolsService";
 import { createOnboardingService } from "./services/onboarding/onboardingService";
 import { createAutomationService } from "./services/automations/automationService";
@@ -244,6 +273,7 @@ import { createAutomationIngressService, createKvIngressCursorStore } from "./se
 import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "./services/automations/cursorCloudIngressService";
+import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createReviewService } from "./services/review/reviewService";
@@ -296,13 +326,26 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createKeepAwakeService } from "./services/power/keepAwakeService";
+import { getPowerStateService } from "./services/power/powerStateService";
+import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
+import {
+  checkRuntimeIdentity,
+  runVerifiedRuntimeRestart,
+} from "./services/updates/runtimeRestartVerification";
 import { createProjectRecoveryService } from "./services/runtime/projectRecoveryService";
+import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
+import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
+import { collectDiagnosticReport } from "./services/diagnostics/diagnosticReportService";
 import { createAgentToolsCacheService } from "./services/tools/agentToolsCacheService";
 import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersions";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
+
+/** One warm-runtime budget for every project context in this process. */
+const chatRuntimeBudget = createChatRuntimeBudget();
 
 type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -447,25 +490,42 @@ function fixElectronShellPath(): void {
 // Must run before any service or child process is created.
 fixElectronShellPath();
 
+let adeCliAutoInstallScheduled = false;
+
+/**
+ * Makes `ade` exist for a user who never opens Settings. Every guard that
+ * matters — already on PATH, already settled once, silent failure — lives in
+ * `runAdeCliAutoInstall`; this only schedules it. Both project-open and dormant
+ * startup reach here, so the process-wide latch keeps it to a single attempt.
+ *
+ * Its outcome goes to the MACHINE log, not the caller's. Whether this computer
+ * ever got the `ade` command is a fact about the computer: filed per project it
+ * landed wherever the latch happened to win, and on the dormant path it landed
+ * in a `userData` log no report collects at all — so "did the auto-install
+ * run?" was unanswerable from the one document meant to answer it.
+ */
 function installAdeCliForTerminalInBackground(
   adeCliService: ReturnType<typeof createAdeCliService>,
-  logger: Logger,
+  globalStatePath: string,
 ): void {
-  if (process.env.ADE_DISABLE_CLI_AUTO_INSTALL === "1") return;
-  void adeCliService.installForUser()
-    .then((result) => {
-      logger.info("ade_cli.auto_install", {
-        ok: result.ok,
-        command: result.status.command,
-        installTargetPath: result.status.installTargetPath,
-        message: result.message,
-      });
-    })
-    .catch((error) => {
+  if (adeCliAutoInstallScheduled) return;
+  adeCliAutoInstallScheduled = true;
+  const logger = getMachineMainLogger();
+  // A convenience, not startup work: it can spawn the packaged installer and
+  // append to a shell profile, so it stays off the path to the first window.
+  const task = setImmediate(() => {
+    void runAdeCliAutoInstall({
+      adeCli: adeCliService,
+      logger,
+      readState: () => readGlobalState(globalStatePath),
+      writeState: (state) => writeGlobalState(globalStatePath, state),
+    }).catch((error) => {
       logger.warn("ade_cli.auto_install_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+  });
+  task.unref?.();
 }
 
 const disableHardwareAcceleration =
@@ -588,11 +648,17 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
   try {
     if (safeStorage.isEncryptionAvailable()) {
-      return new ElectronSafeStorageCredentialStore({
+      const primary = new ElectronSafeStorageCredentialStore({
         secretsDir,
         safeStorage,
         legacyStore,
       });
+      // Credentials the ADE brain and the CLI co-own live in the shared machine
+      // file, so the desktop app must READ them there too — the Electron-only
+      // store cannot see them, and a build that wrote one into it signs the
+      // brain out.
+      adoptFileBackedCredentials({ primary, fileStore: legacyStore, identity: secretsDir });
+      return createRoutedCredentialStore({ primary, fileStore: legacyStore });
     }
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.
@@ -601,27 +667,14 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
     isElectronSafeStorageCredentialFile(safeCredentialsPath)
     || isElectronSafeStorageCredentialFile(legacyCredentialsPath)
   ) {
-    const message = "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.";
-    return {
-      get: async () => {
-        throw new Error(message);
-      },
-      set: async () => {
-        throw new Error(message);
-      },
-      delete: async () => {
-        throw new Error(message);
-      },
-      getSync: () => {
-        throw new Error(message);
-      },
-      setSync: () => {
-        throw new Error(message);
-      },
-      deleteSync: () => {
-        throw new Error(message);
-      },
-    };
+    // The shared file needs no keychain, so the credentials the brain co-owns
+    // stay reachable even while the Electron-only ones are locked away.
+    return createRoutedCredentialStore({
+      primary: createUnavailableCredentialStore(
+        "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
+      ),
+      fileStore: legacyStore,
+    });
   }
   return legacyStore;
 }
@@ -1079,16 +1132,14 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
         pendingAppNavigationRequests.length - MAX_PENDING_APP_NAVIGATION_REQUESTS,
       );
     }
-    try {
-      // The structured logger is not up this early; console keeps the signal.
-      console.warn("[main] app_navigation.queued_before_dispatcher_ready", {
-        target: request.target.kind,
-        source: request.source,
-        queued: pendingAppNavigationRequests.length,
-      });
-    } catch {
-      // A missing console must never break navigation queueing.
-    }
+    // Durable in the machine log and still on stdout; `logMachineEvent` owns
+    // both, and swallows a failure of either — a missing console must never
+    // break navigation queueing.
+    logMachineEvent("warn", "app_navigation.queued_before_dispatcher_ready", {
+      target: request.target.kind,
+      source: request.source,
+      queued: pendingAppNavigationRequests.length,
+    });
     return;
   }
   dispatchAppNavigationRequest(request);
@@ -1100,14 +1151,12 @@ const dispatchOrQueueAppNavigationRequest = (request: AppNavigationRequest): voi
 registerAdeProtocolHandler({
   claimAsDefault: deeplinkClaimAsDefault,
   dispatch: dispatchOrQueueAppNavigationRequest,
-  log: (event, fields) => {
-    // Avoid throwing if console is gone; structured logger may not be ready yet.
-    try {
-      console.log(`[main] ${event}`, fields);
-    } catch {
-      // ignore
-    }
-  },
+  // Which scheme this build claimed, and which process won the single-instance
+  // lock, are facts about the computer, not about any project — and they are
+  // decided before one can be open. They were `console.log` only because no
+  // structured logger existed this early; the machine log does.
+  log: (event, fields) => logMachineEvent("info", event, fields),
+  flushLog: flushMachineMainLog,
 });
 
 let pendingProjectOpenFiles: string[] = [];
@@ -1342,7 +1391,8 @@ app.whenReady().then(async () => {
       return new Response("Not found", { status: 404 });
     }
   });
-  console.log("[info] app.hardware_acceleration", {
+  // What this computer's GPU was told to do, decided before any project opens.
+  logMachineEvent("info", "app.hardware_acceleration", {
     enabled: !disableHardwareAcceleration,
     reason: disableHardwareAcceleration
       ? process.env.ADE_DISABLE_HARDWARE_ACCEL === "1"
@@ -1452,8 +1502,10 @@ app.whenReady().then(async () => {
       machineTrustResetRestartRequired = runMachineTrustResetMigration(machineAdeLayout).restartRequired;
     } catch (error) {
       // Leave the reset incomplete so the next launch retries. A filesystem
-      // permission problem must not prevent ADE itself from starting.
-      console.warn("[warn] machine_trust_reset.failed", {
+      // permission problem must not prevent ADE itself from starting. The
+      // subject is this machine's saved machine list, so it belongs in the
+      // machine log — and it fires before a project logger could exist.
+      logMachineEvent("warn", "machine_trust_reset.failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -1600,6 +1652,30 @@ app.whenReady().then(async () => {
   const closeContextPromises = new Map<string, Promise<void>>();
   const windowProjectRoots = new Map<number, string | null>();
   const windowProjectTabRoots = new Map<number, Set<string>>();
+  /**
+   * Every local project root this window has actually opened during this
+   * session, kept as the window's local runtime scope.
+   *
+   * `windowProjectTabRoots` is replaced wholesale by the renderer on every tab
+   * change and `windowProjectRoots` is nulled the moment the tab binds to a
+   * remote machine, so neither can answer "was this window ever working in this
+   * local checkout?". A chat pinned to "This computer" is exactly that question:
+   * its lane lives on this machine no matter which machine the project tab is
+   * currently bound to, and rejecting it left cross-machine Work views unable to
+   * act on their own local sessions. Membership is only ever granted by the
+   * window opening the project itself, never by a renderer-supplied path.
+   */
+  const windowKnownLocalProjectRoots = new Map<number, Set<string>>();
+
+  const rememberWindowKnownLocalProjectRoot = (
+    windowId: number | null,
+    rootPath: string | null | undefined,
+  ): void => {
+    if (windowId == null || !rootPath) return;
+    const roots = windowKnownLocalProjectRoots.get(windowId) ?? new Set<string>();
+    roots.add(rootPath);
+    windowKnownLocalProjectRoots.set(windowId, roots);
+  };
   const windowPendingProjectRoots = new Map<number, Map<string, number>>();
   const windowProjectBindings = new Map<number, RemoteOpenProjectBinding>();
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
@@ -1609,6 +1685,26 @@ app.whenReady().then(async () => {
   const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
   const localRuntimeLogger = createFileLogger(path.join(app.getPath("userData"), "local-runtime.jsonl"));
+  /**
+   * The signed-in account owner, once there is an auth service to ask.
+   *
+   * Late-bound because the account services are built far below, while the
+   * diagnostics report builder that hashes this id is built up here next to its
+   * triggers. Null before then simply means an unattributed report.
+   *
+   * It has to stay late-bound: `getSharedAccountAuthService` caches ONE service
+   * per secrets directory and the FIRST caller's options are the ones that
+   * survive, so calling it here — before `accountBridge` and `runtimeBridge`
+   * pass theirs — would silently pin the whole app to a default-configured
+   * account service. The reference is filled in beside the call that legitimately
+   * constructs it; the reader itself is a const so no later assignment can
+   * quietly repoint it somewhere else.
+   */
+  let accountAuthServiceForOwnerId: AccountAuthService | null = null;
+  const readAccountOwnerId = (): string | null => {
+    const status = accountAuthServiceForOwnerId?.getStatus();
+    return status?.signedIn ? status.userId?.trim() || null : null;
+  };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
   const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
     createProductAnalyticsService({
@@ -1682,6 +1778,19 @@ app.whenReady().then(async () => {
         });
       }
     },
+  });
+  // Carry this machine's OS-level suspend/resume into the brain, which has no
+  // such hook of its own and owns the account-directory publisher. Registered
+  // here rather than lazily so the beat is already wired the first time the lid
+  // closes, and disposed with the app below.
+  const machinePowerBrainBridge = createMachinePowerBrainBridge({
+    powerSource: getPowerStateService(),
+    logger: localRuntimeLogger,
+    report: ({ kind, budgetMs }) => localRuntimePool.callSync(
+      "machine.reportPowerTransition",
+      { kind, budgetMs },
+      { timeoutMs: budgetMs },
+    ),
   });
   const mirrorDesktopRecentProjectToMachineCatalog = (rootPath: string): void => {
     void localRuntimePool.ensureProject(rootPath, {
@@ -1813,14 +1922,19 @@ app.whenReady().then(async () => {
     rootPaths: string[],
   ): ProjectInfo[] => {
     if (windowId == null) return [];
-    const roots = new Set<string>();
-    for (const rootPath of rootPaths) {
-      const normalized = rootPath.trim() ? normalizeProjectRoot(rootPath) : "";
-      if (normalized) roots.add(normalized);
+    // The gate on what may join the window's local runtime scope lives in
+    // `resolveWindowTabRoots` (see it for why a renderer-named path is not
+    // enough), so it can be tested without standing up a window.
+    const { tabRoots, authorizedLocalRoots } = resolveWindowTabRoots({
+      rootPaths,
+      activeRoot: windowProjectRoots.get(windowId) ?? null,
+      normalizeRoot: normalizeProjectRoot,
+      isOpenedProjectRoot: (root) => projectForRoot(root) != null,
+    });
+    windowProjectTabRoots.set(windowId, tabRoots);
+    for (const root of authorizedLocalRoots) {
+      rememberWindowKnownLocalProjectRoot(windowId, root);
     }
-    const activeRoot = windowProjectRoots.get(windowId) ?? null;
-    if (activeRoot) roots.add(activeRoot);
-    windowProjectTabRoots.set(windowId, roots);
     scheduleProjectContextRebalance();
     return projectsForWindowTabs(windowId);
   };
@@ -1994,6 +2108,7 @@ app.whenReady().then(async () => {
         const tabRoots = windowProjectTabRoots.get(windowId) ?? new Set<string>();
         tabRoots.add(normalizedRoot);
         windowProjectTabRoots.set(windowId, tabRoots);
+        rememberWindowKnownLocalProjectRoot(windowId, normalizedRoot);
       }
       const win = BrowserWindow.fromId(windowId);
       if (win && !win.isDestroyed()) {
@@ -2376,6 +2491,9 @@ app.whenReady().then(async () => {
   let runtimeServiceUninstalledForUpdate = false;
   let autoUpdateInstallRollbackReason: string | null = null;
   const reinstallRuntimeServiceAfterUpdateAbort = async (reason: string): Promise<void> => {
+    // The install is off. Normal recovery owns the service again from here,
+    // whether or not this abort has anything to reinstall.
+    localRuntimePool.endUpdateWindow(`install_aborted:${reason}`);
     if (!runtimeServiceUninstalledForUpdate) return;
     const result = await installRuntimeService();
     const payload = {
@@ -2397,6 +2515,10 @@ app.whenReady().then(async () => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
     });
+    // From here until the app quits, the missing (or old) background service
+    // is the update working. The pool must not answer it with a repair that
+    // reinstalls what this function is about to remove.
+    localRuntimePool.beginUpdateWindow("prepare_quit_and_install");
     runtimeServiceUninstalledForUpdate = false;
     autoUpdateInstallRollbackReason = null;
     if (!shouldRepairRuntimeServiceOnFallback) {
@@ -2406,6 +2528,11 @@ app.whenReady().then(async () => {
       return;
     }
     const result = await uninstallRuntimeService();
+    if (!result.ok) {
+      // Nothing was removed and the install will not proceed, so recovery must
+      // get its normal freedom back immediately.
+      localRuntimePool.endUpdateWindow("uninstall_before_install_failed");
+    }
     const payload = {
       ok: result.ok,
       serviceName: result.serviceName,
@@ -2460,6 +2587,20 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  // Opt-in, default off: ADE holds no power assertion until the user picks a
+  // level, and even then only while an agent turn is actually running. Turns
+  // live in the brain, so the live count is asked of the runtime pool.
+  const keepAwakeService = createKeepAwakeService({
+    globalStatePath,
+    powerSaveBlocker,
+    readActiveTurns: async () => (await localRuntimePool.activitySummary()).activeAgentTurns,
+    logger: {
+      info: (event, data) => updateLogger.info(event, data as Record<string, unknown> | undefined),
+      warn: (event, data) => updateLogger.warn(event, data as Record<string, unknown> | undefined),
+    },
+    productAnalyticsService,
+  });
+  keepAwakeService.start();
   // Pinned agent tools are fetched, not bundled. The brain kicks its own
   // background fetch on `ade serve`, but the desktop app can be launched
   // against a brain that is already running (or one that failed its fetch), so
@@ -2477,6 +2618,62 @@ app.whenReady().then(async () => {
     });
   }
 
+  /**
+   * Automatic diagnostics: the report nobody was going to press the button for.
+   *
+   * Built here, ahead of the recovery service and the post-update transaction,
+   * because those two are triggers. It owns the Settings toggle, the per-install
+   * daily budget (shared on disk with the brain) and the send; every trigger is
+   * one call that cannot throw.
+   */
+  const autoDiagnosticsService = createAutoDiagnosticsService({
+    stateFilePath: resolveAutoDiagnosticsStateFile(machineAdeLayout.adeDir),
+    appVersion: app.getVersion(),
+    logger: localRuntimeLogger,
+    capture: (input) => productAnalyticsService.capture(input),
+    buildReport: async (request) => {
+      const projectRoot = request.projectRoot?.trim() || null;
+      const result = await collectDiagnosticReport(
+        {
+          appVersion: app.getVersion(),
+          packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+          isPackaged: app.isPackaged,
+          userDataPath: app.getPath("userData"),
+          reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
+          installId: productAnalyticsService.getDistinctId(),
+          accountUserId: readAccountOwnerId(),
+          getLocalRuntimeStatus: () => localRuntimePool.getStatus(),
+          // Deliberately no `diagnoseProject`. The recovery diagnosis is itself
+          // one of the triggers, so asking for a fresh one while building the
+          // report about it would re-enter the code path that asked for it.
+          // The diagnosis that fired this is already in the report's context.
+        },
+        {
+          surface: request.surface,
+          headline: request.headline ?? null,
+          code: request.failureCode,
+          technicalDetail: request.technicalDetail ?? null,
+          projectRoot,
+        },
+      );
+      return { report: result.report, filePath: result.filePath, installId: result.installId };
+    },
+    // Fast path only. `webContents.send` does not throw when the renderer has
+    // crashed or has not mounted its toast host, so nothing here can tell that
+    // the user was actually shown anything — which is why the send stays marked
+    // pending regardless and only a renderer's acknowledgement retires it. A
+    // window that gets both keys the toast on the same id and sees one.
+    onSent: (notice) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        try {
+          win.webContents.send(IPC.diagnosticsAutoSent, notice);
+        } catch {
+          // A window tearing down simply does not get this toast.
+        }
+      }
+    },
+  });
+
   // The one recovery service for this machine. It owns `restartServiceAndWait`,
   // the verified restart sequence behind the Repair button, and the post-update
   // transaction below reuses it rather than growing a second restart path.
@@ -2485,6 +2682,21 @@ app.whenReady().then(async () => {
     adeHome: machineAdeLayout.adeDir,
     logger: localRuntimeLogger,
     connectionPool: localRuntimePool,
+    // One call at the point the diagnosis is final. The service's own budget
+    // makes a re-diagnosed screen cost nothing.
+    onTerminalDiagnosis: ({ code, projectRoot }) => {
+      // `report` is documented never to reject, and the same belt-and-braces
+      // catch the update transaction below carries applies here: a rejection
+      // from a path that is meant to be silent must not become an unhandled
+      // rejection in the main process.
+      void autoDiagnosticsService
+        .report({
+          failureCode: code,
+          surface: "project_recovery",
+          projectRoot,
+        })
+        .catch(() => undefined);
+    },
   });
 
   const shouldRefreshRuntimeServiceAfterUpdate =
@@ -2502,10 +2714,22 @@ app.whenReady().then(async () => {
     // per-user service itself.
     const recentlyInstalledVersion =
       autoUpdateService.getSnapshot().recentlyInstalled?.version ?? null;
+    // What the service must be answering as once this transaction finishes. The
+    // installed version is the fallback for an update that did not name one.
+    const expectedRuntimeVersion = recentlyInstalledVersion ?? app.getVersion();
+    // The post-relaunch half of the same update. The pool's own repair path
+    // would otherwise race these steps: it reinstalls and restarts the service
+    // this transaction is already reinstalling and restarting.
+    localRuntimePool.beginUpdateWindow("post_update_transaction");
     void runUpdateTransaction({
       installedVersion: app.getVersion(),
       expectedVersion: recentlyInstalledVersion,
       reinstallService: async () => {
+        // Read who is serving this machine BEFORE the service is replaced. A
+        // pre-update brain that outlives the reinstall can only be recognised
+        // afterwards if it was seen once beforehand, and this probe is what
+        // records it.
+        await localRuntimePool.probeMachineRuntimeIdentity().catch(() => null);
         await localRuntimePool.installServiceBestEffort();
         const status = localRuntimePool.getStatus().serviceInstall;
         if (status.state === "installed") {
@@ -2518,28 +2742,38 @@ app.whenReady().then(async () => {
           detail: status.message?.trim() ?? "",
         };
       },
-      restartService: async () => {
-        // The app and the brain move together on an update, so restarting is
-        // the default — but a relaunch where the service is ALREADY answering
-        // on the new build has nothing to restart, and bouncing it there kills
-        // live work for no gain. Same side-effect-free probe the health step
-        // uses, so this is a skip in front of the one restart path, not a
-        // second one.
-        const alreadyCurrent = await localRuntimePool
-          .probeMachineRuntimeHealth()
-          .catch(() => null);
-        if (alreadyCurrent?.ok) {
-          return {
-            ok: true,
-            detail: alreadyCurrent.version
-              ? `Background service already running ${alreadyCurrent.version} — restart not needed.`
-              : "Background service already on the new build — restart not needed.",
-          };
-        }
-        await machineRecoveryService.restartBrain();
-        return { ok: true };
+      // The app and the brain move together on an update, so restarting is the
+      // default — but a relaunch where the service is ALREADY answering as the
+      // new build has nothing to restart, and bouncing it there kills live work
+      // for no gain. That skip has to be earned by identity, not by a bare
+      // "something answered": the pre-update brain can survive the service
+      // reinstall, let a replacement bind the socket, and keep the machine-wide
+      // sync lease — which is exactly what a green "restart not needed" hid.
+      restartService: () => runVerifiedRuntimeRestart({
+        expectedVersion: expectedRuntimeVersion,
+        probeIdentity: () => localRuntimePool.probeMachineRuntimeIdentity(),
+        restartService: () => machineRecoveryService.restartBrain(),
+        readStaleRuntime: () => localRuntimePool.getStaleMismatchedRuntime(),
+        // Each restart attempt waits on the socket, so two of them plus the
+        // reinstall can outlast the window opened when the transaction began.
+        // Re-arming per attempt keeps opportunistic repair out of a restart
+        // that is still progressing, and a brain that never answers still
+        // lets the window expire.
+        onAttemptStart: () => localRuntimePool.beginUpdateWindow("post_update_transaction"),
+        log: (event, meta) => updateLogger.info(event, meta),
+      }),
+      checkHealth: async () => {
+        const { identity, verdict } = await checkRuntimeIdentity({
+          expectedVersion: expectedRuntimeVersion,
+          probeIdentity: () => localRuntimePool.probeMachineRuntimeIdentity(),
+          readStaleRuntime: () => localRuntimePool.getStaleMismatchedRuntime(),
+        });
+        return {
+          ok: verdict.matches,
+          version: identity?.version ?? null,
+          detail: verdict.detail,
+        };
       },
-      checkHealth: () => localRuntimePool.probeMachineRuntimeHealth(),
     })
       .then((result) => {
         autoUpdateService.setUpdateTransaction(result);
@@ -2550,12 +2784,23 @@ app.whenReady().then(async () => {
           });
           return;
         }
+        const failedStep = result.steps.find((step) => step.status === "failed")?.id ?? null;
         updateLogger.error("autoUpdate.transaction_failed", {
           version: result.version,
-          failedStep: result.steps.find((step) => step.status === "failed")?.id ?? null,
+          failedStep,
           failureMessage: result.failureMessage,
           steps: result.steps,
         });
+        // An update that half-landed is the failure people least often report
+        // and the one hardest to reconstruct afterwards.
+        if (failedStep) {
+          void autoDiagnosticsService
+            .report({
+              failureCode: `update_${failedStep}`,
+              surface: "update_transaction",
+            })
+            .catch(() => undefined);
+        }
       })
       .catch((error) => {
         // runUpdateTransaction never rejects; this only guards a broken
@@ -2563,6 +2808,9 @@ app.whenReady().then(async () => {
         updateLogger.warn("autoUpdate.transaction_publish_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
+      })
+      .finally(() => {
+        localRuntimePool.endUpdateWindow("post_update_transaction");
       });
   }
 
@@ -2668,7 +2916,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
-    installAdeCliForTerminalInBackground(adeCliService, logger);
+    installAdeCliForTerminalInBackground(adeCliService, globalStatePath);
     const devToolsService = createDevToolsService({ logger });
 
     const project = toProjectInfo(projectRoot, baseRef);
@@ -3108,6 +3356,13 @@ app.whenReady().then(async () => {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
       githubRelaySecretReader: (ref) => githubRelaySecretService?.getSecret(ref) ?? null,
       getAccountAccessToken,
+      // A repaired or removed App credential ends the relay's auth-pending
+      // cooldown at once. Wired here rather than inside either service: the
+      // ingress loop must stay free of GitHub internals, and only this owner
+      // holds both of them.
+      onAppUserAuthChanged: () => {
+        void automationIngressServiceRef?.pollNow().catch(() => undefined);
+      },
     });
 
     const projectScaffoldService = createProjectScaffoldService({
@@ -3554,6 +3809,7 @@ app.whenReady().then(async () => {
     linearLiveStatusServiceRef = linearLiveStatusService;
 
     const agentChatService = createAgentChatService({
+      runtimeBudget: chatRuntimeBudget,
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
       fileService,
@@ -3565,6 +3821,10 @@ app.whenReady().then(async () => {
       linearCredentials: linearCredentialService,
       prService,
       diskPressureMonitor,
+      // Electron's `suspend` fires a beat BEFORE the machine goes down, which
+      // is the only moment a turn in flight can still be told why it is about
+      // to stall.
+      hostPowerSource: getPowerStateService(),
       getTestService: () => testServiceRef,
       ptyService,
       getAutomationService: () => automationService,
@@ -3820,6 +4080,15 @@ app.whenReady().then(async () => {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+        emitProjectEvent(projectRoot, IPC.aiCursorCloudFleetEvent, {
+          agentId: record.agentId,
+          status: record.status,
+          summary: record.summary,
+          branchName: record.branchName,
+          prUrl: record.prUrl,
+          eventId: record.eventId,
+          createdAt: record.createdAt,
+        });
         if (!automationService) return;
         await Promise.all(buildCursorCloudAutomationDispatches(record).map((dispatch) =>
           automationService.dispatchIngressTrigger(dispatch).catch((error) => {
@@ -3831,6 +4100,40 @@ app.whenReady().then(async () => {
         ));
       },
       logger,
+    });
+
+    const cursorCloudFleetService = createCursorCloudFleetService({
+      projectRoot,
+      logger,
+      listCursorCloudAgents: (args) => aiIntegrationService.listCursorCloudAgents(args),
+      listCursorCloudRuns: async (args) => {
+        const result = await aiIntegrationService.listCursorCloudRuns(args);
+        return { items: result.items as Array<Record<string, unknown>> };
+      },
+      laneService: {
+        list: (args) => laneService.list(args),
+        importBranch: (args) => laneService.importBranch(args),
+      },
+      listCursorCloudSessionLinks: async () => {
+        const sessions = await agentChatService.listSessions(undefined, { includeArchived: true });
+        return sessions
+          .filter((session) => Boolean(session.cursorCloudAgentId))
+          .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
+          .map((session) => ({
+            sessionId: session.sessionId,
+            agentId: session.cursorCloudAgentId ?? "",
+            laneId: session.laneId,
+            title: session.title ?? null,
+          }))
+          .filter((link) => link.agentId.length > 0);
+      },
+      openCursorCloudChat: (args) => agentChatService.openCursorCloudChat(args),
+      cancelCursorCloudRun: (args) => agentChatService.cancelCursorCloudRun(args),
+      getCursorCloudAgent: (agentId) => aiIntegrationService.getCursorCloudAgent(agentId),
+      getIngressStatus: () => {
+        const status = cursorCloudIngressService.getStatus();
+        return { state: status.state, lastEventAt: status.lastEventAt };
+      },
     });
     automationService?.setCursorCloudIngressAvailable(() => {
       const status = cursorCloudIngressService.getStatus();
@@ -4134,6 +4437,7 @@ app.whenReady().then(async () => {
       autoRebaseService,
       computerUseArtifactBrokerService,
       agentChatService,
+      cursorCloudFleetService,
       ctoStateService,
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
@@ -4560,6 +4864,7 @@ app.whenReady().then(async () => {
       automationIngressService,
       linearIngressService,
       cursorCloudIngressService,
+      cursorCloudFleetService,
       feedbackReporterService,
       usageTrackingService,
       storageInsightsService,
@@ -4942,7 +5247,7 @@ app.whenReady().then(async () => {
       logger,
     });
     adeCliService.applyToProcessEnv();
-    installAdeCliForTerminalInBackground(adeCliService, logger);
+    installAdeCliForTerminalInBackground(adeCliService, globalStatePath);
     const externalOnlyLaneService: FileServiceLaneAdapter = {
       getFilesWorkspaces: () => [],
       resolveWorkspaceById: (workspaceId: string) => {
@@ -6084,7 +6389,17 @@ app.whenReady().then(async () => {
     } catch {
       // ignore
     }
+    try {
+      keepAwakeService?.dispose();
+    } catch {
+      // ignore
+    }
     disposeSharedTranscriptionService();
+    try {
+      machinePowerBrainBridge.dispose();
+    } catch {
+      // ignore
+    }
     try {
       localRuntimePool.dispose();
     } catch {
@@ -6186,6 +6501,11 @@ app.whenReady().then(async () => {
 
       try {
         autoUpdateService?.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        keepAwakeService?.dispose();
       } catch {
         // ignore
       }
@@ -6625,6 +6945,7 @@ app.whenReady().then(async () => {
     }
     windowProjectRoots.set(win.id, normalizedRoot);
     windowProjectTabRoots.set(win.id, normalizedRoot ? new Set([normalizedRoot]) : new Set());
+    rememberWindowKnownLocalProjectRoot(win.id, normalizedRoot);
     if (remoteBinding) {
       windowProjectBindings.set(win.id, remoteBinding);
     } else {
@@ -6657,6 +6978,7 @@ app.whenReady().then(async () => {
       const previousRoot = windowProjectRoots.get(win.id) ?? null;
       windowProjectRoots.delete(win.id);
       windowProjectTabRoots.delete(win.id);
+      windowKnownLocalProjectRoots.delete(win.id);
       windowPendingProjectRoots.delete(win.id);
       windowProjectBindings.delete(win.id);
       if (activeProjectRoot === previousRoot) {
@@ -6666,7 +6988,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -6675,8 +6997,12 @@ app.whenReady().then(async () => {
         binding: bindingForLocalProject(project),
         openProjectTabs: project ? [project] : [],
         pendingLocalProjectRoots: [],
+        knownLocalProjectRoots: project ? [project.rootPath] : [],
       };
     }
+    const knownLocalProjectRoots = Array.from(
+      windowKnownLocalProjectRoots.get(windowId) ?? [],
+    );
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {
       windowId,
@@ -6684,6 +7010,7 @@ app.whenReady().then(async () => {
       binding: remoteBinding,
       openProjectTabs: projectsForWindowTabs(windowId),
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
+      knownLocalProjectRoots,
     };
     const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
     return {
@@ -6692,6 +7019,7 @@ app.whenReady().then(async () => {
       binding: bindingForLocalProject(project),
       openProjectTabs: projectsForWindowTabs(windowId),
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
+      knownLocalProjectRoots,
     };
   };
 
@@ -7084,6 +7412,7 @@ app.whenReady().then(async () => {
   const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
+  accountAuthServiceForOwnerId = attentionAccountAuthService;
   const attentionRelayClient = createPushRelayClient({
     store: createPushRegistrationStore({
       filePath: resolvePushRelayStateFile(machineAdeLayout.secretsDir),
@@ -7443,6 +7772,9 @@ app.whenReady().then(async () => {
       if (!ctx.autoUpdateService) {
         ctx.autoUpdateService = autoUpdateService;
       }
+      if (!ctx.keepAwakeService) {
+        ctx.keepAwakeService = keepAwakeService;
+      }
       if (!ctx.agentToolsCacheService) {
         ctx.agentToolsCacheService = agentToolsCacheService;
       }
@@ -7472,6 +7804,7 @@ app.whenReady().then(async () => {
       : localRuntimePool,
     projectRecoveryConnectionPool: localRuntimePool,
     injectedProjectRecoveryService: machineRecoveryService,
+    autoDiagnosticsService,
     createWindow: openAdeWindow,
     closeWindow: closeAdeWindow,
     switchProjectFromDialog,
@@ -7515,10 +7848,7 @@ app.whenReady().then(async () => {
       );
     },
     accountAttentionClient: attentionRelayClient,
-    getCurrentAccountOwnerId: () => {
-      const status = attentionAccountAuthService.getStatus();
-      return status.signedIn ? status.userId?.trim() || null : null;
-    },
+    getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
 
   // Explicit project launches still bind a project before the renderer boots;

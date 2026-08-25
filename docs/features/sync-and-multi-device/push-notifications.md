@@ -399,7 +399,7 @@ code is typed as a plain string across the version boundary — a newer brain ma
 name a refusal an older desktop has never heard of, and anything unrecognized
 (including absence) must read as "unknown", never as "not that code".
 
-Three entry points reach it:
+Four entry points reach it:
 
 - `ade machines reconnect` (alias `repair`), which takes no machine selector
   because a brain can only lift its own machine's revocation. When the directory
@@ -415,6 +415,13 @@ Three entry points reach it:
   device-login recovery when the directory demands fresh proof, and reports the
   honest outcome — including the case where the machine re-joined but push has
   not resumed.
+- `machinePairingAutoRecovery`, the brain's own slow loop, which calls the same
+  function unattended once a refusal has been latched for a while. A headless
+  box has no Settings button to press, so without it a stale row or a key
+  rotation left the machine off the account permanently. It runs on a persisted
+  6-hour budget and stays idle for the first ten minutes after a revocation, so
+  it can never undo a removal the user just performed — see *Getting back on
+  after a refusal* in [README.md](./README.md#getting-back-on-after-a-refusal).
 
 ## Brain publisher
 
@@ -457,9 +464,10 @@ publisher.
 What it filters and how:
 
 - **Identity chats are excluded.** A roster chat with an `identityKey` (CTO and
-  the other identity threads) never becomes an item. `rosterBuilder.ts` stamps
-  that label and the sync roster keeps carrying those rows for the mobile hub;
-  only this feed drops them, mirroring the desktop sidebar.
+  the other identity threads) never becomes an item. The machine-wide sync
+  roster now omits those rows and their attached descendants before publishing;
+  this defensive filter remains for stale or legacy roster payloads, mirroring
+  the desktop sidebar and keeping the separate CTO surface out of Activity.
 - **Child shells fold into their parent.** A roster chat whose parent chat is
   itself in the roster is dropped — a shell attached to a visible chat is one
   piece of work, and publishing 1 + N items per chat inflated every count.

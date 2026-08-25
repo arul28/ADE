@@ -115,7 +115,9 @@ vi.mock("./openCodeServerManager", () => ({
 import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
   buildOpenCodeConfig,
+  buildOpenCodePromptParts,
   getOpenCodeRuntimeSnapshot,
+  isOpenCodeNotFoundError,
   refreshOpenCodeSessionToolSelection,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
@@ -149,8 +151,17 @@ describe("openCodeRuntime", () => {
       config: expect.objectContaining({
         agent: expect.objectContaining({
           "ade-plan": expect.objectContaining({
-            tools: expect.objectContaining({ code_search: false, web_search: false }),
-            permission: expect.objectContaining({ question: "allow" }),
+            // The deprecated `tools` map is gone; OpenCode desugars it into
+            // these same permission keys and an explicit permission block wins.
+            permission: expect.objectContaining({
+              question: "allow",
+              websearch: "deny",
+              skill: "deny",
+              // Plan denies edit, so it must deny task: a spawned subagent runs
+              // under its own ruleset with edit allowed, which let plan mode
+              // write files through a child session.
+              task: "deny",
+            }),
           }),
           "ade-helper": expect.objectContaining({
             permission: expect.objectContaining({ question: "deny" }),
@@ -228,6 +239,160 @@ describe("openCodeRuntime", () => {
     expect(snapshot.sharedCount).toBe(1);
     expect(snapshot.dedicatedCount).toBe(0);
     expect(Object.keys(snapshot).sort()).toEqual(["dedicatedCount", "entries", "sharedCount"]);
+  });
+
+  it("sends a provided system prompt through the body system field, not a text part", async () => {
+    await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "System prompt transport",
+      modelDescriptor: {
+        id: "opencode/openai/gpt-5-mini",
+        family: "openai",
+        providerRoute: "opencode",
+        providerModelId: "openai/gpt-5-mini",
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5-mini",
+      } as any,
+      prompt: "ping",
+      system: "You are ADE's naming agent.",
+      projectConfig: { ai: {} },
+    });
+
+    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
+      [{ body: Record<string, unknown> } | undefined];
+    const body = lastPromptCall?.[0]?.body ?? {};
+    expect(body.system).toBe("You are ADE's naming agent.");
+    // The synthetic/ignored part injection is gone for good: OpenCode drops
+    // `ignored` parts from model context, so that transport never worked.
+    const parts = body.parts as Array<Record<string, unknown>>;
+    expect(parts.every((part) => !part.synthetic && !part.ignored)).toBe(true);
+  });
+
+  it("omits the body system field when no system prompt is provided", async () => {
+    await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "No system prompt",
+      modelDescriptor: {
+        id: "opencode/openai/gpt-5-mini",
+        family: "openai",
+        providerRoute: "opencode",
+        providerModelId: "openai/gpt-5-mini",
+        openCodeProviderId: "openai",
+        openCodeModelId: "gpt-5-mini",
+      } as any,
+      prompt: "ping",
+      projectConfig: { ai: {} },
+    });
+
+    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
+      [{ body: Record<string, unknown> } | undefined];
+    const body = lastPromptCall?.[0]?.body ?? {};
+    expect(body).not.toHaveProperty("system");
+  });
+
+  it("builds prompt parts from the user text plus file attachments only", () => {
+    const parts = buildOpenCodePromptParts({
+      prompt: "hello",
+      files: [{ path: "/tmp/pic.png", mime: "image/png", filename: "pic.png" }],
+    });
+
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toMatchObject({ type: "text", text: "hello" });
+    expect(parts[1]).toMatchObject({ type: "file", mime: "image/png" });
+  });
+
+  it("recreates a persisted session only on a confirmed miss, and rethrows anything else", async () => {
+    // Confirmed 404 → fall through to session.create.
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new Error("not found", { cause: { body: { name: "NotFoundError" }, status: 404 } });
+    });
+    const recreated = await startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_gone",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-404",
+      ownerKey: "chat:chat-404",
+    });
+    expect(recreated.sessionId).toContain("opencode-session-");
+    expect(mockState.createSession).toHaveBeenCalled();
+
+    // Transient failure (no response / non-404 status) must surface, not reset
+    // the thread onto a brand-new empty session.
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new Error("opencode server GET → 503", { cause: { body: {}, status: 503 } });
+    });
+    await expect(startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_blip",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-blip",
+      ownerKey: "chat:chat-blip",
+    })).rejects.toThrow(/503/);
+    expect(mockState.dedicatedLease.close).toHaveBeenCalledWith("error");
+
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_network",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-net",
+      ownerKey: "chat:chat-network",
+    })).rejects.toThrow(/fetch failed/);
+
+    // A live session is adopted as-is, with its title.
+    mockState.getSession.mockImplementationOnce((async () => ({
+      data: { id: "ses_live", title: "Real thread" },
+    })) as unknown as typeof mockState.getSession);
+    const adopted = await startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_live",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-live",
+      ownerKey: "chat:chat-live",
+    });
+    expect(adopted.initialTitle).toBe("Real thread");
+    expect(mockState.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies OpenCode missing-session errors precisely", () => {
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { body: { name: "NotFoundError" }, status: 404 } }))).toBe(true);
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { body: { name: "NotFoundError" } } }))).toBe(true);
+    expect(isOpenCodeNotFoundError({ status: 404 })).toBe(true);
+    expect(isOpenCodeNotFoundError({ name: "NotFoundError" })).toBe(true);
+    // Deeply nested but bounded walk still finds it.
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { error: { data: { statusCode: 404 } } } }))).toBe(true);
+    // Anything else is NOT a confirmed miss — transient blips included.
+    expect(isOpenCodeNotFoundError(new Error("session not found"))).toBe(false);
+    expect(isOpenCodeNotFoundError(new Error("x", { cause: { status: 500 } }))).toBe(false);
+    expect(isOpenCodeNotFoundError({ status: 400 })).toBe(false);
+    expect(isOpenCodeNotFoundError(undefined)).toBe(false);
+    expect(isOpenCodeNotFoundError("404")).toBe(false);
+  });
+
+  it("rejects a NotFoundError whose chain carries a non-404 status", () => {
+    // A shallow NotFoundError name must not outvote a deeper concrete status:
+    // re-creating the session after a transient 503 strands the live thread.
+    expect(isOpenCodeNotFoundError(new Error("x", {
+      cause: { body: { name: "NotFoundError" }, status: 503 },
+    }))).toBe(false);
+    expect(isOpenCodeNotFoundError({
+      name: "NotFoundError",
+      cause: { status: 500 },
+    })).toBe(false);
+    // And a deep non-404 vetoes even when the name sits at the root.
+    expect(isOpenCodeNotFoundError(new Error("x", {
+      cause: { error: { data: { statusCode: 500, name: "NotFoundError" } } },
+    }))).toBe(false);
   });
 });
 
@@ -358,5 +523,77 @@ describe("refreshOpenCodeSessionToolSelection", () => {
       await expect(refreshOpenCodeSessionToolSelection(handle as never, options)).resolves.toBeNull();
       expect(handle.toolSelection).toBeNull();
     }
+  });
+});
+
+describe("buildOpenCodeConfig user-owned keys", () => {
+  const config = (): Record<string, any> =>
+    buildOpenCodeConfig({ projectConfig: { ai: {} } as any }) as Record<string, any>;
+
+  it("does not force share or snapshot over the user's opencode.json", () => {
+    // OPENCODE_CONFIG_CONTENT merges last, so naming these would beat the user's
+    // own file. snapshot's documented default is true, and forcing false
+    // silently disables OpenCode's /undo and /revert.
+    expect(config()).not.toHaveProperty("share");
+    expect(config()).not.toHaveProperty("snapshot");
+    expect(config()).not.toHaveProperty("autoupdate");
+  });
+
+  it("denies task in plan mode so a subagent cannot write for it", () => {
+    // The regression: plan denied `edit` but left `task` open, and a spawned
+    // subagent runs under its own ruleset where edit is allowed.
+    const plan = config().agent["ade-plan"].permission;
+    expect(plan.edit).toBe("deny");
+    expect(plan.task).toBe("deny");
+  });
+
+  it("lets full access read without prompting", () => {
+    // OpenCode's base ruleset asks before reading *.env, so full access
+    // prompted until read was stated.
+    expect(config().agent["ade-full-auto"].permission.read).toBe("allow");
+  });
+
+  it("keeps ADE's own modes out of the user's agent picker", () => {
+    for (const name of ["ade-plan", "ade-edit", "ade-full-auto", "ade-helper"]) {
+      expect(config().agent[name].hidden).toBe(true);
+    }
+  });
+
+  it("gives an isolated lead's discovered ollama models an endpoint to run against", () => {
+    // A lead inherits no user config, so nothing else can supply the address and
+    // there is no user endpoint to clobber.
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as any,
+      isolatedConfig: true,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.models).toHaveProperty("llama3");
+    expect(cfg.provider.ollama.options.baseURL).toBe("http://localhost:11434/v1");
+  });
+
+  it("does not invent an ollama endpoint for an ordinary session", () => {
+    // OPENCODE_CONFIG_CONTENT merges last, so an ADE default would replace a
+    // remote host in the user's own opencode.json — which ADE cannot read.
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: {} } as any,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.models).toHaveProperty("llama3");
+    expect(cfg.provider.ollama.options?.baseURL).toBeUndefined();
+  });
+
+  it("keeps a user-configured ollama endpoint over ADE's default", () => {
+    const cfg = buildOpenCodeConfig({
+      projectConfig: { ai: { localProviders: { ollama: { endpoint: "http://remote-box:11434" } } } } as any,
+      discoveredLocalModels: [{ provider: "ollama", modelId: "llama3", loaded: true }],
+    } as any) as Record<string, any>;
+    expect(cfg.provider.ollama.options.baseURL).toBe("http://remote-box:11434/v1");
+  });
+
+  it("omits local providers the user never configured", () => {
+    // An ADE-invented baseURL merges over the endpoint in the user's own
+    // opencode.json, repointing a configured remote host back at localhost.
+    expect(config().provider ?? {}).not.toHaveProperty("ollama");
+    expect(config().provider ?? {}).not.toHaveProperty("lmstudio");
   });
 });

@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { collectDiagnosticReport } from "./diagnosticReportService";
+import {
+  collectDiagnosticReport,
+  diagnosticReportRoots,
+  resolveRevealableDiagnosticReport,
+} from "./diagnosticReportService";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-diag-report-"));
 
@@ -134,5 +138,120 @@ describe("collectDiagnosticReport", () => {
     });
 
     expect(report).not.toContain("requested project root was not recognised");
+  });
+
+  // A machine-scoped report is the one a user reaches when nothing will open,
+  // and it used to be the one missing `main.jsonl` — the desktop appended it
+  // only when a project happened to be open. The evidence was on disk the
+  // whole time.
+  it("carries the last project's main.jsonl when no project is open", async () => {
+    const adeHome = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+    const projectRoot = fs.mkdtempSync(path.join(tempRoot, "photon-"));
+    const logsDir = path.join(projectRoot, ".ade", "transcripts", "logs");
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.writeFileSync(path.join(logsDir, "main.jsonl"), '{"event":"deeplink.scheme_claimed"}\n', "utf8");
+    fs.writeFileSync(path.join(logsDir, "ade-cli.jsonl"), '{"event":"cli.started"}\n', "utf8");
+    fs.writeFileSync(
+      path.join(adeHome, "projects.json"),
+      JSON.stringify({
+        version: 2,
+        projects: [{ rootPath: projectRoot, lastOpenedAt: 7, catalogVisibility: "recent" }],
+      }),
+      "utf8",
+    );
+
+    const { report } = await collectDiagnosticReport(
+      { ...deps(), env: { ADE_HOME: adeHome } },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(report).toContain("### Desktop main (project)");
+    expect(report).toContain("deeplink.scheme_claimed");
+    expect(report).toContain("### ADE CLI");
+    expect(report).toContain("no project was open");
+    // The project's absolute path must not ride along with its logs.
+    expect(report).not.toContain(projectRoot);
+  });
+
+  // The fallback above still needs a project to have been opened once, and to
+  // guess the right one. On a machine where none ever was, the main process's
+  // own machine log is the only main-process evidence there is — and a report
+  // from that machine used to contain none at all.
+  it("carries the desktop's machine log with no project on the machine", async () => {
+    const adeHome = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+    fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });
+    fs.writeFileSync(
+      path.join(adeHome, "runtime", "desktop-main.jsonl"),
+      '{"event":"desktop.main_started"}\n{"event":"deeplink.single_instance.lock_lost"}\n',
+      "utf8",
+    );
+
+    const { report } = await collectDiagnosticReport(
+      { ...deps(), env: { ADE_HOME: adeHome } },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(report).toContain("### Desktop main (machine)");
+    expect(report).toContain("desktop.main_started");
+    expect(report).toContain("deeplink.single_instance.lock_lost");
+    expect(report).toContain("no project is registered");
+  });
+
+  // The desktop and `ade report-issue` are meant to produce the same document;
+  // the section that says what the background service was told to be is part
+  // of it, present-or-noted, on every platform.
+  it("always carries a background service definition section", async () => {
+    const adeHome = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+
+    const { report } = await collectDiagnosticReport(
+      { ...deps(), env: { ADE_HOME: adeHome } },
+      { surface: "project_recovery", projectRoot: null },
+    );
+
+    expect(report).toContain("## Background service definition");
+  });
+});
+
+describe("resolveRevealableDiagnosticReport", () => {
+  // Regression: the reveal handler carried only the desktop's reports
+  // directory, so "View" on every toast for a BRAIN send — the sends nobody
+  // was present for, and therefore the ones most worth opening — threw.
+  function roots() {
+    const userDataDir = fs.mkdtempSync(path.join(tempRoot, "userData-"));
+    const adeDir = fs.mkdtempSync(path.join(tempRoot, "adeHome-"));
+    for (const dir of diagnosticReportRoots({ userDataDir, adeDir })) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return { userDataDir, adeDir, list: diagnosticReportRoots({ userDataDir, adeDir }) };
+  }
+
+  it("reveals a report written by either sender", () => {
+    const { userDataDir, adeDir, list } = roots();
+    const desktopReport = path.join(userDataDir, "diagnostic-reports", "ade-desktop.md");
+    const brainReport = path.join(adeDir, "diagnostic-reports", "ade-brain.md");
+    fs.writeFileSync(desktopReport, "# desktop", "utf8");
+    fs.writeFileSync(brainReport, "# brain", "utf8");
+
+    expect(resolveRevealableDiagnosticReport(list, desktopReport)).toBe(desktopReport);
+    expect(resolveRevealableDiagnosticReport(list, brainReport)).toBe(brainReport);
+  });
+
+  it("refuses anything outside both reports directories", () => {
+    const { adeDir, list } = roots();
+    // A neighbour of a reports directory, a walk out of one, and an absolute
+    // path the renderer simply invented.
+    const neighbour = path.join(adeDir, "secrets", "credentials.json");
+    fs.mkdirSync(path.dirname(neighbour), { recursive: true });
+    fs.writeFileSync(neighbour, "{}", "utf8");
+
+    expect(resolveRevealableDiagnosticReport(list, neighbour)).toBeNull();
+    expect(
+      resolveRevealableDiagnosticReport(
+        list,
+        path.join(adeDir, "diagnostic-reports", "..", "secrets", "credentials.json"),
+      ),
+    ).toBeNull();
+    expect(resolveRevealableDiagnosticReport(list, path.join(os.homedir(), ".ssh", "id_rsa")))
+      .toBeNull();
   });
 });

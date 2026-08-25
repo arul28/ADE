@@ -56,6 +56,7 @@ import type {
 } from "../../../desktop/src/shared/types/chat";
 import type {
   AiSettingsStatus,
+  CursorCloudFleetResult,
   LaneEnvInitProgress,
   LaneTemplate,
   OpenCodeRuntimeSnapshot,
@@ -771,6 +772,12 @@ export async function watchCursorCloudMirror(
   watching: boolean,
 ): Promise<void> {
   await connection.action("ai", "watchCursorCloudMirror", { sessionId, watching });
+}
+
+export async function getCursorCloudFleet(connection: AdeCodeConnection): Promise<CursorCloudFleetResult> {
+  return await connection.action<CursorCloudFleetResult>("ai", "getCursorCloudFleet", {
+    includeArchived: false,
+  });
 }
 
 export async function createChatSession(args: {

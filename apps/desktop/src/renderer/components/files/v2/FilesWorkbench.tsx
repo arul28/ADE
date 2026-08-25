@@ -142,6 +142,7 @@ export function FilesWorkbench({
   externalOpenNonce,
   externalOpenLine,
   navigationOpenRequest,
+  pin: seedPin = null,
 }: {
   preferredLaneId?: string | null;
   embedded?: boolean;
@@ -150,6 +151,12 @@ export function FilesWorkbench({
   externalOpenNonce?: string | null;
   externalOpenLine?: string | null;
   navigationOpenRequest?: FilesNavigationOpenRequest | null;
+  /**
+   * Machine this workbench should start on, for hosts that already know it —
+   * the Work tools pane, whose chat may live on another machine. Navigation
+   * requests still repin as before; this only supplies the starting machine.
+   */
+  pin?: OpenProjectBinding | null;
 }) {
   const project = useAppStore((s) => s.project);
   const boundProjectRootPath = project?.rootPath ?? "";
@@ -166,7 +173,7 @@ export function FilesWorkbench({
    * every file read/write follow the pin without the window rebinding — the
    * same per-call routing chats and PR reads already use.
    */
-  const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(null);
+  const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(seedPin);
   // The Files API with this machine already bound to it. Identity changes only
   // when the machine does, so every callback and effect below can depend on it
   // honestly — see `pinnedFilesApi.ts` for why a ref could not.
@@ -970,6 +977,16 @@ export function FilesWorkbench({
   // lane in is that machine's, not this one's. Kept as its own effect so the
   // pin lands in one render and the open resolves against the right roster on
   // the next, rather than racing inside a single pass.
+  // A host-supplied pin (the Work tools pane following its chat's machine)
+  // wins whenever it changes. Identity is compared by key so an equal binding
+  // rebuilt each render does not thrash the roster.
+  const seedPinKey = seedPin?.key ?? null;
+  useEffect(() => {
+    setMachinePin((current) => (current?.key === seedPinKey ? current : seedPin ?? null));
+    // Only the machine identity should retrigger this, not a new object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedPinKey]);
+
   useEffect(() => {
     if (!active || !navigationOpenRequest) return;
     const requestedPin = navigationOpenRequest.pin ?? null;

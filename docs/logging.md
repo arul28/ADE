@@ -24,9 +24,41 @@ Operational logs use ADE's local logging services and may include bounded diagno
 
 The machine brain writes the same `{ts, level, event, meta}` JSONL format as the desktop logger to `~/.ade/runtime/brain.jsonl`, honoring `ADE_LOG_LEVEL` (default `info`). The file rotates at 10 MiB to `brain.1.jsonl`; warnings and errors are also mirrored to stderr with an ISO-8601 timestamp and uppercase level for launchd diagnostics.
 
+The desktop main process has a structured logger **from process start**: `apps/desktop/src/main/services/logging/machineLogger.ts` writes `~/.ade/runtime/desktop-main.jsonl` (same format, same `createFileLogger`, same 10 MiB rotation to `desktop-main.1.jsonl`), and `main.ts` opens it in its first executable statement, before the `ade://` claim and the single-instance lock. Its location is chosen for who can *read* it: `resolveMachineAdeLayout` is the resolver `ade report-issue` uses, so a headless report on a machine where the desktop will not start finds the file by construction, and each channel's `ADE_HOME` keeps its own. Electron's `userData` — where `local-runtime.jsonl` and `ade-update.jsonl` still live — is a per-platform, per-productName directory the CLI would have to guess, which is why those two remain desktop-only sources in a report.
+
+Not everything reaches a structured logger. Lines the runtime prints on its way up go to the background service's **stdout**, which on macOS is `~/.ade/runtime/launchd.out.log` and not the `launchd.err.log` that carries stderr. Both streams are bounded by `runtimeLogMaintenance.ts` and **both** are collected into a diagnostic report; see [Diagnostic reports](features/storage-and-recovery/README.md#diagnostic-reports-report-issue). Early main-process events additionally mirror to `console` through `logMachineEvent`, so a terminal-launched app still shows them and the pathological case — an old plist that boots the whole desktop app as the background service — still leaves them in `launchd.out.log`. That mirror is a second copy, not the record: a bare `console.log` for something the machine log could carry is no longer acceptable, because it is invisible to a Finder-launched app.
+
 Writes are batched onto an async stream, so a caller that is about to end the process (`app.exit`, a force quit, an install handoff escalation) must call `logger.flushSync()` immediately after the line that matters — while it is still queued — or the records explaining the exit die with the process. `flushSync` drains only what is still queued (a batch already handed to an in-flight async flush is not duplicated), skips rotation deliberately, and, like every other log write, never throws.
 
-Not every operational log belongs to the active project. `createFileLogger` also backs machine-scoped sinks for facts that outlive or fall outside a project: `accountBridge` writes `account.local_machines_removed` to `<machine ade dir>/runtime/account-trust.jsonl`, because dropping a paired machine credential is a machine-level mutation and the project logger follows the active project — on a remote-bound project it would ship the record to the other machine and leave nothing on the machine that actually lost its trust. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
+Not every operational log belongs to the active project. The rule is the **subject** of the event: if it is the computer, it goes to `desktop-main.jsonl`; if it is a repository, it goes to that project's `main.jsonl`. Machine-subject events include the launch marker `desktop.main_started`, the deeplink scheme claim and single-instance outcome (`deeplink.*`, including `deeplink.single_instance.lock_lost`), `app_navigation.queued_before_dispatcher_ready`, `app.hardware_acceleration`, `machine_trust_reset.failed`, and the `ade` CLI auto-install outcome (`ade_cli.auto_install`, `ade_cli.auto_install_failed`, `ade_cli.auto_install_skipped`) — whether this computer ever got the `ade` command is a fact about the computer, and filed per project it landed wherever the startup latch happened to win. Project-subject events (`project.init`, `ipc.*`, per-service telemetry) stay in the project log, unchanged. Auto-update events were already machine-scoped in `<Electron userData>/ade-update.jsonl` and stay there.
+
+`createFileLogger` backs other machine-scoped sinks for the same reason: `accountBridge` writes `account.local_machines_removed` to `<machine ade dir>/runtime/account-trust.jsonl`, because dropping a paired machine credential is a machine-level mutation and the project logger follows the active project — on a remote-bound project it would ship the record to the other machine and leave nothing on the machine that actually lost its trust. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
+
+The brain's sync host and memory watchdog write their own local structured
+lines. `sync.host_start_failed` (signature, attempt, classified code, errno,
+the human-readable failure message — the redacted sentence for a classified
+storage fault, the raw error text otherwise —
+provider — at the failure deduper's one-per-minute cadence) and
+`sync.host_start_recovered` replace the free-text stderr lines that once made
+the most frequent brain failure invisible to structured logs.
+`brain.suspend_gap` records a sleep the watchdogs would previously have
+mis-reported as an event-loop stall. `brain.memory_sample` (rss, heap,
+external, uptime; every five minutes) and `brain.memory_restart` /
+`brain.memory_restart_deferred` record the RSS slope and the planned
+idle restart that mitigates a known native leak. All of these are local
+operational logs and none is a PostHog event; the only analytics adjacent to
+them is the existing `ade_feature_used` `auto_sent` outcome when a sustained
+storage fault triggers an automatic diagnostic send through the unchanged
+consent, deduplication, and budget path.
+
+The desktop's runtime connection pool writes its own local lines around the
+update window and repair throttle: `local_runtime.update_window_started` /
+`_ended` / `_expired`, `local_runtime.connect_deferred_for_update`,
+`local_runtime.service_repair_suppressed`, and
+`local_runtime.service_repair_throttled`. They record why a repair or connect
+was held back during an update transaction and carry no paths or versions
+beyond the bounded fields already in `local-runtime.jsonl`; none is a PostHog
+event.
 
 Claude compaction observations use the local structured line
 `agent_chat.claude_context_compaction_observed` with `sessionId`, `trigger`
@@ -49,6 +81,35 @@ unnoticed. A final delivery failure keeps its own
 writes `agent_chat.spawn_kind_changed` with `sessionId`, `parentSessionId`,
 `previousSpawnKind`, `spawnKind`, and `source` (`takeover`, `promote`, or
 `parent_dispatch`). None of these spawn-coordination lines is a PostHog event.
+
+When the idle sweep or budget eviction reclaims a chat runtime that still
+*claims* live background work — the exemption expired after
+`RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS` (= `SESSION_STALE_AFTER_MS`, three
+hours) of total silence — it writes the local structured line `agent_chat.runtime_workload_exemption_expired` with
+`sessionId`, `provider`, `silentForMs`, `liveBackgroundTaskCount`, and
+`activeSubagentCount`. This is the one teardown path that overrides a workload
+the runtime is still reporting, so it must be attributable after the fact:
+without it, a user asking "why did my background job stop" has nothing to read.
+It is a local operational log, not a PostHog event, and it carries no task ids,
+commands, or titles.
+
+**No product-analytics event accompanies it, deliberately.** The closed event
+taxonomy records what an installation *does* — a surface opened, a chat started,
+a settle the user asked for. This teardown is a background timer firing with no
+user action behind it, so an `ade_feature_used` here would report engagement
+nobody generated and would fire on a schedule rather than on use. The nearest
+precedent cuts the same way: the settle-with-residue event exists because a
+human pressed Settle and the stop could not be confirmed. If a future change
+ever makes this reclaim user-initiated, revisit the decision then.
+
+The Claude subprocess reaper writes its own local lines around process
+teardown: `agent_chat.claude_subprocess_terminate` (with `pid`, `sessionId`,
+`reason`, and on POSIX a `groupLeader` flag recording whether the whole process
+group was signalled), `agent_chat.claude_subprocess_kill` for the SIGKILL
+escalation, `agent_chat.claude_subprocess_pid_reused` when an identity probe
+refuses a recycled pid, and `agent_chat.claude_subprocess_taskkill_failed` on
+Windows. They carry pids and session ids and no command lines, and none is a
+PostHog event.
 
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
@@ -110,6 +171,7 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_publish_failing`
 - `ade_relay_suppressed`
 - `ade_account_session_unreadable`
+- `ade_brain_action_failed`
 
 The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_renderer_recovered` fires once per lost renderer and is bounded by the recovery budget itself (three reload attempts per rolling 60 seconds, after which the window stays down rather than looping), carrying only `crash_reason` — Electron's closed enum, normalized to `unknown` for any future value — and whether the reload was still allowed, never the window URL or title; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 
@@ -121,6 +183,24 @@ session details, or runtime activity counts. A persisted 24-hour deduplication
 key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
+
+Choosing a keep-awake level records the same `ade_feature_used` event at the
+keep-awake service's persist boundary — after the choice is written, so a
+refused level (the lid-closed one whose password prompt was cancelled) is never
+counted as adopted. It carries `feature: "connections"`,
+`action: "preferences_changed"`, and one closed `outcome`:
+`keep_awake_never`, `keep_awake_while_away`, or `keep_awake_lid_closed`. The
+product question is only whether installations opt into ADE holding a machine
+awake, and how many go as far as the level that needs a password. It carries no
+machine name or identifier, no battery level, no power source, and nothing about
+what was running. A 24-hour deduplication key per level bounds this to at most
+three accepted events per installation per UTC day, inside the existing
+`ade_feature_used` ceiling.
+
+Host sleep and wake themselves are deliberately **not** analytics. They are
+OS-driven mechanics that can fire dozens of times a day on a laptop, which is
+exactly the high-frequency shape this document says to aggregate or leave
+untracked. They stay local operational logs.
 
 Settle teardown records two things at the session-service owner boundary, both
 on the existing `ade_feature_used` event with `feature: "work"`.
@@ -250,16 +330,50 @@ installation per UTC day, inside the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 The dashboard spec is deliberately untouched: no card asks this question yet.
 
+When ADE hits a failure it already classified, it sends that same redacted
+report by itself, and that decision records the same `ade_feature_used` event at
+the owner boundary — the auto-diagnostics service, where the outcome is known —
+with `feature: "connections"`, `action: "auto_sent"`, and one of three coarse
+outcomes: `completed` when the upload succeeded, `skipped_budget` when the
+client's own daily ceiling refused it, `failed` when it was attempted and did
+not land (including a `429` from either the per-user or the fleet budget). The
+product question is only whether the thing that fires without anyone asking
+works and whether its guardrail holds, so nothing else crosses: not the failure
+code that triggered it, not the surface, not the upload reference, not the saved
+report path, and not whether the user then turned the feature off — that is a
+setting, not an event. Two of the five outcomes `runAutoDiagnosticsSend` can
+return deliberately emit nothing. `skipped_disabled`: an installation that has
+withdrawn consent emits nothing at all, so counting its non-sends would be the
+one measurement it declined. `skipped_ineligible` — an unusable failure code, or
+a send already in flight — because nothing was built, spent or refused, so there
+is no outcome to report; it is a caller bug or a race, and it belongs in the
+local log, which is where it goes. A per-outcome one-hour
+deduplication key bounds the worst case to 24 accepted events per outcome — 72
+across all three — per installation per UTC day, and the client budget of three
+sends a day makes the real number far smaller; this sits inside the existing
+`ade_feature_used` 140-per-day / 30-per-minute limits and the shared 200-event
+ceiling, and no ceiling was raised. The brain emits the same event for its own
+automatic sends through the same shared service — under `surface: "api"`, since
+nobody was at the keyboard — and shares the persisted deduplication state, so an
+installation's counts are one number rather than two. The dashboard spec is
+deliberately untouched: no card asks this question yet.
+
 The diagnostic report itself is a **local** artifact and is not analytics. It
 deliberately includes the PostHog `distinct_id` for this installation
 (`productAnalyticsService.getDistinctId()` — the identified account hash when
 signed in, otherwise the random anonymous install token) so a report someone
 files by hand can be matched to the events the installation already sent.
-Nothing flows the other way: the report is written to disk and copied to the clipboard, and only
-the person filing it decides where it goes. Its body is redacted before it is
+Nothing flows the other way: no part of a report reaches PostHog, on either
+path. A report the user files is written to disk and copied to the clipboard and
+only they decide where it goes; a report ADE sends by itself goes to the
+diagnostics upload route and nowhere else, and the analytics boundary learns
+only that a send happened and how it ended. Its body is redacted before it is
 written (home directory, project paths, usernames, hostnames and tailnet names,
-emails, credentials and routable IP addresses), and the GitHub issue title and
-stub body are redacted with the same context.
+emails, credentials and routable IP addresses) — the same bytes on both paths,
+because redaction happens once in the builder — and the GitHub issue title and
+stub body are redacted with the same context. Automatic sending is a separate
+consent from analytics: it has its own Settings toggle (default on) and its own
+persisted flag, so turning one off does not silently turn off the other.
 
 Clicking "Reconnect this computer" on the Account pane's removed-machine banner
 records the existing `ade_feature_used` event at the IPC owner boundary (the
@@ -272,10 +386,61 @@ banner copy and in local logs. A per-outcome one-hour deduplication key bounds a
 click-loop to at most 24 accepted events per outcome — 48 across both — per
 installation per UTC day, inside the existing `ade_feature_used` and shared
 ceilings. The Activity feed's polling, rendering, section collapse, filters, and
-acknowledgements, notch and iOS widget updates, machine removal, pairing-grant
-mint and redeem, and relay control sweeps remain untracked: they are
-high-frequency reads and UI mechanics, or they run on the relay and
-account-directory surfaces that have no analytics path.
+acknowledgements, notch and iOS widget updates, pairing-grant mint and redeem,
+and relay control sweeps remain untracked: they are high-frequency reads and UI
+mechanics, or they run on the relay and account-directory surfaces that have no
+analytics path.
+
+Machine membership is two more coarse facts on the same `ade_feature_used`
+event, added because a production incident — a machine revoked, then a brain
+that would not boot — produced no analytics at all.
+
+Removing a computer from the account records `feature: "connections"`,
+`action: "machine_removed"`, and a coarse `outcome`. It is captured in
+`accountBridge.removeMachine`, not in the IPC handler, because only that
+function knows which half failed: the directory delete is the authoritative
+membership change, and the Activity purge that follows it rethrows so the user
+can retry clearing it. `completed` therefore means the directory accepted the
+removal, and `failed` means it did not. No machine key, display name, or account
+identifier travels.
+
+The account directory refusing to register **this** computer records
+`action: "machine_register_refused"`, `outcome: "failed"`, and `refusal_code` —
+one of `machine_revoked`, `pairing_authentication_required`, or `other`. The
+desktop can see this because the brain's publisher puts the machine-readable
+code in `routeHealth.accountDirectory.lastHttpReason` alongside `http_error` and
+a 401/403 (`accountMachinePublisherService`); the desktop never talks to the
+directory itself. Any other 401/403 is reported as `other` rather than passing
+the server's prose through, and non-refusals (timeouts, 5xx, transport failures)
+are left to `ade_publish_failing`, which the brain already emits. The refusal is
+a **state**, and the Connections pane and app shell both poll it on a timer, so
+only the edge into a refusal is captured; a per-code one-hour key bounds the
+case the in-process latch cannot see, an app or brain restarting inside the
+refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
+30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
+
+`ade_brain_action_failed` is the one new event. Every brain action the desktop
+performs goes through the single `ade.localRuntime.callAction` IPC channel, and
+that channel is not a meaningful usage action, so the existing `ade_error`
+capture in `registerIpc` has never fired for it — an installation whose brain
+rejected every action was silent. The channel is deliberately **not** added to
+`MEANINGFUL_ACTIONS`: that set defines the durable `usage_events` mutation
+ledger, and joining it would write a mutation row per brain call. Instead the
+`callAction` error path emits exactly two properties: `action_domain`, the ADE
+action domain, allowlisted against the closed `ADE_ACTION_DOMAIN_NAMES` list in
+`services/adeActions/domains.ts` — its own zero-import module, because
+`registry.ts` pulls in the whole runtime service graph and the analytics policy
+needs only the names, which is why it used to keep a hand-written copy of all
+of them; and `error_code`, the structured code from
+`codedError`/`Error.code`/the RPC `code:` prefix — the code only, never the
+message, never a path, and `ipc_timeout` or `unknown` when there is no code.
+Because codes are an open code-authored vocabulary (seeing an unpredicted one is
+the point), `error_code` is bounded by shape rather than a literal allowlist: a
+lower-case identifier of at most 48 characters, which no path, URL, email,
+hostname, or sentence fragment can satisfy. A per-domain-per-code one-hour
+deduplication key turns an error loop into one accepted event an hour, and the
+event's own 20-per-day / 3-per-minute caps bound the rest without touching
+`ade_error`'s budget.
 
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 

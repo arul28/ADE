@@ -376,7 +376,9 @@ ade code remote --target mac --route tailscale --project ADE
 ade code remote session --target mac --project ADE --session chat-1
                                    # open a remote chat or provider CLI terminal session
 ade login                          # sign in to the optional shared machine account
-ade machines list --text          # list account machines, including offline state
+ade machines list --text          # list account machines: dial status, plus a
+                                   # presence column (Connected/Online/Asleep/
+                                   # Offline and battery or wall power)
 ade machines rename <machine-key> "Build Mac"
                                    # set the account-wide display name
 ade machines rename <machine-key> --clear
@@ -459,7 +461,7 @@ ade login --headless                      # print verification URL + user code
 ade auth status --text                    # account identity + loopback/device/env-token source
 ade account token create --text           # print a self-contained durable ADE_ACCOUNT_TOKEN once
 ade logout
-ade machines list --text
+ade machines list --text                           # includes presence: asleep/online + battery or wall power
 ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
 ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity
 ade machines reconnect                             # re-pair THIS machine after it was removed
@@ -469,6 +471,7 @@ ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
 ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
 ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
+ade report-issue --send                           # also upload the same redacted report to ADE and print its reference id
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
@@ -497,7 +500,7 @@ ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431 --no-parent
 ade chat list --personal --text
 ade chat create --personal --provider codex --model openai/gpt-5.5 --prompt "Plan a trip"
-ade chat steer personal-session-id --personal --text "focus on the tradeoffs"
+ade chat steer personal-session-id --personal --text "focus on the tradeoffs"   # add --dispatch inline|interrupt for atomic active-turn delivery
 ade chat interrupt personal-session-id --personal --keep-queue
 ade chat restore-queue personal-session-id recovery-id --personal
 ade chat actions --personal --text
@@ -548,9 +551,10 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
+ade chat steer session-id --text "active-turn context" --dispatch interrupt   # atomic active-turn delivery: inline | interrupt; omit to stage for the next turn (Claude takes both, Cursor takes interrupt)
 ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
-ade session show session-id --text                          # settle/snooze state, and why a snoozed row came back
+ade session show session-id --text                          # status + elapsed, live agent pids, settle/snooze state, and why a snoozed row came back
 ade session snooze session-id --for 1h                      # 30m|1h|4h|1d|1.5h; a bare number means minutes; relative durations cap at 30d
 ade session snooze session-id --until 2026-07-26T18:00:00Z  # explicit ISO-8601 deadline (must be in the future)
 ade session snooze session-id --until-asked                 # open-ended, matching the desktop/iOS "Until I'm asked" preset: only a hand-raise brings it back
@@ -570,7 +574,7 @@ ade chat demote [session-id]                                     # take over a s
 ade chat promote [session-id]                                    # restore a peer as a subagent so it reports to its parent again
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
-ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); stays in source lane
+ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
 ade code
 ade code --embedded
@@ -645,7 +649,7 @@ ade --role cto actions run ai.piLoginCancel --input-json '{"providerId":"anthrop
 ade cursor cloud agents list --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
 ade --role cto github app-auth login              # device-flow authorize the machine ADE GitHub App (headless/brain)
-ade github app-auth status --text                 # show whether a GitHub App user token is stored (login, expiry)
+ade github app-auth status --text                 # show the GitHub App credential state, login, expiry, and any renewal failure
 ade --role cto github app-auth clear              # remove the stored GitHub App authorization
 ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text # show active read/write sources and cooldowns
 ade open ade://lane/<lane-uuid>
@@ -663,10 +667,26 @@ ade skill list --text
 ade skill show ade-browser --text
 ```
 
+`github app-auth status` answers "re-authorize, or wait?" from `credentialState`
+alone — never from `expiresAt`. An access token lives 8 hours and renews on use,
+so a lapsed `expiresAt` with `credentialState: "authorized"` is healthy.
+`"blocked"` means ADE paused its own refresh retries until `refreshBlockedUntil`
+after a transient failure (`lastRefreshError` carries the reason): wait, do not
+re-authorize. Only `"needs_reauth"` and `"missing"` call for `app-auth login`.
+
 GitHub reads try credentials in environment → ADE GitHub App → GitHub CLI →
 stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
 reports the active read/write sources, per-credential failure/cooldown state,
 fallback details, and any background-refresh pause without exposing tokens.
+
+When GitHub itself is failing rather than rejecting the credential,
+`authFailure.kind` is `service_unavailable` (GitHub returned 5xx) — scripts must
+not treat that as a reason to re-auth or rotate a token. In that case, and for
+an unclassifiable failure, `github.getStatus` also consults githubstatus.com and
+attaches `serviceHealth` (`indicator`, `affected` components, `incidentUrl`)
+when a GitHub surface ADE depends on is confirmed down. `serviceHealth` is
+present only as positive corroboration: its absence never means the failure is
+local, so do not branch on it being missing.
 
 Pi sign-in has no typed command, the same way OpenCode's `ai.opencodeOAuth*`
 actions do not. `ai.piLoginStart` blocks until a human finishes Pi's own browser
@@ -762,6 +782,8 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 - **Relay** — relay route health as already computed by the brain. `ok` when the relay control is connected, the bridge is validated, and the end-to-end round-trip is verified; `fail` when the route is not fully validated; `warn` when relay is disabled or route health is unavailable. When another ADE process on this machine has claimed the relay slot, the brain deliberately stops redialing and this row reports that suppression ahead of any lower-level close error, so the detail names the fix (quit the rival process) instead of the symptom. `ade sync status --text` shows the same reason on its `relay` line, plus a `relay failing since` row for how long the current outage has run.
 - **Account** — whether this machine's brain is signed in to an ADE account (and the credential source), read via the brain's `account.call status`. `warn` when signed out or unavailable.
 - **Credentials** — whether the shared credential store (`$ADE_HOME/secrets/credentials.json.enc`) can be read, and whether an unreadable one was set aside earlier. `fail` when it cannot be read, naming the next step: a store sealed with a key this process cannot obtain is unlocked by opening the ADE app on this computer, while anything else needs a fresh sign-in. `warn` when a quarantined file is still waiting to be restored. Unlike every other row, this one is read **straight from disk** rather than through the brain — the failure it exists for is a brain that cannot start, so a check that needed a running brain would be silent exactly when it matters. It is non-creating: it never mints a machine key or OS key material, so running the diagnostic cannot change the state it reports. `ade brain repair-credentials` acts on the same reading.
+- **Storage** — where this machine's ADE home and its most recently opened project actually live, and whether their bytes are on the disk. `fail` when a root cannot be read at all, or when sampled files are not downloaded *and* this computer's background service is not allowed to download them; `warn` when files are not downloaded but the service may fetch them, or when a root sits on cloud storage that the service may not download from. Both facts come from a bounded `fs` walk (at most 120 files, 24 directories, and 250 ms per root) plus one read of the installed launch agent, so this row — like **Credentials** — works on the machine where the brain will not start. That is the point of it: an evicted iCloud Drive project read by a background service macOS will not let hydrate returns `EDEADLK` ("Unknown system error -11") and leaves every other row green. The remedy the row names, `ade runtime install-service`, rewrites the launch agent with the `MaterializeDatalessFiles` key. The row reports locations and counts only, never a path or a file name. `ade report-issue` prints the same facts in full under "Storage environment".
+- **Diagnostics sharing** — whether ADE may send a redacted diagnostic report by itself when something fails, and how much of today's ceiling has been spent (`on · 1 of 3 automatic reports sent today` / `off`). Read straight from the ledger both senders account against (`$ADE_HOME/secrets/diagnostics-autosend.json`), which is why the count covers the whole computer rather than one process. Always `ok`: it is a preference, not a health check. An absent or unreadable ledger reports the default the next auto-send would act on — on, nothing spent. The setting itself is toggled in the desktop app; there is no CLI flag for it.
 
 When a row fails and the checks above do not explain it, `ade doctor --text`
 points at `ade report-issue`. That command is the headless counterpart to the
@@ -769,7 +791,21 @@ desktop "Report issue" button: it reads only local files — it never starts or
 contacts the brain — so it still works on the machine where ADE itself will not
 come up, and on Windows where there is no desktop error screen to press. It
 prints a redacted diagnostic report plus a prefilled GitHub issue URL (`--open`
-also opens that URL, `--json` returns `{ installId, issueUrl, report }`).
+copies the report to the clipboard and opens that URL, `--json` returns
+`{ installId, issueUrl, copied, report }`).
+
+`--send` is the one part of this command that leaves the machine, and it is
+opt-in: it uploads the same redacted report to ADE over HTTPS and prints the
+reference id support quotes back. It is the headless counterpart to the desktop
+button's "Send to ADE", and it reads everything it needs — the account session,
+the directory origin — from local files, so it still works on a machine whose
+brain will not start. A signed-in machine attaches its account token; a
+signed-out one uploads anonymously against the install id already in the report.
+A failed or rate-limited send never changes the printed report or the exit code:
+it prints one line saying so and leaves the user holding everything they need to
+file the issue by hand. With `--json`, `sent` is present only when `--send` was
+asked for, as `{ ok: true, reference }` or `{ ok: false, reason }`, so a script
+can tell "not requested" from "requested and failed".
 
 There is no `ade recovery diagnose` / `ade recovery repair`: those are
 Electron-main IPC (`ade.recovery.diagnose` / `ade.recovery.repair`) backed by
@@ -777,11 +813,14 @@ the desktop's local-runtime connection pool, which does not exist in a headless
 CLI. The CLI equivalents are `ade doctor` for the diagnosis, `ade brain restart`
 for the repair, and `ade brain repair-credentials` for the credential half.
 
-Default doctor does not call provider, GitHub, or Linear networks. Every row but
-**Credentials** comes from the local brain over its socket; **Credentials** is a
-read-only inspection of the machine's own secrets directory. It never prints
-secret values. The one optional network touch is the `--online` desktop-release
-lookup above.
+Default doctor does not call provider, GitHub, or Linear networks. **Brain**,
+**Sync port**, **Publish health**, **Relay**, and **Account** come from the local
+brain over its socket. **App**, **Wedge history**, **Credentials**, **Storage**,
+and **Diagnostics sharing** are read-only inspections of files this machine
+already has, so they still answer while the brain is down (Wedge history reads
+the on-disk breadcrumb first and asks the brain only as a fallback). None of them prints a
+secret value or a project path. The one optional network touch is the `--online`
+desktop-release lookup above.
 
 Agents starting an unfamiliar ADE session should begin with:
 

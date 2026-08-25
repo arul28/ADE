@@ -236,6 +236,8 @@ export const PUBLISH_FAILING_ALARM_MS = 2 * 60_000;
  */
 const PUBLISH_INACTIVE_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
   "sync_disabled",
+  // The publisher has not run yet. Nothing has failed, so this must not alarm.
+  "sync_not_started",
   "no_active_sync_scope",
   "not_host",
   "account_signed_out",

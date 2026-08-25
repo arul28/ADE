@@ -136,11 +136,10 @@ describe("ComposerPromptStash", () => {
       rootPath: "/current-project",
       displayName: "Current project",
     };
-    const error = new Error(
-      "Error invoking remote method 'ade.localRuntime.callAction': Error: Local runtime project is not available for this window.",
-    );
     installBridge({
-      list: vi.fn().mockRejectedValue(error),
+      list: vi.fn().mockRejectedValue(new Error(
+        "Error invoking remote method 'ade.localRuntime.callAction': Error: Local runtime project is not available for this window.",
+      )),
       getWindowSession: vi.fn().mockResolvedValue({
         windowId: 1,
         project: { rootPath: currentBinding.rootPath, displayName: currentBinding.displayName },
@@ -160,7 +159,7 @@ describe("ComposerPromptStash", () => {
       />,
     );
 
-    expect((await screen.findByRole("alert")).textContent).toContain(error.message);
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 
   it("stays out of the toolbar when the composer and stash list are both empty", async () => {

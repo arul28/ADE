@@ -100,12 +100,22 @@ test("detached dev runtime does not inherit another runtime's shutdown controls"
     {
       ADE_RUNTIME_PARENT_PID: "1234",
       ADE_RUNTIME_IDLE_EXIT_MS: "5000",
+      ADE_CHAT_SESSION_ID: "agent-chat",
+      ADE_RUN_ID: "agent-run",
+      ADE_STEP_ID: "agent-step",
+      ADE_ATTEMPT_ID: "agent-attempt",
+      ADE_OWNER_ID: "agent-owner",
       KEEP_ME: "yes",
     },
   );
 
   assert.equal(env.ADE_RUNTIME_PARENT_PID, undefined);
   assert.equal(env.ADE_RUNTIME_IDLE_EXIT_MS, undefined);
+  assert.equal(env.ADE_CHAT_SESSION_ID, undefined);
+  assert.equal(env.ADE_RUN_ID, undefined);
+  assert.equal(env.ADE_STEP_ID, undefined);
+  assert.equal(env.ADE_ATTEMPT_ID, undefined);
+  assert.equal(env.ADE_OWNER_ID, undefined);
   assert.equal(env.KEEP_ME, "yes");
   assert.equal(env.ADE_RUNTIME_SOCKET_PATH, "\\\\.\\pipe\\ade-runtime-dev-test");
 });

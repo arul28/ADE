@@ -39,7 +39,17 @@ extension WorkSessionDestinationView {
     let pendingUploadRefs = WorkPendingUploadPreviewStore.shared.register(
       workChatInputReadyAttachments(inputAttachments)
     )
-    let initialDeliveryState = (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
+    // Desktop parity: the chosen active-turn mode rides the steer itself, so a
+    // host that can honor it dispatches in one round-trip and the message never
+    // enters the staged queue. Resolved before the send, not after it, so the
+    // "turn is already active" resend below carries the same mode — that is
+    // where a Send-now tap used to be silently downgraded to a staged message.
+    let atomicDispatchMode = workChatAtomicSteerDispatchMode(
+      deliveryMode: deliveryMode,
+      dispatchModes: manualSteerDispatchModes
+    )
+    let willStage = sendWillQueueChatMessage || (useSteer && atomicDispatchMode == nil)
+    let initialDeliveryState = willStage ? "queued" : "sending"
     let echo = WorkLocalEchoMessage(
       text: text,
       timestamp: workDateFormatter.string(from: Date()),
@@ -81,7 +91,8 @@ extension WorkSessionDestinationView {
         delivery = try await syncService.steerChatSession(
           sessionId: sessionId,
           text: text,
-          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+          dispatchMode: atomicDispatchMode
         )
       } else {
         do {
@@ -91,22 +102,33 @@ extension WorkSessionDestinationView {
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
           )
         } catch where workChatErrorIndicatesActiveTurn(error) {
-          updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+          // The row said idle but the runtime is busy. Resend as a steer — with
+          // the mode attached, so an atomic send stays an atomic send and the
+          // echo keeps its "sending" state instead of flashing "queued".
+          if atomicDispatchMode == nil {
+            updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+          }
           delivery = try await syncService.steerChatSession(
             sessionId: sessionId,
             text: text,
-            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+            dispatchMode: atomicDispatchMode
           )
         }
       }
       switch delivery {
       case .queued(let steerId):
-        if useSteer, let steerId, deliveryMode == .inline || deliveryMode == .interrupt {
+        // We asked for an atomic dispatch and got a staged row back, so this
+        // host predates `dispatchMode` on `chat.steer` (it shipped later than
+        // `chat.dispatchSteer`, which is what the capability gate checks).
+        // Promote with the older two-step call rather than dropping the mode
+        // the user picked. Current hosts answer `.sent` and never land here.
+        if let steerId, let atomicDispatchMode {
           do {
             try await syncService.dispatchChatSteer(
               sessionId: sessionId,
               steerId: steerId,
-              mode: deliveryMode.rawValue
+              mode: atomicDispatchMode
             )
           } catch {
             // Staging already succeeded on the host. Keep the single queued
@@ -837,6 +859,19 @@ extension WorkSessionDestinationView {
     guard let currentSession = session ?? initialSession else { return }
     let laneId = resolvedWorkNavigationLaneId(for: currentSession, lanes: lanes)
     syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
+  }
+
+  /// Routes a standalone spawned chat back to its parent through the same
+  /// Work navigation request used by deeplinks and cross-surface opens.
+  func openParentSession() {
+    guard let parentId = composerChatSummary?.orchestrationParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !parentId.isEmpty
+    else { return }
+    syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+      sessionId: parentId,
+      laneId: (session ?? initialSession)?.laneId
+    )
   }
 
   @MainActor

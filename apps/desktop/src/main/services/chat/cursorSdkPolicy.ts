@@ -60,12 +60,30 @@ export const CURSOR_SDK_READONLY_TOOLS = ["read", "grep", "glob", "ls"] as const
 
 export type CursorSdkReadonlyTool = (typeof CURSOR_SDK_READONLY_TOOLS)[number];
 
+/**
+ * What ADE has to say about the Cursor sandbox, which is not a boolean.
+ *
+ * The SDK treats an explicit `false` and an absent key differently: `false`
+ * returns `insecure_none` without ever reading the user's ~/.cursor/sandbox.json,
+ * while absent lets that file decide. So ADE needs three states, not two.
+ *
+ * When ADE does ask for a sandbox ("enable"), a user policy still wins over
+ * ADE's own — the SDK only falls back to its workspace_readwrite default when
+ * the user has written no policy at all.
+ *
+ * "disable" also covers the retry after a ConfigurationError, where the
+ * environment cannot sandbox at all and the alternative is a hard failure.
+ *
+ * See services/shared/providerConfigHomes.ts for the rule this follows.
+ */
+export type CursorSdkSandboxDirective = "enable" | "disable" | "inherit";
+
 export type CursorSdkLocalRunOptions = {
   mode: CursorSdkAgentMode;
   tools?: string[];
   disallowedTools?: string[];
   autoReview: boolean;
-  sandboxEnabled: boolean;
+  sandboxDirective: CursorSdkSandboxDirective;
 };
 
 /**
@@ -86,13 +104,20 @@ export function buildCursorSdkLocalRunOptions(
   policy: CursorSdkPermissionPolicy,
   args?: { sandboxSupported?: boolean },
 ): CursorSdkLocalRunOptions {
-  const sandboxEnabled = policy.sandbox === "cursor-native" && args?.sandboxSupported !== false;
+  const sandboxSupported = args?.sandboxSupported !== false;
+  const sandboxDirective: CursorSdkSandboxDirective = !sandboxSupported
+    ? "disable"
+    : policy.sandbox === "cursor-native"
+      ? "enable"
+      : policy.sandbox === "off"
+        ? "disable"
+        : "inherit";
   return {
     mode: cursorSdkLocalAgentMode(policy),
     ...(policy.tools?.length ? { tools: [...policy.tools] } : {}),
     ...(policy.disallowedTools?.length ? { disallowedTools: [...policy.disallowedTools] } : {}),
     autoReview: policy.autoReview,
-    sandboxEnabled,
+    sandboxDirective,
   };
 }
 

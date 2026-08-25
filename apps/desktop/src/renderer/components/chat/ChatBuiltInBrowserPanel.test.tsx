@@ -230,16 +230,44 @@ describe("ChatBuiltInBrowserPanel", () => {
     expect(document.querySelector("webview")).toBeNull();
   });
 
+  it("says where the browser runs instead of driving another machine's browser", async () => {
+    const { api } = installBrowserApi();
+
+    render(
+      <ChatBuiltInBrowserPanel
+        sessionId="chat-1"
+        runtimePin={{
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Mac Studio",
+          projectId: "project-a",
+          rootPath: "/remote/repo-a",
+          displayName: "repo-a",
+        }}
+      />,
+    );
+
+    expect(await screen.findByText(
+      "The browser opens on this computer. This chat runs on Mac Studio, so open the browser from a chat here.",
+    )).toBeTruthy();
+    // Nothing may reach the pinned machine: its browser view would be moved
+    // around a screen nobody in this window can see.
+    expect(api.getStatus).not.toHaveBeenCalled();
+    expect(api.setBounds).not.toHaveBeenCalled();
+    expect(api.onEvent).not.toHaveBeenCalled();
+  });
+
   it("routes personal chat browser calls to the personal tab collection", async () => {
     const { api } = installBrowserApi();
 
     render(<ChatBuiltInBrowserPanel sessionId="personal-chat-1" projectRootOverride={null} />);
 
     await waitFor(() => {
-      expect(api.getStatus).toHaveBeenCalledWith({ tabCollection: "personal" });
+      expect(api.getStatus).toHaveBeenCalledWith({ tabCollection: "personal" }, null);
       expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
         tabCollection: "personal",
-      }));
+      }), null);
     });
   });
 
@@ -253,7 +281,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT));
@@ -263,7 +291,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: false,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT));
@@ -273,7 +301,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
   });
 
@@ -287,7 +315,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
@@ -297,7 +325,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: false,
-      }));
+      }), null);
     });
 
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
@@ -307,7 +335,7 @@ describe("ChatBuiltInBrowserPanel", () => {
       width: 640,
       height: 360,
       visible: false,
-    }));
+    }), null);
 
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
 
@@ -316,7 +344,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
   });
 
@@ -330,7 +358,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     const overlay = document.createElement("div");
@@ -346,7 +374,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: false,
-      }));
+      }), null);
     });
 
     overlay.remove();
@@ -356,7 +384,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
   });
 
@@ -370,7 +398,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         width: 640,
         height: 360,
         visible: true,
-      }));
+      }), null);
     });
 
     const overlay = document.createElement("div");
@@ -386,7 +414,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: false,
-        }));
+        }), null);
       });
     } finally {
       overlay.remove();
@@ -406,7 +434,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
 
       overlay = document.createElement("div");
@@ -422,7 +450,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
 
       expect(api.setBounds).not.toHaveBeenCalledWith(expect.objectContaining({
@@ -456,7 +484,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
 
       overlay = document.createElement("div");
@@ -471,7 +499,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: true,
-        }));
+        }), null);
       });
       expect(api.setBounds).not.toHaveBeenLastCalledWith(expect.objectContaining({ visible: false }));
 
@@ -483,7 +511,7 @@ describe("ChatBuiltInBrowserPanel", () => {
           width: 640,
           height: 360,
           visible: false,
-        }));
+        }), null);
       });
     } finally {
       overlay?.remove();

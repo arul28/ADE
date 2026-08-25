@@ -305,17 +305,17 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // re-lighting the row would let a stubborn monitor out-vote the user's
     // explicit "this is done".
     //
-    // But `liveness` still reports the truth, because settle does NOT stop
-    // background work today — archive is the only lifecycle path that stops
-    // processes. A settled session can therefore legitimately still own a live
-    // background shell, subagent, or Cursor cloud run, and a surface that wants
-    // to show "settled, but something is still running" must be able to. The
-    // phase alone would hide it, which is the exact failure this module exists
-    // to prevent — just at the other end of the lifecycle.
+    // But `liveness` still reports the truth, because a settled session can
+    // legitimately still own live work. Settle teardown DOES stop the session's
+    // outstanding background tasks (`sessionSettleTeardown.ts`) — that landed —
+    // but it is best-effort: a provider with no stop control, a stop that times
+    // out, or a stop the provider rejects all leave the settle standing with
+    // residue recorded against it. Work that escaped the process tree entirely
+    // (`nohup`/`setsid`/`disown`) is invisible to it by construction.
     //
-    // Making settle stop that work is a separate change; it needs a synchronous
-    // lifecycle revision teardown can serialize against, not a wrapper around
-    // this write. See the settle-teardown design doc.
+    // So a surface that wants to show "settled, but something is still running"
+    // must be able to. The phase alone would hide it, which is the exact failure
+    // this module exists to prevent — just at the other end of the lifecycle.
     const settledWork = args.backgroundWork;
     return {
       phase: "settled",

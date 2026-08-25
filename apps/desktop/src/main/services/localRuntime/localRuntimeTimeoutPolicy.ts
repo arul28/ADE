@@ -56,6 +56,15 @@ export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
+/**
+ * `runtime.activitySummary` counts running turns from memory, so this is not a
+ * work budget — it is the bound on a stuck poll. Without it the call inherits
+ * `RuntimeRpcClient`'s ten-minute default, and `keepAwakeService` (which polls
+ * every 5s and skips a pass while one is in flight) would keep the machine's
+ * wake lock held for up to ten minutes after the user chose "Never". Kept under
+ * that poll interval so a wedged call cannot stack passes either.
+ */
+export const LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS = 4_000;
 export const LOCAL_RUNTIME_IPC_PROJECT_SETUP_MARGIN_MS = 30_000;
 export const LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS = 15_000;
 const LOCAL_RUNTIME_IPC_PROJECT_REGISTRATION_TIMEOUT_MS =

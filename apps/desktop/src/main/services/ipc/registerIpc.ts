@@ -5,6 +5,12 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
+import type {
+  KeepAwakeFixResult,
+  KeepAwakeSnapshot,
+} from "../../../shared/types/keepAwake";
+import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import {
   buildGithubReleaseUrl,
@@ -82,6 +88,10 @@ import {
   type ProductAnalyticsStatus,
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import {
+  brainActionErrorCode,
+  createMachineRegisterRefusalObserver,
+} from "../analytics/reliabilityTelemetry";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
@@ -268,6 +278,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -460,6 +471,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingHelpState,
   OnboardingStatus,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
@@ -532,6 +544,7 @@ import type {
   RunTestSuiteArgs,
   SessionDeltaSummary,
   SessionLifecycleSettings,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   StackChainItem,
   StopTestRunArgs,
@@ -634,6 +647,9 @@ import type {
   CursorCloudOpenChatResult,
   CursorCloudWatchMirrorRequest,
   CursorCloudStreamRunResult,
+  CursorCloudFleetResult,
+  CursorCloudFleetEvent,
+  CursorCloudPullIntoLaneResult,
   CursorAgentUsage,
   CursorAgentUsageRequest,
   AgentToolsCacheSnapshot,
@@ -741,7 +757,7 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
-import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
+import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
 import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
@@ -749,6 +765,7 @@ import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
@@ -756,6 +773,7 @@ import type { createAutomationPlannerService } from "../automations/automationPl
 import type { createAutomationIngressService } from "../automations/automationIngressService";
 import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
 import type { CursorCloudIngressService } from "../automations/cursorCloudIngressService";
+import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -814,14 +832,23 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   collectDiagnosticReport,
+  diagnosticReportRoots,
+  resolveRevealableDiagnosticReport,
   writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
+import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
+import {
+  MAX_AUTO_DIAGNOSTICS_PER_WINDOW,
+  MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
+} from "../diagnostics/autoDiagnosticsStore";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendResult,
+  DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
@@ -1043,6 +1070,7 @@ export type AppContext = {
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: LinearIngressService | null;
   cursorCloudIngressService?: CursorCloudIngressService | null;
+  cursorCloudFleetService?: CursorCloudFleetService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
@@ -1063,6 +1091,7 @@ export type AppContext = {
   rpcSocketServer?: NetServer;
   rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  keepAwakeService?: KeepAwakeService | null;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
@@ -1667,6 +1696,7 @@ export function registerIpc({
   releaseRepository = DEFAULT_RELEASE_REPOSITORY,
   builtInBrowserService,
   productAnalyticsService,
+  autoDiagnosticsService,
   publishAttentionNotchSnapshot,
   publishAttentionNotchToast,
   updateAttentionNotchSettings,
@@ -1682,7 +1712,7 @@ export function registerIpc({
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
-  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[] };
+  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[]; knownLocalProjectRoots?: string[] };
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
@@ -1712,6 +1742,11 @@ export function registerIpc({
   releaseRepository?: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
+  /**
+   * Owns the auto-send setting, the budget and the send itself. Absent only in
+   * tests and in runtime modes that never built one; every call site guards.
+   */
+  autoDiagnosticsService?: AutoDiagnosticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
@@ -2360,6 +2395,37 @@ export function registerIpc({
                   outcome: didTimeout ? "timeout" : "failure",
                   recoverable: true,
                   source: "ipc",
+                },
+              });
+            } catch {
+              // Analytics capture must never mask the original IPC error.
+            }
+          }
+          // Every brain action the app performs goes through this one channel,
+          // and `usageActionFromIpcChannel` maps it to `localRuntime.callAction`
+          // — not a meaningful usage action — so the branch above has never
+          // fired for it. That is why an installation whose brain failed every
+          // action produced no telemetry at all. It is deliberately NOT fixed by
+          // adding the channel to MEANINGFUL_ACTIONS: that set is the durable
+          // `usage_events` mutation ledger, and joining it would write a
+          // mutation row per brain call and redefine what "interaction" counts.
+          if (channel === IPC.localRuntimeCallAction) {
+            try {
+              // The analytics policy re-checks this against the closed domain
+              // list, so an unrecognised domain is dropped rather than reported.
+              const actionDomain = readRuntimeActionRequest(args)?.domain ?? null;
+              const errorCode = brainActionErrorCode(error, didTimeout);
+              productAnalyticsService?.captureInternal({
+                event: "ade_brain_action_failed",
+                surface: "desktop",
+                // Per domain+code per hour: a brain that rejects every call in
+                // a retry loop costs one accepted event an hour, not one per
+                // call, and the per-event daily cap bounds the rest.
+                dedupeKey: `brain-action-failed:${actionDomain ?? "unknown"}:${errorCode}`,
+                minimumIntervalMs: 60 * 60 * 1_000,
+                properties: {
+                  ...(actionDomain ? { action_domain: actionDomain } : {}),
+                  error_code: errorCode,
                 },
               });
             } catch {
@@ -4699,7 +4765,6 @@ export function registerIpc({
         reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
         installId: productAnalyticsService?.getDistinctId() ?? null,
         accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        projectLogsDir: projectRoot ? resolveAdeLayout(projectRoot).logsDir : null,
         getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
         diagnoseProject: projectRecoveryService
           ? (root: string) => projectRecoveryService.diagnose(root)
@@ -4753,6 +4818,148 @@ export function registerIpc({
         copied,
         opened,
       };
+    },
+  );
+
+  /**
+   * The renderer's failure surfaces (the crash boundaries) asking for one
+   * automatic send. Main decides: the setting, the budget and the send all live
+   * there, so a renderer that fires this repeatedly changes nothing.
+   *
+   * `projectRoot` is deliberately NOT taken from the payload. It selects which
+   * project's log directory gets read into the report, and a renderer is the
+   * one participant here that must not choose that — the only caller
+   * (`RendererErrorBoundary`) never sends one anyway. Main uses the project it
+   * already has open, or none. The manual `openIssue` path is unchanged: there
+   * a person is choosing to file about the screen they are looking at.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsAutoReport,
+    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<void> => {
+      const code = typeof arg?.code === "string" ? arg.code : "";
+      if (!autoDiagnosticsService || !code.trim()) return;
+      await autoDiagnosticsService.report({
+        failureCode: code,
+        surface: typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown",
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string"
+          ? arg.technicalDetail.slice(0, 16_000)
+          : null,
+        projectRoot: getCtx().project?.rootPath ?? null,
+      });
+    },
+  );
+
+  /**
+   * "Send a report to ADE" from the Diagnostics sharing settings section.
+   *
+   * Takes no argument on purpose. Every other report carries a surface and a
+   * context from the screen that failed; this one is about nothing in
+   * particular, so main names the surface itself (`settings_manual`) and uses
+   * the project it already has open. A renderer choosing either would be a
+   * renderer choosing whose logs go in the report.
+   *
+   * `null` rather than a throw when the service is absent (a runtime mode
+   * without it): the caller renders "unavailable right now", which is true,
+   * instead of an exception it would have to translate.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsSendManual,
+    async (): Promise<DiagnosticsManualSendResult> =>
+      (await autoDiagnosticsService?.sendManual()) ?? { ok: false, reason: "failed" },
+  );
+
+  const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>
+    autoDiagnosticsService?.getStatus()
+    ?? {
+      enabled: true,
+      sendsInWindow: 0,
+      limit: MAX_AUTO_DIAGNOSTICS_PER_WINDOW,
+      manualSendsInWindow: 0,
+      manualLimit: MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
+    };
+
+  ipcMain.handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
+    diagnosticsSharingStatus());
+
+  ipcMain.handle(
+    IPC.diagnosticsSetSharing,
+    async (_event, arg: { enabled?: boolean } | undefined): Promise<DiagnosticsSharingStatus> => {
+      autoDiagnosticsService?.setEnabled(arg?.enabled === true);
+      return diagnosticsSharingStatus();
+    },
+  );
+
+  /**
+   * Hands over the notices nobody has been shown, and clears NOTHING.
+   *
+   * Clearing here would record "asked" as "displayed" — the same mistake the
+   * fast path already cannot make — and this handler is the one place where the
+   * difference is visible: the window can vanish between this loop and the
+   * toast. The renderer acknowledges each reference once it has rendered it
+   * (`diagnosticsAckAutoSent`), and that is the only thing that retires a
+   * notice.
+   */
+  ipcMain.handle(IPC.diagnosticsFlushAutoSent, async (event): Promise<void> => {
+    const pending = autoDiagnosticsService?.listPendingNotices() ?? [];
+    for (const notice of pending) {
+      try {
+        event.sender.send(IPC.diagnosticsAutoSent, {
+          failureCode: notice.failureCode,
+          reportPath: notice.reportPath ?? "",
+          reference: notice.reference ?? "",
+        } satisfies DiagnosticsAutoSentPayload);
+      } catch {
+        // A window that went away simply does not get the toast; the report was
+        // still sent, and it stays pending for the next window to show.
+      }
+    }
+  });
+
+  ipcMain.handle(
+    IPC.diagnosticsAckAutoSent,
+    async (_event, arg: { references?: unknown } | undefined): Promise<void> => {
+      const references = Array.isArray(arg?.references)
+        ? arg.references
+            .filter((value): value is string => typeof value === "string")
+            // A renderer only ever holds the handful it was just sent; the cap
+            // is here so a malformed caller cannot hand this a huge array.
+            .slice(0, 64)
+        : [];
+      autoDiagnosticsService?.ackNotices(references);
+    },
+  );
+
+  /**
+   * Reveals a saved auto-report, and nothing else.
+   *
+   * Deliberately NOT `appRevealPath`: that one validates against the project
+   * root and the user's Downloads/Documents/temp, and diagnostic reports live
+   * outside all of those. Widening that allowlist for every caller to serve one
+   * toast button would be the wrong trade; this handler carries the two
+   * directories it needs instead.
+   *
+   * BOTH senders write reports, to different places — the desktop under
+   * `userData/diagnostic-reports`, the brain under
+   * `<adeHome>/diagnostic-reports` — and the brain's are precisely the ones a
+   * user is most likely to want, since a headless send is the one they were not
+   * present for. Allowing only the desktop's root left "View" on every brain
+   * toast throwing on click.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsRevealReport,
+    async (_event, arg: { reportPath?: string } | undefined): Promise<void> => {
+      const raw = typeof arg?.reportPath === "string" ? arg.reportPath.trim() : "";
+      if (!raw) return;
+      const resolved = resolveRevealableDiagnosticReport(
+        diagnosticReportRoots({
+          userDataDir: app.getPath("userData"),
+          adeDir: resolveMachineAdeLayout().adeDir,
+        }),
+        raw,
+      );
+      if (!resolved) throw new Error("Path is outside allowed directories.");
+      shell.showItemInFolder(resolved);
     },
   );
 
@@ -5339,6 +5546,42 @@ export function registerIpc({
   );
 
   ipcMain.handle(
+    IPC.aiCursorCloudFleet,
+    async (_event, arg?: { includeArchived?: boolean; limit?: number }): Promise<CursorCloudFleetResult> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.getFleet(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudPullIntoLane,
+    async (_event, arg: { agentId: string }): Promise<CursorCloudPullIntoLaneResult> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.pullIntoLane(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudResolveLane,
+    async (_event, arg: { agentId: string }): Promise<{ laneId: string; laneName: string; created: boolean }> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.resolveLaneForAgent(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudStopRun,
+    async (_event, arg: { agentId: string }): Promise<{ stopped: boolean }> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.stopAgentRun(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
     IPC.aiCursorCloudStreamRun,
     async (_event, arg: unknown): Promise<CursorCloudStreamRunResult> => {
       // Subscription is opportunistic: events flow through the existing session
@@ -5376,7 +5619,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+  const readLocalSyncStatus = async (arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const params = {
       includeTransferReadiness: arg?.includeTransferReadiness === true,
       forceTransferReadiness: arg?.forceTransferReadiness === true,
@@ -5410,6 +5653,34 @@ export function registerIpc({
     } catch (error) {
       return buildMachineOnlySyncSnapshot(error);
     }
+  };
+
+  // The account directory refusing to register THIS computer is the state a
+  // revoked machine sits in, and the local status read is where the desktop can
+  // see it. The observer reports only the edge into a refusal, so a machine that
+  // stays revoked for days costs one event and not one per poll tick; the
+  // per-code hour below bounds the case the in-process latch cannot see, which
+  // is an app or brain restarting inside the refusal.
+  const observeMachineRegisterRefusal = createMachineRegisterRefusalObserver((code) => {
+    productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_register_refused",
+        outcome: "failed",
+        refusal_code: code,
+      },
+      projectId: null,
+      dedupeKey: `machine_register_refused:${code}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
+  });
+
+  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const snapshot = await readLocalSyncStatus(arg);
+    observeMachineRegisterRefusal(snapshot);
+    return snapshot;
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
@@ -6462,6 +6733,38 @@ export function registerIpc({
   ): Promise<SessionLinearIssueLink[]> => {
     const ctx = ensureLaneContext();
     return ctx.laneService.listLinearIssuesForLaneSessions(arg);
+  });
+
+  ipcMain.handle(IPC.lanesAttachGitHubIssueToSession, async (
+    _event,
+    arg: { chatSessionId: string; issues: LaneGitHubIssue[] },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.attachGitHubIssueToSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesDetachGitHubIssueFromSession, async (
+    _event,
+    arg: { chatSessionId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.detachGitHubIssueFromSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListGitHubIssuesForSession, async (
+    _event,
+    arg: { chatSessionId: string },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listGitHubIssuesForSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListGitHubIssuesForLaneSessions, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listGitHubIssuesForLaneSessions(arg);
   });
 
   ipcMain.handle(IPC.lanesUnlinkLinearIssues, async (
@@ -7575,12 +7878,16 @@ export function registerIpc({
       return [];
     }
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const listOptions = {
+      includeAutomation: Boolean(arg?.includeAutomation),
+      ...(arg?.includeIdentity === true ? { includeIdentity: true } : {}),
+    };
     return await (service as unknown as {
       listSessions: (
         laneId?: string,
-        options?: { includeAutomation?: boolean },
+        options?: { includeAutomation?: boolean; includeIdentity?: boolean },
       ) => Promise<AgentChatSessionSummary[]>;
-    }).listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
+    }).listSessions(laneId || undefined, listOptions);
   });
 
   ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
@@ -9541,6 +9848,12 @@ export function registerIpc({
     return ctx.githubService.clearAppUserAuth();
   });
 
+  // Zero-network read, so pollers can consult the reserve on a timer.
+  ipcMain.handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRequestBudget();
+  });
+
   const resolveGithubRepoRef = async (
     githubService: ReturnType<typeof createGithubService>,
     arg?: { owner?: string; name?: string } | null
@@ -9610,6 +9923,12 @@ export function registerIpc({
       state: arg?.state ?? "all",
       since: arg?.since,
     });
+  });
+
+  ipcMain.handle(IPC.githubGetIssue, async (_event, arg: { owner?: string; name?: string; number: number }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.getIssue(owner, name, arg.number);
   });
 
   ipcMain.handle(
@@ -9687,6 +10006,19 @@ export function registerIpc({
       localRuntimeConnectionPool,
       LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
     ),
+    // Same shape and the same per-outcome hour as the two Connections controls
+    // below, so removal joins that funnel rather than starting a parallel one.
+    // The machine key, its display name and the account id all stay here.
+    recordMachineRemoved: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "machine_removed", outcome },
+        projectId: null,
+        dedupeKey: `machine_removed:${outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+    },
     logger: {
       info: (message, meta) => getCtx().logger.info(message, meta),
       warn: (message, meta) => getCtx().logger.warn(message, meta),
@@ -11101,8 +11433,39 @@ export function registerIpc({
     return { detection };
   });
 
+  // A renderer running against a main process without the service must still
+  // get a well-formed snapshot — and one that says "off", because a missing
+  // service holds no lock. The shape lives with the type so the four surfaces
+  // that report "no lock held" cannot drift apart.
+  ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
+    const service = getCtx().keepAwakeService;
+    return service ? await service.getSnapshot() : INERT_KEEP_AWAKE_SNAPSHOT;
+  });
+
+  ipcMain.handle(
+    IPC.keepAwakeSetLevel,
+    async (_event, level: unknown): Promise<KeepAwakeSnapshot> => {
+      const service = getCtx().keepAwakeService;
+      return service ? await service.setLevel(level) : INERT_KEEP_AWAKE_SNAPSHOT;
+    },
+  );
+
+  ipcMain.handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
+    const service = getCtx().keepAwakeService;
+    if (!service) {
+      return {
+        ok: false,
+        error: "ADE can't change this right now.",
+        snapshot: INERT_KEEP_AWAKE_SNAPSHOT,
+      };
+    }
+    return await service.fixSystemSleep();
+  });
+
   ipcMain.handle(IPC.updateCheckForUpdates, () => {
-    getCtx().autoUpdateService?.checkForUpdates();
+    // Only reachable from the Settings button, so it always counts as
+    // user-initiated: it must run even when an update is already staged.
+    getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
   });
 
   ipcMain.handle(IPC.updateGetState, () => {

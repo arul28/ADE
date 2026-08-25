@@ -127,10 +127,13 @@ inside the lane worktree, but hostname-based isolation is off.
 
 ## What isolation does NOT cover
 
-- **Shared filesystem locations** — `~/.claude/`, `~/.codex/`, global
-  npm/yarn/pip caches, host-level docker daemon. The PTY inherits
-  `process.env` including `HOME`, so CLIs write to their usual user
-  paths regardless of the lane.
+- **Shared filesystem locations** — `~/.claude/`, `~/.codex/`,
+  `~/.factory/`, global npm/yarn/pip caches, host-level docker daemon. The
+  PTY inherits `process.env` including `HOME`, so CLIs write to their usual
+  user paths regardless of the lane — and their usual paths are whatever
+  `CLAUDE_CONFIG_DIR` / `CODEX_HOME` / `FACTORY_HOME_OVERRIDE` say, which is
+  why every ADE read of those directories goes through
+  `services/shared/providerConfigHomes.ts` instead of a hardcoded default.
 - **Network sockets** — lane port ranges are advisory; commands can bind to any free port unless explicitly constrained.
 - **Shared database** — ADE's own SQLite file is per-project, not per
   lane. All lanes in a project write into the same `terminal_sessions`

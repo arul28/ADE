@@ -48,6 +48,13 @@ export function registerAdeProtocolHandler(options: {
   /** Optional structured log hook. */
   log?: (event: string, fields: Record<string, unknown>) => void;
   /**
+   * Drains {@link log} to disk. Called only on the branch that quits this
+   * process immediately, where a batched write would die with it — and that
+   * branch's line (`deeplink.single_instance.lock_lost`) is the one that says
+   * which process ADE actually booted.
+   */
+  flushLog?: () => void;
+  /**
    * When true, ask the OS to make this app the default `ade://` handler. When
    * false the single-instance lock and `open-url` / `second-instance`
    * listeners are still installed so the app can dispatch deeplinks delivered
@@ -114,6 +121,7 @@ export function registerAdeProtocolHandler(options: {
       shouldForwardToLockHolder,
     });
     if (shouldForwardToLockHolder) {
+      options.flushLog?.();
       app.quit();
       return;
     }

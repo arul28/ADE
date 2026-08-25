@@ -18,6 +18,7 @@ import {
   describeLastFailureForStartupLog,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,
@@ -42,6 +43,7 @@ import {
   startHeadlessRpcTcpServer,
   shouldAutoRegisterProjectForPlan,
   formatBrainStatus,
+  formatGithubAppUserAuth,
   shouldBlockManualMachineRuntimeSpawn,
   shouldProbeBrainStartupState,
   shouldEnforceMachineRuntimeBuildCompatibility,
@@ -59,6 +61,7 @@ import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { readBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
@@ -67,6 +70,53 @@ process.env.ADE_ENABLE_AUTOMATIONS = "1";
 process.env.ADE_ENABLE_MACOS_VM = "1";
 
 const crdtHostIt = process.platform === "darwin" ? it : it.skip;
+
+/**
+ * Waits for a DETACHED test brain to leave, and kills it if it will not.
+ *
+ * A brain owns its ADE_HOME for as long as it runs: it writes the credential
+ * store, that store's lock file, and the relay configuration under
+ * `secrets/`, plus its heartbeat under `runtime/`. `ade runtime stop` returns
+ * when the shutdown request is answered, not when the process is gone, and it
+ * reports rather than throws when it never reached a brain at all. A teardown
+ * that removes ADE_HOME on that signal alone races those writes: one file
+ * created between `rmSync`'s readdir and its rmdir fails the whole teardown
+ * with ENOTEMPTY.
+ */
+async function waitForDetachedProcessExit(
+  pid: number | null,
+  timeoutMs = 10_000,
+): Promise<void> {
+  if (pid === null || !Number.isInteger(pid) || pid <= 0) return;
+  // Same rule as the brain's "self" heartbeat verdict: never signal your own
+  // process. A stale heartbeat naming this pid would SIGKILL the test runner.
+  if (pid === process.pid) return;
+  const isRunning = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error: unknown) {
+      // EPERM means the process exists and belongs to somebody else, which is
+      // still "running" for this purpose. Only ESRCH means it is gone.
+      return (error as NodeJS.ErrnoException | null)?.code !== "ESRCH";
+    }
+  };
+  const waitUntilGone = async (deadline: number): Promise<boolean> => {
+    while (Date.now() < deadline) {
+      if (!isRunning()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return !isRunning();
+  };
+  if (await waitUntilGone(Date.now() + timeoutMs)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone, or not ours to signal.
+  }
+  // SIGKILL is not synchronous either: the process still has to be reaped.
+  await waitUntilGone(Date.now() + 2_000);
+}
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -448,6 +498,34 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "account-machines",
     )).toContain("unreachable");
+    // A machine that announced its own suspend must read "Asleep" here, not
+    // "online" — the whole point of publishing the announcement is that the
+    // heartbeat window alone cannot tell a shut lid from a live machine. The
+    // battery slot is absent for a machine that reported none, so a desktop
+    // never renders as one at 0%.
+    const sleeping = formatOutput(
+      {
+        state: "ok",
+        message: null,
+        machines: [{
+          machineKey: "laptop",
+          deviceId: "device-laptop",
+          name: "MacBook Pro",
+          platform: "macOS",
+          deviceType: "desktop",
+          reachableEndpoints: [],
+          lastSeenAt: Date.now(),
+          online: true,
+          sleepState: "asleep",
+          sleepStateAt: Date.now(),
+          power: { batteryPercent: 82, charging: false, onExternalPower: false },
+        }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "account-machines",
+    );
+    expect(sleeping).toContain("Asleep · 82% battery");
+    expect(sleeping).toContain("wakes when you connect to it");
     const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
     expect(rawActionPlan.steps[0]).toMatchObject({
       method: "account.call",
@@ -1278,6 +1356,79 @@ describe("ADE CLI", () => {
     // The same output has to read as a plain failure when nothing is coming up.
     expect(formatBrainStatus({ ok: false, starting: false, runtime: { running: false } }))
       .not.toContain("nothing to repair");
+  });
+
+  it("reports the GitHub App credential state, not the access-token expiry", () => {
+    // A lapsed 8-hour access token behind a live refresh token is healthy. An
+    // agent that reads `expiresAt` re-authorizes a working credential, so the
+    // printed verdict has to come from `credentialState`.
+    const authorized = formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: "2026-08-20T01:00:00.000Z",
+      refreshTokenExpiresAt: "2026-11-18T01:00:00.000Z",
+      credentialState: "authorized",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    });
+    expect(authorized).toContain("Authorized as octocat");
+    expect(authorized).not.toContain("app-auth login");
+
+    // "blocked" must never read as a request to re-authorize, and the reason
+    // must survive whole — the generic record renderer truncates it as JSON.
+    const blocked = formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: null,
+      refreshTokenExpiresAt: "2026-11-18T01:00:00.000Z",
+      credentialState: "blocked",
+      refreshBlockedUntil: "2026-08-20T12:05:00.000Z",
+      lastRefreshError: {
+        kind: "rate_limited",
+        message: "GitHub is rate-limiting ADE's sign-in requests right now. Try again in a few minutes.",
+        status: 429,
+        at: "2026-08-20T12:00:00.000Z",
+      },
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    });
+    expect(blocked).toContain("do not re-authorize");
+    expect(blocked).toContain("2026-08-20T12:05:00.000Z");
+    expect(blocked).toContain("rate_limited (HTTP 429)");
+    expect(blocked).toContain("Try again in a few minutes.");
+
+    // Only a dead refresh token may ask for a login.
+    expect(formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: null,
+      refreshTokenExpiresAt: null,
+      credentialState: "needs_reauth",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    })).toContain("ade --role cto github app-auth login");
+
+    // An older host sends no credentialState at all. The shared derivation
+    // judges by the refresh token, so a lapsed 8-hour access token next to a
+    // live refresh token still reads as authorized — never as "log in again".
+    expect(formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: "2026-08-20T04:00:00.000Z",
+      refreshTokenExpiresAt: "2099-01-01T00:00:00.000Z",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    })).toContain("ADE renews this credential on its own");
   });
 
   it("skips the brain-starting probe inside supervisor and handover probe children", () => {
@@ -2432,6 +2583,48 @@ describe("ADE CLI", () => {
     expect(maintenanceText).toContain("manual");
     expect(maintenanceText).toContain("automation_ingress_events");
     expect(maintenanceText).toContain("skipped: not due");
+  });
+
+  it("ade session show reports what a session is DOING, not just its columns", () => {
+    // `runtime state` alone reads `idle` for a chat holding a warm agent
+    // process and two background jobs open — the state people were dropping to
+    // `ps` to diagnose. The words come from the shared presentation module, so
+    // this also pins that the CLI has not grown its own vocabulary.
+    const now = Date.now();
+    const text = formatOutput(
+      {
+        sessionId: "chat-1",
+        title: "Reap stale runtimes",
+        laneId: "lane-1",
+        status: "running",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+        startedAt: new Date(now - 3 * 60 * 60_000).toISOString(),
+        lastActivityAt: new Date(now - 3_000).toISOString(),
+        backgroundWorkSince: new Date(now - 2 * 60 * 60_000).toISOString(),
+        activeBackgroundTaskCount: 2,
+        backgroundWork: { workingCount: 1, monitoringCount: 1 },
+        runtimeProcesses: [{ pid: 59213, startedAt: new Date(now - 2 * 60 * 60_000).toISOString() }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    // Elapsed counts from when the work started, not from the last frame the
+    // provider happened to emit three seconds ago.
+    expect(text).toMatch(/^status\s+Background work \u00d72 2h$/mu);
+    expect(text).toContain("pid 59213 (2h)");
+  });
+
+  it("ade session show mutation acks carry no activity lines", () => {
+    // The same formatter renders snooze/wake acks, which have none of these
+    // fields. Every added line must disappear rather than render empty.
+    const text = formatOutput(
+      { sessionId: "chat-1", snoozedUntil: new Date(Date.now() + 3_600_000).toISOString(), ok: true },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    expect(text).not.toMatch(/^agent processes\s/mu);
+    expect(text).not.toMatch(/^status\s/mu);
   });
 
   it("formats external session action results as text", () => {
@@ -4096,6 +4289,57 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("passes chat steer --dispatch through without restating provider rules", () => {
+    // The host owns which providers honor which active-turn dispatch mode
+    // (`ACTIVE_TURN_DISPATCH_MODES`), so the CLI forwards the mode verbatim for
+    // every provider — Cursor's "interrupt" must not be filtered out here.
+    const interrupt = expectExecutePlan(buildCliPlan([
+      "chat",
+      "steer",
+      "chat-1",
+      "--text",
+      "switch to the other repro",
+      "--dispatch",
+      "interrupt",
+    ]));
+    expect(interrupt.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "steer",
+        args: { sessionId: "chat-1", text: "switch to the other repro", dispatchMode: "interrupt" },
+      },
+    });
+
+    const inline = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch-mode", "inline",
+    ]));
+    expect(inline.steps[0]?.params).toMatchObject({
+      arguments: { args: { dispatchMode: "inline" } },
+    });
+
+    const personal = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "personal-1", "--personal", "--text", "context", "--dispatch", "interrupt",
+    ]));
+    expect(personal.steps[0]).toMatchObject({
+      params: { action: "steer", args: { sessionId: "personal-1", text: "context", dispatchMode: "interrupt" } },
+    });
+
+    // Omitting the flag stages the message, so no mode reaches the host.
+    const staged = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context",
+    ]));
+    expect(
+      (staged.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })?.arguments?.args,
+    ).not.toHaveProperty("dispatchMode");
+
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "queue",
+    ])).toThrow(/stages the message for the next turn/);
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "later",
+    ])).toThrow(/must be inline or interrupt/);
+  });
+
   it("routes queue-aware interruption and recovery for project and personal chats", () => {
     const stopOnly = expectExecutePlan(buildCliPlan([
       "chat",
@@ -5397,11 +5641,17 @@ describe("ADE CLI", () => {
       expect(codeRequests).toBe(1);
       expect(tokenRequests).toBe(1);
     } finally {
+      // Read the pid BEFORE the stop: a clean shutdown removes the heartbeat
+      // file on its way out.
+      const brainPid = readBrainHeartbeat(path.join(adeHome, "runtime"))?.pid ?? null;
       try {
         await runCli(["--socket", socketPath, "runtime", "stop", "--text"]);
       } catch {
         // Best-effort cleanup if the detached test runtime never became available.
       }
+      // The brain writes into `adeHome` for as long as it lives. Removing the
+      // directory under a live one is what fails this teardown with ENOTEMPTY.
+      await waitForDetachedProcessExit(brainPid);
       stderrWrite.mockRestore();
       process.argv[1] = previousArgvEntry;
       for (const [key, value] of previousEnv) {
@@ -5411,7 +5661,9 @@ describe("ADE CLI", () => {
       await new Promise<void>((resolve) => directory.close(() => resolve()));
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
-  }, 30_000);
+    // The teardown above waits for a detached brain to leave, which costs up to
+    // 12 seconds on its own before the login flow's own budget is counted.
+  }, 45_000);
 
   posixIt("accepts current-session deadline success but rejects a stale signed-in account", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-deadline-sock-"));
@@ -12138,5 +12390,69 @@ describe("unlinkOwnedRuntimeSocket", () => {
 
     expect(outcome).toBe("not_owned");
     expect(unlinked).toEqual([]);
+  });
+});
+
+describe("formatDiagnosticError", () => {
+  it("never prints the fields of a thrown non-Error, which can carry a token", () => {
+    // sync.connectToBrain hands the draft's token to the request it builds; a
+    // rejection that carried that request used to be JSON.stringify'd whole
+    // into launchd.err.log, which `ade report-issue` tails into a report the
+    // user is told to paste into a public GitHub issue.
+    // Assembled from segments so the working tree never carries a
+    // secret-shaped literal the secret scanner would flag (same convention as
+    // diagnosticReport.test.ts).
+    const fakeAdeToken = ["ade", "live", "9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c"].join("_");
+    const fakeSkToken = ["sk", "live", "abcdefghijklmnopqrstuvwxyz"].join("-");
+    const thrown = {
+      code: "ECONNREFUSED",
+      token: fakeAdeToken,
+      body: { authorization: `Bearer ${fakeSkToken}` },
+    };
+
+    const formatted = formatDiagnosticError(thrown);
+
+    expect(formatted).not.toContain(fakeAdeToken);
+    expect(formatted).not.toContain(fakeSkToken);
+    // The shape still has to be diagnosable: the errno and the key names that
+    // locate the throw site survive.
+    expect(formatted).toContain("code=ECONNREFUSED");
+    expect(formatted).toContain("token");
+  });
+
+  it("redacts a credential that an Error carried in its own message", () => {
+    const fakeUrlToken = ["6f1c", "8a2b", "4d9e", "7f30"].join("");
+    const formatted = formatDiagnosticError(
+      new Error(`connect failed: tcp://127.0.0.1:5051?token=${fakeUrlToken}`),
+    );
+
+    expect(formatted).not.toContain(fakeUrlToken);
+    expect(formatted).toContain("token=<redacted>");
+    // Loopback is the fact a maintainer needs and identifies nobody.
+    expect(formatted).toContain("127.0.0.1");
+  });
+
+  it("caps a runaway error so one throw cannot bury the log it is written to", () => {
+    const formatted = formatDiagnosticError("x".repeat(20_000));
+
+    expect(formatted.length).toBeLessThan(4_200);
+    expect(formatted).toMatch(/characters truncated/);
+  });
+
+  it("keeps a plain string error and survives a value that throws while described", () => {
+    expect(formatDiagnosticError("brain socket vanished")).toBe("brain socket vanished");
+
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("no keys for you");
+        },
+        get: () => {
+          throw new Error("no fields for you");
+        },
+      },
+    );
+    expect(() => formatDiagnosticError(hostile)).not.toThrow();
   });
 });

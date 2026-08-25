@@ -10,6 +10,7 @@ import type {
   IosElementContextItem,
   IosSimulatorSession,
   LaneSummary,
+  OpenProjectBinding,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
@@ -340,6 +341,7 @@ function renderSidebar(args: {
   lanes?: LaneSummary[];
   activeSession?: TerminalSessionSummary | null;
   onTabChange?: (tab: WorkSidebarTab) => void;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   return render(
     <MemoryRouter>
@@ -353,6 +355,7 @@ function renderSidebar(args: {
         onClose={vi.fn()}
         contextTarget={args.contextTarget}
         contextDisabledReason={args.contextDisabledReason ?? null}
+        runtimePin={args.runtimePin ?? null}
       />
     </MemoryRouter>,
   );
@@ -402,6 +405,7 @@ describe("WorkSidebar context targets", () => {
   it("renders the attached terminal panel for running CLI session owners", () => {
     renderSidebar({
       tab: "terminal",
+      activeSession: { ...activeSession, id: "term-1", toolType: "codex" },
       contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "codex" },
     });
 
@@ -415,6 +419,7 @@ describe("WorkSidebar context targets", () => {
   it("renders the attached terminal panel for chat owners", () => {
     renderSidebar({
       tab: "terminal",
+      activeSession: { ...activeSession, id: "chat-1", toolType: "claude-chat" },
       contextTarget: { kind: "chat", sessionId: "chat-1" },
     });
 
@@ -452,7 +457,7 @@ describe("WorkSidebar context targets", () => {
       terminalId: "term-1",
       ptyId: "pty-1",
       data: expect.stringContaining("\x1b[200~"),
-    });
+    }, null);
     expect(terminalWrite.mock.calls[0]?.[0].data).toContain("iOS visual inspect context attached by the user.");
     expect(terminalWrite.mock.calls[0]?.[0].data).toContain("Continue");
     expect(dispatchSpy).not.toHaveBeenCalledWith(expect.objectContaining({ type: "ade:agent-chat:add-ios-context" }));
@@ -592,43 +597,40 @@ describe("WorkSidebar context targets", () => {
     expect((screen.getByText("Add Browser context") as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("scopes Browser sidebar status to the current project and ignores malformed open events", async () => {
-    installAdeMock({
-      browserStatus: {
-        ...defaultBrowserStatus,
-        collectionProjectRoot: "/repo-one",
-      },
-    });
+  it("hides the browser view for the pinned checkout, not the tab's project", async () => {
+    installAdeMock({});
     useAppStore.setState({
       project: { rootPath: "/repo-one", name: "Repo One" },
     } as any);
-    const browserEventListener: {
-      current: ((event: { type?: string; status?: unknown }) => void) | null;
-    } = { current: null };
     const browser = window.ade.builtInBrowser;
-    vi.mocked(browser.onEvent).mockImplementation((listener) => {
-      browserEventListener.current = (event) => listener(event as Parameters<typeof listener>[0]);
-      return () => {};
-    });
 
     renderSidebar({
       tab: "browser",
       contextTarget: { kind: "chat", sessionId: "chat-1" },
+      runtimePin: {
+        kind: "local",
+        key: "local:/repo-two",
+        rootPath: "/repo-two",
+        displayName: "Repo Two",
+      },
     });
 
+    // The sidebar itself never reads browser status: that read is unpinned, so
+    // it could only ever answer for the tab's own machine.
+    expect(browser.getStatus).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Git" }));
+
     await waitFor(() => {
-      expect(browser.getStatus).toHaveBeenCalledWith({
-        projectRoot: "/repo-one",
-      });
+      expect(browser.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+        projectRoot: "/repo-two",
+        visible: false,
+      }));
     });
-    expect(() => browserEventListener.current?.({ type: "open-request" })).not.toThrow();
-    expect(() => browserEventListener.current?.({
-      type: "status",
-      status: {
-        ...defaultBrowserStatus,
-        collectionProjectRoot: "/repo-two",
-      },
-    })).not.toThrow();
+    expect(browser.stopInspect).toHaveBeenCalledWith({ projectRoot: "/repo-two" });
+    expect(browser.setBounds).not.toHaveBeenCalledWith(expect.objectContaining({
+      projectRoot: "/repo-one",
+    }));
   });
 
   it("only exposes remote-aware tool panes for remote projects", async () => {

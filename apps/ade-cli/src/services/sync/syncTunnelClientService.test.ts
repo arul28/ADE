@@ -25,6 +25,7 @@ import {
   RELAY_CLOSE_FORWARD_FAILED,
   RELAY_CLOSE_HOST_UNAVAILABLE,
   RELAY_CONTROL_REPLACED_MESSAGE,
+  RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE,
   RELAY_READY_VERSION,
   RELAY_SELF_PROBE_DEBOUNCE_MS,
 } from "./syncTunnelClientService";
@@ -48,10 +49,9 @@ function fakeStore(relayUrl = "https://relay.example.com"): SyncCloudRelayStore 
     setRelayUrl: () => identity,
     getRelayWssUrl: () => `wss://relay.example.com/connect/${identity.machineKey}`,
     rotateMachineIdentity: (expectedMachineKey: string) => {
-      if (identity.machineKey === expectedMachineKey) {
-        identity = { machineKey: "c".repeat(32), secret: "d".repeat(48) };
-      }
-      return identity;
+      const rotated = identity.machineKey === expectedMachineKey;
+      if (rotated) identity = { machineKey: "c".repeat(32), secret: "d".repeat(48) };
+      return { config: identity, rotated, budgetExhausted: false, rotationsInWindow: rotated ? 1 : 0 };
     },
   } as unknown as SyncCloudRelayStore;
 }
@@ -1578,6 +1578,45 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
+  it("stops minting identities and asks for a reconnect once the budget is spent", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response(null, { status: 409 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const rotateMachineIdentity = vi.fn(() => ({
+      config: { machineKey: "a".repeat(32), secret: "b".repeat(48) },
+      rotated: false,
+      budgetExhausted: true,
+      rotationsInWindow: 2,
+    }));
+    const store = {
+      ...fakeStore("http://127.0.0.1:9"),
+      rotateMachineIdentity,
+    } as unknown as SyncCloudRelayStore;
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => "f".repeat(32),
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: store,
+      // Keep the retry far away; the capped state, not the schedule, is under test.
+      reconnectBackoffMs: () => 600_000,
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().identityRotationCapped).toBe(true);
+      });
+      // The machine keeps the key the account already knows about instead of
+      // minting yet another row nobody asked for.
+      expect(service.getStatus().machineKey).toBe("a".repeat(32));
+      expect(service.getStatus().lastError).toBe(RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE);
+      expect(rotateMachineIdentity).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("claims again when another process rotates the shared identity", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
@@ -1594,7 +1633,12 @@ describe("createSyncTunnelClientService", () => {
       getRelayUrl: () => relayUrl,
       setRelayUrl: () => ({ ...identity, relayUrl }),
       getRelayWssUrl: () => `ws://127.0.0.1:${relayPort}/connect/${identity.machineKey}`,
-      rotateMachineIdentity: () => ({ ...identity, relayUrl }),
+      rotateMachineIdentity: () => ({
+        config: { ...identity, relayUrl },
+        rotated: false,
+        budgetExhausted: false,
+        rotationsInWindow: 0,
+      }),
     } as unknown as SyncCloudRelayStore;
     const controlPaths: string[] = [];
     relay.on("connection", (socket, request) => {

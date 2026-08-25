@@ -619,4 +619,106 @@ describe("runtime catalog machine scoping", () => {
     expect(runtimeCatalogProviderIsFresh("cursor", "sdk")).toBe(true);
     expect(runtimeCatalogProviderIsFresh("cursor", "sdk", FOREIGN_SCOPE)).toBe(false);
   });
+
+  it("does not treat a cached OpenCode catalog as a live probe", () => {
+    rememberRuntimeCatalog({
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+      groups: [{
+        key: "opencode",
+        displayName: "OpenCode",
+        providers: [{
+          key: "zen",
+          displayName: "Zen",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "zen",
+            label: "Zen",
+            models: [{
+              id: "opencode/zen/ox-alpha-free",
+              runtimeModelId: "zen/ox-alpha-free",
+              provider: "opencode",
+              providerKey: "zen",
+              groupKey: "opencode",
+              displayName: "ox alpha free",
+              isDefault: false,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    } as unknown as AgentChatModelCatalog, { mode: "cached" });
+
+    expect(runtimeCatalogProviderIsFresh("opencode")).toBe(false);
+
+    rememberRuntimeCatalog({
+      fetchedAt: "2026-05-18T00:00:01.000Z",
+      stale: false,
+      groups: [{
+        key: "opencode",
+        displayName: "OpenCode",
+        providers: [{
+          key: "zen",
+          displayName: "Zen",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "zen",
+            label: "Zen",
+            models: [{
+              id: "opencode/zen/ox-alpha-free",
+              runtimeModelId: "zen/ox-alpha-free",
+              provider: "opencode",
+              providerKey: "zen",
+              groupKey: "opencode",
+              displayName: "ox alpha free",
+              isDefault: false,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    } as unknown as AgentChatModelCatalog, { mode: "force", refreshProvider: "opencode" });
+
+    expect(runtimeCatalogProviderIsFresh("opencode")).toBe(true);
+  });
+
+  it("keeps live OpenCode thinking tiers in the composer machine bucket, not the unscoped one", () => {
+    const liveId = "opencode/zen/ox-alpha-free";
+    rememberRuntimeCatalog({
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+      groups: [{
+        key: "opencode",
+        displayName: "OpenCode",
+        providers: [{
+          key: "zen",
+          displayName: "Zen",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "zen",
+            label: "Zen",
+            models: [{
+              id: liveId,
+              runtimeModelId: "zen/ox-alpha-free",
+              provider: "opencode",
+              providerKey: "zen",
+              groupKey: "opencode",
+              displayName: "ox alpha free",
+              isDefault: false,
+              isAvailable: true,
+              reasoningEfforts: ["low", "medium", "high", "max"].map((effort) => ({ effort })),
+            }],
+          }],
+        }],
+      }],
+    } as unknown as AgentChatModelCatalog, { mode: "force", refreshProvider: "opencode", scopeKey: FOREIGN_SCOPE });
+    descriptorsFromAgentChatModelCatalog(getSharedRuntimeCatalog(FOREIGN_SCOPE), undefined, FOREIGN_SCOPE);
+
+    expect(resolveModelDescriptorWithRuntimeCatalog(liveId, FOREIGN_SCOPE)?.reasoningTiers)
+      .toEqual(["low", "medium", "high", "max"]);
+    expect(resolveModelDescriptorWithRuntimeCatalog(liveId)?.reasoningTiers).toBeUndefined();
+  });
 });

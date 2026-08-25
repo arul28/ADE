@@ -9,12 +9,18 @@ and why.
 for pre-fix clients" in §3c-i; step 1 is the chokepoint and revision in §3a,
 whose implemented shape is recorded at the end of that section.
 
-Settle currently writes a lifecycle column and stops nothing. A session filed as
-"done" can still own a background shell, a subagent fleet, or a Cursor cloud run
-— burning tokens and holding ports behind a row that has left every live-work
-surface. **Archive is the only lifecycle path that stops processes today**
-(`laneService.archive` → `stopLaneRuntimeWork`, ordered before the port-lease
-release).
+**The problem, as it stood before step 3** (kept because the rest of this
+document argues from it — see §6 for what shipped): settle wrote a lifecycle
+column and stopped nothing. A session filed as "done" could still own a
+background shell, a subagent fleet, or a Cursor cloud run — burning tokens and
+holding ports behind a row that had left every live-work surface. Archive was
+the only lifecycle path that stopped processes (`laneService.archive` →
+`stopLaneRuntimeWork`, ordered before the port-lease release). Settle now tears
+down through `sessionSettleTeardown.ts` (§6b), best-effort, with residue
+recorded when a stop cannot be confirmed (§6c) — which is also why the Settle
+affordance is offered on a row whose turn has ended but whose background work
+has not (`sessionIsMidFlight`, see `ui-surfaces.md`): settling it is what stops
+that work.
 
 This document exists because the obvious implementation — "await teardown, then
 write `settled_at`" — was built, reviewed six times, and cut in PR #1059. It

@@ -148,56 +148,14 @@ import {
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 
-export const ADE_ACTION_DOMAIN_NAMES = [
-  "account",
-  "attention",
-  "lane",
-  "git",
-  "diff",
-  "conflicts",
-  "pr",
-  "tests",
-  "chat",
-  "keybindings",
-  "ai",
-  "onboarding",
-  "automation_planner",
-  "cto_state",
-  "cto_memory",
-  "session",
-  "operation",
-  "ade_project",
-  "project_config",
-  "project_secret",
-  "linear_credentials",
-  "linear_oauth",
-  "linear_issue_tracker",
-  "github",
-  "feedback",
-  "usage",
-  "analytics",
-  "storage",
-  "budget",
-  "update",
-  "file",
-  "pty",
-  "terminal",
-  "layout",
-  "tiling_tree",
-  "graph_state",
-  "computer_use_artifacts",
-  "ios_simulator",
-  "app_control",
-  "built_in_browser",
-  "automations",
-  "review",
-  "issue",
-  "orchestration",
-  "search",
-  "external-sessions",
-] as const;
+// The names themselves live in `./domains`, which has no imports, so consumers
+// that need only the vocabulary (the analytics policy) do not have to load this
+// module's whole service graph to get it. Re-exported here because this is
+// where every existing caller looks for them.
+import type { AdeActionDomain } from "./domains";
 
-export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
+export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
+export type { AdeActionDomain } from "./domains";
 
 export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "evaluator";
 
@@ -358,6 +316,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "archive",
     "archiveAndReclaim",
     "attachLinearIssueToSession",
+    "attachGitHubIssueToSession",
     "cancelDelete",
     "create",
     "createChild",
@@ -366,6 +325,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "delete",
     "deleteTemplate",
     "detachLinearIssueFromSession",
+    "detachGitHubIssueFromSession",
     "diagnosticsActivateFallback",
     "diagnosticsDeactivateFallback",
     "diagnosticsGetLaneHealth",
@@ -394,6 +354,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listTemplates",
     "listLinearIssuesForLaneSessions",
     "listLinearIssuesForSession",
+    "listGitHubIssuesForLaneSessions",
+    "listGitHubIssuesForSession",
     "linkLinearIssues",
     "oauthDecodeState",
     "oauthEncodeState",
@@ -723,6 +685,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cursorCloudFollowUp",
     "openCursorCloudChat",
     "watchCursorCloudMirror",
+    "getCursorCloudFleet",
+    "resolveCursorCloudAgentLane",
+    "pullCursorCloudAgentIntoLane",
+    "stopCursorCloudAgentRun",
   ],
   onboarding: [
     "complete",
@@ -818,10 +784,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getAppUserAuthStatus",
     "getRepoOrThrow",
     "getRemoteStatus",
+    "getRequestBudget",
     "getStatus",
     "createRepoAutolink",
     "listRepoAutolinks",
     "listRepoCollaborators",
+    "listRepoIssues",
+    "getIssue",
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
@@ -3033,6 +3002,23 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         watching: args.watching,
       });
     },
+    getCursorCloudFleet: (args?: { includeArchived?: boolean; limit?: number }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").getFleet({
+        includeArchived: args?.includeArchived !== false,
+        ...(args?.limit !== undefined ? { limit: args.limit } : {}),
+      }),
+    resolveCursorCloudAgentLane: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").resolveLaneForAgent(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
+    pullCursorCloudAgentIntoLane: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").pullIntoLane(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
+    stopCursorCloudAgentRun: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").stopAgentRun(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
   };
 }
 
@@ -3775,6 +3761,31 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       return githubService.listRepoCollaborators(
         requireNonEmptyString(actionArgs.owner, "owner"),
         requireNonEmptyString(actionArgs.name, "name"),
+      );
+    },
+    async listRepoIssues(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const state = actionArgs.state;
+      return githubService.listRepoIssues(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        {
+          state: state === "open" || state === "closed" || state === "all" ? state : "open",
+        },
+      );
+    },
+    async getIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = typeof actionArgs.number === "number"
+        ? actionArgs.number
+        : Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.getIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
       );
     },
     async publishCurrentProject(args?: unknown) {

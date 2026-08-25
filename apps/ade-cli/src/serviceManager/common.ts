@@ -6,6 +6,17 @@ import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
 
+/**
+ * The launchd plist key that lets a background service read an evicted cloud
+ * file instead of failing on the placeholder.
+ *
+ * Named once because three places must agree on it: the two plists that write
+ * it, and the storage probe that reads a plist back to report whether an
+ * install predates it. A typo in any one of them is invisible until a user's
+ * project will not open.
+ */
+export const MATERIALIZE_DATALESS_FILES_KEY = "MaterializeDatalessFiles";
+
 export type ServiceManagerResult = {
   ok: boolean;
   serviceName: string;

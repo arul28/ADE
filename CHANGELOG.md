@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.63] - 2026-08-20
+
+### GitHub connection
+
+- The GitHub App user credential is renewed through one coordinator per credential store: a process-wide single-flight plus a cross-process lease and backoff ledger persisted inside the credential record. Parallel renewals could previously invalidate the rotating refresh token, after which every process retried the dead token without backoff until GitHub rate-limited the OAuth host (#1137).
+- `github.appUserToken.v1` is file-backed and shared by the desktop app, the machine brain, and the CLI; a routed desktop store with a one-time freshness-aware adoption replaces the split safeStorage copy.
+- The status model is honest: `credentialState` (missing / authorized / blocked / needs_reauth) is judged by the refresh token, never by the 8-hour access token; a paused renewal shows its retry time with no re-authorize CTA; ADE's own renewal reads as "renewing", not as a failed check; and the App panel gained a Disconnect control.
+- OAuth transport errors are typed: HTTP-200 error bodies (`bad_refresh_token`) are read, `retry-after` is honored, a credential is declared dead only on a 401 or a definitive OAuth error code, and the whole refresh exchange is bounded below the lease lifetime.
+- The brain watches the shared credential file and force-polls the relay after a re-authorization instead of waiting out its five-minute cooldown.
+- A refresh whose store write fails keeps the rotated token in process memory, retries the persist, and never re-POSTs the spent refresh token; the account-session rotation journal likewise survives failed exchanges.
+
+### Updates
+
+- "Check for updates" runs when an update is already staged (#1134), and a manual check no longer discards the update that was already downloaded (#1135).
+
+### Providers
+
+- ADE no longer overrides the user's own provider configuration (#1136).
+
+### Getting help
+
+- Settings gained a Send button beside Diagnostics sharing; previously a report could only be sent from a surface that had already failed.
+- Diagnostic reports no longer require an open project: the machine-scoped main log, the most recent project's log, the background service's stdout as well as stderr, and the service definition are all collected.
+- The desktop main process now writes a machine-scoped log from process start (`~/.ade/runtime/desktop-main.jsonl`), so startup, deeplink, single-instance and CLI-install events are recorded even when no project is ever opened.
+- Linux reports now collect the service journal instead of asking for a macOS log path that never existed there.
+- A failed report save no longer claims the report is on disk.
+
+### The `ade` terminal command
+
+- The CLI install now runs once, is skipped when `ade` already resolves from any source, and never re-runs on every launch.
+
+### Fixes
+
+- Report collection no longer blocks the Electron main thread or the brain's event loop on subprocesses (Windows and Linux).
+- The Windows installed-product smoke test no longer fails a passing run on a benign cleanup `taskkill`, and its process-ownership checks re-verify identity rather than trusting a recycled PID.
+- The account-directory production deploy preflight now checks all four required secrets and both required vars, instead of one secret and one var.
+
+## [1.2.62] - 2026-08-19
+
+### Automatic diagnostic reports
+
+- Failures now send the redacted diagnostic report on their own: project recovery, renderer crash, failed update, pairing give-up, and stuck machine publish.
+- Every automatic send announces itself with a message offering View (read the exact report) and Turn off (stop future sends).
+- On by default, with a Diagnostics sharing section in Settings and a truthful row in `ade doctor`; turning it off takes effect immediately across the app and the CLI.
+- Budgets bound the volume: one report per failure kind per day and a small daily cap per machine, plus a fleet-wide server ceiling that refuses quietly rather than surfacing an error.
+- Reports carry the same redaction as the manual report, and a refused or failed send is never shown to the user as a failure.
+
+## [1.2.61] - 2026-08-19
+
+### Account and machines
+
+- Machine identity is anchored to the hardware it runs on, so reinstalling and signing back in reconnects the existing machine instead of stranding a duplicate; existing duplicates are merged.
+- Pairing refusals now recover automatically in the background while signed in, and respect a machine you removed on purpose.
+- Machine identity is written durably with a backup, and a corrupt identity file is repaired instead of lost.
+
+### GitHub connection
+
+- An unreadable saved GitHub sign-in reports itself as unreadable and routes to Repair, instead of looking identical to a fresh install.
+- GitHub outages are distinguished from broken credentials.
+- Foreground PR polling no longer consumes the hourly GitHub API quota: failures arm an exponential stand-down, a request reserve is held for user actions, and recovery is automatic.
+- Failed check, comment, and review reads are reported as failures instead of rendering as "no checks ran".
+
+### Errors and diagnostics
+
+- Storage and startup failures carry coded, plain-language errors instead of raw system errnos.
+- Projects stored in iCloud or Dropbox are detected before they fail.
+- One-click "Send to ADE" for the redacted diagnostic report, on the desktop app, `ade report-issue --send`, and `ade code` — working even when the brain is down.
+
+### Machine sleep
+
+- Hosts announce suspend and resume, with a heartbeat-gap fallback, so "Asleep" is stated rather than inferred; machine rows carry battery, charging, and wall-power state.
+- A turn interrupted by sleep pauses and resumes in place instead of failing; session deeplinks carry their owning machine and offer to wake it.
+- Opt-in keep-awake setting with three levels, default off.
+
+### Work and chat
+
+- Cursor SDK chats recover from an in-stream token expiry by resuming the same agent in a fresh worker.
+- Claude chats recover after a session-limit reject without forking, with a quota card and a local-lane fork.
+- Cursor forks replay the full fitted transcript instead of a short conversation tail.
+- Cursor chats support mid-turn steering (interrupt and continue, or send after turn).
+- Chat runtimes no longer outlive the background work that pinned them; background-work elapsed is measured from when the work started, and Settle stays available on background-promoted rows.
+- Handoff, the tools pane, Git/diff/terminal, iOS simulator, app control, and browser panels act on the chat's machine rather than the tab's binding.
+- The @ mention popover dismisses when its query stops matching.
+
+### Connections and sync
+
+- Unknown-device sync rejection storms are throttled, and a pairing is dropped once every connection hop agrees it is gone.
+- Lane PR badges are scoped to the current branch.
+- Windows uninstall teardown retries locked files.
+
+### iOS
+
+- Mobile Work session cards polished.
+- The iOS app is built and tested on every PR.
+
 ## [1.2.60] - 2026-08-17
 
 ### Startup and recovery
@@ -1576,7 +1671,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.63...HEAD
+[1.2.63]: https://github.com/arul28/ADE/compare/v1.2.62...v1.2.63
+[1.2.62]: https://github.com/arul28/ADE/compare/v1.2.61...v1.2.62
+[1.2.61]: https://github.com/arul28/ADE/compare/v1.2.60...v1.2.61
 [1.2.60]: https://github.com/arul28/ADE/compare/v1.2.59...v1.2.60
 [1.2.59]: https://github.com/arul28/ADE/compare/v1.2.58...v1.2.59
 [1.2.58]: https://github.com/arul28/ADE/compare/v1.2.57...v1.2.58

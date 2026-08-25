@@ -359,10 +359,7 @@ describe("buildRosterSnapshot", () => {
     expect(projects[0]!.runningCount).toBe(0);
   });
 
-  it("labels CTO/identity chats without dropping them from the roster", async () => {
-    // The mobile hub consumes this roster and renders identity chats, so the
-    // roster must keep the rows. It only labels them; excluding them is the
-    // Activity publisher's job (see pushPublisherService).
+  it("excludes CTO/identity chats from the roster and its counts", async () => {
     // Disk path: the persisted sidecar is the only identity signal available
     // for an un-booted project.
     fs.writeFileSync(
@@ -371,8 +368,9 @@ describe("buildRosterSnapshot", () => {
     );
     const fromDisk = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
     const diskRow = fromDisk[0]!.chats.find((chat) => chat.id === "chat-run");
-    expect(diskRow).toBeDefined();
-    expect((diskRow as { identityKey?: string | null } | undefined)?.identityKey).toBe("cto");
+    expect(diskRow).toBeUndefined();
+    expect(fromDisk[0]!.chats.find((chat) => chat.id === "cli-end")).toBeUndefined();
+    expect(fromDisk[0]!.attentionCount).toBe(1);
 
     // Booted path: the live summary carries identityKey directly.
     const scopeRegistry = bootedScopes([
@@ -380,10 +378,8 @@ describe("buildRosterSnapshot", () => {
     ]);
     const fromLive = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
     const liveRow = fromLive[0]!.chats.find((chat) => chat.id === "chat-await");
-    expect(liveRow).toBeDefined();
-    expect((liveRow as { identityKey?: string | null } | undefined)?.identityKey).toBe("cto");
-    // Hub behaviour is unchanged: an awaiting identity chat still badges.
-    expect(fromLive[0]!.attentionCount).toBe(1);
+    expect(liveRow).toBeUndefined();
+    expect(fromLive[0]!.attentionCount).toBe(0);
   });
 
   it("leaves ordinary chats unlabelled", async () => {

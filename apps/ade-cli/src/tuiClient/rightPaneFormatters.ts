@@ -1,6 +1,8 @@
 import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
 import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { NO_CI_REASON, rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
+import type { CursorCloudFleetEntry } from "../../../desktop/src/shared/types/config";
+import { formatCursorCloudAge } from "../../../desktop/src/renderer/lib/cursorCloudUtils";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -69,6 +71,23 @@ function unwrapPrValue(value: unknown): { root: JsonRecord; pr: JsonRecord } | n
     root,
     pr: isRecord(nested) ? nested : root,
   };
+}
+
+/**
+ * The message from a PR read that failed, or null when the value is real data.
+ *
+ * The `/pr` dispatch catches a rejected read into `{ error }` rather than
+ * blowing the pane away, so every PR formatter has to tell "GitHub refused"
+ * apart from "there is nothing to show". Without this the two collapse: an
+ * `{ error }` carries no rows, so the formatters below printed "No PR checks."
+ * for an outage — the exact conflation `prService.getChecks` stopped making
+ * when it started rejecting instead of returning `[]`. A reader cannot act on
+ * a lie that reads as a fact, and "no checks ran" invites a merge.
+ */
+function prReadFailure(value: unknown): string | null {
+  const root = unwrapStructured(value);
+  if (!isRecord(root)) return null;
+  return asString(root.error);
 }
 
 function firstRecordArray(value: unknown, keys: string[]): JsonRecord[] {
@@ -354,6 +373,8 @@ export function formatPrMergeState(value: unknown): string {
 }
 
 export function formatPrChecks(value: unknown): string {
+  const failure = prReadFailure(value);
+  if (failure) return `PR checks · could not be read — ${failure}`;
   const root = unwrapStructured(value);
   const rollup = isRecord(root) ? pickString(root, ["checksStatus"]) : null;
   const reason = isRecord(root) ? pickString(root, ["checksReason"]) : null;
@@ -399,13 +420,43 @@ export function formatPrChecks(value: unknown): string {
   ].join("\n");
 }
 
+/** reviews + threads + comments — the three independent reads behind `/pr review`. */
+const PR_REVIEW_SOURCES = 3;
+
 export function formatPrReview(value: unknown): string {
   const root = unwrapStructured(value);
   const reviews = firstRecordArray(root, ["reviews"]);
   const threads = firstRecordArray(root, ["reviewThreads", "threads"]);
   const comments = firstRecordArray(root, ["comments", "issueComments"]);
+  // Three independent reads land here, each caught into its own `{ error }`,
+  // so a partial outage is normal: name the sources that failed rather than
+  // reporting their absence as "0 reviews".
+  const failures: Array<[label: string, message: string]> = [];
+  for (const [label, part] of [
+    ["reviews", isRecord(root) ? root.reviews : null],
+    ["threads", isRecord(root) ? (root.reviewThreads ?? root.threads) : null],
+    ["comments", isRecord(root) ? (root.comments ?? root.issueComments) : null],
+  ] satisfies Array<[string, unknown]>) {
+    const message = prReadFailure(part);
+    if (message) failures.push([label, message]);
+  }
+  const rootFailure = prReadFailure(root);
+  if (rootFailure) return `PR review · could not be read — ${rootFailure}`;
+  if (failures.length === PR_REVIEW_SOURCES) {
+    return [
+      "PR review · could not be read",
+      ...failures.map(([label, message]) => `  ✗ ${label}: ${message}`),
+    ].join("\n");
+  }
+  // A source that failed has no count to report — printing `0 reviews` would
+  // state as fact the very thing the read could not establish.
+  const failed = new Set(failures.map(([label]) => label));
+  const headerCount = (label: string, noun: string, count: number): string =>
+    failed.has(label) ? `${noun}s unavailable` : formatCount(noun, count);
   const lines = [
-    `PR review · ${formatCount("review", reviews.length)} · ${formatCount("thread", threads.length)} · ${formatCount("comment", comments.length)}`,
+    `PR review · ${headerCount("reviews", "review", reviews.length)}`
+    + ` · ${headerCount("threads", "thread", threads.length)}`
+    + ` · ${headerCount("comments", "comment", comments.length)}`,
   ];
   if (reviews.length) {
     lines.push("", "Reviews");
@@ -431,11 +482,18 @@ export function formatPrReview(value: unknown): string {
       lines.push(`- ${commentPreview(comment)}`);
     }
   }
-  if (!reviews.length && !threads.length && !comments.length) lines.push("", "No PR reviews or comments.");
+  if (failures.length > 0) {
+    lines.push("", "Could not be read");
+    for (const [label, message] of failures) lines.push(`  ✗ ${label}: ${message}`);
+  } else if (!reviews.length && !threads.length && !comments.length) {
+    lines.push("", "No PR reviews or comments.");
+  }
   return lines.join("\n");
 }
 
 export function formatPrComments(value: unknown): string {
+  const failure = prReadFailure(value);
+  if (failure) return `PR comments · could not be read — ${failure}`;
   const root = unwrapStructured(value);
   const summary = isRecord(root) && isRecord(root.summary) ? root.summary : null;
   const threads = firstRecordArray(root, ["reviewThreads", "threads"]);
@@ -444,6 +502,10 @@ export function formatPrComments(value: unknown): string {
     summary ? checksStatusWord(pickString(summary, ["checksStatus"])) : null,
     summary ? `${asString(summary.actionableComments) ?? "0"} actionable` : null,
   ].filter(Boolean);
+  // The aggregate reports a failed thread read rather than flattening it to an
+  // empty list, so a partial answer is normal here: name the source that failed
+  // instead of letting "GitHub refused" read as "nothing to action".
+  const threadsUnavailable = isRecord(root) ? asString(root.reviewThreadsUnavailable) : null;
   const lines = [`PR comments${headerParts.length ? ` · ${headerParts.join(" · ")}` : ""}`];
   if (threads.length) {
     lines.push("", "Review threads");
@@ -460,7 +522,11 @@ export function formatPrComments(value: unknown): string {
       lines.push(`- ${commentPreview(comment)}`);
     }
   }
-  if (!threads.length && !comments.length) lines.push("", "No actionable PR comments.");
+  if (threadsUnavailable) {
+    lines.push("", "Could not be read", `  ✗ review threads: ${threadsUnavailable}`);
+  } else if (!threads.length && !comments.length) {
+    lines.push("", "No actionable PR comments.");
+  }
   return lines.join("\n");
 }
 
@@ -495,4 +561,46 @@ export function formatLinearIssueComments(value: unknown): string {
   }
   if (items.length > 20) lines.push("", `… and ${items.length - 20} more`);
   return lines.join("\n");
+}
+
+// /cloud pane. Read-only by design: open/stop/pull/archive/delete need lane
+// and ownership context the terminal does not have, so the pane only answers
+// "what is running and how old is it" and points management at desktop/iOS.
+export const CURSOR_CLOUD_PANE_NOTE = "Read-only here — manage agents on desktop or iOS.";
+
+function cursorCloudFleetStatusGlyph(status: string): string {
+  if (status === "running") return "●";
+  if (status === "finished" || status === "completed") return "✓";
+  if (status === "error" || status === "failed" || status === "cancelled") return "✗";
+  return "○";
+}
+
+function cursorCloudFleetCreatedAt(entry: CursorCloudFleetEntry): number {
+  const raw = entry.agent.createdAt ?? entry.agent.lastModified ?? null;
+  return typeof raw === "number" && Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+/**
+ * One line per fleet entry for the /cloud right-pane list: running agents
+ * first, each group newest first. The short agent id is appended only when the
+ * composed row fits the default pane width, so narrow terminals clip nothing.
+ */
+export function formatCursorCloudFleetRows(entries: CursorCloudFleetEntry[]): string[] {
+  const ordered = [...entries].sort((left, right) => {
+    const leftRunning = (left.runStatus ?? left.agent.status)?.toLowerCase() === "running" ? 0 : 1;
+    const rightRunning = (right.runStatus ?? right.agent.status)?.toLowerCase() === "running" ? 0 : 1;
+    if (leftRunning !== rightRunning) return leftRunning - rightRunning;
+    return cursorCloudFleetCreatedAt(right) - cursorCloudFleetCreatedAt(left);
+  });
+  // DEFAULT_PANE_WIDTH (38) minus the four cells the list renderer reserves.
+  const rowBudget = 34;
+  return ordered.map((entry) => {
+    const name = entry.agent.name?.trim() || entry.agent.agentId;
+    const status = entry.runStatus ?? entry.agent.status ?? "queued";
+    const age = formatCursorCloudAge(cursorCloudFleetCreatedAt(entry) || null);
+    let row = `${cursorCloudFleetStatusGlyph(status.toLowerCase())} ${name} · ${status.toLowerCase()}${age ? ` · ${age}` : ""}`;
+    const agentId = entry.agent.agentId?.trim();
+    if (agentId && row.length + 3 + agentId.length <= rowBudget) row += ` · ${agentId}`;
+    return row;
+  });
 }

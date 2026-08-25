@@ -6,7 +6,6 @@ import {
   type CtoAttentionState,
   type CtoOnboardingState,
   type CtoSnapshot,
-  type GitHubStatus,
   type PersonalChatStreamEventsResult,
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
@@ -14,7 +13,9 @@ import {
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
+import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 export type MiscNamespaces = {
   sync: AdeNamespace<"sync">;
@@ -417,9 +418,18 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   infra.addDispose(stopOAuthDrain);
 
   const ai: Record<string, unknown> = {
-    getStatus: (args?: unknown) => call("ai.getStatus", args, aiStatus()),
+    // Pinned in the Electron contract: the AI status describes the machine that
+    // answered it, so a pin naming another machine cannot be served from this
+    // adapter's single connection.
+    getStatus: async (args?: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.getStatus", pin, infra);
+      return await call("ai.getStatus", args, aiStatus());
+    },
     getOpenCodeRuntimeDiagnostics: async () => ({ installed: false, available: false, diagnostics: [] }),
-    isOpenCodeInstalled: async () => ({ installed: false, source: "missing" }),
+    isOpenCodeInstalled: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.isOpenCodeInstalled", pin, infra);
+      return { installed: false, source: "missing" };
+    },
     // The pinned-tools cache is a property of the machine running the desktop
     // app, so a web client has no cache of its own to report and no business
     // kicking a 300 MB fetch on someone else's disk. An empty snapshot is the
@@ -546,30 +556,11 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       call("ai.watchCursorCloudMirror", args, undefined, false),
   };
 
-  const github: Record<string, unknown> = {
-    getStatus: (opts?: unknown) => call("github.getStatus", opts, githubDisconnectedStatus()),
-    getRemoteStatus: (opts?: unknown) => call("github.getRemoteStatus", opts, { repo: null, hasOrigin: false }),
-    setToken: async () => githubDisconnectedStatus(),
-    clearToken: async () => githubDisconnectedStatus(),
-    getAppUserAuthStatus: async () => ({ authenticated: false, user: null }),
-    startAppUserDeviceAuth: async () => ({ ok: false, error: "unsupported" }),
-    pollAppUserDeviceAuth: async () => ({ status: "expired" }),
-    clearAppUserAuth: async () => ({ authenticated: false, user: null }),
-    detectRepo: async () => null,
-    listRepoAutolinks: async () => [],
-    getAppInstallationStatus: async () => ({ installed: false, state: "unknown" }),
-    createRepoAutolink: async () => null,
-    listRepoLabels: async () => [],
-    listRepoCollaborators: async () => [],
-    listMyRepos: async () => ({ repositories: [], nextCursor: null }),
-    // Publishing creates a repo + pushes, so keep it explicitly marked as a
-    // mutation and ineligible for adapter read caching.
-    publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }, false),
-    onStatusChanged: (listener: (status: unknown) => void) => events.on("githubStatusChanged", listener as never),
-  };
-
   const projectConfig: Record<string, unknown> = {
-    get: () => call("projectConfig.get", {}, projectConfigSnapshot(state.getProject()?.rootPath ?? "")),
+    get: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("projectConfig.get", pin, infra);
+      return await call("projectConfig.get", {}, projectConfigSnapshot(state.getProject()?.rootPath ?? ""));
+    },
     validate: async () => projectConfigSnapshot(state.getProject()?.rootPath ?? "").validation,
     // A snapshot fallback here would echo the settings back as if they were
     // stored: Settings renders "Saved" and the write is gone. Fail loudly
@@ -614,7 +605,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     onboarding: onboarding as AdeNamespace<"onboarding">,
     modelPicker: modelPicker as AdeNamespace<"modelPicker">,
     ai: ai as AdeNamespace<"ai">,
-    github: github as AdeNamespace<"github">,
+    github: createGithubNamespace({
+      call,
+      onStatusChanged: (listener) => events.on("githubStatusChanged", listener as never),
+    }) as AdeNamespace<"github">,
     projectConfig: projectConfig as AdeNamespace<"projectConfig">,
     zoom: zoom as AdeNamespace<"zoom">,
     layout: localNamespaces.layout as AdeNamespace<"layout">,
@@ -623,7 +617,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
     cto: createCtoNamespace(call, localState),
-    orchestration: createOrchestrationNamespace(call),
+    orchestration: createOrchestrationNamespace(call, infra),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
@@ -786,9 +780,15 @@ function createCtoNamespace(
   } as unknown as NonNullable<Window["ade"]["cto"]>;
 }
 
-function createOrchestrationNamespace(call: MiscCall): Partial<Window["ade"]["orchestration"]> {
+function createOrchestrationNamespace(
+  call: MiscCall,
+  infra: AdapterInfra,
+): Partial<Window["ade"]["orchestration"]> {
   return {
-    runCreate: (args: unknown) => call("orchestration.runCreate", args, { ok: false, error: "unsupported" }, false),
+    runCreate: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("orchestration.runCreate", pin, infra);
+      return await call("orchestration.runCreate", args, { ok: false, error: "unsupported" }, false);
+    },
   } as unknown as Partial<Window["ade"]["orchestration"]>;
 }
 
@@ -908,26 +908,6 @@ function aiStatus(): Record<string, unknown> {
     opencodeProviders: [],
     opencodeProvidersStale: true,
     modelsDevLastFetchedAt: null,
-  };
-}
-
-function githubDisconnectedStatus(): GitHubStatus {
-  return {
-    tokenStored: false,
-    patTokenStored: false,
-    tokenDecryptionFailed: false,
-    storageScope: "app",
-    authSource: "none",
-    repo: null,
-    hasOrigin: false,
-    userLogin: null,
-    scopes: [],
-    ghCliPath: null,
-    ghAuthError: null,
-    checkedAt: new Date().toISOString(),
-    repoAccessOk: null,
-    repoAccessError: null,
-    connected: false,
   };
 }
 

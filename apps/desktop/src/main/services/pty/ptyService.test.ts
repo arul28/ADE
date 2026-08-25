@@ -39,8 +39,8 @@ const mocks = vi.hoisted(() => {
       return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
     }),
     realpathSync: Object.assign(
-      vi.fn((p: string) => p),
-      { native: vi.fn((p: string) => p) },
+      vi.fn((p: string) => realpathOverrides.get(p as string) ?? p),
+      { native: vi.fn((p: string) => realpathOverrides.get(p as string) ?? p) },
     ),
     statSync: vi.fn((p: string) => {
       if ((existsSyncResults.get(p) ?? true) === false) {
@@ -354,6 +354,7 @@ import {
   selectPiStorageSessionCandidate,
 } from "./ptyService";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import { claudeConfigHome } from "../shared/providerConfigHomes";
 
 const originalPlatform = process.platform;
 const originalHome = process.env.HOME;
@@ -5604,12 +5605,75 @@ describe("ptyService", () => {
         expect(spawnArgs).toContain(buildCanonicalOpenCodeReplayResumeCommand({
           permissionMode: "plan",
           model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
-          fastMode: true,
           resumeTarget: "ses_abc",
           prompt: "continue from the freeze frame",
           replayLimit: 40,
         }));
         expect(mockPty.write).not.toHaveBeenCalledWith("continue from the freeze frame\r");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+        } else {
+          process.env.ADE_OPENCODE_REPLAY_RESUME = previous;
+        }
+      }
+    });
+
+    it("detects mini replay support from realistic root help output without overrides", async () => {
+      // Regression: \b can never match before "--" (both sides are non-word
+      // characters), so the old probe never recognized help output and replay
+      // resume stayed permanently dormant.
+      const previous = process.env.ADE_OPENCODE_REPLAY_RESUME;
+      delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+      try {
+        const { service, sessionService, loadPty } = createHarness();
+        mocks.spawnSync.mockImplementationOnce(() => ({
+          status: 0,
+          stdout: [
+            "Options:",
+            "  -m, --model         model to use in the format of provider/model",
+            "      --mini          start the minimal interactive interface   [boolean] [default: false]",
+            "      --no-replay     disable mini session history replay on resume and after resize",
+            "      --replay-limit  cap visible mini replay to the newest N messages",
+          ].join("\n"),
+          stderr: "",
+        }));
+        sessionService.create({
+          sessionId: "session-opencode-probe",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "OpenCode CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-opencode-probe.log",
+          toolType: "opencode",
+          resumeCommand: "opencode --session ses_probe",
+          resumeMetadata: {
+            provider: "opencode",
+            targetKind: "session",
+            targetId: "ses_probe",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-opencode-probe",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const result = await service.sendToSession({
+          sessionId: "session-opencode-probe",
+          text: "continue from the freeze frame",
+          permissionMode: "plan",
+        });
+
+        expect(result.resumed).toBe(true);
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const commandLine = String(spawn.mock.calls[0]?.[1]?.at(-1) ?? "");
+        expect(commandLine).toContain("opencode --mini ");
+        expect(commandLine).toContain("--replay-limit 40");
+        expect(commandLine).toContain("--session ses_probe");
       } finally {
         if (previous === undefined) {
           delete process.env.ADE_OPENCODE_REPLAY_RESUME;
@@ -6001,8 +6065,7 @@ describe("ptyService", () => {
       try {
         const claudeSessionId = "123e4567-e89b-12d3-a456-426614174000";
         const claudeFilePath = path.join(
-          os.homedir(),
-          ".claude",
+          claudeConfigHome({ homeDir: os.homedir() }),
           "projects",
           "-tmp-test-worktree",
           `${claudeSessionId}.jsonl`,
@@ -8087,7 +8150,7 @@ describe("ptyService", () => {
 
         const matchedId = "11111111-1111-1111-1111-111111111111";
         const newerDifferentId = "22222222-2222-2222-2222-222222222222";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const matchedPath = path.join(claudeProjectDir, `${matchedId}.jsonl`);
         const newerDifferentPath = path.join(claudeProjectDir, `${newerDifferentId}.jsonl`);
         const matchedFirstLine = JSON.stringify({
@@ -8149,7 +8212,7 @@ describe("ptyService", () => {
         vi.setSystemTime(fakeNow);
 
         const otherId = "33333333-3333-3333-3333-333333333333";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const otherPath = path.join(claudeProjectDir, `${otherId}.jsonl`);
         const otherFirstLine = JSON.stringify({
           timestamp: "2026-04-15T21:31:00.000Z",
@@ -8202,7 +8265,7 @@ describe("ptyService", () => {
 
         const firstId = "44444444-4444-4444-4444-444444444444";
         const secondId = "55555555-5555-5555-5555-555555555555";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const firstPath = path.join(claudeProjectDir, `${firstId}.jsonl`);
         const secondPath = path.join(claudeProjectDir, `${secondId}.jsonl`);
         const firstLine = JSON.stringify({
@@ -8337,6 +8400,46 @@ describe("ptyService", () => {
       expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode", "opencode --session ses_abc");
     });
 
+    it("matches OpenCode resume rows through symlink-resolved directories", async () => {
+      // macOS hands PTY cwds out as /tmp/... while OpenCode records the
+      // resolved /private/tmp/... spelling; the backfill must compare
+      // realpath-resolved keys or lane sessions under symlinked roots lose
+      // their own resume target.
+      const startedAt = "2026-04-15T21:30:00.000Z";
+      const bundledOpenCode = "/Applications/ADE.app/Contents/Resources/app.asar.unpacked/node_modules/opencode-darwin-arm64/bin/opencode";
+      mocks.resolveOpenCodeBinaryPath.mockReturnValue(bundledOpenCode);
+      mocks.spawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify([
+          {
+            id: "ses_symlink",
+            directory: "/private/tmp/test-worktree",
+            created: Date.parse(startedAt),
+            updated: Date.parse(startedAt) + 1000,
+          },
+        ]),
+        stderr: "",
+      });
+
+      const { service, sessionService } = createHarness();
+      sessionService.readTranscriptTail.mockResolvedValueOnce("opencode\n");
+      sessionService.create({
+        sessionId: "session-opencode-symlink",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "OpenCode CLI",
+        startedAt,
+        transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-opencode-symlink.log",
+        toolType: "opencode",
+      });
+      mocks.realpathOverrides.set("/tmp/test-worktree", "/private/tmp/test-worktree");
+
+      await service.ensureResumeTargets(["session-opencode-symlink"]);
+
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode-symlink", "opencode --session ses_symlink");
+    });
+
     it("does not backfill OpenCode from session list without OpenCode transcript evidence", async () => {
       const startedAt = "2026-04-15T21:30:00.000Z";
       mocks.spawnSync.mockReturnValueOnce({
@@ -8422,8 +8525,7 @@ describe("ptyService", () => {
       try {
         const claudeSessionId = "5647da1e-10de-4089-bce2-00b9c2552bfc";
         const filePath = path.join(
-          os.homedir(),
-          ".claude",
+          claudeConfigHome({ homeDir: os.homedir() }),
           "projects",
           "-tmp-test-worktree",
           `${claudeSessionId}.jsonl`,

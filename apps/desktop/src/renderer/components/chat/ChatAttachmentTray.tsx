@@ -1,9 +1,11 @@
 import { forwardRef, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
-import { Copy, File, Globe, Image, X } from "@phosphor-icons/react";
+import { Copy, File, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
+import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
+import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 
 function attachmentName(path: string): string {
@@ -67,13 +69,17 @@ type OrchestrationAnnotationContextAttachment = Extract<AgentChatContextAttachme
 function ContextAttachmentChip({
   attachment,
   onRemove,
+  onOpen,
 }: {
   attachment: AgentChatContextAttachment;
   onRemove?: (key: string) => void;
+  onOpen?: (attachment: AgentChatContextAttachment) => void;
 }) {
   switch (attachment.type) {
     case "linear_issue":
-      return <LinearIssueContextChip attachment={attachment} onRemove={onRemove} />;
+      return <LinearIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
+    case "github_issue":
+      return <GitHubIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
     case "orchestration_annotation":
       return <OrchestrationAnnotationContextChip attachment={attachment} onRemove={onRemove} />;
   }
@@ -129,9 +135,11 @@ function OrchestrationAnnotationContextChip({
 function LinearIssueContextChip({
   attachment,
   onRemove,
+  onOpen,
 }: {
   attachment: AgentChatContextAttachment;
   onRemove?: (key: string) => void;
+  onOpen?: (attachment: AgentChatContextAttachment) => void;
 }) {
   if (attachment.type !== "linear_issue") return null;
   const issue = attachment.issue;
@@ -147,6 +155,7 @@ function LinearIssueContextChip({
     <span
       className={cn(
         "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 text-[10px] transition-colors",
+        onOpen ? "cursor-pointer" : "",
       )}
       style={{
         borderColor: LINEAR_BRAND.borderSubtle,
@@ -155,6 +164,7 @@ function LinearIssueContextChip({
       }}
       title={title}
       data-testid="linear-issue-context-chip"
+      onClick={onOpen ? () => onOpen(attachment) : undefined}
     >
       <span
         className="flex h-4 w-4 shrink-0 items-center justify-center rounded"
@@ -185,7 +195,71 @@ function LinearIssueContextChip({
           className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
           title={`Remove ${attachment.issue.identifier}`}
           aria-label={`Remove ${attachment.issue.identifier}`}
-          onClick={() => onRemove(chatContextAttachmentKey(attachment))}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(chatContextAttachmentKey(attachment));
+          }}
+        >
+          <X size={10} weight="bold" />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+function GitHubIssueContextChip({
+  attachment,
+  onRemove,
+  onOpen,
+}: {
+  attachment: AgentChatContextAttachment;
+  onRemove?: (key: string) => void;
+  onOpen?: (attachment: AgentChatContextAttachment) => void;
+}) {
+  if (attachment.type !== "github_issue") return null;
+  const issue = attachment.issue;
+  const identifier = githubIssueIdentifier(issue);
+  const title = [identifier, issue.title, issue.state].filter(Boolean).join(" - ");
+  return (
+    <span
+      className={cn(
+        "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 text-[10px] transition-colors",
+        onOpen ? "cursor-pointer" : "",
+      )}
+      style={{
+        borderColor: GITHUB_BRAND.borderSubtle,
+        background: GITHUB_BRAND.surface,
+        color: GITHUB_BRAND.text,
+      }}
+      title={title}
+      data-testid="github-issue-context-chip"
+      onClick={onOpen ? () => onOpen(attachment) : undefined}
+    >
+      <span
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded"
+        style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+      >
+        <GithubLogo size={11} weight="fill" />
+      </span>
+      <span
+        className="shrink-0 rounded font-mono text-[10px] font-semibold"
+        style={{ background: "rgba(255,255,255,0.08)", color: GITHUB_BRAND.text, padding: "1px 4px" }}
+      >
+        {identifier}
+      </span>
+      <span className="min-w-0 max-w-[240px] truncate font-sans text-[11px] font-medium text-fg/90">
+        {issue.title}
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          className="rounded-full text-current/55 transition-colors hover:bg-white/[0.06] hover:text-current"
+          title={`Remove ${identifier}`}
+          aria-label={`Remove ${identifier}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(chatContextAttachmentKey(attachment));
+          }}
         >
           <X size={10} weight="bold" />
         </button>
@@ -576,6 +650,7 @@ type ChatAttachmentTrayProps = {
   mode: ChatSurfaceMode;
   onRemove?: (path: string) => void;
   onRemoveContext?: (key: string) => void;
+  onOpenContext?: (attachment: AgentChatContextAttachment) => void;
   onRemovePendingImageAttachment?: (id: string) => void;
   onFocusPrompt?: () => void;
   className?: string;
@@ -589,6 +664,7 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
   mode,
   onRemove,
   onRemoveContext,
+  onOpenContext,
   onRemovePendingImageAttachment,
   onFocusPrompt,
   className,
@@ -616,6 +692,7 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
           key={chatContextAttachmentKey(attachment)}
           attachment={attachment}
           onRemove={onRemoveContext}
+          onOpen={onOpenContext}
         />
       ))}
       {pendingImageAttachments.map((attachment) => (

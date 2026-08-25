@@ -368,7 +368,7 @@ describe("kvDb migration backup", () => {
     } catch (error) {
       openError = error;
     }
-    expect(classifySqliteOpenError(openError)).toBe("insufficient_headroom");
+    expect(classifySqliteOpenError(openError, { path: dbPath })).toBe("insufficient_headroom");
     expect(fs.existsSync(`${dbPath}.pre-crsqlite-w1.bak`)).toBe(false);
     expect(fs.readdirSync(path.dirname(dbPath)).some((name) => name.includes(".pre-crsqlite-w1.bak.tmp-"))).toBe(false);
 
@@ -384,11 +384,50 @@ describe("kvDb migration backup", () => {
   });
 
   it("classifies explicit migration codes, full disks, and corrupt databases", () => {
-    expect(classifySqliteOpenError(Object.assign(new Error("custom"), { code: "migration_unknown_state" })))
+    expect(classifySqliteOpenError(Object.assign(new Error("custom"), { code: "migration_unknown_state" }), { path: null }))
       .toBe("migration_unknown_state");
-    expect(classifySqliteOpenError(new Error("SQLITE_FULL: database or disk is full"))).toBe("disk_full");
-    expect(classifySqliteOpenError(new Error("database disk image is malformed"))).toBe("db_integrity");
-    expect(classifySqliteOpenError(new Error("surprise"))).toBe("unknown");
+    expect(classifySqliteOpenError(new Error("SQLITE_FULL: database or disk is full"), { path: null })).toBe("disk_full");
+    expect(classifySqliteOpenError(new Error("database disk image is malformed"), { path: null })).toBe("db_integrity");
+    expect(classifySqliteOpenError(new Error("surprise"), { path: null })).toBe("unknown");
+  });
+
+  it("buckets unreadable-storage errnos apart from a damaged database", () => {
+    // macOS returns EDEADLK for a File-Provider read it cannot satisfy, and
+    // libuv has no name for it — this exact message reached a user's screen.
+    expect(classifySqliteOpenError(Object.assign(
+      new Error("Unknown system error -11: Unknown system error -11, read"),
+      { errno: -11, syscall: "read" },
+    ), { path: null })).toBe("storage_read_failed");
+    expect(classifySqliteOpenError(new Error("Unknown system error -11, read"), { path: null })).toBe("storage_read_failed");
+    // A bare errno needs the file to corroborate it — several of these names
+    // are also ordinary socket verdicts. The open site always knows its path.
+    expect(classifySqliteOpenError(
+      Object.assign(new Error("read failed"), { code: "EDEADLK" }),
+      { path: "/Users/dev/Projects/app/.ade/ade.db" },
+    )).toBe("storage_read_failed");
+    expect(classifySqliteOpenError(
+      Object.assign(new Error("input/output error"), { code: "EIO", syscall: "read" }),
+      { path: null },
+    )).toBe("storage_read_failed");
+    expect(classifySqliteOpenError(Object.assign(new Error("input/output error"), { code: "EIO" }), { path: null }))
+      .toBe("unknown");
+    // Windows has no POSIX name for an unhydratable OneDrive placeholder: the
+    // catch-all UNKNOWN counts only because the path names a cloud provider.
+    expect(classifySqliteOpenError(
+      Object.assign(new Error("UNKNOWN: unknown error, open"), { code: "UNKNOWN", errno: -4094 }),
+      { path: "C:\\Users\\dev\\OneDrive\\Projects\\app\\.ade\\ade.db" },
+    )).toBe("storage_read_failed");
+    // A full disk still wins: it has its own repair path.
+    expect(classifySqliteOpenError(Object.assign(new Error("Unknown system error -28"), { code: "ENOSPC" }), { path: null }))
+      .toBe("disk_full");
+    // An unreadable file is never reported as a corrupt one — repairing it
+    // would rewrite data ADE could not read.
+    expect(classifySqliteOpenError(Object.assign(
+      new Error("Unknown system error -11, read"),
+      { code: "EDEADLK" },
+    ), { path: null })).not.toBe("db_integrity");
+    expect(classifySqliteOpenError(Object.assign(new Error("permission denied"), { code: "EACCES" }), { path: null }))
+      .toBe("unknown");
   });
 });
 

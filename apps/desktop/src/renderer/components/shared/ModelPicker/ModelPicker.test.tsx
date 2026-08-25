@@ -1228,11 +1228,10 @@ describe("ModelPicker", () => {
     expect(document.querySelector(`[data-model-id="${boundOnlyId}"]`)).toBeNull();
   });
 
-  // Machine scoping must not cost the common case anything. Same-machine
-  // pickers are the overwhelming majority of surfaces, so they keep the exact
-  // single-argument call shape they had (which is what lets preload fall back
-  // to local IPC), and a pin object re-created on every render must not be
-  // mistaken for a machine change and re-fetch.
+  // Surfaces with no composer machine (Settings) keep the single-argument
+  // bound-path call. Work composers pass an explicit pin even when that
+  // machine equals the project tab — see the test below. A pin object
+  // re-created on every render must not be mistaken for a machine change.
   it("adds no catalog traffic for the bound machine and ignores pin identity churn", async () => {
     const user = userEvent.setup();
     const modelCatalog = vi.fn(async () => ({
@@ -1279,6 +1278,120 @@ describe("ModelPicker", () => {
     }
     await Promise.resolve();
     expect(modelCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it("pins catalog fetches even when the composer machine is this window's project tab", async () => {
+    const user = userEvent.setup();
+    const boundPin = {
+      kind: "local" as const,
+      key: "local:/Users/me/ADE",
+      rootPath: "/Users/me/ADE",
+      displayName: "ADE",
+    };
+    const modelCatalog = vi.fn(async () => ({
+      groups: [],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    renderPicker({ runtimePin: boundPin as never });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "cached" }, boundPin);
+    });
+    expect(modelCatalog).not.toHaveBeenCalledWith({ mode: "cached" });
+  });
+
+  it("still live-probes OpenCode after a cached catalog that already has OpenCode rows", async () => {
+    const user = userEvent.setup();
+    rememberRuntimeCatalog(
+      {
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+        groups: [{
+          key: "opencode",
+          displayName: "OpenCode",
+          providers: [{
+            key: "anthropic",
+            displayName: "Anthropic",
+            badgeColor: "#D97706",
+            modelCount: 1,
+            subsections: [{
+              key: "anthropic",
+              label: "Anthropic",
+              models: [{
+                id: OPENCODE_MODEL.id,
+                runtimeModelId: "claude-sonnet-5",
+                provider: "opencode",
+                providerKey: "opencode",
+                groupKey: "opencode",
+                displayName: OPENCODE_MODEL.displayName,
+                isDefault: false,
+                isAvailable: true,
+              }],
+            }],
+          }],
+        }],
+      } as never,
+      { mode: "cached" },
+    );
+    const modelCatalog = vi.fn(async (args: { mode?: string }) => {
+      if (args.mode === "refresh-stale") {
+        return { groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: true };
+      }
+      return {
+        groups: [{
+          key: "opencode",
+          displayName: "OpenCode",
+          providers: [{
+            key: "zen",
+            displayName: "Zen",
+            badgeColor: "#64748B",
+            modelCount: 1,
+            subsections: [{
+              key: "zen",
+              label: "Zen",
+              models: [{
+                id: "opencode/zen/ox-alpha-free",
+                runtimeModelId: "zen/ox-alpha-free",
+                provider: "opencode",
+                providerKey: "zen",
+                groupKey: "opencode",
+                displayName: "ox alpha free",
+                isDefault: false,
+                isAvailable: true,
+              }],
+            }],
+          }],
+        }],
+        fetchedAt: "2026-05-18T00:00:01.000Z",
+        stale: false,
+      };
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    renderPicker();
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    const opencodeRail = document.querySelector(
+      '[data-rail-selection="provider:opencode"]',
+    ) as HTMLButtonElement;
+    await user.click(opencodeRail);
+
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "opencode" });
+    });
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "force", refreshProvider: "opencode" });
+    });
   });
 
   it("renders the Set up banner when the active rail is unauthed and onOpenSignIn is wired", async () => {

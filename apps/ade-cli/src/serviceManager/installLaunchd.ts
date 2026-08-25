@@ -6,6 +6,7 @@ import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
   isCurrentProcessDescendantOfPid,
+  MATERIALIZE_DATALESS_FILES_KEY,
   listStaleChannelServePids,
   readPidElapsedMs,
   resolveAdeServeCliScriptPath,
@@ -95,8 +96,18 @@ function launchdPrintOutputText(result: ReturnType<ServiceManagerSpawnSync>): st
   return "";
 }
 
-export function launchAgentPath(homeDir = os.homedir()): string {
-  return path.join(homeDir, "Library", "LaunchAgents", `${ADE_RUNTIME_SERVICE_NAME}.plist`);
+/**
+ * `serviceName` is a parameter rather than only the module constant because
+ * `ADE_RUNTIME_SERVICE_NAME` is frozen from `process.env` at import time.
+ * Callers that resolve a channel from an environment they were handed — the
+ * diagnostic collector, and every test that points ADE at a temp home — would
+ * otherwise silently read the stable channel's plist.
+ */
+export function launchAgentPath(
+  homeDir = os.homedir(),
+  serviceName: string = ADE_RUNTIME_SERVICE_NAME,
+): string {
+  return path.join(homeDir, "Library", "LaunchAgents", `${serviceName}.plist`);
 }
 
 export function isLaunchdPrintRunning(output: string): boolean {
@@ -167,6 +178,34 @@ function selfServiceMutationBlock(args: {
  * `Cannot find module '/serve'` loop. The floor is what turns that into a slow,
  * self-healing retry instead of a hot spin, so it should not silently inherit
  * whatever a future launchd decides the default is.
+ *
+ * `MaterializeDatalessFiles` is why a brain can read a user's project at all
+ * when that project lives in iCloud Drive, Dropbox, or any other provider that
+ * evicts file contents. `read(2)` returns EDEADLK -- which libuv has no name for
+ * and reports as "Unknown system error -11" -- when the file is a dataless
+ * placeholder and the reading process's I/O policy disallows on-demand
+ * materialization (read(2) and setiopolicy_np(3)). The per-process switch is
+ * `setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, ...)`, which Node
+ * and Electron do not expose; launchd.plist(5) exposes the same switch as this
+ * key, so the launch agent can grant it without any native code. Set it on the
+ * job and every read the brain makes downloads what it needs, exactly as the
+ * desktop app's own reads do.
+ *
+ * `ProcessType` is `Interactive` because launchd otherwise "applies light
+ * resource limits to the job, throttling its CPU usage and I/O bandwidth".
+ * The brain is not a background chore: every action the user takes in the
+ * desktop app is a blocking RPC to this process. launchd.plist(5) reserves
+ * `Interactive` for jobs whose responsiveness the app depends on and that
+ * cannot be made `Adaptive` -- `Adaptive` tracks activity over XPC connections,
+ * which a Node process does not open. Both conditions describe this job.
+ *
+ * `LowPriorityIO` is stated for the same reason as `ThrottleInterval`: the
+ * failure being fixed here is a filesystem-I/O failure, so the job says out
+ * loud that its reads are not low priority instead of inheriting a default.
+ *
+ * All three are optional keys that describe policy, not structure: a macOS old
+ * enough not to know one of them still has a complete, loadable job definition
+ * without it, and falls back to exactly today's behaviour.
  */
 export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.homedir()): string {
   const envEntries = Object.entries(command.env ?? {});
@@ -198,6 +237,12 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
   <true/>
   <key>ThrottleInterval</key>
   <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>${MATERIALIZE_DATALESS_FILES_KEY}</key>
+  <true/>
+  <key>LowPriorityIO</key>
+  <false/>
   <key>StandardOutPath</key>
   <string>${escapeXml(path.join(runtimeLogDir, "launchd.out.log"))}</string>
   <key>StandardErrorPath</key>

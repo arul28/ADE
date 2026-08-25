@@ -2,7 +2,7 @@ import SwiftUI
 import XCTest
 @testable import ADE
 
-/// Equivalence tests for the tail-only streaming markdown parser: replaying a
+/// Equivalence tests for the bounded streaming markdown parser: replaying a
 /// document as a stream of appended deltas must produce, at EVERY snapshot,
 /// exactly the same blocks (kinds and ids) as the whole-text parser.
 final class WorkMarkdownStreamingParsingTests: XCTestCase {
@@ -142,6 +142,202 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
     assertStreamingMatchesFullParse(text, deltaSizes: [2, 5])
   }
 
+  /// An oversized paragraph becomes several blocks, and the bounded parser
+  /// has to agree with the whole-text parser about every one of them. It can:
+  /// the split is a function of one paragraph's text, and a paragraph never
+  /// crosses the blank line the streaming parser splits at, so both paths chunk
+  /// the same text. Anything that broke that would show up as a block the two
+  /// paths number differently — the identity churn this parser exists to avoid.
+  func testStreamingMatchesFullParseWithAnOversizedParagraph() {
+    let wall = (1...70)
+      .map { "\($0). The keeper walked the length of the gallery and counted the lamps again." }
+      .joined(separator: " ")
+    assertStreamingMatchesFullParse("Short opener.\n\n\(wall)\n\nShort closer.", deltaSizes: [23, 61])
+  }
+
+  func testPlainProseAppendKeepsSettledRowsAndFallsBackForMarkdown() {
+    let base = (1...100)
+      .map { "The keeper walked the length of the gallery and counted lamp \($0) again." }
+      .joined(separator: " ")
+    let key = "\(#function)-plain"
+    let initial = parseMarkdownBlocksForStreaming(base, cacheKey: key)
+    let grownText = base + " The next inspection began before sunrise."
+    let grown = parseMarkdownBlocksForStreaming(grownText, cacheKey: key)
+
+    XCTAssertGreaterThan(initial.count, 1)
+    XCTAssertEqual(grown, parseMarkdownBlocks(grownText))
+    for index in 0..<(initial.count - 1) {
+      XCTAssertEqual(
+        grown[index],
+        initial[index],
+        "an append may change only the still-growing final prose row"
+      )
+    }
+    XCTAssertEqual(
+      grown.map(\.id),
+      grown.indices.map { "markdown-block-\($0)" },
+      "the append path must retain positional block ids"
+    )
+
+    let whitespaceKey = "\(#function)-trailing-space"
+    _ = parseMarkdownBlocksForStreaming(base + " ", cacheKey: whitespaceKey)
+    let whitespaceGrown = parseMarkdownBlocksForStreaming(base + " next", cacheKey: whitespaceKey)
+    XCTAssertEqual(
+      whitespaceGrown,
+      parseMarkdownBlocks(base + " next"),
+      "trailing stream whitespace must not be dropped when the next token arrives"
+    )
+
+    let markdownText = grownText + "\n\n**A Markdown paragraph.**"
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(markdownText, cacheKey: key),
+      parseMarkdownBlocks(markdownText),
+      "Markdown must leave the plain-prose fast path"
+    )
+    let fencedText = markdownText + "\n\n```swift\nlet value = 1\n```"
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(fencedText, cacheKey: key),
+      parseMarkdownBlocks(fencedText),
+      "fences must keep using the full parser"
+    )
+  }
+
+  func testPlainProseAppendDoesNotDuplicateWhitespaceAcrossDeltas() {
+    let key = "\(#function)"
+    _ = parseMarkdownBlocksForStreaming("hello", cacheKey: key)
+    let trailingSpace = parseMarkdownBlocksForStreaming("hello ", cacheKey: key)
+    XCTAssertEqual(trailingSpace, parseMarkdownBlocks("hello "))
+    let grown = parseMarkdownBlocksForStreaming("hello  next", cacheKey: key)
+
+    XCTAssertEqual(grown, parseMarkdownBlocks("hello  next"))
+  }
+
+  func testOrderedListMarkerSplitAcrossStreamingDeltasFallsBackToMarkdownParser() {
+    let numericKey = "\(#function)-numeric"
+    _ = parseMarkdownBlocksForStreaming("1", cacheKey: numericKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming("1. item", cacheKey: numericKey),
+      parseMarkdownBlocks("1. item"),
+      "a numeric marker split after its digits must not be cached as prose"
+    )
+
+    let dottedKey = "\(#function)-dotted"
+    _ = parseMarkdownBlocksForStreaming("1.", cacheKey: dottedKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming("1. item", cacheKey: dottedKey),
+      parseMarkdownBlocks("1. item"),
+      "a numeric marker split after its dot must not be cached as prose"
+    )
+
+    let spacedNumericKey = "\(#function)-spaced-numeric"
+    _ = parseMarkdownBlocksForStreaming(" 1", cacheKey: spacedNumericKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(" 1. item", cacheKey: spacedNumericKey),
+      parseMarkdownBlocks(" 1. item"),
+      "leading spaces must not hide an ordered-list marker"
+    )
+
+    let spacedHeadingKey = "\(#function)-spaced-heading"
+    _ = parseMarkdownBlocksForStreaming(" ", cacheKey: spacedHeadingKey)
+    XCTAssertEqual(
+      parseMarkdownBlocksForStreaming(" # Heading", cacheKey: spacedHeadingKey),
+      parseMarkdownBlocks(" # Heading"),
+      "leading spaces must not hide a heading marker"
+    )
+  }
+
+  func testStreamingParserKeepsUnicodePrefixFastPathAtGraphemeBoundary() {
+    let key = "\(#function)-unicode"
+    _ = parseMarkdownBlocksForStreaming("Cafe", cacheKey: key)
+    let grown = parseMarkdownBlocksForStreaming("Cafe\u{301}", cacheKey: key)
+
+    XCTAssertEqual(grown, parseMarkdownBlocks("Cafe\u{301}"))
+    XCTAssertEqual(grown.first?.kind, .paragraph("Cafe\u{301}"))
+  }
+
+  func testStreamingDoesNotSplitInsideLongNestedLinkDestination() {
+    let destination = "<https://example.test/path (one_(two)) \(String(repeating: "segment", count: 260))>"
+    let text = "See [the long link](\(destination)) and then keep reading. "
+      + (1...90).map { "word\($0)" }.joined(separator: " ")
+    let chunks = workBoundedProseChunks(text)
+    let linkStart = text.firstIndex(of: "[")!
+    let linkEnd = text.range(of: ") and then")!.lowerBound
+
+    var boundary = text.startIndex
+    for chunk in chunks.dropLast() {
+      boundary = text.index(boundary, offsetBy: chunk.count)
+      XCTAssertFalse(
+        boundary > linkStart && boundary < linkEnd,
+        "A prose chunk must not end inside a Markdown link destination"
+      )
+    }
+    XCTAssertEqual(chunks.joined(), text)
+    assertStreamingMatchesFullParse(text, deltaSizes: [17, 43, 89])
+  }
+
+  func testStreamingDoesNotSplitInsideEscapedParenthesesInLinkDestination() {
+    let destination = "https://example.test/path\\) (one_(two)) "
+      + String(repeating: "segment ", count: 260)
+    let text = "See [the long link](\(destination)) and then keep reading. "
+      + (1...90).map { "word\($0)" }.joined(separator: " ")
+    let chunks = workBoundedProseChunks(text)
+    let linkStart = text.firstIndex(of: "[")!
+    let linkEnd = text.range(of: ") and then")!.lowerBound
+
+    var boundary = text.startIndex
+    for chunk in chunks.dropLast() {
+      boundary = text.index(boundary, offsetBy: chunk.count)
+      XCTAssertFalse(
+        boundary > linkStart && boundary < linkEnd,
+        "an escaped close parenthesis must not end the link destination"
+      )
+    }
+    XCTAssertEqual(chunks.joined(), text)
+  }
+
+  func testIncompleteLongLinkDestinationHasHardProseCut() {
+    let text = "See [the unfinished link](https://example.test/"
+      + String(repeating: "segment ", count: 500)
+    let chunks = workBoundedProseChunks(text)
+
+    XCTAssertGreaterThan(chunks.count, 1, "an incomplete destination cannot create one unbounded row")
+    XCTAssertTrue(chunks.allSatisfy { $0.count <= workMarkdownProseRowCharacterLimit })
+    XCTAssertEqual(chunks.joined(), text, "the hard cut must preserve every source character")
+  }
+
+  func testLinkDestinationOpenedAfterBudgetEdgeStillHasHardProseCut() {
+    let text = "See [the unfinished link "
+      + String(repeating: "segment ", count: 180)
+      + "](https://example.test/"
+      + String(repeating: "tail ", count: 500)
+    let chunks = workBoundedProseChunks(text)
+
+    XCTAssertGreaterThan(chunks.count, 1, "a destination opened after the edge cannot create one unbounded row")
+    XCTAssertTrue(chunks.allSatisfy { $0.count <= workMarkdownProseRowCharacterLimit })
+    XCTAssertEqual(chunks.joined(), text, "the hard cut must preserve every source character")
+  }
+
+  func testAngleDelimitedLinkDestinationClosesDespiteLiteralUnmatchedParenthesis() {
+    let destination = "<https://example.test/path (literal "
+      + String(repeating: "segment ", count: 260)
+      + ">"
+    let text = "See [the long link](\(destination)) and then keep reading. "
+      + (1...90).map { "word\($0)" }.joined(separator: " ")
+    let chunks = workBoundedProseChunks(text)
+    let linkStart = text.firstIndex(of: "[")!
+    let linkEnd = text.range(of: ") and then")!.lowerBound
+
+    var boundary = text.startIndex
+    for chunk in chunks.dropLast() {
+      boundary = text.index(boundary, offsetBy: chunk.count)
+      XCTAssertFalse(
+        boundary > linkStart && boundary < linkEnd,
+        "an angle-delimited destination must close at `>` even when it contains `(`"
+      )
+    }
+    XCTAssertEqual(chunks.joined(), text)
+  }
+
   func testStreamingRepeatedCallsWithSameTextReturnStableBlocks() {
     let text = "Para one.\n\n```swift\nlet a = 1\n```\n\nPara two."
     let first = parseMarkdownBlocksForStreaming(text, cacheKey: #function)
@@ -165,6 +361,152 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
       parseMarkdownBlocksForStreaming(shrunk, cacheKey: key),
       parseMarkdownBlocks(shrunk)
     )
+  }
+}
+
+final class WorkStreamingMonospacedClassifierTests: XCTestCase {
+  func testAppendCanFlipAFalseClassificationWhenSecondAlignedRowArrives() {
+    var state = WorkStreamingMonospacedClassifierState()
+    state.append("left   value\n")
+    XCTAssertFalse(state.usesMonospacedRendering)
+
+    state.append("right   value")
+    XCTAssertTrue(state.usesMonospacedRendering)
+  }
+
+  func testAlignedRowsInsideFenceDoNotClassifyUntilFenceCloses() {
+    var state = WorkStreamingMonospacedClassifierState()
+    state.append("```text\nleft   value\nright   value\n")
+    XCTAssertFalse(state.usesMonospacedRendering)
+
+    state.append("```\nleft   value\nright   value")
+    XCTAssertTrue(state.usesMonospacedRendering)
+  }
+
+  func testClassifierMatchesWholeTextAcrossDeltaBoundaries() {
+    let text = "Intro\n\n```\nleft   value\nright   value\n```\n\nleft   value\nright   value"
+    var state = WorkStreamingMonospacedClassifierState()
+    var snapshot = ""
+    for character in text {
+      snapshot.append(character)
+      state.append(String(character))
+      XCTAssertEqual(
+        state.usesMonospacedRendering,
+        workAssistantMessageUsesMonospacedPreview(snapshot),
+        "classifier diverged at \(snapshot.count) characters"
+      )
+    }
+  }
+}
+
+/// Diagnostic benchmark for the path that previously rescanned the entire
+/// growing assistant response on every delta. It deliberately reports rather
+/// than asserts wall-clock numbers: CI hosts vary, but the optimized path must
+/// remain visible in test logs and in the simulator trace.
+final class WorkStreamingPreviewPerformanceTests: XCTestCase {
+  func testFenceMetadataSurvivesAnOpeningFenceSplitAcrossDeltas() {
+    var message = WorkChatMessage(
+      id: "assistant-split-fence",
+      role: "assistant",
+      markdown: "Intro\n\n",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-1"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("``", to: &message))
+    XCTAssertFalse(message.markdownContainsFence == true)
+    XCTAssertTrue(workApplyStreamingAssistantText("`swift\nroot\n", to: &message))
+
+    XCTAssertTrue(message.markdownContainsFence == true)
+    XCTAssertEqual(message.markdownOpenFenceMarker, "```swift")
+    XCTAssertEqual(message.markdownTrailingBacktickRun, 0)
+  }
+
+  func testStreamingAssistantPreviewCostIsReported() {
+    let deltaCount = 500
+    var optimizedMessage = WorkChatMessage(
+      id: "assistant-preview-benchmark",
+      role: "assistant",
+      markdown: "Seed.",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-1"
+    )
+    let optimizedCache = WorkAssistantPreviewCache()
+    let characterBudget = workAssistantMessageCharacterBudget(
+      forLineBudget: workAssistantMessageInitialLineBudget
+    )
+
+    let optimizedStart = Date()
+    for index in 1...deltaCount {
+      _ = workApplyStreamingAssistantText(
+        " Delta \(index): the keeper walked the length of the gallery and counted the lamps again.",
+        to: &optimizedMessage
+      )
+      _ = optimizedCache.preview(
+        for: optimizedMessage,
+        anchor: .tail,
+        lineBudget: workAssistantMessageInitialLineBudget,
+        characterBudget: characterBudget,
+        classification: nil
+      )
+    }
+    let optimizedSeconds = Date().timeIntervalSince(optimizedStart)
+
+    var baselineText = "Seed."
+    let baselineStart = Date()
+    for index in 1...deltaCount {
+      baselineText += " Delta \(index): the keeper walked the length of the gallery and counted the lamps again."
+      _ = workAssistantMessagePreview(
+        baselineText,
+        lineBudget: workAssistantMessageInitialLineBudget,
+        characterBudget: characterBudget,
+        anchor: .tail
+      )
+    }
+    let baselineSeconds = Date().timeIntervalSince(baselineStart)
+
+    XCTAssertEqual(optimizedMessage.markdown, baselineText)
+    print(String(
+      format: "assistant preview streaming benchmark: %d deltas / %d chars; optimized %.1f ms, full-rescan baseline %.1f ms, speedup %.1fx",
+      deltaCount,
+      baselineText.count,
+      optimizedSeconds * 1000,
+      baselineSeconds * 1000,
+      baselineSeconds / max(optimizedSeconds, .leastNonzeroMagnitude)
+    ))
+  }
+
+  func testPlainProseStreamingParserCostIsReported() {
+    let deltaCount = 500
+    let delta = " The keeper walked the length of the gallery and counted the lamps again."
+    var optimizedText = "Seed."
+    let optimizedKey = "\(#function)-optimized"
+    let optimizedStart = Date()
+    for _ in 1...deltaCount {
+      optimizedText += delta
+      _ = parseMarkdownBlocksForStreaming(optimizedText, cacheKey: optimizedKey)
+    }
+    let optimizedSeconds = Date().timeIntervalSince(optimizedStart)
+
+    var baselineText = "Seed."
+    let baselineStart = Date()
+    for _ in 1...deltaCount {
+      baselineText += delta
+      _ = parseMarkdownBlocks(baselineText)
+    }
+    let baselineSeconds = Date().timeIntervalSince(baselineStart)
+
+    XCTAssertEqual(optimizedText, baselineText)
+    print(String(
+      format: "markdown parser streaming benchmark: %d deltas / %d chars; append-only %.1f ms, full-rescan baseline %.1f ms, speedup %.1fx",
+      deltaCount,
+      optimizedText.count,
+      optimizedSeconds * 1000,
+      baselineSeconds * 1000,
+      baselineSeconds / max(optimizedSeconds, .leastNonzeroMagnitude)
+    ))
   }
 }
 
@@ -759,5 +1101,264 @@ final class WorkInlineMarkdownCacheTests: XCTestCase {
     workPurgeMarkdownRenderCaches()
     XCTAssertFalse(workMarkdownSharedCacheHolds(text))
   }
+
 }
 
+/// One assistant paragraph with no blank line in it used to render as a single
+/// row many screens tall. The transcript's `LazyVStack` estimates the height of
+/// every row it has not realized from the ones it has, so one outlier moves the
+/// estimate, the moved estimate changes which rows are realized, and the two
+/// never settle — the main thread pinned at 100% with the chat frozen mid-turn.
+///
+/// These tests hold the split to the three things that make it safe: rows stay
+/// inside the budget, the text survives, and a cut is never moved or withdrawn
+/// once the row carrying it has been rendered.
+final class WorkBoundedProseRowTests: XCTestCase {
+  private func wallOfProse(sentences: Int) -> String {
+    (1...sentences)
+      .map { "\($0). The keeper walked the length of the gallery and counted the lamps again." }
+      .joined(separator: " ")
+  }
+
+  /// Words in order, ignoring where the whitespace fell. This supplements the
+  /// lossless joined-string assertions with a readable failure if a cut ever
+  /// drops, duplicates, or reorders a token.
+  private func words(_ text: String) -> [String] {
+    text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+  }
+
+  // MARK: - The budget
+
+  func testLongParagraphIsSplitIntoBoundedRows() {
+    let text = wallOfProse(sentences: 120)
+    let chunks = workBoundedProseChunks(text)
+    XCTAssertGreaterThan(chunks.count, 1, "a wall of prose has to become several rows")
+    for chunk in chunks {
+      XCTAssertLessThanOrEqual(
+        chunk.count,
+        workMarkdownProseRowCharacterLimit,
+        "every row must stay inside the layout budget"
+      )
+    }
+    XCTAssertEqual(
+      chunks.joined(),
+      text,
+      "splitting may only insert row boundaries, never change the text"
+    )
+  }
+
+  func testShortParagraphIsNotSplit() {
+    let text = "One sentence. Two sentences. That is the whole answer."
+    XCTAssertEqual(workBoundedProseChunks(text), [text])
+  }
+
+  /// The budget is counted in characters because row height follows glyphs. A
+  /// byte budget would let a Japanese paragraph run three times as tall as an
+  /// English one, and a script that does not put spaces between words offers no
+  /// word gap to cut at — so the cut has to fall back to the budget's own edge,
+  /// exactly as line breaking in those scripts already does.
+  func testParagraphWithNoWordGapsIsStillBounded() {
+    let text = String(repeating: "検索結果を確認してください。これは長い段落です。", count: 200)
+    let chunks = workBoundedProseChunks(text)
+    XCTAssertGreaterThan(text.utf8.count, text.count, "the fixture has to be multi-byte to mean anything")
+    XCTAssertGreaterThan(chunks.count, 1, "a script without word gaps still needs bounded rows")
+    for chunk in chunks {
+      XCTAssertLessThanOrEqual(chunk.count, workMarkdownProseRowCharacterLimit)
+    }
+    XCTAssertEqual(chunks.joined(), text, "a gapless script has no whitespace to lose")
+  }
+
+  func testHardWrappedParagraphKeepsEveryWord() {
+    let text = (1...90)
+      .map { "Line \($0) of a hard wrapped paragraph the agent never separated with a blank line." }
+      .joined(separator: "\n")
+    let chunks = workBoundedProseChunks(text)
+    XCTAssertGreaterThan(chunks.count, 1)
+    XCTAssertEqual(words(chunks.joined(separator: " ")), words(text))
+  }
+
+  func testGraphemeClustersAreNeverSplit() {
+    let text = Array(repeating: "👩‍👩‍👧‍👦 family", count: 400).joined(separator: " ")
+    let chunks = workBoundedProseChunks(text)
+    XCTAssertGreaterThan(chunks.count, 1)
+    XCTAssertEqual(words(chunks.joined(separator: " ")), words(text))
+  }
+
+  // MARK: - Cuts settle and stay settled
+
+  /// A paragraph that is still streaming must keep every already-rendered row
+  /// byte-identical: same text, same digest, same `markdown-block-<n>` id, and
+  /// a cache hit instead of a fresh `AttributedString(markdown:)` per row per
+  /// delta. Only the last row may change, and the row count may only grow.
+  func testGrowingParagraphKeepsEarlierChunksStable() {
+    var previous: [String] = []
+    for sentences in stride(from: 20, through: 200, by: 20) {
+      let chunks = workBoundedProseChunks(wallOfProse(sentences: sentences))
+      XCTAssertGreaterThanOrEqual(
+        chunks.count, previous.count,
+        "the row count may never drop — every id after the drop would change"
+      )
+      for (index, settled) in previous.dropLast().enumerated() {
+        XCTAssertEqual(
+          chunks[index], settled,
+          "row \(index) changed when the paragraph grew to \(sentences) sentences"
+        )
+      }
+      previous = chunks
+    }
+  }
+
+  /// The regression that matters most. An agent typing `` `configuration` ``
+  /// mid-paragraph leaves the backtick unclosed for a few deltas. Judging the
+  /// split as a whole made that tail retract every cut ahead of it: the
+  /// paragraph collapsed from four blocks to one and came back when the closing
+  /// backtick arrived, renumbering every block in the message twice — the exact
+  /// churn the split exists to remove. Cuts are decided one at a time, out of
+  /// text that has already arrived, so an unfinished span cannot reach back.
+  func testUnclosedInlineSpanInTheTailDoesNotRetractEarlierCuts() {
+    let base = wallOfProse(sentences: 80)
+    let deltas = [
+      "",
+      " Then he checked",
+      " Then he checked `configuration",
+      " Then he checked `configuration.reload()",
+      " Then he checked `configuration.reload()`",
+      " Then he checked `configuration.reload()` and left.",
+    ]
+    var previous: [String] = []
+    for delta in deltas {
+      let chunks = workBoundedProseChunks(base + delta)
+      XCTAssertGreaterThanOrEqual(
+        chunks.count, previous.count,
+        "an unclosed span collapsed the split at delta \(delta.debugDescription)"
+      )
+      for (index, settled) in previous.dropLast().enumerated() {
+        XCTAssertEqual(chunks[index], settled, "row \(index) moved at delta \(delta.debugDescription)")
+      }
+      previous = chunks
+    }
+    XCTAssertGreaterThan(previous.count, 1)
+  }
+
+  /// Replays a paragraph character group by character group, the way a real
+  /// turn arrives, over text carrying every inline construct the cut has an
+  /// opinion about.
+  func testCutsNeverMoveWhileAParagraphStreamsInSmallDeltas() {
+    let text = wallOfProse(sentences: 60)
+      + " He wrote `reload()` twice, then **stopped**, then noted [the ledger](x)"
+      + " and *left* at 2 * 3 o'clock. "
+      + wallOfProse(sentences: 60)
+    var previous: [String] = []
+    var cursor = text.startIndex
+    while cursor < text.endIndex {
+      cursor = text.index(cursor, offsetBy: 17, limitedBy: text.endIndex) ?? text.endIndex
+      let chunks = workBoundedProseChunks(String(text[..<cursor]))
+      XCTAssertGreaterThanOrEqual(chunks.count, previous.count)
+      for (index, settled) in previous.dropLast().enumerated() {
+        XCTAssertEqual(chunks[index], settled, "row \(index) moved at length \(text[..<cursor].count)")
+      }
+      previous = chunks
+    }
+    XCTAssertGreaterThan(previous.count, 1)
+    XCTAssertEqual(words(previous.joined(separator: " ")), words(text))
+  }
+
+  // MARK: - Inline markup
+
+  func testNoRowEndsInsideACodeSpanOrBoldRun() {
+    let text = wallOfProse(sentences: 40)
+      + " a `code span with several words in it` and **a bold run that also spans words** done. "
+      + wallOfProse(sentences: 40)
+    let chunks = workBoundedProseChunks(text)
+    XCTAssertGreaterThan(chunks.count, 1)
+    for chunk in chunks {
+      XCTAssertTrue(
+        (chunk.components(separatedBy: "`").count - 1).isMultiple(of: 2),
+        "a row ended inside a code span: \(chunk.suffix(40).debugDescription)"
+      )
+      XCTAssertTrue(
+        (chunk.components(separatedBy: "**").count - 1).isMultiple(of: 2),
+        "a row ended inside a bold run: \(chunk.suffix(40).debugDescription)"
+      )
+    }
+  }
+
+  /// One emphasis span opened at the very start and closed at the very end: no
+  /// interior boundary can leave a row balanced, so the paragraph stays whole.
+  /// A tall row is the lesser evil against a row rendering a stray `**`.
+  func testParagraphWrappedEntirelyInOneSpanIsLeftWhole() {
+    let text = "**" + wallOfProse(sentences: 120) + "**"
+    XCTAssertEqual(workBoundedProseChunks(text), [text])
+  }
+
+  /// Emphasis is only counted where it could actually open or close a span.
+  /// Reading arithmetic as markup would leave the parity wrong for the whole
+  /// rest of the paragraph, and one stray character would cost every later cut
+  /// — handing the transcript back the giant row this split exists to prevent.
+  func testStrayDelimitersDoNotDisableLaterCuts() {
+    for stray in [" the product is 2 * 3 and nothing more. ", " the value at index] was wrong. "] {
+      let text = wallOfProse(sentences: 30) + stray + wallOfProse(sentences: 60)
+      XCTAssertGreaterThan(
+        workBoundedProseChunks(text).count, 1,
+        "\(stray.debugDescription) stopped the paragraph from splitting"
+      )
+    }
+  }
+
+  // MARK: - Through the parser
+
+  /// The split has to survive the parser, not just the helper: an oversized
+  /// paragraph becomes several `.paragraph` blocks with the usual sequential
+  /// position-stable ids.
+  func testParserEmitsSeveralBlocksForOneOversizedParagraph() {
+    let text = (1...120)
+      .map { "The keeper walked the length of the gallery and counted lamp \($0) again." }
+      .joined(separator: " ")
+    let blocks = parseMarkdownBlocks(text)
+    XCTAssertGreaterThan(blocks.count, 1)
+    for (index, block) in blocks.enumerated() {
+      XCTAssertEqual(block.id, "markdown-block-\(index)")
+      guard case .paragraph = block.kind else {
+        return XCTFail("a wall of prose only ever produces paragraphs")
+      }
+    }
+  }
+
+  func testLongInlineNumberedNarrativeDoesNotBecomeOneListRow() {
+    let text = wallOfProse(sentences: 120)
+    XCTAssertTrue(workLooksLikeInlineNumberedProse(text))
+
+    let blocks = parseMarkdownBlocks(text)
+    XCTAssertGreaterThan(blocks.count, 1)
+    let paragraphs = blocks.compactMap { block -> String? in
+      guard case .paragraph(let text) = block.kind else { return nil }
+      return text
+    }
+    XCTAssertEqual(paragraphs.count, blocks.count, "the narrative should stay prose, not a giant ordered-list item")
+    XCTAssertEqual(paragraphs.joined(), text)
+    XCTAssertLessThanOrEqual(paragraphs.map(\.count).max() ?? 0, workMarkdownProseRowCharacterLimit)
+  }
+
+  func testLongSingleOrderedListItemContainingYearRemainsOrderedList() {
+    let text = "1. " + String(repeating: "The keeper recorded another calm observation. ", count: 80)
+      + "The log was archived in 2026. The next watch began at dusk."
+    let blocks = parseMarkdownBlocks(text)
+
+    XCTAssertEqual(blocks.count, 1)
+    guard case .orderedList(start: 1, let items) = blocks[0].kind else {
+      return XCTFail("a long real list item must keep its ordered-list semantics")
+    }
+    XCTAssertEqual(items.count, 1)
+    XCTAssertEqual(items[0], String(text.dropFirst(3)))
+  }
+
+  /// Splitting must not reach any other block kind. A fenced block is rendered
+  /// by its own view, and slicing one would break both the code-block ordinals
+  /// that Copy resolves through and the code itself.
+  func testOversizedFencedCodeIsLeftAsOneBlock() {
+    let code = (1...400).map { "let value\($0) = compute(\($0))" }.joined(separator: "\n")
+    let blocks = parseMarkdownBlocks("```swift\n\(code)\n```")
+    XCTAssertEqual(blocks.count, 1)
+    XCTAssertEqual(blocks.first?.kind, .code(language: "swift", code: code))
+  }
+}

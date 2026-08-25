@@ -4,6 +4,7 @@ import { resolveHomeDir } from "./discoveryUtils";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
 import { isPathInside, pathKey } from "../shared/pathCompare";
 import type { ExternalSessionProvider } from "../../../shared/types/externalSessions";
+import { claudeConfigHome, codexConfigHome, factoryConfigHome } from "../shared/providerConfigHomes";
 
 export type ProviderSessionHandle = {
   provider: ExternalSessionProvider;
@@ -94,10 +95,13 @@ export function providerSessionRoots(args: {
   const xdgData = typeof env.XDG_DATA_HOME === "string" && env.XDG_DATA_HOME.trim()
     ? env.XDG_DATA_HOME.trim()
     : path.join(homeDir, ".local", "share");
+  // Each provider's config-dir override has its own shape; providerConfigHomes
+  // keeps them straight so ADE reads the same directory the CLI writes.
+  const providerHome = { env, homeDir };
   return [
-    { provider: "claude", root: path.join(homeDir, ".claude", "projects") },
-    { provider: "codex", root: path.join(homeDir, ".codex", "sessions") },
-    { provider: "droid", root: path.join(homeDir, ".factory", "sessions") },
+    { provider: "claude", root: path.join(claudeConfigHome(providerHome), "projects") },
+    { provider: "codex", root: path.join(codexConfigHome(providerHome), "sessions") },
+    { provider: "droid", root: path.join(factoryConfigHome(providerHome), "sessions") },
     { provider: "cursor", root: path.join(homeDir, ".cursor", "chats") },
     { provider: "cursor", root: path.join(homeDir, ".cursor", "projects") },
     { provider: "opencode", root: path.join(xdgData, "opencode") },

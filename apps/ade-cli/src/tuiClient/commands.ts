@@ -1,4 +1,23 @@
-import type { AgentChatProvider, AgentChatSlashCommand } from "../../../desktop/src/shared/types/chat";
+import {
+  ACTIVE_TURN_DISPATCH_MODES,
+  type ActiveTurnSendMode,
+  type AgentChatProvider,
+  type AgentChatSlashCommand,
+} from "../../../desktop/src/shared/types/chat";
+
+/**
+ * Providers whose backend accepts this atomic active-turn dispatch mode, read
+ * off the canonical table rather than restated here — adding a provider there
+ * offers its /steer command in the TUI automatically.
+ */
+function providersSupporting(mode: ActiveTurnSendMode): AgentChatProvider[] {
+  return (Object.entries(ACTIVE_TURN_DISPATCH_MODES) as [AgentChatProvider, readonly ActiveTurnSendMode[]][])
+    .filter(([, modes]) => modes.includes(mode))
+    .map(([provider]) => provider);
+}
+
+const INLINE_STEER_PROVIDERS = providersSupporting("inline");
+const INTERRUPT_STEER_PROVIDERS = providersSupporting("interrupt");
 
 export type CommandPlacement = "inline" | "right" | "overlay" | "chat";
 
@@ -10,6 +29,7 @@ export type CommandCategory =
   | "Steer"
   | "PRs"
   | "Linear"
+  | "Issues"
   | "Model"
   | "Nav"
   | "System";
@@ -20,6 +40,7 @@ export const COMMAND_CATEGORY_ORDER: CommandCategory[] = [
   "Steer",
   "PRs",
   "Linear",
+  "Issues",
   "Model",
   "Nav",
   "System",
@@ -52,8 +73,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/quit", description: "Exit ade code", placement: "inline", category: "System" },
   { name: "/steer cancel", description: "Remove the latest staged steer message", placement: "inline", category: "Steer" },
   { name: "/steer edit", description: "Edit the latest staged steer message", placement: "inline", argumentHint: "<text>", category: "Steer" },
-  { name: "/steer send", description: "Send the latest staged steer into a Claude turn", placement: "inline", providers: ["claude"], category: "Steer" },
-  { name: "/steer interrupt", description: "Interrupt Claude and run the latest staged steer", placement: "inline", providers: ["claude"], category: "Steer" },
+  { name: "/steer send", description: "Send the latest staged steer into the active agent's turn", placement: "inline", providers: INLINE_STEER_PROVIDERS, category: "Steer" },
+  { name: "/steer interrupt", description: "Interrupt the agent and run the latest staged steer", placement: "inline", providers: INTERRUPT_STEER_PROVIDERS, category: "Steer" },
   { name: "/steer", description: "Show staged steer messages", placement: "right", category: "Steer" },
   { name: "/new lane", description: "Create a new lane", placement: "right", category: "Lanes" },
   { name: "/new chat", description: "Create a new chat in the current lane", placement: "right", argumentHint: "[title]", category: "Chats" },
@@ -92,6 +113,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/activity", description: "Show account-wide Activity across machines", placement: "right", category: "Nav" },
   { name: "/project", description: "Switch project on this machine", placement: "right", argumentHint: "[name|path]", category: "Nav" },
   { name: "/machines", description: "Hop to another paired ADE machine", placement: "right", argumentHint: "[name]", category: "Nav" },
+  { name: "/cloud", description: "List Cursor Cloud agents for this project", placement: "right", category: "Nav" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },
   { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/info", description: "Open active chat info, plan, goal, and agents", placement: "right", category: "Nav" },
@@ -137,6 +159,10 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/linear comments", description: "Show comments on a Linear ticket", placement: "right", argumentHint: "<id>", category: "Linear" },
   { name: "/linear status", description: "Show Linear status", placement: "right", category: "Linear" },
   { name: "/linear assign", description: "Assign a Linear ticket", placement: "right", argumentHint: "<id> <user>", category: "Linear" },
+  { name: "/issue", description: "Attach, list, or detach Linear and GitHub issues", placement: "right", argumentHint: "<attach|list|detach> [id]", category: "Issues" },
+  { name: "/issue attach", description: "Attach a Linear or GitHub issue to this chat", placement: "right", argumentHint: "<ADE-123|owner/repo#42|#42>", category: "Issues" },
+  { name: "/issue list", description: "List issues attached to this chat", placement: "right", category: "Issues" },
+  { name: "/issue detach", description: "Detach a Linear or GitHub issue from this chat", placement: "right", argumentHint: "<ADE-123|owner/repo#42|#42>", category: "Issues" },
   { name: "/feedback", description: "Submit ADE feedback to GitHub issues", placement: "right", category: "Nav" },
   { name: "/chats", description: "List chats in the active lane", placement: "right", argumentHint: "[filter]", category: "Chats" },
   { name: "/switch", description: "Switch lane or chat", placement: "right", argumentHint: "[lane|chat]", category: "Chats" },
@@ -146,7 +172,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/doctor", description: "Show ADE Code and Claude-compat diagnostics", placement: "right", category: "System" },
   // The terminal counterpart of the desktop "Report issue" button. Local-only,
   // like `ade report-issue`, so it still works when the brain is the problem.
-  { name: "/report-issue", description: "Build a redacted diagnostic report for a bug report", placement: "right", category: "System" },
+  { name: "/report-issue", description: "Build a redacted diagnostic report for a bug report; send hands it to ADE", placement: "right", argumentHint: "[send]", category: "System" },
   { name: "/model", description: "Open the model, reasoning, and permission picker", placement: "right", category: "Model" },
   { name: "/effort", description: "Open the reasoning-effort picker", placement: "right", category: "Model" },
   { name: "/system", description: "Show system and runtime details", placement: "right", category: "System" },

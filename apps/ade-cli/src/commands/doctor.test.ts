@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   compareDoctorVersions,
@@ -5,15 +8,51 @@ import {
   evaluateDoctorRows,
   parseWindowsDesktopInstallProbe,
   probeDoctorBrain,
+  readAutoDiagnosticsSharingForDoctor,
+  readStorageEnvironmentForDoctor,
   type DoctorInput,
 } from "./doctor";
+import type {
+  StorageEnvironment,
+  StorageEnvironmentRoot,
+} from "../services/diagnostics/storageEnvironmentProbe";
+import type { MachineAdeLayout } from "../services/projects/machineLayout";
 import { createSyncAccountDirectoryHealth } from "../../../desktop/src/shared/types/sync";
+import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../services/account/accountMachinePublisherService";
 
 const NOW = Date.parse("2026-07-23T12:00:00.000Z");
 
 afterEach(() => {
   vi.useRealTimers();
 });
+
+function storageRoot(
+  overrides: Partial<StorageEnvironmentRoot> & { label: string },
+): StorageEnvironmentRoot {
+  return {
+    location: "local",
+    sampledFiles: 120,
+    datalessFiles: 0,
+    sampleTruncated: false,
+    ...overrides,
+  };
+}
+
+function storageEnvironment(overrides: {
+  roots: StorageEnvironmentRoot[];
+  materializeDatalessFiles?: boolean | null;
+}): StorageEnvironment {
+  return {
+    roots: overrides.roots,
+    process: {
+      platform: "darwin",
+      processType: "cli",
+      launchdManaged: true,
+      materializeDatalessFiles: overrides.materializeDatalessFiles ?? null,
+    },
+    limitations: [],
+  };
+}
 
 function healthyInput(): DoctorInput {
   return {
@@ -189,6 +228,8 @@ describe("doctor row evaluation", () => {
       ["relay", "ok"],
       ["account", "ok"],
       ["credentials", "ok"],
+      ["storage", "ok"],
+      ["diagnostics", "ok"],
     ]);
   });
 
@@ -324,6 +365,22 @@ describe("doctor row evaluation", () => {
     expect(rows.find((row) => row.key === "publish")?.detail).not.toContain("ade brain restart");
   });
 
+  it("keeps the directory refusal sentence on a long-failing publish row", () => {
+    // A refused machine is terminal, so by the time anyone runs doctor it is
+    // always in the ≥2min branch — the one that used to print the bare state.
+    const input = healthyInput();
+    input.publishHealth = createSyncAccountDirectoryHealth(
+      "http_error",
+      PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
+      { failingSinceMs: NOW - 6 * 60_000, lastHttpStatus: 403 },
+    );
+
+    const publish = evaluateDoctorRows(input).find((row) => row.key === "publish");
+
+    expect(publish?.status).toBe("fail");
+    expect(publish?.detail).toContain(PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE);
+  });
+
   it("points an unreadable account session at `ade brain restart`", () => {
     // Desktop's Connections panel shows a Repair (brain restart) button for
     // this state; the CLI has to name the same remedy or an agent is stuck.
@@ -389,6 +446,226 @@ describe("doctor row evaluation", () => {
     expect(relay?.detail).toBe(
       "Another ADE process owns the relay connection for this machine.",
     );
+  });
+
+  it("reports the needs-reconnect reason over a stale relay self-probe failure", () => {
+    const input = healthyInput();
+    input.relayHealth = {
+      ...input.relayHealth!,
+      relayControlConnected: false,
+      relayBridgeValidated: false,
+      relayEndToEndVerifiedAt: null,
+      // Kept across control generations by the tunnel client, so a machine that
+      // is now capped still reports whatever its last probe said.
+      relayEndToEndFailure: "Relay self-probe skipped because the control socket is not connected.",
+      // What the brain ranks into skipReason once the rotation budget is spent.
+      skipReason: "This computer needs to be reconnected to your ADE account.",
+      lastControlError: "claim failed (409)",
+    };
+
+    const relay = evaluateDoctorRows(input).find((row) => row.key === "relay");
+
+    expect(relay?.status).toBe("fail");
+    expect(relay?.detail).toBe("This computer needs to be reconnected to your ADE account.");
+  });
+
+  it("still reports a self-probe failure while relay control is connected", () => {
+    const input = healthyInput();
+    input.relayHealth = {
+      ...input.relayHealth!,
+      relayEndToEndVerifiedAt: null,
+      relayEndToEndFailure: "Relay echo never came back.",
+    };
+
+    const relay = evaluateDoctorRows(input).find((row) => row.key === "relay");
+
+    expect(relay?.status).toBe("fail");
+    expect(relay?.detail).toBe("Relay echo never came back.");
+  });
+
+  it("states diagnostics sharing as a preference, never as a problem", () => {
+    const on = healthyInput();
+    on.diagnostics = { enabled: true, sendsInWindow: 1, limit: 3 };
+    const off = healthyInput();
+    off.diagnostics = { enabled: false, sendsInWindow: 0, limit: 3 };
+
+    expect(evaluateDoctorRows(on).find((row) => row.key === "diagnostics")).toEqual({
+      key: "diagnostics",
+      label: "Diagnostics sharing",
+      status: "ok",
+      detail: "on · 1 of 3 automatic reports sent today",
+    });
+    // "Off" is a choice the user made, so it stays green: a diagnostic that
+    // paints a respected preference yellow trains people to ignore the colour.
+    expect(evaluateDoctorRows(off).find((row) => row.key === "diagnostics")).toEqual({
+      key: "diagnostics",
+      label: "Diagnostics sharing",
+      status: "ok",
+      detail: "off · no automatic reports are sent",
+    });
+    // Omitted by a caller that did not read the ledger: say so, do not guess.
+    expect(evaluateDoctorRows(healthyInput()).find((row) => row.key === "diagnostics"))
+      .toMatchObject({ status: "ok", detail: "not checked" });
+  });
+
+  it("reads diagnostics sharing off the shared ledger, defaulting on when it is absent or unreadable", () => {
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-doctor-diagnostics-"));
+    try {
+      const statePath = path.join(adeDir, "secrets", "diagnostics-autosend.json");
+      fs.mkdirSync(path.dirname(statePath), { recursive: true });
+
+      // Never auto-sent: the setting is on and the budget is untouched.
+      expect(readAutoDiagnosticsSharingForDoctor(adeDir, {})).toEqual({
+        enabled: true,
+        sendsInWindow: 0,
+        limit: 3,
+      });
+
+      fs.writeFileSync(
+        statePath,
+        JSON.stringify({
+          version: 1,
+          enabled: false,
+          sends: [{ code: "brain_wedge", atMs: Date.now(), source: "brain", pending: false }],
+        }),
+      );
+      expect(readAutoDiagnosticsSharingForDoctor(adeDir, {})).toMatchObject({
+        enabled: false,
+        sendsInWindow: 1,
+      });
+
+      // Unreadable is reported as the default the next auto-send would act on,
+      // rather than as a failure of the machine's health.
+      fs.rmSync(statePath);
+      fs.writeFileSync(statePath, "{ not json");
+      expect(readAutoDiagnosticsSharingForDoctor(adeDir, {})).toEqual({
+        enabled: true,
+        sendsInWindow: 0,
+        limit: 3,
+      });
+    } finally {
+      fs.rmSync(adeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports evicted cloud files, and calls a denied download policy the failure it is", () => {
+    // The outage this row exists for: the project is in iCloud Drive, its files
+    // have been evicted, and the launch agent this machine runs predates the
+    // key that lets the background service fetch them back.
+    const denied = healthyInput();
+    denied.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({
+          label: "Project",
+          location: "icloud",
+          sampledFiles: 120,
+          datalessFiles: 47,
+        }),
+      ],
+      materializeDatalessFiles: false,
+    });
+    const deniedRow = evaluateDoctorRows(denied).find((row) => row.key === "storage");
+    expect(deniedRow?.status).toBe("fail");
+    expect(deniedRow?.detail).toContain("Project: 47 of 120 sampled files are not downloaded (icloud)");
+    expect(deniedRow?.detail).toContain("ade runtime install-service");
+
+    // The same evicted files with the policy granted are a provider taking its
+    // time, not a machine that cannot read its own data.
+    const allowed = healthyInput();
+    allowed.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({
+          label: "Project",
+          location: "icloud",
+          sampledFiles: 120,
+          datalessFiles: 47,
+        }),
+      ],
+      materializeDatalessFiles: true,
+    });
+    const allowedRow = evaluateDoctorRows(allowed).find((row) => row.key === "storage");
+    expect(allowedRow?.status).toBe("warn");
+    expect(allowedRow?.detail).not.toContain("ade runtime install-service");
+  });
+
+  it("keeps a denied download policy quiet unless this machine has bytes in the cloud", () => {
+    // Every machine that has not reinstalled its service since the key shipped
+    // reads as denied. On local disks that costs the user nothing, and a row
+    // that is yellow everywhere is a row nobody reads.
+    const local = healthyInput();
+    local.storage = storageEnvironment({
+      roots: [storageRoot({ label: "ADE home" }), storageRoot({ label: "Project" })],
+      materializeDatalessFiles: false,
+    });
+    expect(evaluateDoctorRows(local).find((row) => row.key === "storage")).toEqual({
+      key: "storage",
+      label: "Storage",
+      status: "ok",
+      detail: "ADE home: local · Project: local",
+    });
+
+    // Nothing is missing yet, but the next eviction lands on a service that may
+    // not fetch it back, and the fix is the same one.
+    const cloud = healthyInput();
+    cloud.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({ label: "Project", location: "dropbox" }),
+      ],
+      materializeDatalessFiles: false,
+    });
+    const cloudRow = evaluateDoctorRows(cloud).find((row) => row.key === "storage");
+    expect(cloudRow?.status).toBe("warn");
+    expect(cloudRow?.detail).toContain("Project on cloud storage");
+  });
+
+  it("fails the storage row when a root could not be read, and says nothing when it was not checked", () => {
+    const unreadable = healthyInput();
+    unreadable.storage = storageEnvironment({
+      roots: [
+        storageRoot({ label: "ADE home" }),
+        storageRoot({ label: "Project", error: "(could not be read)" }),
+      ],
+    });
+    expect(evaluateDoctorRows(unreadable).find((row) => row.key === "storage")).toMatchObject({
+      status: "fail",
+      detail: "Project could not be read",
+    });
+
+    expect(evaluateDoctorRows(healthyInput()).find((row) => row.key === "storage"))
+      .toMatchObject({ status: "ok", detail: "not checked" });
+  });
+
+  it("samples the ADE home and the last project this machine opened", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-doctor-storage-home-"));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), "ade-doctor-storage-project-"));
+    try {
+      fs.mkdirSync(path.join(project, ".ade"), { recursive: true });
+      fs.writeFileSync(path.join(project, "README.md"), "hello");
+      fs.writeFileSync(path.join(home, "machine.json"), "{}");
+      const projectsPath = path.join(home, "projects.json");
+      fs.writeFileSync(
+        projectsPath,
+        JSON.stringify({ projects: [{ rootPath: project, lastOpenedAt: Date.now() }] }),
+      );
+
+      const environment = await readStorageEnvironmentForDoctor(
+        { adeDir: home, projectsPath } as MachineAdeLayout,
+        {},
+        "linux",
+      );
+      expect(environment?.roots.map((root) => root.label)).toEqual(["ADE home", "Project"]);
+      // Both roots were really walked, and neither reported a path.
+      expect(environment?.roots[1]?.sampledFiles).toBeGreaterThan(0);
+      expect(JSON.stringify(environment)).not.toContain(project);
+      // Off darwin there is no launch agent and no policy to read.
+      expect(environment?.process.materializeDatalessFiles).toBeNull();
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(project, { recursive: true, force: true });
+    }
   });
 
   it("compares release versions without depending on tag formatting", () => {

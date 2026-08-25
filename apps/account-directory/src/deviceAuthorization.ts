@@ -1,3 +1,5 @@
+import { isLoopbackHostname } from "./trustedOrigin";
+
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
 const DEVICE_SLOW_DOWN_INCREMENT_SECONDS = 5;
@@ -108,7 +110,7 @@ function positiveInteger(value: unknown): number | null {
 function normalizeIssuer(raw: string): string {
   const issuer = raw.trim().replace(/\/+$/, "");
   const parsed = new URL(issuer);
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname))) {
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLoopbackHostname(parsed.hostname))) {
     throw new Error("CLERK_ISSUER must use https (http is only allowed for localhost)");
   }
   return issuer;

@@ -227,7 +227,7 @@ describe("ChatAppControlPanel", () => {
     const targetSelect = await screen.findByLabelText("Switch the controlled window") as HTMLSelectElement;
     fireEvent.change(targetSelect, { target: { value: "target-2" } });
     await waitFor(() => {
-      expect(api.appControl.attachToTarget).toHaveBeenCalledWith({ targetId: "target-2" });
+      expect(api.appControl.attachToTarget).toHaveBeenCalledWith({ targetId: "target-2" }, null);
     });
 
     const targetRefreshCalls = api.appControl.listTargets.mock.calls.length;
@@ -299,7 +299,7 @@ describe("ChatAppControlPanel", () => {
         y: 15,
         coordinateSpace: "viewport",
         includeScreenshot: false,
-      });
+      }, null);
     });
     expect(screen.getByText("hovering")).toBeTruthy();
 
@@ -312,7 +312,7 @@ describe("ChatAppControlPanel", () => {
         y: 60,
         coordinateSpace: "viewport",
         includeScreenshot: false,
-      });
+      }, null);
     });
     expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({
       id: "context-1",

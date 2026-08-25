@@ -18,6 +18,10 @@
  */
 
 import type { SyncCredentialStore } from "../credentials/credentialStore";
+import {
+  supportsAtomicCredentialUpdate,
+  updateCredentialKeySync,
+} from "../credentials/updateCredentialKey";
 import type {
   AccountSessionMutationAction,
   AccountSessionMutationSource,
@@ -223,10 +227,21 @@ export function createRotationJournal(args: RotationJournalArgs): RotationJourna
       });
       return decision;
     }
-    if (decision.kind === "already_ours") {
-      return { kind: "acquired", takeover: false };
-    }
-    if (decision.takeover) {
+    const ourOwnEntry = decision.kind === "already_ours";
+    if (ourOwnEntry) {
+      // Our OWN entry for this same generation survived a previous exchange.
+      // The only way that happens is an exchange that ran and never made its
+      // replacement durable — a failed store write, most of all. That is an
+      // interrupted rotation exactly like a dead peer's, so report it as one:
+      // otherwise the `invalid_grant` on the grant we already spent reads as
+      // definitive and signs the machine out.
+      args.log({
+        action: "rotation_journal_interrupted",
+        reason: "own_journal_survived_previous_exchange",
+        tokenGeneration: entry.oldRefreshTokenHash,
+        level: "warn",
+      });
+    } else if (decision.takeover) {
       args.log({
         action: "rotation_journal_interrupted",
         reason: "dead_peer_journal_taken_over",
@@ -234,7 +249,11 @@ export function createRotationJournal(args: RotationJournalArgs): RotationJourna
         level: "warn",
       });
     }
-    if (!options.alreadyPersisted) {
+    // Our surviving entry IS the journal for this exchange. Rewriting it would
+    // restamp `startedAt`, which is what ages an abandoned entry out of
+    // peer_in_flight — a process that keeps failing the same write would keep
+    // its own journal young forever.
+    if (!options.alreadyPersisted && !ourOwnEntry) {
       persistBegin(entry);
     }
     args.log({
@@ -242,7 +261,7 @@ export function createRotationJournal(args: RotationJournalArgs): RotationJourna
       reason: "refresh_exchange_started",
       tokenGeneration: entry.oldRefreshTokenHash,
     });
-    return { kind: "acquired", takeover: decision.takeover };
+    return { kind: "acquired", takeover: ourOwnEntry || decision.takeover };
   };
 
   const tryBegin = (entry: {
@@ -250,21 +269,24 @@ export function createRotationJournal(args: RotationJournalArgs): RotationJourna
     userId: string | null;
   }): RotationJournalBeginResult => {
     try {
-      const updateSync = args.credentialStore.updateSync;
-      if (!updateSync) {
+      // A store with no atomic update cannot compare-and-swap the journal, so
+      // it decides against a plain read instead.
+      if (!supportsAtomicCredentialUpdate(args.credentialStore)) {
         return finalizeBegin(decide(read(), entry), entry);
       }
 
       let decision: BeginDecision | undefined;
-      updateSync.call(args.credentialStore, (values) => {
-        const existing = parseRotationJournal(values[ACCOUNT_SESSION_ROTATION_JOURNAL_KEY]);
-        decision = decide(existing, entry);
-        if (decision.kind === "peer_in_flight" || decision.kind === "already_ours") {
-          return false;
-        }
-        values[ACCOUNT_SESSION_ROTATION_JOURNAL_KEY] = serialize(entry);
-        return true;
-      });
+      updateCredentialKeySync(
+        args.credentialStore,
+        ACCOUNT_SESSION_ROTATION_JOURNAL_KEY,
+        (current) => {
+          decision = decide(parseRotationJournal(current), entry);
+          if (decision.kind === "peer_in_flight" || decision.kind === "already_ours") {
+            return undefined;
+          }
+          return serialize(entry);
+        },
+      );
       if (!decision) {
         // The store declined to run the updater. Proceed without a journal
         // rather than blocking the exchange.

@@ -39,9 +39,18 @@ vi.mock(
   }),
 );
 
+// The bridge builds a directory service per call, so the stub forwards to a
+// mutable hook the removal suite can point at a success or a rejection.
+const deleteMachine = vi.fn();
 vi.mock(
   "../../../../../ade-cli/src/services/account/accountMachineDirectoryService",
-  () => ({ AccountMachineDirectoryService: class {} }),
+  () => ({
+    AccountMachineDirectoryService: class {
+      deleteMachine(machineKey: string) {
+        return deleteMachine(machineKey);
+      }
+    },
+  }),
 );
 
 vi.mock(
@@ -226,6 +235,70 @@ const BRAIN_SUCCESS = {
   },
   statusHints: {},
 };
+
+describe("accountBridge.removeMachine", () => {
+  afterEach(() => {
+    deleteMachine.mockReset();
+  });
+
+  it("reports the removal the directory accepted, with no outcome but the pair", async () => {
+    deleteMachine.mockResolvedValue({ removed: true });
+    const recordMachineRemoved = vi.fn();
+    const bridge = createAccountBridge({ getProjectRoot: () => null, recordMachineRemoved });
+
+    await bridge.removeMachine("machine_1");
+
+    expect(recordMachineRemoved).toHaveBeenCalledTimes(1);
+    expect(recordMachineRemoved).toHaveBeenCalledWith("completed");
+    // Nothing identifying the machine may be handed to the sink.
+    expect(recordMachineRemoved.mock.calls[0]).toHaveLength(1);
+  });
+
+  it("reports a refused removal as failed", async () => {
+    deleteMachine.mockRejectedValue(new Error("The account directory returned HTTP 403."));
+    const recordMachineRemoved = vi.fn();
+    const bridge = createAccountBridge({ getProjectRoot: () => null, recordMachineRemoved });
+
+    await expect(bridge.removeMachine("machine_1")).rejects.toThrow(/403/);
+
+    expect(recordMachineRemoved).toHaveBeenCalledWith("failed");
+  });
+
+  /**
+   * The reason this fact is recorded here and not at the IPC handler. The
+   * directory delete is the authoritative membership change; the Activity purge
+   * that follows rethrows so the user can retry clearing it. The machine IS off
+   * the account, and telemetry that called that a failed removal would be wrong
+   * about the only thing it reports.
+   */
+  it("still reports the removal when only the Activity purge fails", async () => {
+    deleteMachine.mockResolvedValue({ removed: true });
+    const recordMachineRemoved = vi.fn();
+    const bridge = createAccountBridge({
+      getProjectRoot: () => null,
+      recordMachineRemoved,
+      purgeMachineActivity: async () => {
+        throw new Error("activity store is locked");
+      },
+    });
+
+    await expect(bridge.removeMachine("machine_1")).rejects.toThrow(/Activity could not be cleared/);
+
+    expect(recordMachineRemoved).toHaveBeenCalledWith("completed");
+  });
+
+  it("never lets the telemetry sink break the removal", async () => {
+    deleteMachine.mockResolvedValue({ removed: true });
+    const bridge = createAccountBridge({
+      getProjectRoot: () => null,
+      recordMachineRemoved: () => {
+        throw new Error("analytics state file is unwritable");
+      },
+    });
+
+    await expect(bridge.removeMachine("machine_1")).resolves.toEqual({ removed: true });
+  });
+});
 
 describe("accountBridge.repairMachinePairing", () => {
   it("forwards to the brain, because only that process owns the live push gate", async () => {

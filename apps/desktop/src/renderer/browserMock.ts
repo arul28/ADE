@@ -69,8 +69,15 @@ import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_VERSION,
 } from "../shared/welcomeVideo";
+import {
+  INERT_KEEP_AWAKE_SNAPSHOT,
+  type KeepAwakeSnapshot,
+} from "../shared/types/keepAwake";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
+
+// The browser preview holds no power locks, so it reports the honest default.
+const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
 
 const noop = () => () => {};
 const resolved =
@@ -5931,6 +5938,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         userLogin: "arul",
         expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
         refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
+        credentialState: "authorized",
+        refreshBlockedUntil: null,
+        lastRefreshError: null,
         checkedAt: new Date().toISOString(),
         error: null,
       }),
@@ -5952,6 +5962,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           userLogin: "arul",
           expiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
           refreshTokenExpiresAt: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
+          credentialState: "authorized",
+          refreshBlockedUntil: null,
+          lastRefreshError: null,
           checkedAt: new Date().toISOString(),
           error: null,
         },
@@ -5962,9 +5975,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         userLogin: null,
         expiresAt: null,
         refreshTokenExpiresAt: null,
+        credentialState: "missing",
+        refreshBlockedUntil: null,
+        lastRefreshError: null,
         checkedAt: new Date().toISOString(),
         error: null,
       }),
+      getRequestBudget: resolved({ pausedUntil: null, failureKind: null, retryAt: null }),
       detectRepo: resolved({ owner: "arul28", name: "ADE" }),
       getAppInstallationStatus: resolved({
         repo: { owner: "arul28", name: "ADE" },
@@ -5984,6 +6001,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         webhookLastSeenAt: new Date().toISOString(),
         checkedAt: new Date().toISOString(),
         error: null,
+        appUserAuthFailure: null,
       }),
       listRepoAutolinks: resolved([]),
       createRepoAutolink: resolvedArg({ id: 1, keyPrefix: "ADEPR-", urlTemplate: "https://ade-app.dev/open?type=pr&repo=arul28%2FADE&number=<num>", isAlphanumeric: false }),
@@ -6508,6 +6526,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       lastInstallFailed: null,
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
+    }),
+    keepAwakeGet: resolved(MOCK_KEEP_AWAKE_SNAPSHOT),
+    keepAwakeSetLevel: async (): Promise<KeepAwakeSnapshot> => MOCK_KEEP_AWAKE_SNAPSHOT,
+    keepAwakeFixSystemSleep: resolved({
+      ok: false,
+      error: "Not available in the browser preview.",
+      snapshot: MOCK_KEEP_AWAKE_SNAPSHOT,
     }),
     updateGetPreferences: resolved({ ...DEFAULT_AUTO_UPDATE_PREFERENCES }),
     updateSetPreferences: async (

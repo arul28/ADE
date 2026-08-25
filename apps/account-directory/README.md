@@ -59,11 +59,10 @@ nothing at all. Two proofs are accepted, either one sufficient:
 2. **A pairing grant (fallback).** 32 random bytes minted at `POST /device/token`
    — the one interactive sign-in this Worker runs end to end — stored as a
    SHA-256 digest in `machine_pairing_grants`, bound to the signing-in user and
-   to the `machine_key` declared back at `POST /device/code`, valid for
-   `PAIRING_GRANT_TTL_MS` (10 minutes), and redeemed by a single conditional
-   `DELETE` so it is spendable exactly once. A removed machine holding only an
-   old access token cannot obtain one: minting requires completing the browser
-   half of the device flow.
+   to the `machine_key` declared back at `POST /device/code`, and valid for
+   `PAIRING_GRANT_TTL_MS` (10 minutes). A removed machine holding only an old
+   access token cannot obtain one: minting requires completing the browser half
+   of the device flow.
 
 The fallback exists because path 1 fails closed and ADE's brain authenticates
 with a Clerk **OAuth access token**, whose documented claim set does not include
@@ -75,10 +74,218 @@ actionable message rather than a bare status. An accepted re-pair clears the
 relay's revocation first, so a machine is never back on the roster while still
 unable to publish.
 
+### Spending a grant takes two phases
+
+A grant is spendable exactly once, but a spend is not a single `DELETE`. The
+relay hand-off that follows can fail, and destroying the grant before knowing
+the outcome meant a relay outage burned the only credential a reinstalled
+machine had — the same lockout the grant exists to prevent, moved one step
+later. So redemption is:
+
+1. **Reserve.** One atomic `UPDATE ... SET reserved_at` whose `WHERE` still
+   carries every rule (this user, this machine, inside its TTL, not already
+   held). `changes === 1` is the whole proof, so two concurrent registrations
+   can no more both spend it than they could before.
+2. **Consume** (`DELETE`, scoped to that reservation) once the relay agrees, or
+   **release** (`SET reserved_at = null`) when it does not.
+
+A release restores the row exactly as it was. `expires_at` is never rewritten,
+so an attacker who can force relay failures gains nothing beyond the TTL the
+grant was minted with. A reservation older than `PAIRING_GRANT_RESERVATION_MS`
+(60 s) is ignored, so a Worker that dies mid-hand-off strands the grant for a
+minute rather than until it expires.
+
+## Superseding a rotated machine key
+
+Machines are keyed `(user_id, machine_key)`, so a client that rotates its
+identity file — a reinstall, a wiped config directory, a restored backup —
+arrives as a **second row for one physical computer**. The user then removes the
+row that looks stale, and half the time that is the live install.
+
+A register call whose `deviceId` **or** `hardwareId` matches other rows on the
+same account therefore deletes those rows and reports them:
+
+```json
+{ "machineKey": "...", "supersededMachineKeys": ["<older key>"] }
+```
+
+The field is additive and omitted when nothing was superseded, so existing
+clients are unaffected. Three rules bound it:
+
+- **Two identifiers, one union.** `deviceId` catches an in-place reinstall,
+  where `~/.ade/secrets` survived. `hardwareId` — an optional, per-account
+  sha256 of an OS-level machine identifier (`IOPlatformUUID`, `MachineGuid`,
+  `/etc/machine-id`) — catches a full `~/.ade` wipe, where the device id was
+  minted fresh alongside the machine key and matches nothing. It is salted with
+  the account id, so one machine seen by two accounts stores two unrelated
+  values and the column cannot correlate users. Rows with a null `hardware_id`
+  (written before it shipped, or by a host that cannot read one) are matched by
+  `deviceId` only, and nothing back-fills them.
+- **Same trust bar as a re-pair.** `deviceId` and `hardwareId` are both
+  caller-supplied and forgeable, so on a plain token they authorize nothing —
+  otherwise any machine could claim another's identifiers and delete its row.
+  The call must carry proven-fresh interactive authentication or spend a pairing
+  grant, exactly as un-revoking does. A grant is only spendable on
+  `pairing: true`; the claim is honored on any register, because it is a
+  property of a token this Worker verified.
+- **At most 5 rows per call** across both identifiers, oldest-seen first. The
+  rest go on the next proven re-pair.
+
+It **folds**, it does not merely delete: the one thing a superseded row holds
+that the new one cannot rebuild is `custom_name`, the name the user typed. The
+most recently seen superseded name is carried onto the surviving row, and only
+when that row has no name of its own — a name set on the new row is the fresher
+statement of intent. The carry-forward and the deletes go out as a single
+`DB.batch()`, because the pairing grant is already spent by the time they run
+and a half-finished loop would leave phantoms behind with no credential left to
+clear them.
+
+Superseded keys get **no** `revoked_machines` row. The physical device holds the
+new key, and blocking the old one would trapdoor any client that rolls its
+identity file back into a permanent refusal; an absent key simply registers
+again. The relay is not called either — the device never left the account, so
+its Activity is still the user's own.
+
+## Refusal logs
+
+Every refusal on this Worker is a user who cannot get their computer back onto
+their account, and by the time they ask for help the request is gone. Each
+refusal path emits exactly one structured line to `console.log` (Workers
+observability runs at `head_sampling_rate: 1`):
+
+```json
+{"event":"directory.register_refused","userId":"user_…","machineKeyPrefix":"abcdef12",
+ "deviceIdPrefix":"01234567","code":"machine_revoked","correlationId":"…"}
+```
+
+`event` is one of `directory.register_refused`, `directory.remove_refused`, or
+`directory.supersede_refused`; `code` is the wire code the client received
+(`machine_revoked`, `pairing_authentication_required`,
+`activity_relay_unavailable`, `activity_purge_failed`,
+`supersede_authentication_required`), and an optional `reason` carries the finer
+classification support actually needs — `no_proof` versus `grant_rejected`, or
+the relay's own failure text. `correlationId` joins the line to the request the
+client logged.
+
+Identifiers appear as **8-character prefixes only**. A machine key is
+capability-shaped and a grant is a live credential; no full key, token, or grant
+is ever logged.
+
+There is no admin route for restoring a machine by hand, and this change did not
+add one: the Worker has no secret-gated inbound surface to extend
+(`DIRECTORY_AUTH_SECRET` is outbound provenance for the relay, not an inbound
+credential), and adding one would be a new authentication boundary guarding
+exactly the tables `wrangler d1 execute --env production` already reaches.
+Support recovery is a direct D1 statement — typically
+`delete from revoked_machines where user_id = ? and machine_key = ?` — after the
+refusal logs above identify the row.
+
 Machine registration and list records may carry a `pubkey` string. Current ADE
 hosts publish `ed25519:<raw-32-byte-base64>` so clients can verify and seal
 account adoption on direct or relay routes. The Worker treats the value as
 opaque metadata and rejects values longer than 128 characters.
+
+## Diagnostic report uploads
+
+`POST /diagnostics/upload` is the destination for ADE's "Send to ADE" button and
+`ade report-issue --send`. It exists because support round-trips were the real
+cost of a broken install: the report is already built and fully redacted on the
+user's machine, and asking someone whose ADE will not start to run terminal
+commands and paste output is where most of them stalled.
+
+**Contract**
+
+| | |
+|---|---|
+| Method | `POST` (plus `OPTIONS` preflight; anything else is `405`) |
+| Body | `text/plain` — the report itself; or `application/json` — `{ report, installId?, appVersion?, auto?, failureCode? }` |
+| Metadata on `text/plain` | `?installId=` / `?appVersion=` / `?auto=` / `?failureCode=` query parameters |
+| Automatic sends | `auto` (boolean, or `1`/`true`/`yes` as a string) marks a report the client sent on its own rather than one a human pressed send on. `failureCode` names what broke and is bound to `^[a-z][a-z0-9_-]{0,47}$`. Both are optional; absent means a manual send. A `failureCode` that does not match the shape is **dropped, not refused** — the label is cosmetic and the report is not |
+| Auth | **Optional** `Authorization: Bearer <Clerk token>`, verified exactly as the account routes verify it. Absent, the upload is anonymous. A header that is sent and does not verify — or does not even parse as `Bearer <token>` — is `401`, never silently downgraded. A Worker with no Clerk configuration answers `503`, exactly as the account routes do |
+| Origin | `403` when the browser reports `sec-fetch-site: cross-site` from a real remote origin. ADE's own senders are unaffected: the CLI sends no fetch-metadata header, and the Electron renderer's `null` (packaged `file://`) and loopback (development) origins are exempt |
+| Size | `413` above 512 KB. `content-length` is checked first, then the stream is counted as it arrives, so a missing or dishonest length changes nothing |
+| Per-caller limit | 5 **stored** per UTC day per user (signed in) or per `cf-connecting-ip` (anonymous) → `429 {"error":"rate limited"}` with `retry-after: 86400`. Off Cloudflare there is no trustworthy address, so anonymous callers share one bucket; `x-forwarded-for` is caller-controlled and is never read |
+| Fleet limit | `DIAGNOSTICS_DAILY_GLOBAL_LIMIT` uploads **stored per UTC day across every caller** (default 400) → `429 {"error":"daily diagnostics budget exhausted"}` with `retry-after` counting the seconds to the next UTC midnight. A **distinct body** from the per-caller `429` on purpose: only one of the two is about the caller, and an auto-sender that reads a fleet-wide stop as its own quota retries forever |
+| Budget unavailable | `503 {"error":"diagnostics upload unavailable"}`. The claim **fails closed** — a ceiling that is skipped whenever D1 hiccups is not a ceiling |
+| Success | `200 {"ok": true, "id": "<uuid>"}`. The report is **never** echoed back |
+| Storage | `reports/<utc-date>/<userIdOrAnon>/<uuid>.md` in the `DIAGNOSTICS` R2 bucket, with `userId` / `installId` / `appVersion` / `auto` / `failureCode` as custom metadata (`auto` is written only when true, so a manual upload stores exactly what it always did) |
+| No binding | `503`, and the in-app button says sending is unavailable |
+
+The key's identity segment is `u-<clerk user id>` when signed in and
+`anon-<sha256(ip) prefix>` otherwise — the *same* segment the quota is counted
+on, so one prefix listing answers both "where does this go" and "has this caller
+had enough today".
+
+CORS is `*` on this route only. The desktop button runs in Electron's renderer,
+whose origin is `file://` (`Origin: null`) in a packaged build, so no fixed
+allow-list can name it; `*` is safe here because the route reads no account
+state, returns only an opaque id, and cannot be used with
+`credentials: "include"`. Every `/account/*` route keeps its exact-origin rule.
+
+**Two limits, because they bound different things.**
+
+The *per-caller* quota answers "one person cannot fill the bucket". It is
+enforced by a per-isolate counter (fast, but lost when Cloudflare recycles the
+isolate) backed by an R2 prefix listing on the caller's day (durable and global,
+one class-A operation per upload). The listing is not transactional, so
+genuinely simultaneous requests can land a couple of objects over five — an
+acceptable slop for an abuse bound.
+
+Both halves count **stored objects**, never attempts, and the counter is
+advanced only after the `put` returns. The durable half cannot do otherwise —
+it is a listing of what is in the bucket — and the fast path has to agree with
+it or it is not a cache of it. Counting attempts let refusals the caller did
+not cause (a fleet budget that was out for the day, a bucket having a bad
+minute) lock an install out until UTC midnight having stored nothing, which is
+the same reasoning as the fleet budget's refund below.
+
+The *fleet* budget answers a different question, and it is not allowed any slop
+at all, because it is the storage bill. ADE clients now send reports
+**automatically on failure**, so a single bug that fires for every install at
+once multiplies "five each" by the install base, and no per-caller limit can see
+that coming. `diagnostics_upload_days` (migration `0009`) holds one row per UTC
+day, and every upload claims a slot from it in a single statement:
+
+```sql
+insert into diagnostics_upload_days (day, count)
+values (?, 1)
+on conflict(day) do update set count = count + 1
+where count < ?
+```
+
+`changes === 1` is the whole proof — the same upsert idiom
+`device_approval_rate_limits` uses, and for the same reason: a read followed by
+a write lets two concurrent uploads both observe the last free slot. No
+`RETURNING`, so nothing depends on a D1 version.
+
+**The cost ceiling is arithmetic, not an estimate.** This Worker is the *only*
+writer the bucket has, so the numbers below are the whole spend:
+
+```
+400 uploads/day        DIAGNOSTICS_DAILY_GLOBAL_LIMIT
+×  512 KB/upload       MAX_DIAGNOSTIC_REPORT_BYTES (413 above it)
+×   30 days            the bucket's expiry lifecycle rule
+≈  6 GB steady-state maximum, against R2's 10 GB free tier
+```
+
+Every term is enforced somewhere a client cannot reach: the first by the claim
+above, the second by the streaming size cap, the third by the bucket lifecycle
+(see the deployment steps — **nothing in the Worker ever deletes a report**).
+Change any one of them and redo the multiplication.
+
+Ordering matters and is deliberate: the fleet slot is claimed **after** the
+per-caller quota and **before** the R2 `put`. After, because one caller
+hammering their own limit must not spend the fleet's budget on requests that
+were never going to be stored. Before, because that ordering is what makes the
+cap unraceable — the day's stored count cannot exceed the day's claimed count. A
+`put` that then fails **refunds** the slot, so an R2 outage does not quietly eat
+the day's ceiling for reports that do not exist.
+
+`0` is a kill switch: it refuses every upload without a code deploy. An unset or
+unparseable value falls back to 400, so a typo can neither uncap the bill nor
+close the route. The cron sweep prunes budget rows older than seven days;
+today's row is never in range, so a sweep can never hand back budget the running
+day has already spent.
 
 ## Local checks
 
@@ -114,7 +321,37 @@ deployment:
    `DIRECTORY_AUTH_SECRET` (`npx wrangler secret put DIRECTORY_AUTH_SECRET`) to
    the same value configured on the push relay; machine removal and re-pairing
    both fail loudly without it.
-3. Apply the remote migrations and deploy the Worker. Use
+3. Create the R2 bucket behind the `DIAGNOSTICS` binding, **before** the deploy
+   that first references it — `wrangler deploy` does not create buckets, and a
+   Worker bound to a bucket that does not exist fails to start:
+
+   ```sh
+   npx wrangler r2 bucket create ade-diagnostics              # default environment
+   npx wrangler r2 bucket create ade-diagnostics-production   # production
+   ```
+
+   The binding is optional in code, so an already-deployed Worker whose bucket
+   was removed answers `503` on `/diagnostics/upload` and keeps every other
+   route working.
+4. Give both diagnostics buckets a **30-day** expiry lifecycle rule. **Nothing
+   in the Worker ever deletes a report**, so without this the bucket grows
+   forever and every report a user ever sent stays readable indefinitely. Thirty
+   days is not a taste preference: it is the third term of the cost ceiling
+   above (400/day × 512 KB × 30 days ≈ 6 GB, inside R2's 10 GB free tier), and
+   it is the one term this repository cannot enforce in code. Lengthen it and
+   the ceiling moves with it — 90 days is ~18 GB and off the free tier:
+
+   ```sh
+   npx wrangler r2 bucket lifecycle add ade-diagnostics \
+     expire-reports reports/ --expire-days 30
+   npx wrangler r2 bucket lifecycle add ade-diagnostics-production \
+     expire-reports reports/ --expire-days 30
+   ```
+
+   Confirm with `npx wrangler r2 bucket lifecycle list <bucket>`. Thirty days is
+   still far longer than any support thread; a report nobody has read in a month
+   is not going to be read.
+5. Apply the remote migrations and deploy the Worker. Use
    `npm run d1:migrate:production` and `npm run deploy:production` for the
    production environment. Each deploy script validates only the environment it
    is about to publish, so an unconfigured development Worker cannot block a

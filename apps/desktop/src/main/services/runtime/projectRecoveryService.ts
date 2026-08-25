@@ -104,6 +104,20 @@ export type ProjectRecoveryServiceDeps = {
   clearFailureReports?: (projectRoot: string) => Promise<void>;
   readChatCounts?: (projectRoot: string) => Promise<ChatCounts>;
   socketExists?: (socketPath: string) => boolean;
+  /**
+   * Fires when a diagnosis settles on a state the user cannot work through —
+   * everything except `healthy` and the transient `brain_starting`. Automatic
+   * diagnostics listens here; the callback owns its own budget, so a screen
+   * that re-diagnoses on every poll costs nothing.
+   *
+   * Carries only what the one listener uses. `state` is derivable from `code`
+   * and was passed unused, which is how a notification callback turns into a
+   * second, informal copy of the diagnosis type.
+   */
+  onTerminalDiagnosis?: (input: {
+    code: AdeRecoveryErrorCode;
+    projectRoot: string;
+  }) => void;
   now?: () => number;
 };
 
@@ -160,6 +174,12 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
         headline: "This project's data needs a quick repair.",
         body: "Something interrupted ADE while it was saving. Your files and chats are still here.",
         canAutoRepair: true,
+      };
+    case "storage_unreadable":
+      return {
+        headline: "ADE couldn't read this project's data.",
+        body: "The project's files couldn't be read from this computer. If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.",
+        canAutoRepair: false,
       };
     case "brain_crash_looping":
       return {
@@ -575,6 +595,14 @@ export class ProjectRecoveryService {
       code = "unknown";
     }
 
+    if (state !== "healthy" && state !== "brain_starting") {
+      try {
+        this.deps.onTerminalDiagnosis?.({ code, projectRoot: normalizedRoot });
+      } catch {
+        // A listener must never cost the user their diagnosis.
+      }
+    }
+
     const required = RECOMMENDED_FREE_BYTES(dbSize);
     return {
       state,
@@ -733,7 +761,7 @@ export class ProjectRecoveryService {
       dbHealthy = true;
       addStep("resolve_migrations", "ok", "Interrupted saves were finished safely.");
     } catch (error) {
-      const classified = this.classifyOpenError(error);
+      const classified = this.classifyOpenError(error, { path: dbPath });
       const failureCode = classified === "unknown" ? "unknown" : classified;
       const nextAction = classified === "migration_unknown_state"
         ? "ADE found data it doesn't recognize from an interrupted save. Contact support — nothing has been deleted."

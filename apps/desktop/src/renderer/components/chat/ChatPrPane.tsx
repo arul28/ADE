@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AnimatePresence, motion } from "framer-motion";
 import {
-  ArrowRight,
   ArrowsClockwise,
   ArrowSquareOut,
   CheckCircle,
@@ -11,7 +9,6 @@ import {
   Check,
   GithubLogo,
   GitPullRequest,
-  Lightning,
   MinusCircle,
   Sparkle,
   X,
@@ -19,12 +16,13 @@ import {
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
-import type { OpenProjectBinding, PrCheck, PrReview, PrState, PrStatus, PrSummary } from "../../../shared/types";
+import type { OpenProjectBinding, PrCheck, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
-import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { selectPrsForChat } from "../../lib/prChatScope";
@@ -40,94 +38,14 @@ import { NO_CI_REASON } from "../../../shared/prChecksRollup";
  * Live data flow: the GitHub webhook relay lands events in the main process,
  * which fires `prs-updated`; we re-read the lane's summary and hot-refresh the
  * enriched detail (checks / reviews / merge status) immediately rather than
- * waiting for the next background polling tick. The parent (AgentChatPane) owns
- * the auto-pop decision and hands us a `delta` describing what just changed.
+ * waiting for the next background polling tick.
  */
-
-// ---------------------------------------------------------------------------
-// Delta detection — shared with AgentChatPane, which owns the auto-pop.
-// ---------------------------------------------------------------------------
-
-export type ChatPrDeltaKind =
-  | "created"
-  | "merged"
-  | "closed"
-  | "reopened"
-  | "ready"
-  | "draft"
-  | "commit";
-
-export type ChatPrDeltaTone = "good" | "bad" | "warn" | "info";
-
-export type ChatPrDelta = {
-  kind: ChatPrDeltaKind;
-  label: string;
-  tone: ChatPrDeltaTone;
-  /** Bumped each time a new delta fires so the pane restarts its fade timer. */
-  nonce: number;
-};
-
-export type ChatPrSignature = {
-  exists: boolean;
-  state: PrState | null;
-  headSha: string | null;
-};
-
-export function chatPrSignature(pr: PrSummary | null): ChatPrSignature {
-  return { exists: Boolean(pr), state: pr?.state ?? null, headSha: pr?.headSha ?? null };
-}
-
-/**
- * Returns a pop-worthy delta when the transition from `prev` → `next` warrants
- * an auto-pop: a newly created / linked PR, a lifecycle change (merged /
- * closed / reopened / ready / draft), or a new commit push. Check and review
- * changes intentionally return null — they update in the panel but must not
- * pop it. Returns null when nothing pop-worthy changed.
- */
-export function detectChatPrDelta(
-  prev: ChatPrSignature,
-  next: PrSummary | null,
-): Omit<ChatPrDelta, "nonce"> | null {
-  if (!next) return null; // PR removed / unlinked — never pop.
-  if (!prev.exists) {
-    return { kind: "created", label: "Pull request opened", tone: "good" };
-  }
-  if (prev.state !== next.state) {
-    switch (next.state) {
-      case "merged":
-        return { kind: "merged", label: "Merged", tone: "good" };
-      case "closed":
-        return { kind: "closed", label: "Closed", tone: "bad" };
-      case "draft":
-        return { kind: "draft", label: "Converted to draft", tone: "warn" };
-      case "open":
-        return prev.state === "draft"
-          ? { kind: "ready", label: "Marked ready for review", tone: "good" }
-          : { kind: "reopened", label: "Reopened", tone: "info" };
-      default:
-        return { kind: "reopened", label: "Updated", tone: "info" };
-    }
-  }
-  if (prev.headSha && next.headSha && prev.headSha !== next.headSha) {
-    return { kind: "commit", label: "New commit pushed", tone: "info" };
-  }
-  return null;
-}
-
-const DELTA_VISIBLE_MS = 4200;
 
 const titleBarIconButton =
   "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
 
 const paneAction =
   "inline-flex w-full items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-2.5 py-1.5 text-left text-[12px] font-medium text-fg/65 transition-colors hover:border-white/[0.10] hover:bg-white/[0.04] hover:text-fg/85";
-
-const deltaToneClass: Record<ChatPrDeltaTone, string> = {
-  good: "text-emerald-300/90",
-  bad: "text-red-300/90",
-  warn: "text-amber-300/90",
-  info: "text-sky-300/90",
-};
 
 function stateTone(state: PrSummary["state"]): { dot: string; label: string } {
   switch (state) {
@@ -249,30 +167,12 @@ function isMergeReady(pr: PrSummary, status: PrStatus | null): boolean {
   );
 }
 
-/** One-shot highlight flash replayed whenever `nonce` changes; plain otherwise. */
-function FieldPulse({ nonce, active, children }: { nonce: number; active: boolean; children: React.ReactNode }) {
-  if (!active) return <>{children}</>;
-  return (
-    <motion.div
-      key={nonce}
-      initial={{ backgroundColor: "rgba(255,255,255,0)" }}
-      animate={{ backgroundColor: ["rgba(255,255,255,0.10)", "rgba(255,255,255,0)"] }}
-      transition={{ duration: 1.1, ease: "easeOut" }}
-      className="-mx-1 rounded px-1"
-    >
-      {children}
-    </motion.div>
-  );
-}
-
 function PrDetails({
   pr,
   checks,
   reviews,
   status,
   relay,
-  delta,
-  deltaVisible,
   copied,
   onOpenAde,
   onOpenGitHub,
@@ -283,8 +183,6 @@ function PrDetails({
   reviews: PrReview[] | null;
   status: PrStatus | null;
   relay: RelayState;
-  delta: ChatPrDelta | null;
-  deltaVisible: boolean;
   copied: boolean;
   onOpenAde: () => void;
   onOpenGitHub: () => void;
@@ -301,46 +199,18 @@ function PrDetails({
     : null;
   const reviewInfo = reviewView(reviews, pr.reviewStatus);
   const mergeReady = isMergeReady(pr, status);
-  const pulseHeader = deltaVisible && Boolean(delta) && delta!.kind !== "commit";
-  const pulseChecks = deltaVisible && delta?.kind === "commit";
-  const nonce = delta?.nonce ?? 0;
 
   return (
     <div className="space-y-3">
-      <FieldPulse nonce={nonce} active={pulseHeader}>
-        <div className="flex items-center gap-2">
-          <span className={cn("inline-block h-2 w-2 rounded-full", tone.dot)} />
-          <span className="text-[11px] font-medium uppercase tracking-wide text-fg/55">{tone.label}</span>
-          <span className="font-mono text-[11px] text-fg/45">{formatPrBadgeLabel(pr)}</span>
-          <span className="ml-auto inline-flex items-center gap-1.5" title={live.title}>
-            <span className={cn("inline-block h-1.5 w-1.5 rounded-full", live.dot)} />
-            <span className="text-[10.5px] tabular-nums text-fg/40">{live.label}</span>
-          </span>
-        </div>
-      </FieldPulse>
-
-      <AnimatePresence initial={false}>
-        {delta && deltaVisible ? (
-          <motion.button
-            key={delta.nonce}
-            type="button"
-            onClick={onOpenAde}
-            initial={{ opacity: 0, y: -3 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            className={cn(
-              "group flex w-full items-center gap-1.5 text-left text-[11.5px] font-medium",
-              deltaToneClass[delta.tone],
-            )}
-          >
-            <Lightning size={12} weight="fill" className="shrink-0" />
-            <span className="truncate">{delta.label}</span>
-            <span className="ml-auto text-[10px] text-fg/35">just now</span>
-            <ArrowRight size={10} className="shrink-0 opacity-0 transition-opacity group-hover:opacity-70" />
-          </motion.button>
-        ) : null}
-      </AnimatePresence>
+      <div className="flex items-center gap-2">
+        <span className={cn("inline-block h-2 w-2 rounded-full", tone.dot)} />
+        <span className="text-[11px] font-medium uppercase tracking-wide text-fg/55">{tone.label}</span>
+        <span className="font-mono text-[11px] text-fg/45">{formatPrBadgeLabel(pr)}</span>
+        <span className="ml-auto inline-flex items-center gap-1.5" title={live.title}>
+          <span className={cn("inline-block h-1.5 w-1.5 rounded-full", live.dot)} />
+          <span className="text-[10.5px] tabular-nums text-fg/40">{live.label}</span>
+        </span>
+      </div>
 
       <h3 className="text-[14px] font-semibold leading-snug text-fg/90">{pr.title}</h3>
 
@@ -361,22 +231,20 @@ function PrDetails({
         </div>
       ) : null}
 
-      <FieldPulse nonce={nonce} active={pulseChecks}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg/50">
-          {checksInfo ? (
-            <span className={cn("inline-flex items-center gap-1", checksInfo.tone)} title={checksInfo.title}>
-              {checksInfo.icon}
-              {checksInfo.text}
-            </span>
-          ) : null}
-          {pr.additions > 0 || pr.deletions > 0 ? (
-            <span className="inline-flex items-center gap-1">
-              <span className="text-emerald-400/60">+{pr.additions}</span>
-              <span className="text-red-400/60">−{pr.deletions}</span>
-            </span>
-          ) : null}
-        </div>
-      </FieldPulse>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg/50">
+        {checksInfo ? (
+          <span className={cn("inline-flex items-center gap-1", checksInfo.tone)} title={checksInfo.title}>
+            {checksInfo.icon}
+            {checksInfo.text}
+          </span>
+        ) : null}
+        {pr.additions > 0 || pr.deletions > 0 ? (
+          <span className="inline-flex items-center gap-1">
+            <span className="text-emerald-400/60">+{pr.additions}</span>
+            <span className="text-red-400/60">−{pr.deletions}</span>
+          </span>
+        ) : null}
+      </div>
 
       {reviewInfo ? (
         <div className={cn("flex items-center gap-1.5 text-[11px]", reviewInfo.tone)}>
@@ -418,7 +286,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   branchName,
   sessionTitle = null,
   sessionId = null,
-  delta = null,
   onClose,
   runtimePin = null,
 }: {
@@ -432,21 +299,22 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   sessionTitle?: string | null;
   /** The chat whose explicit PR links should be shown first. */
   sessionId?: string | null;
-  /** Describes the PR change that triggered this pane's auto-pop (owned by the parent). */
-  delta?: ChatPrDelta | null;
   /** Closes the pane — wired to the title bar's ✕ (the header PR pill also toggles it). */
   onClose?: () => void;
   /** See `ChatGitToolbar.runtimePin` — the machine this lane's PR row lives on. */
   runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
+  // Also rendered from the Work view area, which has no chat scope above it,
+  // so the scope is derived from the pin this pane is handed.
+  const scope = useChatRuntimeScopeForPin(runtimePin, laneId);
+  const projectRoot = scope.rootPath;
   // Keep the PR refresh callback keyed to the lane identity, not the lanes
   // collection. Lane status refreshes replace that array frequently, and
   // making it a dependency would tear down/recreate the PR event pump.
-  const laneType = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.laneType ?? "worktree");
-  const laneBranchRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.branchRef ?? null);
-  const laneBaseRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.baseRef ?? null);
+  const laneType = scope.lane?.laneType ?? "worktree";
+  const laneBranchRef = scope.lane?.branchRef ?? null;
+  const laneBaseRef = scope.lane?.baseRef ?? null;
   const laneForPr = useMemo(() => ({
     id: laneId,
     laneType,
@@ -458,12 +326,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
   runtimePinRef.current = runtimePin;
   const runtimePinKey = runtimePin?.key ?? null;
-  const machinesById = useRootAppStore((s) => s.crossMachineLanesByMachineId);
-  const pinMachineName = useMemo(() => {
-    if (!runtimePinKey) return null;
-    return Object.values(machinesById)
-      .find((machine) => machine.binding?.key === runtimePinKey)?.machineName ?? null;
-  }, [machinesById, runtimePinKey]);
+  const pinMachineName = useMachineEntryForBinding(runtimePin)?.machineName ?? null;
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const { copy, copied } = useCopyToClipboard();
@@ -471,7 +334,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [reviews, setReviews] = useState<PrReview[] | null>(null);
   const [status, setStatus] = useState<PrStatus | null>(null);
   const [relay, setRelay] = useState<RelayState>(null);
-  const [deltaVisible, setDeltaVisible] = useState(false);
   // Manual title-bar ↻ sync in flight.
   const [syncing, setSyncing] = useState(false);
   // Backend reconcile-on-focus running (project-scoped); drives the subtle
@@ -504,7 +366,8 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           scopedPrs,
         );
       } else {
-        cached = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
       }
       if (!requestIsCurrent()) return;
       setCurrentPr(cached);
@@ -668,14 +531,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     return () => { cancelled = true; };
   }, [prRepoOwner, prRepoName]);
 
-  // Show the delta line for a few seconds after each new delta, then fade it.
-  useEffect(() => {
-    if (!delta) { setDeltaVisible(false); return; }
-    setDeltaVisible(true);
-    const id = window.setTimeout(() => setDeltaVisible(false), DELTA_VISIBLE_MS);
-    return () => window.clearTimeout(id);
-  }, [delta?.nonce, delta]);
-
   // Same rule the sidebar badge follows: a PR id only resolves on the machine
   // that owns it, so a pinned pane's "Open in ADE" would land on an empty PRs
   // tab. `openLanePr` sends a foreign PR to GitHub instead.
@@ -749,8 +604,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             reviews={reviews}
             status={status}
             relay={relay}
-            delta={delta}
-            deltaVisible={deltaVisible}
             copied={copied}
             onOpenAde={openInAde}
             onOpenGitHub={() => void openInGitHub()}

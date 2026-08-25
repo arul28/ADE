@@ -49,12 +49,13 @@ export type ModelPickerProps = {
   onOpenSignIn?: (family?: ProviderFamily, authTypes?: readonly AuthType[]) => void;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   /**
-   * The machine whose catalog this picker describes, when it is not the one
-   * this window's project tab is bound to. A runtime catalog is a machine fact
-   * (local ollama/LM Studio endpoints, installed cursor-agent, opencode
-   * inventory), and a Work tab shows chats from every machine at once — so a
-   * picker for a chat on another machine must fetch and cache under THAT
-   * machine, never the bound one. `null`/omitted means the bound machine.
+   * The machine whose catalog this picker describes. A runtime catalog is a
+   * machine fact (local ollama/LM Studio endpoints, installed cursor-agent,
+   * opencode inventory). Work composers pass the prompt-box / chat machine even
+   * when it equals the global project tab — collapsing that to `null` shared
+   * every same-tab catalog in one bucket and let tab switches show the wrong
+   * list. `null`/omitted is only for surfaces with no composer machine
+   * (Settings), which still use the window's bound runtime.
    */
   runtimePin?: OpenProjectBinding | null;
   constrainToAvailableModelIds?: boolean;
@@ -431,6 +432,7 @@ export const ModelPicker = memo(function ModelPicker({
                 {...(onFastModeChange ? { onFastModeChange } : {})}
                 {...(filter ? { registryFilter: filter } : {})}
                 {...(onOpenSignIn ? { onOpenSignIn: handleOpenSignIn } : {})}
+                {...(runtimePin ? { runtimePin } : {})}
               />
             ) : null}
           </Popover.Content>

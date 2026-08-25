@@ -405,7 +405,10 @@ final class DeepLinkRouter {
         itemId: scopedItemId,
         eventId: scopedEventId,
         event: event,
-        offset: offset
+        offset: offset,
+        // The one producer that can be about a machine this phone is not on,
+        // and so the only one allowed to resolve the session's owner.
+        origin: .external
       )
     }
     if kind == "pr" {

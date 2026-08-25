@@ -43,7 +43,8 @@ struct ConnectionSettingsView: View {
                   if let host = syncService.accountPairingPinFallbackHost {
                     pinPreset = .discover(host)
                   }
-                }
+                },
+                onWake: wakeAsleepMachine
               )
 
               SettingsPairingSection(
@@ -77,7 +78,8 @@ struct ConnectionSettingsView: View {
                   if let host = syncService.accountPairingPinFallbackHost {
                     pinPreset = .discover(host)
                   }
-                }
+                },
+                onWake: wakeAsleepMachine
               )
             }
             .padding(.horizontal, 16)
@@ -276,6 +278,22 @@ struct ConnectionSettingsView: View {
     }
   }
 
+  /// Dials the machine the connection card says is asleep. Dialling is what
+  /// wakes it, so this is the same call the machine row makes — aimed at the
+  /// machine the card NAMES, never at whichever one the saved profile holds.
+  ///
+  /// Bounded by the connect attempt itself: it ends attached, or it ends with
+  /// a named failure and this same button. There is no third outcome and no
+  /// spinner that outlives the attempt.
+  ///
+  /// The key arrives from the card, which only renders the button when it has
+  /// one (`settingsWakeMachineKey`), so this is never asked to dial nothing.
+  private func wakeAsleepMachine(machineKey: String) {
+    guard let machine = AccountService.shared.machines.first(where: { $0.machineKey == machineKey })
+    else { return }
+    connectToAccountMachine(machine)
+  }
+
   /// Parses a scanned/deep-linked pairing code and dispatches it. Unparseable
   /// strings (e.g. an unrelated deep link) are ignored.
   private func handleScannedPairingCode(_ raw: String) {
@@ -380,6 +398,16 @@ struct SettingsConnectionSnapshot: Equatable {
   /// The machine the in-flight or just-failed attempt is aimed at. Kept apart
   /// from `hostDisplayName` because these are only the same Mac by coincidence.
   var connectAttemptHostName: String?
+  /// The machine this phone is attached to right now, if any. `hostDisplayName`
+  /// is the card's SUBJECT and follows the attempt; this one never does, which
+  /// is what lets the card say "…is asleep, you're still on <the other one>".
+  var attachedMachineName: String?
+  /// Set only when the machine an attempt is waking, or just failed to wake, is
+  /// asleep. Drives the outcome-first card.
+  var asleepMachineName: String?
+  /// Directory key of that machine, so the card's Wake button dials the machine
+  /// it names rather than whichever one the saved profile points at.
+  var wakeMachineKey: String?
   var canReconnectToSavedHost: Bool
   var errorMessage: String?
   var accountConnectStageLabel: String?
@@ -487,6 +515,28 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
       attemptMachineName: attemptHostName,
       hostDisplayName: hostDisplayName
     )
+    // A machine that is asleep owns the card. Name and identity are resolved
+    // together so the copy and the "Wake it" can never come from two different
+    // machines — see `syncAsleepCardSubject`.
+    let asleepMachine = syncAsleepCardSubject(
+      transport: health.transport,
+      attemptIsWakingMachine: syncService.connectAttemptIsWakingMachine,
+      attemptMachineName: attemptHostName,
+      attemptMachineIdentity: syncService.connectAttemptTarget?.machineIdentity,
+      failure: syncService.lastConnectAttemptFailure
+    )
+    // Identity first, name only as a fallback: two Macs in one account can
+    // carry the same name, and the wake has to dial the one that was tapped.
+    let wakeMachineKey = asleepMachine.flatMap { subject -> String? in
+      let machines = AccountService.shared.machines
+      if let identity = subject.identity,
+         let byIdentity = machines.first(where: {
+           $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame
+         }) {
+        return byIdentity.machineKey
+      }
+      return machines.first(where: { $0.displayName == subject.name })?.machineKey
+    }
     let address = Self.trimmedNonEmpty(syncService.currentAddress) ?? Self.trimmedNonEmpty(activeProfile?.lastSuccessfulAddress)
     let displayedDiscovery = syncDiscoveredHostsForDisplay(
       savedHosts: syncService.savedReconnectHosts,
@@ -503,6 +553,9 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         connectAttemptHostName: health.transport == .connecting || health.transport == .unreachable
           ? subjectMachineName
           : nil,
+        attachedMachineName: health.transport.isConnected ? hostDisplayName : nil,
+        asleepMachineName: asleepMachine?.name,
+        wakeMachineKey: wakeMachineKey,
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
         accountConnectStageLabel: syncService.accountConnectStageLabel,
@@ -678,8 +731,19 @@ struct SettingsMachinesSection: View {
     let name: String
     let routeHint: String
     let online: Bool
+    /// The machine said it was asleep, or has been silent long enough that
+    /// asleep is the only honest reading. Turns "Connect" into "Wake".
+    let isAsleep: Bool
+    /// This phone holds a socket to it. Still true for a machine that has since
+    /// announced a suspend — the socket does not report itself closed — which
+    /// is why it is not what the row RENDERS.
     let isCurrent: Bool
     let kind: Kind
+
+    /// What the row is allowed to show as connected. An announced sleep
+    /// outranks the socket: a green CONNECTED pill on a Mac that told us it was
+    /// going dark is the claim this whole pass exists to stop making.
+    var presentsAsConnected: Bool { isCurrent && !isAsleep }
   }
 
   private var isConnected: Bool {
@@ -712,6 +776,20 @@ struct SettingsMachinesSection: View {
       } else {
         false
       }
+      let lastSeen = machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+      // An announced sleep beats attached, not the other way round. A channel
+      // to a sleeping machine does not report itself closed — the socket simply
+      // stops answering — so `current` is the flag that has not found out yet,
+      // and the machine's own "I'm going to sleep now" is the better evidence.
+      // Saying "Connected" to a Mac that had been asleep for three minutes is
+      // the bug this ordering exists to fix.
+      let asleep = syncMachinePresence(
+        connected: current,
+        online: machine.online,
+        sleepState: machine.sleepState,
+        sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt),
+        lastSeenAt: lastSeen
+      ) == .asleep
       return (
         key: (machine.deviceId ?? machine.machineKey).lowercased(),
         entry: Entry(
@@ -719,12 +797,15 @@ struct SettingsMachinesSection: View {
           name: machine.displayName,
           // Route-neutral to match the saved rows below; the route kind stays
           // in the Connection details section, never on the primary list.
-          routeHint: machineReachabilityText(
-            isConnected: current,
+          routeHint: accountMachineDetailLine(
+            isConnected: current && !asleep,
+            isAsleep: asleep,
             directoryOnline: machine.online,
-            lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+            lastSeenAt: lastSeen,
+            power: machine.power
           ),
           online: machine.online,
+          isAsleep: asleep,
           isCurrent: current,
           kind: .account(machine)
         )
@@ -763,6 +844,9 @@ struct SettingsMachinesSection: View {
           lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt)
         ),
         online: online,
+        // A directly-paired host publishes no power or sleep state, so it keeps
+        // exactly the row it had before any of this existed.
+        isAsleep: false,
         isCurrent: current,
         kind: .saved(host)
       ))
@@ -856,7 +940,10 @@ struct SettingsMachinesSection: View {
   @ViewBuilder
   private func machineRow(_ entry: Entry) -> some View {
     let isConnecting = connectingId == entry.id
-    let tappable = !entry.isCurrent && connectingId == nil
+    // Follows what the row PRESENTS, not the socket: a machine that announced a
+    // suspend while we still held a channel keeps its Wake, and keeps it
+    // tappable, for the seconds it takes that channel to notice.
+    let tappable = !entry.presentsAsConnected && connectingId == nil
 
     VStack(alignment: .leading, spacing: 0) {
       Group {
@@ -872,7 +959,7 @@ struct SettingsMachinesSection: View {
         }
       }
       .accessibilityLabel("\(entry.name), \(entry.routeHint)")
-      .accessibilityHint(tappable ? "Connect." : "")
+      .accessibilityHint(tappable ? (entry.isAsleep ? "Wake and connect." : "Connect.") : "")
       .contextMenu {
         if let machine = accountMachine(from: entry) {
           Button {
@@ -919,8 +1006,8 @@ struct SettingsMachinesSection: View {
       title: entry.name,
       routeHint: entry.routeHint,
       online: entry.online,
-      isAuthenticatedCurrent: entry.isCurrent,
-      statusPill: entry.isCurrent ? .connected : nil,
+      isAuthenticatedCurrent: entry.presentsAsConnected,
+      statusPill: entry.presentsAsConnected ? .connected : nil,
       affordance: rowAffordance(entry, isConnecting: isConnecting),
       surface: .row
     )
@@ -933,6 +1020,10 @@ struct SettingsMachinesSection: View {
 
   private func rowAffordance(_ entry: Entry, isConnecting: Bool) -> MachineRowView.Affordance {
     if isConnecting { return .connecting }
+    // Asleep first, for the same reason the pill defers to it: offering a
+    // checkmark on a machine that announced a suspend tells the user the one
+    // thing they cannot act on.
+    if entry.isAsleep { return .wake }
     if entry.isCurrent { return .connected }
     return .connect
   }
@@ -956,7 +1047,8 @@ struct SettingsMachinesSection: View {
   }
 
   private func connect(_ entry: Entry) {
-    guard !entry.isCurrent, connectingId == nil else { return }
+    // Same reading as `tappable`, so a row that offers Wake can take the tap.
+    guard !entry.presentsAsConnected, connectingId == nil else { return }
     connectingId = entry.id
     rowErrors = [:]
     Task { @MainActor in

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { StorageEnvironment } from "./storageEnvironmentProbe";
 
 /**
  * Diagnostic-report assembly and redaction, shared by the desktop
@@ -22,6 +23,34 @@ export const ISSUE_URL_MAX_LENGTH = 6_000;
 /** Per-log-file tail caps. Newest lines are kept, oldest dropped. */
 export const LOG_TAIL_MAX_LINES = 120;
 export const LOG_TAIL_MAX_BYTES = 32 * 1024;
+
+/**
+ * The tighter cap for the SUPPORTING log tails — the project's `main.jsonl`
+ * and `ade-cli.jsonl`.
+ *
+ * Every source added here is weighed against `MAX_DIAGNOSTIC_UPLOAD_BYTES`
+ * (512 KB for the whole serialized upload, `apps/desktop/src/shared/diagnosticsUpload.ts`),
+ * because a report that grows past it is not sent at all — the exact failure
+ * this collector exists to prevent. At the full cap the desktop's eight tails
+ * alone would be 256 KB before a single JSON state blob; at this one the two
+ * project logs cost 32 KB instead of 64 KB, which is what buys room for the
+ * launchd stdout stream and the service definition. The machine-level
+ * streams — the service's own stdout/stderr, `brain.jsonl`, and the desktop
+ * main process's `desktop-main.jsonl` — keep the full cap, because they are the
+ * ones that explain a startup that never got far enough to write anything else.
+ */
+export const LOG_TAIL_COMPACT_MAX_LINES = 80;
+export const LOG_TAIL_COMPACT_MAX_BYTES = 16 * 1024;
+
+/**
+ * Service definitions are read from the FRONT, not tailed: a launchd plist
+ * states its `Label`, `ProgramArguments` and `EnvironmentVariables` at the top,
+ * and a Windows launcher script sets its environment and command before
+ * anything else. A tail of either would keep the part nobody needs. Real
+ * definitions are 1-2 KB; the cap only bounds the generated PowerShell
+ * launcher, whose first 8 KB still carry the whole environment block.
+ */
+export const SERVICE_DEFINITION_MAX_BYTES = 8 * 1024;
 
 export type DiagnosticRedactionContext = {
   homeDir?: string | null;
@@ -89,7 +118,31 @@ export type DiagnosticReportInput = {
     updateTransaction?: unknown;
   };
   storage?: readonly DiagnosticVolumeSpace[];
+  /**
+   * How the reported directories are stored, rather than how full they are.
+   *
+   * The probe's own type, so a field or an enum member added there is a
+   * compile error here rather than a section that silently stops rendering it.
+   * The import is `type`-only: this module renders whatever the collector hands
+   * it and never reaches for the filesystem itself. Paths are deliberately
+   * absent from the shape — this section reports enums and counts, and there is
+   * nothing here to leak.
+   */
+  storageEnvironment?: StorageEnvironment | null;
   logs?: readonly DiagnosticLogTail[];
+  /**
+   * How this machine's background service is DEFINED — the launchd plist, the
+   * systemd unit, the Windows launcher script and scheduled task.
+   *
+   * Its own section rather than another log, because it answers a different
+   * question: not "what did the runtime say" but "what was the runtime told to
+   * be". A plist written by an older install without `ELECTRON_RUN_AS_NODE=1`
+   * boots the whole desktop app as the background service, which then claims
+   * the `ade://` scheme and fights the real GUI for the single-instance lock —
+   * a failure with no signature in any log, and invisible until someone asks
+   * the user to read the file out loud.
+   */
+  serviceDefinition?: readonly DiagnosticLogTail[];
   /** Free-form operational notes, e.g. "doctor: not run". */
   notes?: readonly string[];
   redaction?: DiagnosticRedactionContext;
@@ -393,6 +446,61 @@ function section(title: string, body: string | null): string | null {
 }
 
 /**
+ * One captured file, rendered so an ABSENCE reads as loudly as a presence.
+ *
+ * A file that could not be read still gets its heading and its path with the
+ * reason underneath, because "we looked here and found nothing" and "we never
+ * looked" are different facts and only one of them is the reader's problem.
+ */
+function fileEntryBlock(entry: DiagnosticLogTail): string {
+  const heading = `### ${entry.label}\n\n\`${entry.path}\``;
+  if (entry.error) return `${heading}\n\n${entry.error}`;
+  const text = (entry.text ?? "").trim();
+  if (!text) return `${heading}\n\n(empty)`;
+  return `${heading}\n\n${fence(text)}`;
+}
+
+function fileEntriesSection(title: string, entries: readonly DiagnosticLogTail[]): string | null {
+  if (entries.length === 0) return null;
+  return section(title, entries.map(fileEntryBlock).join("\n\n"));
+}
+
+/**
+ * The storage-environment section, or null when the collector did not run one.
+ *
+ * Deliberately flat prose bullets rather than a JSON blob: the reader of a
+ * report is looking for one sentence — "the project is in iCloud Drive and 47
+ * of 200 sampled files are not downloaded" — and that sentence is the whole
+ * point of the section.
+ */
+function storageEnvironmentBlock(
+  environment: DiagnosticReportInput["storageEnvironment"],
+): string | null {
+  if (!environment) return null;
+  const rows = environment.roots.map((root) => {
+    if (root.error) return `- ${root.label}: ${root.location} — ${root.error}`;
+    const sampleNote = root.sampleTruncated ? ", sample truncated" : "";
+    return `- ${root.label}: ${root.location} — ${root.datalessFiles} of ${root.sampledFiles} sampled files not downloaded${sampleNote}`;
+  });
+  const launchd = environment.process.launchdManaged;
+  const processRow = `- Collected by: ${environment.process.processType} on ${environment.process.platform}${
+    launchd == null ? "" : launchd ? ", started by launchd" : ", not started by launchd"
+  }`;
+  // Stated as a sentence rather than a boolean, because the whole value of the
+  // line is which of two very different failures the reader is looking at.
+  const materialize = environment.process.materializeDatalessFiles;
+  const policyRow = materialize == null
+    ? null
+    : materialize
+      ? "- Cloud file downloads: the background service is allowed to download evicted files"
+      : "- Cloud file downloads: this computer's background service is NOT allowed to download evicted files (launch agent predates MaterializeDatalessFiles)";
+  const limitations = (environment.limitations ?? []).map((note) => `- ${note}`);
+  return [...rows, processRow, policyRow, ...limitations]
+    .filter((row): row is string => row != null)
+    .join("\n");
+}
+
+/**
  * Renders the Markdown report, then redacts the whole thing. Redaction runs on
  * the assembled text rather than per-field on purpose: a future section cannot
  * leak by forgetting to opt in.
@@ -469,23 +577,13 @@ export function buildDiagnosticReport(input: DiagnosticReportInput): string {
     ),
   );
 
-  const logs = input.logs ?? [];
-  parts.push(
-    section(
-      "Logs",
-      logs.length
-        ? logs
-            .map((log) => {
-              const heading = `### ${log.label}\n\n\`${log.path}\``;
-              if (log.error) return `${heading}\n\n${log.error}`;
-              const text = (log.text ?? "").trim();
-              if (!text) return `${heading}\n\n(empty)`;
-              return `${heading}\n\n${fence(text)}`;
-            })
-            .join("\n\n")
-        : null,
-    ),
-  );
+  parts.push(section("Storage environment", storageEnvironmentBlock(input.storageEnvironment)));
+
+  // Before the logs: what the service was told to be explains what the logs
+  // then show, and it is short enough to read first.
+  parts.push(fileEntriesSection("Background service definition", input.serviceDefinition ?? []));
+
+  parts.push(fileEntriesSection("Logs", input.logs ?? []));
 
   parts.push(
     section("Notes", (input.notes ?? []).length ? (input.notes ?? []).map((note) => `- ${note}`).join("\n") : null),

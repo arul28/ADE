@@ -48,6 +48,12 @@ export type SyncTunnelClientStatus = {
   /** True while the client is deliberately not redialing after a 4505 eviction. */
   controlSuppressed?: boolean;
   controlSuppressedReason?: string | null;
+  /**
+   * The relay refused this machine's key AND the persisted rotation budget is
+   * spent, so the client will not mint another identity. Additive and optional:
+   * older consumers keep reading `lastError`, which carries the same sentence.
+   */
+  identityRotationCapped?: boolean;
   /** Epoch ms the current uninterrupted control outage began; null when connected. */
   controlFailingSinceMs?: number | null;
 };
@@ -189,12 +195,19 @@ export const MAX_CONTROL_REPLACED_REATTEMPTS = 3;
  */
 export const CONTROL_REPLACED_REARM_MS = 10 * 60_000;
 export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
+/**
+ * What a machine says once it has spent its rotation budget on relay claim
+ * conflicts. It names the only safe next step: minting another identity would
+ * add another phantom row to the owner's account, and the row this machine
+ * already owns is the one that has to be repaired.
+ */
+export const RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE =
+  "This computer needs to be reconnected to your ADE account.";
 export const BRIDGE_VALIDATION_LEASE_MS = 2_000;
 export const CONTROL_READY_STABLE_MS = 5_000;
 export const RELAY_READY_VERSION = 2;
 export const RELAY_SELF_PROBE_DEBOUNCE_MS = 2_000;
 const MAX_UNEXPECTED_RESPONSE_BODY_BYTES = 512;
-const MAX_CONFIRMED_CONFLICT_ROTATIONS = 1;
 
 class RelayClaimError extends Error {
   logged = false;
@@ -405,7 +418,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let claimedIdentity: { relayOrigin: string; machineKey: string } | null = null;
   let accountLeaseExpiresAtMs: number | null = null;
   let consecutiveAccountLeaseFailures = 0;
-  let confirmedConflictRotations = 0;
+  /**
+   * Latched once the persisted rotation budget refuses another mint. Cleared by
+   * the next successful claim, so a machine that gets repaired stops saying it
+   * needs repairing without a restart.
+   */
+  let identityRotationCapped = false;
   let identityRotationPendingPublish = false;
   let accountGeneration = 0;
   let controlGeneration = 0;
@@ -763,6 +781,13 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
     await response.body?.cancel().catch(() => {});
     claimedIdentity = { relayOrigin, machineKey: id.machineKey };
+    // The relay accepted this identity, so whatever conflict spent the budget
+    // is over. Reported through the status the desktop reads, not just cleared.
+    if (identityRotationCapped) {
+      identityRotationCapped = false;
+      if (lastError === RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE) lastError = null;
+      requestPublicationStatePublish("route-state-changed");
+    }
     log.info?.("sync_tunnel.claimed", {
       machineKey: id.machineKey,
       status: response.status,
@@ -777,7 +802,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       if (
         !(error instanceof RelayClaimError)
         || error.status !== 409
-        || confirmedConflictRotations >= MAX_CONFIRMED_CONFLICT_ROTATIONS
         || args.machineIdentity
       ) {
         throw error;
@@ -790,17 +814,33 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         status: error.status,
         identityRotation: "starting",
       });
-      const rotated = args.configStore.rotateMachineIdentity(initialIdentity.machineKey);
-      if (rotated.machineKey === initialIdentity.machineKey) {
+      // The budget lives in the identity file, so a restart cannot forgive a
+      // rotation. Exhausting it is a product state, not a retry: every extra
+      // mint is another machine row the owner never asked for.
+      const rotation = args.configStore.rotateMachineIdentity(initialIdentity.machineKey);
+      if (!rotation.rotated) {
+        if (rotation.budgetExhausted && !identityRotationCapped) {
+          identityRotationCapped = true;
+          log.warn?.("sync_tunnel.identity_rotation_capped", {
+            machineKey: initialIdentity.machineKey,
+            rotationsInWindow: rotation.rotationsInWindow,
+            reason: RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE,
+          });
+          requestPublicationStatePublish("route-state-changed");
+        }
         throw error;
       }
-      confirmedConflictRotations += 1;
       identityRotationPendingPublish = true;
       log.info?.("sync_tunnel.identity_rotated", {
         previousMachineKey: initialIdentity.machineKey,
-        machineKey: rotated.machineKey,
+        machineKey: rotation.config.machineKey,
         triggerStatus: 409,
+        rotationsInWindow: rotation.rotationsInWindow,
       });
+      const rotated: MachineIdentity = {
+        machineKey: rotation.config.machineKey,
+        secret: rotation.config.secret,
+      };
       await claimOnce(rotated);
       return rotated;
     }
@@ -823,11 +863,19 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       try {
         id = await claimWithConflictRecovery(id);
       } catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
+        const rawReason = error instanceof Error ? error.message : String(error);
+        // A capped machine reports the action its owner can take, not the
+        // status code that produced it — `claim failed (409)` tells nobody that
+        // this computer has to be reconnected to the account.
+        const reason = identityRotationCapped
+          && error instanceof RelayClaimError
+          && error.status === 409
+          ? RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE
+          : rawReason;
         recordFailure(reason);
         if (!(error instanceof RelayClaimError) || !error.logged) {
           log.warn?.("sync_tunnel.claim_failed", {
-            error: reason,
+            error: rawReason,
             machineKey: error instanceof RelayClaimError ? error.machineKey : id.machineKey,
             status: error instanceof RelayClaimError ? error.status : null,
           });
@@ -2016,6 +2064,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         machineKey,
         controlSuppressed: controlSuppressedReason != null,
         controlSuppressedReason,
+        identityRotationCapped: eligible && identityRotationCapped,
         controlFailingSinceMs: connected ? null : controlFailingSinceMs,
       };
     },

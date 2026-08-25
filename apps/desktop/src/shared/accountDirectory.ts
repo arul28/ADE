@@ -4,6 +4,8 @@ import type {
   AdeAccountMachinesResult,
 } from "./types/account";
 import type { SyncHelloOkPayload } from "./types/sync";
+import { fromMachinePowerRecord } from "./types/power";
+import type { MachinePower, MachineSleepState } from "./types/power";
 import { isTailnetHostname } from "./tailnet";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -226,6 +228,44 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     reachableEndpoints: endpoints,
     lastSeenAt,
     online: value.online === true,
+    ...parseMachinePower(value),
+  };
+}
+
+/**
+ * Power and sleep, as the directory publishes them.
+ *
+ * Every field degrades independently: a host too old to report power omits all
+ * of them, and the Worker nulls a malformed value rather than dropping the
+ * machine. Absent stays absent — a machine with no reading must not render as
+ * a machine at 0%.
+ */
+function parseMachinePower(value: Record<string, unknown>): {
+  power?: MachinePower | null;
+  sleepState?: MachineSleepState | null;
+  sleepStateAt?: number | null;
+} {
+  const raw = isRecord(value.power) ? value.power : null;
+  const power = raw
+    ? fromMachinePowerRecord({
+        batteryPercent: typeof raw.batteryPercent === "number" ? raw.batteryPercent : null,
+        charging: typeof raw.charging === "boolean" ? raw.charging : null,
+        onExternalPower: typeof raw.onExternalPower === "boolean" ? raw.onExternalPower : null,
+      })
+    : null;
+  const sleepState = value.sleepState === "asleep" || value.sleepState === "awake"
+    ? value.sleepState
+    : null;
+  const sleepStateAt = typeof value.sleepStateAt === "number"
+    && Number.isFinite(value.sleepStateAt)
+    && value.sleepStateAt >= 0
+    && value.sleepStateAt <= 8_640_000_000_000_000
+    ? value.sleepStateAt
+    : null;
+  return {
+    ...(power ? { power } : {}),
+    ...(sleepState ? { sleepState } : {}),
+    ...(sleepStateAt === null ? {} : { sleepStateAt }),
   };
 }
 

@@ -6,7 +6,7 @@ import { createAccountNamespace } from "./account";
 import { createAgentChatNamespace } from "./agentChat";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAttentionNamespace } from "./attention";
-import { createAppNamespace, webUpdateMethods } from "./app";
+import { createAppNamespace, webKeepAwakeMethods, webUpdateMethods } from "./app";
 import { createFilesNamespace } from "./files";
 import { createGitNamespaces } from "./git";
 import { CommandCaller } from "./infra/commandCaller";
@@ -146,6 +146,9 @@ export function createAdeWebAdapter(
     automations: misc.automations,
     feedback: misc.feedback,
     updateCheckForUpdates: async () => undefined,
+    keepAwakeGet: webKeepAwakeMethods.keepAwakeGet,
+    keepAwakeSetLevel: webKeepAwakeMethods.keepAwakeSetLevel,
+    keepAwakeFixSystemSleep: webKeepAwakeMethods.keepAwakeFixSystemSleep,
     updateGetState: webUpdateMethods.updateGetState,
     updateGetPreferences: webUpdateMethods.updateGetPreferences,
     updateSetPreferences: webUpdateMethods.updateSetPreferences,

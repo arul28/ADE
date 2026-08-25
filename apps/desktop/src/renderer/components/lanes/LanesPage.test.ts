@@ -3,6 +3,7 @@ import {
   buildLaneActionClearedSearch,
   getDeferredLanePaneDelayMs,
   githubPrMatchesCurrentBranch,
+  laneIsOnBaseBranch,
   laneHasAncestor,
   lanePrTagRoutePath,
   lanePrMatchesCurrentBranch,
@@ -403,16 +404,16 @@ describe("selectLanePrTag", () => {
     expect(selectLanePrTag(makeLane(), [mergedPr])).toBe(mergedPr);
   });
 
-  it("retains a PR row as lane history when its head branch moved on", () => {
+  it("does not surface a previous-branch PR as the lane tag", () => {
     const stalePr = makePr({
       state: "merged",
       headBranch: "ade/old-pr-state",
     });
 
-    expect(selectLanePrTag(makeLane(), [stalePr])).toBe(stalePr);
+    expect(selectLanePrTag(makeLane(), [stalePr])).toBeNull();
   });
 
-  it("orders active PRs before previous history while retaining both", () => {
+  it("selects only current-branch PRs while role derivation still identifies history", () => {
     const previous = makePr({
       id: "previous-pr",
       state: "merged",
@@ -426,7 +427,6 @@ describe("selectLanePrTag", () => {
 
     expect(selectLanePrs(makeLane(), [previous, active]).map((pr) => pr.id)).toEqual([
       "active-pr",
-      "previous-pr",
     ]);
     expect(lanePrRole(makeLane(), previous)).toBe("previous");
     expect(lanePrRole(makeLane(), active)).toBe("active");
@@ -455,6 +455,11 @@ describe("selectLanePrTag", () => {
   });
 
   it("does not match a primary lane that is currently on its base branch", () => {
+    expect(laneIsOnBaseBranch(makeLane({
+      laneType: "primary",
+      branchRef: "main",
+      baseRef: "main",
+    }))).toBe(true);
     expect(
       lanePrMatchesCurrentBranch(
         makeLane({
@@ -467,6 +472,22 @@ describe("selectLanePrTag", () => {
         }),
       ),
     ).toBe(false);
+  });
+
+  it("removes mapped and GitHub-only tags when primary returns to its base branch", () => {
+    const primary = makeLane({
+      laneType: "primary",
+      branchRef: "main",
+      baseRef: "main",
+    });
+    const mergedFeaturePr = makePr({ state: "merged", headBranch: "ade/pr-state" });
+    const mergedFeatureGithubPr = makeGitHubPr({
+      state: "merged",
+      headBranch: "ade/pr-state",
+    });
+
+    expect(selectLaneTabPrTag(primary, [mergedFeaturePr], [])).toBeNull();
+    expect(selectLaneTabPrTag(primary, [], [mergedFeatureGithubPr])).toBeNull();
   });
 });
 

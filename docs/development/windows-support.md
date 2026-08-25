@@ -77,12 +77,43 @@ Release proof records these as separate bounded signals, not one inferred
 - a bounded startup/recovery log extract correlated by a proof-local alias.
 
 The launcher's wait is sliced, not unbounded. Every 15 s it reads the brain's
-heartbeat file (`<ADE home>\runtime\heartbeat.json`) and, if the beat is older
-than 90 s **and** belongs to the child it started, stops that child and lets its
-own restart path take over. This is the Windows half of the cross-platform wedge
-watchdog — macOS uses a separate `com.ade.watchdog` launch agent because launchd
-has no loop to fold the check into. An absent, unreadable, or foreign heartbeat
-is never read as a wedge, so the guard cannot fire on a brain it does not own.
+heartbeat file (`<ADE home>\runtime\heartbeat.json`). This is the Windows half
+of the cross-platform wedge watchdog — macOS uses a separate `com.ade.watchdog`
+launch agent because launchd has no loop to fold the check into. An absent,
+unreadable, or foreign heartbeat is never read as a wedge, so the guard cannot
+fire on a brain it does not own.
+
+A stale beat is not enough to stop the child. A kill needs three facts, and the
+last two exist because modern standby suspends the supervisor and the brain
+together — on wake, a beat 40 minutes old describes the suspension, not a wedge:
+
+1. the beat is older than 90 s and belongs to the child the launcher started;
+2. **the supervisor was awake to watch it go stale.** It measures its own
+   lateness, the one thing a suspended process can still report. When the gap
+   since its previous poll is at least `max(90 s, 3 × 15 s)` and the beat's age
+   fits inside that gap plus the staleness window, the launcher logs
+   `machine slept` and clears any strike. A brain that went quiet days before a
+   ten-minute nap is not explained by the nap, and still dies;
+3. **a previous poll already saw this same beat**, matched on the beat's own
+   timestamp rather than its age. A brain the OS merely stopped scheduling beats
+   again before the next poll and never reaches the kill; a wedged one is still
+   sitting on the same timestamp one cadence later. A beat that comes back fresh
+   clears the strike, so the two stale polls have to be consecutive.
+
+macOS applies the identical two rules in `evaluateBrainHeartbeat`. The suspend
+floor is the same formula on both platforms — `max(staleMs, 3 × the checker's
+own interval)` — not the same number: 90 s on Windows (15 s poll) and 180 s on
+macOS (60 s StartInterval), with `brainWatcherSuspendFloorMs` computing it
+there and the rendered PowerShell computing it inline.
+
+`ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
+platforms, with the same rules: a positive integer wins, anything else keeps the
+default, and the result never drops below 30 s. The suspend floor is computed
+after the override, so it rescales with it. Only the pickup differs. The macOS
+checker is a fresh process every 60 s, so it reads the variable at the next
+check. The Windows supervisor reads the variable once when it starts, so a
+changed machine variable applies after the brain service restarts. Neither
+platform has an override for the poll interval.
 
 The PID JSON is advisory ownership evidence. It is not a readiness file, and an
 ONLOGON Scheduled Task is not a current supervisor or readiness mechanism.

@@ -103,6 +103,7 @@ export type LaneSummary = {
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
+  githubIssueLinks?: LaneGitHubIssueLink[];
 };
 
 export type LaneLinearIssue = {
@@ -185,6 +186,50 @@ export type SessionLinearIssueLink = {
     commitSha?: string | null;
     prId?: string | null;
   } | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LaneGitHubIssue = {
+  id: string;
+  number: number;
+  owner: string;
+  repo: string;
+  title: string;
+  body?: string | null;
+  url: string;
+  state: "open" | "closed";
+  stateReason?: string | null;
+  labels: string[];
+  assignees: string[];
+  authorLogin?: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LaneGitHubIssueLink = {
+  id: string;
+  laneId: string;
+  issue: LaneGitHubIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: SessionLinearIssueLink["evidence"] | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SessionGitHubIssueLink = {
+  id: string;
+  sessionId: string;
+  laneId: string | null;
+  issue: LaneGitHubIssue;
+  role: LaneLinearIssueLinkRole;
+  source: LaneLinearIssueLinkSource;
+  includeInPr: boolean;
+  closeOnMerge: boolean;
+  evidence?: SessionLinearIssueLink["evidence"] | null;
   createdAt: string;
   updatedAt: string;
 };

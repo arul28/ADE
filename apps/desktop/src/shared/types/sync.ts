@@ -352,7 +352,16 @@ export type SyncTailnetDiscoveryStatus = {
 
 export type SyncAccountDirectoryState =
   | "published"
+  /** Sync is genuinely turned off on this computer. Nothing is trying. */
   | "sync_disabled"
+  /**
+   * Sync is meant to run here but has not come up yet — the publisher has made
+   * no attempt, or the sync host is still failing and retrying. Distinct from
+   * `sync_disabled` because the copy for the two is not the same sentence:
+   * this state was reported as "sync is off on this computer" while ADE was in
+   * fact retrying a read it could not complete.
+   */
+  | "sync_not_started"
   | "no_active_sync_scope"
   | "snapshot_failed"
   | "machine_key_unavailable"
@@ -386,6 +395,7 @@ export function isBrainAccountSessionFailure(
 const SYNC_ACCOUNT_DIRECTORY_STATES: readonly SyncAccountDirectoryState[] = [
   "published",
   "sync_disabled",
+  "sync_not_started",
   "no_active_sync_scope",
   "snapshot_failed",
   "machine_key_unavailable",
@@ -459,6 +469,14 @@ export function describeUnpublishedAccountDirectory(
       return {
         summary: "sync is off on this computer, so other devices can't reach it",
         nextAction: null,
+      };
+    case "sync_not_started":
+      // Only ever true, never "off": this is also what a brain reports while
+      // its sync host is failing and retrying, and telling someone sync is off
+      // sends them looking for a switch that is already on.
+      return {
+        summary: "sync hasn't started on this computer yet",
+        nextAction: "ade doctor",
       };
     case "missing_pairing_connect_info":
       return {
@@ -788,6 +806,11 @@ export type SyncRosterChat = {
   laneId: string;
   /** Parent chat/session id for attached shell rows. Mirrors TerminalSessionSummary.chatSessionId. */
   chatSessionId?: string | null;
+  /**
+   * Identity-session marker used to reject stale/legacy roster rows on clients.
+   * Current hosts omit identity sessions from the normal roster entirely.
+   */
+  identityKey?: string | null;
   title?: string | null;
   provider?: string | null;
   model?: string | null;
@@ -1190,6 +1213,15 @@ export type SyncCloudRelayStatus = {
   lastBridgeValidationAt: string | null;
   lastControlError: string | null;
   lastError: string | null;
+  /**
+   * The relay self-probe: ADE dialing its own relay endpoint and reading the
+   * echo back. Declared optional because only the brain's status builder fills
+   * them in and only `ade doctor` reads them; every other producer of this type
+   * omits all three, and did so while these fields were travelling untyped.
+   */
+  relayEndToEndVerifiedAt?: string | null;
+  relayEndToEndFailure?: string | null;
+  relayEndToEndRoundTripMs?: number | null;
 };
 
 /**
@@ -1744,6 +1776,10 @@ export type SyncRemoteCommandAction =
   | "lanes.delete"
   | "lanes.getStackChain"
   | "lanes.getChildren"
+  | "lanes.attachGitHubIssueToSession"
+  | "lanes.detachGitHubIssueFromSession"
+  | "lanes.listGitHubIssuesForSession"
+  | "lanes.listGitHubIssuesForLaneSessions"
   | "lanes.rebaseStart"
   | "lanes.rebasePush"
   | "lanes.rebaseRollback"
@@ -1921,6 +1957,10 @@ export type SyncRemoteCommandAction =
   | "history.listOperations"
   | "github.getStatus"
   | "github.getRemoteStatus"
+  | "github.getRequestBudget"
+  | "github.detectRepo"
+  | "github.listRepoIssues"
+  | "github.getIssue"
   | "github.publishCurrentProject"
   | "projectConfig.get"
   | "projectConfig.save"
@@ -1929,6 +1969,10 @@ export type SyncRemoteCommandAction =
   | "ai.deleteApiKey"
   | "ai.openCursorCloudChat"
   | "ai.watchCursorCloudMirror"
+  | "ai.cursorCloudFleet"
+  | "ai.cursorCloudResolveLane"
+  | "ai.cursorCloudPullIntoLane"
+  | "ai.cursorCloudStopRun"
   | "orchestration.runCreate"
   | "prs.list"
   | "prs.listOpenForRepo"

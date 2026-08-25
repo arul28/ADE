@@ -560,6 +560,201 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("reports a failed brain action as a domain and a code, never as a message", () => {
+    const harness = makeHarness();
+
+    // What the local-runtime callAction error path has in scope: the domain the
+    // renderer asked for, the structured code the brain attached, and the raw
+    // message — which is the one thing that must not cross the boundary.
+    expect(harness.service.captureInternal({
+      event: "ade_brain_action_failed",
+      surface: "desktop",
+      properties: {
+        action_domain: "lane",
+        error_code: "storage_read_failed",
+        message: "storage_read_failed: could not read /Users/alice/secret-project/.ade/ade.db",
+        error_message: "EACCES: permission denied, open '/Users/alice/secret-project/.ade/ade.db'",
+        root_path: "/Users/alice/secret-project",
+        action: "lanes.create",
+      },
+      dedupeKey: "brain-action-failed:lane:storage_read_failed",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    expect(harness.messages).toHaveLength(1);
+    expect(harness.messages[0]?.properties).toMatchObject({
+      action_domain: "lane",
+      error_code: "storage_read_failed",
+    });
+    for (const forbidden of ["message", "error_message", "root_path", "action"]) {
+      expect(harness.messages[0]?.properties).not.toHaveProperty(forbidden);
+    }
+    expect(JSON.stringify(harness.messages)).not.toContain("secret-project");
+    expect(JSON.stringify(harness.messages)).not.toContain("alice");
+
+    // The loop that produced no telemetry last time: the same failure, again and
+    // again. One accepted event per domain+code per hour, not thousands.
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      expect(harness.service.captureInternal({
+        event: "ade_brain_action_failed",
+        surface: "desktop",
+        properties: { action_domain: "lane", error_code: "storage_read_failed" },
+        dedupeKey: "brain-action-failed:lane:storage_read_failed",
+        minimumIntervalMs: 60 * 60 * 1_000,
+      })).toEqual({ accepted: false, reason: "duplicate" });
+    }
+    expect(harness.messages).toHaveLength(1);
+
+    // A different code inside the same hour is a different fact and still lands.
+    expect(harness.service.captureInternal({
+      event: "ade_brain_action_failed",
+      surface: "desktop",
+      properties: { action_domain: "lane", error_code: "ipc_timeout" },
+      dedupeKey: "brain-action-failed:lane:ipc_timeout",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[1]?.properties).toMatchObject({
+      action_domain: "lane",
+      error_code: "ipc_timeout",
+    });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("drops a brain-action domain or code that is not a closed value", () => {
+    // Each of these is an accepted event with a stripped property, and the
+    // event's per-minute ceiling is 3 — so the clock advances past the window
+    // between captures rather than the test asserting on a rate-limited drop.
+    let clock = Date.parse("2026-08-18T12:00:00.000Z");
+    const harness = makeHarness({ now: () => clock });
+    const capture = (properties: Record<string, string>, dedupeKey: string) => {
+      clock += 61_000;
+      expect(harness.service.captureInternal({
+        event: "ade_brain_action_failed",
+        surface: "desktop",
+        properties,
+        dedupeKey,
+      })).toEqual({ accepted: true, reason: "accepted" });
+      return harness.messages.at(-1)?.properties as Record<string, unknown>;
+    };
+
+    // A domain outside the registry's closed list is dropped, not widened.
+    expect(capture({ action_domain: "/Users/alice/secret", error_code: "not_found" }, "d1"))
+      .not.toHaveProperty("action_domain");
+
+    // The one registry domain that is not a plain identifier still survives, so
+    // the allowlist is a real mirror of the registry and not a rounded-off copy.
+    expect(capture({ action_domain: "external-sessions", error_code: "not_found" }, "d2"))
+      .toMatchObject({ action_domain: "external-sessions" });
+
+    // An error "code" that is really a sentence, a path, a URL, or an address
+    // fails the identifier shape and never reaches PostHog. Each of these is
+    // something `parseCodedErrorMessage` could conceivably hand back if the
+    // caller stopped extracting the code and passed the message instead.
+    // A hyphenated code is real (`cto-identity-invalid`) and must survive.
+    expect(capture({ action_domain: "chat", error_code: "cto-identity-invalid" }, "d3"))
+      .toMatchObject({ error_code: "cto-identity-invalid" });
+
+    for (const [index, leaked] of [
+      "could not open the project data store",
+      "/Users/alice/secret-project/.ade/ade.db",
+      "https://directory.example.test/account/machines",
+      "ada@example.com",
+      "alice-macbook.local",
+    ].entries()) {
+      expect(capture({ action_domain: "file", error_code: leaked }, `leak-${index}`))
+        .not.toHaveProperty("error_code");
+    }
+    expect(JSON.stringify(harness.messages)).not.toContain("alice");
+    expect(JSON.stringify(harness.messages)).not.toContain("example.com");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("reports machine membership changes as coarse connections facts", () => {
+    const harness = makeHarness();
+
+    // Removing a computer from the account. The roster row this came from has
+    // the machine's key and display name in it; neither is a product fact.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_removed",
+        outcome: "completed",
+        machine_key: "not-a-real-machine-key",
+        machine_name: "Example MacBook",
+      },
+      projectId: null,
+      dedupeKey: "machine_removed:completed",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "connections",
+      action: "machine_removed",
+      outcome: "completed",
+    });
+    expect(JSON.stringify(harness.messages[0])).not.toContain("MacBook");
+
+    // The directory refusing to take this computer back. `refusal_code` is the
+    // whole point of the event; the brain's sentence explaining it is not.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_register_refused",
+        outcome: "failed",
+        refusal_code: "machine_revoked",
+        reason: "This machine was removed from your ADE account.",
+      },
+      projectId: null,
+      dedupeKey: "machine_register_refused:machine_revoked",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[1]?.properties).toMatchObject({
+      feature: "connections",
+      action: "machine_register_refused",
+      outcome: "failed",
+      refusal_code: "machine_revoked",
+    });
+    expect(harness.messages[1]?.properties).not.toHaveProperty("reason");
+
+    // A poll loop against a machine that stays refused cannot spend the budget.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_register_refused",
+        outcome: "failed",
+        refusal_code: "machine_revoked",
+      },
+      projectId: null,
+      dedupeKey: "machine_register_refused:machine_revoked",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: false, reason: "duplicate" });
+
+    // A refusal code outside the closed set is dropped rather than widening it,
+    // so a directory that starts naming refusals differently cannot turn this
+    // key into free text.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_register_refused",
+        outcome: "failed",
+        refusal_code: "http 403 from https://directory.example.test",
+      },
+      projectId: null,
+      dedupeKey: "machine_register_refused:unknown",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[2]?.properties).not.toHaveProperty("refusal_code");
+    expect(JSON.stringify(harness.messages)).not.toContain("directory.example.test");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("keeps a renderer-crash report to the reason and the outcome", () => {
     const harness = makeHarness();
 
@@ -838,15 +1033,17 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
-  it("cancels another process's queued client when the shared opt-out marker appears", async () => {
+  it("cancels another process's queued client on the next status read after the shared opt-out marker appears", async () => {
     const first = makeHarness();
     expect(first.service.capture({ event: "ade_app_opened", surface: "desktop" }).accepted).toBe(true);
 
     const second = makeHarness({ root: first.root });
     expect(second.service.setEnabled(false)).toMatchObject({ enabled: false, effective: false });
-    await vi.waitFor(() => {
-      expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
-    }, { timeout: 3_000, interval: 20 });
+    // Drive the reconcile explicitly instead of racing the cross-process fs
+    // watcher: getStatus() re-reads the shared opt-out marker synchronously via
+    // the same reconcileOptOutMarker() the watcher callback runs.
+    expect(first.service.getStatus()).toMatchObject({ enabled: false, effective: false });
+    expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
     await expect(first.service.flush()).resolves.toBe(true);
 
     await first.service.shutdown();
@@ -854,20 +1051,18 @@ describe("productAnalyticsService", () => {
     fs.rmSync(first.root, { recursive: true, force: true });
   });
 
-  it("honors another process's explicit opt-in after a shared opt-out", async () => {
+  it("honors another process's explicit opt-in after a shared opt-out on the next status read", async () => {
     const first = makeHarness();
     expect(first.service.capture({ event: "ade_app_opened", surface: "desktop" }).accepted).toBe(true);
 
     const second = makeHarness({ root: first.root });
     expect(second.service.setEnabled(false)).toMatchObject({ enabled: false, effective: false });
-    await vi.waitFor(() => {
-      expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
-    }, { timeout: 3_000, interval: 20 });
+    // Same synchronous reconcile as above rather than a real-timer watcher race.
+    expect(first.service.getStatus()).toMatchObject({ enabled: false, effective: false });
+    expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
 
     expect(second.service.setEnabled(true)).toMatchObject({ enabled: true, effective: true });
-    await vi.waitFor(() => {
-      expect(first.service.getStatus()).toMatchObject({ enabled: true, effective: true });
-    }, { timeout: 3_000, interval: 20 });
+    expect(first.service.getStatus()).toMatchObject({ enabled: true, effective: true });
     expect(first.service.capture({ event: "ade_screen_viewed", surface: "desktop" })).toEqual({
       accepted: true,
       reason: "accepted",
@@ -1301,6 +1496,31 @@ describe("product analytics producers", () => {
       action: "issue_report",
       outcome: "ENOSPC: no space left on device",
     })).not.toHaveProperty("outcome");
+  });
+
+  it("keeps only the three coarse outcomes of an automatic diagnostic send", () => {
+    // Auto-send answers one question: does the thing that fires without anyone
+    // asking actually go, get held back by its own budget, or fail. The failure
+    // code that triggered it, the surface, the upload reference and the saved
+    // report path are the local artifact and the toast — never the event.
+    for (const outcome of ["completed", "skipped_budget", "failed"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "connections",
+        action: "auto_sent",
+        outcome,
+      })).toEqual({ feature: "connections", action: "auto_sent", outcome });
+    }
+
+    const leaky = sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "connections",
+      action: "auto_sent",
+      outcome: "completed",
+      code: "brain_crash_looping",
+      surface: "project_recovery",
+      reference: "abcd1234",
+      report_path: "/Users/ada/Library/Application Support/ADE/diagnostic-reports/x.md",
+    });
+    expect(leaky).toEqual({ feature: "connections", action: "auto_sent", outcome: "completed" });
   });
 
   it("maps automation completion and failed chat turns into canonical bounded outcomes", () => {

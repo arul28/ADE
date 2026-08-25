@@ -37,3 +37,11 @@ baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:g
 # that introduced the literal still carries it in its own patch, and gitleaks
 # fingerprints are commit-scoped. Scoped to that one commit and finding.
 359ae24fd3fdf638b1e4b28cbeea34c068285aad:apps/ade-cli/src/services/diagnostics/diagnosticReport.test.ts:generic-api-key:54
+
+# cli.test.ts's formatDiagnosticError redaction tests need secret-shaped
+# fixtures to prove they are stripped. The working tree assembles them from
+# segments at runtime, but the commit that introduced the literals still
+# carries them in its own patch, and gitleaks fingerprints are commit-scoped.
+# Scoped to that one commit and its two findings.
+7ec89db49bbd5f9724915222008be6fc0b264682:apps/ade-cli/src/cli.test.ts:generic-api-key:11792
+7ec89db49bbd5f9724915222008be6fc0b264682:apps/ade-cli/src/cli.test.ts:generic-api-key:11808

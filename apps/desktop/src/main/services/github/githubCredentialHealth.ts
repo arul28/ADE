@@ -6,6 +6,7 @@ import type {
   GitHubCredentialState,
   GitHubRateLimitState,
   GitHubRepoRef,
+  GitHubRequestBudget,
 } from "../../../shared/types";
 import {
   githubRateLimitRetryAtMs,
@@ -18,8 +19,29 @@ import {
 
 const FALLBACK_COOLDOWN_MS = 5 * 60_000;
 const SECONDARY_RATE_LIMIT_COOLDOWN_MS = 60_000;
+// A GitHub 5xx deliberately gets NO cooldown. Cooldowns here are consulted by
+// every operation path (githubRawRequest, githubRequest, readAuthToken), not
+// just background probes, so parking a credential after one transient 502 would
+// fail the user's next merge or PR read locally, without a request, for the
+// whole window. The credential is not the problem, so it must stay usable the
+// instant GitHub recovers.
 const REPOSITORY_ACCESS_TTL_MS = 2 * 60_000;
 export const GITHUB_BACKGROUND_RATE_LIMIT_RESERVE = 500;
+/**
+ * How recent a recorded failure must be for {@link githubRequestBudget} to
+ * report its kind.
+ *
+ * A failure is otherwise cleared only by a success on the SAME credential and
+ * resource, so a permanently-bad one (a stale `GITHUB_TOKEN`, a revoked PAT, a
+ * fork the App cannot see) keeps its kind for the life of the process while
+ * ADE happily serves every request from the next credential in the chain. The
+ * budget is read unscoped, so that stale kind would become the process-wide
+ * answer and push every project's poll ladder onto the longer base on a
+ * perfectly healthy GitHub. Callers read the budget immediately after a failure
+ * they just observed, so a window a little wider than their refresh cadence is
+ * all the kind needs to be useful.
+ */
+const REQUEST_BUDGET_FAILURE_FRESHNESS_MS = 90_000;
 
 export type GithubCredentialCandidate = {
   source: GitHubCredentialSource;
@@ -32,6 +54,8 @@ type CredentialResourceHealth = {
   failure: GitHubAuthFailure | null;
   rateLimit: GitHubRateLimitState | null;
   cooldownUntilMs: number;
+  /** When {@link failure} was recorded. Zero when there is no failure. */
+  failureAtMs: number;
 };
 
 type CredentialHealth = {
@@ -140,6 +164,7 @@ export function recordGithubCredentialSuccess(
       failure: null,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
       cooldownUntilMs: 0,
+      failureAtMs: 0,
     })),
     userLogin: normalizedLogin(userLogin ?? candidate.userLogin ?? existing?.userLogin),
   });
@@ -158,9 +183,52 @@ export function recordGithubCredentialProbeSuccess(
       failure: null,
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
       cooldownUntilMs: 0,
+      failureAtMs: 0,
     })),
     userLogin: normalizedLogin(userLogin ?? candidate.userLogin ?? existing?.userLogin),
   });
+}
+
+/**
+ * Reconcile a new failure with a cooldown that is still running.
+ *
+ * A later failure must never *shorten* one. Kinds differ in how long they park
+ * a credential — a rejected token gets five minutes, a transport error
+ * deliberately gets none — and they share a resource entry, so overwriting
+ * unconditionally let a transient network blip un-park a credential ADE had
+ * already decided was broken, sending the next request straight back at it.
+ *
+ * When the older cooldown wins, its *reason* is kept with it. The deadline and
+ * the reason describe the same decision, and splitting them produced an
+ * incoherent state: a rejected token parked for five minutes but reported as a
+ * network problem, which is precisely the misattribution that hides the
+ * reconnect the user actually needs.
+ */
+function reconcileCooldown(
+  current: CredentialResourceHealth | undefined,
+  failure: GitHubAuthFailure,
+  cooldownUntilMs: number,
+  nowMs: number,
+): Pick<CredentialResourceHealth, "failure" | "cooldownUntilMs" | "failureAtMs"> {
+  const live = (current?.cooldownUntilMs ?? 0) > nowMs ? current!.cooldownUntilMs : 0;
+  if (live > cooldownUntilMs && current?.failure) {
+    // The preserved failure keeps its ORIGINAL timestamp. Restamping it to now
+    // would refresh a stale reason's clock on every later failure, so a
+    // long-dead `invalid_token` would stay inside
+    // `REQUEST_BUDGET_FAILURE_FRESHNESS_MS` indefinitely as long as transient
+    // blips kept arriving — and `githubRequestBudget` would keep reporting it
+    // process-wide, which is exactly what that bound exists to prevent.
+    return {
+      failure: current.failure,
+      cooldownUntilMs: live,
+      failureAtMs: current.failureAtMs,
+    };
+  }
+  return {
+    failure,
+    cooldownUntilMs: Math.max(cooldownUntilMs, live),
+    failureAtMs: nowMs,
+  };
 }
 
 function recordGithubFailure(
@@ -172,11 +240,11 @@ function recordGithubFailure(
   const digest = githubCredentialTokenDigest(candidate.token);
   const existing = healthByTokenDigest.get(digest);
   const userLogin = normalizedLogin(candidate.userLogin ?? existing?.userLogin);
+  const nowMs = Date.now();
   const next: CredentialHealth = {
     resources: updateResourceHealth(existing, rateLimit, (current) => ({
-      failure,
+      ...reconcileCooldown(current, failure, cooldownUntilMs, nowMs),
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      cooldownUntilMs,
     })),
     userLogin,
   };
@@ -192,9 +260,8 @@ function recordGithubFailure(
     const resources = new Map(candidateHealth.resources);
     const current = resources.get(resource);
     resources.set(resource, {
-      failure,
+      ...reconcileCooldown(current, failure, cooldownUntilMs, nowMs),
       rateLimit: rateLimit ?? current?.rateLimit ?? null,
-      cooldownUntilMs,
     });
     healthByTokenDigest.set(candidateDigest, {
       ...candidateHealth,
@@ -355,22 +422,39 @@ export function githubCredentialStates(args: {
   });
 }
 
+/**
+ * Whether a quota bucket is one PR reads actually spend from. Search has its
+ * own small independent bucket and must never pause PR refresh; `unknown` only
+ * counts when the reported limit is large enough to be a primary bucket.
+ */
+function protectsPullRequestReads(
+  resource: string,
+  rateLimit: GitHubRateLimitState | null,
+): boolean {
+  return resource === "core"
+    || resource === "graphql"
+    || (resource === "unknown" && (rateLimit?.limit ?? 0) >= 1_000);
+}
+
+function healthEntriesFor(
+  candidates?: readonly GithubCredentialCandidate[],
+): CredentialHealth[] {
+  return candidates
+    ? candidates
+        .map((candidate) => healthFor(candidate))
+        .filter((health): health is CredentialHealth => health != null)
+    : [...healthByTokenDigest.values()];
+}
+
 export function githubBackgroundRequestPauseUntilMs(
   nowMs = Date.now(),
   candidates?: readonly GithubCredentialCandidate[],
 ): number | null {
   let pauseUntilMs: number | null = null;
-  const healthEntries = candidates
-    ? candidates.map((candidate) => healthFor(candidate)).filter(Boolean)
-    : [...healthByTokenDigest.values()];
-  for (const health of healthEntries) {
-    if (!health) continue;
+  for (const health of healthEntriesFor(candidates)) {
     for (const [resource, resourceHealth] of health.resources) {
       const rateLimit = resourceHealth.rateLimit;
-      const protectsPullRequestReads = resource === "core"
-        || resource === "graphql"
-        || (resource === "unknown" && (rateLimit?.limit ?? 0) >= 1_000);
-      if (!protectsPullRequestReads) continue;
+      if (!protectsPullRequestReads(resource, rateLimit)) continue;
       const remaining = rateLimit?.remaining;
       const resetAt = rateLimit?.resetAt ? Date.parse(rateLimit.resetAt) : NaN;
       if (remaining == null || remaining > GITHUB_BACKGROUND_RATE_LIMIT_RESERVE) continue;
@@ -379,4 +463,80 @@ export function githubBackgroundRequestPauseUntilMs(
     }
   }
   return pauseUntilMs;
+}
+
+/**
+ * Rank of a failure kind by how long a stand-down it justifies.
+ *
+ * Contract with `ladderBaseMs` in
+ * `renderer/components/prs/state/githubPollGovernor.ts`: the budget reports the
+ * worst kind currently recorded, and "worst" has to mean the same thing in both
+ * modules or a multi-credential chain reports the kind that asks for the
+ * *shorter* wait. Change one, change both.
+ */
+const REQUEST_BUDGET_FAILURE_SEVERITY: Record<GitHubAuthFailure["kind"], number> = {
+  rate_limited: 6,
+  service_unavailable: 5,
+  invalid_token: 4,
+  permission_denied: 3,
+  network: 2,
+  unknown: 1,
+  // Last: ADE renewing its own credential is the one "failure" here that GitHub
+  // never refused, and it clears in seconds. Any real refusal outranks it.
+  renewing: 0,
+};
+
+/**
+ * The reserve and the worst recorded failure kind, for automatic GitHub readers
+ * deciding their cadence before spending a request.
+ *
+ * Takes no credential inventory, and that is load-bearing rather than a
+ * shortcut: resolving one can shell out to `gh auth token`, decrypt the
+ * credential store (a PowerShell subprocess under DPAPI on Windows), or refresh
+ * an expired App user token *over the network* — and this runs on a timer and
+ * again on every failed poll group, during exactly the outage it exists to
+ * survive. Reading every credential this process knows rather than one
+ * project's is also the safe direction: the primary quota is per-account, so
+ * over-throttling is conservative and under-throttling is the bug. It matches
+ * `prPollingService`, which calls `githubBackgroundRequestPauseUntilMs()`
+ * unscoped for the same reason.
+ */
+export function githubRequestBudget(
+  nowMs = Date.now(),
+  candidates?: readonly GithubCredentialCandidate[],
+): GitHubRequestBudget {
+  const pauseUntilMs = githubBackgroundRequestPauseUntilMs(nowMs, candidates);
+  let failure: GitHubAuthFailure | null = null;
+  for (const health of healthEntriesFor(candidates)) {
+    for (const [resource, resourceHealth] of health.resources) {
+      // Deliberately NOT `protectsPullRequestReads`. That filter exists to stop
+      // the tiny `search` bucket from pausing PR refresh, and its `limit >= 1000`
+      // clause makes it a statement about a quota bucket. A failure kind is a
+      // statement about GitHub, and the failures that matter most here — a hung
+      // request, a DNS failure, an edge 5xx — carry no `x-ratelimit-*` headers
+      // at all, so they land under `unknown` with no limit and were being
+      // dropped. That left the classified ladder inert for exactly the outage
+      // shape it was written for: the governor saw `failureKind: null` and held
+      // a flat 30-second rung instead of climbing to the five-minute ceiling.
+      if (resource === "search") continue;
+      const current = nowMs - resourceHealth.failureAtMs <= REQUEST_BUDGET_FAILURE_FRESHNESS_MS
+        ? resourceHealth.failure
+        : null;
+      if (
+        current
+        && (
+          !failure
+          || REQUEST_BUDGET_FAILURE_SEVERITY[current.kind]
+            > REQUEST_BUDGET_FAILURE_SEVERITY[failure.kind]
+        )
+      ) {
+        failure = current;
+      }
+    }
+  }
+  return {
+    pausedUntil: pauseUntilMs == null ? null : new Date(pauseUntilMs).toISOString(),
+    failureKind: failure?.kind ?? null,
+    retryAt: failure?.retryAt ?? null,
+  };
 }

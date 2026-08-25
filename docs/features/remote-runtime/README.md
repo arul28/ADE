@@ -162,7 +162,28 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   wait for the desktop handler timeout. `LocalRuntimeStatus` now also carries
   the brain's `pid`, its bound `syncPort`, the account-directory `publishHealth`
   slice (state + `failingSinceMs` + last-leg durations), and the one-shot
-  `lastWedge` recovered by the event-loop watchdog. The Machines panel renders
+  `lastWedge` recovered by the event-loop watchdog.
+  `probeMachineRuntimeIdentity()` is the side-effect-free question "what is
+  answering on this machine's endpoint, exactly": a `MachineRuntimeIdentity`
+  carrying version, build hash, pid, the build hash this desktop expected, and
+  whether the answering brain is a compatible newer one. It replaces the older
+  `probeMachineRuntimeHealth()`, which answered `ok` and thereby could not tell
+  a correctly updated brain from the pre-update one still holding the socket —
+  see [desktop auto-update](../onboarding-and-settings/desktop-auto-update.md#applying-an-update-is-one-transaction).
+  The pool's own opportunistic service repair is now both throttled and
+  suppressible. `serviceRepairBackoffMs` spaces attempts at 0 / 5 s / 15 s /
+  30 s / 60 s, capped at one a minute, because a mismatched runtime previously
+  spawned one installer per connect attempt — that is per failing action poll.
+  `beginUpdateWindow` / `endUpdateWindow` suppress repair entirely for at most
+  `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 minutes) while an update is applying,
+  and connects refused during it get
+  `LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE` ("ADE is applying an update. The
+  background service is restarting.") rather than a repair. The window
+  self-expires, so a transaction that never settles cannot leave recovery
+  disabled for the session. `getStaleMismatchedRuntime()` reports a
+  still-running pre-update brain, verified alive and start-time-matched through
+  `readProcessStartTimeMs` so a recycled pid is never mistaken for it, and never
+  reports a brain *newer* than this desktop. The Machines panel renders
   publish health as a This-computer indicator (`remoteMachineModel.describePublishHealth`,
   which reads inactive states as "none" and only alarms a real failure after it
   has persisted ~2 minutes), and the app shell reads `lastWedge` for the
@@ -334,7 +355,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   did not have. Connection failures also carry a **Report issue** button. `remoteMachineModel.ts`
   (`describePublishHealth`) is the pure classifier for that indicator: the
   publishing `published` state reads healthy, the non-publishing states
-  (`sync_disabled`, `not_host`, `account_signed_out`, `machine_key_unavailable`,
+  (`sync_disabled`, `sync_not_started`, `not_host`, `account_signed_out`,
+  `machine_key_unavailable`,
   …) read as "none", and every other state is a failure that only alarms once it
   has persisted at least `PUBLISH_FAILING_ALARM_MS` (2 min) so a transient blip
   stays quiet. When that failure is specifically the brain-side unreadable
@@ -377,6 +399,12 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   Machines are named **absolutely** ("This computer", "MacBook Pro (97)"); "remote"
   is never a machine name, since the machine a tab is bound to can change and
   the create-lane dialog already uses "remote" for the git base-branch source.
+  `machineNameForBinding(binding)` is that absolute name for the machine a
+  call-routing binding targets. A null binding is the tab's own machine — which
+  for a chat is exactly the unpinned path — so it names "This computer" the same
+  way a local binding does. A remote binding prefers the runtime's own reported
+  name and falls back to the project tab's display name; neither branch can
+  produce the word "remote".
 - `apps/desktop/src/main/services/projects/recentProjectSummary.ts` — reads
   `origin`'s URL straight out of the repo's git config (no `git` subprocess per
   recent) and attaches it to each recent summary, which is the join key the tab
@@ -432,6 +460,33 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   scoped per repository, so switching project tabs invalidates it wholesale.
   `selectOtherMachineBranchStates` is the derived-state seam the push guard
   reads at click time.
+  The same module owns the **pin-resolution hooks** every chat-scoped surface
+  resolves its machine through:
+  - `machineEntryForBinding(state, pin)` / `useMachineEntryForBinding(pin)` —
+    the pinned machine's slice of the union. The join is by binding **key**, not
+    machine id: `machineId` is only known once that machine has answered, while
+    a pin carries its routing target from the moment a chat is selected.
+  - `useForeignSessionLaneId(sessionId, presentLocally)` — a chat selected from
+    another machine is absent from this tab's session list, so its lane, and
+    with it its machine, is knowable only from the union. `presentLocally`
+    short-circuits the scan for the common case where the tab already holds the
+    session.
+  - `useLanesForPin(pin)` — the **only** lane list a pinned lane id may be
+    resolved against. Never `state.lanes`: lane ids are unique per machine, not
+    globally, so falling back to the tab-bound machine's list can match a
+    *different* lane that happens to share the id and then hand its worktree
+    path to a tool about to drive the other machine. A machine that has not been
+    read yet yields an empty list, which surfaces as "not found" rather than as
+    the wrong lane. It returns `null` for an absent pin so callers keep their own
+    unpinned source explicitly rather than by accident, and it reads each half
+    from the store that owns it: the union from the root store, the warm
+    `laneCacheByProject` lane cache from the surrounding project-scoped store.
+  - **Root-store invariant.** `crossMachineLanesByMachineId` is written only to
+    the root store — every writer goes through `rootAppStoreApi` — and
+    `createProjectAppStore` does not copy it, so a project-scoped `useAppStore`
+    read sees an empty record forever. That is why these are `useRootAppStore`
+    hooks, and why a React caller must not pass a `useAppStore` state into
+    `machineEntryForBinding`.
 - `apps/desktop/src/renderer/lib/chatMachineRouting.ts` — **per-session runtime
   routing**. `buildLaneBindingIndex` folds each open binding's lane list into a
   lane→binding index (active binding first wins), and `resolveChatRuntimePin`
@@ -451,7 +506,34 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   chat's lane; the Work hook is the Work tab's single routing authority for
   CLI/shell rows, adding lane-then-launch-pin resolution
   (`pinForSession`) and the launch-pin registry writes
-  (`rememberSessionPin` / `forgetSessionPin`) on top of the shared router.
+  (`rememberSessionPin` / `forgetSessionPin`) on top of the shared router. The
+  Work tools pane (Terminal / Git / Files / iOS / App Control / Browser) follows
+  the active Work session's machine through a `runtimePin` prop off that same
+  hook, so a chat on another machine gets *that* machine's git, terminals, and
+  files rather than the tab's.
+- `apps/desktop/src/renderer/components/chat/ChatRuntimeScope.tsx` — the
+  canonical chat-machine derivation, resolved **once per pane**. `AgentChatPane`
+  runs `useChatScopeDerivation` (session → lane, via
+  `useForeignSessionLaneId` when the chat is not in this tab's list → pin, via
+  the chat machine router) and hands the result to `ChatRuntimeScopeProvider`,
+  which covers its whole panel/drawer subtree. The pane and every chat-scoped
+  tool — Git toolbar, iOS simulator, App Control, built-in browser, file
+  changes, PR pane, terminals — therefore cannot disagree about which machine
+  the chat is on, which is the failure mode a global `useAppStore` selector
+  produces by default: it answers with the *tab's* machine, wrong in exactly the
+  case that matters. `useChatRuntimeScope()` returns
+  `{ pin, binding, laneId, lane, laneWorktreePath, rootPath, isRemote,
+  machineName, online }`; `pin === null` means, and only means, "this chat lives
+  on the tab's binding", so the unpinned call is byte-for-byte what it was
+  before per-chat routing. Outside a provider the hook yields the unpinned,
+  local, online fallback, which is how a chat-less surface should behave.
+  `useChatRuntimeScopeForPin(pin, laneId, bindingOverride?)` serves surfaces
+  reused outside a chat pane — the CLI session header mounts `ChatGitToolbar`
+  with its own pin and no provider above it — so the derivation comes from a
+  prop instead of context. Lane rows and worktree paths come from
+  `useLanesForPin`, never from the tab's `lanes`; `online` is false only when the
+  chat's *pinned* machine is known unreachable, since the bound machine's
+  liveness is the window's problem rather than this chat's.
 - `apps/desktop/src/renderer/components/lanes/laneMachines.ts`,
   `LaneMachineSelector.tsx`, and `PushDivergenceDialog.tsx` —
   machine selection during lane creation and the push-time divergence warning.
@@ -512,7 +594,49 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (`agentChat.send` / `steer` / `interrupt` / `approve` / `getSummary` /
   `recoverTurn` / …, `sessions.get`, `sessions.readTranscriptTail`) accept that
   optional pin; when it is absent the call is byte-for-byte the bound path it was
-  before per-chat routing, with no extra await. Remote
+  before per-chat routing, with no extra await. The pin surface extends to every
+  domain a chat-scoped tool drives, because the simulator, the controlled app,
+  and a run's captured artifacts all live on the machine that owns the lane:
+  - the **iOS simulator** domain (`getStatus` / `listDevices` /
+    `listLaunchTargets` / `launch` / `attachToChatSession` / `shutdown` /
+    `screenshot` / `getScreenSnapshot` and the rest), **App Control**, and the
+    **computer-use artifact** reads and repairs (`deleteArtifacts` /
+    `recoverArtifact` / `readArtifactPreview`). These route through domain-bound
+    wrappers — `callIosSimulatorActionOr`, `callAppControlActionOr`,
+    `callComputerUseArtifactActionOr` — so the domain string is not retyped at
+    ~50 call sites, where a typo is a silent "unknown action" at runtime, while
+    each method stays statically greppable by name.
+  - the cross-machine handoff trio `agentChat.prepareCrossMachineHandoff` /
+    `validateCrossMachineSource` / `markCrossMachineHandoff`, which are facts
+    about the chat's machine and so take the pin rather than the unpinned
+    `callProjectRuntimeActionOr`.
+  - **Pinned event subscriptions.** `iosSimulator.onEvent` and
+    `appControl.onEvent` take the pin and follow their reads to the pinned
+    runtime's stream. Without that a pinned panel got status reads and no live
+    updates, and the bound machine's stream described a different simulator
+    entirely. `builtInBrowser.onEvent` is the deliberate exception: the built-in
+    browser is hosted by *this* desktop's main process (it owns a
+    `WebContentsView`) and the runtime daemon only proxies calls into it over
+    the desktop bridge socket, so a pin naming another *local* checkout still
+    drives this machine's browser and keeps the local IPC stream. Only a
+    `kind: "remote"` pin switches to the pinned runtime stream, because those
+    calls land on that desktop's browser.
+  - **Read caches are namespaced by binding.** The preload process is shared by
+    every machine a window talks to, so a read cache keyed by arguments alone is
+    machine-blind: once an action can carry a pin, one machine's rows could be
+    served to — or overwritten by — another's. `boundReadCacheKey()` prefixes
+    each cached read's key with the current binding's key. The iOS simulator
+    status and device caches became keyed caches for the same reason, and a
+    pinned `getStatus` / `listDevices` bypasses the cache entirely with a direct
+    `callPinnedRuntimeAction`.
+  - **The bridge object is contract-checked.** It is declared
+    `const adeBridge = { … } satisfies Window["ade"]` before
+    `contextBridge.exposeInMainWorld`, so a preload signature that drifts from
+    the declared `global.d.ts` contract — a missing `pin` parameter above all —
+    is a compile error rather than a renderer silently talking to the wrong
+    machine.
+
+  Remote
   project usage/budget reads route through the remote runtime; local project
   usage/budget reads stay on desktop usage IPC. File actions are strict once a
   local or remote runtime is bound. During a
@@ -532,6 +656,28 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `Sync service is not available` / `Register a project first` failures retry
   through main-process sync IPC; remote-bound failures never fall back to the
   local machine.
+- `apps/desktop/src/main/services/projects/windowTabRootAuthorization.ts` — what
+  a window's set-open-tabs call is allowed to change. `resolveWindowTabRoots`
+  splits the renderer's one list into two very different things: `tabRoots`,
+  what the window is displaying, which is renderer-supplied and only ever used
+  to look projects back up, so an unknown path there is harmless; and
+  `authorizedLocalRoots`, the window's local runtime scope, which
+  `runtimeBridge` treats as "this window opened this checkout". A path that
+  never opened must not earn local-runtime access merely by appearing in a tab
+  list, so only roots resolving to a project this process actually opened pass
+  through — the same gate `projectsForWindowTabs` applies on the way back out.
+  `main.ts` additionally keeps a per-window `windowKnownLocalProjectRoots` set —
+  every local root the window itself opened this session — surfaced as
+  `knownLocalProjectRoots` on the window session and folded into
+  `runtimeBridge.collectAuthorizedLocalRuntimeRoots`. It exists because neither
+  existing signal can answer "was this window ever working in this local
+  checkout?": `windowProjectTabRoots` is replaced wholesale by the renderer on
+  every tab change, and `windowProjectRoots` is nulled the moment the tab binds
+  to a remote machine. A chat pinned to "This computer" is exactly that
+  question — its lane lives on this machine no matter which machine the tab is
+  bound to — and rejecting it left cross-machine Work views unable to act on
+  their own local sessions. Membership stays window-scoped and is granted only
+  by the window opening the project itself, never by a renderer-supplied path.
 - Settings > Secrets keeps file ownership explicit across this boundary. The
   controller desktop opens Finder and reads at most 1 MB from the file the user
   selected, then sends only its basename and content through the active
@@ -559,12 +705,22 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   externally-readable liveness beat: `<ADE home>/runtime/heartbeat.json`
   (`{pid, ts, seq, startedAt}`) rewritten every 15 s from a timer that ticks
   while the brain is completely idle, which is exactly the state a wedge hides
-  in.
+  in. A beat that is itself overdue by more than 60 s records `suspendGapMs` and
+  logs `brain.suspend_gap`: the writer noticing its own lateness is the cheapest
+  evidence that the machine slept. `evaluateBrainHeartbeat` is the shared
+  verdict function, and `brainWatcherSuspendFloorMs` the shared floor both
+  platforms measure a watcher's own lateness against.
 - `apps/ade-cli/src/services/runtime/brainWatchdogCheck.ts` — `runBrainWatchdogCheck`,
   behind `ade runtime watchdog-check`. Reads the heartbeat and, at most, kills
   one pid. It deliberately never opens the runtime socket: a wedged brain is
   precisely the case where connecting hangs, and a watchdog that blocks on its
-  patient is not a watchdog.
+  patient is not a watchdog. It keeps one file of its own,
+  `<ADE home>/runtime/watchdog-check.json` (`{ts, staleBeat}`), which is how it
+  knows how long ago it last ran and whether it has already seen this exact
+  beat — the two facts behind the `machine_slept` and `stale_unconfirmed`
+  verdicts below. The record is written before the judgement, so a check that
+  dies mid-run still leaves its timestamp; an unwritable runtime directory means
+  the watcher stops killing rather than kills on stale information.
 - `apps/ade-cli/src/serviceManager/installLaunchdWatchdog.ts` — install/uninstall
   of the `com.ade.watchdog` launch agent (`.beta` / `.alpha` per channel,
   `StartInterval` 60 s), done alongside the brain's own agent and best effort: a
@@ -1206,6 +1362,39 @@ Three layers now cover that, and they are deliberately different in kind:
   alive. Both conditions are required: an absent or unreadable heartbeat means
   "no judgement available", never "wedged", and a stale beat with a dead writer
   is left to the supervisor that already owns the restart.
+
+  Those two facts are necessary and were not sufficient. A laptop that sleeps
+  suspends the brain and its watcher together, so on wake the beat is 40 minutes
+  old and describes the suspension, not a wedge — and the watchdog killed a
+  perfectly healthy brain every time the lid closed. A kill now needs three
+  facts, and `evaluateBrainHeartbeat` returns a named verdict for each way it
+  can fail to get them:
+
+  1. the beat is stale and its writer is alive and positively identified;
+  2. **the watcher was awake to watch it go stale** — it measures its own
+     lateness, which is the one thing a suspended process can still report.
+     When the gap since its previous run reaches
+     `brainWatcherSuspendFloorMs` (`max(90 s, 3 × the check interval)`) and the
+     beat's age fits inside that gap plus the staleness window, the verdict is
+     `machine_slept` and nothing is killed. A brain that went quiet days before
+     a ten-minute nap is not explained by the nap and still dies;
+  3. **a previous check already saw this same beat**, matched on the beat's own
+     timestamp rather than on its age. A brain the OS merely stopped scheduling
+     beats again before the next check and never reaches a kill; a wedged one is
+     still sitting on the same timestamp a cadence later. Until then the verdict
+     is `stale_unconfirmed`. A beat that comes back fresh clears the strike, so
+     the two stale checks have to be consecutive.
+
+  Both platforms apply the same three rules. macOS gets them from
+  `evaluateBrainHeartbeat`; the Windows supervisor implements them inline in
+  PowerShell against the same heartbeat file and the same suspend floor.
+  `ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
+  platforms, under the same rules — a positive integer wins, anything else keeps
+  the default, and the result never drops below 30 s — and the suspend floor is
+  computed after the override, so it rescales. Only the pickup differs: the
+  macOS check is a fresh process every 60 s and reads the variable at the next
+  check, while the Windows supervisor reads it once at start, so a changed
+  machine variable applies after the brain service restarts.
   - *macOS*: a separate launch agent, `com.ade.watchdog` (`.beta`/`.alpha` per
     channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
     the same binary the brain was installed from. It is installed and removed
@@ -1213,7 +1402,10 @@ Three layers now cover that, and they are deliberately different in kind:
     install the watchdog still gets a brain.
   - *Windows*: the PowerShell supervisor already runs a restart loop, so the
     check folds into it. It waits in 15 s slices instead of one unbounded
-    `WaitForExit()` and stops a child that stopped beating. No Scheduled Task.
+    `WaitForExit()` and stops a child that stopped beating, applying the same
+    three rules — `Get-StaleBeatTs` returns the stale beat's *timestamp* rather
+    than its age precisely so the second-strike rule can recognise the same beat
+    across polls. No Scheduled Task.
 - **Desktop, when running** — `projectRecoveryService.restartBrain` already
   probes and repairs. The watchdog exists for the headless case, and does not
   duplicate it.

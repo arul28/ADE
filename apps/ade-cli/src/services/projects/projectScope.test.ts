@@ -4,7 +4,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { markActiveHostProjectOpen } from "./projectCatalog";
 import { ProjectRegistry } from "./projectRegistry";
-import { ProjectScopeRegistry } from "./projectScope";
+import { FAILED_SCOPE_BACKOFF_MAX_MS, ProjectScopeRegistry } from "./projectScope";
 
 const createAdeRuntimeMock = vi.fn();
 
@@ -821,5 +821,148 @@ describe("markActiveHostProjectOpen", () => {
       { id: "project_previous", isOpen: false },
       { id: "project_current", isOpen: true },
     ]);
+  });
+});
+
+describe("ProjectScopeRegistry failed-boot backoff", () => {
+  beforeEach(() => {
+    createAdeRuntimeMock.mockReset();
+  });
+
+  /** A clock the test advances by hand, so no test waits on real time. */
+  function fakeClock(startMs = 1_000) {
+    let nowMs = startMs;
+    return {
+      now: () => nowMs,
+      advance: (ms: number) => {
+        nowMs += ms;
+      },
+    };
+  }
+
+  it("serves the recorded failure instead of re-booting on every call", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    const bootFailure = Object.assign(new Error("ADE could not open the project data store."), {
+      code: "storage_read_failed",
+    });
+    createAdeRuntimeMock.mockRejectedValue(bootFailure);
+    const scopeRegistry = new ProjectScopeRegistry(registry, { now: clock.now });
+
+    await expect(scopeRegistry.get(first.projectId)).rejects.toBe(bootFailure);
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(1);
+
+    // Forty callers inside the backoff window cost no boots at all, and each
+    // one still sees the coded error it knows how to handle.
+    for (let call = 0; call < 40; call += 1) {
+      clock.advance(20);
+      await expect(scopeRegistry.get(first.projectId)).rejects.toBe(bootFailure);
+    }
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries at the backoff cadence and lengthens it with each failure", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    createAdeRuntimeMock.mockRejectedValue(new Error("boot failed"));
+    const scopeRegistry = new ProjectScopeRegistry(registry, { now: clock.now });
+
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(1);
+
+    // First window is 2s: 1.9s in, still cached; past 2s, one fresh boot.
+    clock.advance(1_900);
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(1);
+    clock.advance(200);
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(2);
+
+    // Second failure doubles the window to 4s.
+    clock.advance(3_900);
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(2);
+    clock.advance(200);
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("caps the backoff at thirty seconds", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    createAdeRuntimeMock.mockRejectedValue(new Error("boot failed"));
+    const scopeRegistry = new ProjectScopeRegistry(registry, { now: clock.now });
+
+    // Ten consecutive failures would be 2^10 seconds without the cap.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+      clock.advance(FAILED_SCOPE_BACKOFF_MAX_MS);
+    }
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(10);
+  });
+
+  it("clears the backoff once a boot succeeds", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    createAdeRuntimeMock.mockRejectedValueOnce(new Error("boot failed"));
+    createAdeRuntimeMock.mockImplementation(async () => ({ dispose: vi.fn() }));
+    const scopeRegistry = new ProjectScopeRegistry(registry, { now: clock.now });
+
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+    clock.advance(2_100);
+    const scope = await scopeRegistry.get(first.projectId);
+    expect(scope.registryProjectId).toBe(first.projectId);
+
+    // A later failure starts from the short window again, not the long one.
+    await scopeRegistry.dispose(first.projectId);
+    createAdeRuntimeMock.mockRejectedValueOnce(new Error("boot failed again"));
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed again");
+    clock.advance(2_100);
+    await scopeRegistry.get(first.projectId);
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(4);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("lets an explicit dispose force a fresh boot inside the backoff window", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    createAdeRuntimeMock.mockRejectedValueOnce(new Error("boot failed"));
+    createAdeRuntimeMock.mockImplementation(async () => ({ dispose: vi.fn() }));
+    const scopeRegistry = new ProjectScopeRegistry(registry, { now: clock.now });
+
+    await expect(scopeRegistry.get(first.projectId)).rejects.toThrow("boot failed");
+
+    // Repair path: dispose drops the backoff, so the very next call boots even
+    // though no time has passed.
+    await scopeRegistry.dispose(first.projectId);
+    const scope = await scopeRegistry.get(first.projectId);
+
+    expect(scope.registryProjectId).toBe(first.projectId);
+    expect(createAdeRuntimeMock).toHaveBeenCalledTimes(2);
+
+    await scopeRegistry.disposeAll();
+  });
+
+  it("does not let an abandoned boot's failure hold off a newer attempt", async () => {
+    const { registry, first } = createRegistry();
+    const clock = fakeClock();
+    const abandoned = deferred<{ dispose: () => void }>();
+    createAdeRuntimeMock.mockImplementationOnce(async () => await abandoned.promise);
+    const scopeRegistry = new ProjectScopeRegistry(registry, { now: clock.now });
+
+    const abandonedGet = scopeRegistry.get(first.projectId);
+    // The cold-boot timeout path evicts the in-flight boot before it settles.
+    const disposing = scopeRegistry.dispose(first.projectId);
+    abandoned.reject(new Error("abandoned boot failed"));
+    await expect(abandonedGet).rejects.toThrow("abandoned boot failed");
+    await disposing;
+
+    createAdeRuntimeMock.mockImplementation(async () => ({ dispose: vi.fn() }));
+    const scope = await scopeRegistry.get(first.projectId);
+
+    expect(scope.registryProjectId).toBe(first.projectId);
+
+    await scopeRegistry.disposeAll();
   });
 });

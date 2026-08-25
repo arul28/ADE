@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { claudeConfigHome } from "../../../../desktop/src/main/services/shared/providerConfigHomes";
 
 export const CLAUDE_KEYBINDING_CONTEXTS = [
   "Global",
@@ -232,8 +233,17 @@ const DEFAULT_CONFIG = {
   bindings: [],
 };
 
+/**
+ * The user-level Claude config directory the `claude` binary itself reads.
+ *
+ * `CLAUDE_CONFIG_DIR` names that directory outright, so hardcoding `~/.claude`
+ * makes the TUI read keybindings, statusLine, vim mode, and agents from a
+ * directory Claude Code is not using. `os.homedir()` is passed explicitly
+ * because the shared helper imports `homedir` by name, which a `vi.spyOn(os,
+ * "homedir")` in the suites below would otherwise miss.
+ */
 export function claudeHomePath(...segments: string[]): string {
-  return path.join(os.homedir(), ".claude", ...segments);
+  return path.join(claudeConfigHome({ homeDir: os.homedir() }), ...segments);
 }
 
 export function defaultKeybindingsPath(): string {

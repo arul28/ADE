@@ -1,5 +1,14 @@
 import { createHmac } from "node:crypto";
-import type { GitHubAppInstallationStatus, GitHubRepoRef } from "../../../shared/types";
+import type {
+  GitHubAppInstallationStatus,
+  GitHubAppUserAuthUnavailable,
+  GitHubRepoRef,
+} from "../../../shared/types";
+import { GITHUB_APP_USER_AUTH_RENEWING_COPY } from "../../../shared/types";
+import {
+  describeAppUserAuthUnavailable,
+  resolveAppUserTokenForRelay,
+} from "./githubAppUserAuthFailure";
 
 export const ADE_GITHUB_APP_DISPLAY_NAME = "ADE";
 export const ADE_GITHUB_APP_SLUG = "ade-for-github";
@@ -147,6 +156,7 @@ function baseStatus(repo: GitHubRepoRef | null, patch: Partial<GitHubAppInstalla
     webhookLastSeenAt: null,
     checkedAt: new Date().toISOString(),
     error: null,
+    appUserAuthFailure: null,
     ...patch,
   };
 }
@@ -199,12 +209,30 @@ function normalizeRelayStatusPayload(
   });
 }
 
+function appUserAuthUnavailableCopy(failure: GitHubAppUserAuthUnavailable): string {
+  if (failure.credentialState === "blocked") {
+    // Blocked with nothing refused is ADE waiting on its own refresh lease: one
+    // process renews the credential and the others wait a moment for it. Saying
+    // GitHub paused anything there is an accusation ADE has no evidence for.
+    if (!failure.failureKind) return GITHUB_APP_USER_AUTH_RENEWING_COPY;
+    // The deadline itself travels as `retryAt` on the auth status, where a
+    // surface can format it as a time a person reads. A raw timestamp in a
+    // sentence is a log line, not a message.
+    return "Waiting on GitHub authorization. GitHub paused ADE's renewal; ADE retries on its own.";
+  }
+  if (failure.credentialState === "needs_reauth") {
+    return "ADE's GitHub authorization expired. Re-authorize ADE with GitHub.";
+  }
+  return failure.message;
+}
+
 export async function fetchGitHubAppInstallationStatus(args: {
   repo: GitHubRepoRef | null;
   secretReader?: GitHubRelaySecretReader | null;
   fetchImpl?: typeof fetch;
   forceRefresh?: boolean;
   githubAppUserToken?: string | null;
+  appUserAuthFailure?: GitHubAppUserAuthUnavailable | null;
   accountAccessToken?: string | null;
   auditLog?: GitHubRelayAuthAuditLog | null;
 }): Promise<GitHubAppInstallationStatus> {
@@ -236,11 +264,15 @@ export async function fetchGitHubAppInstallationStatus(args: {
     const hostedAuth = useLegacyProjectRoute
       ? null
       : resolveHostedGitHubRelayAuthToken({ githubAppUserToken });
+    const appUserAuthFailure = args.appUserAuthFailure ?? null;
     if (hostedAuth && !hostedAuth.ok && !accountAccessToken) {
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
-        error: hostedAuth.error,
+        error: appUserAuthFailure
+          ? appUserAuthUnavailableCopy(appUserAuthFailure)
+          : hostedAuth.error,
+        appUserAuthFailure,
       });
     }
     const authToken = useLegacyProjectRoute
@@ -275,13 +307,23 @@ export async function fetchGitHubAppInstallationStatus(args: {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const message = payload && typeof payload === "object" && "error" in payload
+      const relayMessage = payload && typeof payload === "object" && "error" in payload
         ? String((payload as { error?: unknown }).error)
         : `GitHub App relay status check failed (${response.status})`;
+      // A 401 with no usable App user token is the account problem the relay
+      // sees from the outside. Report the account problem, not the relay's
+      // wording for it.
+      const accountProblem = response.status === 401 ? appUserAuthFailure : null;
+      const message = accountProblem
+        ? appUserAuthUnavailableCopy(accountProblem)
+        : relayMessage;
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
         error: message,
+        // Only on the 401: any other status was answered with a credential the
+        // relay accepted, so it says something about the repo, not the account.
+        appUserAuthFailure: accountProblem,
       });
     }
     return normalizeRelayStatusPayload(args.repo, payload, config.configured);
@@ -292,4 +334,52 @@ export async function fetchGitHubAppInstallationStatus(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+/**
+ * The whole installation check for one repository: ask for the App user token,
+ * keep the reason when there is none, and fetch the status with both.
+ *
+ * The desktop GitHub service and its headless CLI twin ran identical copies of
+ * this sequence, and the reason it must not be split back apart is the middle
+ * step: the failure the token lookup produced is what the repo axis is ALLOWED
+ * to say. A copy that drops it reports the relay's own 401 — "GitHub auth token
+ * is required" — which blames the repository for a problem with ADE's
+ * authorization. Only the repo, and how each caller reaches its own config,
+ * differ between the two.
+ */
+export async function fetchAppInstallationStatusForRepo(args: {
+  repo: GitHubRepoRef | null;
+  appUserAuth: {
+    getValidTokenForRelay(): Promise<string>;
+    auditLog: GitHubRelayAuthAuditLog;
+  };
+  logger: {
+    info(message: string, meta?: Record<string, unknown>): void;
+    warn(message: string, meta?: Record<string, unknown>): void;
+  };
+  secretReader?: GitHubRelaySecretReader | null;
+  forceRefresh?: boolean;
+  /** Resolved lazily: a signed-in machine can carry the check without the App. */
+  getAccountAccessToken?: (() => Promise<string | null>) | null;
+  fetchImpl?: typeof fetch;
+}): Promise<GitHubAppInstallationStatus> {
+  const appUserToken = await resolveAppUserTokenForRelay({
+    appUserAuth: args.appUserAuth,
+    logger: args.logger,
+    event: "github.app_installation_status_auth_unavailable",
+  });
+  const accountAccessToken = args.getAccountAccessToken
+    ? await args.getAccountAccessToken().catch(() => null)
+    : null;
+  return await fetchGitHubAppInstallationStatus({
+    repo: args.repo,
+    secretReader: args.secretReader,
+    fetchImpl: args.fetchImpl,
+    forceRefresh: args.forceRefresh === true,
+    githubAppUserToken: appUserToken.token,
+    appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
+    accountAccessToken,
+    auditLog: args.appUserAuth.auditLog,
+  });
 }

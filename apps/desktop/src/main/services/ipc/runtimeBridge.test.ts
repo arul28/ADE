@@ -686,6 +686,70 @@ describe("registerRuntimeBridge", () => {
     expect(localRuntimeConnectionPool.subscribeEventsForRoot).not.toHaveBeenCalled();
   });
 
+  it("authorizes only the local roots the window itself opened, not every root a tab-set call named", async () => {
+    // `knownLocalProjectRoots` is an authorization set: membership means "this
+    // window opened this checkout". The renderer can name any path in a
+    // set-open-tabs call, so main.ts only admits roots that resolve to a real
+    // project context — a path that never opened must stay outside the set and
+    // be refused here, even though it sat in the same tab list.
+    const localRuntimeConnectionPool = {
+      callActionForRoot: vi.fn(async () => ({
+        ok: true,
+        domain: "lane",
+        action: "list",
+        result: [],
+        statusHints: {},
+      })),
+    };
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: {
+          kind: "remote",
+          key: "remote:studio:ade",
+          targetId: "studio",
+          projectId: "ade",
+          rootPath: "/Users/arul/ADE",
+          displayName: "ADE",
+          runtimeName: "Studio",
+          hostname: "studio.local",
+        },
+        openProjectTabs: [],
+        knownLocalProjectRoots: ["/opened-earlier"],
+      }),
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          rootPath: "/opened-earlier",
+          request: { domain: "lane", action: "list", args: {} },
+        },
+      ),
+    ).resolves.toMatchObject({ result: [] });
+
+    await expect(
+      ipcHandlers.get(IPC.localRuntimeCallAction)?.(
+        eventForSender(sender(101)),
+        {
+          rootPath: "/never-opened",
+          request: { domain: "lane", action: "list", args: {} },
+        },
+      ),
+    ).rejects.toThrow(/not available/i);
+
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledTimes(1);
+    expect(localRuntimeConnectionPool.callActionForRoot).toHaveBeenCalledWith(
+      "/opened-earlier",
+      expect.objectContaining({ domain: "lane", action: "list" }),
+    );
+  });
+
   it("authorizes a pending local runtime root while a project switch is binding", async () => {
     const localRuntimeConnectionPool = {
       callActionForRoot: vi.fn(async () => ({

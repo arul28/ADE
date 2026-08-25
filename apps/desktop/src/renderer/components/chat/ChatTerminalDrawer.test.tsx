@@ -156,7 +156,7 @@ describe("ChatTerminalDrawer", () => {
       laneId: "lane-1",
       chatSessionId: "cli-session-1",
       toolType: "shell",
-    }));
+    }), null);
   });
 
   it("switches restored terminal tabs", async () => {
@@ -228,7 +228,7 @@ describe("ChatTerminalDrawer", () => {
     expect(window.ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-1",
       sessionId: "terminal-1",
-    });
+    }, null);
     expect(screen.queryByText("First terminal")).toBeNull();
     expect(screen.getByText("Second terminal")).toBeTruthy();
   });
@@ -262,7 +262,7 @@ describe("ChatTerminalDrawer", () => {
     expect(window.ade.pty.dispose).toHaveBeenCalledWith({
       ptyId: "pty-1",
       sessionId: "terminal-1",
-    });
+    }, null);
     expect(screen.queryByText("First terminal")).toBeNull();
   });
 

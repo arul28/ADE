@@ -268,6 +268,12 @@ apps/ios/
 │   │   │                            # per-network route memory, endpoint
 │   │   │                            # failure memory, relay dial single-flight
 │   │   │                            # registry, and route truth
+│   │   ├── SyncMachineWake.swift    # sleep vocabulary shared with the desktop:
+│   │   │                            # syncMachinePresence, staleness window,
+│   │   │                            # wake need, wake-prompt request/stage
+│   │   ├── SyncService+MachineWake.swift # the confirm/waking/failed prompt
+│   │   │                            # state machine and its 90 s decision
+│   │   │                            # deadline
 │   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
 │   │   │                                # ACK timeout/retry, stable input ids
 │   │   ├── Dictation/               # SpeechDictationService,
@@ -424,8 +430,8 @@ apps/ios/
 │   │   │                            # WorkPromptStash (composer overflow +
 │   │   │                            #   per-project stash host),
 │   │   │                            # WorkContextUsageViews (turn-end meter),
-│   │   │                            # WorkChatComposerAndInputViews (compacted
-│   │   │                            #   icon-only staged-steer strip + the
+│   │   │                            # WorkChatComposerAndInputViews (always-open
+│   │   │                            #   icon-only queued-steer strip + the
 │   │   │                            #   structured-question card: pinned provider
 │   │   │                            #   row / tab strip above and freeform +
 │   │   │                            #   Send/Decline footer below a
@@ -471,6 +477,29 @@ apps/ios/
 │   │   │                            # LinearOAuthRunner (worker-bounce OAuth via
 │   │   │                            #   ASWebAuthenticationSession, ade:// capture),
 │   │   │                            #   all gated on supportsRemoteAction.
+│   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
+│   │   │                            #   (full-screen sheet mirroring the Linear
+│   │   │                            #   pane's presentation) +
+│   │   │                            # CursorCloudPaneToolbarButton (Work top-bar
+│   │   │                            #   button beside the Linear one; shown while a
+│   │   │                            #   project is open — the pane itself resolves
+│   │   │                            #   connection state so a missing key renders an
+│   │   │                            #   honest connect prompt instead of hiding the
+│   │   │                            #   surface) + CursorCloudPaneStore (fleet load /
+│   │   │                            #   status-lane-archived filters / active,
+│   │   │                            #   per-lane, and unlinked repo·branch grouping
+│   │   │                            #   over ai.cursorCloudFleet),
+│   │   │                            # CursorCloudAgentListScreen (pull-to-refresh,
+│   │   │                            #   skeleton/failure/connect/empty states) +
+│   │   │                            # CursorCloudAgentDetailScreen (facts, summary,
+│   │   │                            #   Open in ADE / Stop / Pull into lane /
+│   │   │                            #   cursor.com actions) +
+│   │   │                            # CursorCloudModels (Swift mirrors of the fleet
+│   │   │                            #   DTOs). Every action executes host-side like
+│   │   │                            #   Linear; no Cursor credentials live on device.
+│   │   │                            #   Gated on an active project plus the host
+│   │   │                            #   advertising the optional ai.cursorCloud*
+│   │   │                            #   commands, so an older brain omits the pane.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),
@@ -625,8 +654,63 @@ and is applied through `ScrollPosition` in a non-animated transaction.
 Deliberately not total content height: a reply streaming into the tail grows the
 content at the same time, and a reader scrolled back through history is exactly
 when that happens, so a total-height correction would add the tail's growth and
-overshoot. Bottom-follow, the jump-to-latest pill, and the initial force-pin are
-untouched.
+overshoot. Bottom-follow and the jump-to-latest pill are untouched.
+
+Three rules keep that correction from becoming a teleport. A probe sample that
+describes a *different* row than the armed anchor is no measurement at all, so
+it waits rather than falling through with a zero row shift — that would reduce
+the correction to the reader's own scroll delta and apply it twice. Overlapping
+prepends keep the *first* anchor rather than re-arming on the new leading row:
+its row was pushed down by both insertions, so the displacement measured on it
+already accumulates them. And a correction is a scroll write, so like every
+other one it defers to the reader for the whole interaction — finger-down
+through the end of the fling (`workChatMayWriteScrollOffset`, fed by
+`onScrollPhaseChange`, not by the drag gesture, which ends at finger-up).
+
+**A chat opens where it was left, not at a random offset.** The transcript opens
+at the tail through `defaultScrollAnchor(.bottom, for: .initialOffset)` —
+scoped to the initial offset because the `.sizeChanges` anchor is the
+total-height correction the paragraph above exists to avoid. The force-pin
+remains as belt-and-braces, but it now stays armed until the content size has
+been quiet for 600ms rather than firing on a fixed retry ladder, because
+hydration routinely lands after that ladder ends. It stands down early only for
+a deliberate drag (16pt — the 2pt stickiness deadband is finger jitter on a
+freshly-opened chat). A transcript shorter than the viewport renders from the
+top, desktop-style; a one-entry chat skips the pin entirely.
+
+**A message's truncation budget only ever grows.** The newest assistant message
+renders tail-anchored under a generous budget so a finishing turn is readable in
+place. When a newer message arrives it becomes head-anchored — and the budget it
+already rendered under becomes its floor, so "Show more" can never appear on a
+message the reader has already read in full. Both show-more paths (the split
+controls row and the message bubble) write one shared budget map on the
+transcript, so an expansion survives `LazyVStack` recycling. Expanding grows the
+message downward and holds the tapped row in place; it never re-pins the
+transcript to its bottom.
+
+**Expanding is a two-rung ladder, not an infinite one.** The first "Show more"
+expands in place as above. Anything still bounded after that step offers "Open
+full output" instead of another step (`workTruncatedOutputAffordance`), which
+presents `WorkOutputViewerScreen` — a monospaced, line-numbered, lazily laid out
+reader with a wrap toggle, occurrence-counting search, Copy all and the share
+sheet. The boxed renderers (`WorkStructuredOutputBlock`, `WorkDiffOutputBlock`,
+`WorkInlineDiffPreview`) clip at a fixed height with no inner scroller, so for
+them the second rung is not a preference: another in-place step would add text
+the box cuts away. `workOutputBoxOverflows` decides whether a box is clipping
+without scanning a long result to find out, and a clipping box opens the viewer
+from its header *or* by tapping the clipped region. The viewer is presented once
+per surface through `\.workOutputViewer` rather than by a `fullScreenCover` on
+every transcript row.
+
+**Copy is always the full content, never what is on screen.** The transcript
+renders bounded slices, so a Copy control that echoed its own view silently
+handed over a preview. Fenced code blocks resolve against the message they were
+sliced from by ordinal — counted from the front for a head-anchored preview and
+from the back for a tail-anchored one, which is also the case that carries a
+synthetic opening fence and so is the one most likely to hold a fragment
+(`WorkCodeBlockSource`). Resolution runs at tap time, never per render pass. The
+tool-result box displays its 500-character truncation while `copyText` carries
+the whole result.
 
 **Long replies cost O(tail), not O(message).** `parseMarkdownBlocksForStreaming`
 already split prose at a stable boundary; syntax highlighting now does the same,
@@ -639,6 +723,16 @@ their own small cache instead of the shared 256-entry inline-markdown cache, so
 one long turn cannot evict every completed message and force a main-thread
 re-parse on scrollback; the final revision is promoted. All derived render
 caches drop on `applicationDidReceiveMemoryWarning`.
+
+Two properties make that O(tail) real rather than nominal. Markdown block ids
+are position-stable (`markdown-block-<index>`), not content-derived, so a
+delta does not hand the `LazyVStack` a new identity for a row that is still the
+same row; content changes travel in a separate `digest` field that change
+detection reads. And no derived text is recomputed per refresh: each message
+carries a digest stamped by the (off-main) snapshot fold, previews are cached
+per line budget, and the presentation signature hashes those digests plus each
+preview's shape instead of re-hashing the visible transcript's full text
+several times a second.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -742,6 +836,9 @@ header, and Hub pill refresh without reconnecting.
 
 Primary machine rows state only facts they can prove:
 
+- a machine that **announced** it was going to sleep, recently enough to still
+  be believed, is **Asleep** — and that outranks a held socket, because a
+  channel to a sleeping Mac does not report itself closed;
 - the active authenticated socket is **Connected**;
 - a current directory/discovery lease is **Online**;
 - otherwise the row says **Last seen just now**, **Last seen Nm/Nh/Nd ago**, or
@@ -751,6 +848,66 @@ The `online` heartbeat never earns connected styling, and an expired heartbeat
 never becomes a claim that the Mac is powered off. Route names stay out of these
 reachability lines; observed transport belongs in the connected badge and
 Connection details.
+
+Rows also carry the machine's own power reading when the directory heartbeat
+that delivered it is fresh — attachment is not evidence of freshness, since
+power rides the heartbeat rather than the socket. `accountMachinePowerClause`
+produces one phrase, battery always winning over wall power: `"82% battery"`,
+else `"plugged in"`, else `"on battery"`, else nothing at all. A Mac Studio gets
+no clause rather than `"0%"` — it has no battery to report. The full line is
+`"Asleep · 82% battery"`; a state word with no clause never emits an orphaned
+separator. The wording must match `machinePowerPhrase` in
+`apps/desktop/src/shared/machinePresence.ts` word for word, and the staleness
+rule in `SyncMachineWake.swift` must match `resolveMachinePresence` down to the
+inclusive boundary.
+
+### Waking a sleeping Mac
+
+`SyncMachineWake.swift` holds the whole vocabulary: `SyncMachineWakeNeed`
+(`.asleep` / `.unreachable`), `syncMachinePresence`, the 10-minute
+`syncMachineSleepInferenceWindow` that mirrors the desktop's, and the 24-hour
+`syncMachineRecentlySeenWindow` that decides whether a confirm prompt is allowed
+to say "asleep" at all.
+
+**Wake sends nothing.** There is no wake packet, push, or Wake-on-LAN frame —
+dialling *is* the wake. The Wake action runs the ordinary
+`pairWithAccountMachine` connect race (direct LAN/tailnet candidates plus the
+relay `/connect` WebSocket), and the traffic arriving at the Mac is what brings
+it back. Only the budget and the copy differ:
+
+- `SyncConnectionRaceTiming.wakeOverallBudgetNanoseconds` is **25 seconds**
+  against the standard 10, sized from a measured 16-second clamshell wake plus
+  headroom for a slower machine and a cold Durable Object.
+  `wakeRelayReadyAfterAcceptedNanoseconds` is 22 s (standard 7 s), kept strictly
+  under the overall budget so a failing candidate still records its endpoint
+  failure inside the race. Both live on `SyncConnectionRaceBudget`
+  (`.standard` / `.wakingMachine`), and a `restorePreviousConnection` resets to
+  `.standard` — a restore must not inherit the wake budget.
+- The stage label reads *"Waking <machine>…"* rather than *"Connecting to
+  <machine>…"*, and a wake that runs out of budget with no pairing-failure code
+  fails with *"It didn't wake up in time."* rather than a transport message.
+
+`MachineWakeCard` is presented from `ContentView` on `pendingMachineWake`, with
+a `confirm → waking → failed` stage machine driven by
+`SyncService+MachineWake.swift`. It is bound with `sheet(isPresented:)` rather
+than `sheet(item:)` so the stage can change under a stable id, is
+dismiss-disabled while waking, and arms a 90-second decision deadline that
+resolves to "don't wake". A failure keeps the card up with **Try again** rather
+than dropping the user back where they started. In Settings, a sleeping machine
+paints the status dot `ADEColor.warning` and offers a **Wake it** button — a
+sleeping machine is a tap, not a fault. `MachineRowView.Affordance` gains
+`.wake`, which is the `.connect` shape with a different word, because the tap is
+the same tap.
+
+Session and PR deeplinks are machine-scoped: `AccountAttentionDestination`
+appends `accountMachineKey=<key>` to `ade://session/<id>` and `ade://pr/...`
+(and to the `https://ade-app.dev/open` mirror), so opening a notification, a
+widget link, or a shared URL knows which Mac the work lives on and can wake that
+one. Widget links carry the key too. A link minted without one recovers the
+owner from the attention snapshot's items, then from the workspace snapshot's
+agent list. Only an **externally** minted link may have its owner resolved that
+way (`WorkSessionNavigationRequest.Origin.external`); the cold-launch restore
+must not, or a plain relaunch turns into a machine transition.
 
 ### Tailscale-off route hint
 
@@ -1002,7 +1159,14 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    when the rejecting machine attributed itself (`hello_error.host`)
    and its identity matches the paired machine; unattributed or
    mismatched rejections are marked ambiguous, keep the pairing, and
-   let the reconnect loop try other routes. "Pairing rejection" is
+   let the reconnect loop try other routes. After a connection race
+   *finishes* (every candidate that actually started produced an outcome)
+   and every hop was a pairing rejection from the same responding host,
+   iOS also drops the pairing — that is the saved machine rejecting this
+   phone, even when the profile never stored `hostIdentity` or it went
+   stale. Queued addresses that never got a race slot do not keep a dead
+   pairing alive. A timeout or mixed failure among hops still keeps the pairing.
+   "Pairing rejection" is
    `syncCodeIsPairingRejection` — `repair_required` (what current hosts send)
    or the generic `auth_failed` (what older hosts send for the same cause).
    Both mean the saved pairing is no longer usable, so every pairing decision
@@ -2946,29 +3110,77 @@ the stats and shows update guidance.
   Codex and other adapters reuse compact tool cards; data URIs are never printed
   into the timeline, and stored/mobile compaction byte counts become a short
   "preview omitted" detail.
-- **Tool telemetry is disclosed from turn status, not repeated through the
-  mobile transcript.** `WorkChatSessionView` keeps assistant narration,
-  reasoning, provider-specific cards, and `WorkChangedFilesPanelView` rows in
-  chronological order, but filters normalized `toolGroup` rows from the visible
-  timeline. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView`
-  open the corresponding activity in `WorkTurnActivitySheet`. The live row uses
-  `ViewThatFits` so narrow phones retain the activity verb and monospaced elapsed
-  time without squeezing tool details into the same line. The association is
-  data-driven and never invents file changes for providers that did not emit
-  them.
-- **Active-turn send and Stop use dismissing native popovers.** For Claude,
-  the in-session composer mirrors desktop's three delivery choices: **Send
-  during turn**, **Send after turn**, and **Interrupt & send**. The primary
-  button's icon/label communicates the selected behavior, the chevron opens a
-  custom SwiftUI popover, and selection dismisses it immediately. Non-Claude
-  providers keep the single stage-behind-turn action. When the host advertises
-  additive `chat.interruptWithQueueMode`, Claude Stop likewise becomes a split
-  control for **Stop & clear queue**
+- **Tool telemetry keeps one chronological row, and is also disclosed from turn
+  status.** `WorkChatSessionView` draws assistant narration, reasoning,
+  provider-specific cards, `WorkToolCallsPanelView` clusters and
+  `WorkChangedFilesPanelView` rows in chronological order;
+  `workPresentedTimelineEntries` in `WorkTimelineHelpers.swift` is the seam that
+  decides what reaches the visible timeline. It used to drop every normalized
+  `toolGroup` row, which meant a turn whose only work was a `Read` and an
+  approved shell command left no trace in the transcript at all. That rule was
+  written when a cluster had no compact form; a finished cluster is now a single
+  44pt row in the same one-liner grammar the changed-files panel uses, so it
+  stays. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still
+  open the whole turn's activity in `WorkTurnActivitySheet`, where tapping a
+  member reveals its result or output. The live row uses `ViewThatFits` so
+  narrow phones retain the activity verb and monospaced elapsed time without
+  squeezing tool details into the same line. The association is data-driven and
+  never invents file changes for providers that did not emit them.
+- **Active-turn send and Stop use dismissing native popovers.** The in-session
+  composer's delivery choices come from `WorkActiveSendCapability` in
+  `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical
+  `ACTIVE_TURN_DISPATCH_MODES` table in `apps/desktop/src/shared/types/chat.ts`,
+  kept in step by hand because iOS cannot import the TS. Modes are in menu order
+  and the first is the default, so Claude mirrors desktop's three choices
+  (**Send during turn**, **Send after turn**, **Interrupt & send**, defaulting to
+  *Send during turn*) and Cursor gets two (**Interrupt & continue**, **Send after
+  turn**, defaulting to *Interrupt & continue*). `interruptContinues` is mirrored
+  alongside the table, so Cursor's button and hint say "continue" — its SDK has
+  no mid-run message API, and the redirect cancels and resends on the same agent
+  thread. Every provider name in the option titles, details, hints and VoiceOver
+  strings comes from the capability's `agentLabel` rather than hard-coded
+  "Claude". The primary button's icon/label communicates the selected behavior,
+  the chevron opens a custom SwiftUI popover, and selection dismisses it
+  immediately. The pick is remembered per chat in `WorkActiveSendModeStore`
+  (App Group defaults, same bounded JSON-map mechanism as the composer drafts),
+  so a working habit survives backgrounding and relaunch; a turn starting or
+  ending does not reset it, and a provider change snaps back to that provider's
+  default only when the new provider cannot honor the remembered mode.
+  Queue-only providers (a single mode is not a choice) keep the plain
+  stage-behind-turn button, matching the desktop composer. When the host
+  advertises additive `chat.interruptWithQueueMode`, Claude Stop likewise
+  becomes a split control for **Stop & clear queue**
   and **Stop only**; the per-chat choice is stored in `UserDefaults`, carries
   VoiceOver labels and haptics, and falls back to legacy Stop against older
-  brains. Immediate send still stages once on the host before
-  `chat.dispatchSteer`; if dispatch fails, the one queued message remains and
-  the draft is not restored as a duplicate.
+  brains.
+- **Active-turn sends are atomic, so nothing flashes through the staged strip.**
+  `AgentChatSteerRequest` carries the desktop's `dispatchMode` field
+  (`"inline"` / `"interrupt"`, spelled exactly as the host validates it), and
+  `SyncService.steerChatSession` sends it with the steer itself. A host that can
+  honor it dispatches in the same round-trip and answers `queued: false`, so no
+  queued transcript row is written and no optimistic staged entry is created.
+  The mode is resolved once, before the send, so the branch that resends as a
+  steer after a "turn already active" rejection carries the same mode — losing
+  it there used to downgrade a *Send now* tap into a silently staged message.
+  `workChatAtomicSteerDispatchMode` returns nil for **Send after turn**, for a
+  provider with no such channel, and for a brain that does not advertise
+  `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
+  composer can never request a promotion the strip is hiding the recovery for.
+  A host old enough to advertise `chat.dispatchSteer` but too old to accept
+  `dispatchMode` on `chat.steer` answers `queued: true`; that one case falls
+  back to the legacy two-step promotion rather than dropping the user's choice,
+  and if the promotion fails the single queued message remains and the draft is
+  not restored as a duplicate.
+- **The staged strip is only ever "you queued this".** With active-turn sends
+  atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
+  queue, so it no longer hides behind an accordion: one queued message is a
+  single compact card — waiting glyph, one truncated line of the message, its
+  disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
+  as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
+  a slim `N queued` count above the rows. While a turn is running the clock
+  glyph breathes and the disposition reads "sends when turn ends"; on an idle
+  session it sits still and reads "after turn". The pulse goes through
+  `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full strength.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
   retain `context_compact.postTokens` plus the automatic `context_usage.state`.

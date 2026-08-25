@@ -1,6 +1,9 @@
 import type { SyncRouteHealth } from "../../../../desktop/src/shared/types";
 import type { SyncLoopbackValidationStatus } from "./syncLoopbackProbe";
-import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
+import {
+  RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE,
+  type SyncTunnelClientStatus,
+} from "./syncTunnelClientService";
 
 /**
  * How a machine describes its own inbound routes.
@@ -130,6 +133,12 @@ function resolveRelaySkipReason(args: BuildRelayRouteHealthArgs & {
     // fault, and its reason is the only one that tells the user what to
     // actually do — so it outranks the raw close text.
     return status.controlSuppressedReason
+      // A spent rotation budget outranks the raw close text for the same
+      // reason: this machine will not mint another identity, so the only way
+      // back is reconnecting the computer, and nothing else says that.
+      ?? (status.identityRotationCapped
+        ? status.lastError ?? RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE
+        : null)
       ?? status.lastControlError
       ?? status.lastError
       ?? "Relay control is not connected.";

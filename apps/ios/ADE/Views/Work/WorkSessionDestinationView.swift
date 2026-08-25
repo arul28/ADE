@@ -75,13 +75,37 @@ func workChatShouldSteerActiveTurn(
   normalizedWorkChatSessionStatus(session: session, summary: summary) == "active"
 }
 
-func workChatSupportsManualSteerDispatch(
+/// Which atomic dispatch modes an already-staged message can be promoted into
+/// on this session. Read off `WorkActiveSendCapability` — the hand mirror of
+/// the desktop's `ACTIVE_TURN_DISPATCH_MODES` — rather than restated here, so
+/// the staged strip and the composer's split send button can never disagree.
+/// Claude can fold a staged row into the live turn or interrupt with it; Cursor
+/// has no mid-run message API, so it gets interrupt only; everything else has
+/// nothing to promote into and keeps the plain staged row.
+func workChatManualSteerDispatchModes(
   session: TerminalSessionSummary?,
   summary: AgentChatSessionSummary?
-) -> Bool {
+) -> [WorkActiveSendMode] {
   let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
-  guard let provider else { return false }
-  return providerFamilyKey(provider) == "claude"
+  guard let provider else { return [] }
+  return WorkActiveSendCapability.forProvider(provider).atomicDispatchModes
+}
+
+/// The `dispatchMode` that rides `chat.steer` itself, so a busy host dispatches
+/// the message in the same round-trip instead of staging it and waiting for a
+/// second `chat.dispatchSteer` call. This is the desktop contract, and the
+/// strings are the desktop's exactly — the host rejects anything else.
+///
+/// Nil means "stage it", which covers the queue mode, a provider with no
+/// mid-turn channel, and a host too old to promote at all. Resolving it once,
+/// up front, is what keeps the "turn was already active" resend from quietly
+/// downgrading a Send-now tap into a staged message.
+func workChatAtomicSteerDispatchMode(
+  deliveryMode: WorkActiveSendMode,
+  dispatchModes: [WorkActiveSendMode]
+) -> String? {
+  guard deliveryMode != .queue, dispatchModes.contains(deliveryMode) else { return nil }
+  return deliveryMode.rawValue
 }
 
 func latestActiveTurnId(from transcript: [WorkChatEnvelope]) -> String? {
@@ -176,6 +200,8 @@ func workChatErrorIndicatesActiveTurn(_ error: Error) -> Bool {
 
 func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
   [
+    entry.messageId ?? "",
+    entry.itemId ?? "",
     entry.timestamp,
     entry.role,
     entry.turnId ?? "",
@@ -183,15 +209,120 @@ func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
   ].joined(separator: "\u{1F}")
 }
 
+private func workTranscriptEntryLegacyIdentity(_ entry: AgentChatTranscriptEntry) -> String {
+  [
+    entry.timestamp,
+    entry.role,
+    entry.turnId ?? "",
+    entry.text
+  ].joined(separator: "\u{1F}")
+}
+
+private func workTranscriptEntryLegacyFrame(_ entry: AgentChatTranscriptEntry) -> String {
+  [
+    entry.timestamp,
+    entry.role,
+    entry.turnId ?? ""
+  ].joined(separator: "\u{1F}")
+}
+
+private func workTranscriptEntryStableIdentity(_ entry: AgentChatTranscriptEntry) -> String? {
+  if let messageId = entry.messageId?.trimmingCharacters(in: .whitespacesAndNewlines), !messageId.isEmpty {
+    return "message:\(messageId)"
+  }
+  if let itemId = entry.itemId?.trimmingCharacters(in: .whitespacesAndNewlines), !itemId.isEmpty {
+    return "item:\(itemId)"
+  }
+  return nil
+}
+
+/// A refreshed transcript can gain host ids after its first page was cached.
+/// Stable host ids identify the physical row even when its text changes while
+/// a turn is streaming; id-less rows still use their legacy occurrence fields.
+/// Two genuinely different stable ids remain distinct even when they render
+/// identical text.
+private func workTranscriptEntriesRepresentSameOccurrence(
+  _ lhs: AgentChatTranscriptEntry,
+  _ rhs: AgentChatTranscriptEntry
+) -> Bool {
+  let lhsStableId = workTranscriptEntryStableIdentity(lhs)
+  let rhsStableId = workTranscriptEntryStableIdentity(rhs)
+  if let lhsStableId, let rhsStableId {
+    return lhsStableId == rhsStableId
+  }
+  return workTranscriptEntryLegacyIdentity(lhs) == workTranscriptEntryLegacyIdentity(rhs)
+}
+
+private func workTranscriptEntriesAreStableUpgrade(
+  _ lhs: AgentChatTranscriptEntry,
+  _ rhs: AgentChatTranscriptEntry,
+  uniqueIdlessFrameCount: Int
+) -> Bool {
+  guard workTranscriptEntryStableIdentity(lhs) == nil
+    || workTranscriptEntryStableIdentity(rhs) == nil
+  else { return false }
+  guard workTranscriptEntryStableIdentity(lhs) != nil
+    || workTranscriptEntryStableIdentity(rhs) != nil
+  else { return false }
+  return uniqueIdlessFrameCount == 1
+    && workTranscriptEntryLegacyFrame(lhs) == workTranscriptEntryLegacyFrame(rhs)
+}
+
 func mergeWorkTranscriptEntries(
   older: [AgentChatTranscriptEntry],
   newer: [AgentChatTranscriptEntry]
 ) -> [AgentChatTranscriptEntry] {
-  var seen = Set<String>()
+  var seenStableOccurrences = Set<String>()
+  var seenStableLegacyOccurrences = Set<String>()
+  var seenLegacyOnlyOccurrences = Set<String>()
+  var idlessIndicesByFrame: [String: [Int]] = [:]
+  var stableFrames = Set<String>()
   var result: [AgentChatTranscriptEntry] = []
   result.reserveCapacity(older.count + newer.count)
   for entry in older + newer {
-    if seen.insert(workTranscriptEntryIdentity(entry)).inserted {
+    let legacyIdentity = workTranscriptEntryLegacyIdentity(entry)
+    if let stableIdentity = workTranscriptEntryStableIdentity(entry) {
+      guard !seenStableOccurrences.contains(stableIdentity) else { continue }
+      // A later refresh can add a stable id while also completing the text of
+      // a row that was cached without one. Match that upgrade by the physical
+      // transcript frame, not the mutable text, but only when the frame is
+      // unique; repeated id-less rows must never be collapsed accidentally.
+      let frame = workTranscriptEntryLegacyFrame(entry)
+      let matchingIdlessIndices = idlessIndicesByFrame[frame] ?? []
+      if matchingIdlessIndices.count == 1,
+         workTranscriptEntriesAreStableUpgrade(
+           result[matchingIdlessIndices[0]],
+           entry,
+           uniqueIdlessFrameCount: matchingIdlessIndices.count
+         ) {
+        result[matchingIdlessIndices[0]] = entry
+        idlessIndicesByFrame[frame] = nil
+        stableFrames.insert(frame)
+        seenStableOccurrences.insert(stableIdentity)
+        seenStableLegacyOccurrences.insert(legacyIdentity)
+        continue
+      }
+      // If the frame is repeated, retain every physical row and append the
+      // newly identified one instead of deleting an occurrence. For the
+      // ordinary same-text case with no stable upgrade target, preserve the
+      // existing id-less row rather than duplicating it.
+      let hasStableFrame = stableFrames.contains(frame)
+      if matchingIdlessIndices.isEmpty,
+         !hasStableFrame,
+         seenLegacyOnlyOccurrences.contains(legacyIdentity) {
+        continue
+      }
+      seenStableOccurrences.insert(stableIdentity)
+      seenStableLegacyOccurrences.insert(legacyIdentity)
+      result.append(entry)
+      stableFrames.insert(frame)
+    } else {
+      guard !seenLegacyOnlyOccurrences.contains(legacyIdentity),
+            !seenStableLegacyOccurrences.contains(legacyIdentity)
+      else { continue }
+      seenLegacyOnlyOccurrences.insert(legacyIdentity)
+      let frame = workTranscriptEntryLegacyFrame(entry)
+      idlessIndicesByFrame[frame, default: []].append(result.count)
       result.append(entry)
     }
   }
@@ -207,14 +338,26 @@ func mergeWorkTranscriptPageOccurrences(
   guard !older.isEmpty else { return newer }
   guard !newer.isEmpty else { return older }
   let maxOverlap = min(older.count, newer.count)
+  var idlessFrameCounts: [String: Int] = [:]
+  for entry in older where workTranscriptEntryStableIdentity(entry) == nil {
+    let frame = workTranscriptEntryLegacyFrame(entry)
+    idlessFrameCounts[frame, default: 0] += 1
+  }
   var overlap = 0
   if maxOverlap > 0 {
     for candidate in stride(from: maxOverlap, through: 1, by: -1) {
       let olderStart = older.count - candidate
       var matches = true
       for index in 0..<candidate {
-        if workTranscriptEntryIdentity(older[olderStart + index])
-          != workTranscriptEntryIdentity(newer[index]) {
+        let cached = older[olderStart + index]
+        let refreshed = newer[index]
+        let sameOccurrence = workTranscriptEntriesRepresentSameOccurrence(cached, refreshed)
+          || workTranscriptEntriesAreStableUpgrade(
+            cached,
+            refreshed,
+            uniqueIdlessFrameCount: idlessFrameCounts[workTranscriptEntryLegacyFrame(cached)] ?? 0
+          )
+        if !sameOccurrence {
           matches = false
           break
         }
@@ -225,7 +368,34 @@ func mergeWorkTranscriptPageOccurrences(
       }
     }
   }
-  return older + newer.dropFirst(overlap)
+  guard overlap > 0 else { return older + newer }
+
+  // A page refresh can carry the completed payload for a row that was cached
+  // while it was still streaming. Replace stable-ID overlap entries and a
+  // unique id-less → stable upgrade. Id-less rows may represent repeated
+  // physical occurrences and must keep the payload/order already established
+  // by the older page when the frame is ambiguous.
+  var mergedOlder = older
+  for index in 0..<overlap {
+    let olderIndex = older.count - overlap + index
+    let cached = older[olderIndex]
+    let refreshed = newer[index]
+    if let cachedStableId = workTranscriptEntryStableIdentity(cached),
+       let refreshedStableId = workTranscriptEntryStableIdentity(refreshed),
+       cachedStableId == refreshedStableId {
+      mergedOlder[olderIndex] = refreshed
+      continue
+    }
+    let uniqueIdlessFrameCount = idlessFrameCounts[workTranscriptEntryLegacyFrame(cached)] ?? 0
+    if workTranscriptEntriesAreStableUpgrade(
+      cached,
+      refreshed,
+      uniqueIdlessFrameCount: uniqueIdlessFrameCount
+    ) {
+      mergedOlder[olderIndex] = refreshed
+    }
+  }
+  return mergedOlder + newer.dropFirst(overlap)
 }
 
 struct WorkLiveTranscriptCache {
@@ -545,7 +715,9 @@ struct WorkSessionDestinationView: View {
     _chatSummary = State(initialValue: initialChatSummary)
     _lastKnownChatSummary = State(initialValue: initialChatSummary)
     _transcript = State(initialValue: seededTranscript)
-    _transcriptRenderSignature = State(initialValue: workChatEnvelopeListRenderSignature(seededTranscript))
+    // This is a monotonic invalidation token, not a content hash. The old
+    // initializer scanned every assistant string before the first frame.
+    _transcriptRenderSignature = State(initialValue: 0)
     _fallbackEntries = State(initialValue: seededFallbackEntries)
     _fallbackEntriesRenderSignature = State(initialValue: workFallbackEntriesRenderSignature(seededFallbackEntries))
     _transcriptEntriesByIndex = State(initialValue: workChatTranscriptEntriesByIndexForRestoredPresentation(
@@ -577,6 +749,8 @@ struct WorkSessionDestinationView: View {
   @State var lastKnownChatSummary: AgentChatSessionSummary?
   @State var transcript: [WorkChatEnvelope] = []
   @State var transcriptRenderSignature = 0
+  @State var transcriptAllowsIncrementalSnapshot = false
+  @State var transcriptIncrementalDelta: [WorkChatEnvelope] = []
   @State var mainChatRenderEpoch = 0
   @State var liveTranscriptCache = WorkLiveTranscriptCache()
   @State var fallbackEntries: [AgentChatTranscriptEntry] = []
@@ -614,7 +788,10 @@ struct WorkSessionDestinationView: View {
   @State var expandedSubagentDetailIds: Set<String> = []
   @State var probingSubagentTaskId: String?
   @State var remoteSubagentRefreshInFlight = false
-  @State var expandedToolCardIds = Set<String>()
+  /// Central expansion state for every collapsible transcript card. Lives
+  /// here, above the list, so it survives `LazyVStack` recycling and can be
+  /// swept in one move when a turn ends.
+  @State var cardExpansion = WorkCardExpansionState()
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State var artifactContentRenderSignature = 0
   @State var artifactContentLoadsInFlight = Set<String>()
@@ -669,12 +846,27 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
-  func setTranscript(_ next: [WorkChatEnvelope]) {
+  func setTranscript(
+    _ next: [WorkChatEnvelope],
+    allowsIncrementalSnapshot: Bool = false,
+    incrementalDelta: [WorkChatEnvelope] = []
+  ) {
     if transcript.isEmpty, !next.isEmpty {
       mainChatRenderEpoch &+= 1
     }
+    let canUseIncrementalSnapshot = allowsIncrementalSnapshot && !incrementalDelta.isEmpty
+    if canUseIncrementalSnapshot {
+      // Multiple host ticks can arrive before the renderer's coalescing window
+      // wakes. Keep every fragment since the last rendered revision together;
+      // the child clears this binding after it consumes them.
+      transcriptIncrementalDelta.append(contentsOf: incrementalDelta)
+      transcriptAllowsIncrementalSnapshot = true
+    } else {
+      transcriptAllowsIncrementalSnapshot = false
+      transcriptIncrementalDelta = []
+    }
     transcript = next
-    transcriptRenderSignature = workChatEnvelopeListRenderSignature(next)
+    transcriptRenderSignature &+= 1
     cacheCurrentTranscriptPresentationIfNeeded()
   }
 
@@ -760,7 +952,7 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func setSubagentTranscript(_ next: [WorkChatEnvelope]) {
     subagentTranscript = next
-    subagentTranscriptRenderSignature = workChatEnvelopeListRenderSignature(next)
+    subagentTranscriptRenderSignature &+= 1
   }
 
   @MainActor
@@ -884,8 +1076,16 @@ struct WorkSessionDestinationView: View {
     syncService.chatTurnActiveHint(sessionId: sessionId)
   }
 
-  var supportsManualSteerDispatch: Bool {
-    workChatSupportsManualSteerDispatch(session: session, summary: chatSummary)
+  /// Host-gated as well as provider-gated. A brain that predates
+  /// `chat.dispatchSteer` can neither promote a staged row nor honor an atomic
+  /// `dispatchMode`, so the staged strip's buttons and the send path have to
+  /// read the same empty list — otherwise the send path would ask for a mode
+  /// the strip is hiding the recovery for.
+  var manualSteerDispatchModes: [WorkActiveSendMode] {
+    guard syncService.supportsChatRemoteAction("chat.dispatchSteer", sessionId: sessionId) else {
+      return []
+    }
+    return workChatManualSteerDispatchModes(session: session, summary: chatSummary)
   }
 
   /// Lane id the header menu acts on. Resolved against the loaded lane list so
@@ -942,7 +1142,12 @@ struct WorkSessionDestinationView: View {
           onDelete: { Task { await deleteCurrentChatSession() } },
           onCopySessionId: { copyCurrentSessionId() },
           onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
-          onTogglePinned: { Task { await toggleCurrentSessionPinned() } }
+          onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+          onAttachIssue: {
+            ADEHaptics.light()
+            syncService.linearPaneAttachSessionId = session.id
+            syncService.linearPanePresented = true
+          }
         )
         .equatable()
       }
@@ -973,7 +1178,8 @@ struct WorkSessionDestinationView: View {
       sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id),
       showsProof: !personalChat,
       showsPinAction: !personalChat,
-      showsSessionLink: !personalChat
+      showsSessionLink: !personalChat,
+      canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
     )
   }
 
@@ -1444,13 +1650,28 @@ struct WorkSessionDestinationView: View {
       ? "Viewing subagent transcript. Return to main chat to send."
       : nil
     let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
+    // Wired per mode, not per provider: Cursor accepts the interrupt promotion
+    // but has no inline channel, so it gets the Interrupt button and not
+    // "Send now". Matches the desktop pane, which gates each handler on the
+    // same table.
+    // Also host-gated: a brain that predates `chat.dispatchSteer` cannot
+    // promote a staged row at all, so the buttons would only ever produce an
+    // error toast. `manualSteerDispatchModes` carries the same gate.
+    let activeSendModesAvailable = syncService.supportsChatRemoteAction(
+      "chat.dispatchSteer",
+      sessionId: session.id
+    )
+    let manualDispatchModes = manualSteerDispatchModes
     let dispatchSteerInlineAction: (@MainActor (String) async -> Void)?
-    let dispatchSteerInterruptAction: (@MainActor (String) async -> Void)?
-    if supportsManualSteerDispatch {
-      dispatchSteerInlineAction = { text in await dispatchSteerInline(text) }
-      dispatchSteerInterruptAction = { text in await dispatchSteerInterrupt(text) }
+    if manualDispatchModes.contains(.inline) {
+      dispatchSteerInlineAction = { steerId in await dispatchSteerInline(steerId) }
     } else {
       dispatchSteerInlineAction = nil
+    }
+    let dispatchSteerInterruptAction: (@MainActor (String) async -> Void)?
+    if manualDispatchModes.contains(.interrupt) {
+      dispatchSteerInterruptAction = { steerId in await dispatchSteerInterrupt(steerId) }
+    } else {
       dispatchSteerInterruptAction = nil
     }
     let resolvedSessionStatus: String? = viewingSubagent ? "ended" : sessionStatus
@@ -1480,10 +1701,6 @@ struct WorkSessionDestinationView: View {
       "chat.interruptWithQueueMode",
       sessionId: session.id
     )
-    let activeSendModesAvailable = syncService.supportsChatRemoteAction(
-      "chat.dispatchSteer",
-      sessionId: session.id
-    )
     let canWriteSpawnKind = !viewingSubagent && syncService.supportsSpawnKindUpdate
     let restoreCancelledQueueAction: (@MainActor (String) async -> Void)?
     if syncService.supportsChatRemoteAction(
@@ -1506,6 +1723,8 @@ struct WorkSessionDestinationView: View {
       ),
       transcript: transcriptForView,
       transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
+      allowsIncrementalTranscriptUpdate: viewingSubagent ? false : transcriptAllowsIncrementalSnapshot,
+      transcriptIncrementalDelta: viewingSubagent ? .constant([]) : $transcriptIncrementalDelta,
       fallbackEntries: fallbackEntriesForView,
       fallbackEntriesRenderSignature: viewingSubagent ? 0 : fallbackEntriesRenderSignature,
       artifacts: artifactsForView,
@@ -1514,13 +1733,13 @@ struct WorkSessionDestinationView: View {
       optimisticPendingSteersRenderSignature: viewingSubagent ? 0 : workPendingSteersRenderSignature(optimisticPendingSteers),
       localEchoMessages: localEchoMessagesForView,
       localEchoMessagesRenderSignature: viewingSubagent ? 0 : workLocalEchoMessagesRenderSignature(localEchoMessages),
-      expandedToolCardIdsSnapshot: expandedToolCardIds,
-      expandedToolCardIdsRenderSignature: workExpandedToolCardIdsRenderSignature(expandedToolCardIds),
+      cardExpansionSnapshot: cardExpansion,
+      cardExpansionRenderSignature: workCardExpansionRenderSignature(cardExpansion),
       artifactContentRenderSignature: artifactContentRenderSignature,
       artifactDrawerPresentedSnapshot: artifactDrawerPresented,
       sendingSnapshot: sending,
       errorMessageSnapshot: errorMessage ?? openingDeliveryWarning,
-      expandedToolCardIds: $expandedToolCardIds,
+      cardExpansion: $cardExpansion,
       artifactContent: $artifactContent,
       fullscreenImage: $fullscreenImage,
       artifactDrawerPresented: $artifactDrawerPresented,
@@ -1566,6 +1785,10 @@ struct WorkSessionDestinationView: View {
       onSelectRuntimeMode: selectRuntimeMode,
       onSelectEffort: selectReasoningEffort,
       onSelectCodexFastMode: selectCodexFastMode,
+      // Memberwise-init argument order follows property declaration order in
+      // WorkChatSessionView, where onOpenParentSession sits after the model
+      // controls.
+      onOpenParentSession: viewingSubagent ? nil : { openParentSession() },
       resolvedSessionStatus: resolvedSessionStatus,
       lanes: lanes,
       lanesRenderSignature: workLaneListRenderSignature(lanes),
@@ -1576,11 +1799,30 @@ struct WorkSessionDestinationView: View {
       scheduledWorkSnapshots: viewingSubagent ? [] : scheduledWorkSnapshots,
       scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : workScheduledWorkSnapshotsRenderSignature(scheduledWorkSnapshots),
       selectedSubagentTaskId: subagentView?.taskId,
+      // One chip, one destination: subagents, background work and schedules
+      // all live in the Chat Info sheet. Timeline-row selection stays scoped
+      // to the parent chat, so nested transcript state cannot accidentally
+      // fetch from itself.
       onOpenChatInfo: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
-      // The subagent roster now lives inside the unified Chat Info sheet, so the
-      // composer badge and header menu both open Chat Info — no separate drawer.
-      onOpenSubagents: viewingSubagent ? nil : { Task { await prepareChatInfoPresentation() } },
       onSelectSubagentRow: subagentRowSelectionHandler(viewingSubagent: viewingSubagent),
+      onForkChatInLane: {
+        let modelId = (composerChatSummary?.modelId ?? composerChatSummary?.model ?? "")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !modelId.isEmpty else {
+          errorMessage = "Choose a model before forking this chat."
+          return
+        }
+        do {
+          try await syncService.handoffChatSession(
+            sourceSessionId: session.id,
+            targetModelId: modelId,
+            mode: "fork",
+            handoffNote: "Continuing after Claude session limit"
+          )
+        } catch {
+          errorMessage = error.localizedDescription
+        }
+      },
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
       liveTurnActiveHint: liveTurnActiveHint,
@@ -2088,7 +2330,11 @@ struct WorkSessionDestinationView: View {
       )
     }
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
-      setTranscript(mergedTranscript)
+      setTranscript(
+        mergedTranscript,
+        allowsIncrementalSnapshot: !liveDeltaTranscript.isEmpty && !liveTranscriptWasRebuilt,
+        incrementalDelta: liveDeltaTranscript
+      )
     }
     if fetchedFallbackEntriesAvailable, fallbackEntries != fetchedFallbackEntries {
       setFallbackEntries(fetchedFallbackEntries)
@@ -2515,6 +2761,10 @@ struct WorkSessionDestinationView: View {
     updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending")
     do {
       let delivery: SyncChatMessageDelivery
+      // No `dispatchMode` on either steer: a launch prompt has no composer
+      // behind it, so there is no chosen active-turn mode to carry. Landing on
+      // an already-busy session stages it, which is the conservative reading of
+      // "run this next" and matches what the desktop launcher does.
       if useSteer {
         delivery = try await syncService.steerChatSession(sessionId: sessionId, text: prompt)
       } else {
@@ -2646,7 +2896,11 @@ struct WorkSessionDestinationView: View {
       )
     }
     if !mergedTranscript.isEmpty, mergedTranscript != transcript {
-      setTranscript(mergedTranscript)
+      setTranscript(
+        mergedTranscript,
+        allowsIncrementalSnapshot: !liveDeltaTranscript.isEmpty && !liveTranscriptWasRebuilt,
+        incrementalDelta: liveDeltaTranscript
+      )
     }
     reconcileOptimisticPendingSteers(with: mergedTranscript)
     reconcileLocalEchoMessages()

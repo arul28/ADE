@@ -7,6 +7,11 @@ import {
   type ProjectInfo,
   type UpdateInstallImpact,
 } from "../../../shared/types";
+import {
+  INERT_KEEP_AWAKE_SNAPSHOT,
+  type KeepAwakeFixResult,
+  type KeepAwakeSnapshot,
+} from "../../../shared/types/keepAwake";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl } from "./infra/fileBlob";
 
@@ -219,6 +224,28 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
   };
   return app as AdeNamespace<"app">;
 }
+
+/**
+ * Keep-awake belongs to a physical machine, so a browser tab has nowhere to
+ * hold a lock. Reads answer "off" and writes are no-ops — the manifest marks
+ * the setting `hidden` on web, so neither is reachable from the nav or the
+ * palette either.
+ */
+export const webKeepAwakeMethods = {
+  async keepAwakeGet(): Promise<KeepAwakeSnapshot> {
+    return INERT_KEEP_AWAKE_SNAPSHOT;
+  },
+  async keepAwakeSetLevel(): Promise<KeepAwakeSnapshot> {
+    return INERT_KEEP_AWAKE_SNAPSHOT;
+  },
+  async keepAwakeFixSystemSleep(): Promise<KeepAwakeFixResult> {
+    return {
+      ok: false,
+      error: "Change this on the computer itself.",
+      snapshot: INERT_KEEP_AWAKE_SNAPSHOT,
+    };
+  },
+};
 
 export const webUpdateMethods = {
   async updateGetState() {

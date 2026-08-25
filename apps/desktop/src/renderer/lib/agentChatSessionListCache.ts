@@ -22,6 +22,7 @@ function normalizeArgs(args?: AgentChatListArgs): AgentChatListArgs {
   if (args?.laneId?.trim()) normalized.laneId = args.laneId.trim();
   if (typeof args?.includeAutomation === "boolean") normalized.includeAutomation = args.includeAutomation;
   if (typeof args?.includeArchived === "boolean") normalized.includeArchived = args.includeArchived;
+  if (typeof args?.includeIdentity === "boolean") normalized.includeIdentity = args.includeIdentity;
   return normalized;
 }
 
@@ -34,6 +35,7 @@ function cacheKey(args?: AgentChatListArgs): string {
     laneId: normalized.laneId ?? null,
     includeAutomation: normalized.includeAutomation ?? null,
     includeArchived: normalized.includeArchived ?? null,
+    includeIdentity: normalized.includeIdentity ?? null,
   });
 }
 

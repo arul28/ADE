@@ -4,6 +4,8 @@ export const ADE_RECOVERY_ERROR_CODES = [
   "db_integrity",
   "migration_incomplete",
   "migration_unknown_state",
+  /** The data files exist but the filesystem refuses to read them. */
+  "storage_read_failed",
   "brain_not_installed",
   "brain_crash_looping",
   "socket_stale_no_owner",
@@ -42,6 +44,13 @@ export type ProjectRecoveryDiagnosis = {
     | "disk_full"
     | "insufficient_headroom"
     | "db_repair_needed"
+    /**
+     * The data files can't be read at all — typically a project or `~/.ade`
+     * parked in a cloud folder whose contents were evicted. Repair is not
+     * offered: rewriting files ADE cannot read would risk the user's data, and
+     * the fix is to move the folder.
+     */
+    | "storage_unreadable"
     | "brain_crash_looping"
     | "brain_not_installed"
     | "socket_stale_no_owner"
@@ -135,6 +144,7 @@ export function mapKvDbOpenErrorCode(code: string): AdeRecoveryErrorCode {
     case "db_integrity":
     case "migration_incomplete":
     case "migration_unknown_state":
+    case "storage_read_failed":
       return code;
     default:
       return "unknown";
@@ -155,6 +165,7 @@ export function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnos
     case "db_integrity":
     case "migration_incomplete":
     case "migration_unknown_state": return "db_repair_needed";
+    case "storage_read_failed": return "storage_unreadable";
     case "brain_crash_looping": return "brain_crash_looping";
     case "brain_not_installed": return "brain_not_installed";
     case "socket_stale_no_owner": return "socket_stale_no_owner";

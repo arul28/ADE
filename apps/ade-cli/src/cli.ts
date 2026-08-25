@@ -36,8 +36,12 @@ import {
 import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
+  describeDiagnosticUpload,
   openDiagnosticIssue,
+  saveDiagnosticReportCopy,
+  sendDiagnosticReport,
 } from "./commands/reportIssue";
+import { redactDiagnosticText } from "./services/diagnostics/diagnosticReport";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -53,7 +57,24 @@ import {
   accountMachineConnectionState,
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
+import {
+  accountMachinePresence,
+  machineStatusLine,
+} from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
+import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import {
+  formatWorkingDuration,
+  sessionElapsedLabel,
+} from "../../desktop/src/shared/sessionStatusPresentation";
+import {
+  canonicalInputFromSummary,
+  sessionCanonicalUiState,
+  sessionStatusDisplay,
+} from "../../desktop/src/renderer/lib/terminalAttention";
+import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/githubIntegrationStatus";
+import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
 import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
@@ -104,6 +125,7 @@ import {
   startJsonRpcServer,
   type JsonRpcHandler,
   type JsonRpcId,
+  type JsonRpcInternalErrorReport,
   type JsonRpcRequest,
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
@@ -170,6 +192,7 @@ import {
   PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
 } from "./services/account/accountMachinePublisherService";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
+import type { MachinePairingAutoRecovery } from "./services/account/machinePairingAutoRecovery";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
 import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
@@ -200,9 +223,11 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
 import {
+  currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 
 type JsonObject = Record<string, unknown>;
@@ -313,6 +338,7 @@ type FormatterId =
   | "history-show"
   | "actions-list"
   | "action-result"
+  | "github-app-auth"
   | "automation-run-detail"
   | "automation-ingress"
   | "automation-linear-ingress"
@@ -417,7 +443,7 @@ type CliPlan =
   | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
-  | { kind: "report-issue"; open: boolean }
+  | { kind: "report-issue"; open: boolean; send: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -716,7 +742,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open]                     Print a redacted diagnostic report for a bug report
+    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -1426,7 +1452,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   store. The token itself is never printed.
 
     $ ade --role cto github app-auth login     Start device flow and wait for approval
-    $ ade github app-auth status --text        Show whether a token is stored (login, expiry)
+    $ ade github app-auth status --text        Show the credential state, login, and expiry
     $ ade --role cto github app-auth clear      Remove the stored authorization
     $ ade github actions --text                 List raw github service actions
     $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
@@ -1441,6 +1467,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
       GitHub CLI, then a stored PAT. Writes skip the read-only GitHub App.
       Authentication failures and rate limits can fall through to the next
       healthy credential while the failed source is in cooldown.
+    - Read "state" from app-auth status, not "access token expires". An access
+      token lives 8 hours and renews on use, so a lapsed expiry with state
+      "authorized" is healthy. State "blocked" means ADE paused its own retries
+      until "retry after" — wait, do not re-authorize. Only "needs_reauth" and
+      "missing" call for login.
 
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
@@ -1943,7 +1974,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   way to quiet a row you are waiting on — it hides the row without claiming
   the work is done, and a hand-raise wakes it early.
 
-    $ ade session show <id> --text                  Print settle/snooze state and the wake reason
+    $ ade session show <id> --text                  Print what the session is doing (status + elapsed), the agent
+                                                    processes it is holding open, settle/snooze state, and the wake reason
     $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
     $ ade session snooze <id> --until 2026-07-26T18:00:00Z
                                                     Snooze until an explicit ISO-8601 deadline
@@ -1993,6 +2025,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
+    $ ade chat steer <session> --text "context" --dispatch interrupt
+                                                    Deliver into the running turn: inline | interrupt.
+                                                    Omit --dispatch to stage for the next turn.
+                                                    Claude takes inline and interrupt; Cursor takes
+                                                    interrupt (cancel + resend on the same thread).
+                                                    Other providers reject the flag outright and nothing
+                                                    is sent; omit --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
@@ -2078,8 +2117,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     fork stays on the source provider and in the source lane; brief summarizes
     the chat, can switch provider, and accepts --target-lane.
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
-    Cursor has no fork surface, so ADE forks it by seeding a fresh Cursor agent
-    with this conversation's context instead of copying a provider thread.
+    Cursor has no fork surface, so ADE forks it by replaying this conversation
+    into a fresh Cursor agent instead of copying a provider thread; the oldest
+    turns drop if the transcript exceeds the target model's context window.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same
@@ -3547,6 +3587,28 @@ function normalizeChatMessageKind(value: string | null): "auto" | "queue" | "wak
   throw new CliUsageError(
     "chat message --kind must be auto, queue, wake, or interrupt-replace.",
   );
+}
+
+/**
+ * `chat steer --dispatch` asks for atomic delivery into the turn that is
+ * already running instead of staging the message for the next one. Which
+ * providers honor which mode is the host's call — the canonical table lives in
+ * desktop `shared/types/chat.ts` (`ACTIVE_TURN_DISPATCH_MODES`) and the chat
+ * service rejects an unsupported mode with a templated message — so the CLI
+ * only validates the shape and never restates the per-provider rules.
+ */
+function normalizeChatSteerDispatchMode(value: string | null): AgentChatDispatchSteerMode | null {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) return null;
+  if (normalized === "inline" || normalized === "now" || normalized === "send") return "inline";
+  if (normalized === "interrupt" || normalized === "replace") return "interrupt";
+  if (normalized === "queue" || normalized === "stage" || normalized === "next") {
+    throw new CliUsageError(
+      "chat steer stages the message for the next turn by default; omit --dispatch instead of passing 'queue'.",
+    );
+  }
+  throw new CliUsageError("chat steer --dispatch must be inline or interrupt.");
 }
 
 function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
@@ -7728,6 +7790,9 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "steer") {
     const imageUrl = readValue(args, ["--image-url"]);
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const steerText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
@@ -7743,6 +7808,7 @@ function buildChatPlan(args: string[]): CliPlan {
           withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: steerText,
+            ...(dispatchMode ? { dispatchMode } : {}),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
           }),
         ),
@@ -8422,6 +8488,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
   if (sub === "steer") {
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const text = requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text");
     const imageUrl = readValue(args, ["--image-url"]);
     return {
@@ -8430,6 +8499,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
         sessionId,
         text,
+        ...(dispatchMode ? { dispatchMode } : {}),
         ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
       }))],
     };
@@ -12536,6 +12606,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--depth",
   "--desc",
   "--device",
+  "--dispatch",
+  "--dispatch-mode",
   "--disk",
   "--disk-size",
   "--display",
@@ -12976,6 +13048,7 @@ function buildCliPlan(
     return {
       kind: "report-issue",
       open: readFlag(args, ["--open"]),
+      send: readFlag(args, ["--send"]),
     };
   }
   if (primary === "auth") {
@@ -13119,6 +13192,7 @@ function buildGithubPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "github app-auth status",
+        formatter: "github-app-auth",
         steps: [actionStep("result", "github", "getAppUserAuthStatus")],
       };
     }
@@ -13133,6 +13207,7 @@ function buildGithubPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "github app-auth clear",
+        formatter: "github-app-auth",
         steps: [actionStep("result", "github", "clearAppUserAuth")],
       };
     }
@@ -14471,14 +14546,90 @@ function reportContainedJsonRpcError(
   }
 }
 
+/**
+ * The full text behind a redacted `internalError` reply. It lands on stderr,
+ * which for the installed brain is `launchd.err.log` — one of the logs
+ * `ade report-issue` tails — so the `ref` the user was shown is searchable.
+ */
+function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
+  try {
+    process.stderr.write(
+      `ade jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
+    );
+  } catch {
+    // Stderr may be gone during shutdown; contained errors should stay contained.
+  }
+}
+
+/**
+ * One thrown value must not be able to bury a log the user is asked to send:
+ * a rejected fetch can carry a whole response body.
+ */
+const DIAGNOSTIC_ERROR_MAX_CHARS = 4_000;
+
+/** Fields worth printing off a thrown non-Error: they describe, never carry. */
+const DIAGNOSTIC_ERROR_SAFE_FIELDS = [
+  "name",
+  "message",
+  "code",
+  "errno",
+  "syscall",
+  "status",
+  "statusCode",
+] as const;
+
+/**
+ * Renders a thrown value for stderr — which for the installed brain is
+ * `launchd.err.log`, a file `ade report-issue` tails into a report the user is
+ * told to paste into a public issue. So this is a redaction boundary, not a
+ * formatter: everything it returns goes through the same pass the report body
+ * gets, and a thrown non-Error is described rather than serialized. Dumping
+ * such a value with `JSON.stringify` would print whatever an upstream caller
+ * attached to it — `sync.connectToBrain` carries `draft.token`, and a rejected
+ * request object would have shipped it verbatim.
+ */
 function formatDiagnosticError(error: unknown): string {
+  return capDiagnosticText(redactDiagnosticText(describeDiagnosticError(error)));
+}
+
+function capDiagnosticText(text: string): string {
+  if (text.length <= DIAGNOSTIC_ERROR_MAX_CHARS) return text;
+  return `${text.slice(0, DIAGNOSTIC_ERROR_MAX_CHARS)}… (${text.length - DIAGNOSTIC_ERROR_MAX_CHARS} more characters truncated)`;
+}
+
+function describeDiagnosticError(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
   if (typeof error === "string") return error;
+  if (error === null || error === undefined) return String(error);
+  if (typeof error !== "object") return String(error);
+
+  // A thrown object: name the shape and the diagnostic fields, then list the
+  // remaining keys by name only. Key names locate the throw site; their values
+  // are exactly what must not reach a log the user may hand over.
+  const record = error as Record<string, unknown>;
+  const described: string[] = [];
+  let label = "Object";
   try {
-    return JSON.stringify(error);
+    for (const field of DIAGNOSTIC_ERROR_SAFE_FIELDS) {
+      const value = record[field];
+      if (value === undefined || value === null) continue;
+      if (typeof value === "object" || typeof value === "function") continue;
+      described.push(`${field}=${String(value)}`);
+    }
+    const otherKeys = Object.keys(record).filter(
+      (key) => !(DIAGNOSTIC_ERROR_SAFE_FIELDS as readonly string[]).includes(key),
+    );
+    if (otherKeys.length > 0) {
+      described.push(`otherKeys=[${otherKeys.slice(0, 20).join(", ")}]`);
+    }
+    label = Array.isArray(error) ? "Array" : (record.constructor?.name ?? "Object");
   } catch {
-    return String(error);
+    // Getters and proxy traps run arbitrary code and can throw; a value we
+    // cannot describe still must not take the error boundary down with it.
   }
+  return described.length > 0
+    ? `[thrown ${label}] ${described.join(" ")}`
+    : `[thrown ${label}]`;
 }
 
 function installRuntimeProcessErrorBoundary(label: string): () => void {
@@ -14554,6 +14705,7 @@ function createHeadlessRpcServer(
     const stop = startJsonRpcServer(handler, transport, {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
       stop.notify(method, params),
@@ -16944,6 +17096,7 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
     stop = startJsonRpcServer(handler, createStdioTransport(), {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     unsubscribeNotifications = client.onAnyNotification((method, params) =>
       stop?.notify(method, params),
@@ -17082,6 +17235,10 @@ async function runServe(
   let stopBrainLoopWatchdog: (() => void) | null = null;
   let stopBrainHeartbeat: (() => void) | null = null;
   let stopBrainFreshnessMonitor: (() => void) | null = null;
+  // Built much later than the watchdog that feeds it: the memory mitigation may
+  // only restart a brain the service manager owns, and whether this one is that
+  // brain is not known until the service command has been resolved.
+  let brainMemoryRestartGuard: BrainMemoryRestartGuard | null = null;
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
@@ -17138,9 +17295,21 @@ async function runServe(
       runtimeMode: "brain",
     }),
   );
+  /**
+   * The brain's half of automatic diagnostics. It shares the desktop's consent
+   * flag and daily budget on disk, and reads the machine's credential store, so
+   * a report from a headless box lands attributed to the account.
+   */
+  const { createBrainAutoDiagnostics } = await import("./services/diagnostics/autoDiagnosticsSender");
+  const brainAutoDiagnostics = createBrainAutoDiagnostics({
+    cliVersion: VERSION,
+    logger: headlessProjectLogger,
+    capture: (input) => brainProductAnalytics.capture(input),
+  });
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    info: (event, meta) => headlessProjectLogger.info(event, meta),
     onRecovered: (breadcrumb) => {
       brainProductAnalytics.captureInternal({
         event: "ade_brain_recovered",
@@ -17153,6 +17322,9 @@ async function runServe(
         minimumIntervalMs: 24 * 60 * 60 * 1_000,
       });
     },
+    onMemoryPressure: (sample) => {
+      void brainMemoryRestartGuard?.handle(sample);
+    },
   });
   // The loop watchdog above lives inside the process it guards, so it cannot
   // report a brain whose whole runtime is stuck. This heartbeat is the same
@@ -17163,6 +17335,7 @@ async function runServe(
   stopBrainHeartbeat = startBrainHeartbeat({
     runtimeDir: layout.runtimeDir,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    info: (event, meta) => headlessProjectLogger.info(event, meta),
   });
   const rawSocketPath =
     readValue(args, ["--socket"]) ??
@@ -17517,8 +17690,16 @@ async function runServe(
   const machineCloudRelayFilePath = path.join(layout.secretsDir, "sync-cloud-relay.json");
   const machineCloudRelayStore = createSyncCloudRelayStore({
     filePath: machineCloudRelayFilePath,
+    // Every mint, rotation, and backup recovery of this machine's identity is
+    // logged here. A machine key that changes silently is how a live computer
+    // became a phantom row its owner deleted.
+    logger: headlessProjectLogger,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // Turns the "Reconnect this computer" button into something the machine can
+  // press for itself when the directory refuses it. Built below, next to the
+  // publisher it watches.
+  let machinePairingAutoRecovery: MachinePairingAutoRecovery | null = null;
   // Held only while this brain hosts phone sync WITHOUT a project scope (a
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
@@ -17531,9 +17712,58 @@ async function runServe(
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
     accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
-      "sync_disabled",
+      "sync_not_started",
       "Account-directory publishing has not started.",
     );
+  /**
+   * The desktop's OS-level suspend/resume beat, arriving over RPC.
+   *
+   * The brain has no `powerMonitor` of its own — its native signal is the
+   * heartbeat gap, which is only observable AFTER the machine is back. This is
+   * the hop that makes "asleep" a stated fact: the shared monitor records the
+   * announcement (which the chat service and the publisher both read), and the
+   * suspend half then publishes it to the account directory inside a hard
+   * budget, because the window before the OS takes the machine down is short
+   * and nothing here may delay it.
+   *
+   * The answer is only `accepted` when there was a publisher to carry the
+   * announcement to the account directory. A brain whose publisher has not been
+   * built yet (or was released with its sync scope) still records the local
+   * announcement — the chat service reads it — but nothing reached the
+   * directory, and saying "accepted" for that is what let the desktop count an
+   * unpersisted beat as landed and skip its resume retry. It reuses the same
+   * `unsupported` reason the RPC already returns for an unwired brain rather
+   * than inventing a second vocabulary for "nowhere to publish".
+   */
+  const reportDesktopMachinePowerTransition = async (
+    input: { kind: "suspend" | "resume"; budgetMs?: number },
+  ): Promise<{ accepted: boolean; reason?: string }> => {
+    const { getSharedMachinePowerMonitor } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
+    const monitor = getSharedMachinePowerMonitor();
+    // Read once: the publisher can be released between the announcement and the
+    // write, and a null-check that disagrees with the call it guards is how a
+    // "published" answer gets returned for a publish that never ran.
+    const publisher = accountMachinePublisher;
+    if (input.kind === "resume") {
+      // A wake has all the time in the world, so it rides the publisher's own
+      // subscription (which republishes "awake" at once) rather than blocking
+      // the caller on a write.
+      monitor.noteAnnouncedResume();
+      // Retrying this is worth it: the publisher is built lazily when a sync
+      // scope appears, so a wake that lands a beat too early can still be
+      // delivered by the desktop's next attempt.
+      return publisher ? { accepted: true } : { accepted: false, reason: "unsupported" };
+    }
+    monitor.noteAnnouncedSuspend();
+    if (!publisher) return { accepted: false, reason: "unsupported" };
+    // The announcement above already asks the publisher for the pre-suspend
+    // write; awaiting the same coalesced attempt is what gives the desktop
+    // something real to bound its beat on instead of a fire-and-forget void.
+    await publisher.publishPowerStateNow(input.budgetMs);
+    return { accepted: true };
+  };
   // What this machine looks like when no project scope owns sync. Hosting is
   // the projectless lease AND a bound shared listener; the builder reports the
   // honest all-down shape otherwise.
@@ -17715,6 +17945,7 @@ async function runServe(
         logger: headlessProjectLogger,
         requestRestart: requestBrainServiceRestartFromServe,
       }),
+      reportMachinePowerTransition: reportDesktopMachinePowerTransition,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -17826,6 +18057,8 @@ async function runServe(
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    machinePairingAutoRecovery?.stop();
+    machinePairingAutoRecovery = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -17952,7 +18185,42 @@ async function runServe(
         startSyncHost,
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
+        // The same failures as structured facts. Without this the most frequent
+        // brain failure there is lived only as untimestamped free text in
+        // `launchd.err.log` — never in `brain.jsonl`, so no report section and
+        // no telemetry ever saw it.
+        logEvent: (event, meta) => headlessProjectLogger.warn(event, meta),
+        // The machine-scoped last-failure record: the same file the recovery
+        // screen, `ade doctor`, and the diagnostic report already read.
+        recordStorageFault: (fault, detail) => {
+          recordLastFailure({ kind: "machine" }, {
+            code: fault.code,
+            message: fault.message,
+            detail,
+            component: "sync_host",
+          });
+        },
         getServiceMainPid: getRuntimeServiceMainPid,
+        // Auto-diagnostics driven off the FAILURE rather than off the account
+        // publisher. The publisher only exists once this brain holds the
+        // sync-host lease, which it only takes once the sync host starts — so
+        // the machine that cannot start one could never send a report about it.
+        //
+        // The fault's own words are already in the report: `recordStorageFault`
+        // writes the classified code, message and raw detail to the machine
+        // last-failure record before this fires, and that record is a section of
+        // every report. The headline stays the plain sentence.
+        onSustainedStorageFault: ({ fault }) => {
+          // `report` is documented never to reject; the catch is what keeps a
+          // silent-by-design path from becoming an unhandled rejection.
+          void brainAutoDiagnostics
+            .report({
+              failureCode: fault.code,
+              surface: "sync_host_storage",
+              headline: "This computer could not read its own data",
+            })
+            .catch(() => undefined);
+        },
       });
       // A recorded sync-host failure is cleared only once the sync host is
       // really up; clearing it on the bind would reset the crash-loop counter
@@ -17976,11 +18244,11 @@ async function runServe(
         const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
         conflict = error instanceof SyncHostSingletonConflictError;
       } catch (importError: unknown) {
-        process.stderr.write(
-          `ADE brain could not classify its sync host failure: ${
-            importError instanceof Error ? importError.message : String(importError)
-          }\n`,
-        );
+        const importMessage = importError instanceof Error
+          ? importError.message
+          : String(importError);
+        process.stderr.write(`ADE brain could not classify its sync host failure: ${importMessage}\n`);
+        headlessProjectLogger.warn("sync.host_failure_unclassifiable", { error: importMessage });
       }
       if (conflict) {
         syncHostStartupFailure = new CliExecutionError("ADE brain refusing to run without mobile sync.", {
@@ -17991,6 +18259,7 @@ async function runServe(
         });
       } else {
         process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+        headlessProjectLogger.error("sync.host_startup_loop_failed", { error: message });
         syncHostStartupFailure = error;
       }
       finish();
@@ -18058,6 +18327,9 @@ async function runServe(
     const { createBrainAccountMachinePublisherService } = await import(
       "./services/account/accountMachinePublisherService"
     );
+    const { borrowSharedMachinePowerSource } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
     // Match the active sync-host/desktop project priority so a project Clerk
     // issuer cannot send the brain to a different directory Worker.
     const accountProjectRoots = () => {
@@ -18080,6 +18352,12 @@ async function runServe(
       accountMachinePublisher = createBrainAccountMachinePublisherService({
         secretsDir: layout.secretsDir,
         projectRoots: accountProjectRoots,
+        // The one monitor this brain has, shared with the chat service and with
+        // the desktop's forwarded suspend beat. Borrowed rather than owned: the
+        // publisher is rebuilt on every sync-host handoff, and disposing the
+        // machine's power tracking along with it would leave chats blind to
+        // sleep until the next one started.
+        powerSource: borrowSharedMachinePowerSource(),
         isSyncEnabled: () => syncEnabled,
         logger: headlessProjectLogger,
         getSnapshot: async () => {
@@ -18098,9 +18376,36 @@ async function runServe(
           return brainSyncHostLease ? projectlessSyncSnapshot() : null;
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+        // The SAME store instance the machine key above comes from, so a
+        // `supersededMachineKeys` answer is checked against the keys this brain
+        // actually retired. The publisher used to build a private second store
+        // over the same file, which is one identity guarded by two independent
+        // readers for no benefit at all.
+        confirmSupersededMachineKeys: (keys) => {
+          try {
+            return machineCloudRelayStore.confirmSupersededMachineKeys(keys);
+          } catch {
+            return [];
+          }
+        },
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);
+        },
+        // A machine that has been unable to publish for minutes has silently
+        // dropped out of the account directory, and on a headless box there is
+        // nobody to press "Report issue" about it.
+        onSustainedFailure: ({ code }) => {
+          // `report` is documented never to reject; the catch is what keeps a
+          // silent-by-design path from ever becoming an unhandled rejection
+          // that takes the brain down.
+          void brainAutoDiagnostics
+            .report({
+              failureCode: code,
+              surface: "account_publisher",
+              headline: "This computer could not publish to your account",
+            })
+            .catch(() => undefined);
         },
       });
       accountMachinePublisher.start();
@@ -18147,11 +18452,53 @@ async function runServe(
         reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
       });
     }
+    // A directory refusal used to dead-end: heartbeats stopped and the machine
+    // waited for a human to click "Reconnect this computer", which nobody ever
+    // sees on a headless box. This runs the identical repair on a slow, budgeted
+    // schedule. It reads the publisher through `getPublisher` rather than
+    // capturing it, because the publisher is destroyed and rebuilt whenever the
+    // sync host lease moves.
+    const { createMachinePairingAutoRecovery } = await import(
+      "./services/account/machinePairingAutoRecovery"
+    );
+    machinePairingAutoRecovery = createMachinePairingAutoRecovery({
+      getPublisher: () => accountMachinePublisher,
+      runRepair: () => repairMachinePairing(),
+      hasAccountSession: () => {
+        try {
+          return brainAccountAuthService.getStatus().signedIn === true;
+        } catch {
+          return false;
+        }
+      },
+      budget: machineCloudRelayStore,
+      logger: headlessProjectLogger,
+      // The loop has stopped arguing and this computer is still disconnected.
+      onGaveUp: ({ code }) => {
+        void brainAutoDiagnostics
+          .report({
+            failureCode: code,
+            surface: "machine_pairing_recovery",
+            headline: "This computer could not reconnect to your account",
+          })
+          .catch(() => undefined);
+      },
+    });
+    machinePairingAutoRecovery.start();
   }
 
   process.stderr.write(
     `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
+  // The same fact in `brain.jsonl`. The human line above stays: it is what a
+  // person reads when they run the brain in a terminal, and it is what the
+  // desktop's handover waits to see. But a report that carries a launchd stderr
+  // tail full of untimestamped lines and a `brain.jsonl` that never mentions
+  // the brain starting cannot place ANY of them in time.
+  headlessProjectLogger.info("brain.listening", {
+    socketPath,
+    tcpUrl: tcpUrl ?? null,
+  });
   serveStarted = true;
   // The RPC socket is up: any recorded startup failure that was NOT about the
   // sync host is over. Sync-host failures stay recorded until the sync host
@@ -18200,46 +18547,80 @@ async function runServe(
     && socketPath === layout.socketPath
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   if (isPrimaryBrain && preparedServiceCommand.filePath) {
-    const [{ createBrainFreshnessMonitor }, { requestBrainServiceRestart }] = await Promise.all([
+    const [
+      { createBrainFreshnessMonitor },
+      { requestBrainServiceRestart },
+      { createSingleFlightBrainRestart },
+    ] = await Promise.all([
       import("./services/runtime/brainFreshnessMonitor"),
       import("./commands/brainUpdate"),
+      import("./services/runtime/singleFlightBrainRestart"),
     ]);
+    // Hoisted so the freshness monitor and the memory mitigation restart this
+    // brain the same way. Two spellings of "restart the service" would be two
+    // things to keep in step.
+    const isBrainIdle = async (): Promise<boolean> => (
+      await readMachineRuntimeActivitySummary({
+        projectRegistry,
+        scopeRegistry,
+        personalChatScope,
+      })
+    ).idle;
+    // Single-flighted: the freshness monitor and the memory guard each
+    // serialize only their own attempts, so without a shared latch both can
+    // request a restart of this service at the same time. The second caller
+    // joins the restart already running and sees its outcome.
+    const restartBrainService = createSingleFlightBrainRestart((failureEvent: string): void => {
+      const result = requestBrainServiceRestart({
+        command: serviceCommand.command,
+        commandArgs: preparedServiceCommand.args,
+        env: {
+          ...process.env,
+          ...(serviceCommand.env ?? {}),
+        },
+      });
+      if (result.status !== 0) {
+        headlessProjectLogger.error(failureEvent, {
+          status: result.status,
+          error: result.stderr || result.stdout || "service restart failed",
+        });
+        throw new Error(result.stderr || result.stdout || "service restart failed");
+      }
+    }, {
+      onCoalesced: (failureEvent) => {
+        headlessProjectLogger.info("brain.restart_coalesced", { failureEvent });
+      },
+    });
     const freshnessMonitor = createBrainFreshnessMonitor({
       filePath: preparedServiceCommand.filePath,
       runningHash:
         process.env.ADE_RUNTIME_BUILD_HASH?.trim()
         || preparedServiceCommand.buildHash,
-      isIdle: async () => (
-        await readMachineRuntimeActivitySummary({
-          projectRegistry,
-          scopeRegistry,
-          personalChatScope,
-        })
-      ).idle,
+      isIdle: isBrainIdle,
       logger: {
         warn: (event, fields) =>
           headlessProjectLogger.warn(event, fields),
       },
-      restart: () => {
-        const result = requestBrainServiceRestart({
-          command: serviceCommand.command,
-          commandArgs: preparedServiceCommand.args,
-          env: {
-            ...process.env,
-            ...(serviceCommand.env ?? {}),
-          },
-        });
-        if (result.status !== 0) {
-          headlessProjectLogger.error("brain.freshness_restart_failed", {
-            status: result.status,
-            error: result.stderr || result.stdout || "service restart failed",
-          });
-          throw new Error(result.stderr || result.stdout || "service restart failed");
-        }
-      },
+      restart: () => restartBrainService("brain.freshness_restart_failed"),
     });
     freshnessMonitor.start();
     stopBrainFreshnessMonitor = () => freshnessMonitor.stop();
+    const { createBrainMemoryRestartGuard } = await import(
+      "./services/runtime/brainMemoryRestart"
+    );
+    brainMemoryRestartGuard = createBrainMemoryRestartGuard({
+      // Three separate ways for this brain to be busy, and all of them have to
+      // be quiet: a tracked command in flight, a chat or agent run in the
+      // activity summary, or an attached client.
+      isIdle: async () => (
+        currentBrainLoopWatchdogCommand() === "idle" && await isBrainIdle()
+      ),
+      isQuiet: () => !hasActiveHeadlessConnections(states),
+      logger: {
+        warn: (event, fields) => headlessProjectLogger.warn(event, fields),
+      },
+      restart: () => restartBrainService("brain.memory_restart_command_failed"),
+    });
   }
 
   // Remembered so the shutdown below removes only the socket file this brain
@@ -18349,6 +18730,7 @@ async function runServe(
     throw error;
   } finally {
     stopBrainFreshnessMonitor?.();
+    brainMemoryRestartGuard?.stop();
     stopBrainHeartbeat?.();
     stopBrainLoopWatchdog?.();
   }
@@ -19940,11 +20322,14 @@ function formatSessionLifecycle(value: unknown): string {
   const snoozed = Number.isFinite(snoozedUntilMs) && snoozedUntilMs > now;
   const wakeLabel = snoozed ? snoozeWakeLabel(snoozedUntil, now) : null;
   const indefinite = isIndefiniteSnooze(snoozedUntil, now);
+
   return renderKeyValues("ADE session lifecycle", [
     ["session", record.sessionId ?? record.id],
     ["title", record.title],
     ["lane", record.laneId],
+    ["status", sessionStatusLine(record, now, snoozed)],
     ["runtime state", record.runtimeState],
+    ["agent processes", sessionRuntimeProcessLine(record, now)],
     ["settled at", record.settledAt],
     ["settle override", record.settleOverride],
     ["status note", record.statusNote],
@@ -19958,6 +20343,61 @@ function formatSessionLifecycle(value: unknown): string {
     ["woke reason", record.wokeReason ?? record.reason],
     ["ok", record.ok],
   ]);
+}
+
+/**
+ * What `ade session show` says a session is DOING, as opposed to which columns
+ * it has. `runtime state` alone reads `idle` for a chat that is holding a warm
+ * agent process and two background jobs open — the state people were dropping
+ * to `ps` to diagnose.
+ *
+ * The word, its elapsed, and the snooze overlay all come from the shared
+ * presentation helpers the Work rows and `ade code` use, so this line and the
+ * `snoozed` / `wakes` lines below it cannot tell two different stories.
+ * Undefined for the mutation acks that share this formatter — they carry no
+ * `status`, and `renderKeyValues` drops the row.
+ */
+function sessionStatusLine(record: JsonObject, now: number, snoozed: boolean): string | undefined {
+  // `session.get` answers with a TerminalSessionSummary. The formatter takes an
+  // opaque record because it also renders acks, and `status` is what tells the
+  // two apart.
+  if (!asString(record.status)) return undefined;
+  const summary = record as unknown as TerminalSessionSummary;
+  const input = { ...canonicalInputFromSummary(summary), nowMs: now };
+  const canonical = sessionCanonicalUiState(input);
+  // Deliberately no `snoozeWakeLabel`: the shared module would then make the
+  // return ticket the whole status ("in 40 minutes"), which reads as a status
+  // nowhere else and duplicates the `wakes` line three rows down. The bare word
+  // is the status; the timing already has its own line.
+  const presentation = sessionStatusDisplay(input, { snoozed });
+  if (!presentation) return undefined;
+  const elapsed = sessionElapsedLabel(summary, presentation, canonical.phase, canonical.liveness, now);
+  return elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+}
+
+/**
+ * The agent SDK processes a session is holding open, with their ages.
+ *
+ * Reads the raw record rather than the summary type: these entries arrive as
+ * JSON over the action boundary, so their shape is a claim to check, not one to
+ * assert. A pid we cannot read is dropped rather than printed as `pid undefined`.
+ */
+function sessionRuntimeProcessLine(record: JsonObject, now: number): string | undefined {
+  const entries = Array.isArray(record.runtimeProcesses) ? record.runtimeProcesses : [];
+  const rendered = entries
+    .map((entry) => {
+      const info = isRecord(entry) ? entry : null;
+      const pid = typeof info?.pid === "number" && Number.isInteger(info.pid) ? info.pid : null;
+      if (pid == null) return null;
+      const startedMs = Date.parse(asString(info?.startedAt) ?? "");
+      const age = Number.isFinite(startedMs)
+        ? formatWorkingDuration(Math.max(0, now - startedMs))
+        : null;
+      return age ? `pid ${pid} (${age})` : `pid ${pid}`;
+    })
+    .filter((entry): entry is string => entry !== null)
+    .join(", ");
+  return rendered || undefined;
 }
 
 /**
@@ -20922,8 +21362,16 @@ function formatAccountMachines(value: unknown): string {
         return machine ? [machine] : [];
       })
     : [];
+  // `status` answers "can this be dialled"; `presence` answers "is it awake,
+  // and on what power" — the same second line the desktop machine row and the
+  // iOS roster render, from the same shared helper, so the three cannot
+  // disagree about whether a Mac with a shut lid is asleep or merely quiet.
+  // `connected` is deliberately not passed: this table marks no row as holding
+  // a live channel, and a surface that renders no such mark must not claim one.
+  let anyAsleep = false;
   const rows = machines.map((machine) => {
     const connectionState = accountMachineConnectionState(machine);
+    if (accountMachinePresence(machine) === "asleep") anyAsleep = true;
     const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
       ? new Date(machine.lastSeenAt).toLocaleString()
       : "never";
@@ -20931,17 +21379,23 @@ function formatAccountMachines(value: unknown): string {
       asString(machine.machineKey) ?? "—",
       accountMachineDisplayName(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
       connectionState,
+      machineStatusLine(machine) ?? "—",
       lastSeenAt,
     ];
   });
   return [
     renderTable(
-      ["machine key", "name", "status", "last seen"],
+      ["machine key", "name", "status", "presence", "last seen"],
       rows,
       "No machines are registered to this ADE account.",
     ),
     "",
     "Connect with: ade machines connect <machine-key>",
+    // Connecting IS what wakes a sleeping machine — the same thing the desktop
+    // row and the phone say by labelling the button "Wake". Stated only when a
+    // machine on this account is actually asleep, so the hint never becomes
+    // noise on a list of awake machines.
+    ...(anyAsleep ? ["A machine listed asleep wakes when you connect to it."] : []),
   ].join("\n");
 }
 
@@ -20986,6 +21440,68 @@ export function formatBrainStatus(value: unknown): string {
     ["last failure", result.lastFailure],
     ["message", starting ? null : result.message],
   ]);
+}
+
+/**
+ * `ade github app-auth status | clear | login` in --text mode.
+ *
+ * An agent reads this to answer one question: re-authorize now, or wait? Only
+ * `credentialState` answers it. A stored token whose 8-hour access token has
+ * lapsed is still `authorized` — it renews on use — so `expiresAt` alone reads
+ * as broken when nothing is. `blocked` means ADE has paused its own retries
+ * until `refreshBlockedUntil` and re-authorizing cannot help; `needs_reauth` is
+ * the only state that asks for a login. The generic record renderer prints
+ * `lastRefreshError` as JSON truncated at 96 columns, which cuts the reason in
+ * half, so the reason gets its own block here.
+ */
+export function formatGithubAppUserAuth(value: unknown): string {
+  if (!isRecord(value)) return "The GitHub App authorization status is not available.";
+  const credentialState = asString(value.credentialState);
+  const userLogin = asString(value.userLogin);
+  const refreshBlockedUntil = asString(value.refreshBlockedUntil);
+  const lastRefreshError = isRecord(value.lastRefreshError) ? value.lastRefreshError : null;
+  // One module answers "how is this credential judged" for every surface. It
+  // also carries the legacy fallback: an older host sends no credentialState,
+  // and the refresh token — never the 8-hour access token — decides the truth.
+  const accountState = deriveGithubAccountAuthState(value as unknown as GitHubAppUserAuthStatus);
+  const headline = ((): string => {
+    if (value.configured !== true) {
+      return "The ADE GitHub App is not configured on this machine.";
+    }
+    if (accountState === "valid") {
+      return `Authorized${userLogin ? ` as ${userLogin}` : ""}. ADE renews this credential on its own.`;
+    }
+    if (accountState === "blocked") {
+      return "Authorized, but renewal is paused after a transient failure. ADE retries on its own — do not re-authorize.";
+    }
+    if (accountState === "needs_reauth") {
+      return "Re-authorization is needed. Run `ade --role cto github app-auth login`.";
+    }
+    return "Not authorized. Run `ade --role cto github app-auth login`.";
+  })();
+  const rows: Array<[string, unknown]> = [
+    ["state", credentialState],
+    ["account", userLogin],
+    ["token", value.tokenStored === true ? "stored" : "not stored"],
+    ["access token expires", value.expiresAt],
+    ["refresh token expires", value.refreshTokenExpiresAt],
+    ["retry after", refreshBlockedUntil],
+    ["checked", value.checkedAt],
+    ["error", value.error],
+  ];
+  const sections = [headline, "", renderKeyValues("GitHub App authorization", rows)];
+  if (lastRefreshError) {
+    const kind = asString(lastRefreshError.kind) ?? "unknown";
+    const status = typeof lastRefreshError.status === "number" ? ` (HTTP ${lastRefreshError.status})` : "";
+    const at = asString(lastRefreshError.at);
+    sections.push(
+      "",
+      "Last renewal failure",
+      `  ${kind}${status}${at ? ` at ${at}` : ""}`,
+      `  ${asString(lastRefreshError.message) ?? "No detail was reported."}`,
+    );
+  }
+  return sections.join("\n");
 }
 
 function formatTextOutput(
@@ -21312,6 +21828,8 @@ function formatTextOutput(
       return formatStorageMaintenance(value);
     case "update-status":
       return formatUpdateStatus(value);
+    case "github-app-auth":
+      return formatGithubAppUserAuth(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -22065,6 +22583,7 @@ async function runGithubAppLogin(
           output: formatOutput(
             { ...status, status: "expired", error: "timed_out" },
             options,
+            "github-app-auth",
           ),
           exitCode: 1,
         };
@@ -22077,10 +22596,15 @@ async function runGithubAppLogin(
       );
       const poll = await runGithubAction("pollAppUserDeviceAuth", { sessionId });
       const status = asString(poll.status);
-      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
+      // The typed printer reads an auth status. When the host returned none,
+      // `authStatus` is the poll envelope instead, and printing that as an auth
+      // status would report "not configured" for a machine that is configured.
+      const polledAuthStatus = isRecord(poll.authStatus) ? poll.authStatus : null;
+      const authStatus = polledAuthStatus ?? poll;
+      const authFormatter: FormatterId | undefined = polledAuthStatus ? "github-app-auth" : undefined;
       if (status === "authorized") {
         process.stderr.write("GitHub App authorized.\n");
-        return { output: formatOutput(authStatus, options), exitCode: 0 };
+        return { output: formatOutput(authStatus, options, authFormatter), exitCode: 0 };
       }
       if (status === "pending" || status === "slow_down") {
         if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
@@ -22093,7 +22617,7 @@ async function runGithubAppLogin(
         asString(poll.message) ??
         `GitHub device authorization ${status ?? "failed"}.`;
       process.stderr.write(`${message}\n`);
-      return { output: formatOutput(authStatus, options), exitCode: 1 };
+      return { output: formatOutput(authStatus, options, authFormatter), exitCode: 1 };
     }
   } finally {
     await connection.close();
@@ -22660,16 +23184,24 @@ async function runCli(
       // opening it without copying first sends them to a form with nothing to
       // paste. Both steps are best effort and the report is printed regardless.
       const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
+      // Saved BEFORE the upload is attempted, so the path printed under a
+      // failure is a file that already exists rather than one written after we
+      // knew we needed it.
+      const savedPath = plan.send ? saveDiagnosticReportCopy(built, { surface: "cli" }) : null;
+      // Sending is opt-in and never blocks the printed report: a failed upload
+      // still leaves the user holding everything they need to file by hand.
+      const sent = plan.send ? await sendDiagnosticReport(built) : null;
       if (parsed.options.text) {
         const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
+        const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}\n`,
+          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue),
+          buildReportIssuePayload(built, openedIssue, sent, savedPath),
           parsed.options,
           undefined,
         ),
@@ -22893,6 +23425,7 @@ export {
   checkLinearReadiness,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,

@@ -6,6 +6,7 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import {
   BrainRecoveryNotice,
   formatRecoveryCommand,
+  formatRecoveryMessage,
   formatRecoveryTime,
   RECOVERY_ACK_STORAGE_KEY,
   shouldShowRecoveryNotice,
@@ -101,6 +102,24 @@ describe("formatRecoveryCommand", () => {
     const out = formatRecoveryCommand(long);
     expect(out.endsWith("…")).toBe(true);
     expect(out.length).toBe(48);
+  });
+});
+
+describe("formatRecoveryMessage", () => {
+  it("names the command when a real one was stuck", () => {
+    expect(formatRecoveryMessage(wedge("2026-07-23T10:05:00Z", "chat.send")))
+      .toContain("a stuck task (chat.send) was restarted");
+  });
+
+  // The external watchdog stops the background service, not a task the person
+  // started, and "external-watchdog" is the name of our plumbing. The friend in
+  // the 2026-08-20 report was told a stuck task called "external-watchdog" had
+  // been restarted, which described nothing they had ever done.
+  it("describes a service restart without naming the watchdog", () => {
+    const message = formatRecoveryMessage(wedge("2026-07-23T10:05:00Z", "external-watchdog"));
+    expect(message).toContain("ADE restarted its background service");
+    expect(message).not.toContain("external-watchdog");
+    expect(message).not.toContain("stuck task");
   });
 });
 
