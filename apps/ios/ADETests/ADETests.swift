@@ -25133,8 +25133,38 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       mergeWorkTranscriptPageOccurrences(older: [draft], newer: [completed]),
-      [draft]
+      [completed]
     )
+  }
+
+  func testWorkTranscriptPageOccurrenceMergeReplacesStableOverlapWithoutCollapsingIdlessRows() {
+    let repeated = AgentChatTranscriptEntry(
+      role: "user",
+      text: "same physical payload",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let draft = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "draft answer",
+      timestamp: "2026-07-24T10:01:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a"
+    )
+    let completed = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed answer",
+      timestamp: draft.timestamp,
+      turnId: draft.turnId,
+      messageId: draft.messageId
+    )
+
+    let merged = mergeWorkTranscriptPageOccurrences(
+      older: [repeated, repeated, draft],
+      newer: [repeated, completed]
+    )
+
+    XCTAssertEqual(merged, [repeated, repeated, completed])
   }
 
   func testRestoredByteCursorTranscriptCacheRehydratesOrderedIndexStore() {

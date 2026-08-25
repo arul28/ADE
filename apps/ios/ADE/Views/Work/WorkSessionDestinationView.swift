@@ -304,7 +304,24 @@ func mergeWorkTranscriptPageOccurrences(
       }
     }
   }
-  return older + newer.dropFirst(overlap)
+  guard overlap > 0 else { return older + newer }
+
+  // A page refresh can carry the completed payload for a row that was cached
+  // while it was still streaming. Replace only stable-ID overlap entries;
+  // id-less rows may represent repeated physical occurrences and must keep
+  // the payload/order already established by the older page.
+  var mergedOlder = older
+  for index in 0..<overlap {
+    let olderIndex = older.count - overlap + index
+    let cached = older[olderIndex]
+    let refreshed = newer[index]
+    guard let cachedStableId = workTranscriptEntryStableIdentity(cached),
+          let refreshedStableId = workTranscriptEntryStableIdentity(refreshed),
+          cachedStableId == refreshedStableId
+    else { continue }
+    mergedOlder[olderIndex] = refreshed
+  }
+  return mergedOlder + newer.dropFirst(overlap)
 }
 
 struct WorkLiveTranscriptCache {
