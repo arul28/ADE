@@ -10,7 +10,7 @@ import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { pathsEqual } from "../shared/pathCompare";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
-import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
+import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { PRIMARY_LANE_COLOR, allocateLaneColor } from "../../../shared/laneColorPalette";
 import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
@@ -87,7 +87,10 @@ import {
   laneNameAdvertisesBranch,
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
-import { isAutoLaneTemporaryBranch } from "../../../shared/laneNameFallback";
+import {
+  isAutoLaneTemporaryBranch,
+  resolveAppliedAutoLaneBranchFragment,
+} from "../../../shared/laneNameFallback";
 
 type LaneRow = {
   id: string;
@@ -6228,14 +6231,15 @@ export function createLaneService({
         branchRef,
         reason,
       });
-      if (!isAutoLaneTemporaryBranch(args.temporaryBranch)) return skipBranch("invalid_temporary_branch");
-      if (lane.branch_ref !== args.temporaryBranch) return skipBranch("persisted_branch_changed");
+      const temporaryBranch = branchNameFromLaneRef(args.temporaryBranch);
+      if (!isAutoLaneTemporaryBranch(temporaryBranch)) return skipBranch("invalid_temporary_branch");
+      if (normalizeBranchKey(lane.branch_ref) !== temporaryBranch) return skipBranch("persisted_branch_changed");
 
       const currentBranch = await runGit(["branch", "--show-current"], {
         cwd: lane.worktree_path,
         timeoutMs: 8_000,
       });
-      if (currentBranch.exitCode !== 0 || currentBranch.stdout.trim() !== args.temporaryBranch) {
+      if (currentBranch.exitCode !== 0 || branchNameFromLaneRef(currentBranch.stdout.trim()) !== temporaryBranch) {
         return skipBranch("checked_out_branch_changed");
       }
       const upstream = await runGit(
@@ -6250,7 +6254,7 @@ export function createLaneService({
       const hasOrigin = origin.exitCode === 0 && origin.stdout.trim().length > 0;
       if (hasOrigin) {
         const remoteTemp = await runGit(
-          ["ls-remote", "--exit-code", "--heads", "origin", args.temporaryBranch],
+          ["ls-remote", "--exit-code", "--heads", "origin", temporaryBranch],
           { cwd: lane.worktree_path, timeoutMs: 12_000 },
         );
         if (remoteTemp.exitCode === 0 && remoteTemp.stdout.trim()) return skipBranch("temporary_branch_pushed");
@@ -6262,7 +6266,60 @@ export function createLaneService({
       );
       if (pr) return skipBranch("pull_request_exists");
 
-      const baseRef = `ade/${args.branchFragment}`;
+      const autoIdentityBranchOccupied = (ref: string): boolean => {
+        const normalized = normalizeBranchKey(ref);
+        if (!normalized) return true;
+        if (findActiveBranchOwner(normalized, args.laneId)) return true;
+        const headVariants = [normalized, `refs/heads/${normalized}`, `origin/${normalized}`];
+        const historical = db.get<{ id: string }>(
+          `
+            select id from pull_requests
+            where project_id = ?
+              and (
+                head_branch = ?
+                or head_branch = ?
+                or head_branch = ?
+              )
+            limit 1
+          `,
+          [projectId, ...headVariants],
+        );
+        if (historical) return true;
+        const projected = db.get<{ github_pr_number: number }>(
+          `
+            select github_pr_number from github_pr_projections
+            where project_id = ?
+              and (
+                head_branch = ?
+                or head_branch = ?
+                or head_branch = ?
+              )
+            limit 1
+          `,
+          [projectId, ...headVariants],
+        );
+        return Boolean(projected);
+      };
+
+      // Only keep the AI fragment when this lane actually took the AI title.
+      // A duplicate-name failure (or a user rename mid-flight) must not still
+      // claim `ade/chat-mention-tags-2` for a lane that stayed on its fallback
+      // title. Occupied fragments also lose to the applied title's slug rather
+      // than suffixing a name that belongs to another live lane or merged PR.
+      const adoptedAiTitle = laneRenameOutcome === "renamed"
+        || (laneRenameOutcome === "kept" && args.laneTitle === lane.name);
+      const identityTitle = laneRenameOutcome === "skipped"
+        ? lane.name
+        : laneRenameOutcome === "failed"
+          ? args.expectedLaneName
+          : args.laneTitle;
+      const branchFragment = resolveAppliedAutoLaneBranchFragment({
+        adoptedAiTitle,
+        aiBranchFragment: args.branchFragment,
+        identityTitle,
+        occupied: autoIdentityBranchOccupied,
+      });
+      const baseRef = `ade/${branchFragment}`;
       const validRef = await runGit(["check-ref-format", "--branch", baseRef], {
         cwd: lane.worktree_path,
         timeoutMs: 8_000,
@@ -6285,7 +6342,7 @@ export function createLaneService({
         if (remote.exitCode !== 0 && remote.exitCode !== 2) {
           return skipBranch("remote_state_unavailable");
         }
-        if (local.exitCode !== 0 && remote.exitCode === 2) {
+        if (local.exitCode !== 0 && remote.exitCode === 2 && !autoIdentityBranchOccupied(candidate)) {
           targetRef = candidate;
           break;
         }
@@ -6293,12 +6350,14 @@ export function createLaneService({
       if (!targetRef) return skipBranch("branch_collision_limit_reached");
 
       const latestLane = getLaneRow(args.laneId);
-      if (latestLane?.branch_ref !== args.temporaryBranch) return skipBranch("persisted_branch_changed");
+      if (normalizeBranchKey(latestLane?.branch_ref ?? "") !== temporaryBranch) {
+        return skipBranch("persisted_branch_changed");
+      }
       const latestBranch = await runGit(["branch", "--show-current"], {
         cwd: lane.worktree_path,
         timeoutMs: 8_000,
       });
-      if (latestBranch.exitCode !== 0 || latestBranch.stdout.trim() !== args.temporaryBranch) {
+      if (latestBranch.exitCode !== 0 || branchNameFromLaneRef(latestBranch.stdout.trim()) !== temporaryBranch) {
         return skipBranch("checked_out_branch_changed");
       }
 
@@ -6309,27 +6368,27 @@ export function createLaneService({
       if (renamed.exitCode !== 0) {
         logger.warn("lane.auto_identity_branch_rename_failed", {
           laneId: args.laneId,
-          temporaryBranch: args.temporaryBranch,
+          temporaryBranch,
           targetRef,
           error: renamed.stderr.trim(),
         });
         return {
           laneRenameOutcome,
           branchRenameOutcome: "failed",
-          branchRef: args.temporaryBranch,
+          branchRef: temporaryBranch,
           reason: "git_rename_failed",
         };
       }
       try {
         laneServiceApi.updateBranchRef(args.laneId, targetRef);
       } catch (error) {
-        const rollback = await runGit(["branch", "-m", args.temporaryBranch], {
+        const rollback = await runGit(["branch", "-m", temporaryBranch], {
           cwd: lane.worktree_path,
           timeoutMs: 15_000,
         });
         logger.error("lane.auto_identity_branch_persist_failed", {
           laneId: args.laneId,
-          temporaryBranch: args.temporaryBranch,
+          temporaryBranch,
           targetRef,
           rollbackSucceeded: rollback.exitCode === 0,
           error: error instanceof Error ? error.message : String(error),
@@ -6360,7 +6419,7 @@ export function createLaneService({
         return {
           laneRenameOutcome,
           branchRenameOutcome: "failed",
-          branchRef: args.temporaryBranch,
+          branchRef: temporaryBranch,
           reason: "persistence_failed_git_rolled_back",
         };
       }
