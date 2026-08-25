@@ -23488,6 +23488,7 @@ export function createAgentChatService(args: {
               return event.properties.info.id;
             case "message.part.updated":
               return event.properties.part.sessionID;
+            case "message.part.delta":
             case "message.part.removed":
               return event.properties.sessionID;
             case "permission.asked":
@@ -23640,6 +23641,37 @@ export function createAgentChatService(args: {
         }
 
         if (resolveSessionId() !== runtime.handle.sessionId) {
+          continue;
+        }
+
+        // Incremental assistant output. OpenCode's processor calls
+        // `updatePartDelta` for every `text-delta` and only calls `updatePart`
+        // at text-start and text-end, so `message.part.updated` carries an
+        // empty part, then the finished one — nothing in between. Without this
+        // branch the whole answer lands in a single jump at the end of the
+        // turn and the chat looks frozen while the model is talking. The
+        // running text is tracked here so the closing full-part update diffs to
+        // an empty delta instead of re-emitting the entire message.
+        if (event.type === "message.part.delta") {
+          const { messageID, partID, field, delta } = event.properties;
+          if (openCodeMessageRoleById.get(messageID) !== "assistant") continue;
+          if (typeof delta !== "string" || !delta.length) continue;
+          if (field === "text") {
+            runtime.textByPartId.set(partID, (runtime.textByPartId.get(partID) ?? "") + delta);
+            finalAssistantText += delta;
+            emitChatEvent(managed, { type: "text", text: delta, turnId, itemId: partID });
+            continue;
+          }
+          if (field === "reasoning") {
+            runtime.reasoningByPartId.set(partID, (runtime.reasoningByPartId.get(partID) ?? "") + delta);
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "thinking",
+              detail: REASONING_ACTIVITY_DETAIL,
+              turnId,
+            });
+            emitChatEvent(managed, { type: "reasoning", text: delta, turnId, itemId: partID });
+          }
           continue;
         }
 

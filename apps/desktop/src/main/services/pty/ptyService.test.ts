@@ -1390,6 +1390,37 @@ describe("ptyService", () => {
       expect(instructions).not.toContain("Autonomous mode.");
     });
 
+    it("keeps ADE instructions after resume-target backfill rewrites the command", async () => {
+      // The backfill replaces startupCommand wholesale with the session's
+      // persisted resumeCommand, which carries its own inline
+      // OPENCODE_CONFIG_CONTENT assignment and no instructions. A command-line
+      // assignment overrides the process environment, so merging before that
+      // point dropped the ADE contract on exactly the resume path this exists
+      // to cover — and the persisted command's own permission policy must
+      // survive the rewrite too.
+      const { service, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode resume",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        startupCommand: `OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"ask"}}' opencode --continue`,
+      });
+
+      const written = String(vi.mocked(mockPty.write).mock.calls.at(-1)?.[0] ?? "");
+      const [assignment] = parseCommandLine(written.replace(/\r$/, ""), { platform: "linux" });
+      const config = JSON.parse(assignment!.slice("OPENCODE_CONFIG_CONTENT=".length)) as {
+        instructions?: string[];
+        permission?: Record<string, string>;
+      };
+
+      expect(config.instructions?.[0]).toMatch(/opencode-instructions[\\/]ade-[0-9a-f]{16}\.md$/);
+      expect(config.permission).toEqual({ edit: "ask" });
+    });
+
     it("does not add OpenCode instructions to other providers' terminals", async () => {
       const { service, loadPty } = createHarness();
 

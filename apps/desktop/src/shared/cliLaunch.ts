@@ -1183,7 +1183,13 @@ export function withOpenCodeAdeInstructions(
   const resolved = instructionsPath?.trim();
   if (!resolved) return null;
   let config: Record<string, unknown> = {};
-  const existing = launch.env?.[OPENCODE_INLINE_CONFIG_ENV];
+  // The command line wins over the environment, because that is the precedence
+  // the shell itself applies to a leading `NAME=value` assignment. Reading only
+  // `env` dropped whatever the assignment carried alone — a resumed session's
+  // persisted command holds its `permission` policy there while the launch
+  // environment has no such key, so rebuilding from `env` erased the policy.
+  const existing = readOpenCodeConfigAssignment(launch.startupCommand)
+    ?? launch.env?.[OPENCODE_INLINE_CONFIG_ENV];
   if (existing) {
     try {
       const parsed = JSON.parse(existing) as unknown;
@@ -1213,6 +1219,15 @@ export function withOpenCodeAdeInstructions(
       ? {}
       : { startupCommand: withOpenCodeConfigAssignment(launch.startupCommand, nextValue) }),
   };
+}
+
+/** The JSON carried by a command line's leading inline OpenCode config assignment. */
+function readOpenCodeConfigAssignment(startupCommand: string | undefined): string | undefined {
+  if (!startupCommand?.trim()) return undefined;
+  const [first] = parseCommandLine(startupCommand, { platform: "linux" });
+  return first?.startsWith(`${OPENCODE_INLINE_CONFIG_ENV}=`)
+    ? first.slice(`${OPENCODE_INLINE_CONFIG_ENV}=`.length)
+    : undefined;
 }
 
 /** Replace (or insert) the leading inline OpenCode config assignment on a command line. */

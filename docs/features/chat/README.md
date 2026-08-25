@@ -1939,7 +1939,16 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   message id on `message.updated` and renders text/reasoning/file parts only
   when that map says `assistant` — user-message parts (including synthetic or
   ignored prompt context) stream through the same channel and would otherwise
-  echo into the transcript as assistant bubbles.
+  echo into the transcript as assistant bubbles. Incremental text arrives on a
+  **different** event: OpenCode's processor calls `updatePartDelta` for every
+  `text-delta` and only calls `updatePart` at text-start and text-end, so
+  `message.part.updated` carries an empty part and then the finished one with
+  nothing in between. The service therefore handles `message.part.delta`
+  (`{sessionID, messageID, partID, field, delta}`) under the same assistant-role
+  gate, accumulating into `textByPartId` / `reasoningByPartId` so the closing
+  full-part update diffs to an empty delta instead of repeating the whole
+  answer. Without that branch the transcript renders nothing until the turn
+  ends and the reply lands in one jump.
 - **One OpenCode client, and it is the v2 one.** ADE talks to OpenCode
   exclusively through `@opencode-ai/sdk/v2/client`; the legacy entry point is
   imported for nothing but the `Config` type. The two clients call the *same*

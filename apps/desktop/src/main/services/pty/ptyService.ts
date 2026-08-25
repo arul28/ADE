@@ -5479,34 +5479,6 @@ export function createPtyService({
       if (existingSession && !existingSession.tracked) {
         throw ptySendPreDeliveryError(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
       }
-      // Every tracked OpenCode launch reaches this one method — fresh, resumed,
-      // desktop, or driven remotely through the CLI — so ADE's instruction file
-      // is written here rather than at each of the callers that build a launch
-      // command. That is what makes a resume carry the same ADE contract as the
-      // first launch; the old `--prompt` preamble was only ever attached to a
-      // fresh launch, so resumed sessions ran with no ADE instructions at all.
-      // A resume arrives without `runtimeCliLaunch`, so the mode comes from the
-      // session's own resume metadata — otherwise a plan-mode session would be
-      // told it is in edit mode while the CLI runs `--agent plan`.
-      if (isOpenCodeToolType(args.toolType ?? null)) {
-        const instructionsPath = ensureOpenCodeAdeInstructionsFile({
-          projectRoot,
-          laneWorktreePath: worktreePath,
-          permissionMode: args.runtimeCliLaunch?.permissionMode
-            ?? existingSession?.resumeMetadata?.launch?.permissionMode
-            ?? null,
-        });
-        const withInstructions = withOpenCodeAdeInstructions(
-          {
-            env: effectiveArgs.env,
-            ...(typeof effectiveArgs.startupCommand === "string"
-              ? { startupCommand: effectiveArgs.startupCommand }
-              : {}),
-          },
-          instructionsPath,
-        );
-        if (withInstructions) effectiveArgs = { ...effectiveArgs, ...withInstructions };
-      }
       // Snapshot only a real terminal end state before reattach/backfill can
       // overwrite it. A row may still say `running` after its owning brain
       // died; capturing that stale state would make closeEntry restore a dead
@@ -5999,6 +5971,32 @@ export function createPtyService({
             piSessionLeaseIsCreation = true;
           }
           launchEnv.ADE_PI_SESSION_LEASE_PATH = piSessionLease.lockPath;
+        }
+        // Applied here, not earlier, because `startupCommand` is still being
+        // rewritten above this point — resume-target backfill in particular
+        // replaces it wholesale with the session's persisted `resumeCommand`,
+        // which carries its own inline OPENCODE_CONFIG_CONTENT assignment and
+        // no instructions. Since a command-line assignment overrides the
+        // process environment, merging any earlier meant the restored
+        // assignment silently dropped the ADE contract on exactly the resume
+        // path this exists to cover.
+        if (isOpenCodeToolType(toolTypeHint)) {
+          const instructionsPath = ensureOpenCodeAdeInstructionsFile({
+            projectRoot,
+            laneWorktreePath: worktreePath,
+            permissionMode: args.runtimeCliLaunch?.permissionMode
+              ?? initialResumeMetadata?.launch?.permissionMode
+              ?? existingSession?.resumeMetadata?.launch?.permissionMode
+              ?? null,
+          });
+          const withInstructions = withOpenCodeAdeInstructions(
+            { env: launchEnv as Record<string, string>, startupCommand },
+            instructionsPath,
+          );
+          if (withInstructions?.env) launchEnv = withInstructions.env;
+          if (typeof withInstructions?.startupCommand === "string") {
+            startupCommand = withInstructions.startupCommand;
+          }
         }
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
         if (spawnHelperRepair.status === "chmod_applied") {

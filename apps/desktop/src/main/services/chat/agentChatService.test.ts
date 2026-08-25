@@ -27634,6 +27634,148 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("streams OpenCode assistant text from part deltas, without doubling it at the end", async () => {
+      // OpenCode's processor calls updatePartDelta for every text-delta and
+      // only calls updatePart at text-start and text-end. Ignoring
+      // `message.part.delta` therefore meant nothing rendered until the turn
+      // finished and the whole answer appeared in one jump. The closing
+      // full-part update must not then re-emit the text a second time.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Stream something." });
+      const started = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      const pushEvents = (...next: any[]): void => {
+        state.events.push(...next);
+        const waiters = [...state.waiters];
+        state.waiters.length = 0;
+        waiters.forEach((waiter) => waiter());
+      };
+
+      const sessionID = "opencode-session-1";
+      const renderedText = (): string => events
+        .filter((event) => event.event.type === "text")
+        .map((event) => (event.event as { text: string }).text)
+        .join("");
+
+      pushEvents(
+        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
+        // text-start: the part exists but is still empty.
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Hello" } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: " world" } },
+      );
+
+      // The turn is still open and no closing full-part update has arrived, so
+      // anything rendered here came from the deltas alone. This is the assertion
+      // that fails when `message.part.delta` is ignored.
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "text");
+      await vi.waitFor(() => { expect(renderedText()).toBe("Hello world"); });
+
+      pushEvents(
+        // text-end: the full accumulated part.
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "Hello world", messageID: "msg-a", sessionID } } },
+        { type: "session.idle", properties: { sessionID } },
+      );
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === started.event.turnId,
+      );
+
+      // The closing full-part update must diff to nothing, not repeat the answer.
+      expect(renderedText()).toBe("Hello world");
+
+      releaseStream();
+      await sendPromise;
+    });
+
+    it("ignores part deltas that belong to a user message", async () => {
+      // The delta stream carries no role, so the same assistant-role gate that
+      // protects `message.part.updated` has to protect this one — otherwise the
+      // user's own prompt echoes back as agent output.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Echo check." });
+      const started = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      const sessionID = "opencode-session-1";
+      state.events.push(
+        { type: "message.updated", properties: { info: { id: "msg-u", role: "user", sessionID } } } as any,
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-u", partID: "prt-u", field: "text", delta: "Echo check." } } as any,
+        // A delta whose message was never announced stays unrendered too.
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-unknown", partID: "prt-x", field: "text", delta: "orphan" } } as any,
+        { type: "session.idle", properties: { sessionID } } as any,
+      );
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === started.event.turnId,
+      );
+
+      const text = events
+        .filter((event) => event.event.type === "text")
+        .map((event) => (event.event as { text: string }).text)
+        .join("");
+      expect(text).not.toContain("Echo check.");
+      expect(text).not.toContain("orphan");
+      expect(text).toBe("");
+
+      releaseStream();
+      await sendPromise;
+    });
+
     it("keeps ADE instructions in the system channel on every turn, never in user text", async () => {
       // The prompt boundary, asserted on the wire ADE actually sends:
       //  - ADE's instructions ride the first-class `system` field, so OpenCode

@@ -666,15 +666,27 @@ describe("ADE instructions for the tracked OpenCode CLI", () => {
     expect(written?.startsWith(os.tmpdir() + path.sep + "ade-opencode")).toBe(false);
   });
 
-  it("reuses one stable path per lane and rewrites it on relaunch", () => {
-    const first = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "plan" });
-    const second = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "full-auto" });
+  it("keeps concurrent terminals on the same lane from overwriting each other", () => {
+    // Two tracked terminals can run on one lane under different modes at once,
+    // and OpenCode re-reads its instruction files every turn — a shared path
+    // let the second launch hand its mode to the first mid-conversation.
+    const plan = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "plan" });
+    const fullAuto = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "full-auto" });
 
-    // A resume must not resurrect the previous launch's permission mode.
+    expect(fullAuto).not.toBe(plan);
+    expect(fs.readFileSync(plan!, "utf8")).toContain("Plan mode. Stay read-only");
+    expect(fs.readFileSync(fullAuto!, "utf8")).toContain("Autonomous mode.");
+
+    // Relaunching the same mode reuses its own file rather than accumulating.
+    const first = plan;
+    const second = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "plan" });
     expect(second).toBe(first);
-    expect(fs.readFileSync(second!, "utf8")).toContain("Autonomous mode.");
 
-    expect(openCodeAdeInstructionsPath({ projectRoot, laneWorktreePath: `${lane}-2` })).not.toBe(first);
+    expect(openCodeAdeInstructionsPath({
+      projectRoot,
+      laneWorktreePath: `${lane}-2`,
+      permissionMode: "full-auto",
+    })).not.toBe(first);
   });
 
   it("produces a filename OpenCode's basename glob cannot misread", () => {
@@ -684,8 +696,23 @@ describe("ADE instructions for the tracked OpenCode CLI", () => {
     const name = path.basename(openCodeAdeInstructionsPath({
       projectRoot,
       laneWorktreePath: "/repo/lane with spaces/*/weird?",
+      permissionMode: "edit",
     }));
     expect(name).toMatch(/^ade-[0-9a-f]{16}\.md$/);
+  });
+
+  it("does not claim an ADE permission tier when the user owns the config", () => {
+    // config-toml means "use my own OpenCode configuration", and ADE sends no
+    // permission block for it, so asserting edit mode would state a policy ADE
+    // never set and the user's config may not grant.
+    const text = buildOpenCodeAdeInstructions({ laneWorktreePath: lane, permissionMode: "config-toml" });
+
+    expect(text).toContain("## Permission policy");
+    expect(text).toContain("ADE sets no permission policy");
+    expect(text).toContain("treat it as authoritative wherever it is more restrictive");
+    // And it stays isolated from the edit-mode file rather than sharing it.
+    expect(openCodeAdeInstructionsPath({ projectRoot, laneWorktreePath: lane, permissionMode: "config-toml" }))
+      .not.toBe(openCodeAdeInstructionsPath({ projectRoot, laneWorktreePath: lane, permissionMode: "edit" }));
   });
 
   it("returns null instead of failing the launch when there is no lane", () => {
