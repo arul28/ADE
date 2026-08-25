@@ -1320,9 +1320,13 @@ describe("ChatIosSimulatorPanel", () => {
 
     await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
 
+    // Expanding hands the whole drawer to the picture: the chrome around it —
+    // here the type-into-the-simulator row — is unmounted, not just restyled.
+    expect(screen.getByPlaceholderText("Type into the active simulator app")).toBeTruthy();
+
     fireEvent.click(screen.getByRole("button", { name: /expand simulator view/i }));
 
-    expect(screen.queryByText("Simulator readiness")).toBeNull();
+    expect(screen.queryByPlaceholderText("Type into the active simulator app")).toBeNull();
     expect(screen.getByRole("button", { name: /exit expanded simulator view/i })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /zoom in simulator view/i }));
@@ -1330,8 +1334,16 @@ describe("ChatIosSimulatorPanel", () => {
     expect(screen.getByRole("button", { name: /reset simulator zoom/i }).textContent).toBe("125%");
   });
 
-  it("uses the window-capture visual without a stream-mode toggle", async () => {
-    const { api } = installIosSimulatorApi();
+  // The picked window is the one whose name matches the active device, not
+  // simply the first the host swept up — a machine with two simulator windows
+  // open otherwise streamed the wrong phone.
+  it("streams the discovered window that matches the active device", async () => {
+    const { api, getUserMedia } = installIosSimulatorApi({
+      windowSources: [
+        { id: "window:other", name: "iPad Pro 13-inch — Simulator", thumbnailDataUrl: null },
+        simulatorWindowSource,
+      ],
+    });
 
     render(
       <ChatIosSimulatorPanel
@@ -1341,12 +1353,11 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalled());
 
     expect(api.startStream).toHaveBeenCalledWith({ deviceUdid: device.udid, backend: "simulator-window-capture", fps: 60 });
-    expect(api.listSimulatorWindowSources).toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: /show ios window/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /use ade stream/i })).toBeNull();
+    const constraints = (getUserMedia.mock.calls as unknown as any[][])[0]?.[0];
+    expect(constraints.video.mandatory.chromeMediaSourceId).toBe(simulatorWindowSource.id);
   });
 
   it("warns when ADE cannot refresh the simulator live view", async () => {
@@ -1630,6 +1641,182 @@ describe("ChatIosSimulatorPanel", () => {
     });
 
     expect(await screen.findByRole("button", { name: /Controls/ })).toBeTruthy();
+  });
+
+  // Shutdown enforces the same single-owner rule as launch. A drawer that does
+  // not name itself is an anonymous caller, so its own Stop button came back
+  // refused as "owned by chat <itself>".
+  it("names the owning chat when stopping so the drawer is not refused its own session", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { api } = installIosSimulatorApi();
+    api.shutdown.mockResolvedValue({ ok: true });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(api.shutdown).toHaveBeenCalledWith({ chatSessionId: "chat-1", force: false }));
+    confirmSpy.mockRestore();
+  });
+
+  // The lane-scoped surface hides the ownership card and keeps Stop live for a
+  // session another chat owns, so identifying as itself would have it refused
+  // by the very rule it is meant to bypass.
+  it("stops a foreign-owned session as its owner on the lane-scoped surface", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { api } = installIosSimulatorApi();
+    api.shutdown.mockResolvedValue({ ok: true });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-2"
+        ignoreChatOwnership
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+
+    // activeStatus's session is owned by chat-1, not this drawer's chat-2.
+    await waitFor(() => expect(api.shutdown).toHaveBeenCalledWith({ chatSessionId: "chat-1", force: false }));
+    confirmSpy.mockRestore();
+  });
+
+  // Launch extras describe one binary. Untagged, the panel's own record of a
+  // launch kept accusing every session that came after it — the amber chip sat
+  // next to "No simulator running" long after the session it described was
+  // gone, and a rebuild inherited the old launch's verdict.
+  it("drops the prebuilt chip once the session it described is gone", async () => {
+    const idleStatus: IosSimulatorStatus = { ...activeStatus, activeSession: null };
+    const launched = { ...activeStatus.activeSession!, id: "session-2", usedInstalledBinary: true };
+    const { api } = installIosSimulatorApi({ status: idleStatus });
+    api.launch.mockResolvedValue(launched);
+    api.shutdown.mockResolvedValue({ ok: true });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    // The header carries one Launch, the empty body another; either one is the
+    // user's own click.
+    const [launchButton] = await screen.findAllByRole("button", { name: "Launch" });
+    api.getStatus.mockResolvedValue({ ...activeStatus, activeSession: launched });
+    fireEvent.click(launchButton!);
+
+    expect(await screen.findByText(/prebuilt — changes not included/i)).toBeTruthy();
+
+    api.getStatus.mockResolvedValue(idleStatus);
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(screen.queryByText(/prebuilt — changes not included/i)).toBeNull());
+    confirmSpy.mockRestore();
+  });
+
+  // A failed launch used to pin its stepper over every other mode with no way
+  // out: it had no staleness bound, only a fresh launch cleared it, and the
+  // Control/Inspect toggle that would leave it lives inside the branches this
+  // one sits above.
+  it("lets the user close a failed launch stepper and get back to the drawer", async () => {
+    const { emit } = installIosSimulatorApi();
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+
+    act(() => {
+      emit({
+        type: "launch-progress",
+        progress: {
+          launchId: "launch-1",
+          step: "build-app",
+          status: "failed",
+          message: "Build failed",
+          detail: "error: no such module 'Foo'",
+          updatedAt: new Date().toISOString(),
+          buildRoot: "/tmp/project",
+        },
+      } as never);
+    });
+
+    expect(await screen.findByText("Build")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+  });
+
+  // The header reads the session straight off the status; the live visual only
+  // exists three IPC round trips later. Mounting onto an already-running
+  // simulator therefore showed the cyan Live chip beside a body claiming "No
+  // simulator running" with Launch enabled.
+  it("says it is connecting instead of claiming nothing is running", async () => {
+    const { api } = installIosSimulatorApi();
+    let releaseStartStream: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => {
+      releaseStartStream = resolve;
+    });
+    const realStartStream = api.startStream.getMockImplementation()!;
+    api.startStream.mockImplementation(async (args: any) => {
+      await held;
+      return realStartStream(args);
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    // The header already believes there is a session.
+    expect(await screen.findByText("Live")).toBeTruthy();
+    expect(screen.queryByText("No simulator running")).toBeNull();
+    expect(screen.getByText(/connecting to the simulator/i)).toBeTruthy();
+
+    act(() => releaseStartStream?.());
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+  });
+
+  // "Runtime" used to be `simulator_window.available`, which is only "Xcode is
+  // installed". A Mac with Xcode and zero iOS runtimes read healthy on all four
+  // chips, hid the row entirely, and left Launch enabled with nothing to launch
+  // on — while the chip's own "install a runtime" hint was unreachable.
+  it("reports the Runtime chip as missing when the machine has no simulator devices", async () => {
+    const { api } = installIosSimulatorApi();
+    api.listDevices.mockResolvedValue([]);
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    const runtimeChip = await screen.findByRole("button", { name: /Runtime/ });
+    await userEvent.setup().click(runtimeChip);
+
+    expect(await screen.findByText(/install an ios runtime/i)).toBeTruthy();
   });
 
   it("stops the host capture stream when the drawer unmounts", async () => {

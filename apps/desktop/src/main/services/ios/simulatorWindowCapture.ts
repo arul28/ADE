@@ -24,8 +24,20 @@ import type {
   IosSimulatorWindowState,
 } from "../../../shared/types";
 
-/** Discovery is polled by the drawer; cap the wall time so a blocked simulator fails fast. */
-export const SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS = 4_000;
+/**
+ * Discovery is polled by the drawer; cap the wall time so a blocked simulator
+ * fails fast.
+ *
+ * The budget has to sit *above* the subprocess ceilings it wraps or it is not a
+ * cap, it is a guaranteed timeout. Worst case, in order: the window-state read
+ * (900), the attach park (open 900 + measure 900 + apply 1200 + confirm 900,
+ * then a 300 settle), the re-attach park (the same 3900 plus a 600 settle) and
+ * the closing re-measure (900) — 10.5s of ceilings. At 4s the re-attach could
+ * never run and the handler reported "timed out" before the first sweep had a
+ * fair chance. The IPC channel allows 60s, and the drawer polls at most three
+ * times, so this is comfortably inside its own transport budget.
+ */
+export const SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS = 12_000;
 
 const SIMULATOR_WINDOW_NAME =
   /(?:^|\s|[(\[\-–])(simulator|iphone|ipad|apple\s*watch|apple\s*tv|vision\s*pro)(?:\s|[)\]\-–]|$)/i;
@@ -37,6 +49,30 @@ type MacUtilityResult = {
   timedOut: boolean;
 };
 
+type SpawnProcess = typeof spawn;
+
+// Everything this module decides — the window-state parse, the hidden /
+// minimized / no-window classification, the permission verdict, the park — is a
+// reaction to one `osascript` run, and the platform gate short-circuits all of
+// it off macOS. Without a seam for both, none of it was reachable from a test
+// and a unit run on a developer's Mac would really have launched Simulator.app.
+// Mirrors `__testSetIosSimulatorProcessHooks` in `iosSimulatorService`.
+let spawnProcess: SpawnProcess = spawn;
+let hostPlatform: NodeJS.Platform = process.platform;
+
+export function __testSetSimulatorWindowCaptureHooks(hooks: {
+  spawn?: SpawnProcess;
+  platform?: NodeJS.Platform;
+}): () => void {
+  const previous = { spawnProcess, hostPlatform };
+  if (hooks.spawn) spawnProcess = hooks.spawn;
+  if (hooks.platform) hostPlatform = hooks.platform;
+  return () => {
+    spawnProcess = previous.spawnProcess;
+    hostPlatform = previous.hostPlatform;
+  };
+}
+
 // Every simulator window helper runs through here. The old variant discarded
 // stdio entirely, so a denied Automation grant — the single most common cause
 // of a blank live view — produced no signal anywhere: the park silently
@@ -47,7 +83,7 @@ async function runMacUtility(
   timeoutMs = 900,
 ): Promise<MacUtilityResult> {
   return new Promise<MacUtilityResult>((resolve) => {
-    const child = spawn(command, args, {
+    const child = spawnProcess(command, args, {
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -89,7 +125,7 @@ function isAutomationDenied(result: MacUtilityResult): boolean {
 // desktopCapturer hands back black thumbnails without the Screen Recording
 // grant, and macOS gives no error — the drawer just showed an empty live view.
 function screenCaptureAccessStatus(): IosSimulatorPermissionStatus {
-  if (process.platform !== "darwin") return "granted";
+  if (hostPlatform !== "darwin") return "granted";
   try {
     return systemPreferences.getMediaAccessStatus("screen") as IosSimulatorPermissionStatus;
   } catch {
@@ -117,7 +153,7 @@ function windowIssueMessage(issue: IosSimulatorWindowState["issue"]): string | n
 }
 
 export async function getSimulatorWindowState(): Promise<IosSimulatorWindowState> {
-  if (process.platform !== "darwin") {
+  if (hostPlatform !== "darwin") {
     return {
       appRunning: false,
       visible: null,
@@ -250,6 +286,34 @@ const MEASURE_SIMULATOR_WINDOW_SCRIPT = [
   'end tell',
 ].join("\n");
 
+type SimulatorWindowMeasurement = {
+  /** Null when the window reported a non-numeric position or size. */
+  frame: SimulatorWindowFrame | null;
+  hidden: boolean;
+  minimized: boolean;
+};
+
+/** One `osascript` read of window 1. Null means "no window to measure". */
+async function measureSimulatorWindow(): Promise<SimulatorWindowMeasurement | null> {
+  const measured = await runMacUtility("osascript", ["-e", MEASURE_SIMULATOR_WINDOW_SCRIPT], 900);
+  if (measured.code !== 0) return null;
+  const parts = measured.stdout.trim().split("|");
+  if (parts[0] !== "ok") return null;
+  const [, visibleRaw, minimizedRaw, xRaw, yRaw, widthRaw, heightRaw] = parts;
+  const toInt = (value: string | undefined) => Number.parseInt(value ?? "", 10);
+  const current: SimulatorWindowFrame = {
+    x: toInt(xRaw),
+    y: toInt(yRaw),
+    width: toInt(widthRaw),
+    height: toInt(heightRaw),
+  };
+  return {
+    frame: Object.values(current).every((value) => Number.isFinite(value)) ? current : null,
+    hidden: visibleRaw !== "true",
+    minimized: minimizedRaw === "true",
+  };
+}
+
 function simulatorWorkArea(adeBounds: SimulatorWindowFrame | null) {
   try {
     const display = adeBounds
@@ -279,7 +343,7 @@ async function prepareSimulatorWindowForCapture(
   window: BrowserWindow | null,
   options: { attach?: boolean; allowLaunch?: boolean } = {},
 ): Promise<void> {
-  if (process.platform !== "darwin") return;
+  if (hostPlatform !== "darwin") return;
   const attach = options.attach === true;
   const allowLaunch = options.allowLaunch ?? attach;
   if (attach) {
@@ -288,23 +352,9 @@ async function prepareSimulatorWindowForCapture(
   }
   // `-g` keeps the Simulator behind ADE; it must never take focus.
   if (allowLaunch) await runMacUtility("open", ["-g", "-a", "Simulator"], 900);
-  const measured = await runMacUtility("osascript", ["-e", MEASURE_SIMULATOR_WINDOW_SCRIPT], 900);
-  if (measured.code !== 0) return;
-  const parts = measured.stdout.trim().split("|");
-  if (parts[0] !== "ok") return;
-  const [, visibleRaw, minimizedRaw, xRaw, yRaw, widthRaw, heightRaw] = parts;
-  const toInt = (value: string | undefined) => Number.parseInt(value ?? "", 10);
-  const current: SimulatorWindowFrame = {
-    x: toInt(xRaw),
-    y: toInt(yRaw),
-    width: toInt(widthRaw),
-    height: toInt(heightRaw),
-  };
-  const measuredFrame = Object.values(current).every((value) => Number.isFinite(value))
-    ? current
-    : null;
-  const hidden = visibleRaw !== "true";
-  const minimized = minimizedRaw === "true";
+  const measurement = await measureSimulatorWindow();
+  if (!measurement) return;
+  const { frame: measuredFrame, hidden, minimized } = measurement;
 
   if (!attach && measuredFrame && simulatorAdeSetFrame && !framesMatch(measuredFrame, simulatorAdeSetFrame)) {
     simulatorFollowSuspended = true;
@@ -375,8 +425,22 @@ async function prepareSimulatorWindowForCapture(
   ].join("\n");
   const applied = await runMacUtility("osascript", ["-e", applyScript], 1_200);
   if (applied.code !== 0) return;
-  // Remember only what ADE actually wrote, so the next call can tell an
-  // ADE-parked window apart from one the user has since moved.
+  // Record what the window actually BECAME, not what ADE asked for.
+  // Simulator.app constrains its window to the device's aspect ratio, so the
+  // size that lands is almost never the size requested. Recording the request
+  // made the very next comparison miss by more than the 2px tolerance, which
+  // reads as "the user took the window over" — so the follow suspended itself
+  // permanently on its own first park and the documented follow-ADE behaviour
+  // never ran once.
+  if (shouldMove || shouldResize) {
+    const confirmed = await measureSimulatorWindow();
+    if (confirmed?.frame) {
+      simulatorAdeSetFrame = confirmed.frame;
+      return;
+    }
+  }
+  // Confirmation failed (or nothing was moved): fall back to the intent, which
+  // is still closer to the truth than the pre-park frame.
   if (measuredFrame) {
     simulatorAdeSetFrame = {
       x: shouldMove && targetX !== null ? targetX : measuredFrame.x,
@@ -390,11 +454,40 @@ async function prepareSimulatorWindowForCapture(
 let simulatorParkingWindow: BrowserWindow | null = null;
 let simulatorParkingTimer: NodeJS.Timeout | null = null;
 let cleanupSimulatorParkingFollow: (() => void) | null = null;
-// How many live capture surfaces in the claiming window depend on the follow.
-// Two are reachable at once — a chat pane's drawer and the Work sidebar's iOS
-// tab — and the first of them to close used to drop the claim out from under
-// the other, which then re-attached and re-sized a window the user had sized.
-let simulatorParkingHolders = 0;
+
+/**
+ * The renderer side of a holder: the `webContents` that asked for it.
+ *
+ * Structural rather than `WebContents` so a unit test can hand over a plain
+ * object — the only two members the refcount needs are the identity and the
+ * death notice.
+ */
+export type SimulatorParkingHolderSender = {
+  id: number;
+  once: (event: "destroyed", listener: () => void) => unknown;
+};
+
+// How many live capture surfaces depend on the follow, keyed by the renderer
+// that took them. Two are reachable at once inside one window — a chat pane's
+// drawer and the Work sidebar's iOS tab — and the first of them to close must
+// not drop the claim out from under the other.
+//
+// Keyed, not a bare count, because the only decrements are an explicit release
+// and the ADE window's `closed` event. A renderer reload emits neither: it
+// destroys the React tree without running any cleanup and the BrowserWindow
+// never closes. A count-only refcount therefore stayed >= 1 forever, every
+// later real release answered false, and every ADE window move kept
+// repositioning the user's Simulator with no drawer open at all.
+const simulatorParkingHolders = new Map<number, number>();
+// webContents ids already wired to a `destroyed` teardown, so a second holder
+// from the same renderer does not stack listeners.
+const simulatorParkingHolderWatched = new Set<number>();
+
+function totalSimulatorParkingHolders(): number {
+  let total = 0;
+  for (const count of simulatorParkingHolders.values()) total += count;
+  return total;
+}
 
 function scheduleSimulatorParking(window: BrowserWindow) {
   // Nothing to follow until a capture session has parked the window once, and
@@ -435,8 +528,10 @@ export function followSimulatorWindowUnderAde(window: BrowserWindow | null) {
     if (simulatorParkingWindow === window) simulatorParkingWindow = null;
     // The claim is gone, so its holders are too: a closed window must not leave
     // a positive count that the next claimant would have to release its way out
-    // of.
-    simulatorParkingHolders = 0;
+    // of. Any `destroyed` listener still armed for one of these renderers finds
+    // no entry to drop and does nothing.
+    simulatorParkingHolders.clear();
+    simulatorParkingHolderWatched.clear();
     simulatorAdeSetFrame = null;
     simulatorFollowSuspended = false;
     cleanupSimulatorParkingFollow = null;
@@ -463,11 +558,31 @@ export function releaseSimulatorParkingFollow(): void {
  * the way back to the caller. A surface that assumed it had been counted would
  * later issue a release that decrements a holder it never took — someone
  * else's — and tear down a follow that is still in use.
+ *
+ * The holder is booked against `sender`, the renderer that asked, so a reload
+ * of that renderer takes its holders with it.
  */
-export function retainSimulatorParkingFollow(window: BrowserWindow | null): boolean {
-  if (!window || activeSimulatorParkingWindow() !== window) return false;
-  simulatorParkingHolders += 1;
+export function retainSimulatorParkingFollow(
+  window: BrowserWindow | null,
+  sender: SimulatorParkingHolderSender | null,
+): boolean {
+  if (!window || !sender || activeSimulatorParkingWindow() !== window) return false;
+  simulatorParkingHolders.set(sender.id, (simulatorParkingHolders.get(sender.id) ?? 0) + 1);
+  if (!simulatorParkingHolderWatched.has(sender.id)) {
+    simulatorParkingHolderWatched.add(sender.id);
+    // A reload destroys this webContents without ever running the renderer's
+    // release, so this is the only signal that its holders are gone.
+    sender.once("destroyed", () => dropSimulatorParkingHoldersFor(sender.id));
+  }
   return true;
+}
+
+/** Forgets every holder a renderer took, and drops the follow if it was the last. */
+function dropSimulatorParkingHoldersFor(senderId: number): void {
+  simulatorParkingHolderWatched.delete(senderId);
+  if (!simulatorParkingHolders.delete(senderId)) return;
+  if (totalSimulatorParkingHolders() > 0) return;
+  releaseSimulatorParkingFollow();
 }
 
 /**
@@ -481,11 +596,18 @@ export function retainSimulatorParkingFollow(window: BrowserWindow | null): bool
  *
  * Returns whether the follow was actually dropped. Never goes negative: a
  * double release from one surface finds no claim to release the second time.
+ * Scoped to `sender` as well as the window, so one renderer can only ever give
+ * back what it took.
  */
-export function releaseSimulatorParkingHolder(window: BrowserWindow | null): boolean {
-  if (!window || activeSimulatorParkingWindow() !== window) return false;
-  if (simulatorParkingHolders > 0) simulatorParkingHolders -= 1;
-  if (simulatorParkingHolders > 0) return false;
+export function releaseSimulatorParkingHolder(
+  window: BrowserWindow | null,
+  sender: SimulatorParkingHolderSender | null,
+): boolean {
+  if (!window || !sender || activeSimulatorParkingWindow() !== window) return false;
+  const held = simulatorParkingHolders.get(sender.id) ?? 0;
+  if (held > 1) simulatorParkingHolders.set(sender.id, held - 1);
+  else if (held === 1) simulatorParkingHolders.delete(sender.id);
+  if (totalSimulatorParkingHolders() > 0) return false;
   releaseSimulatorParkingFollow();
   return true;
 }
@@ -495,7 +617,7 @@ export function releaseSimulatorParkingHolder(window: BrowserWindow | null): boo
  * pressed Reveal on a hidden or minimized window. Parking must never do this.
  */
 export async function revealSimulatorWindow(): Promise<{ ok: boolean; message: string | null }> {
-  if (process.platform !== "darwin") {
+  if (hostPlatform !== "darwin") {
     return { ok: false, message: "The iOS Simulator is only available on macOS." };
   }
   const script = [
@@ -533,7 +655,7 @@ export async function revealSimulatorWindow(): Promise<{ ok: boolean; message: s
 
 /** Opens the macOS privacy pane the blocked capability lives in. */
 export async function openSimulatorPrivacyPane(pane: IosSimulatorPrivacyPane): Promise<{ ok: boolean }> {
-  if (process.platform !== "darwin") return { ok: false };
+  if (hostPlatform !== "darwin") return { ok: false };
   const anchor = pane === "automation" ? "Privacy_Automation" : "Privacy_ScreenCapture";
   await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${anchor}`);
   return { ok: true };

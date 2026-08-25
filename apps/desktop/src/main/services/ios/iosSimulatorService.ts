@@ -120,6 +120,23 @@ export const IDB_COMPANION_REGISTRY_PATH = path.join(
   `ade-ios-simulator-idb-companions-${IDB_COMPANION_REGISTRY_OWNER}.json`,
 );
 
+/**
+ * The live ledger path. Production always uses IDB_COMPANION_REGISTRY_PATH;
+ * only `__testSetIosSimulatorCompanionRegistryPath` moves it, because that one
+ * file is shared with the developer's running ADE app and brain daemon and a
+ * test that wrote or deleted it erased the live processes' companion records.
+ */
+let idbCompanionRegistryPath: string = IDB_COMPANION_REGISTRY_PATH;
+
+/** Test-only: point the companion ledger at a scratch file. Returns a restore. */
+export function __testSetIosSimulatorCompanionRegistryPath(nextPath: string): () => void {
+  const previous = idbCompanionRegistryPath;
+  idbCompanionRegistryPath = nextPath;
+  return () => {
+    idbCompanionRegistryPath = previous;
+  };
+}
+
 type RunCommand = (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) => Promise<{ stdout: string; stderr: string }>;
 type SpawnProcess = typeof spawn;
 type CommandExistsProbe = typeof commandExists;
@@ -657,7 +674,7 @@ type IdbCompanionRegistry = Record<string, IdbCompanionRegistryEntry>;
 
 function readIdbCompanionRegistry(): IdbCompanionRegistry {
   try {
-    const parsed = JSON.parse(fs.readFileSync(IDB_COMPANION_REGISTRY_PATH, "utf8")) as unknown;
+    const parsed = JSON.parse(fs.readFileSync(idbCompanionRegistryPath, "utf8")) as unknown;
     if (!isRecord(parsed)) return {};
     const registry: IdbCompanionRegistry = {};
     for (const [pid, entry] of Object.entries(parsed)) {
@@ -679,10 +696,10 @@ function writeIdbCompanionRegistry(registry: IdbCompanionRegistry): void {
   // ADE is killed mid-write, and the next startup then parses nothing and
   // forgets every companion it owns. The temp file carries the pid so two ADE
   // processes racing here never share one.
-  const tempPath = `${IDB_COMPANION_REGISTRY_PATH}.${process.pid}.tmp`;
+  const tempPath = `${idbCompanionRegistryPath}.${process.pid}.tmp`;
   try {
     fs.writeFileSync(tempPath, JSON.stringify(registry), { encoding: "utf8", mode: 0o600 });
-    fs.renameSync(tempPath, IDB_COMPANION_REGISTRY_PATH);
+    fs.renameSync(tempPath, idbCompanionRegistryPath);
   } catch {
     // The registry is an optimisation for cross-restart cleanup, never a
     // correctness requirement.
@@ -3351,10 +3368,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // Only fall back to a target the caller did not name when it can actually
     // be built. Silently picking an already-installed app used to report
     // "App launched" for code that was never compiled.
+    //
+    // The fallback is gated on the caller having named nothing. A caller that
+    // named a bundle id which matched no target used to fall through to this
+    // default anyway: xcodebuild built an unrelated scheme, simctl launched it,
+    // and the caller "verified" an app it never asked for.
     const namedATarget = Boolean(launchArgs.targetId || launchArgs.bundleId || launchArgs.appBundlePath);
-    target ??= targets.find((candidate) => candidate.kind === "project" && candidate.projectPath === ADE_IOS_PROJECT && candidate.scheme === ADE_IOS_SCHEME)
-      ?? targets.find((candidate) => candidate.kind === "project")
-      ?? null;
+    if (!namedATarget) {
+      target ??= targets.find((candidate) => candidate.kind === "project" && candidate.projectPath === ADE_IOS_PROJECT && candidate.scheme === ADE_IOS_SCHEME)
+        ?? targets.find((candidate) => candidate.kind === "project")
+        ?? null;
+    }
     if (!target && !namedATarget) {
       const buildable = targets.filter((candidate) => candidate.canBuild);
       const installedOnly = targets.filter((candidate) => !candidate.canBuild);
@@ -3370,9 +3394,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       ].join(""));
     }
     if (!target) {
-      throw new Error(namedATarget
-        ? `No launchable iOS app matched the requested ${launchArgs.bundleId ? `bundle id ${launchArgs.bundleId}` : "target"} under ${projectRoot}. Refresh launchable iOS apps and try again.`
-        : "No launchable iOS apps were found. Add a buildable application target to a root-level .xcodeproj or apps/*/*.xcodeproj project, or provide --app-bundle/--bundle-id.");
+      if (!namedATarget) {
+        throw new Error("No launchable iOS apps were found. Add a buildable application target to a root-level .xcodeproj or apps/*/*.xcodeproj project, or provide --app-bundle/--bundle-id.");
+      }
+      const buildable = targets.filter((candidate) => candidate.canBuild);
+      throw new Error([
+        `No launchable iOS app matched the requested ${launchArgs.bundleId ? `bundle id ${launchArgs.bundleId}` : "target"} under ${projectRoot}.`,
+        buildable.length
+          ? ` Buildable targets: ${buildable.map((candidate) => `${candidate.name}${candidate.bundleId ? ` (${candidate.bundleId})` : ""}`).join(", ")}.`
+          : " No buildable application target exists under this build root.",
+        " Refresh launchable iOS apps and try again.",
+      ].join(""));
     }
 
     const projectPath = normalizeProjectPath(projectRoot, target.projectPath);
@@ -3464,20 +3496,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     options: { takeOver?: boolean } = {},
   ): IosSimulatorSession | null => {
     if (!activeSession) return null;
-    // Ownership check applies symmetrically: callers passing null to detach
-    // must still be the current owner, otherwise an unrelated chat could free
-    // another chat's simulator binding. The caller's own chat id is supplied
-    // via callerChatSessionId; for attach calls it is the same as the new
-    // chatSessionId, for detach calls (chatSessionId === null) it identifies
-    // the chat requesting the detach.
+    // The caller's own chat id arrives as callerChatSessionId: for attach calls
+    // it is the same as the new chatSessionId, for detach calls (chatSessionId
+    // === null) it identifies the chat requesting the detach. Detach is covered
+    // by the same guard as attach, so an unrelated chat cannot free another
+    // chat's simulator binding.
+    //
+    // Known hole, unchanged from before this lane and deliberately left alone
+    // here: the guard requires a non-empty callerChatSessionId, so a caller that
+    // passes null for it bypasses the check entirely and can attach or detach
+    // any session. Only IPC/CLI callers that already supply their chat id are
+    // actually constrained. Closing it belongs with the shutdown/launch
+    // ownership rules, not in a comment.
     //
     // takeOver lets a chat adopt a running session in place, skipping the
     // shutdown/rebuild — but only FOR ITSELF. Without the identity check any
     // caller could hand the simulator to a third chat it does not own, which is
     // a full ownership transfer disguised as an attach. So the bypass needs
     // both ids present and equal; it never applies to detach (chatSessionId
-    // null), and a takeOver naming someone else falls through to the normal
-    // owner guard below.
+    // null). A takeOver naming someone else reaches the owner guard below,
+    // which refuses it whenever the caller identified itself.
     const takeOver = options.takeOver === true
       && Boolean(chatSessionId)
       && Boolean(callerChatSessionId)
@@ -3844,6 +3882,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const readInspectorSnapshot = async (arg: { deviceUdid?: string | null } = {}): Promise<IosInspectorSnapshot | null> => {
+    // Exposed straight over IPC as `getInspectorSnapshot`, and it was the one
+    // reachable method without this guard: off darwin it reported "Launch an
+    // iOS app before reading inspector context" instead of the truth.
+    assertDarwin();
     const { device, containerPath } = await getAppContainerPath(arg.deviceUdid);
     const snapshotPath = path.join(containerPath, ADE_IOS_INSPECTOR_SNAPSHOT_PATH);
     let data: string;
@@ -4186,6 +4228,19 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const shutdown = async (shutdownArgs: IosSimulatorShutdownArgs = {}): Promise<IosSimulatorShutdownResult> => {
+    // Same single-owner rule as `launch` above, checked before any teardown so
+    // a refused shutdown leaves the stream and companion of the owning chat
+    // untouched. Without it, `ade ios-sim shutdown` — a step in every chat's
+    // own instructions — silently evicted whichever other chat was mid-verify.
+    const incomingChatSessionId = shutdownArgs.chatSessionId ?? null;
+    if (
+      activeSession
+      && activeSession.chatSessionId
+      && activeSession.chatSessionId !== incomingChatSessionId
+      && !shutdownArgs.force
+    ) {
+      throw new IosSimulatorOwnedBySessionError(activeSession);
+    }
     const previousSession = activeSession;
     try {
       await stopStream();
@@ -4228,7 +4283,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       return { released: false, previousSession: null };
     }
     args.logger.info("ios_simulator.released_with_chat_session", { chatSessionId: trimmed });
-    return shutdown({ force: false });
+    // Identify as the owner: shutdown now refuses an anonymous non-force call.
+    return shutdown({ chatSessionId: owner, force: false });
   };
 
   const startedStreamStatus = (
@@ -4295,6 +4351,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const startStream = async (streamArgs: IosSimulatorStartStreamArgs = {}): Promise<IosSimulatorStreamStatus> => {
+    // Ahead of resolveDevice: on Windows/Linux the device lookup fails first
+    // and reported "No available iOS Simulator devices were found", which reads
+    // as a fixable setup problem rather than the platform being unsupported.
+    assertDarwin();
     const device = await resolveDevice(streamArgs.deviceUdid ?? activeSession?.deviceUdid);
     const rawBackend = streamArgs.backend ?? "simulator-window-capture";
     if (rawBackend !== "auto" && rawBackend !== "simulator-window-capture") {

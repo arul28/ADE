@@ -6,6 +6,7 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess, spawn as nodeSpawn } from "node:child_process";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
+  __testSetIosSimulatorCompanionRegistryPath,
   __testSetIosSimulatorProcessHooks,
   createIosSimulatorService,
   IDB_COMPANION_REGISTRY_PATH,
@@ -340,6 +341,63 @@ describe("iosSimulatorService shutdown contract", () => {
       expect(events.find((e) => e.type === "session-released")).toBeUndefined();
     } finally {
       service.dispose();
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("refuses a shutdown from anyone but the owning chat unless forced", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-shutdown-owner-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+    const launchAsChatA = () => service.launch({
+      projectRoot,
+      build: true,
+      chatSessionId: "chat-A",
+      laneId: "lane-A",
+      force: true,
+    });
+
+    try {
+      await launchAsChatA();
+
+      // Chat B running its own skill step (`ade ios-sim shutdown`) must not be
+      // able to kill chat A's session mid-verification.
+      const deniedOther = await service.shutdown({ chatSessionId: "chat-B" })
+        .then(() => null, (error: unknown) => error as Error);
+      expect(deniedOther).toBeInstanceOf(IosSimulatorOwnedBySessionError);
+      expect(deniedOther?.message).toContain(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE);
+      expect(deniedOther?.message).toContain("chat-A");
+      expect(deniedOther?.message).toContain("lane-A");
+      // Refused before any teardown: the owner's session is untouched.
+      expect((await service.getStatus()).activeSession).toMatchObject({ chatSessionId: "chat-A" });
+
+      // An anonymous caller names no chat, so it cannot be the owner either.
+      // Same rule `launch` applies, so the two commands agree.
+      const deniedAnon = await service.shutdown()
+        .then(() => null, (error: unknown) => error as Error);
+      expect(deniedAnon).toBeInstanceOf(IosSimulatorOwnedBySessionError);
+      expect((await service.getStatus()).activeSession).toMatchObject({ chatSessionId: "chat-A" });
+
+      // The owner stops its own session without ceremony.
+      expect(await service.shutdown({ chatSessionId: "chat-A" })).toMatchObject({ released: true });
+      expect((await service.getStatus()).activeSession).toBeNull();
+
+      // --force stays the documented escape hatch, for a named other chat...
+      await launchAsChatA();
+      expect(await service.shutdown({ chatSessionId: "chat-B", force: true })).toMatchObject({ released: true });
+      expect((await service.getStatus()).activeSession).toBeNull();
+
+      // ...and for an anonymous caller.
+      await launchAsChatA();
+      expect(await service.shutdown({ force: true })).toMatchObject({ released: true });
+      expect((await service.getStatus()).activeSession).toBeNull();
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
       platformSpy.mockRestore();
     }
   });
@@ -1037,6 +1095,38 @@ describe("iosSimulatorService target provenance", () => {
       platformSpy.mockRestore();
     }
   });
+
+  it("refuses a --bundle-id that matches nothing instead of building a different app", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-bundle-mismatch-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    const { run, builds } = simulatorRunMock();
+    const restoreHooks = __testSetIosSimulatorProcessHooks({ run, commandExists: () => true });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+
+    try {
+      // The unmatched bundle id used to fall through to the generic "first
+      // project target" default: xcodebuild built Prox, simctl launched it, and
+      // the caller "verified" an app it never named.
+      const denied = await service.launch({ projectRoot, build: true, bundleId: "com.nobody.here" })
+        .then(() => null, (error: unknown) => error as Error);
+      expect(denied).toBeInstanceOf(Error);
+      expect(denied?.message).toContain("com.nobody.here");
+      expect(denied?.message).toContain(projectRoot);
+      // The error has to name what IS buildable, or the caller cannot correct it.
+      expect(denied?.message).toContain("Prox");
+      // Nothing was compiled and nothing was installed or launched.
+      expect(builds).toEqual([]);
+      expect(run.mock.calls.some((call) => call[0] === "xcodebuild" && call[1]?.[0] !== "-version")).toBe(false);
+      expect(run.mock.calls.some((call) => call[0] === "xcrun" && call[1]?.[1] === "launch")).toBe(false);
+      expect((await service.getStatus()).activeSession).toBeNull();
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
 });
 
 describe("iosSimulatorService stale binary honesty", () => {
@@ -1332,16 +1422,35 @@ describe("iosSimulatorService launch concurrency and ownership", () => {
 });
 
 describe("iosSimulatorService idb companion registry", () => {
-  const restoreRegistry = () => {
-    fs.rmSync(IDB_COMPANION_REGISTRY_PATH, { force: true });
+  // The real ledger at IDB_COMPANION_REGISTRY_PATH is shared with the
+  // developer's running ADE app and brain daemon, so writing or deleting it
+  // from a test erases the live processes' companion records. Every test here
+  // redirects the service at its own scratch file instead.
+  const useScratchRegistry = () => {
+    const dir = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-companion-registry-`);
+    const registryPath = path.join(dir, "companions.json");
+    const restoreHook = __testSetIosSimulatorCompanionRegistryPath(registryPath);
+    return {
+      registryPath,
+      restore: () => {
+        restoreHook();
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    };
   };
+
+  it("keeps the production ledger path per-user under tmpdir", () => {
+    expect(path.dirname(IDB_COMPANION_REGISTRY_PATH)).toBe(os.tmpdir());
+    expect(path.basename(IDB_COMPANION_REGISTRY_PATH)).toMatch(/^ade-ios-simulator-idb-companions-.+\.json$/);
+  });
 
   it("sweeps only companions whose owning ADE process is gone", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const { registryPath, restore: restoreRegistry } = useScratchRegistry();
     // A pid this test can be sure is dead: 2^22 is above every default
     // pid_max, so nothing can be occupying it.
     const deadOwnerPid = 4_194_304;
-    fs.writeFileSync(IDB_COMPANION_REGISTRY_PATH, JSON.stringify({
+    fs.writeFileSync(registryPath, JSON.stringify({
       "901": { udid: "device-1", startedAt: new Date().toISOString(), ownerPid: process.pid },
       "902": { udid: "device-2", startedAt: new Date().toISOString(), ownerPid: deadOwnerPid },
       // Written by a build that predates ownerPid; treated as an orphan, which
@@ -1380,7 +1489,8 @@ describe("iosSimulatorService idb companion registry", () => {
 
   it("rewrites the registry atomically and owner-readable only", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
-    fs.writeFileSync(IDB_COMPANION_REGISTRY_PATH, JSON.stringify({
+    const { registryPath, restore: restoreRegistry } = useScratchRegistry();
+    fs.writeFileSync(registryPath, JSON.stringify({
       "904": { udid: "device-4", startedAt: new Date().toISOString(), ownerPid: 4_194_305 },
     }), "utf8");
 
@@ -1397,13 +1507,13 @@ describe("iosSimulatorService idb companion registry", () => {
       await swept;
       // The sweep forgets what it reaped, which is the rewrite path.
       await vi.waitFor(() => {
-        expect(JSON.parse(fs.readFileSync(IDB_COMPANION_REGISTRY_PATH, "utf8"))).toEqual({});
+        expect(JSON.parse(fs.readFileSync(registryPath, "utf8"))).toEqual({});
       });
       // tmpdir is world-writable and shared between accounts, so the file that
       // names pids ADE will SIGKILL must not be readable or writable by others.
-      expect(fs.statSync(IDB_COMPANION_REGISTRY_PATH).mode & 0o777).toBe(0o600);
+      expect(fs.statSync(registryPath).mode & 0o777).toBe(0o600);
       // No temp file survives the rename.
-      expect(fs.existsSync(`${IDB_COMPANION_REGISTRY_PATH}.${process.pid}.tmp`)).toBe(false);
+      expect(fs.existsSync(`${registryPath}.${process.pid}.tmp`)).toBe(false);
     } finally {
       service.dispose();
       restoreHooks();
@@ -1574,6 +1684,13 @@ describe("iosSimulatorService screenshots and platform guards", () => {
       await expect(service.getScreenSnapshot()).rejects.toThrow(/only available on macOS/);
       await expect(service.inspectPoint({ x: 1, y: 2 })).rejects.toThrow(/only available on macOS/);
       await expect(service.selectPoint({ x: 1, y: 2 })).rejects.toThrow(/only available on macOS/);
+      // startStream used to resolve a device first, so a Windows caller was told
+      // "No available iOS Simulator devices were found" — a setup problem it
+      // could never fix — instead of that the platform is unsupported.
+      await expect(service.startStream()).rejects.toThrow(/only available on macOS/);
+      // getInspectorSnapshot was the one IPC-reachable method with no guard at
+      // all; off darwin it blamed the caller for not launching an app.
+      await expect(service.getInspectorSnapshot()).rejects.toThrow(/only available on macOS/);
     } finally {
       service.dispose();
       platformSpy.mockRestore();

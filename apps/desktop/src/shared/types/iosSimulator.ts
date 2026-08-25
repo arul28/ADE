@@ -30,6 +30,16 @@ export const IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE = "IOS_SIMULATOR_LANE_NOT_RESO
 export const IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE = "IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT" as const;
 
 export type IosSimulatorShutdownArgs = {
+  /**
+   * Who is asking. Shutdown enforces the same single-owner rule as `launch`:
+   * a caller that is not the owning chat — including an anonymous caller that
+   * names no chat at all — is refused with
+   * `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` unless it passes `force`. Without
+   * this field the service could not tell chat A's own stop apart from chat
+   * B's, so any chat following its skill instructions killed whichever session
+   * happened to be running.
+   */
+  chatSessionId?: string | null;
   force?: boolean | null;
 };
 

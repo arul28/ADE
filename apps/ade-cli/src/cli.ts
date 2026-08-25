@@ -896,7 +896,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --foreground                Bring Simulator.app to the front; default is background.
     --background                Accepted, no-op: background is the default.
     --open-drawer               Also open the iOS drawer for the user.
-    --follow                    Announce the wait, then print the launch timeline.
+    --follow                    Announce the wait up front; per-step progress is
+                                not streamed, the summary prints at the end.
     --arg KEY=VALUE             Extra service args for advanced launch options.
 `,
   proof: `${ADE_BANNER}
@@ -914,18 +915,34 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --device, --udid <id>  Simulator device.
     --project-root <path>  Build root; defaults to the lane worktree.
 `,
+  claim: `${ADE_BANNER}
+  iOS Simulator: claim
+
+  Attributes an already-running simulator session to a lane and chat. This is
+  not a step in a normal launch — "launch" claims the session itself.
+
+    $ ade --socket ios-sim claim --lane <lane-id> --text
+
+  Flags:
+    --lane, --lane-id <id>   Required; defaults to $ADE_LANE_ID.
+    --chat-session <id>      Owner chat session; defaults to $ADE_CHAT_SESSION_ID.
+`,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
 
   Stops live view state, releases the drawer session, and clears related simulator work.
   Aliases: stop, teardown, end, end-session.
 
+  Shutdown carries the caller's chat session ($ADE_CHAT_SESSION_ID or
+  --chat-session). Releasing a session owned by a different chat is refused
+  unless --force is passed.
+
     $ ade --socket ios-sim shutdown --text
     $ ade --socket ios-sim shutdown --force --text
 
   Flags:
     --force, -f            Release a session owned by another chat.
-    --device, --udid <id>  Optional device context for cleanup.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
 `,
   actions: `${ADE_BANNER}
   iOS Simulator: actions
@@ -1108,6 +1125,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --device, --udid <id>  Simulator device.
     --fps <n>              Target fps.
+    --backend <name>       auto or simulator-window-capture; default
+                           simulator-window-capture.
 `,
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
@@ -1149,7 +1168,6 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --x <n> --y <n>        Required point coordinates.
     --device, --udid <id>  Simulator device.
-    --project-root <path>  Project root.
 `,
   drag: `${ADE_BANNER}
   iOS Simulator: drag / swipe
@@ -1164,7 +1182,6 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --end-x <n> --end-y <n>     Required end coordinates.
     --duration-ms <n>           Swipe duration in milliseconds.
     --device, --udid <id>       Simulator device.
-    --project-root <path>       Project root.
 `,
   type: `${ADE_BANNER}
   iOS Simulator: type
@@ -1179,7 +1196,6 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
                            compatibility, but --text by itself controls ADE's
                            human-readable output mode.
     --device, --udid <id>  Simulator device.
-    --project-root <path>  Project root.
 `,
 };
 
@@ -2228,17 +2244,17 @@ const HELP_BY_COMMAND: Record<string, string> = {
   in. Pass --project-root to target the primary checkout from inside a lane.
 
   A launched simulator session belongs to one chat at a time. Run
-  "ios-sim shutdown" before launching it from a different chat, or use
-  "shutdown --force" / "launch --force" when you intentionally want to take
-  over. Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a
-  lane.
+  "ios-sim shutdown" from the owning chat before launching it from a different
+  one; shutting down a session another chat owns is refused unless you pass
+  "shutdown --force", and "launch --force" takes it over in one step. Use
+  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show simulator readiness
     $ ade ios-sim devices --text                   List available simulators
     $ ade ios-sim apps --device <udid> --text      List launchable apps
     $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
-    $ ade --socket ios-sim launch --follow         Same, printing the launch timeline
+    $ ade --socket ios-sim launch --follow         Same, announcing the wait before the summary
     $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
     $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
@@ -9720,7 +9736,11 @@ function buildIosSimulatorPlan(
   ) {
     const backendFlag = readValue(args, ["--backend"]);
     if (backendFlag && backendFlag !== "auto" && backendFlag !== "simulator-window-capture") {
-      throw new Error("ios-sim live-start received an unsupported live view option.");
+      // A typo in a flag is a usage error, not a crash: CliUsageError exits 2
+      // with the message alone, where a bare Error prints a stack trace.
+      throw new CliUsageError(
+        `ios-sim ${sub}: unknown --backend '${backendFlag}'. Valid values: auto, simulator-window-capture.`,
+      );
     }
     const requestedBackend = backendFlag ?? "simulator-window-capture";
     return {
@@ -9784,9 +9804,11 @@ function buildIosSimulatorPlan(
           "result",
           "ios_simulator",
           "tap",
+          // No build root here: tap/drag/type act on whatever is already on the
+          // device, so the service takes no root and sending one only invents a
+          // contract the CLI cannot keep.
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
           }),
@@ -9805,7 +9827,6 @@ function buildIosSimulatorPlan(
           sub,
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
             startX: readCoordinate("--start-x", 0),
             startY: readCoordinate("--start-y", 1),
             endX: readCoordinate("--end-x", 2),
@@ -9846,7 +9867,6 @@ function buildIosSimulatorPlan(
           "typeText",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            ...rootArgs(),
             text: requireValue(
               readValue(args, ["--value", "--message", "--input-text"]) ??
                 readCommandTextValue(args, ["--text"]) ??
@@ -9873,8 +9893,12 @@ function buildIosSimulatorPlan(
           "result",
           "ios_simulator",
           "shutdown",
+          // The caller's chat session is what makes the single-owner guard
+          // enforceable: without it every shutdown looks anonymous and the
+          // service can only choose between evicting everyone or no one.
+          // `launch` sends it the same way.
           collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
+            chatSessionId: claimArgs.chatSessionId,
             force: readFlag(args, ["--force", "-f"]) ? true : undefined,
           }),
         ),

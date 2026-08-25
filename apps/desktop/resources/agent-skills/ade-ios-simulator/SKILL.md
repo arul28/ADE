@@ -17,7 +17,7 @@ ade --socket ios-sim screenshot --out .ade/tmp/sim.png --text
 ade --socket ios-sim proof --caption "Settings row renders" --text
 ```
 
-- `status` is the gate. If `supported` is false the runtime is not a Mac — stop and say so. Every other command fails with the same macOS-only error.
+- `status` is the gate. If `supported` is false the runtime is not a Mac — stop and say so. Do not probe further: the commands that touch a real simulator (`launch`, `screenshot`, `snapshot`, `inspect`, `tap`, `type`, `drag`, `select`) fail with the macOS-only error, and the rest answer with empty or inert results that look like success.
 - `launch` builds from your lane worktree by default. Pass `--project-root <path>` only to override.
 - `launch` runs in the background: Simulator.app is not brought forward and the drawer does not take over the user's screen. Add `--foreground` when the user asked to watch it.
 - `screenshot` always returns a `filePath` you can Read. `--out <path>` picks where it lands; without it the PNG goes to `<buildRoot>/.ade/cache/ios-simulator/screenshots/` and only the newest 20 survive, so `--out` anything you need to keep.
@@ -77,7 +77,7 @@ One chat owns a simulator session at a time. A second launch fails with `IOS_SIM
 
 - Ownership releases automatically only when the owning chat is deleted or archived. Merely closing or navigating away from it does not free the simulator. Once released, re-run `launch`.
 - If the owner is still live and the user wants it taken over: `ade --socket ios-sim shutdown --force --text`, or `launch --force`.
-- You cannot evict an owner without `--force`. Don't force it on your own initiative — ask. Waiting only pays off if the owner is actively finishing; an idle chat holds the session indefinitely, so don't sit in a retry loop.
+- A plain `shutdown` from a chat that does not own the session is refused with `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION`; only `--force` evicts the owner. Don't force it on your own initiative — ask. Waiting only pays off if the owner is actively finishing; an idle chat holds the session indefinitely, so don't sit in a retry loop.
 - `claim --lane <lane-id>` is only for attaching an already-running session to a lane. It is not a step in a normal launch.
 
 ## Gotchas

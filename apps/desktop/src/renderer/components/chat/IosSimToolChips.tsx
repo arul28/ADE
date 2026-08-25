@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Copy, CursorClick, Desktop, DeviceMobile, Wrench } from "@phosphor-icons/react";
-import type { IosSimulatorStatus, IosSimulatorToolStatus } from "../../../shared/types";
+import type { IosSimulatorDevice, IosSimulatorStatus, IosSimulatorToolStatus } from "../../../shared/types";
 import { cn } from "../ui/cn";
 
 export type IosSimChipState = "ok" | "warn" | "missing";
@@ -58,8 +58,17 @@ function looksLikeCommand(hint: string | null): boolean {
 /**
  * Collapses the tool matrix into four chips. Required gaps read rose, the
  * interact-only gap (idb) reads amber, everything healthy keeps its own accent.
+ *
+ * `devices` is the available-device list, and it is what makes the Runtime chip
+ * mean what it says: `simulator_window` alone is only "Simulator.app exists",
+ * so a Mac with Xcode and zero installed iOS runtimes read healthy on all four
+ * chips, hid the row entirely, and left Launch enabled with nothing to launch
+ * on — while the chip's own "Install an iOS runtime" hint was unreachable.
  */
-export function buildIosSimToolChips(status: IosSimulatorStatus | null): IosSimToolChip[] {
+export function buildIosSimToolChips(
+  status: IosSimulatorStatus | null,
+  devices: IosSimulatorDevice[] = [],
+): IosSimToolChip[] {
   const byName = new Map((status?.tools ?? []).map((tool) => [tool.name, tool]));
   const xcrun = byName.get("xcrun");
   const xcodebuild = byName.get("xcodebuild");
@@ -69,7 +78,8 @@ export function buildIosSimToolChips(status: IosSimulatorStatus | null): IosSimT
   const onMac = status ? status.platform === "darwin" : true;
 
   const xcodeOk = Boolean(xcrun?.available && xcodebuild?.available);
-  const runtimeOk = Boolean(simulatorWindow?.available);
+  const hasRuntimeDevice = devices.some((simulator) => simulator.isAvailable);
+  const runtimeOk = Boolean(simulatorWindow?.available) && hasRuntimeDevice;
   const controlsOk = Boolean(idb?.available && idbCompanion?.available);
   const xcodeHint = firstHint(xcodebuild, xcrun);
   const runtimeHint = firstHint(simulatorWindow);

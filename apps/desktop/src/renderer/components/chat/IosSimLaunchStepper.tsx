@@ -42,6 +42,12 @@ type IosSimLaunchStepperProps = {
   /** True when the launch reused an already-installed app instead of building. */
   usedInstalledBinary: boolean;
   now: number;
+  /**
+   * Closes a stepper the user is done with. Only offered once a step has
+   * failed: a running launch has nothing to dismiss, while a failed one used to
+   * sit over every other mode — including the toggle that leaves it.
+   */
+  onDismiss?: () => void;
 };
 
 /**
@@ -49,7 +55,8 @@ type IosSimLaunchStepperProps = {
  * carries the tail of its output root because "built the wrong checkout" is the
  * failure mode that otherwise looks identical to a slow build.
  */
-export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now }: IosSimLaunchStepperProps) {
+export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now, onDismiss }: IosSimLaunchStepperProps) {
+  const anyFailed = steps.some((step) => step.status === "failed");
   return (
     <div className="flex h-full min-h-[300px] flex-col justify-center gap-2 px-5 py-4">
       <div className="flex items-center gap-2">
@@ -58,6 +65,15 @@ export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now
           <span className="inline-flex h-5 items-center rounded-full border border-amber-300/24 bg-amber-400/[0.09] px-2 font-sans text-[10px] font-medium text-amber-50/85">
             prebuilt — changes not included
           </span>
+        ) : null}
+        {anyFailed && onDismiss ? (
+          <button
+            type="button"
+            className="ml-auto inline-flex h-6 items-center rounded border border-white/[0.08] bg-white/[0.03] px-2 font-sans text-[10px] text-muted-fg/70 transition-colors hover:text-fg/90"
+            onClick={onDismiss}
+          >
+            Close
+          </button>
         ) : null}
       </div>
       <div className="flex flex-col">

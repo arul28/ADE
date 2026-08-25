@@ -8504,6 +8504,38 @@ describe("ADE CLI", () => {
     if (typeHelp.kind !== "help") return;
     expect(typeHelp.text).toContain("iOS Simulator: type");
     expect(typeHelp.text).toContain("--value, --message <v>");
+
+    // `claim` is implemented and listed in the top-level help, so asking for
+    // its help must not answer "unknown subcommand".
+    const claimHelp = buildCliPlan(["ios-sim", "claim", "--help"]);
+    expect(claimHelp.kind).toBe("help");
+    if (claimHelp.kind !== "help") return;
+    expect(claimHelp.text).toContain("iOS Simulator: claim");
+    expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
+  });
+
+  it("rejects an unknown ios-sim --backend as a usage error", () => {
+    // A bare Error here printed a stack trace and exited 1; a usage error
+    // prints the message and exits 2.
+    let thrown: unknown;
+    try {
+      buildCliPlan(["ios-sim", "live-start", "--backend", "nope"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error | undefined)?.constructor.name).toBe(
+      "CliUsageError",
+    );
+    // The message names the subcommand the caller actually typed and the
+    // values that would have worked.
+    expect((thrown as Error).message).toContain("ios-sim live-start");
+    expect((thrown as Error).message).toContain("unknown --backend 'nope'");
+    expect((thrown as Error).message).toContain("auto, simulator-window-capture");
+    // Every valid value still builds a plan.
+    for (const backend of ["auto", "simulator-window-capture"]) {
+      const plan = buildCliPlan(["ios-sim", "stream-start", "--backend", backend]);
+      expect(plan.kind).toBe("execute");
+    }
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
@@ -11193,11 +11225,11 @@ describe("ADE CLI", () => {
       // worktree it is standing in, not the primary checkout.
       delete process.env.ADE_LANE_ID;
       expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
-        projectRoot: "/tmp/ade-project/.ade/worktrees/lane-a",
+        projectRoot: path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"),
       });
       expect(launchArgsFor(["ios-sim", "launch"]).laneId).toBeUndefined();
       expect(launchArgsFor(["ios-sim", "select", "120", "420"])).toMatchObject({
-        projectRoot: "/tmp/ade-project/.ade/worktrees/lane-a",
+        projectRoot: path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"),
       });
     });
 
@@ -11241,6 +11273,48 @@ describe("ADE CLI", () => {
       expect(quiet.kind).toBe("execute");
       if (quiet.kind !== "execute") return;
       expect(quiet.progressNotice).toBeUndefined();
+    });
+
+    it("sends the caller's chat session on shutdown so the owner guard can bite", () => {
+      // Without a caller identity the service can only evict unconditionally,
+      // which is exactly the "you cannot take another chat's session" promise
+      // the docs make.
+      process.env.ADE_CHAT_SESSION_ID = "chat-owner-1";
+      expect(launchArgsFor(["ios-sim", "shutdown"])).toMatchObject({
+        chatSessionId: "chat-owner-1",
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown"]).force).toBeUndefined();
+      // An explicit flag still wins over the environment.
+      expect(
+        launchArgsFor(["ios-sim", "stop", "--chat-session", "chat-other"]),
+      ).toMatchObject({ chatSessionId: "chat-other" });
+      // --force is the documented override and must still reach the service.
+      expect(launchArgsFor(["ios-sim", "shutdown", "--force"])).toMatchObject({
+        chatSessionId: "chat-owner-1",
+        force: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown", "-f"])).toMatchObject({
+        force: true,
+      });
+    });
+
+    it("does not invent a build root for tap, drag, or type", () => {
+      // These act on whatever is already on the device; the service takes no
+      // root, so sending one advertised a flag that silently did nothing.
+      expect(launchArgsFor(["ios-sim", "tap", "120", "420"]).projectRoot)
+        .toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "tap", "120", "420"]).laneId)
+        .toBeUndefined();
+      expect(
+        launchArgsFor(["ios-sim", "drag", "120", "700", "120", "250"])
+          .projectRoot,
+      ).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "type", "--value", "hi"]).projectRoot)
+        .toBeUndefined();
+      // `select` does match Swift sources, so it keeps its root.
+      expect(
+        launchArgsFor(["ios-sim", "select", "120", "420"]).projectRoot,
+      ).toBe(path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"));
     });
 
     it("passes --out through to the screenshot action", () => {

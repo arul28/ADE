@@ -8423,12 +8423,16 @@ export function registerIpc({
     revealSimulatorWindow());
 
   ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event, arg = {}): Promise<IosSimulatorWindowSourcesResult> => {
-    const startedAt = Date.now();
-    const remainingMs = () => SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS - (Date.now() - startedAt);
     const status = await getIosSimulatorStatusForEvent(event, arg, IPC.iosSimulatorListWindowSources);
     if (!status.supported) {
       return { sources: [], windowState: null, message: "The iOS Simulator is not available on this machine." };
     }
+    // The clock starts here, not above: the status call is a remote-runtime
+    // round trip on a bound project and has nothing to do with the window
+    // budget. Counting it left the discovery work with less time than its own
+    // subprocess ceilings need.
+    const startedAt = Date.now();
+    const remainingMs = () => SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS - (Date.now() - startedAt);
     // The Electron-main simulator service never sees a launch the brain daemon
     // owns, so its `activeSession` is always null and parking used to be dead in
     // production. Trust the caller's session when it has one.
@@ -8454,18 +8458,28 @@ export function registerIpc({
     }
     if (sources.length) return { sources, windowState, message: null };
 
+    // The park above is allowed to change every fact the read at the top of the
+    // handler established: it starts Simulator.app, un-hides it and
+    // un-minimizes it. Re-read before judging, or the verdict is an instruction
+    // describing what ADE just did — a cold start answered "The simulator is
+    // not running. Launch it from ADE again." *because ADE had launched it*,
+    // and the drawer treats any message as terminal and gave up on the first
+    // sweep. Only the parked path needs the second read; without a session
+    // nothing moved.
+    const settledWindowState = hasActiveSession ? await getSimulatorWindowState() : windowState;
+
     // `message` is a verdict, not a status line: the caller stops polling the
     // moment one arrives. A permission blocker, a missing session and an
     // exhausted budget are terminal, so they get named. Plain emptiness with
     // budget left is not — a Simulator window can appear a beat after the app
     // does — so it answers with no message and lets the caller sweep again.
-    const message = windowState.message
+    const message = settledWindowState.message
       ?? (!hasActiveSession
         ? "No simulator session is running. Launch the app from ADE first."
         : remainingMs() <= 0
           ? "Timed out finding the simulator window. Try again."
           : null);
-    return { sources, windowState, message };
+    return { sources, windowState: settledWindowState, message };
   });
 
   // The window-parking follow is armed by the discovery call above and has to be
@@ -8486,12 +8500,17 @@ export function registerIpc({
   // `ok` is the truth, not an acknowledgement: a sender that does not own the
   // claim is silently not counted, and a renderer that believed otherwise would
   // later release a holder it never took — the incumbent drawer's.
+  //
+  // The sender travels with the holder because it is the only thing that can
+  // report a renderer reload: that destroys the drawer without running its
+  // release and never closes the window, so a window-scoped count leaked a
+  // holder for the life of the process.
   ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: boolean }> => ({
-    ok: retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender)),
+    ok: retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender), event.sender),
   }));
 
   ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (event): Promise<{ ok: true }> => {
-    releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender));
+    releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender), event.sender);
     return { ok: true };
   });
 

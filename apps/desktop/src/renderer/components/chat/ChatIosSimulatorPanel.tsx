@@ -198,10 +198,6 @@ const FRAME_STALL_MS = 3_000;
  * a Simulator window can appear a beat after the app does.
  */
 const WINDOW_SOURCE_ATTEMPTS = 3;
-/**
- * The "a start is wanted but none owns the live view yet" value of
- * `captureStartRef` — see the ref's own comment for the three states.
- */
 /** Window-state poll cadence: fast while the state is moving, slow once settled. */
 const WINDOW_POLL_FAST_MS = 2_000;
 const WINDOW_POLL_SLOW_MS = 10_000;
@@ -788,7 +784,16 @@ export function ChatIosSimulatorPanel({
   const [simulatorWindowState, setSimulatorWindowState] = useState<IosSimulatorWindowState | null>(null);
   const [streamStatus, setStreamStatus] = useState<IosSimulatorStreamStatus | null>(null);
   const [launchProgress, setLaunchProgress] = useState<IosSimulatorLaunchProgress[]>([]);
-  const [panelLaunchExtras, setPanelLaunchExtras] = useState<IosSimLaunchExtras>(EMPTY_LAUNCH_EXTRAS);
+  /** The launch whose stepper the user closed. Nothing else can dismiss a failure. */
+  const [dismissedLaunchId, setDismissedLaunchId] = useState<string | null>(null);
+  // Extras describe *one* binary, so they are stored with the session they came
+  // from. Untagged, a launch this panel ran kept accusing every session after
+  // it: the "prebuilt" chip survived a rebuild, both header chips survived Stop,
+  // and a new launch fell through to the previous session's extras.
+  const [panelLaunchExtras, setPanelLaunchExtras] = useState<{
+    sessionId: string | null;
+    extras: IosSimLaunchExtras;
+  }>({ sessionId: null, extras: EMPTY_LAUNCH_EXTRAS });
   const [frameStalled, setFrameStalled] = useState(false);
   const [revealError, setRevealError] = useState<string | null>(null);
   const [windowPollNonce, setWindowPollNonce] = useState(0);
@@ -959,7 +964,7 @@ export function ChatIosSimulatorPanel({
 
   // The chip builder is the single place tool status becomes a verdict, so the
   // panel reads its answers rather than re-deriving them from the tool matrix.
-  const toolChips = useMemo(() => buildIosSimToolChips(status), [status]);
+  const toolChips = useMemo(() => buildIosSimToolChips(status, devices), [devices, status]);
   const toolChipsHealthy = toolChips.every((chip) => chip.state === "ok");
   // idb + idb_companion, collapsed into the Controls chip: tap/type/drag need
   // both, and "ok" is exactly that conjunction.
@@ -1096,7 +1101,16 @@ export function ChatIosSimulatorPanel({
       return false;
     }
     try {
-      await window.ade.iosSimulator.shutdown({ force });
+      // Shutdown enforces the same single-owner rule as launch, so the drawer
+      // has to name itself or the service refuses its own Stop button as a
+      // foreign caller. `ignoreChatOwnership` is the lane-scoped surface, which
+      // by design drives whatever session the lane is running and hides the
+      // ownership card — it answers as the current owner so that rule cannot
+      // lock it out of a Stop button it deliberately still shows.
+      const callerChatSessionId = ignoreChatOwnership
+        ? activeSession?.chatSessionId ?? sessionId ?? null
+        : sessionId ?? null;
+      await window.ade.iosSimulator.shutdown({ chatSessionId: callerChatSessionId, force });
       await refreshStatus();
       setSnapshot(null);
       setSelectedElement(null);
@@ -1106,7 +1120,14 @@ export function ChatIosSimulatorPanel({
       setMessage(error instanceof Error ? error.message : String(error));
       return false;
     }
-  }, [controlsDisabled, controlsDisabledMessage, refreshStatus]);
+  }, [
+    activeSession?.chatSessionId,
+    controlsDisabled,
+    controlsDisabledMessage,
+    ignoreChatOwnership,
+    refreshStatus,
+    sessionId,
+  ]);
 
   const takeOver = useCallback(async () => {
     const evicted = activeSession?.laneId ?? (activeSession?.chatSessionId ? shortChatId(activeSession.chatSessionId) : null);
@@ -1724,16 +1745,22 @@ export function ChatIosSimulatorPanel({
   // user opens the drawer afterwards, and the session is then the only place
   // the build root and the prebuilt flag exist — without this fallback the
   // "prebuilt — changes not included" warning never appeared on that path at
-  // all. A launch this panel ran stays authoritative.
+  // all. A launch this panel ran stays authoritative — but only over the
+  // session it produced, which is what `panelLaunchExtras.sessionId` pins.
   //
   // Derived, not an effect that seeds its own state: the old version listed the
   // state it wrote in its own dependency array, so it re-ran on every value it
   // produced and the "is it already populated" guard was load-bearing rather
   // than an optimisation.
   const launchExtras = useMemo<IosSimLaunchExtras>(() => {
-    if (panelLaunchExtras.buildRoot || panelLaunchExtras.usedInstalledBinary) return panelLaunchExtras;
+    // A launch in flight invalidates everything known: the session still on
+    // screen is the one being replaced, and its extras would otherwise badge
+    // the new launch's own stepper.
+    if (launchBusy || !activeSession) return EMPTY_LAUNCH_EXTRAS;
+    const own = panelLaunchExtras.sessionId === activeSession.id ? panelLaunchExtras.extras : null;
+    if (own && (own.buildRoot || own.usedInstalledBinary)) return own;
     return readLaunchExtras(activeSession);
-  }, [activeSession, panelLaunchExtras]);
+  }, [activeSession, launchBusy, panelLaunchExtras]);
 
   useEffect(() => {
     // Keyed on primitives, not object identity, so a plain status refresh no
@@ -1973,7 +2000,8 @@ export function ChatIosSimulatorPanel({
     setBusy(true);
     setLaunchBusy(true);
     setLaunchProgress([]);
-    setPanelLaunchExtras(EMPTY_LAUNCH_EXTRAS);
+    setPanelLaunchExtras({ sessionId: null, extras: EMPTY_LAUNCH_EXTRAS });
+    setDismissedLaunchId(null);
     setMessage(null);
     try {
       const session = await window.ade.iosSimulator.launch({
@@ -1989,7 +2017,7 @@ export function ChatIosSimulatorPanel({
         // own click on Launch, so it opts in.
         openDrawer: true,
       });
-      setPanelLaunchExtras(readLaunchExtras(session));
+      setPanelLaunchExtras({ sessionId: session.id, extras: readLaunchExtras(session) });
       setSelectedDeviceUdid(session.deviceUdid);
       await refreshStatus();
       setMode("interact");
@@ -2754,8 +2782,8 @@ export function ChatIosSimulatorPanel({
   const footerStatus = message ?? previewModeHint ?? simulatorModeHint;
 
   const visibleLaunchProgress = useMemo(() => selectLaunchSteps(launchProgress), [launchProgress]);
+  const visibleLaunchId = visibleLaunchProgress[0]?.launchId ?? null;
   const launchReady = visibleLaunchProgress.some((step) => step.step === "ready" && step.status === "complete");
-  const launchFailed = visibleLaunchProgress.some((step) => step.status === "failed");
   const lastLaunchUpdateAt = visibleLaunchProgress.reduce((latest, step) => {
     const parsed = Date.parse(step.updatedAt);
     return Number.isFinite(parsed) && parsed > latest ? parsed : latest;
@@ -2763,9 +2791,15 @@ export function ChatIosSimulatorPanel({
   // Progress survives a transport timeout: it stays until the launch actually
   // reaches a terminal state, or until it has clearly gone quiet.
   const launchProgressFresh = lastLaunchUpdateAt > 0 && nowTick - lastLaunchUpdateAt < 180_000;
+  // A failure used to pin this stepper over every other mode forever: it had no
+  // staleness bound, only a new launch cleared it, and the Control/Inspect
+  // toggle that would take the user anywhere else lives *inside* the branches
+  // this one sits above. So it now expires on the same 180s clock as a running
+  // launch, and Close is the way out before then.
   const showLaunchProgress = visibleLaunchProgress.length > 0
     && !launchReady
-    && (launchBusy || launchFailed || launchProgressFresh);
+    && visibleLaunchId !== dismissedLaunchId
+    && (launchBusy || launchProgressFresh);
 
   useEffect(() => {
     if (!showLaunchProgress && !ownedByOtherChat) return;
@@ -3418,6 +3452,7 @@ export function ChatIosSimulatorPanel({
             buildRoot={launchExtras.buildRoot}
             usedInstalledBinary={launchExtras.usedInstalledBinary}
             now={nowTick}
+            onDismiss={() => setDismissedLaunchId(visibleLaunchId)}
           />
         ) : canShowLiveVisual ? (
           <div
@@ -3646,6 +3681,17 @@ export function ChatIosSimulatorPanel({
               </div>
             ) : null}
             {mediaViewToolbar}
+          </div>
+        ) : hasActiveSession ? (
+          // The header reads a session straight off the status, but the live
+          // visual only exists after three IPC round trips. Mounting onto an
+          // already-running simulator therefore showed the cyan Live chip and
+          // Stop next to a body saying "No simulator running" with Launch
+          // enabled. Both sides now agree: a session with no picture yet is
+          // connecting, not absent.
+          <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-2.5 px-6 text-center">
+            <SpinnerGap size={20} className="animate-spin text-cyan-200/75" />
+            <div className="font-sans text-[11px] text-muted-fg/60">Connecting to the simulator...</div>
           </div>
         ) : (
           <div className="flex h-full min-h-[300px] flex-col items-center justify-center gap-2.5 px-6 text-center">

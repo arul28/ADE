@@ -28,9 +28,12 @@ cannot run a shell command, so the "now run this" half lives in the CLI's own
 hint (`iosSimulatorErrorHint`), keyed off the code.
 Ownership releases automatically when the owning chat is deleted or archived —
 those are the only two paths that call `notifyChatSessionEnded`, so a chat that
-is merely closed or navigated away from still holds the session. An anonymous
-caller cannot evict an owner silently; it must pass `--force`, and
-`launch --force` validates the new target before evicting.
+is merely closed or navigated away from still holds the session. `shutdown`
+carries the caller's chat session id (the CLI forwards `$ADE_CHAT_SESSION_ID`),
+and a shutdown from any other chat — or from a caller with no session id at all
+— is refused with the same `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` code unless it
+passes `--force`. The owning chat releases its own session with a plain
+`shutdown`. `launch --force` validates the new target before evicting.
 
 ### Build root
 

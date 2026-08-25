@@ -1159,17 +1159,17 @@ _    ____  _____
   in. Pass --project-root to target the primary checkout from inside a lane.
 
   A launched simulator session belongs to one chat at a time. Run
-  "ios-sim shutdown" before launching it from a different chat, or use
-  "shutdown --force" / "launch --force" when you intentionally want to take
-  over. Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a
-  lane.
+  "ios-sim shutdown" from the owning chat before launching it from a different
+  one; shutting down a session another chat owns is refused unless you pass
+  "shutdown --force", and "launch --force" takes it over in one step. Use
+  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show simulator readiness
     $ ade ios-sim devices --text                   List available simulators
     $ ade ios-sim apps --device <udid> --text      List launchable apps
     $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
-    $ ade --socket ios-sim launch --follow         Same, printing the launch timeline
+    $ ade --socket ios-sim launch --follow         Same, announcing the wait before the summary
     $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
     $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
