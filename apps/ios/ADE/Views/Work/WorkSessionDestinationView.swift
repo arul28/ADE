@@ -200,6 +200,8 @@ func workChatErrorIndicatesActiveTurn(_ error: Error) -> Bool {
 
 func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
   [
+    entry.messageId ?? "",
+    entry.itemId ?? "",
     entry.timestamp,
     entry.role,
     entry.turnId ?? "",
@@ -207,15 +209,66 @@ func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
   ].joined(separator: "\u{1F}")
 }
 
+private func workTranscriptEntryLegacyIdentity(_ entry: AgentChatTranscriptEntry) -> String {
+  [
+    entry.timestamp,
+    entry.role,
+    entry.turnId ?? "",
+    entry.text
+  ].joined(separator: "\u{1F}")
+}
+
+private func workTranscriptEntryStableIdentity(_ entry: AgentChatTranscriptEntry) -> String? {
+  if let messageId = entry.messageId?.trimmingCharacters(in: .whitespacesAndNewlines), !messageId.isEmpty {
+    return "message:\(messageId)"
+  }
+  if let itemId = entry.itemId?.trimmingCharacters(in: .whitespacesAndNewlines), !itemId.isEmpty {
+    return "item:\(itemId)"
+  }
+  return nil
+}
+
+/// A refreshed transcript can gain host ids after its first page was cached.
+/// Stable host ids identify the physical row even when its text changes while
+/// a turn is streaming; id-less rows still use their legacy occurrence fields.
+/// Two genuinely different stable ids remain distinct even when they render
+/// identical text.
+private func workTranscriptEntriesRepresentSameOccurrence(
+  _ lhs: AgentChatTranscriptEntry,
+  _ rhs: AgentChatTranscriptEntry
+) -> Bool {
+  let lhsStableId = workTranscriptEntryStableIdentity(lhs)
+  let rhsStableId = workTranscriptEntryStableIdentity(rhs)
+  if let lhsStableId, let rhsStableId {
+    return lhsStableId == rhsStableId
+  }
+  return workTranscriptEntryLegacyIdentity(lhs) == workTranscriptEntryLegacyIdentity(rhs)
+}
+
 func mergeWorkTranscriptEntries(
   older: [AgentChatTranscriptEntry],
   newer: [AgentChatTranscriptEntry]
 ) -> [AgentChatTranscriptEntry] {
-  var seen = Set<String>()
+  var seenStableOccurrences = Set<String>()
+  var seenStableLegacyOccurrences = Set<String>()
+  var seenLegacyOnlyOccurrences = Set<String>()
   var result: [AgentChatTranscriptEntry] = []
   result.reserveCapacity(older.count + newer.count)
   for entry in older + newer {
-    if seen.insert(workTranscriptEntryIdentity(entry)).inserted {
+    let legacyIdentity = workTranscriptEntryLegacyIdentity(entry)
+    if let stableIdentity = workTranscriptEntryStableIdentity(entry) {
+      guard !seenStableOccurrences.contains(stableIdentity) else { continue }
+      // A later refresh can add a stable id to a row that was already kept
+      // from the id-less page. Keep the first occurrence and avoid a duplicate.
+      guard !seenLegacyOnlyOccurrences.contains(legacyIdentity) else { continue }
+      seenStableOccurrences.insert(stableIdentity)
+      seenStableLegacyOccurrences.insert(legacyIdentity)
+      result.append(entry)
+    } else {
+      guard !seenLegacyOnlyOccurrences.contains(legacyIdentity),
+            !seenStableLegacyOccurrences.contains(legacyIdentity)
+      else { continue }
+      seenLegacyOnlyOccurrences.insert(legacyIdentity)
       result.append(entry)
     }
   }
@@ -237,8 +290,10 @@ func mergeWorkTranscriptPageOccurrences(
       let olderStart = older.count - candidate
       var matches = true
       for index in 0..<candidate {
-        if workTranscriptEntryIdentity(older[olderStart + index])
-          != workTranscriptEntryIdentity(newer[index]) {
+        if !workTranscriptEntriesRepresentSameOccurrence(
+          older[olderStart + index],
+          newer[index]
+        ) {
           matches = false
           break
         }
@@ -569,7 +624,9 @@ struct WorkSessionDestinationView: View {
     _chatSummary = State(initialValue: initialChatSummary)
     _lastKnownChatSummary = State(initialValue: initialChatSummary)
     _transcript = State(initialValue: seededTranscript)
-    _transcriptRenderSignature = State(initialValue: workChatEnvelopeListRenderSignature(seededTranscript))
+    // This is a monotonic invalidation token, not a content hash. The old
+    // initializer scanned every assistant string before the first frame.
+    _transcriptRenderSignature = State(initialValue: 0)
     _fallbackEntries = State(initialValue: seededFallbackEntries)
     _fallbackEntriesRenderSignature = State(initialValue: workFallbackEntriesRenderSignature(seededFallbackEntries))
     _transcriptEntriesByIndex = State(initialValue: workChatTranscriptEntriesByIndexForRestoredPresentation(
@@ -701,7 +758,7 @@ struct WorkSessionDestinationView: View {
       mainChatRenderEpoch &+= 1
     }
     transcript = next
-    transcriptRenderSignature = workChatEnvelopeListRenderSignature(next)
+    transcriptRenderSignature &+= 1
     cacheCurrentTranscriptPresentationIfNeeded()
   }
 
@@ -787,7 +844,7 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func setSubagentTranscript(_ next: [WorkChatEnvelope]) {
     subagentTranscript = next
-    subagentTranscriptRenderSignature = workChatEnvelopeListRenderSignature(next)
+    subagentTranscriptRenderSignature &+= 1
   }
 
   @MainActor

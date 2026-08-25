@@ -132,6 +132,22 @@ struct WorkChatMessage: Identifiable, Equatable {
   var processed: Bool? = nil
   var attachments: [AgentChatFileRef]? = nil
   var unprocessedResolution: WorkUserMessageResolution? = nil
+  /// Monotonic content revision for the incremental streaming path. The
+  /// off-main snapshot fold stamps `markdownDigest` once, but live deltas
+  /// mutate the same message on the main actor and must invalidate preview
+  /// caches without hashing the entire growing response again.
+  var markdownRevision: UInt64 = 0
+  /// Exact counts for the append-only streaming path. They are updated from
+  /// the incoming delta, so preview summaries do not recount the whole answer
+  /// on every token batch. Completed snapshot messages leave these nil and
+  /// continue to derive their values from the authoritative markdown.
+  var markdownCharacterCount: Int? = nil
+  var markdownLineCount: Int? = nil
+  var markdownHasCarriageReturn: Bool? = nil
+  var markdownContainsFence: Bool? = nil
+  /// Incremental fixed-column classification state for the append-only live
+  /// path. Completed snapshot messages leave this nil and classify normally.
+  var markdownMonospacedClassifier: WorkStreamingMonospacedClassifierState? = nil
 }
 
 struct WorkLocalEchoMessage: Identifiable, Equatable {

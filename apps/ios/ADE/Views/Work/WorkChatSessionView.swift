@@ -2431,6 +2431,19 @@ private func workTimelinePresentationSignature(
 /// Prefers the digest the snapshot fold stamped on the message; only messages
 /// built outside the fold pay to hash their text here.
 private func workTimelineCombineMessageTextSignature(_ message: WorkChatMessage, into hasher: inout Hasher) {
+  hasher.combine(message.markdownRevision)
+
+  // Live assistant deltas already carry a monotonic revision and exact
+  // character metadata. Do not count or hash the growing response here: this
+  // helper runs as part of the presentation signature on every streaming
+  // refresh. The revision is the authoritative invalidation token; the count
+  // only keeps the signature useful when a caller inspects it while a message
+  // is being assembled.
+  if message.markdownRevision > 0 {
+    hasher.combine(message.markdownCharacterCount)
+    return
+  }
+
   hasher.combine(message.markdown.utf8.count)
   if let digest = message.markdownDigest {
     hasher.combine(digest)
@@ -2614,7 +2627,7 @@ func workTimelineRenderEntries(
         itemId: message.itemId,
         text: preview.text,
         accessibilityLabel: accessibilityLabel,
-        sourceDigest: message.markdownDigest ?? ""
+        sourceDigest: "\(message.markdownDigest ?? ""):\(message.markdownRevision)",
       )
       rendered.append(WorkTimelineRenderEntry(
         id: model.id,

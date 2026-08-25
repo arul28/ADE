@@ -19477,6 +19477,51 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
+  func testAssistantPreviewCacheInvalidatesOnIncrementalRevisionWithoutRehashing() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming",
+      role: "assistant",
+      markdown: "Before",
+      markdownDigest: workStableDigest("Before"),
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-1"
+    )
+    let cache = WorkAssistantPreviewCache()
+
+    XCTAssertEqual(cache.preview(for: message).text, "Before")
+    XCTAssertTrue(workApplyStreamingAssistantText("Before and after", to: &message))
+    XCTAssertEqual(message.markdown, "Before and after")
+    XCTAssertEqual(message.markdownRevision, 1)
+    XCTAssertEqual(message.markdownDigest, workStableDigest("Before"), "the live path must not rescan the full text")
+    XCTAssertEqual(cache.preview(for: message).text, "Before and after")
+    XCTAssertFalse(workApplyStreamingAssistantText("Before and after", to: &message))
+    XCTAssertEqual(message.markdownRevision, 1, "duplicate replay must not cause another render refresh")
+  }
+
+  func testStreamingPreviewMetadataKeepsExactCountsAcrossAppendedDeltas() {
+    var message = WorkChatMessage(
+      id: "assistant-streaming-counts",
+      role: "assistant",
+      markdown: "First line",
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "msg-1"
+    )
+
+    XCTAssertTrue(workApplyStreamingAssistantText("\nSecond line", to: &message))
+    XCTAssertTrue(workApplyStreamingAssistantText("\nThird line", to: &message))
+    XCTAssertEqual(message.markdownCharacterCount, message.markdown.count)
+    XCTAssertEqual(message.markdownLineCount, 3)
+    XCTAssertEqual(message.markdownHasCarriageReturn, false)
+    XCTAssertEqual(message.markdownContainsFence, false)
+
+    let preview = WorkAssistantPreviewCache().preview(for: message, anchor: .tail)
+    XCTAssertEqual(preview.totalCharacterCount, message.markdown.count)
+    XCTAssertEqual(preview.totalLineCount, 3)
+    XCTAssertFalse(preview.isTruncated)
+  }
+
   func testWorkChatAccessibilityPreviewCapsHugeMessages() {
     let text = String(repeating: "x", count: workChatAccessibilityPreviewLimit + 50)
     let preview = workChatAccessibilityPreview(text)
@@ -25010,6 +25055,86 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(merged, [duplicate, duplicate, newest])
+  }
+
+  func testWorkTranscriptMergeKeepsDistinctStableIdsWithIdenticalVisibleText() {
+    let olderRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a",
+      itemId: "item-a"
+    )
+    let newerRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-b",
+      itemId: "item-b"
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [olderRow], newer: [newerRow]),
+      [olderRow, newerRow]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [olderRow], newer: [newerRow]),
+      [olderRow, newerRow]
+    )
+  }
+
+  func testWorkTranscriptMergeDoesNotDuplicateRowWhenRefreshAddsStableIds() {
+    let cachedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let refreshedRow = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "same visible text",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a",
+      itemId: "item-a"
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [cachedRow], newer: [refreshedRow]),
+      [cachedRow]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [cachedRow], newer: [refreshedRow]),
+      [cachedRow]
+    )
+  }
+
+  func testWorkTranscriptMergeUsesStableIdWhenStreamingTextChanges() {
+    let draft = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "draft answer",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same",
+      messageId: "message-a"
+    )
+    let completed = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "completed answer",
+      timestamp: draft.timestamp,
+      turnId: draft.turnId,
+      messageId: draft.messageId
+    )
+
+    XCTAssertEqual(
+      mergeWorkTranscriptEntries(older: [draft], newer: [completed]),
+      [draft]
+    )
+    XCTAssertEqual(
+      mergeWorkTranscriptPageOccurrences(older: [draft], newer: [completed]),
+      [draft]
+    )
   }
 
   func testRestoredByteCursorTranscriptCacheRehydratesOrderedIndexStore() {

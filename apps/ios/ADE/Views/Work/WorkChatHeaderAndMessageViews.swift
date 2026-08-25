@@ -741,12 +741,19 @@ final class WorkAssistantPreviewCache {
   }
 
   private var entries: [String: Entry] = [:]
-
   /// Cheap stand-in for the message text. Prefers the digest stamped by the
   /// snapshot fold; messages built outside it fall back to a length probe plus
   /// the text itself, which still avoids hashing on the common path.
   private func identity(for message: WorkChatMessage) -> String {
-    if let digest = message.markdownDigest { return digest }
+    if let digest = message.markdownDigest {
+      return "\(digest):revision=\(message.markdownRevision)"
+    }
+    if message.markdownRevision > 0 {
+      // Incremental messages have not gone through the snapshot fold yet. Do
+      // not interpolate the growing markdown here: the revision already gives
+      // this cache a unique content identity for the current message.
+      return "streaming:\(message.id):revision=\(message.markdownRevision)"
+    }
     return "raw:\(message.markdown.utf8.count):\(message.markdown)"
   }
 
@@ -789,7 +796,11 @@ final class WorkAssistantPreviewCache {
       lineBudget: lineBudget,
       characterBudget: characterBudget,
       anchor: anchor,
-      classification: classification
+      classification: classification ?? message.markdownMonospacedClassifier?.usesMonospacedRendering,
+      knownLineCount: message.markdownLineCount,
+      knownCharacterCount: message.markdownCharacterCount,
+      knownMarkdownHasCarriageReturn: message.markdownHasCarriageReturn,
+      knownMarkdownContainsFence: message.markdownContainsFence
     )
     entry.previewsByLineBudget[lineBudget] = preview
     return preview
@@ -840,13 +851,17 @@ func workAssistantMessagePreview(
   lineBudget: Int,
   characterBudget: Int,
   anchor: WorkAssistantMessagePreviewAnchor = .head,
-  classification: Bool? = nil
+  classification: Bool? = nil,
+  knownLineCount: Int? = nil,
+  knownCharacterCount: Int? = nil,
+  knownMarkdownHasCarriageReturn: Bool? = nil,
+  knownMarkdownContainsFence: Bool? = nil
 ) -> WorkAssistantMessagePreview {
   // `replacingOccurrences` allocates a second copy of the whole message even
   // when there is nothing to replace, which is the overwhelmingly common case
   // (host transcripts are LF). Scan first, copy only when it would change
   // something.
-  let normalized = markdown.utf8.contains(0x0D)
+  let normalized = (knownMarkdownHasCarriageReturn ?? markdown.utf8.contains(0x0D))
     ? markdown.replacingOccurrences(of: "\r\n", with: "\n")
     : markdown
   guard !normalized.isEmpty else {
@@ -873,10 +888,10 @@ func workAssistantMessagePreview(
       : characterBudget,
     256
   )
-  let totalLineCount = workAssistantMessageLineCount(normalized)
-  let totalCharacterCount = normalized.count
+  let totalLineCount = knownLineCount ?? workAssistantMessageLineCount(normalized)
+  let totalCharacterCount = knownCharacterCount ?? normalized.count
   let smallFullCharacterBudget = max(clampedCharacterBudget, workAssistantMessageSmallFullCharacterBudget)
-  if totalLineCount <= clampedLineBudget && normalized.count <= smallFullCharacterBudget {
+  if totalLineCount <= clampedLineBudget && totalCharacterCount <= smallFullCharacterBudget {
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
@@ -896,7 +911,8 @@ func workAssistantMessagePreview(
       characterBudget: clampedCharacterBudget,
       totalLineCount: totalLineCount,
       totalCharacterCount: totalCharacterCount,
-      usesMonospacedRendering: usesMonospacedPreview
+      usesMonospacedRendering: usesMonospacedPreview,
+      containsFence: knownMarkdownContainsFence
     )
   }
 
@@ -952,8 +968,28 @@ private func workAssistantMessageTailPreview(
   characterBudget: Int,
   totalLineCount: Int,
   totalCharacterCount: Int,
-  usesMonospacedRendering: Bool
+  usesMonospacedRendering: Bool,
+  containsFence: Bool? = nil
 ) -> WorkAssistantMessagePreview {
+  // A long one-line answer is the common streaming shape for prose. Searching
+  // backwards for a newline would scan the entire growing line on every delta;
+  // the known line count makes the tail a direct bounded suffix instead.
+  if totalLineCount == 1, containsFence != true {
+    let visibleCharacterCount = min(characterBudget, normalized.count)
+    let suffixStart = normalized.index(normalized.endIndex, offsetBy: -visibleCharacterCount)
+    let sourceRendered = String(normalized[suffixStart...])
+    return WorkAssistantMessagePreview(
+      text: sourceRendered,
+      isTruncated: visibleCharacterCount < totalCharacterCount,
+      usesMonospacedRendering: usesMonospacedRendering,
+      visibleLineCount: 1,
+      totalLineCount: totalLineCount,
+      visibleCharacterCount: visibleCharacterCount,
+      totalCharacterCount: totalCharacterCount,
+      anchor: .tail
+    )
+  }
+
   var segments: [Substring] = []
   segments.reserveCapacity(min(lineBudget, 16))
   var usedCharacters = 0
@@ -987,10 +1023,15 @@ private func workAssistantMessageTailPreview(
   }
 
   let sourceRendered = segments.reversed().joined(separator: "\n")
-  let openingFence = workOpeningMarkdownFenceBeforeTail(
-    in: normalized,
-    tailStart: segments.last?.startIndex ?? normalized.endIndex
-  )
+  let openingFence: String?
+  if containsFence == false {
+    openingFence = nil
+  } else {
+    openingFence = workOpeningMarkdownFenceBeforeTail(
+      in: normalized,
+      tailStart: segments.last?.startIndex ?? normalized.endIndex
+    )
+  }
   let rendered = openingFence.map { "\($0)\n\(sourceRendered)" } ?? sourceRendered
   return WorkAssistantMessagePreview(
     text: rendered,

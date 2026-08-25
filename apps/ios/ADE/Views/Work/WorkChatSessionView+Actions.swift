@@ -269,8 +269,7 @@ private func workIncrementalApplyEnvelope(
     envelopeId: envelope.id
   ) {
     guard case .message(var message) = timeline[targetIndex].payload else { return false }
-    message.markdown = mergeWorkStreamingText(message.markdown, text)
-    message.assistantPreview = nil
+    workApplyStreamingAssistantText(text, to: &message)
     timeline[targetIndex] = WorkTimelineEntry(
       id: timeline[targetIndex].id,
       timestamp: timeline[targetIndex].timestamp,
@@ -493,8 +492,7 @@ private func workIncrementalSnapshotSignature(
     hasher.combine(tail.timestamp)
     hasher.combine(tail.sequence)
     if case .assistantText(let text, let turnId, let itemId) = tail.event {
-      hasher.combine(text.utf8.count)
-      hasher.combine(text.hashValue)
+      workCombineBoundedTextSignature(text, into: &hasher)
       hasher.combine(turnId)
       hasher.combine(itemId)
     }
@@ -503,6 +501,21 @@ private func workIncrementalSnapshotSignature(
     hasher.combine(latestAssistantId)
   }
   return hasher.finalize()
+}
+
+/// Keep the incremental snapshot signature proportional to a small fixed
+/// window. The live path already has the envelope's sequence and byte count;
+/// the ends distinguish edits/replays without hashing a growing response on
+/// the main actor for every delta.
+func workCombineBoundedTextSignature(_ text: String, into hasher: inout Hasher) {
+  let utf8Count = text.utf8.count
+  hasher.combine(utf8Count)
+  guard utf8Count > 1_024 else {
+    hasher.combine(text)
+    return
+  }
+  hasher.combine(text.prefix(512))
+  hasher.combine(text.suffix(512))
 }
 
 private func workIncrementalFallbackSignature(_ fallbackEntries: [AgentChatTranscriptEntry], transcriptIsEmpty: Bool) -> Int {
