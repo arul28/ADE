@@ -921,11 +921,17 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Attributes an already-running simulator session to a lane and chat. This is
   not a step in a normal launch — "launch" claims the session itself.
 
+  Claim rewrites the owning chat, so it is an ownership call: taking a session
+  another chat owns is refused with IOS_SIMULATOR_OWNED_BY_OTHER_SESSION unless
+  you say you mean it. Re-attributing only the lane never trips the guard.
+
     $ ade --socket ios-sim claim --lane <lane-id> --text
 
   Flags:
     --lane, --lane-id <id>   Required; defaults to $ADE_LANE_ID.
     --chat-session <id>      Owner chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --arg ignoreOwnership=true
+                             Take a session another chat owns, deliberately.
 `,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
@@ -936,9 +942,9 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Shutdown carries the caller's chat session ($ADE_CHAT_SESSION_ID or
   --chat-session). Releasing a session owned by a different chat is refused.
   The check is cooperative — it stops accidents, not determined callers:
-  --force gets through, and so does naming the owner's own chat session id,
-  which "ios-sim status" reports to anyone who asks. Ask before evicting
-  another chat.
+  --force gets through, so does --arg ignoreOwnership=true, and so does naming
+  the owner's own chat session id, which "ios-sim status" reports to anyone who
+  asks. Ask before evicting another chat.
 
     $ ade --socket ios-sim shutdown --text
     $ ade --socket ios-sim shutdown --force --text
@@ -946,6 +952,9 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --force, -f            Release a session owned by another chat, and hard-reset
                            the launch lock and tracked idb companions with it.
+    --arg ignoreOwnership=true
+                           Release a session owned by another chat without the
+                           hard reset: no companion sweep, no launch-lock reset.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
 `,
   actions: `${ADE_BANNER}

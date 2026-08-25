@@ -70,6 +70,12 @@ type FakeSender = SimulatorParkingHolderSender & {
   destroy: () => void;
   /** The document is swapped under a webContents that survives: a reload. */
   reload: () => void;
+  /**
+   * A navigation ADE cancels: `will-navigate` is preventDefaulted, so
+   * `did-start-navigation` still fires but nothing ever commits and the
+   * document — with the drawer in it — stays exactly where it was.
+   */
+  startBlockedNavigation: () => void;
   /** A `pushState` or fragment jump, which keeps the drawer alive. */
   navigateInPage: () => void;
   /** How many listeners are still armed, across both events. */
@@ -103,8 +109,14 @@ function fakeSender(id: number): FakeSender {
     on: add as SimulatorParkingHolderSender["on"],
     off: remove as SimulatorParkingHolderSender["off"],
     destroy: () => emit("destroyed"),
-    reload: () => emit("did-start-navigation", { isMainFrame: true, isSameDocument: false }),
-    navigateInPage: () => emit("did-start-navigation", { isMainFrame: true, isSameDocument: true }),
+    reload: () => {
+      emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+      emit("did-navigate", "https://ade.local/index.html");
+    },
+    // Identical to a reload right up to the commit that never comes: a
+    // main-frame, cross-document navigation start that `will-navigate` cancels.
+    startBlockedNavigation: () => emit("did-start-navigation", { isMainFrame: true, isSameDocument: false }),
+    navigateInPage: () => emit("did-navigate-in-page", "https://ade.local/index.html#work"),
     listenerCount: () => {
       let total = 0;
       for (const set of listeners.values()) total += set.size;
@@ -382,7 +394,7 @@ describe("simulator window parking holders", () => {
   // sender id, the reloaded drawer retained on top of it, and the count never
   // came back to zero — every later real release answered false and every ADE
   // window move went on repositioning the user's Simulator with no drawer open.
-  it("drops a reloaded renderer's holders when its main frame navigates", () => {
+  it("drops a reloaded renderer's holders once its navigation commits", () => {
     const claimant = fakeWindow();
     const renderer = fakeSender(1);
     followSimulatorWindowUnderAde(asBrowserWindow(claimant));
@@ -410,6 +422,24 @@ describe("simulator window parking holders", () => {
 
     expect(releaseSimulatorParkingHolder(asBrowserWindow(claimant), renderer)).toBe(true);
     expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // ADE preventDefaults every main-frame navigation that is not the renderer
+  // URL — a file dropped outside a drop zone is enough to start one. The
+  // navigation still *starts*, so watching `did-start-navigation` tore the
+  // follow down under a fully live document that then never re-retained, and
+  // the Simulator silently stopped following ADE until the user restarted the
+  // live view. A navigation that never commits must leave the holders alone.
+  it("keeps the holders of a renderer whose navigation is cancelled", () => {
+    const claimant = fakeWindow();
+    const renderer = fakeSender(1);
+    followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), renderer);
+
+    renderer.startBlockedNavigation();
+
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+    expect(releaseSimulatorParkingHolder(asBrowserWindow(claimant), renderer)).toBe(true);
   });
 
   // `pushState` and fragment jumps keep the document — and the drawer holding

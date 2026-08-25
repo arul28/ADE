@@ -3539,6 +3539,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const laneId = cleanClaimId(claimArgs.laneId);
     const chatSessionId = cleanClaimId(claimArgs.chatSessionId);
     if (!laneId && !chatSessionId) return getStatus();
+    // The same cooperative single-owner rule `launch` and `shutdown` enforce.
+    // Claim overwrites `activeSession.chatSessionId` outright, so without this
+    // it was the cheapest eviction of all: a foreign chat ran
+    // `ade ios-sim claim --lane <anything>` (the CLI defaults the chat id to its
+    // own $ADE_CHAT_SESSION_ID), became the owner, and a plain `shutdown` was
+    // then accepted — no --force, no impersonation.
+    //
+    // Scoped to an actual ownership change: naming no chat id, or the owner's
+    // own, only re-attributes the lane and leaves the owning chat in place, so
+    // an agent tagging a running session with its lane is unaffected.
+    if (
+      activeSession.chatSessionId
+      && chatSessionId
+      && chatSessionId !== activeSession.chatSessionId
+      && !claimArgs.force
+      && !claimArgs.ignoreOwnership
+    ) {
+      throw new IosSimulatorOwnedBySessionError(activeSession);
+    }
     const nextLaneId = laneId || activeSession.laneId;
     const nextChatSessionId = chatSessionId || activeSession.chatSessionId;
     const changed = nextLaneId !== activeSession.laneId

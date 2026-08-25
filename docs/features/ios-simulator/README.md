@@ -56,6 +56,14 @@ stating the intent works.
 - `launch --force`, which validates the new target before evicting, and
   `attachToChatSession({ takeOver: true })`, which transfers ownership without
   a teardown at all.
+- `claim({ ignoreOwnership: true })` / `claim --arg force=true`. `claim`
+  rewrites `activeSession.chatSessionId` outright, and the CLI defaults that id
+  to the caller's own `$ADE_CHAT_SESSION_ID`, so `ade ios-sim claim --lane …`
+  from a foreign chat used to take ownership with no bypass flag at all — after
+  which a plain `shutdown` was accepted. It now carries the same cooperative
+  guard as `shutdown`, and the bypass is spelled the same way. Naming no chat
+  session id (or the owner's own) still only re-attributes the lane and is not
+  a takeover.
 
 Treat it as a guard rail against accidents, not as a lock: nothing here stops a
 determined caller, and the agent skill tells agents to ask before evicting

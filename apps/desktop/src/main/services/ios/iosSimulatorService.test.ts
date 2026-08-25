@@ -294,7 +294,7 @@ describe("iosSimulatorService single-owner lock contract", () => {
         bundleId: "com.example.app",
         build: false,
         laneId: "lane-old",
-        chatSessionId: "chat-old",
+        chatSessionId: "chat-1",
       });
 
       const claimed = await service.claim({ laneId: "lane-1", chatSessionId: "chat-1" });
@@ -315,6 +315,72 @@ describe("iosSimulatorService single-owner lock contract", () => {
           claimedAt: expect.any(String),
         },
       });
+    } finally {
+      service.dispose();
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
+  // Claim rewrites `activeSession.chatSessionId`, so before this guard it was
+  // the cheapest eviction path there is: a foreign chat ran
+  // `ade ios-sim claim --lane <anything>` (the CLI defaults the chat id to its
+  // own $ADE_CHAT_SESSION_ID), became the owner, and a plain `shutdown` was then
+  // accepted — no --force, no impersonation, past every other ownership check.
+  it("refuses a claim from another chat unless the caller says it means to take over", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "bootstatus") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "listapps") {
+        return {
+          stdout: `"com.example.app" = {\n  CFBundleDisplayName = "Example";\n};\n`,
+          stderr: "",
+        };
+      }
+      if (command === "xcrun" && commandArgs[1] === "launch") return { stdout: "com.example.app: 123\n", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({
+      projectRoot: os.tmpdir(),
+      logger: noopLogger,
+      resolveLaneWorktreePath: () => os.tmpdir(),
+      onEvent: () => {},
+    });
+
+    try {
+      await service.launch({
+        bundleId: "com.example.app",
+        build: false,
+        laneId: "lane-owner",
+        chatSessionId: "chat-owner",
+      });
+
+      await expect(service.claim({ laneId: "lane-thief", chatSessionId: "chat-thief" }))
+        .rejects.toMatchObject({ code: IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE });
+      expect((await service.getStatus()).activeSession).toMatchObject({
+        laneId: "lane-owner",
+        chatSessionId: "chat-owner",
+      });
+
+      // Naming no chat id is not a takeover: it re-attributes the lane and
+      // leaves the owning chat exactly where it was, so an agent tagging a
+      // running session with its lane still works.
+      const relabelled = await service.claim({ laneId: "lane-other" });
+      expect(relabelled.activeSession).toMatchObject({
+        laneId: "lane-other",
+        chatSessionId: "chat-owner",
+      });
+
+      // Stated intent gets through, the same way it does for `shutdown`.
+      const taken = await service.claim({ chatSessionId: "chat-thief", ignoreOwnership: true });
+      expect(taken.activeSession).toMatchObject({ chatSessionId: "chat-thief" });
     } finally {
       service.dispose();
       restoreHooks();

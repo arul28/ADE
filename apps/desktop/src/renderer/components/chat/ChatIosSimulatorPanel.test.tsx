@@ -1360,20 +1360,40 @@ describe("ChatIosSimulatorPanel", () => {
     expect(constraints.video.mandatory.chromeMediaSourceId).toBe(simulatorWindowSource.id);
   });
 
-  // The host caps each discovery call, not the sequence of them. With a 12s
-  // per-call budget and three sweeps, a genuinely blocked setup used to spin for
-  // ~36s before saying anything at all — the drawer has to own the overall
-  // deadline and stop asking once a whole host budget no longer fits in it.
-  it("stops sweeping for the simulator window once the overall deadline is spent", async () => {
-    const realNow = Date.now.bind(Date);
-    let elapsed = 0;
-    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + elapsed);
+  // The host's own discovery settles and re-attaches inside its 12s budget, so
+  // a renderer-side retry loop only ever added spinner on top of it. One sweep,
+  // and the give-up message says what actually happened — nothing timed out.
+  it("gives up after a single empty sweep and says the window was not found", async () => {
     const { api } = installIosSimulatorApi();
-    // Each sweep burns a full host budget and comes back empty with no verdict
-    // — the shape a blocked setup actually produces.
-    api.listSimulatorWindowSources.mockImplementation(async () => {
-      elapsed += 12_000;
-      return { sources: [], windowState: null, message: null };
+    // An empty sweep with no verdict — the shape a blocked setup produces, and
+    // the one the deleted loop used to keep re-asking on.
+    api.listSimulatorWindowSources.mockResolvedValue({ sources: [], windowState: null, message: null });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={vi.fn()}
+      />,
+    );
+
+    await waitFor(
+      () => expect(screen.getAllByText(/ADE could not find the .* window/).length).toBeGreaterThan(0),
+      { timeout: 3_000 },
+    );
+    expect(screen.queryByText(/Timed out finding the simulator window/)).toBeNull();
+    expect(api.listSimulatorWindowSources).toHaveBeenCalledTimes(1);
+  });
+
+  // A verdict from the host is the specific, actionable one — a permission
+  // blocker, no session — so it has to survive to the drawer verbatim rather
+  // than be replaced by the generic not-found line.
+  it("passes the host's own discovery verdict through verbatim", async () => {
+    const { api } = installIosSimulatorApi();
+    api.listSimulatorWindowSources.mockResolvedValue({
+      sources: [],
+      windowState: null,
+      message: "ADE needs Screen Recording permission to capture the simulator.",
     });
 
     render(
@@ -1384,15 +1404,11 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    await waitFor(() => expect(api.listSimulatorWindowSources).toHaveBeenCalled(), { timeout: 3_000 });
     await waitFor(
-      () => expect(screen.getAllByText(/Timed out finding the simulator window/).length).toBeGreaterThan(0),
+      () => expect(screen.getAllByText(/needs Screen Recording permission/).length).toBeGreaterThan(0),
       { timeout: 3_000 },
     );
-    // One sweep, not three: the second would have pushed the wall time past the
-    // deadline before it could return.
-    expect(api.listSimulatorWindowSources).toHaveBeenCalledTimes(1);
-    nowSpy.mockRestore();
+    expect(screen.queryByText(/ADE could not find the .* window/)).toBeNull();
   });
 
   it("warns when ADE cannot refresh the simulator live view", async () => {

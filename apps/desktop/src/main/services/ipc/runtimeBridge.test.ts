@@ -205,7 +205,6 @@ const simulatorSession = {
 
 function iosSimulatorServiceStub(overrides: Record<string, unknown> = {}) {
   return {
-    ...overrides,
     getStatus: vi.fn(async () => ({
       platform: "darwin",
       supported: true,
@@ -217,6 +216,9 @@ function iosSimulatorServiceStub(overrides: Record<string, unknown> = {}) {
       activeDevice: null,
       activeSession: simulatorSession,
     })),
+    // Last, so a caller can actually override any key this stub defines —
+    // spread first, the defaults above silently won every collision.
+    ...overrides,
   };
 }
 

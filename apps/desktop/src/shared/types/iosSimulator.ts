@@ -120,6 +120,19 @@ export type IosSimulatorListLaunchTargetsArgs = {
 export type IosSimulatorClaimArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /**
+   * Take a session another chat owns, deliberately.
+   *
+   * Claim rewrites `activeSession.chatSessionId`, so without a guard it was the
+   * cheapest eviction path of all: any chat could name itself the owner and
+   * then issue a plain `shutdown`, which the single-owner rule would accept.
+   * The same cooperative guard `shutdown` uses now applies here, and this is
+   * how a caller says it means to take over. Re-attributing the *lane* alone
+   * never trips it — that leaves the owning chat exactly where it was.
+   */
+  ignoreOwnership?: boolean | null;
+  /** Same bypass as `ignoreOwnership`, spelled the way `launch`/`shutdown` spell it. */
+  force?: boolean | null;
 };
 
 export type IosSimulatorLaunchArgs = {

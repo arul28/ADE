@@ -192,34 +192,6 @@ const MEDIA_ZOOM_STEP = 0.25;
 
 /** Stream reports active but no new frame landed inside this window. */
 const FRAME_STALL_MS = 3_000;
-/**
- * The host answers with a `message` only for a terminal blocker, so a sweep
- * that simply came back empty is worth repeating — a Simulator window can
- * appear a beat after the app does.
- */
-const WINDOW_SOURCE_ATTEMPTS = 3;
-/**
- * Host discovery budgets 12s *per call* (`SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS`
- * — it has to sit above the ~10.5s of AppleScript ceilings a cold Simulator
- * costs), and the loop below sweeps up to three times. Per-call budgets alone
- * therefore bound nothing the user experiences: three full sweeps is ~36s of
- * spinner before a blocked setup says anything at all.
- *
- * So the wall time is bounded here, across attempts, and a sweep is only
- * started when a whole host budget still fits inside it. The first sweep always
- * gets its full 12s, which is what a cold start needs; the retries only happen
- * when the first one came back quickly, which is exactly the case they exist
- * for.
- *
- * Worst case: one 12s sweep, then the deadline refuses a second (13s - 12s
- * spent leaves 1s, less than a budget), so ~12s to a terminal message —
- * a fraction under 13s counting the 250ms inter-sweep wait. A fast first sweep
- * still allows a second and a third, each capped the same way, so the ceiling
- * holds at ~13s + one sweep's overrun rather than 36s.
- */
-const WINDOW_SOURCE_TOTAL_DISCOVERY_MS = 13_000;
-/** Mirrors the host's own per-call cap so the deadline above can reason about it. */
-const WINDOW_SOURCE_HOST_BUDGET_MS = 12_000;
 /** Window-state poll cadence: fast while the state is moving, slow once settled. */
 const WINDOW_POLL_FAST_MS = 2_000;
 const WINDOW_POLL_SLOW_MS = 10_000;
@@ -679,12 +651,6 @@ function stripDataUrlPrefix(dataUrl: string): string {
   return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
 async function cropElementDataUrl(snapshot: IosScreenSnapshot, element: IosScreenElement): Promise<string | null> {
   const screenshotWidth = snapshot.screenshot.width ?? snapshot.screen.width;
   const screenshotHeight = snapshot.screenshot.height ?? snapshot.screen.height;
@@ -1131,6 +1097,16 @@ export function ChatIosSimulatorPanel({
       // not replay the owner's id as its own. Impersonating the owner worked,
       // but it logged the wrong caller and taught every other caller that
       // reading an id off `getStatus` is how you get past the guard.
+      //
+      // The trade: impersonation worked against *any* host build, because it
+      // only ever used fields the host already had. `ignoreOwnership` is a
+      // contract the host has to honour, so against an older remote runtime
+      // this Stop is refused with IOS_SIMULATOR_OWNED_BY_OTHER_SESSION and the
+      // message lands in the drawer. That is a clean, legible failure rather
+      // than a silent one, and it is preferred to auto-retrying with `force`:
+      // `force` is not the same request — it also hard-resets the launch lock
+      // and sweeps tracked idb companions — so falling back to it would quietly
+      // do more than the user's Stop asked for.
       await window.ade.iosSimulator.shutdown({
         chatSessionId: sessionId ?? null,
         force,
@@ -1358,8 +1334,8 @@ export function ChatIosSimulatorPanel({
   /**
    * `captureStartRef` is checked on entry and after every await in here, and
    * both awaits are long: `startStream` is a daemon round-trip, and discovery
-   * sweeps for up to WINDOW_SOURCE_TOTAL_DISCOVERY_MS plus one host budget's
-   * overrun. Leaving Interact, losing the session, or closing the drawer
+   * runs for up to one host budget (~12s). Leaving Interact, losing the
+   * session, or closing the drawer
    * while it says "Starting the live view" therefore lands React's cleanups
    * *before* this resumes — they see no stream and no hold, and then this took
    * both for a live view nobody is watching, permanently pinning the parking
@@ -1417,61 +1393,55 @@ export function ChatIosSimulatorPanel({
         height: null,
         error: null,
       });
-      let source: IosSimulatorWindowSource | null = null;
-      let blockerMessage: string | null = null;
-      // The host answers with a `message` only when it has reached a verdict — a
-      // permission blocker, no session, or its own budget exhausted — so a message
-      // ends the poll. An empty sweep with no message is transient and worth
-      // re-asking: the Simulator window is sometimes a beat behind the app.
+      // One sweep, and one only. The host's own discovery already settles and
+      // re-attaches inside its 12s budget
+      // (`SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS`, sized above the ~10.5s of
+      // AppleScript ceilings a cold Simulator costs), so the transient a
+      // renderer-side retry loop existed for — "the Simulator window is
+      // sometimes a beat behind the app" — is handled before this call ever
+      // returns. Retrying on top of that only ever added spinner.
       //
-      // The host's budget is per call, so the deadline that bounds what the user
-      // waits for lives here. A sweep is only started when a whole host budget
-      // still fits before it, which keeps the first (cold-start) sweep whole and
-      // stops the third from turning a blocked setup into a silent ~36s spinner.
-      const discoveryDeadlineAt = Date.now() + WINDOW_SOURCE_TOTAL_DISCOVERY_MS;
-      for (let attempt = 0; attempt < WINDOW_SOURCE_ATTEMPTS; attempt += 1) {
-        if (attempt > 0 && discoveryDeadlineAt - Date.now() < WINDOW_SOURCE_HOST_BUDGET_MS) {
-          blockerMessage = "Timed out finding the simulator window. Try again.";
-          break;
+      // Worst case is therefore one host budget: ~12s to a source or to a
+      // terminal message.
+      const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
+      // Take the parking hold here, and not where the stream starts. Discovery
+      // is what arms the host's claim, and a holder only counts against a claim
+      // that already exists — while `startStream` itself is answered by the
+      // brain daemon whenever a project is bound (which window capture
+      // requires), so it never reaches the Electron-main code that owns parking
+      // at all. Held even when discovery comes back empty, so the give-up path
+      // below has something to give back.
+      if (!parkingHoldRef.current) {
+        // The host answers with whether it actually counted the holder — a
+        // window that lost the claim race is silently not counted — and the
+        // panel records the hold only then. Believing otherwise would make
+        // every later release decrement a holder this panel never took, which
+        // is another drawer's. A `false` is not retried: it means another ADE
+        // window owns the parking claim, which stays true for the life of that
+        // claim, so this drawer simply captures without a hold until the claim
+        // is gone. It records nothing and therefore releases nothing.
+        const held = await window.ade.iosSimulator.retainWindowParking();
+        if (held) {
+          holdTakenByThisStart = Symbol("ios-simulator-parking-hold");
+          parkingHoldRef.current = holdTakenByThisStart;
         }
-        const result = await listWindowSourcesForSession({ deviceUdid: device.udid, deviceName: device.name });
-        // Take the parking hold here, once, and not where the stream starts.
-        // Discovery is what arms the host's claim, and a holder only counts
-        // against a claim that already exists — while `startStream` itself is
-        // answered by the brain daemon whenever a project is bound (which window
-        // capture requires), so it never reaches the Electron-main code that owns
-        // parking at all. Held from the first sweep on, so the give-up path below
-        // has something to give back.
-        if (!parkingHoldRef.current) {
-          // The host answers with whether it actually counted the holder — a
-          // window that lost the claim race is silently not counted — and the
-          // panel records the hold only then. Believing otherwise would make
-          // every later release decrement a holder this panel never took, which
-          // is another drawer's. A `false` is not retried: it means another ADE
-          // window owns the parking claim, which stays true for the life of that
-          // claim, so this drawer simply captures without a hold until the claim
-          // is gone. It records nothing and therefore releases nothing.
-          const held = await window.ade.iosSimulator.retainWindowParking();
-          if (held) {
-            holdTakenByThisStart = Symbol("ios-simulator-parking-hold");
-            parkingHoldRef.current = holdTakenByThisStart;
-          }
-        }
-        if (superseded()) {
-          await abandonStart();
-          return;
-        }
-        // The session passed above only tells the host whether to park and settle
-        // at all. Choosing among the windows it found is this call, right here,
-        // so a device switch re-picks instead of parking on the previous window.
-        source = pickSimulatorWindowSource(result.sources, device);
-        if (result.windowState) setSimulatorWindowState(result.windowState);
-        blockerMessage = result.message;
-        if (source || blockerMessage) break;
-        await wait(250);
       }
+      if (superseded()) {
+        await abandonStart();
+        return;
+      }
+      // The session passed above only tells the host whether to park and settle
+      // at all. Choosing among the windows it found is this call, right here,
+      // so a device switch re-picks instead of parking on the previous window.
+      const source = pickSimulatorWindowSource(result.sources, device);
+      if (result.windowState) setSimulatorWindowState(result.windowState);
       if (!source) {
-        throw new Error(blockerMessage ?? `ADE could not find ${device.name}. Launch the simulator from ADE to start the live view.`);
+        // The host answers with a `message` only when it has reached a verdict —
+        // a permission blocker, no session, its own budget exhausted — and that
+        // verdict is the specific, actionable one, so it is passed through
+        // verbatim. Without one, discovery simply found no window: say that,
+        // rather than claiming a timeout that did not happen.
+        throw new Error(result.message ?? `ADE could not find the ${device.name} window. Make sure the simulator is running and its window is open, then try again.`);
       }
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("ADE cannot show the simulator in this window.");
       const stream = await navigator.mediaDevices.getUserMedia(buildDesktopCaptureConstraints(source.id, 60));

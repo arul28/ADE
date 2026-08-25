@@ -460,12 +460,6 @@ let simulatorParkingWindow: BrowserWindow | null = null;
 let simulatorParkingTimer: NodeJS.Timeout | null = null;
 let cleanupSimulatorParkingFollow: (() => void) | null = null;
 
-/** The main-frame navigation facts a reload has to be told apart by. */
-export type SimulatorParkingNavigationDetails = {
-  isMainFrame: boolean;
-  isSameDocument: boolean;
-};
-
 /**
  * The two teardown signals a holder is dropped on, and their removal.
  *
@@ -474,10 +468,7 @@ export type SimulatorParkingNavigationDetails = {
  */
 type SimulatorParkingHolderSubscription = {
   (event: "destroyed", listener: () => void): unknown;
-  (
-    event: "did-start-navigation",
-    listener: (details: SimulatorParkingNavigationDetails) => void,
-  ): unknown;
+  (event: "did-navigate", listener: () => void): unknown;
 };
 
 /**
@@ -638,18 +629,22 @@ export function retainSimulatorParkingFollow(
     // under the same sender id forever. The new document retains again, so the
     // count only ever climbed and the follow stayed pinned for the life of the
     // process.
-    const onNavigated = (details: SimulatorParkingNavigationDetails) => {
-      // A fragment jump or a `pushState` keeps the document — and the drawer
-      // that holds the claim — alive. Only a real document swap in the main
-      // frame takes the holders with it.
-      if (!details?.isMainFrame || details.isSameDocument) return;
-      dropSimulatorParkingHoldersFor(sender.id);
-    };
+    //
+    // `did-navigate`, not `did-start-navigation`: the latter fires for
+    // navigations that never commit, and ADE cancels exactly those — the window
+    // preventDefaults every main-frame `will-navigate` that is not the renderer
+    // URL, and a file dropped outside a drop zone is enough to trigger one.
+    // Dropping the holders there tore the follow down under a document that was
+    // still live and never re-retained. `did-navigate` fires only on a commit,
+    // is main-frame-only, and excludes in-page navigations, so no isMainFrame /
+    // isSameDocument filtering is needed. It still precedes the new document's
+    // scripts, so the drop lands before the reloaded drawer re-retains.
+    const onNavigated = () => dropSimulatorParkingHoldersFor(sender.id);
     sender.on("destroyed", onDestroyed);
-    sender.on("did-start-navigation", onNavigated);
+    sender.on("did-navigate", onNavigated);
     simulatorParkingHolderWatched.set(sender.id, () => {
       sender.off("destroyed", onDestroyed);
-      sender.off("did-start-navigation", onNavigated);
+      sender.off("did-navigate", onNavigated);
     });
   }
   return true;
