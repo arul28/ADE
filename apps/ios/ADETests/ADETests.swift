@@ -20458,6 +20458,123 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(dynamicOption?.piModelId, "gpt-5.4")
   }
 
+  /// `WorkModelProvider.id` is its key, so two providers sharing a key would feed
+  /// duplicate ids to `ForEach` and trap SwiftUI. The Pi branch already guarded this;
+  /// the OpenCode branch did not. Merge same-key providers instead of emitting both.
+  func testOpenCodeHostCatalogMergesDuplicateProviderKeys() {
+    func model(id: String, name: String) -> AgentChatModelCatalogModel {
+      AgentChatModelCatalogModel(
+        id: id,
+        runtimeModelId: id,
+        provider: "opencode",
+        providerKey: "openai",
+        groupKey: "opencode",
+        displayName: name,
+        description: "\(name) (OpenCode)",
+        isDefault: false,
+        reasoningEfforts: nil,
+        defaultReasoningEffort: nil,
+        serviceTiers: nil,
+        aliases: nil,
+        maxThinkingTokens: nil,
+        modelId: id,
+        family: "openai",
+        supportsReasoning: false,
+        supportsTools: true,
+        cursorAvailability: nil,
+        color: nil,
+        isAvailable: true,
+        connected: true,
+        requiresConfiguration: false,
+        sourceRuntime: "opencode",
+        providerId: "openai",
+        providerName: "OpenAI",
+        stale: false,
+        piProfileId: nil,
+        piProviderId: nil,
+        piModelId: nil
+      )
+    }
+    func provider(_ model: AgentChatModelCatalogModel) -> AgentChatModelCatalogProvider {
+      AgentChatModelCatalogProvider(
+        key: "openai",
+        displayName: "OpenAI",
+        badgeColor: "#10A37F",
+        modelCount: 1,
+        subsections: [
+          AgentChatModelCatalogSubsection(key: "__default__", label: "", models: [model])
+        ]
+      )
+    }
+    let first = model(id: "opencode/openai/gpt-5.4", name: "GPT 5.4")
+    let second = model(id: "opencode/openai/gpt-5.5", name: "GPT 5.5")
+    let catalog = AgentChatModelCatalog(
+      groups: [
+        AgentChatModelCatalogGroup(
+          key: "opencode",
+          displayName: "OpenCode",
+          providers: [provider(first), provider(second)]
+        )
+      ],
+      fetchedAt: "2026-08-24T00:00:00.000Z",
+      stale: false
+    )
+
+    let providers = workModelCatalogGroups(
+      hostCatalog: catalog,
+      currentModelId: "",
+      currentProvider: "opencode"
+    )
+      .first(where: { $0.key == "opencode" })?
+      .providers ?? []
+
+    XCTAssertEqual(providers.map(\.key), ["openai"], "duplicate provider keys must merge")
+    XCTAssertEqual(Set(providers.flatMap { $0.models.map(\.id) }), [
+      "opencode/openai/gpt-5.4",
+      "opencode/openai/gpt-5.5",
+    ], "merging must keep every model")
+    let ids = providers.flatMap { $0.models.map(\.id) }
+    XCTAssertEqual(ids.count, Set(ids).count, "merged models must stay unique")
+  }
+
+  /// `WorkModelIdMatcher` replaced an O(models x ids) scan that called
+  /// `workModelIdsEquivalent` per pair. It must decide identically: a prebuilt union
+  /// of needle keys matches an id exactly when some individual needle would have.
+  func testWorkModelIdMatcherAgreesWithPairwiseEquivalence() {
+    let needles = [
+      "claude-opus-5",
+      "openai/gpt-5.4",
+      "opencode/anthropic/claude-sonnet-5",
+      "pi/work/openai-codex/gpt-5.4",
+    ]
+    let candidates = needles + [
+      "anthropic/claude-opus-5",
+      "gpt-5.4",
+      "opencode/openai/gpt-5.4",
+      "claude-sonnet-5",
+      "opencode/nano-gpt/nano-model",
+      "cursor/composer-2.5",
+      "",
+    ]
+    let matcher = WorkModelIdMatcher(ids: needles)
+
+    for candidate in candidates {
+      let pairwise = needles.contains { workModelIdsEquivalent($0, candidate) }
+      XCTAssertEqual(
+        matcher.matches(candidate),
+        pairwise,
+        "matcher disagreed with pairwise equivalence for \(candidate.isEmpty ? "<empty>" : candidate)"
+      )
+    }
+
+    // Pin the two ends so the test still fails if BOTH implementations regress to a
+    // constant together.
+    XCTAssertTrue(matcher.matches("anthropic/claude-opus-5"), "alias of a needle must match")
+    XCTAssertFalse(matcher.matches("opencode/nano-gpt/nano-model"), "unrelated id must not match")
+    XCTAssertFalse(matcher.matches(nil), "a nil id matches nothing")
+    XCTAssertFalse(WorkModelIdMatcher(ids: []).matches("claude-opus-5"), "an empty scope matches nothing")
+  }
+
   func testPiHostCatalogKeepsProfilesInDistinctReadablePickerTabs() {
     func model(profile: String) -> AgentChatModelCatalogModel {
       let canonicalId = "pi/\(profile)/openai-codex/gpt-5.4"

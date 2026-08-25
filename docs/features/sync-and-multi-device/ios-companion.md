@@ -602,7 +602,26 @@ The Work model/activity parity path is concentrated in these files:
   host model rows including `defaultReasoningEffort`.
 - `ADE/Views/Work/WorkModelCatalog.swift` and `WorkModelPickerSheet.swift` —
   host-first model catalog merge, GPT-5.6 ordering/defaults/visible tiers, Fast,
-  and the Ultra usage warning.
+  and the Ultra usage warning. `workModelCatalogGroups` runs every group's
+  providers through `workMergedProvidersByKey` — `WorkModelProvider.id` is its
+  key and SwiftUI traps on duplicate `ForEach` ids, and *both* branches can
+  collide (the plain branch passes host provider keys straight through; the Pi
+  branch derives its key from subsection/model metadata rather than
+  `provider.key`), so the merge belongs to the group, not to one branch. Same-key
+  providers merge in first-seen order, keeping the first non-blank label.
+  `WorkModelIdMatcher` is the prebuilt form of `workModelIdsEquivalent`: it
+  hoists a needle id list into one lookup-key set so filtering a catalog is
+  O(models) instead of O(models × ids). `WorkModelPickerSheet` caches the scoped
+  catalog (`rawCatalogGroups` + `scopedCatalogGroups`, written only through
+  `setHostGroups`) because `catalog` is read many times per body pass and the
+  body re-runs on every search keystroke; `.onChange` on `availableModelIds` and
+  `cursorAvailabilityMode` re-scopes from the raw copy, since those are `let`s
+  the parent can replace while the sheet's `@State` survives. `ModelPickerListRow`
+  is deliberately **not** `Equatable` / `.equatable()`: rows live in a
+  `LazyVStack` so only visible rows diff, and `EquatableView` keeping the
+  installed view value would also keep its captured closures (`currentModelId`,
+  `lanes`, `onSelect`), making a sync update that arrives while the sheet is open
+  invisible to a tapped row.
 - `ADE/Views/Work/WorkEventMapping.swift`, `WorkTranscriptParser.swift`,
   `WorkModels.swift`, `WorkTimelineHelpers.swift`, and
   `WorkStatusAndFormattingHelpers.swift` — compact web/MCP/image mapping for
@@ -2918,6 +2937,23 @@ the stats and shows update guidance.
   is a CRR, make sure writes land in a table the phone reads), not
   on the phone. Avoid adding runtime-only caches that the phone has no
   way to observe.
+- **The synced model catalog is sized for the phone.** `ade.agentChat.modelCatalog`
+  emits only connected OpenCode providers' models; the full OpenCode directory is
+  models.dev in its entirety (~195 providers / ~7.2k models, ~4.85 MB) and shipping
+  it stalled or killed the iOS model picker. The host still emits an empty block
+  for each unconnected provider, but that is for the desktop payload shape — the
+  phone drops them (`providers.filter { !$0.models.isEmpty }`, then the same
+  filter on groups), because iOS has no OpenCode connect flow and an empty row
+  would be a dead end. The phone's connect affordance is a static hint in
+  `WorkModelPickerSheet` pointing at the paired machine, not a catalog block.
+  Anything that widens what the host puts in this payload has to be weighed
+  against the phone decoding and rendering all of it.
+- **Long model lists must be lazy on the phone.** `WorkNewChatSheet`'s model
+  section uses a `LazyVStack`: each row materializes two `RoundedRectangle`s and a
+  `.glassEffect` layer, and an eager `VStack` builds every one synchronously the
+  moment a provider is picked. This stays load-bearing even with the host scoped
+  to connected providers — a single connected provider such as `openrouter` or
+  `github-copilot` still lists hundreds of models.
 - **Personal chats are the exception to project-DB reads.** Their durable state
   belongs to the machine scope, so iOS reads summaries through
   `personalChats.list`, caches them per host, and streams transcripts with

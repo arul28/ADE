@@ -1919,7 +1919,6 @@ export function createAiIntegrationService(args: {
               return {
                 error: null as string | null,
                 modelIds: [] as string[],
-                catalogModelIds: [] as string[],
                 providers: [] as NonNullable<AiIntegrationStatus["opencodeProviders"]>,
                 stale: false,
               };
@@ -1955,7 +1954,6 @@ export function createAiIntegrationService(args: {
             return {
               error: null as string | null,
               modelIds: [] as string[],
-              catalogModelIds: [] as string[],
               providers: loadPersistedOpenCodeInventory(projectRoot),
               stale: true,
             };

@@ -61,7 +61,16 @@ struct WorkModelPickerSheet: View {
   @StateObject private var picker = ModelPickerStore()
   @State private var selection: ModelPickerRailSelection = .favorites
   @State private var searchText: String = ""
-  @State private var liveCatalog: [WorkModelCatalogGroup]?
+  /// `scopedCatalog` is O(models) and `catalog` is read ~10x per body pass, which
+  /// SwiftUI re-runs on every search keystroke, so scope once and read the result.
+  ///
+  /// The raw groups are retained because scoping also depends on `availableModelIds`
+  /// and `cursorAvailabilityMode`. Those are `let`s, but a `let` on a View struct is
+  /// not a constant input: the parent replaces the whole struct while `@State`
+  /// persists, so both can change under a live cache. `.onChange` below re-scopes
+  /// from the raw copy. Write both only through `setHostGroups` so they cannot drift.
+  @State private var rawCatalogGroups: [WorkModelCatalogGroup]?
+  @State private var scopedCatalogGroups: [WorkModelCatalogGroup]?
   @State private var isLoadingCatalog = false
   @State private var didPickInitialSelection = false
   @State private var selectedProviderTabKey: String?
@@ -76,10 +85,21 @@ struct WorkModelPickerSheet: View {
   @State private var piLoginError: String?
 
   private var catalog: [WorkModelCatalogGroup] {
-    if let liveCatalog {
-      return scopedCatalog(liveCatalog)
-    }
-    return []
+    scopedCatalogGroups ?? []
+  }
+
+  /// The only writer of the catalog pair.
+  @MainActor
+  private func setHostGroups(_ groups: [WorkModelCatalogGroup]) {
+    rawCatalogGroups = groups
+    scopedCatalogGroups = scopedCatalog(groups)
+  }
+
+  /// Re-scope in place when a scoping input changes without the host catalog changing.
+  @MainActor
+  private func rescopeCatalog() {
+    guard let rawCatalogGroups else { return }
+    scopedCatalogGroups = scopedCatalog(rawCatalogGroups)
   }
 
   private var flattenedModels: [WorkModelOption] {
@@ -96,7 +116,10 @@ struct WorkModelPickerSheet: View {
   }
 
   private var modelById: [String: WorkModelOption] {
-    Dictionary(uniqueKeysWithValues: flattenedModels.map { ($0.id, $0) })
+    // Belt-and-braces: `flattenedModels` owns exact-id uniqueness, so no duplicate
+    // reaches here today. `Dictionary(uniqueKeysWithValues:)` would *trap* rather
+    // than misbehave if that ever changed, so prefer the total constructor.
+    Dictionary(flattenedModels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
 
   /// Rail entries: Favorites + Recents first, then one row per provider that
@@ -216,6 +239,11 @@ struct WorkModelPickerSheet: View {
         await refreshCatalog(for: key)
       }
     }
+    // The scoped catalog is cached, so a change to either scoping input must
+    // re-scope it. Both are `let`s the parent can replace while this `@State`
+    // survives, so neither can be assumed constant for the sheet's lifetime.
+    .onChange(of: availableModelIds) { _, _ in rescopeCatalog() }
+    .onChange(of: cursorAvailabilityMode) { _, _ in rescopeCatalog() }
   }
 
   /// Falls back to the first available provider entry only when the user's
@@ -248,11 +276,10 @@ struct WorkModelPickerSheet: View {
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
     guard !scopedIds.isEmpty else { return [] }
+    let matcher = WorkModelIdMatcher(ids: scopedIds)
     return availabilityScoped.compactMap { group -> WorkModelCatalogGroup? in
       let providers = group.providers.compactMap { provider -> WorkModelProvider? in
-        let models = provider.models.filter { model in
-          scopedIds.contains { workModelIdsEquivalent($0, model.id) }
-        }
+        let models = provider.models.filter { matcher.matches($0.id) }
         guard !models.isEmpty else { return nil }
         return WorkModelProvider(key: provider.key, displayName: provider.displayName, models: models)
       }
@@ -484,12 +511,8 @@ struct WorkModelPickerSheet: View {
     isLoadingCatalog = true
     defer { isLoadingCatalog = false }
 
-    if commandScope == .project, liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
-      liveCatalog = workModelCatalogGroups(
-        hostCatalog: cached,
-        currentModelId: currentModelId,
-        currentProvider: currentProvider
-      )
+    if commandScope == .project, rawCatalogGroups == nil, let cached = syncService.cachedChatModelCatalog() {
+      apply(hostCatalog: cached)
     }
 
     do {
@@ -527,11 +550,11 @@ struct WorkModelPickerSheet: View {
 
   @MainActor
   private func apply(hostCatalog: AgentChatModelCatalog) {
-    liveCatalog = workModelCatalogGroups(
+    setHostGroups(workModelCatalogGroups(
       hostCatalog: hostCatalog,
       currentModelId: currentModelId,
       currentProvider: currentProvider
-    )
+    ))
   }
 
   private func modelCatalog(
@@ -1264,6 +1287,13 @@ enum ModelPickerRowStyle {
   case detailed
 }
 
+// Deliberately NOT `Equatable` / `.equatable()`. Rows render inside a `LazyVStack`,
+// so only the handful of visible rows ever diff and skipping that work saves close
+// to nothing. It is not free, either: when `EquatableView`'s `==` returns true
+// SwiftUI keeps the installed view value, including its captured closures, and those
+// close over this view's `let`s (`currentModelId`, `lanes`, `onSelect`) and, through
+// `onSelect`, over the presenting view's state. A sync update arriving while the
+// sheet is open would then be invisible to a tapped row.
 struct ModelPickerListRow: View {
   let model: WorkModelOption
   let style: ModelPickerRowStyle
