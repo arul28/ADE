@@ -593,6 +593,40 @@ export function createHeadlessAdeCliAgentEnv(
   return next;
 }
 
+type ChatSessionEndedListenerHost = {
+  registerChatSessionEndedListener?: (listener: (sessionId: string) => void) => void;
+};
+
+type ChatOwnedSimulator = {
+  releaseIfOwnedBy: (sessionId: string) => Promise<unknown>;
+};
+
+/**
+ * Headless chat (omitted / headless-stub runtime) has no session-end listener.
+ * Calling the desktop method unguarded threw during brain startup and left CLI
+ * tests hanging on a runtime that never came up.
+ */
+export function bindIosSimulatorReleaseOnChatEnd(args: {
+  agentChatService: ChatSessionEndedListenerHost | null;
+  iosSimulatorService: ChatOwnedSimulator | null;
+  logger: Pick<Logger, "debug">;
+}): boolean {
+  const registerChatSessionEndedListener = args.agentChatService?.registerChatSessionEndedListener;
+  if (typeof registerChatSessionEndedListener !== "function" || !args.iosSimulatorService) {
+    return false;
+  }
+  const iosSimulatorService = args.iosSimulatorService;
+  registerChatSessionEndedListener.call(args.agentChatService, (sessionId) => {
+    void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
+      args.logger.debug("ios_simulator.release_on_chat_end_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+  return true;
+}
+
 export async function createAdeRuntime(args: {
   projectRoot: string;
   workspaceRoot?: string;
@@ -1380,24 +1414,11 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
-    // Headless chat (omitted / headless-stub runtime) has no session-end
-    // listener. Calling the desktop method here threw during brain startup and
-    // left CLI tests hanging on a runtime that never came up.
-    const registerChatSessionEndedListener = (
-      agentChatService as {
-        registerChatSessionEndedListener?: (listener: (sessionId: string) => void) => void;
-      } | null
-    )?.registerChatSessionEndedListener;
-    if (typeof registerChatSessionEndedListener === "function" && iosSimulatorService) {
-      registerChatSessionEndedListener.call(agentChatService, (sessionId) => {
-        void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
-          logger.debug("ios_simulator.release_on_chat_end_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      });
-    }
+    bindIosSimulatorReleaseOnChatEnd({
+      agentChatService,
+      iosSimulatorService,
+      logger,
+    });
     if (agentChatService) {
       laneTeardownDeps.agentChatService = {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
