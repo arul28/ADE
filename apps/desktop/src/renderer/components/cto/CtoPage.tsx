@@ -18,6 +18,7 @@ import { resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions"
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
 import { shellBodyCls } from "./shared/designTokens";
 import { PluginToolbarActions } from "../plugins/sockets";
+import { TechnicalDetailsFold } from "../app/errorSurfaceKit";
 
 const CTO_ACCENT = "#22D3EE";
 const MAX_WAKING_RETRIES = 4;
@@ -31,6 +32,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
   const [session, setSession] = useState<AgentChatSession | null>(() => ctoPrimarySession);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by "Try again" on the failure pane; re-runs the wake effect from a
+  // clean retry budget instead of leaving the user stranded on the error.
+  const [wakeAttempt, setWakeAttempt] = useState(0);
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
@@ -139,7 +143,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, onboardingState, onboardingVisible, primaryLaneId]);
+  }, [active, onboardingState, onboardingVisible, primaryLaneId, wakeAttempt]);
 
   /* ── Callbacks ── */
 
@@ -170,11 +174,14 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     setError(null);
     try {
       if (session) {
+        const modelUpdate = selection.modelId === session.modelId
+          ? { reasoningEffort: selection.reasoningEffort }
+          : {};
         const updated = await window.ade.agentChat.updateSession({
           sessionId: session.id,
           modelId: selection.modelId,
-          reasoningEffort: selection.reasoningEffort,
-          fastMode: selection.supportsFastMode && currentFastMode,
+          ...modelUpdate,
+          fastMode: currentFastMode,
         });
         ctoPrimarySession = updated;
         setSession(updated);
@@ -369,7 +376,20 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             presentation={presentation}
           />
         ) : error ? (
-          <WakingState theme={theme} title="Couldn't reach the CTO" subtitle={error} />
+          <WakingState
+            theme={theme}
+            title="Couldn't reach the CTO"
+            subtitle="ADE tried a few times and the CTO didn't answer. Nothing was lost — your thread is still here."
+            detail={error}
+            action={{
+              label: "Try again",
+              onClick: () => {
+                wakingRetriesRef.current = 0;
+                setError(null);
+                setWakeAttempt((n) => n + 1);
+              },
+            }}
+          />
         ) : (
           <WakingState
             theme={theme}
@@ -431,12 +451,18 @@ function WakingState({
   theme,
   title,
   subtitle,
+  detail = null,
   pulsing = false,
+  action,
 }: {
   theme: ReturnType<typeof getPersonalityTheme>;
   title: string;
   subtitle: string;
+  /** Raw failure text. Never on the main line — it goes in the fold. */
+  detail?: string | null;
   pulsing?: boolean;
+  /** A failure pane with no way out is a dead end; give it one. */
+  action?: { label: string; onClick: () => void };
 }) {
   const Icon = theme.icon;
   return (
@@ -455,7 +481,29 @@ function WakingState({
           <Icon size={20} weight="duotone" style={{ color: theme.hex }} />
         </div>
         <div className="mt-4 text-[14px] font-semibold text-fg">{title}</div>
-        <div className="mt-1 max-w-xs text-[12.5px] leading-5 text-muted-fg/50">{subtitle}</div>
+        {/* A failure sentence is longer than "Restoring identity, memory, and
+            recent context." — `max-w-xs` broke it into four ragged centred
+            lines. */}
+        <div
+          className={cn(
+            "mt-1 text-[12.5px] leading-5 text-muted-fg/50",
+            detail || action ? "max-w-[360px]" : "max-w-xs",
+          )}
+        >
+          {subtitle}
+        </div>
+        {action ? (
+          <button
+            type="button"
+            onClick={action.onClick}
+            className="mt-4 rounded-lg border border-white/[0.1] px-3 py-1.5 text-[12px] font-medium text-fg/85 transition-colors hover:bg-white/[0.05]"
+          >
+            {action.label}
+          </button>
+        ) : null}
+        {detail ? (
+          <TechnicalDetailsFold text={detail} className="mt-4 w-full max-w-[420px] text-left" />
+        ) : null}
       </div>
     </div>
   );

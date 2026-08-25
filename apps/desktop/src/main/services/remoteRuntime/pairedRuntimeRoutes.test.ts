@@ -173,14 +173,26 @@ describe("paired runtime endpoint routes", () => {
     // account session repaired. Both used to arrive as `auth_failed`.
     expect(classifyPairedRuntimeFailure(
       new PairedRuntimeHelloRejectedError(
-        "This machine cannot verify ADE accounts. Update ADE on this computer, then try again.",
+        "The computer you're connecting to cannot verify ADE accounts. Update ADE there, then try again.",
         "host_update_required",
       ),
     )).toBe("protocol");
     expect(classifyPairedRuntimeFailure(
       new PairedRuntimeHelloRejectedError(
-        "The ADE account session on this machine changed while connecting. Try again.",
+        "The ADE account session on the computer you're connecting to changed while connecting. Try again.",
         "account_session_changed",
+      ),
+    )).toBe("authentication");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(
+        "The computer you're connecting to is not signed in to an ADE account. Sign in on that computer, then try again.",
+        "account_not_signed_in",
+      ),
+    )).toBe("authentication");
+    expect(classifyPairedRuntimeFailure(
+      new PairedRuntimeHelloRejectedError(
+        "The computer you're connecting to could not verify its ADE account session.",
+        "account_verification_failed",
       ),
     )).toBe("authentication");
   });
@@ -209,6 +221,20 @@ describe("paired runtime endpoint routes", () => {
     );
     expect(pairedRuntimeFailureMessage("authentication", "Mac Studio")).toBe(
       "Sign in to ADE to connect through the relay.",
+    );
+    expect(pairedRuntimeFailureMessage(
+      "authentication",
+      "Mac Studio",
+      "account_not_signed_in",
+    )).toBe(
+      "Mac Studio is not signed in to an ADE account. Sign in there, then try again.",
+    );
+    expect(pairedRuntimeFailureMessage(
+      "authentication",
+      "Mac Studio",
+      "account_verification_failed",
+    )).toBe(
+      "Mac Studio could not verify its ADE account session. Open ADE there and check that it is signed in to the same ADE account, then try again.",
     );
     // No attempts recorded at all still produces a sentence, not an empty one.
     expect(dominantPairedRuntimeFailure([])).toBe("unknown");

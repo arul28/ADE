@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowClockwise,
   CaretLeft,
   CaretRight,
   DesktopTower,
+  Plus,
   TerminalWindow,
   UserCircle,
   Warning,
@@ -11,12 +13,12 @@ import {
 import { extractError } from "../../lib/format";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
+import { ReportIssueButton } from "../app/ReportIssueButton";
 import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
   outlineButton,
-  primaryButton,
 } from "../lanes/laneDesignTokens";
 import { isBrainAccountSessionFailure } from "../../../shared/types";
 import type {
@@ -51,12 +53,17 @@ import {
   type LocalPublishHealth,
   type MachineSection,
 } from "./remoteMachineModel";
+import {
+  connectedMachineIds,
+  isMachineConnected,
+} from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import {
   helperTextStyle,
+  iconActionButtonStyle,
   inlineDetailStyle,
   panelStyle,
   sectionHeaderStyle,
@@ -81,6 +88,12 @@ type RemoteTargetListProps = {
 type ConnectTargetOptions = {
   skipHostKeyTrustCheck?: boolean;
   onError?: (message: string) => void;
+  /**
+   * The connect was stopped because this machine's SSH identity has to be
+   * confirmed first. Distinct from `onError`: nothing failed, and the caller
+   * has to reveal the trust prompt rather than report a failure.
+   */
+  onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
 type AddMode = "choose" | "nearby" | "pair" | "ssh";
@@ -150,9 +163,9 @@ function joinDiagnosticMessages(
 }
 
 const SECTION_LABELS: Record<MachineSection, string> = {
-  connected: "CONNECTED",
-  available: "AVAILABLE",
-  unavailable: "UNAVAILABLE",
+  connected: "Connected",
+  available: "Available",
+  unavailable: "Unavailable",
 };
 
 export function RemoteTargetList({
@@ -305,6 +318,14 @@ export function RemoteTargetList({
     }
     return map;
   }, [connectionSnapshot]);
+
+  // Which account machines this computer is actually talking to right now.
+  // Presence is decided from this rather than from directory heartbeats alone,
+  // so a row cannot report a machine we hold a channel to as merely online.
+  const connectedIds = useMemo(
+    () => connectedMachineIds(connectionSnapshot?.connections),
+    [connectionSnapshot],
+  );
 
   const sections = useMemo(
     () =>
@@ -539,18 +560,26 @@ export function RemoteTargetList({
     );
   }, []);
 
-  const ensureHostKeyTrust = useCallback(async (targetId: string) => {
-    const status = await window.ade.remoteRuntime.getSshHostKeyTrust(targetId);
-    if (status.state === "needs_trust" || status.state === "changed") {
-      setHostKeyTrust(status);
-      setError(null);
-      return false;
-    }
-    setHostKeyTrust((current) =>
-      current?.targetId === targetId ? null : current,
-    );
-    return true;
-  }, []);
+  /**
+   * Reveals the host-key prompt when this machine's SSH identity still has to
+   * be confirmed, and reports which case it is. Returns null when the identity
+   * is already trusted and the connect may proceed.
+   */
+  const blockingHostKeyTrust = useCallback(
+    async (targetId: string): Promise<"needs_trust" | "changed" | null> => {
+      const status = await window.ade.remoteRuntime.getSshHostKeyTrust(targetId);
+      if (status.state === "needs_trust" || status.state === "changed") {
+        setHostKeyTrust(status);
+        setError(null);
+        return status.state;
+      }
+      setHostKeyTrust((current) =>
+        current?.targetId === targetId ? null : current,
+      );
+      return null;
+    },
+    [],
+  );
 
   const connectTarget = useCallback(
     async (targetId: string, options: ConnectTargetOptions = {}) => {
@@ -558,14 +587,21 @@ export function RemoteTargetList({
       setSelectedId(targetId);
       try {
         if (!options.skipHostKeyTrustCheck) {
-          const trusted = await ensureHostKeyTrust(targetId);
-          if (!trusted) return null;
+          const blocked = await blockingHostKeyTrust(targetId);
+          if (blocked) {
+            options.onTrustRequired?.(blocked);
+            return null;
+          }
         }
         const result = await window.ade.remoteRuntime.connect(targetId);
-        setConnected(result);
+        const connectedTarget = {
+          ...result.target,
+          lastConnectedAt: result.target.lastConnectedAt ?? Date.now(),
+        };
+        setConnected({ ...result, target: connectedTarget });
         setTargets((current) =>
           current.map((target) =>
-            target.id === result.target.id ? result.target : target,
+            target.id === connectedTarget.id ? connectedTarget : target,
           ),
         );
         setConnectionSnapshot((current) => {
@@ -581,7 +617,7 @@ export function RemoteTargetList({
           }));
           const existing = current?.connections ?? fallbackConnections;
           const connectedEntry: RemoteRuntimeConnectionStatus = {
-            target: result.target,
+            target: connectedTarget,
             state: "connected",
             arch: result.arch,
             version: result.version,
@@ -591,7 +627,7 @@ export function RemoteTargetList({
             projects: result.projects,
             lastError: null,
             lastAttemptedAt: Date.now(),
-            connectedAt: result.target.lastConnectedAt ?? Date.now(),
+            connectedAt: connectedTarget.lastConnectedAt,
           };
           const connections = existing.some(
             (entry) => entry.target.id === result.target.id,
@@ -615,13 +651,15 @@ export function RemoteTargetList({
         onConnected?.(result);
         return result;
       } catch (err) {
-        let trustRequired = false;
+        let trustState: "needs_trust" | "changed" | null = null;
         try {
-          trustRequired = !(await ensureHostKeyTrust(targetId));
+          trustState = await blockingHostKeyTrust(targetId);
         } catch {
           // Preserve the connect failure when a follow-up trust probe also fails.
         }
-        if (!trustRequired) {
+        if (trustState) {
+          options.onTrustRequired?.(trustState);
+        } else {
           const message = formatRemoteTargetError(err);
           if (options.onError) options.onError(message);
           else setError(message);
@@ -631,7 +669,7 @@ export function RemoteTargetList({
         setBusyId(null);
       }
     },
-    [ensureHostKeyTrust, nextLocalConnectionSnapshotUpdatedAt, onConnected, targets],
+    [blockingHostKeyTrust, nextLocalConnectionSnapshotUpdatedAt, onConnected, targets],
   );
 
   const trustAndConnect = useCallback(async () => {
@@ -761,12 +799,24 @@ export function RemoteTargetList({
               [machineKey]: message,
             }));
           },
+          onTrustRequired: (state) => {
+            connectionErrorReported = true;
+            // Show the trust prompt this row was silently blocked on: it only
+            // renders for the selected target, and this flow had deselected it.
+            setSelectedId(paired.targetId);
+            setAccountRowErrors((current) => ({
+              ...current,
+              [machineKey]: state === "changed"
+                ? "This machine's identity has changed since you last connected. Check the fingerprint below before you continue."
+                : "This machine hasn't been trusted on this computer yet. Check the fingerprint below, then continue.",
+            }));
+          },
         });
         if (!result) {
           if (!connectionErrorReported) {
             setAccountRowErrors((current) => ({
               ...current,
-              [machineKey]: "Couldn't open the connection. Try again.",
+              [machineKey]: "ADE couldn't finish opening the connection, and didn't say why. Try again — if it keeps happening, check that ADE is running on that machine.",
             }));
           }
           return;
@@ -912,20 +962,21 @@ export function RemoteTargetList({
     }
   }, [nextLocalConnectionSnapshotUpdatedAt]);
 
-  const connectedCount =
-    connectionSnapshot?.connectedCount ?? (connected ? 1 : 0);
-
   const totalRows =
     sections.connected.length +
     sections.available.length +
     sections.unavailable.length;
 
   // "The account list did not arrive" — distinct from "the account has none".
+  // Signed-out / expired already have a header line; don't repeat it here.
   const accountMachinesLoadFailed = Boolean(
-    accountMachinesState
+    accountSignedIn
+    && accountMachinesState
     && accountMachinesState !== "ok"
     && accountMachinesState !== "signed_out",
   );
+  const showPublishFailure = publishHealthDisplay.kind === "failing"
+    && (accountSignedIn || isBrainAccountSessionFailure(localPublishHealth?.state));
 
   const nearbyPairingByAccountMachineKey = useMemo(() => {
     const matches = new Map<string, RemoteRuntimeDiscoveredMachine>();
@@ -1054,6 +1105,7 @@ export function RemoteTargetList({
                 }
                 updating={updatingTargetId === row.target.id}
                 updateStatus={updateResultByTargetId[row.target.id] ?? null}
+                localAdeVersion={updateSnapshot.currentVersion}
                 onUpdateAndRestart={(targetVersion) =>
                   void updateAndRestartTarget(
                     row.target.id,
@@ -1103,6 +1155,7 @@ export function RemoteTargetList({
                 connecting={
                   accountConnectingMachineKey === row.machine.machineKey
                 }
+                connected={isMachineConnected(row.machine, connectedIds)}
                 error={accountRowErrors[row.machine.machineKey] ?? null}
                 errorInfo={
                   row.matchedTargetId
@@ -1220,7 +1273,7 @@ export function RemoteTargetList({
             gap: 12,
           }}
         >
-          <div style={{ minWidth: 0 }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
             <div
               style={{
                 display: "flex",
@@ -1230,16 +1283,13 @@ export function RemoteTargetList({
                 fontFamily: SANS_FONT,
                 fontSize: 15,
                 fontWeight: 700,
+                minHeight: 28,
               }}
             >
-              <DesktopTower size={18} weight="duotone" color={COLORS.accent} />
+              <DesktopTower size={18} weight="regular" color={COLORS.textSecondary} />
               Machines
             </div>
-            <div style={helperTextStyle}>{connectedCount} connected</div>
-            {publishHealthDisplay.kind === "healthy" ? (
-              <div style={helperTextStyle}>Routes fresh</div>
-            ) : null}
-            {publishHealthDisplay.kind === "failing" ? (
+            {showPublishFailure && publishHealthDisplay.kind === "failing" ? (
               <div
                 style={{
                   marginTop: 3,
@@ -1255,40 +1305,46 @@ export function RemoteTargetList({
               >
                 <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
                 <span>
-                  Other devices may not reach this computer — route publish failing for{" "}
+                  Other machines may not find this one — ADE couldn't publish it for{" "}
                   {publishHealthDisplay.minutes} min
                 </span>
                 {showRepair ? <BrainRepairButton repair={repair} height={22} /> : null}
+                <ReportIssueButton
+                  variant="ghost"
+                  context={{
+                    surface: "connections",
+                    headline: "Other machines may not find this one",
+                    code: "publish_failing",
+                    technicalDetail: `publish health: ${publishHealthDisplay.kind}`,
+                  }}
+                />
               </div>
             ) : null}
           </div>
-          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
             <button
               type="button"
+              aria-label="Refresh"
+              title="Refresh"
               disabled={loadingDiscovered}
               onClick={() => void loadDiscoveredMachines()}
               style={{
-                ...outlineButton({
-                  height: 30,
-                  padding: "0 10px",
-                  fontSize: 11,
-                }),
+                ...iconActionButtonStyle,
                 opacity: loadingDiscovered ? 0.6 : 1,
+                cursor: loadingDiscovered ? "not-allowed" : "pointer",
               }}
             >
-              Refresh
+              <ArrowClockwise size={15} />
             </button>
             <button
               type="button"
+              aria-label="Add machine"
+              title="Add machine"
               onClick={openAddMachine}
               aria-expanded={addMode != null}
-              style={primaryButton({
-                height: 30,
-                padding: "0 12px",
-                fontSize: 11,
-              })}
+              style={iconActionButtonStyle}
             >
-              Add machine
+              <Plus size={16} weight="bold" />
             </button>
           </div>
         </div>
@@ -1427,7 +1483,7 @@ export function RemoteTargetList({
           <div style={helperTextStyle}>
             {accountMachinesState === "not_configured"
               ? "Account computers aren't available yet. Saved and nearby computers still work."
-              : "We couldn't reach your ADE account, so computers linked to it aren't listed. Saved and nearby computers still work — close and reopen this panel to try again."}
+              : "Couldn't load machines from your account. Saved and nearby machines still work."}
           </div>
         ) : null}
 
@@ -1440,7 +1496,7 @@ export function RemoteTargetList({
           && !addMode
           && !loadingDiscovered ? (
           <div style={helperTextStyle}>
-            No computers yet. Choose Add machine to connect one.
+            No computers yet. Add a machine to connect one.
           </div>
         ) : null}
         {loadingDiscovered ? (

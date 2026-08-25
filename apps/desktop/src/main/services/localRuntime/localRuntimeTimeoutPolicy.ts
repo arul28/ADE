@@ -24,11 +24,48 @@ export const USAGE_REFRESH_HISTORY_TIMEOUT_MS = LEDGER_WORKER_TIMEOUT_MS + 30_00
  */
 export const USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS =
   LEDGER_WORKER_TIMEOUT_MS + 15_000;
+
+/**
+ * A cold simulator launch is boot (90s) + xcodebuild (600s) + install (180s)
+ * + launch (60s) = 930s worst case; 17 min keeps headroom above that sum.
+ */
+export const IOS_SIMULATOR_LAUNCH_TIMEOUT_MS = 17 * 60_000;
+
+/**
+ * Preview Lab drives Xcode's preview toolchain, which compiles the target
+ * before it can render a single frame — the same build cost as a launch.
+ */
+export const IOS_SIMULATOR_PREVIEW_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * The innermost budgets on the remote path: the JSON-RPC transport carrying
+ * these actions to a paired/SSH runtime, whose daemon runs the very same
+ * xcodebuild and Xcode preview toolchain a local one does. Without entries
+ * here the transport fell back to `RuntimeRpcClient`'s 600s default — for a
+ * launch that is shorter than xcodebuild's own 600s allowance alone, so a
+ * remote cold launch reported "Remote ADE service timed out" while the build
+ * was still running. Both stay below the IPC budgets above them so the chain
+ * expires monotonically outward (transport < IPC) instead of racing and
+ * surfacing an opaque IPC timeout in place of the transport's legible reason.
+ */
+export const IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_LAUNCH_TIMEOUT_MS - 30_000;
+export const IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_PREVIEW_TIMEOUT_MS - 30_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
+/**
+ * `runtime.activitySummary` counts running turns from memory, so this is not a
+ * work budget — it is the bound on a stuck poll. Without it the call inherits
+ * `RuntimeRpcClient`'s ten-minute default, and `keepAwakeService` (which polls
+ * every 5s and skips a pass while one is in flight) would keep the machine's
+ * wake lock held for up to ten minutes after the user chose "Never". Kept under
+ * that poll interval so a wedged call cannot stack passes either.
+ */
+export const LOCAL_RUNTIME_ACTIVITY_SUMMARY_TIMEOUT_MS = 4_000;
 export const LOCAL_RUNTIME_IPC_PROJECT_SETUP_MARGIN_MS = 30_000;
 export const LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS = 15_000;
 const LOCAL_RUNTIME_IPC_PROJECT_REGISTRATION_TIMEOUT_MS =
@@ -63,8 +100,16 @@ export const LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS =
  */
 export const PI_LOGIN_IPC_TIMEOUT_MS = 11 * 60_000;
 
+/**
+ * Cursor.auth.login() polls the browser handshake for ~20 minutes. The
+ * transport budget has to outlive that, or the renderer reports failure while
+ * the daemon is still waiting on the browser.
+ */
+export const CURSOR_LOGIN_IPC_TIMEOUT_MS = 21 * 60_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
+  ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
   // Lane deletion can legitimately include a 60s worktree removal followed by
   // a 45s remote-branch deletion. The old 30s client budget reported failure
   // while the daemon kept mutating state to a successful completion.
@@ -79,6 +124,12 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // success (ADE-122).
   ["chat.handoffSession", 120_000],
   ["chat.prepareCrossMachineHandoff", 120_000],
+  // Cursor Cloud open-chat hydrates conversation + boots a worker + attaches
+  // the live stream. The 30s default fired while Cursor's VM was still
+  // installing, so the renderer reported failure on the draft pane while the
+  // daemon later created an empty session (ADE-122 class).
+  ["ai.openCursorCloudChat", 120_000],
+  ["ai.createCursorCloudRun", 120_000],
   // See USAGE_REFRESH_HISTORY_TIMEOUT_MS: in runtime-backed (production) mode
   // the Usage page's Refresh reaches the ledger worker through this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_TIMEOUT_MS],
@@ -95,6 +146,14 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // supervisor's own typed `plugin_timeout`, and the user learns nothing about
   // which half was slow.
   ["plugin.invoke", 90_000],
+  // See IOS_SIMULATOR_LAUNCH_TIMEOUT_MS. The 30s default reported "Remote ADE
+  // service timed out" while the daemon kept building, so the session surfaced
+  // minutes later with no error to explain it.
+  ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  // See IOS_SIMULATOR_PREVIEW_TIMEOUT_MS.
+  ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
+  ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
+  ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

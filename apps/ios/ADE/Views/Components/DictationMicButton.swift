@@ -39,16 +39,19 @@ struct DictationMicButton: View {
   /// Surfaced to the host so it can collapse its other trailing controls while
   /// recording. Driven by the controller's recording state for this target.
   var onRecordingChange: ((Bool) -> Void)?
+  private let showsIdleButton: Bool
 
   init(
     draft: Binding<String>,
     coordinator: DictationInsertionCoordinator,
     targetId: String = UUID().uuidString,
+    showsIdleButton: Bool = true,
     onRecordingChange: ((Bool) -> Void)? = nil
   ) {
     self._draft = draft
     self._coordinator = ObservedObject(wrappedValue: coordinator)
     self.targetId = targetId
+    self.showsIdleButton = showsIdleButton
     self.onRecordingChange = onRecordingChange
   }
 
@@ -101,6 +104,10 @@ struct DictationMicButton: View {
     .onChange(of: controller.activeTargetId) { _, _ in
       publishRecordingState()
     }
+    .onChange(of: coordinator.startRequestCount) { _, count in
+      guard count > 0 else { return }
+      startRecording()
+    }
     .background(visibilityReporter)
   }
 
@@ -142,7 +149,7 @@ struct DictationMicButton: View {
         onCancel: cancelRecording,
         onDone: finishRecording
       )
-    } else {
+    } else if showsIdleButton {
       micButton
     }
   }
@@ -258,12 +265,17 @@ final class DictationInsertionCoordinator: ObservableObject {
   @Published private(set) var span: Span?
   @Published private(set) var showsUndoChip = false
   @Published private(set) var shimmerActive = false
+  @Published private(set) var startRequestCount = 0
 
   private var undoChipTask: Task<Void, Never>?
   private var shimmerTask: Task<Void, Never>?
 
   func beginSpan(range: NSRange, rawTranscript: String, cleaned: String) {
     span = Span(range: range, rawTranscript: rawTranscript, cleaned: cleaned)
+  }
+
+  func requestStart() {
+    startRequestCount += 1
   }
 
   func updateSpanContent(to newContent: String) {

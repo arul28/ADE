@@ -121,6 +121,21 @@ public struct NotchInteractionState: Equatable, Sendable {
         return generation
     }
 
+    /// Returns whether the panel is showing expanded. Unlike `explicitToggle`,
+    /// a second call does not close it — compact badges and `openPanel` are
+    /// destinations, not a toggle.
+    @discardableResult
+    public mutating func ensureExpanded(
+        hasItems: Bool,
+        policy: NotchPresentationPolicy = .default
+    ) -> Bool {
+        generation &+= 1
+        guard isVisible, hasItems, policy.clickOpensPanel else { return false }
+        presentation = .expanded
+        isExplicitlyInteractive = true
+        return true
+    }
+
     /// Returns whether the panel actually opened, so a click the policy refuses
     /// to grow can be routed to ADE instead of silently doing nothing.
     @discardableResult
@@ -273,20 +288,32 @@ private func clampedNotchWidth(_ width: Double) -> Double {
     max(140, min(240, width))
 }
 
-/// Smallest and largest an ear may get. The floor keeps the strip from
-/// collapsing into the cutout when the account is quiet; the ceiling is what
-/// stops a long signal from spreading the surface across the menu bar.
+/// Smallest an ear may get. The floor keeps the strip from collapsing into the
+/// cutout when the account is quiet.
 private let notchEarMinimumWidth: Double = 58
-private let notchEarMaximumWidth: Double = 150
+/// Ceiling for the *signal* wing, which is prose: it stops a long headline from
+/// spreading the surface across the menu bar, and what does not fit truncates
+/// with an ellipsis that admits it.
+private let notchSignalEarMaximumWidth: Double = 150
 /// Outer margin plus the gap that keeps content off the hardware cutout.
 private let notchEarPadding: Double = 18
 
 /// The width one ear needs for the content it carries.
+///
+/// The two wings cap differently because they fail differently. Prose truncates
+/// visibly; a glyph wing clipped at the same 150pt just loses its last group,
+/// and a dropped group is a state the account is in that the strip denies. So
+/// the glyph wing's ceiling comes from the state-group table itself.
 public func notchCompactEarWidth(_ metrics: NotchStripMetrics) -> Double {
-    max(
-        notchEarMinimumWidth,
-        min(notchEarMaximumWidth, metrics.widest + notchEarPadding)
+    let leading = min(
+        notchStripWidestGlyphWingWidth + notchEarPadding,
+        metrics.leadingWidth + notchEarPadding
     )
+    let trailing = min(
+        notchSignalEarMaximumWidth,
+        metrics.trailingWidth + notchEarPadding
+    )
+    return max(notchEarMinimumWidth, max(leading, trailing))
 }
 
 public func notchSurfaceSize(

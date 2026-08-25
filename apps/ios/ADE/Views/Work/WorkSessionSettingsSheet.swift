@@ -293,19 +293,6 @@ struct WorkSessionSettingsSheet: View {
           .disabled(busy || selectedModelId.isEmpty)
         }
       }
-      .onChange(of: selectedModelId) { _, _ in
-        let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
-        if !reasoningEfforts.isEmpty {
-          if !reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) {
-            selectedReasoningEffort = ""
-          }
-        } else {
-          selectedReasoningEffort = ""
-        }
-        if !supportsCodexFastModeToggle {
-          selectedCodexFastMode = false
-        }
-      }
       .task {
         await loadModels()
       }

@@ -1303,11 +1303,11 @@ describe("sessionService resume metadata", () => {
       attentionMessage: "Need a decision",
       attentionSource: "agent_explicit",
     }));
-    service.settleSession("session-settle", {
+    await service.settleSession("session-settle", {
       outcome: "  Shipped the fix  ",
       settledAt: "2026-03-17T01:00:00.000Z",
     });
-    service.settleSession("session-settle", {
+    await service.settleSession("session-settle", {
       outcome: "   ",
       settledAt: "2026-03-17T02:00:00.000Z",
     });
@@ -1344,9 +1344,9 @@ describe("sessionService resume metadata", () => {
         toolType: "shell",
       });
     }
-    service.settleSession("session-settled", { settledAt: "2026-03-17T01:00:00.000Z" });
+    await service.settleSession("session-settled", { settledAt: "2026-03-17T01:00:00.000Z" });
 
-    expect(service.settleSessions([
+    expect(await service.settleSessions([
       "session-settled",
       "session-new",
       "session-new",
@@ -1356,10 +1356,10 @@ describe("sessionService resume metadata", () => {
     expect(service.get("session-new")?.settledAt).not.toBeNull();
     expect(service.get("session-other")?.settledAt).toBeNull();
 
-    expect(service.settleSessionsReportingAborts(
+    expect((await service.settleSessionsReportingAborts(
       ["session-settled", "session-other"],
       { outcome: "PR #841 merged", settledAt: "2026-03-17T03:00:00.000Z", source: "pr_merge" },
-    ).settled).toEqual(["session-other"]);
+    )).settled).toEqual(["session-other"]);
     expect(service.get("session-settled")).toEqual(expect.objectContaining({
       settledAt: "2026-03-17T01:00:00.000Z",
       statusNote: null,
@@ -1411,7 +1411,7 @@ describe("sessionService resume metadata", () => {
     service.setStatusNote("session-markers", "   ");
     expect(service.get("session-markers")?.statusNote).toBeNull();
 
-    service.settleSession("session-markers", {
+    await service.settleSession("session-markers", {
       settledAt: "2026-03-17T01:00:00.000Z",
       outcome: "Completed fixes and waiting for release review now",
     });
@@ -1471,21 +1471,21 @@ describe("sessionService resume metadata", () => {
     // Chat preview writes (no clearSettled) must PRESERVE a declared settle —
     // an agent's own final assistant text would otherwise undo its
     // `ade chat settle`. Only PTY-layer activity un-settles.
-    service.settleSession("session-output", { settledAt: "2026-03-17T00:30:00.000Z" });
+    await service.settleSession("session-output", { settledAt: "2026-03-17T00:30:00.000Z" });
     service.setLastOutputPreview("session-output", "final assistant text");
     expect(service.get("session-output")?.settledAt).toBe("2026-03-17T00:30:00.000Z");
 
     service.setLastOutputPreview("session-output", "working", { clearSettled: true });
     expect(service.get("session-output")?.settledAt).toBeNull();
 
-    service.settleSession("session-output", { settledAt: "2026-03-17T02:00:00.000Z" });
+    await service.settleSession("session-output", { settledAt: "2026-03-17T02:00:00.000Z" });
     service.touchSessionActivity("session-output", "2026-03-17T02:01:00.000Z");
     expect(service.get("session-output")?.settledAt).toBeNull();
 
     // A tracked agent CLI may emit its settle command and final answer through
     // the same PTY after declaring completion. That output refreshes activity
     // without reopening the thread; the next user turn clears it explicitly.
-    service.settleSession("session-output", { settledAt: "2026-03-17T02:30:00.000Z" });
+    await service.settleSession("session-output", { settledAt: "2026-03-17T02:30:00.000Z" });
     service.touchSessionActivity(
       "session-output",
       "2026-03-17T02:31:00.000Z",
@@ -1495,7 +1495,7 @@ describe("sessionService resume metadata", () => {
 
     // A turn failure un-settles: the declared outcome is in doubt, and keeping
     // the markers mutually exclusive lets every surface agree on precedence.
-    service.settleSession("session-output", { settledAt: "2026-03-17T03:00:00.000Z" });
+    await service.settleSession("session-output", { settledAt: "2026-03-17T03:00:00.000Z" });
     service.markLastTurnFailed("session-output", "2026-03-17T03:05:00.000Z");
     expect(service.get("session-output")?.settledAt).toBeNull();
     expect(service.get("session-output")?.lastTurnFailedAt).toBe("2026-03-17T03:05:00.000Z");
@@ -1828,7 +1828,7 @@ describe("sessionService settle override", () => {
 
     // An explicit settle drops a stale keep-active pin.
     service.setSettleOverride("session-override", "active");
-    service.settleSession("session-override", { settledAt: "2026-03-17T03:00:00.000Z" });
+    await service.settleSession("session-override", { settledAt: "2026-03-17T03:00:00.000Z" });
     expect(service.get("session-override")).toEqual(expect.objectContaining({
       settledAt: "2026-03-17T03:00:00.000Z",
       settleOverride: null,
@@ -1851,7 +1851,7 @@ describe("sessionService settle override", () => {
   it("preserves the declaration source while an active override temporarily hides settle", async () => {
     const { service } = await makeService("ade-session-service-override-source-");
 
-    service.settleSession("session-override", {
+    await service.settleSession("session-override", {
       settledAt: "2026-03-17T03:00:00.000Z",
       source: "agent_explicit",
     });
@@ -1893,7 +1893,7 @@ describe("sessionService settle override", () => {
     expect(service.setSettleOverrides(["session-override", "session-override-2", "missing"], "active"))
       .toEqual(["session-override", "session-override-2"]);
     expect(service.get("session-override-2")?.settleOverride).toBe("active");
-    service.settleSession("session-override", { source: "pr_merge" });
+    await service.settleSession("session-override", { source: "pr_merge" });
     service.setSettleOverrides(["session-override"], "active");
     expect(service.get("session-override")?.settleSource).toBe("pr_merge");
     service.setSettleOverrides(["session-override", "session-override-2"], null);
@@ -1905,7 +1905,7 @@ describe("sessionService settle override", () => {
     const { service } = await makeService("ade-session-service-override-bulk-settle-");
 
     service.setSettleOverride("session-override", "active");
-    expect(service.settleSessions(["session-override"])).toEqual(["session-override"]);
+    expect(await service.settleSessions(["session-override"])).toEqual(["session-override"]);
     expect(service.get("session-override")?.settleOverride).toBeNull();
 
     service.setSettleOverride("session-override", "settled");
@@ -1923,18 +1923,18 @@ describe("sessionService settle override", () => {
     // Declared settle first, Keep-active pinned after: the row carries BOTH a
     // non-null settled_at and settle_override = 'active', and reads as NOT
     // settled because canonicalSessionState consults the override first.
-    service.settleSession("session-override", { settledAt: "2026-03-17T01:00:00.000Z" });
+    await service.settleSession("session-override", { settledAt: "2026-03-17T01:00:00.000Z" });
     service.setSettleOverride("session-override", "active");
     expect(service.get("session-override")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
 
     // Bulk settle must behave like the single-row path: drop the stale pin,
     // report the row as changed, and preserve the original settle timestamp.
-    expect(service.settleSessions(["session-override"])).toEqual(["session-override"]);
+    expect(await service.settleSessions(["session-override"])).toEqual(["session-override"]);
     expect(service.get("session-override")?.settleOverride).toBeNull();
     expect(service.get("session-override")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
 
     // Fully settled with no pin is still a no-op, so the return value keeps
     // meaning "rows this call actually changed".
-    expect(service.settleSessions(["session-override"])).toEqual([]);
+    expect(await service.settleSessions(["session-override"])).toEqual([]);
   });
 });

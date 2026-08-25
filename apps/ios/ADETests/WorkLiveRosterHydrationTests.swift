@@ -466,18 +466,35 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
   func testActiveProjectRosterOverlayKeepsLocalRowsAndAppendsMissingRosterRowsInSourceOrder() {
     let localLane = makeLane(id: "lane-local", name: "Local lane")
     let localSession = makeSession(id: "local-chat", laneId: localLane.id, laneName: localLane.name)
+    var identityChat = makeRosterChat(id: "cto-chat", laneId: localLane.id)
+    identityChat.identityKey = "cto"
     let roster = makeRoster(projectId: "project-1", name: "Project", lanes: [
       makeRosterLane(id: localLane.id, name: "Stale local", branch: "main"),
       makeRosterLane(id: "lane-roster-1", name: "Roster one", branch: "feature/one"),
       makeRosterLane(id: "lane-roster-2", name: "Roster two", branch: "feature/two"),
     ], chats: [
       makeRosterChat(id: localSession.id, laneId: localLane.id),
+      identityChat,
       makeRosterChat(id: "roster-chat-1", laneId: "lane-roster-2"),
       makeRosterChat(id: "roster-chat-2", laneId: "lane-roster-1"),
     ])
     let projection = overlayActiveProjectRoster(localSessions: [localSession], localLanes: [localLane], roster: roster)
     XCTAssertEqual(projection.lanes.map(\.id), ["lane-local", "lane-roster-1", "lane-roster-2"])
     XCTAssertEqual(projection.sessions.map(\.id), ["local-chat", "roster-chat-1", "roster-chat-2"])
+  }
+
+  func testActiveProjectRosterOverlayExcludesKnownIdentityRowsFromLocalState() {
+    let lane = makeLane(id: "lane-cto", name: "CTO lane")
+    let ctoSession = makeSession(id: "cto-chat", laneId: lane.id, laneName: lane.name)
+
+    let projection = overlayActiveProjectRoster(
+      localSessions: [ctoSession],
+      localLanes: [lane],
+      roster: nil,
+      identitySessionIds: Set([ctoSession.id])
+    )
+
+    XCTAssertTrue(projection.sessions.isEmpty)
   }
 
   func testRosterNavigationUsesChatIdentityBeforeHintsAndScopedRepositoryBeforeBranch() {

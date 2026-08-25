@@ -86,3 +86,22 @@ describe("browserMock proof contracts", () => {
     });
   });
 });
+
+describe("browserMock iOS Simulator bridge", () => {
+  it("exposes parking and window-source methods without throwing", async () => {
+    await expect(window.ade.iosSimulator.listSimulatorWindowSources()).resolves.toEqual({
+      sources: [],
+      windowState: null,
+      message: null,
+    });
+    await expect(window.ade.iosSimulator.retainWindowParking()).resolves.toBe(false);
+    await expect(window.ade.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
+    await expect(window.ade.iosSimulator.openSystemSettings({ pane: "screen-recording" })).resolves.toEqual({
+      ok: false,
+    });
+    await expect(window.ade.iosSimulator.revealSimulator()).resolves.toEqual({
+      ok: false,
+      message: "Browser preview has no iOS Simulator window.",
+    });
+  });
+});

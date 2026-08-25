@@ -6,6 +6,7 @@ import { ResizeGutter } from "../../ui/ResizeGutter";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorTab, GroupsState } from "./editorGroupsStore";
 import { EditorGroup } from "./EditorGroup";
+import type { PinnedFilesApi } from "./pinnedFilesApi";
 import type { FilesTabScope } from "./filesTabScope";
 import type { EditorThemeMode } from "./viewers/types";
 
@@ -19,6 +20,8 @@ export type TabWorkspaceContext = {
 };
 
 export type EditorGroupsProps = {
+  /** Files API bound to the machine that owns these tabs. */
+  files: PinnedFilesApi;
   sessionKey: string;
   state: GroupsState;
   explorerWorkspaceId: string;
@@ -101,6 +104,7 @@ export function EditorGroups(props: EditorGroupsProps) {
           <Fragment key={id}>
             <Panel id={`files-group-${id}`} defaultSize={panelSize(id)} minSize="15%" className="min-h-0 min-w-0 overflow-hidden">
               <EditorGroup
+                files={props.files}
                 group={group}
                 isActiveGroup={id === props.state.activeGroupId}
                 explorerWorkspaceId={props.explorerWorkspaceId}

@@ -1,10 +1,16 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   createEmptyAutoUpdateSnapshot,
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
+import type {
+  KeepAwakeFixResult,
+  KeepAwakeSnapshot,
+} from "../../../shared/types/keepAwake";
+import type { KeepAwakeService } from "../power/keepAwakeService";
 import type { AgentToolsCacheService } from "../tools/agentToolsCacheService";
 import {
   buildGithubReleaseUrl,
@@ -19,6 +25,8 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { resolveKnownProjectRoot } from "./knownProjectRoots";
+import type { AttemptedProjectRoots } from "./knownProjectRoots";
 import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
 import type {
   AttentionItem,
@@ -80,6 +88,10 @@ import {
   type ProductAnalyticsStatus,
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import {
+  brainActionErrorCode,
+  createMachineRegisterRefusalObserver,
+} from "../analytics/reliabilityTelemetry";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
@@ -91,7 +103,6 @@ import type {
   IosSimulatorSession,
   IosSimulatorStatus,
   IosSimulatorToolStatus,
-  IosSimulatorWindowState,
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
   ProjectSecretGetArgs,
@@ -103,7 +114,25 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
+  IosSimulatorPrivacyPane,
+  IosSimulatorWindowSourcesResult,
 } from "../../../shared/types";
+import {
+  activeSimulatorParkingWindow,
+  attachSimulatorWindowForCapture,
+  ensureSimulatorWindowCapturable,
+  followSimulatorWindowUnderAde,
+  getSimulatorWindowState,
+  listSimulatorWindowSources,
+  openSimulatorPrivacyPane,
+  readSimulatorSessionHint,
+  reattachSimulatorWindowForCapture,
+  releaseSimulatorParkingFollowAfter,
+  releaseSimulatorParkingHolder,
+  retainSimulatorParkingFollow,
+  revealSimulatorWindow,
+  SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS,
+} from "../ios/simulatorWindowCapture";
 import {
   readGitOriginUrl,
   toShallowRecentProjectSummary,
@@ -249,6 +278,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -262,6 +292,7 @@ import type {
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSessionRepairResult,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -338,6 +369,8 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexResetMemoryArgs,
+  AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
@@ -440,6 +473,7 @@ import type {
   OnboardingDetectionResult,
   OnboardingHelpState,
   OnboardingStatus,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
@@ -512,6 +546,7 @@ import type {
   RunTestSuiteArgs,
   SessionDeltaSummary,
   SessionLifecycleSettings,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   StackChainItem,
   StopTestRunArgs,
@@ -537,6 +572,9 @@ import type {
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
+  CursorSdkAuthEvent,
+  CursorSdkAuthStatus,
+  CursorSdkLoginResult,
   SyncDesktopConnectionDraft,
   SyncCloudRelayStatus,
   SyncDeviceRecord,
@@ -609,7 +647,13 @@ import type {
   CursorCloudRepository,
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
+  CursorCloudWatchMirrorRequest,
   CursorCloudStreamRunResult,
+  CursorCloudFleetResult,
+  CursorCloudFleetEvent,
+  CursorCloudPullIntoLaneResult,
+  CursorAgentUsage,
+  CursorAgentUsageRequest,
   AgentToolsCacheSnapshot,
   AutoUpdatePreferences,
   UpdateInstallImpact,
@@ -617,6 +661,8 @@ import type {
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionSummary,
+  ExternalSessionDetail,
+  ExternalSessionDetailUpdatedEvent,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -671,6 +717,13 @@ import {
   submitPiLoginPrompt,
   type PiLoginResult,
 } from "../ai/piAuthService";
+import {
+  addCursorSdkAuthStatusListener,
+  cancelCursorSdkLogin,
+  getCursorSdkAuthStatus,
+  loginCursorSdk,
+  logoutCursorSdk,
+} from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
@@ -728,13 +781,20 @@ import {
   type PluginSummary,
   type PluginUsageSummary,
 } from "../../../shared/plugins/sdk";
+import {
+  loadExternalSessionDetail,
+  normalizeExternalSessionDetailArgs,
+  startExternalSessionDetailWatch,
+  stopExternalSessionDetailWatch,
+  stopExternalSessionDetailWatchesForSender,
+} from "../externalSessions/externalSessionDetail";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
-import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
+import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
 import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
@@ -742,12 +802,15 @@ import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
 import type { createOnboardingService } from "../onboarding/onboardingService";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
 import type { createAutomationService } from "../automations/automationService";
 import type { createAutomationPlannerService } from "../automations/automationPlannerService";
 import type { createAutomationIngressService } from "../automations/automationIngressService";
 import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
+import type { CursorCloudIngressService } from "../automations/cursorCloudIngressService";
+import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import { resolveDisabledActionDomains } from "../plugins/gatedActionDomains";
@@ -807,6 +870,24 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
+import {
+  collectDiagnosticReport,
+  diagnosticReportRoots,
+  resolveRevealableDiagnosticReport,
+  writeDiagnosticReportFile,
+} from "../diagnostics/diagnosticReportService";
+import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
+import {
+  MAX_AUTO_DIAGNOSTICS_PER_WINDOW,
+  MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
+} from "../diagnostics/autoDiagnosticsStore";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendResult,
+  DiagnosticsSharingStatus,
+} from "../../../shared/types/diagnostics";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
 let appResourceUsageCache: {
@@ -1035,6 +1116,8 @@ export type AppContext = {
   automationPlannerService: ReturnType<typeof createAutomationPlannerService> | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: LinearIngressService | null;
+  cursorCloudIngressService?: CursorCloudIngressService | null;
+  cursorCloudFleetService?: CursorCloudFleetService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
@@ -1055,6 +1138,7 @@ export type AppContext = {
   rpcSocketServer?: NetServer;
   rpcSocketPath?: string;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  keepAwakeService?: KeepAwakeService | null;
   agentToolsCacheService?: AgentToolsCacheService | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
@@ -1660,6 +1744,7 @@ export function registerIpc({
   releaseRepository = DEFAULT_RELEASE_REPOSITORY,
   builtInBrowserService,
   productAnalyticsService,
+  autoDiagnosticsService,
   publishAttentionNotchSnapshot,
   publishAttentionNotchToast,
   updateAttentionNotchSettings,
@@ -1668,13 +1753,14 @@ export function registerIpc({
   openAttentionItem,
   getCurrentAccountOwnerId,
   accountAttentionClient,
+  attemptedProjectRoots,
 }: {
   getCtx: () => AppContext;
   getResourceUsageContexts?: () => AppContext[];
   getSyncService?: () => ReturnType<typeof createSyncService> | null | undefined;
   resolveSyncService?: () => Promise<ReturnType<typeof createSyncService> | null | undefined>;
   runWithIpcWindow?: <T>(event: { sender: Electron.WebContents }, fn: () => T | Promise<T>) => T | Promise<T>;
-  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[] };
+  getWindowSession?: (windowId: number | null) => { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs?: ProjectInfo[]; pendingLocalProjectRoots?: string[]; knownLocalProjectRoots?: string[] };
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
@@ -1690,12 +1776,25 @@ export function registerIpc({
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
   switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  /**
+   * Roots main has tried to open. Read-only here: main.ts is the single
+   * writer (it records a root only after resolving it to a real repository),
+   * and this module only consults `.list()` when validating a
+   * renderer-supplied root. See `knownProjectRoots.ts` for why a merely
+   * *attempted* root has to count as known.
+   */
+  attemptedProjectRoots?: AttemptedProjectRoots;
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
   releaseRepository?: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
+  /**
+   * Owns the auto-send setting, the budget and the send itself. Absent only in
+   * tests and in runtime modes that never built one; every call site guards.
+   */
+  autoDiagnosticsService?: AutoDiagnosticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
   publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
@@ -1898,6 +1997,12 @@ export function registerIpc({
   // custom properties from thrown errors, so we re-throw with the code
   // prepended to the message. Renderer matches on the prefix.
   const surfaceCodedError = (error: unknown, meta?: { rootPath?: string }): never => {
+    // Deliberately does NOT record `meta.rootPath` into `attemptedProjectRoots`.
+    // Every caller that supplies a root got there through
+    // `switchProjectFromDialog`, which already recorded the resolved repo root
+    // after validating it, so a write here would be dead — and it would make
+    // the registry two-writer, with this one accepting a root that was never
+    // proven to exist. Reads still go through `attemptedProjectRoots.list()`.
     if (error instanceof Error) {
       const code = (error as Error & { code?: unknown }).code;
       if (typeof code === "string" && code.length > 0) {
@@ -2335,6 +2440,37 @@ export function registerIpc({
                   outcome: didTimeout ? "timeout" : "failure",
                   recoverable: true,
                   source: "ipc",
+                },
+              });
+            } catch {
+              // Analytics capture must never mask the original IPC error.
+            }
+          }
+          // Every brain action the app performs goes through this one channel,
+          // and `usageActionFromIpcChannel` maps it to `localRuntime.callAction`
+          // — not a meaningful usage action — so the branch above has never
+          // fired for it. That is why an installation whose brain failed every
+          // action produced no telemetry at all. It is deliberately NOT fixed by
+          // adding the channel to MEANINGFUL_ACTIONS: that set is the durable
+          // `usage_events` mutation ledger, and joining it would write a
+          // mutation row per brain call and redefine what "interaction" counts.
+          if (channel === IPC.localRuntimeCallAction) {
+            try {
+              // The analytics policy re-checks this against the closed domain
+              // list, so an unrecognised domain is dropped rather than reported.
+              const actionDomain = readRuntimeActionRequest(args)?.domain ?? null;
+              const errorCode = brainActionErrorCode(error, didTimeout);
+              productAnalyticsService?.captureInternal({
+                event: "ade_brain_action_failed",
+                surface: "desktop",
+                // Per domain+code per hour: a brain that rejects every call in
+                // a retry loop costs one accepted event an hour, not one per
+                // call, and the per-event daily cap bounds the rest.
+                dedupeKey: `brain-action-failed:${actionDomain ?? "unknown"}:${errorCode}`,
+                minimumIntervalMs: 60 * 60 * 1_000,
+                properties: {
+                  ...(actionDomain ? { action_domain: actionDomain } : {}),
+                  error_code: errorCode,
                 },
               });
             } catch {
@@ -4580,21 +4716,297 @@ export function registerIpc({
     }
   });
 
+  /**
+   * The open project's root, or null when there is no project context at all.
+   * The surfaces that most need to file an issue are projectless — a renderer
+   * crash on startup, Connections on a fresh install — and `getCtx()` throws
+   * there, which turned "report this" into no report at all.
+   */
+  const openProjectRootOrNull = (): string | null => {
+    try {
+      return getCtx().project.rootPath ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * The renderer names a project root; main decides whether that is a project
+   * it knows. See `knownProjectRoots.ts` for why trimming is not enough, and
+   * why a root that only ever FAILED to open still counts as known.
+   */
+  const resolveRequestedProjectRoot = (requested: string): string | null => {
+    let recentProjectRoots: string[] = [];
+    try {
+      recentProjectRoots = (readGlobalState(globalStatePath).recentProjects ?? [])
+        // Remote entries have no local root to diagnose or repair.
+        .filter((entry) => !entry.remote)
+        .map((entry) => entry.rootPath);
+    } catch {
+      // A missing or corrupt global state leaves only the open project, which
+      // is the safe subset — never a reason to widen what is accepted.
+    }
+    return resolveKnownProjectRoot(requested, {
+      openProjectRoot: openProjectRootOrNull(),
+      recentProjectRoots,
+      attemptedProjectRoots: attemptedProjectRoots?.list(),
+    });
+  };
+
   ipcMain.handle(IPC.recoveryDiagnose, async (_event, arg: { projectRoot: string }): Promise<ProjectRecoveryDiagnosis> => {
-    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!projectRoot) throw new Error("Project root path is required.");
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
     return await projectRecoveryService.diagnose(projectRoot);
   });
 
-  // Return the complete ordered step array with the final report. The current
-  // alert only needs one result, so it does not need a separate event lifecycle.
-  ipcMain.handle(IPC.recoveryRepair, async (_event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
-    const projectRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
-    if (!projectRoot) throw new Error("Project root path is required.");
+  // The complete ordered step array comes back with the final report; each
+  // step is ALSO pushed to the calling window as it finishes. A repair can
+  // legitimately wait a minute or more for the background service to answer,
+  // and a spinner with no steps for that long reads as a hang.
+  ipcMain.handle(IPC.recoveryRepair, async (event, arg: { projectRoot: string }): Promise<ProjectRepairReport> => {
+    const requested = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    if (!requested) throw new Error("Project root path is required.");
+    const projectRoot = resolveRequestedProjectRoot(requested);
+    if (!projectRoot) throw new Error("That folder is not a project ADE has open or has opened before.");
     if (!projectRecoveryService) throw new Error("Project recovery is unavailable in this runtime mode.");
-    return await projectRecoveryService.repair(projectRoot);
+    return await projectRecoveryService.repair(projectRoot, {
+      onStep: (step) => {
+        if (event.sender.isDestroyed()) return;
+        event.sender.send(IPC.recoveryRepairStep, { projectRoot, step });
+      },
+    });
   });
+
+  /**
+   * Assembles the redacted diagnostic report for whichever error screen asked.
+   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
+   * without a recovery service must never stop someone from filing an issue,
+   * so every optional input degrades to "unknown" rather than throwing.
+   */
+  const buildDiagnosticsReport = async (
+    arg: DiagnosticReportRequestPayload | undefined,
+  ) => {
+    const surface = typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown";
+    const requestedRoot = typeof arg?.projectRoot === "string" ? arg.projectRoot.trim() : "";
+    const resolvedRoot = requestedRoot ? resolveRequestedProjectRoot(requestedRoot) : null;
+    // A root the renderer named but main does not recognise is dropped rather
+    // than quietly swapped for the currently open project: substituting one
+    // would put another project's logs, volumes and recovery diagnosis under a
+    // report about this failure. Reporting stays possible either way — the
+    // report degrades to machine-level state and says so.
+    const rootWasRejected = Boolean(requestedRoot) && !resolvedRoot;
+    const projectRoot = rootWasRejected
+      ? null
+      : resolvedRoot ?? openProjectRootOrNull();
+    return await collectDiagnosticReport(
+      {
+        appVersion: app.getVersion(),
+        packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+        isPackaged: app.isPackaged,
+        userDataPath: app.getPath("userData"),
+        reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
+        installId: productAnalyticsService?.getDistinctId() ?? null,
+        accountUserId: getCurrentAccountOwnerId?.() ?? null,
+        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatus() ?? null,
+        diagnoseProject: projectRecoveryService
+          ? (root: string) => projectRecoveryService.diagnose(root)
+          : undefined,
+      },
+      {
+        surface,
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        code: typeof arg?.code === "string" ? arg.code.slice(0, 120) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string" ? arg.technicalDetail.slice(0, 16_000) : null,
+        projectRoot,
+        extraNotes: rootWasRejected
+          ? ["requested project root was not recognised; machine-level state only"]
+          : undefined,
+      },
+    );
+  };
+
+  ipcMain.handle(
+    IPC.diagnosticsOpenIssue,
+    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
+      const result = await buildDiagnosticsReport(arg);
+      const written = writeDiagnosticReportFile(result.filePath, result.report);
+      let copied = false;
+      try {
+        clipboard.writeText(result.report);
+        copied = true;
+      } catch {
+        copied = false;
+      }
+      let opened = false;
+      try {
+        await openExternalUrl(result.issueUrl);
+        opened = true;
+      } catch {
+        opened = false;
+      }
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "issue_report", outcome: opened ? "opened" : "failed" },
+        projectId: null,
+        dedupeKey: `issue_report:${opened ? "opened" : "failed"}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+      return {
+        report: result.report,
+        filePath: written ? result.filePath : "",
+        issueUrl: result.issueUrl,
+        installId: result.installId,
+        copied,
+        opened,
+      };
+    },
+  );
+
+  /**
+   * The renderer's failure surfaces (the crash boundaries) asking for one
+   * automatic send. Main decides: the setting, the budget and the send all live
+   * there, so a renderer that fires this repeatedly changes nothing.
+   *
+   * `projectRoot` is deliberately NOT taken from the payload. It selects which
+   * project's log directory gets read into the report, and a renderer is the
+   * one participant here that must not choose that — the only caller
+   * (`RendererErrorBoundary`) never sends one anyway. Main uses the project it
+   * already has open, or none. The manual `openIssue` path is unchanged: there
+   * a person is choosing to file about the screen they are looking at.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsAutoReport,
+    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<void> => {
+      const code = typeof arg?.code === "string" ? arg.code : "";
+      if (!autoDiagnosticsService || !code.trim()) return;
+      await autoDiagnosticsService.report({
+        failureCode: code,
+        surface: typeof arg?.surface === "string" && arg.surface.trim() ? arg.surface.trim() : "unknown",
+        headline: typeof arg?.headline === "string" ? arg.headline.slice(0, 300) : null,
+        technicalDetail: typeof arg?.technicalDetail === "string"
+          ? arg.technicalDetail.slice(0, 16_000)
+          : null,
+        projectRoot: getCtx().project?.rootPath ?? null,
+      });
+    },
+  );
+
+  /**
+   * "Send a report to ADE" from the Diagnostics sharing settings section.
+   *
+   * Takes no argument on purpose. Every other report carries a surface and a
+   * context from the screen that failed; this one is about nothing in
+   * particular, so main names the surface itself (`settings_manual`) and uses
+   * the project it already has open. A renderer choosing either would be a
+   * renderer choosing whose logs go in the report.
+   *
+   * `null` rather than a throw when the service is absent (a runtime mode
+   * without it): the caller renders "unavailable right now", which is true,
+   * instead of an exception it would have to translate.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsSendManual,
+    async (): Promise<DiagnosticsManualSendResult> =>
+      (await autoDiagnosticsService?.sendManual()) ?? { ok: false, reason: "failed" },
+  );
+
+  const diagnosticsSharingStatus = (): DiagnosticsSharingStatus =>
+    autoDiagnosticsService?.getStatus()
+    ?? {
+      enabled: true,
+      sendsInWindow: 0,
+      limit: MAX_AUTO_DIAGNOSTICS_PER_WINDOW,
+      manualSendsInWindow: 0,
+      manualLimit: MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
+    };
+
+  ipcMain.handle(IPC.diagnosticsGetSharing, async (): Promise<DiagnosticsSharingStatus> =>
+    diagnosticsSharingStatus());
+
+  ipcMain.handle(
+    IPC.diagnosticsSetSharing,
+    async (_event, arg: { enabled?: boolean } | undefined): Promise<DiagnosticsSharingStatus> => {
+      autoDiagnosticsService?.setEnabled(arg?.enabled === true);
+      return diagnosticsSharingStatus();
+    },
+  );
+
+  /**
+   * Hands over the notices nobody has been shown, and clears NOTHING.
+   *
+   * Clearing here would record "asked" as "displayed" — the same mistake the
+   * fast path already cannot make — and this handler is the one place where the
+   * difference is visible: the window can vanish between this loop and the
+   * toast. The renderer acknowledges each reference once it has rendered it
+   * (`diagnosticsAckAutoSent`), and that is the only thing that retires a
+   * notice.
+   */
+  ipcMain.handle(IPC.diagnosticsFlushAutoSent, async (event): Promise<void> => {
+    const pending = autoDiagnosticsService?.listPendingNotices() ?? [];
+    for (const notice of pending) {
+      try {
+        event.sender.send(IPC.diagnosticsAutoSent, {
+          failureCode: notice.failureCode,
+          reportPath: notice.reportPath ?? "",
+          reference: notice.reference ?? "",
+        } satisfies DiagnosticsAutoSentPayload);
+      } catch {
+        // A window that went away simply does not get the toast; the report was
+        // still sent, and it stays pending for the next window to show.
+      }
+    }
+  });
+
+  ipcMain.handle(
+    IPC.diagnosticsAckAutoSent,
+    async (_event, arg: { references?: unknown } | undefined): Promise<void> => {
+      const references = Array.isArray(arg?.references)
+        ? arg.references
+            .filter((value): value is string => typeof value === "string")
+            // A renderer only ever holds the handful it was just sent; the cap
+            // is here so a malformed caller cannot hand this a huge array.
+            .slice(0, 64)
+        : [];
+      autoDiagnosticsService?.ackNotices(references);
+    },
+  );
+
+  /**
+   * Reveals a saved auto-report, and nothing else.
+   *
+   * Deliberately NOT `appRevealPath`: that one validates against the project
+   * root and the user's Downloads/Documents/temp, and diagnostic reports live
+   * outside all of those. Widening that allowlist for every caller to serve one
+   * toast button would be the wrong trade; this handler carries the two
+   * directories it needs instead.
+   *
+   * BOTH senders write reports, to different places — the desktop under
+   * `userData/diagnostic-reports`, the brain under
+   * `<adeHome>/diagnostic-reports` — and the brain's are precisely the ones a
+   * user is most likely to want, since a headless send is the one they were not
+   * present for. Allowing only the desktop's root left "View" on every brain
+   * toast throwing on click.
+   */
+  ipcMain.handle(
+    IPC.diagnosticsRevealReport,
+    async (_event, arg: { reportPath?: string } | undefined): Promise<void> => {
+      const raw = typeof arg?.reportPath === "string" ? arg.reportPath.trim() : "";
+      if (!raw) return;
+      const resolved = resolveRevealableDiagnosticReport(
+        diagnosticReportRoots({
+          userDataDir: app.getPath("userData"),
+          adeDir: resolveMachineAdeLayout().adeDir,
+        }),
+        raw,
+      );
+      if (!resolved) throw new Error("Path is outside allowed directories.");
+      shell.showItemInFolder(resolved);
+    },
+  );
 
   ipcMain.handle(IPC.projectStateGetSnapshot, async (): Promise<AdeProjectSnapshot> => {
     const ctx = getCtx();
@@ -4914,6 +5326,52 @@ export function registerIpc({
     cancelPiLogin(arg);
   });
 
+  addCursorSdkAuthStatusListener((event: CursorSdkAuthEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.webContents.send(IPC.aiCursorAuthEvent, event);
+      } catch {
+        // ignore broadcast failures
+      }
+    }
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthStatus, async (): Promise<CursorSdkAuthStatus> => {
+    return await getCursorSdkAuthStatus();
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthLogin, async (): Promise<CursorSdkLoginResult> => {
+    const ctx = getCtx();
+    const result = await loginCursorSdk();
+    if (result.ok) {
+      try {
+        ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        ctx.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    return result;
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthLogout, async (): Promise<{ ok: boolean; error?: string }> => {
+    const ctx = getCtx();
+    const result = await logoutCursorSdk();
+    try {
+      ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+    } catch (error) {
+      ctx.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+        error: getErrorMessage(error),
+      });
+    }
+    return result;
+  });
+
+  ipcMain.handle(IPC.aiCursorAuthCancel, async (): Promise<void> => {
+    cancelCursorSdkLogin();
+  });
+
   ipcMain.handle(IPC.aiRefreshModelsDev, async (): Promise<{ lastFetchedAt: number | null }> => {
     const ctx = getCtx();
     try {
@@ -5018,6 +5476,15 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(
+    IPC.aiCursorCloudGetLaneSecretNames,
+    async (_event, arg: { laneId: string }): Promise<string[]> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
+      return ctx.aiIntegrationService.getCursorCloudLaneSecretNames(arg.laneId);
+    },
+  );
+
   ipcMain.handle(IPC.aiCursorCloudArchiveAgent, async (_event, arg: { agentId: string }): Promise<void> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["aiIntegrationService"] as const);
@@ -5042,6 +5509,15 @@ export function registerIpc({
       const ctx = getCtx();
       requireAppContextServices(ctx, ["aiIntegrationService"] as const);
       return await ctx.aiIntegrationService.getCursorCloudAgent(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudGetUsage,
+    async (_event, arg: CursorAgentUsageRequest): Promise<CursorAgentUsage> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
+      return await ctx.aiIntegrationService.getCursorAgentUsage(arg);
     },
   );
 
@@ -5095,7 +5571,58 @@ export function registerIpc({
       return await ctx.agentChatService.openCursorCloudChat({
         cloudAgentId: arg.cloudAgentId,
         laneId: arg.laneId,
+        ...(arg.agentName ? { agentName: arg.agentName } : {}),
+        ...(arg.sessionId ? { sessionId: arg.sessionId } : {}),
+        ...(arg.modelId ? { modelId: arg.modelId } : {}),
       });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudWatchMirror,
+    async (_event, arg: CursorCloudWatchMirrorRequest): Promise<void> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["agentChatService"] as const);
+      ctx.agentChatService.watchCursorCloudMirror({
+        sessionId: arg.sessionId,
+        watching: arg.watching,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudFleet,
+    async (_event, arg?: { includeArchived?: boolean; limit?: number }): Promise<CursorCloudFleetResult> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.getFleet(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudPullIntoLane,
+    async (_event, arg: { agentId: string }): Promise<CursorCloudPullIntoLaneResult> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.pullIntoLane(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudResolveLane,
+    async (_event, arg: { agentId: string }): Promise<{ laneId: string; laneName: string; created: boolean }> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.resolveLaneForAgent(arg.agentId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiCursorCloudStopRun,
+    async (_event, arg: { agentId: string }): Promise<{ stopped: boolean }> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["cursorCloudFleetService"] as const);
+      return await ctx.cursorCloudFleetService.stopAgentRun(arg.agentId);
     },
   );
 
@@ -5137,7 +5664,7 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+  const readLocalSyncStatus = async (arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const params = {
       includeTransferReadiness: arg?.includeTransferReadiness === true,
       forceTransferReadiness: arg?.forceTransferReadiness === true,
@@ -5171,6 +5698,34 @@ export function registerIpc({
     } catch (error) {
       return buildMachineOnlySyncSnapshot(error);
     }
+  };
+
+  // The account directory refusing to register THIS computer is the state a
+  // revoked machine sits in, and the local status read is where the desktop can
+  // see it. The observer reports only the edge into a refusal, so a machine that
+  // stays revoked for days costs one event and not one per poll tick; the
+  // per-code hour below bounds the case the in-process latch cannot see, which
+  // is an app or brain restarting inside the refusal.
+  const observeMachineRegisterRefusal = createMachineRegisterRefusalObserver((code) => {
+    productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "machine_register_refused",
+        outcome: "failed",
+        refusal_code: code,
+      },
+      projectId: null,
+      dedupeKey: `machine_register_refused:${code}`,
+      minimumIntervalMs: 60 * 60 * 1_000,
+    });
+  });
+
+  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const snapshot = await readLocalSyncStatus(arg);
+    observeMachineRegisterRefusal(snapshot);
+    return snapshot;
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
@@ -6141,6 +6696,47 @@ export function registerIpc({
     }) ?? "";
   });
 
+  ipcMain.handle(IPC.externalSessionsGetDetail, async (_event, arg: unknown): Promise<ExternalSessionDetail> => {
+    return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(arg));
+  });
+
+  const detailWatchCleanupSenders = new Set<number>();
+
+  ipcMain.handle(IPC.externalSessionsWatchDetail, async (event, arg: unknown): Promise<ExternalSessionDetail> => {
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
+    const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
+    if (!watchId) throw new Error("external session detail watchId must be a string.");
+    const args = normalizeExternalSessionDetailArgs(arg);
+    const sender = event.sender;
+    const senderId = sender.id;
+    if (!detailWatchCleanupSenders.has(senderId)) {
+      detailWatchCleanupSenders.add(senderId);
+      sender.once("destroyed", () => {
+        detailWatchCleanupSenders.delete(senderId);
+        stopExternalSessionDetailWatchesForSender(senderId);
+      });
+    }
+    return startExternalSessionDetailWatch({
+      senderId,
+      watchId,
+      provider: args.provider,
+      sessionId: args.sessionId,
+      onUpdate: (detail) => {
+        if (sender.isDestroyed()) return;
+        const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };
+        sender.send(IPC.externalSessionsDetailUpdated, payload);
+      },
+    });
+  });
+
+  ipcMain.handle(IPC.externalSessionsUnwatchDetail, async (event, arg: unknown): Promise<{ ok: true }> => {
+    const record = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
+    const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
+    if (!watchId) throw new Error("external session detail watchId must be a string.");
+    stopExternalSessionDetailWatch(event.sender.id, watchId);
+    return { ok: true };
+  });
+
 
   // ── Usage tracking + budget cap IPC ──────────────────────────
   /**
@@ -6551,6 +7147,38 @@ export function registerIpc({
   ): Promise<SessionLinearIssueLink[]> => {
     const ctx = ensureLaneContext();
     return ctx.laneService.listLinearIssuesForLaneSessions(arg);
+  });
+
+  ipcMain.handle(IPC.lanesAttachGitHubIssueToSession, async (
+    _event,
+    arg: { chatSessionId: string; issues: LaneGitHubIssue[] },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.attachGitHubIssueToSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesDetachGitHubIssueFromSession, async (
+    _event,
+    arg: { chatSessionId: string; issueId?: string },
+  ): Promise<boolean> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.detachGitHubIssueFromSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListGitHubIssuesForSession, async (
+    _event,
+    arg: { chatSessionId: string },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listGitHubIssuesForSession(arg);
+  });
+
+  ipcMain.handle(IPC.lanesListGitHubIssuesForLaneSessions, async (
+    _event,
+    arg: { laneId: string },
+  ): Promise<SessionGitHubIssueLink[]> => {
+    const ctx = ensureLaneContext();
+    return ctx.laneService.listGitHubIssuesForLaneSessions(arg);
   });
 
   ipcMain.handle(IPC.lanesUnlinkLinearIssues, async (
@@ -7660,12 +8288,16 @@ export function registerIpc({
       return [];
     }
     const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
+    const listOptions = {
+      includeAutomation: Boolean(arg?.includeAutomation),
+      ...(arg?.includeIdentity === true ? { includeIdentity: true } : {}),
+    };
     return await (service as unknown as {
       listSessions: (
         laneId?: string,
-        options?: { includeAutomation?: boolean },
+        options?: { includeAutomation?: boolean; includeIdentity?: boolean },
       ) => Promise<AgentChatSessionSummary[]>;
-    }).listSessions(laneId || undefined, { includeAutomation: Boolean(arg?.includeAutomation) });
+    }).listSessions(laneId || undefined, listOptions);
   });
 
   ipcMain.handle(IPC.agentChatGetSummary, async (_event, arg: AgentChatGetSummaryArgs): Promise<AgentChatSessionSummary | null> => {
@@ -7993,6 +8625,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.clearCodexGoal(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexResetMemory, async (_event, arg: AgentChatCodexResetMemoryArgs): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.resetCodexMemory(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexTerminateBackgroundTerminal, async (_event, arg: AgentChatCodexTerminateBackgroundTerminalArgs): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.terminateCodexBackgroundTerminal(arg);
   });
 
   ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
@@ -8387,241 +9029,24 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorListLaunchTargets, async (_event, arg = {}) =>
     ensureIosSimulator().listLaunchTargets(arg));
 
-  const simulatorWindowName = /(?:^|\s|[(\[\-–])(simulator|iphone|ipad|apple\s*watch|apple\s*tv|vision\s*pro)(?:\s|[)\]\-–]|$)/i;
-  const runMacUtility = async (command: string, args: string[], timeoutMs = 900) => {
-    await new Promise<void>((resolve) => {
-      const child = spawn(command, args, { stdio: "ignore", windowsHide: true });
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        child.removeAllListeners("error");
-        child.removeAllListeners("exit");
-        resolve();
-      };
-      const timeout = setTimeout(() => {
-        try { child.kill("SIGTERM"); } catch { /* already gone */ }
-        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } }, 250);
-        finish();
-      }, timeoutMs);
-      child.once("error", finish);
-      child.once("exit", finish);
-    });
-  };
-  const runMacUtilityText = async (command: string, args: string[], timeoutMs = 900): Promise<string> => {
-    return new Promise<string>((resolve, reject) => {
-      const child = spawn(command, args, {
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      let stdout = "";
-      let stderr = "";
-      const timeout = setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error(`${command} timed out.`));
-      }, timeoutMs);
-      child.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        stderr += chunk.toString();
-      });
-      child.once("error", (error) => {
-        clearTimeout(timeout);
-        reject(error);
-      });
-      child.once("exit", (code) => {
-        clearTimeout(timeout);
-        if (code === 0) {
-          resolve(stdout.trim());
-          return;
-        }
-        reject(new Error(stderr.trim() || `${command} exited with code ${code ?? "unknown"}.`));
-      });
-    });
-  };
-  const windowIssueMessage = (issue: IosSimulatorWindowState["issue"]): string | null => {
-    switch (issue) {
-      case "not-running":
-        return "The simulator is not running. Launch it from ADE again.";
-      case "hidden":
-        return "The simulator is hidden. Show it to refresh the live view.";
-      case "minimized":
-        return "The simulator is minimized. Restore it to refresh the live view.";
-      case "no-window":
-        return "The simulator is running, but ADE cannot find a visible simulator window.";
-      default:
-        return null;
-    }
-  };
-  const getSimulatorWindowState = async (): Promise<IosSimulatorWindowState> => {
-    if (process.platform !== "darwin") {
-      return {
-        appRunning: false,
-        visible: null,
-        windowCount: null,
-        minimizedWindowCount: null,
-        capturable: false,
-        issue: "unknown",
-        message: null,
-      };
-    }
-    const script = [
-      'tell application "System Events"',
-      '  if not (exists process "Simulator") then return "not-running|false|0|0"',
-      '  tell process "Simulator"',
-      '    set processVisible to visible',
-      '    set windowCount to count windows',
-      '    set minimizedCount to 0',
-      '    repeat with simulatorWindow in windows',
-      '      try',
-      '        if value of attribute "AXMinimized" of simulatorWindow then set minimizedCount to minimizedCount + 1',
-      '      end try',
-      '    end repeat',
-      '    return (processVisible as text) & "|" & (windowCount as text) & "|" & (minimizedCount as text)',
-      '  end tell',
-      'end tell',
-    ].join("\n");
-    try {
-      const raw = await runMacUtilityText("osascript", ["-e", script], 900);
-      if (raw.startsWith("not-running")) {
-        const issue: IosSimulatorWindowState["issue"] = "not-running";
-        return {
-          appRunning: false,
-          visible: false,
-          windowCount: 0,
-          minimizedWindowCount: 0,
-          capturable: false,
-          issue,
-          message: windowIssueMessage(issue),
-        };
-      }
-      const [visibleRaw, windowCountRaw, minimizedCountRaw] = raw.split("|");
-      const visible = visibleRaw === "true";
-      const windowCount = Number.parseInt(windowCountRaw ?? "", 10);
-      const minimizedWindowCount = Number.parseInt(minimizedCountRaw ?? "", 10);
-      const hasWindows = Number.isFinite(windowCount) && windowCount > 0;
-      const allWindowsMinimized = hasWindows && Number.isFinite(minimizedWindowCount) && minimizedWindowCount >= windowCount;
-      const issue: IosSimulatorWindowState["issue"] = !visible
-        ? "hidden"
-        : !hasWindows
-          ? "no-window"
-          : allWindowsMinimized
-            ? "minimized"
-            : null;
-      return {
-        appRunning: true,
-        visible,
-        windowCount: Number.isFinite(windowCount) ? windowCount : null,
-        minimizedWindowCount: Number.isFinite(minimizedWindowCount) ? minimizedWindowCount : null,
-        capturable: issue === null,
-        issue,
-        message: windowIssueMessage(issue),
-      };
-    } catch {
-      return {
-        appRunning: true,
-        visible: null,
-        windowCount: null,
-        minimizedWindowCount: null,
-        capturable: null,
-        issue: "unknown",
-        message: null,
-      };
-    }
-  };
-  const focusBrowserWindow = (window: BrowserWindow | null) => {
-    if (!window) return;
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
-  };
-  const prepareSimulatorWindowForCapture = async (window: BrowserWindow | null, options: { placeBehindAde?: boolean } = {}) => {
-    await runMacUtility("open", ["-g", "-a", "Simulator"], 900);
-    const bounds = options.placeBehindAde && window ? window.getBounds() : null;
-    const targetWidth = bounds ? Math.max(300, Math.min(440, Math.round(bounds.width * 0.34))) : 0;
-    const targetHeight = bounds ? Math.max(520, Math.min(860, bounds.height - 120)) : 0;
-    // Park the real Simulator window under ADE, but away from the drawer.
-    // Window capture needs the window to stay unminimized; placing it under
-    // the left side avoids capturing the user's cursor while they interact
-    // with the simulator surface on the right.
-    const targetX = bounds ? Math.round(bounds.x + Math.max(64, Math.min(140, bounds.width * 0.08))) : 0;
-    const targetY = bounds ? Math.round(bounds.y + 72) : 0;
-    const script = [
-      'tell application "System Events"',
-      '  if exists process "Simulator" then',
-      '    tell process "Simulator"',
-      '      set visible to true',
-      '      repeat with simulatorWindow in windows',
-      '        try',
-      '          set value of attribute "AXMinimized" of simulatorWindow to false',
-      '        end try',
-      bounds
-        ? [
-            '        try',
-            `          set position of simulatorWindow to {${targetX}, ${targetY}}`,
-            `          set size of simulatorWindow to {${Math.round(targetWidth)}, ${Math.round(targetHeight)}}`,
-            '        end try',
-          ].join("\n")
-        : "",
-      '      end repeat',
-      '    end tell',
-      '  end if',
-      'end tell',
-    ].filter(Boolean).join("\n");
-    await runMacUtility("osascript", ["-e", script], 1_200);
-    focusBrowserWindow(window);
-  };
-  let simulatorParkingWindow: BrowserWindow | null = null;
-  let simulatorParkingTimer: NodeJS.Timeout | null = null;
-  let cleanupSimulatorParkingFollow: (() => void) | null = null;
-  const scheduleSimulatorParking = (window: BrowserWindow) => {
-    if (simulatorParkingTimer) clearTimeout(simulatorParkingTimer);
-    simulatorParkingTimer = setTimeout(() => {
-      simulatorParkingTimer = null;
-      if (window.isDestroyed()) return;
-      void prepareSimulatorWindowForCapture(window, { placeBehindAde: true }).catch(() => {});
-    }, 120);
-  };
-  const followSimulatorWindowUnderAde = (window: BrowserWindow | null) => {
-    if (!window || window.isDestroyed()) return;
-    if (simulatorParkingWindow === window) {
-      return;
-    }
-    cleanupSimulatorParkingFollow?.();
-    simulatorParkingWindow = window;
-    const onBoundsChanged = () => scheduleSimulatorParking(window);
-    const onClosed = () => {
-      cleanupSimulatorParkingFollow?.();
-    };
-    window.on("move", onBoundsChanged);
-    window.on("resize", onBoundsChanged);
-    window.once("closed", onClosed);
-    cleanupSimulatorParkingFollow = () => {
-      if (simulatorParkingTimer) {
-        clearTimeout(simulatorParkingTimer);
-        simulatorParkingTimer = null;
-      }
-      if (!window.isDestroyed()) {
-        window.off("move", onBoundsChanged);
-        window.off("resize", onBoundsChanged);
-        window.off("closed", onClosed);
-      }
-      if (simulatorParkingWindow === window) simulatorParkingWindow = null;
-      cleanupSimulatorParkingFollow = null;
-    };
-  };
-  const activeSimulatorParkingWindow = (): BrowserWindow | null => {
-    if (!simulatorParkingWindow || simulatorParkingWindow.isDestroyed()) return null;
-    return simulatorParkingWindow;
-  };
+  // One Simulator.app, many ADE windows: whichever window claims it first owns
+  // the parking follow until it releases or is forced out. Everything the claim
+  // then does to the window lives in `../ios/simulatorWindowCapture`.
   const claimSimulatorParkingWindow = (
     window: BrowserWindow | null,
     options: { force?: boolean } = {},
   ): BrowserWindow | null => {
     const current = activeSimulatorParkingWindow();
     if (current && !options.force) {
+      // There is one Simulator window and many ADE windows. Losing the claim is
+      // silent to the user, so at least say so in the log when a second window
+      // asks for a simulator that is already parked against another.
+      if (current !== window && window && !window.isDestroyed()) {
+        getCtx().logger.info("ios_simulator.parking_window_already_claimed", {
+          claimedWindowId: current.id,
+          requestedWindowId: window.id,
+        });
+      }
       return current;
     }
     if (!window || window.isDestroyed()) return current;
@@ -8636,7 +9061,7 @@ export function registerIpc({
     if (!keepSimulatorInBackground) {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       const parkingWindow = claimSimulatorParkingWindow(browserWindow, { force: true });
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
+      await attachSimulatorWindowForCapture(parkingWindow);
     }
     return result;
   });
@@ -8647,16 +9072,23 @@ export function registerIpc({
     if (arg !== undefined && arg !== null && typeof arg !== "object") {
       throw new Error("iosSimulatorAttachToChatSession requires { chatSessionId } payload.");
     }
-    const payload = (arg ?? {}) as { chatSessionId?: string | null; callerChatSessionId?: string | null };
+    const payload = (arg ?? {}) as {
+      chatSessionId?: string | null;
+      callerChatSessionId?: string | null;
+      takeOver?: boolean;
+    };
     const chatSessionId = payload.chatSessionId ?? null;
     const callerChatSessionId = payload.callerChatSessionId ?? chatSessionId;
-    return ensureIosSimulator().attachToChatSession(chatSessionId, callerChatSessionId);
+    return ensureIosSimulator().attachToChatSession(chatSessionId, callerChatSessionId, {
+      takeOver: payload.takeOver === true,
+    });
   });
 
-  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) => {
-    cleanupSimulatorParkingFollow?.();
-    return ensureIosSimulator().shutdown(arg);
-  });
+  // The follow is dropped *after* the shutdown resolves, never before: the
+  // service refuses a foreign caller by throwing, and a refusal must leave the
+  // owning chat's parking follow exactly as it found it.
+  ipcMain.handle(IPC.iosSimulatorShutdown, async (_event, arg = {}) =>
+    releaseSimulatorParkingFollowAfter(() => ensureIosSimulator().shutdown(arg)));
 
   ipcMain.handle(IPC.iosSimulatorScreenshot, async (_event, arg = {}) => ensureIosSimulator().screenshot(arg));
 
@@ -8693,7 +9125,17 @@ export function registerIpc({
     if (result.backend === "simulator-window-capture") {
       const browserWindow = BrowserWindow.fromWebContents(event.sender);
       const parkingWindow = claimSimulatorParkingWindow(browserWindow);
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
+      // Deliberately does NOT take a holder. With a local project bound this
+      // handler never runs — preload routes `startStream` to the brain daemon,
+      // which has no BrowserWindow and no parking concept — so a retain wired
+      // here would leave the count permanently at zero in production. The
+      // renderer takes its holder over `IPC.iosSimulatorRetainWindowParking`,
+      // the local-only mirror of `releaseWindowParking`, so there is exactly
+      // one claimant of the count and it is on the same transport as its
+      // release.
+      // A stream starting is the capture session attaching: place the window
+      // once here, then leave it to the user.
+      await attachSimulatorWindowForCapture(parkingWindow);
     }
     return result;
   });
@@ -8704,35 +9146,117 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorGetWindowState, async () => getSimulatorWindowState());
 
-  ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event, arg = {}) => {
+  // The one place ADE takes focus for the Simulator is the user's own Reveal.
+  ipcMain.handle(IPC.iosSimulatorRevealWindow, async (): Promise<{ ok: boolean; message: string | null }> =>
+    revealSimulatorWindow());
+
+  ipcMain.handle(IPC.iosSimulatorListWindowSources, async (event, arg = {}): Promise<IosSimulatorWindowSourcesResult> => {
     const status = await getIosSimulatorStatusForEvent(event, arg, IPC.iosSimulatorListWindowSources);
-    if (!status.supported) return [];
-    const readSources = async () => desktopCapturer.getSources({
-      types: ["window"],
-      thumbnailSize: { width: 320, height: 320 },
-    });
+    if (!status.supported) {
+      return { sources: [], windowState: null, message: "The iOS Simulator is not available on this machine." };
+    }
+    // The clock starts here, not above: the status call is a remote-runtime
+    // round trip on a bound project and has nothing to do with the window
+    // budget. Counting it left the discovery work with less time than its own
+    // subprocess ceilings need.
+    const startedAt = Date.now();
+    const remainingMs = () => SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS - (Date.now() - startedAt);
+    // The Electron-main simulator service never sees a launch the brain daemon
+    // owns, so its `activeSession` is always null and parking used to be dead in
+    // production. Trust the caller's session when it has one.
+    const hasActiveSession = Boolean(readSimulatorSessionHint(arg)) || Boolean(status.activeSession);
+
+    const windowState = await getSimulatorWindowState();
+    if (windowState.issue === "screen-recording-permission" || windowState.issue === "automation-denied") {
+      // Capture cannot succeed and parking cannot run; name the blocker instead
+      // of sweeping every window for nothing.
+      return { sources: [], windowState, message: windowState.message };
+    }
+
     const senderWindow = BrowserWindow.fromWebContents(event.sender);
-    const parkingWindow = status.activeSession
-      ? claimSimulatorParkingWindow(senderWindow)
-      : null;
-    if (status.activeSession) {
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
-      await new Promise((resolve) => setTimeout(resolve, 350));
+    const parkingWindow = hasActiveSession ? claimSimulatorParkingWindow(senderWindow) : null;
+    if (hasActiveSession) {
+      await ensureSimulatorWindowCapturable(parkingWindow, { windowState, remainingMs });
     }
-    let sources = await readSources();
-    if (status.activeSession && !sources.some((source) => simulatorWindowName.test(source.name))) {
-      await prepareSimulatorWindowForCapture(parkingWindow, { placeBehindAde: true });
-      await new Promise((resolve) => setTimeout(resolve, 650));
-      sources = await readSources();
+
+    let sources = await listSimulatorWindowSources();
+    if (!sources.length && hasActiveSession && remainingMs() > 700) {
+      await reattachSimulatorWindowForCapture(parkingWindow, { remainingMs });
+      sources = await listSimulatorWindowSources();
     }
-    return sources
-      .filter((source) => simulatorWindowName.test(source.name))
-      .map((source) => ({
-        id: source.id,
-        name: source.name,
-        thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    if (sources.length) return { sources, windowState, message: null };
+
+    // The park above is allowed to change every fact the read at the top of the
+    // handler established: it starts Simulator.app, un-hides it and
+    // un-minimizes it. Re-read before judging, or the verdict is an instruction
+    // describing what ADE just did — a cold start answered "The simulator is
+    // not running. Launch it from ADE again." *because ADE had launched it*,
+    // and the drawer treats any message as terminal and gave up on the first
+    // sweep. Only the parked path needs the second read; without a session
+    // nothing moved.
+    const settledWindowState = hasActiveSession ? await getSimulatorWindowState() : windowState;
+
+    // `message` is a verdict, and the drawer asks only once, so every answer is
+    // final: a permission blocker, a missing session and an exhausted budget
+    // each name themselves, and the caller shows that text verbatim.
+    //
+    // The remaining branch — empty sources, a live session, budget left, and no
+    // window-state message — is left deliberately verdict-free. It is the case
+    // where a cold Simulator's window is a beat behind the app it just started,
+    // and the host genuinely does not know why it found nothing. Naming it here
+    // would replace the drawer's fallback ("ADE could not find the <device>
+    // window. Make sure the simulator is running and its window is open, then
+    // try again."), which is both truthful about the outcome and more
+    // actionable than anything this layer could assert, with a guess. The host
+    // reports the absence; the caller owns the wording.
+    const message = settledWindowState.message
+      ?? (!hasActiveSession
+        ? "No simulator session is running. Launch the app from ADE first."
+        : remainingMs() <= 0
+          ? "Timed out finding the simulator window. Try again."
+          : null);
+    return { sources, windowState: settledWindowState, message };
+  });
+
+  // The window-parking follow is armed by the discovery call above and has to be
+  // dropped when the drawer stops capturing. The shutdown handler below is not
+  // enough on its own: with a runtime bound, `shutdown` goes to the runtime
+  // action and this process never sees it, so a stale follow kept nudging (and
+  // relaunching) Simulator.app on every ADE window move.
+  //
+  // Scoped to the claimant, and refcounted within it: two drawers can be open
+  // in one window (a chat pane plus the Work sidebar's iOS tab), and the first
+  // to close must not drop a claim the other still depends on.
+  //
+  // The retain side has to live on this same local-only channel: `startStream`
+  // — the event that owes a release — is routed to the brain daemon whenever a
+  // local project is bound, so its ipcMain handler never runs in the case that
+  // window capture actually requires. A holder taken there would never exist.
+  //
+  // `ok` is the truth, not an acknowledgement: a sender that does not own the
+  // claim is silently not counted, and a renderer that believed otherwise would
+  // later release a holder it never took — the incumbent drawer's.
+  //
+  // The sender travels with the holder because it is the only thing that can
+  // report a renderer reload: that throws away the drawer without running its
+  // release and never closes the window, so a window-scoped count leaked a
+  // holder for the life of the process. The reload signal is the sender's
+  // main-frame navigation, not `destroyed` — the webContents object outlives
+  // any number of reloads.
+  ipcMain.handle(IPC.iosSimulatorRetainWindowParking, async (event): Promise<{ ok: boolean }> => ({
+    ok: retainSimulatorParkingFollow(BrowserWindow.fromWebContents(event.sender), event.sender),
+  }));
+
+  ipcMain.handle(IPC.iosSimulatorReleaseWindowParking, async (event): Promise<{ ok: true }> => {
+    releaseSimulatorParkingHolder(BrowserWindow.fromWebContents(event.sender), event.sender);
+    return { ok: true };
+  });
+
+  ipcMain.handle(IPC.iosSimulatorOpenSystemSettings, async (_event, arg = {}): Promise<{ ok: boolean }> => {
+    const pane: IosSimulatorPrivacyPane = (arg as { pane?: unknown } | null)?.pane === "automation"
+      ? "automation"
+      : "screen-recording";
+    return openSimulatorPrivacyPane(pane);
   });
 
   ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));
@@ -9744,6 +10268,12 @@ export function registerIpc({
     return ctx.githubService.clearAppUserAuth();
   });
 
+  // Zero-network read, so pollers can consult the reserve on a timer.
+  ipcMain.handle(IPC.githubGetRequestBudget, async (): Promise<GitHubRequestBudget> => {
+    const ctx = getCtx();
+    return await ctx.githubService.getRequestBudget();
+  });
+
   const resolveGithubRepoRef = async (
     githubService: ReturnType<typeof createGithubService>,
     arg?: { owner?: string; name?: string } | null
@@ -9829,6 +10359,12 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.githubGetIssue, async (_event, arg: { owner?: string; name?: string; number: number }) => {
+    const ctx = getCtx();
+    const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
+    return await ctx.githubService.getIssue(owner, name, arg.number);
+  });
+
   ipcMain.handle(
     IPC.githubListMyRepos,
     async (_event, arg: ListMyGitHubReposInput = {}): Promise<ListMyGitHubReposResult> => {
@@ -9904,6 +10440,19 @@ export function registerIpc({
       localRuntimeConnectionPool,
       LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
     ),
+    // Same shape and the same per-outcome hour as the two Connections controls
+    // below, so removal joins that funnel rather than starting a parallel one.
+    // The machine key, its display name and the account id all stay here.
+    recordMachineRemoved: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "machine_removed", outcome },
+        projectId: null,
+        dedupeKey: `machine_removed:${outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+    },
     logger: {
       info: (message, meta) => getCtx().logger.info(message, meta),
       warn: (message, meta) => getCtx().logger.warn(message, meta),
@@ -10056,6 +10605,55 @@ export function registerIpc({
       arg: { machineKey?: string },
     ): Promise<AdeAccountMachineRemovalResult> => {
       return await accountBridge.removeMachine(arg?.machineKey ?? "");
+    },
+  );
+
+  // What the "Can't read your sign-in" Repair control runs. Order matters: the
+  // credential file is repaired FIRST, then the brain restarts, so the
+  // replacement process reads an already-converged store. A restart alone —
+  // which is all this surface used to do — could not fix any credential-store
+  // condition, which is the only condition that surface appears for.
+  ipcMain.handle(
+    IPC.accountRepairSession,
+    async (): Promise<AdeAccountSessionRepairResult> => {
+      // Same product fact as the restart-only handler above, so it keeps the
+      // existing `brain_repair` action and dedupe key rather than forking the
+      // funnel — this control replaced that one, it did not join it. The
+      // outcome is the only thing that got finer: whether the click recovered a
+      // session or only confirmed one is unrecoverable is the question the old
+      // completed/failed pair could not answer.
+      const captureRepairOutcome = (outcome: "completed" | "sign_in_required" | "failed") => {
+        productAnalyticsService?.capture({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: { feature: "connections", action: "brain_repair", outcome },
+          projectId: null,
+          dedupeKey: `brain_repair:${outcome}`,
+          minimumIntervalMs: 60 * 60 * 1_000,
+        });
+      };
+      let repair: Omit<AdeAccountSessionRepairResult, "brainRestarted">;
+      try {
+        repair = accountBridge.repairCredentialStore();
+      } catch (error) {
+        captureRepairOutcome("failed");
+        throw error;
+      }
+      let brainRestarted: boolean | null = null;
+      if (projectRecoveryService) {
+        try {
+          await projectRecoveryService.restartBrain();
+          brainRestarted = true;
+        } catch {
+          // The store repair is the load-bearing half and it already happened.
+          // Report the restart honestly instead of discarding the repair.
+          brainRestarted = false;
+        }
+      }
+      captureRepairOutcome(
+        repair.outcome === "sign_in_required" ? "sign_in_required" : "completed",
+      );
+      return { ...repair, brainRestarted };
     },
   );
 
@@ -11294,8 +11892,39 @@ export function registerIpc({
     return { detection };
   });
 
+  // A renderer running against a main process without the service must still
+  // get a well-formed snapshot — and one that says "off", because a missing
+  // service holds no lock. The shape lives with the type so the four surfaces
+  // that report "no lock held" cannot drift apart.
+  ipcMain.handle(IPC.keepAwakeGet, async (): Promise<KeepAwakeSnapshot> => {
+    const service = getCtx().keepAwakeService;
+    return service ? await service.getSnapshot() : INERT_KEEP_AWAKE_SNAPSHOT;
+  });
+
+  ipcMain.handle(
+    IPC.keepAwakeSetLevel,
+    async (_event, level: unknown): Promise<KeepAwakeSnapshot> => {
+      const service = getCtx().keepAwakeService;
+      return service ? await service.setLevel(level) : INERT_KEEP_AWAKE_SNAPSHOT;
+    },
+  );
+
+  ipcMain.handle(IPC.keepAwakeFixSystemSleep, async (): Promise<KeepAwakeFixResult> => {
+    const service = getCtx().keepAwakeService;
+    if (!service) {
+      return {
+        ok: false,
+        error: "ADE can't change this right now.",
+        snapshot: INERT_KEEP_AWAKE_SNAPSHOT,
+      };
+    }
+    return await service.fixSystemSleep();
+  });
+
   ipcMain.handle(IPC.updateCheckForUpdates, () => {
-    getCtx().autoUpdateService?.checkForUpdates();
+    // Only reachable from the Settings button, so it always counts as
+    // user-initiated: it must run even when an update is already staged.
+    getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
   });
 
   ipcMain.handle(IPC.updateGetState, () => {

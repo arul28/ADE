@@ -21,7 +21,7 @@ import {
   type SessionLifecyclePatch,
 } from "./sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
-import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
 // Full snapshots replace xterm state, so they must be at least as complete as
 // TerminalView's initial hydration. The host caps this at the same 2 MB.
@@ -67,9 +67,12 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
           events.emit("ptyData", {
             ptyId: resolvedPtyId,
             sessionId: payload.sessionId,
-            data: payload.transcript,
+            data: payload.delta === true
+              ? payload.transcript
+              : (payload.screen?.serialized || payload.transcript),
             offset: payload.endOffset,
             ...(payload.delta === true ? {} : { replace: true }),
+            ...(payload.delta !== true && payload.screen?.serialized ? { screen: true } : {}),
           });
         },
         data: (payload) => {
@@ -154,7 +157,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     }
   }
 
-  async function listSessions(args?: unknown, pin?: unknown): Promise<TerminalSessionSummary[]> {
+  async function listSessions(args?: unknown, pin?: RuntimePinArg): Promise<TerminalSessionSummary[]> {
     assertWebRuntimePinRoutable("sessions.list", pin, infra);
     const record = asRecord(args);
     const key = stableCacheKey(record);
@@ -273,7 +276,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   const sessions: Record<string, unknown> = {
     list: listSessions,
-    get: async (sessionId: string, pin?: unknown) => {
+    get: async (sessionId: string, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.get", pin, infra);
       const detail = await commands.call<TerminalSessionDetail | null>("work.getSession", { sessionId }, {
         fallback: null,
@@ -283,7 +286,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       // not show it un-snoozed while the machine catches up.
       return detail ? lifecycle.decorate(detail) : null;
     },
-    delete: async (args: unknown) => {
+    delete: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.delete", pin, infra);
       await commands.call("work.deleteSession", asRecord(args), {
         fallback: undefined,
         idempotent: false,
@@ -293,7 +297,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         reason: "deleted",
       });
     },
-    updateMeta: async (args: unknown) => {
+    updateMeta: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.updateMeta", pin, infra);
       const result = await commands.call<TerminalSessionSummary | null>("work.updateSessionMeta", asRecord(args), {
         fallback: null,
         idempotent: false,
@@ -305,14 +310,20 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       });
       return result;
     },
-    settle: async (sessionId: string, opts?: { outcome?: string; dismissPendingInput?: boolean }) => {
+    settle: async (
+      sessionId: string,
+      opts?: { outcome?: string; dismissPendingInput?: boolean },
+      pin?: RuntimePinArg,
+    ) => {
+      assertWebRuntimePinRoutable("sessions.settle", pin, infra);
       await lifecycleCall("session.settleSession", {
         sessionId,
         ...(opts?.outcome ? { outcome: opts.outcome } : {}),
         ...(opts?.dismissPendingInput ? { dismissPendingInput: true } : {}),
       }, sessionId, settlePatch());
     },
-    unsettle: async (sessionId: string) => {
+    unsettle: async (sessionId: string, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.unsettle", pin, infra);
       await lifecycleCall("session.unsettleSession", { sessionId }, sessionId, UNSETTLE_PATCH);
     },
     settleMany: async (sessionIds: string[]) =>
@@ -326,22 +337,26 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     unsettleMany: async (sessionIds: string[]) => {
       await lifecycleCall("session.unsettleSessions", { sessionIds }, sessionIds, UNSETTLE_PATCH);
     },
-    snoozeSession: async (sessionId: string, untilIso: string) =>
-      sessionLifecycleApplied(await lifecycleCall<unknown>(
+    snoozeSession: async (sessionId: string, untilIso: string, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.snoozeSession", pin, infra);
+      return sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.snoozeSession",
         { sessionId, untilIso },
         sessionId,
         snoozePatch(untilIso),
         appliedToAll,
-      )),
-    wakeSession: async (sessionId: string, reason?: string) =>
-      sessionLifecycleApplied(await lifecycleCall<unknown>(
+      ));
+    },
+    wakeSession: async (sessionId: string, reason?: string, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.wakeSession", pin, infra);
+      return sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.wakeSession",
         { sessionId, ...(reason ? { reason } : {}) },
         sessionId,
         wakePatch(reason),
         appliedToAll,
-      )),
+      ));
+    },
     snoozeSessions: async (sessionIds: string[], untilIso: string) =>
       (await lifecycleCall<string[]>(
         "session.snoozeSessions",
@@ -358,23 +373,31 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         wakePatch(reason),
         appliedToId,
       )) ?? [],
-    setSettleOverride: async (sessionId: string, override: "settled" | "active" | null) =>
-      sessionLifecycleApplied(await lifecycleCall<unknown>(
+    setSettleOverride: async (
+      sessionId: string,
+      override: "settled" | "active" | null,
+      pin?: RuntimePinArg,
+    ) => {
+      assertWebRuntimePinRoutable("sessions.setSettleOverride", pin, infra);
+      return sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.setSettleOverride",
         { sessionId, override },
         sessionId,
         { settleOverride: override },
         appliedToAll,
-      )),
-    clearWokeMarker: async (sessionId: string) =>
-      sessionLifecycleApplied(await lifecycleCall<unknown>(
+      ));
+    },
+    clearWokeMarker: async (sessionId: string, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.clearWokeMarker", pin, infra);
+      return sessionLifecycleApplied(await lifecycleCall<unknown>(
         "session.clearWokeMarker",
         { sessionId },
         sessionId,
         CLEAR_WOKE_PATCH,
         appliedToAll,
-      )),
-    readTranscriptTail: async (args: unknown, pin?: unknown) => {
+      ));
+    },
+    readTranscriptTail: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("sessions.readTranscriptTail", pin, infra);
       const record = asRecord(args);
       const sessionId = stringField(record, "sessionId");
@@ -383,11 +406,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const snapshot = await captureSnapshot(sessionId, maxBytes);
       return snapshot?.transcript ?? "";
     },
-    getDelta: (sessionId: string) =>
-      commands.call("work.getSessionDelta", { sessionId }, {
+    getDelta: async (sessionId: string, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("sessions.getDelta", pin, infra);
+      return await commands.call("work.getSessionDelta", { sessionId }, {
         fallback: null,
         idempotent: true,
-      }),
+      });
+    },
     onChanged: (listener: (event: unknown) => void) => events.on("sessionsChanged", listener as never),
   };
 
@@ -395,15 +420,15 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
   // runtime pin is routable only when it names that host and its bound project
   // — in which case it says nothing the call was not already doing, and the
   // shared guard (./runtimePinGuard) lets it through unpinned. A pin naming any
-  // other machine or project still throws there. The guard covers every
-  // pty/terminal shim, sessions.list/get/readTranscriptTail, lanes.list, the
-  // prs reads, and the draft attachment shim in agentChat.ts — the surfaces
-  // cross-machine reads actually reach today. The wider lanes/sessions pin
-  // params in the Electron contract predate per-session routing and stay
-  // unguarded; a real cross-machine web union must extend the adapter (and
-  // these guards) before routing a foreign pin.
+  // other machine or project still throws there. Every adapter member whose
+  // Electron signature declares a trailing pin now accepts and guards it:
+  // pty/terminal, all of sessions, lanes, prs, git/diff, files, agentChat, and
+  // the three pinned singletons in misc (ai.getStatus, projectConfig.get,
+  // orchestration.runCreate). Declaring the parameter is what makes the guard
+  // reachable at all — a member that omits it lets JS drop the pin on the floor
+  // and serves the call against whichever host this adapter happens to hold.
   const pty: Record<string, unknown> = {
-    create: async (args: unknown, pin?: unknown): Promise<PtyCreateResult> => {
+    create: async (args: unknown, pin?: RuntimePinArg): Promise<PtyCreateResult> => {
       assertWebRuntimePinRoutable("pty.create", pin, infra);
       const record = asRecord(args);
       const result = await commands.call<Record<string, unknown> | null>(
@@ -435,7 +460,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       });
       return { ptyId, sessionId, pid: null };
     },
-    resumeSession: async (args: unknown, pin?: unknown): Promise<PtySendToSessionResult> => {
+    resumeSession: async (args: unknown, pin?: RuntimePinArg): Promise<PtySendToSessionResult> => {
       assertWebRuntimePinRoutable("pty.resumeSession", pin, infra);
       const result = await commands.call<PtySendToSessionResult | null>("work.resumeCliSession", asRecord(args), {
         fallback: null,
@@ -447,7 +472,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       return result ?? fallbackSendResult(asRecord(args));
     },
-    sendToSession: async (args: unknown, pin?: unknown): Promise<PtySendToSessionResult> => {
+    sendToSession: async (args: unknown, pin?: RuntimePinArg): Promise<PtySendToSessionResult> => {
       assertWebRuntimePinRoutable("pty.sendToSession", pin, infra);
       const result = await commands.call<PtySendToSessionResult | null>("work.sendToSession", asRecord(args), {
         fallback: null,
@@ -459,14 +484,14 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       return result ?? fallbackSendResult(asRecord(args));
     },
-    write: async (args: unknown, pin?: unknown) => {
+    write: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("pty.write", pin, infra);
       const record = asRecord(args);
       const sessionId = terminalRegistry.sessionForPty(stringField(record, "ptyId"));
       if (!sessionId) return;
       await client.sendTerminalInput(sessionId, stringField(record, "data"));
     },
-    resize: async (args: unknown, pin?: unknown) => {
+    resize: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("pty.resize", pin, infra);
       const record = asRecord(args);
       // `sessionForPty` is a strict ptyId lookup: it answers null for any pty
@@ -491,7 +516,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       await client.sendTerminalResize(sessionId, numberField(record, "cols") ?? 80, numberField(record, "rows") ?? 24);
     },
-    dispose: async (args: unknown, pin?: unknown): Promise<PtyDisposeResult> => {
+    dispose: async (args: unknown, pin?: RuntimePinArg): Promise<PtyDisposeResult> => {
       assertWebRuntimePinRoutable("pty.dispose", pin, infra);
       const record = asRecord(args);
       const sessionId = stringField(record, "sessionId") || terminalRegistry.sessionForPty(stringField(record, "ptyId"));
@@ -501,7 +526,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         idempotent: false,
       });
     },
-    setDataSubscriptions: async (args: unknown, pin?: unknown) => {
+    setDataSubscriptions: async (args: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("pty.setDataSubscriptions", pin, infra);
       const ptyIds = Array.isArray(asRecord(args).ptyIds) ? (asRecord(args).ptyIds as unknown[]) : [];
       const wanted = new Set<string>();
@@ -515,18 +540,19 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         if (!wanted.has(sessionId)) unsubscribeSession(sessionId);
       }
     },
-    onData: (listener: (event: unknown) => void, pin?: unknown) => {
+    onData: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("pty.onData", pin, infra);
       return events.on("ptyData", listener as never);
     },
-    onExit: (listener: (event: unknown) => void, pin?: unknown) => {
+    onExit: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("pty.onExit", pin, infra);
       return events.on("ptyExit", listener as never);
     },
   };
 
   const terminal: Record<string, unknown> = {
-    list: async (args?: unknown) => {
+    list: async (args?: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("terminal.list", pin, infra);
       const sessions = await commands.call<unknown[]>("terminal.list", asRecord(args), {
         fallback: [],
         idempotent: true,
@@ -534,7 +560,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       terminalRegistry.registerSummaries(sessions);
       return sessions;
     },
-    read: async (args?: unknown): Promise<ChatTerminalReadResult> => {
+    read: async (args?: unknown, pin?: RuntimePinArg): Promise<ChatTerminalReadResult> => {
+      assertWebRuntimePinRoutable("terminal.read", pin, infra);
       const record = asRecord(args);
       const sessionId = terminalRegistry.resolveSessionId(record);
       if (!sessionId) return { terminalId: "", data: "", nextSince: 0 };
@@ -543,7 +570,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const history = await client.requestTerminalHistory({ sessionId, beforeOffset, maxBytes });
       return { terminalId: sessionId, data: history.data, nextSince: history.endOffset };
     },
-    preview: async (args?: unknown, pin?: unknown): Promise<ChatTerminalPreviewResult> => {
+    preview: async (args?: unknown, pin?: RuntimePinArg): Promise<ChatTerminalPreviewResult> => {
       assertWebRuntimePinRoutable("terminal.preview", pin, infra);
       const record = asRecord(args);
       let sessionId = terminalRegistry.resolveSessionId(record);
@@ -570,19 +597,22 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         capturedAt: snapshot?.capturedAt ?? new Date().toISOString(),
       };
     },
-    write: async (args: unknown) => {
+    write: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("terminal.write", pin, infra);
       const record = asRecord(args);
       const sessionId = terminalRegistry.resolveSessionId(record);
       if (sessionId) await client.sendTerminalInput(sessionId, stringField(record, "data"));
       return { ok: true };
     },
-    signal: async (args: unknown) => {
+    signal: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("terminal.signal", pin, infra);
       const record = asRecord(args);
       const sessionId = terminalRegistry.resolveSessionId(record);
       if (sessionId && record.signal === "SIGINT") await client.sendTerminalInput(sessionId, "\u0003");
       return { ok: true };
     },
-    activeForChat: async (args: unknown) => {
+    activeForChat: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("terminal.activeForChat", pin, infra);
       const result = await commands.call<Record<string, unknown> | null>("terminal.activeForChat", asRecord(args), {
         fallback: null,
         idempotent: true,
@@ -591,11 +621,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       terminalRegistry.register(stringField(result ?? {}, "terminalId") || stringField(result ?? {}, "id"), stringField(result ?? {}, "ptyId"));
       return result;
     },
-    reattachChatCli: (args: unknown) =>
-      commands.call("terminal.reattachChatCli", asRecord(args), {
+    reattachChatCli: async (args: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("terminal.reattachChatCli", pin, infra);
+      return await commands.call("terminal.reattachChatCli", asRecord(args), {
         fallback: { terminalId: "", ptyId: "", pid: null, relaunched: false },
         idempotent: false,
-      }),
+      });
+    },
   };
 
   return {

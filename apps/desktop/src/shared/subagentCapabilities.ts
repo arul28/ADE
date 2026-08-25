@@ -90,7 +90,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   claude: {
     canList: true,
     canViewFullTranscript: true,
-    statsFields: ["tokens", "toolUses", "durationMs"],
+    statsFields: ["tokens", "toolUses", "durationMs", "model"],
     kinds: ["subagent", "background", "local_workflow", "cron", "other"],
     hasRichMetadata: false,
   },
@@ -99,7 +99,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   opencode: {
     canList: true,
     canViewFullTranscript: true,
-    statsFields: ["diffSummary", "tokens", "cost", "durationMs"],
+    statsFields: ["diffSummary", "tokens", "cost", "durationMs", "model"],
     kinds: ["subagent"],
     hasRichMetadata: false,
   },
@@ -109,7 +109,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   cursor: {
     canList: true,
     canViewFullTranscript: false,
-    statsFields: ["durationMs"],
+    statsFields: ["durationMs", "model"],
     kinds: ["subagent"],
     hasRichMetadata: false,
   },
@@ -120,7 +120,7 @@ export const SUBAGENT_CAPABILITIES: Record<SubagentRuntimeKey, SubagentCapabilit
   droid: {
     canList: true,
     canViewFullTranscript: false,
-    statsFields: ["durationMs", "exitCode"],
+    statsFields: ["durationMs", "exitCode", "model"],
     kinds: ["subagent"],
     hasRichMetadata: false,
   },
@@ -143,3 +143,14 @@ export function resolveSubagentCapability(
   }
   return NO_SUBAGENT_CAPABILITY;
 }
+
+/**
+ * Runtimes that cannot stop an individual piece of background work at all.
+ *
+ * A Codex chat has no per-subagent stop, so a settle teardown reports its
+ * leftover work as `no_stop_control` rather than as a stop that failed — a
+ * different fact, and the reason the residue reason field exists. Declared
+ * here with the other per-runtime facts rather than as a `provider === "codex"`
+ * check inside the teardown, which is what this module exists to prevent.
+ */
+export const PROVIDERS_WITHOUT_BACKGROUND_STOP_CONTROL: ReadonlySet<string> = new Set(["codex"]);

@@ -613,6 +613,93 @@ describe("ActivityPane", () => {
     expect(screen.getByText(/1 session ·/)).toBeTruthy();
   });
 
+  /**
+   * The strip is the pane's status line and its status filter at once, so the
+   * sections it summarises and the rows the filter leaves behind have to be the
+   * same set. A heading for a state the filter just excluded is the drift this
+   * covers.
+   */
+  it("narrows the sections to the one state the strip selected", async () => {
+    activityStore.setState({
+      itemsById: {
+        approval: item("approval"),
+        running: item("running", {
+          phase: "running",
+          eventKind: "agent_running",
+          title: "Task running",
+        }),
+        broke: item("broke", {
+          phase: "failed",
+          eventKind: "agent_failed",
+          title: "Task broke",
+        }),
+      },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    const sectionIds = () =>
+      [...agentsColumn().querySelectorAll("[data-activity-section]")]
+        .map((node) => node.getAttribute("data-activity-section"));
+    expect(sectionIds()).toEqual(["needs-you", "failed", "working"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "1 working" }));
+
+    await waitFor(() => expect(sectionIds()).toEqual(["working"]));
+    expect(sessionRow("Task running")).toBeTruthy();
+    expect(sessionRow("Task approval")).toBeNull();
+    // The strip still reports the whole account, so the two states it just hid
+    // are still the way back out of the filter it just applied.
+    expect(screen.getByRole("button", { name: "1 needs you" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "1 failed" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "1 working" }));
+    await waitFor(() => expect(sectionIds()).toEqual(["needs-you", "failed", "working"]));
+  });
+
+  it("composes the state strip with an older filter axis", async () => {
+    activityStore.setState({
+      itemsById: {
+        studio: item("studio", {
+          phase: "running",
+          eventKind: "agent_running",
+          title: "Task studio",
+        }),
+        laptop: item("laptop", {
+          phase: "running",
+          eventKind: "agent_running",
+          title: "Task laptop",
+          machine: {
+            machineKey: "laptop",
+            name: "MacBook",
+            online: true,
+            lastSeenAt: null,
+          },
+        }),
+        laptopDone: item("laptop-done", {
+          phase: "completed",
+          eventKind: "agent_completed",
+          title: "Task laptop done",
+          machine: {
+            machineKey: "laptop",
+            name: "MacBook",
+            online: true,
+            lastSeenAt: null,
+          },
+        }),
+      },
+    });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Filter by machine" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "MacBook" }));
+    fireEvent.click(screen.getByRole("button", { name: "2 working" }));
+
+    // AND across axes: the one MacBook row that is also working.
+    await waitFor(() => expect(sessionRow("Task laptop")).toBeTruthy());
+    expect(sessionRow("Task studio")).toBeNull();
+    expect(sessionRow("Task laptop done")).toBeNull();
+  });
+
   it("reads an over-filtered column as a filter result, not as all-clear", async () => {
     activityStore.setState({
       itemsById: {

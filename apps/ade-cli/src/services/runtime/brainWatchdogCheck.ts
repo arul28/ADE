@@ -1,10 +1,12 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { writeJsonAtomic } from "./atomicJson";
+import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/processes/processStartTime";
 import {
   BRAIN_HEARTBEAT_STALE_MS,
+  BRAIN_WATCHER_CHECK_INTERVAL_MS,
   type BrainHeartbeat,
+  type BrainHeartbeatSample,
   brainHeartbeatPath,
   evaluateBrainHeartbeat,
   readBrainHeartbeat,
@@ -27,12 +29,75 @@ export const BRAIN_WATCHDOG_KILL_COMMAND = "external-watchdog";
 
 export type BrainWatchdogCheckResult = {
   ok: true;
-  action: "absent" | "healthy" | "self" | "already_exited" | "killed" | "kill_failed";
+  action:
+    | "absent"
+    | "healthy"
+    | "self"
+    | "already_exited"
+    | "machine_slept"
+    | "stale_unconfirmed"
+    | "killed"
+    | "kill_failed";
   pid: number | null;
   ageMs: number | null;
   staleAfterMs: number;
   message: string;
 };
+
+/**
+ * What one check remembers for the next one.
+ *
+ * The check is a fresh 60-second process, so its only memory is this file. It
+ * carries the two facts a single sample cannot supply: WHEN the watcher last
+ * ran (a run that is twelve minutes late means the machine slept, and the
+ * brain's silence over that window proves nothing), and WHICH beat it last saw
+ * stale (so a kill needs the same beat to be stale twice).
+ */
+export const BRAIN_WATCHDOG_CHECK_RECORD_FILE = "watchdog-check.json";
+
+export type BrainWatchdogCheckRecord = {
+  /** Wall-clock ms of the run that wrote this record. */
+  ts: number;
+  staleBeat: BrainHeartbeatSample | null;
+};
+
+export function brainWatchdogCheckRecordPath(runtimeDir: string): string {
+  return path.join(runtimeDir, BRAIN_WATCHDOG_CHECK_RECORD_FILE);
+}
+
+export function readBrainWatchdogCheckRecord(runtimeDir: string): BrainWatchdogCheckRecord | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(brainWatchdogCheckRecordPath(runtimeDir), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const record = parsed as Partial<BrainWatchdogCheckRecord>;
+  const ts = Number(record.ts);
+  if (!Number.isFinite(ts) || ts <= 0) return null;
+  const beat = record.staleBeat;
+  const beatPid = Number((beat as Partial<BrainHeartbeatSample> | null | undefined)?.pid);
+  const beatTs = Number((beat as Partial<BrainHeartbeatSample> | null | undefined)?.ts);
+  const staleBeat = Number.isInteger(beatPid) && beatPid > 0 && Number.isFinite(beatTs) && beatTs > 0
+    ? { pid: Math.floor(beatPid), ts: Math.floor(beatTs) }
+    : null;
+  return { ts: Math.floor(ts), staleBeat };
+}
+
+export function writeBrainWatchdogCheckRecord(
+  runtimeDir: string,
+  record: BrainWatchdogCheckRecord,
+): void {
+  try {
+    fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    writeJsonAtomic(brainWatchdogCheckRecordPath(runtimeDir), record, String(process.pid));
+  } catch {
+    // A watcher that cannot write its record can never confirm a stale beat
+    // twice, so it stops killing. That is the safe direction: an unwritable
+    // runtime directory is not evidence that the brain is wedged.
+  }
+}
 
 export function resolveBrainHeartbeatStaleMs(env: NodeJS.ProcessEnv = process.env): number {
   const parsed = Number.parseInt(env.ADE_BRAIN_HEARTBEAT_STALE_MS?.trim() ?? "", 10);
@@ -60,48 +125,6 @@ export const BRAIN_IDENTITY_START_TOLERANCE_MS = 2_000;
  */
 export const BRAIN_IDENTITY_MAX_BOOT_MS = 300_000;
 
-/** What the OS says about a live pid. `null` means "could not tell". */
-export type BrainProcessIdentity = { startedAtMs: number } | null;
-
-/**
- * Read a live pid's start time.
- *
- * POSIX only, and deliberately not a fallback-laden probe: on win32 the
- * supervisor loop owns the wedge kill (it holds a `Process` handle for the exact
- * child it started, so it never has to identify a pid by number), and this
- * checker's kill path is skipped there entirely.
- */
-export function defaultBrainProcessIdentity(
-  pid: number,
-  platform: NodeJS.Platform = process.platform,
-): BrainProcessIdentity {
-  if (platform === "win32") return null;
-  let raw = "";
-  try {
-    raw = execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(Math.floor(pid))], {
-      encoding: "utf8",
-      timeout: 2_000,
-      maxBuffer: 64 * 1024,
-      // A missing pid makes `ps` complain on stderr, which would otherwise land
-      // in the launch agent's log once a minute for a brain that is simply gone.
-      stdio: ["ignore", "pipe", "ignore"],
-      // `lstart` is rendered in the process locale: a de_DE or fr_FR host prints
-      // "Mi 6 Aug ..." or "mer. 6 août ...", which `Date.parse` rejects. Without
-      // this pin the identity probe returns null on every non-English machine,
-      // so the wedge kill never fires there at all.
-      env: { ...process.env, LC_ALL: "C", LANG: "C" },
-    });
-  } catch {
-    // No such process, or `ps` is unavailable. Both mean "no identity", which
-    // the caller treats as "do not kill".
-    return null;
-  }
-  // `ps` pads the day of month ("Aug  6"); Date.parse rejects the double space.
-  const startedAtMs = Date.parse(raw.trim().replace(/\s+/g, " "));
-  if (!Number.isFinite(startedAtMs)) return null;
-  return { startedAtMs };
-}
-
 /**
  * Whether the live pid is still the process that wrote this heartbeat.
  *
@@ -112,10 +135,10 @@ export function defaultBrainProcessIdentity(
  */
 export function brainProcessIdentityMatches(
   heartbeat: BrainHeartbeat,
-  identity: BrainProcessIdentity,
+  startedAtMs: number | null,
 ): boolean {
-  if (!identity || !Number.isFinite(identity.startedAtMs)) return false;
-  const bootMs = heartbeat.startedAt - identity.startedAtMs;
+  if (startedAtMs == null) return false;
+  const bootMs = heartbeat.startedAt - startedAtMs;
   return bootMs >= -BRAIN_IDENTITY_START_TOLERANCE_MS && bootMs <= BRAIN_IDENTITY_MAX_BOOT_MS;
 }
 
@@ -170,21 +193,27 @@ function writeWedgeBreadcrumb(args: {
  * One external liveness check. Safe to run on a timer from outside the brain.
  *
  * Deliberately conservative: an absent or unreadable heartbeat means "no
- * judgement available", never "wedged". Only a heartbeat that is BOTH stale and
- * owned by a live pid is a wedge, and that combination cannot be produced by a
- * brain whose event loop is turning.
+ * judgement available", never "wedged". A stale heartbeat owned by a live pid
+ * is a wedge only when the watcher was itself running across the stale window
+ * and already saw the same beat stale on its previous run -- a suspended
+ * process and a wedged one leave the identical stale file, so one sample from a
+ * watcher that may have been suspended too can never authorise a SIGKILL.
  */
 export function runBrainWatchdogCheck(args: {
   runtimeDir: string;
   staleAfterMs?: number;
+  checkIntervalMs?: number;
   now?: () => number;
   selfPid?: number;
   pidAlive?: (pid: number) => boolean;
   kill?: (pid: number) => void;
   platform?: NodeJS.Platform;
   /** Injectable so tests never have to inspect a real process. */
-  processIdentity?: (pid: number) => BrainProcessIdentity;
+  /** Live pid's start time in ms; `null` means "could not tell" (no kill). */
+  processIdentity?: (pid: number) => number | null;
   readHeartbeat?: (runtimeDir: string) => BrainHeartbeat | null;
+  readCheckRecord?: (runtimeDir: string) => BrainWatchdogCheckRecord | null;
+  writeCheckRecord?: (runtimeDir: string, record: BrainWatchdogCheckRecord) => void;
   writeBreadcrumb?: (breadcrumbArgs: {
     runtimeDir: string;
     heartbeat: BrainHeartbeat;
@@ -194,14 +223,26 @@ export function runBrainWatchdogCheck(args: {
   }) => void;
 }): BrainWatchdogCheckResult {
   const now = args.now ?? Date.now;
+  const nowMs = now();
   const staleAfterMs = args.staleAfterMs ?? resolveBrainHeartbeatStaleMs();
+  const checkIntervalMs = args.checkIntervalMs ?? BRAIN_WATCHER_CHECK_INTERVAL_MS;
   const heartbeat = (args.readHeartbeat ?? readBrainHeartbeat)(args.runtimeDir);
+  const previousRecord = (args.readCheckRecord ?? readBrainWatchdogCheckRecord)(args.runtimeDir);
+  const writeCheckRecord = args.writeCheckRecord ?? writeBrainWatchdogCheckRecord;
+  // Remember this run before judging anything. Every exit below has to leave the
+  // stamp behind, and a `finally` cannot know which beat the verdict wants
+  // remembered -- so the record is written here and refined once, at the single
+  // point that learns a beat is stale.
+  writeCheckRecord(args.runtimeDir, { ts: nowMs, staleBeat: null });
   const verdict = evaluateBrainHeartbeat({
     heartbeat,
-    nowMs: now(),
+    nowMs,
     staleAfterMs,
     selfPid: args.selfPid,
     pidAlive: args.pidAlive ?? brainPidAlive,
+    watcherGapMs: previousRecord ? Math.max(0, nowMs - previousRecord.ts) : null,
+    checkIntervalMs,
+    previousStaleBeat: previousRecord?.staleBeat ?? null,
   });
 
   if (verdict.action === "absent") {
@@ -244,6 +285,32 @@ export function runBrainWatchdogCheck(args: {
       message: `Brain pid ${verdict.pid} already exited — the service supervisor owns the restart.`,
     };
   }
+  if (verdict.action === "machine_slept") {
+    return {
+      ok: true,
+      action: "machine_slept",
+      pid: verdict.pid,
+      ageMs: verdict.ageMs,
+      staleAfterMs,
+      message: `This check last ran ${verdict.watcherGapMs}ms ago, so the machine was asleep — brain pid ${verdict.pid} was suspended with it, not wedged.`,
+    };
+  }
+  if (verdict.action === "stale_unconfirmed") {
+    // Remember the exact beat, so the next run can tell "still the same silence"
+    // from "beating again". This is the only place a stale beat is learned.
+    writeCheckRecord(args.runtimeDir, {
+      ts: nowMs,
+      staleBeat: { pid: verdict.heartbeat.pid, ts: verdict.heartbeat.ts },
+    });
+    return {
+      ok: true,
+      action: "stale_unconfirmed",
+      pid: verdict.pid,
+      ageMs: verdict.ageMs,
+      staleAfterMs,
+      message: `Brain pid ${verdict.pid} has not beaten for ${verdict.ageMs}ms — waiting for the next check to confirm before stopping it.`,
+    };
+  }
 
   // Stale plus a live pid is only a wedge if that pid is still the process that
   // wrote the beat. On win32 nothing here can establish that -- and nothing has
@@ -252,14 +319,14 @@ export function runBrainWatchdogCheck(args: {
   const platform = args.platform ?? process.platform;
   const identity = platform === "win32"
     ? null
-    : (args.processIdentity ?? ((pid: number) => defaultBrainProcessIdentity(pid, platform)))(
+    : (args.processIdentity ?? ((pid: number) => readProcessStartTimeMs(pid, platform)))(
       verdict.pid,
     );
   // "Could not read the identity" and "read it, and it is someone else" are
   // different facts. Only the second is evidence, and only evidence may delete
   // the heartbeat -- deleting the beat of a live wedged brain erases the wedge
   // for good, and the next check would find nothing to judge.
-  const identityRead = identity != null && Number.isFinite(identity.startedAtMs);
+  const identityRead = identity != null;
   if (!identityRead) {
     return {
       ok: true,

@@ -20,6 +20,7 @@ struct LinearPaneToolbarButton: View {
     if syncService.activeProjectId != nil, pluginGate.owns(.linear) {
       Button {
         ADEHaptics.light()
+        syncService.linearPaneAttachSessionId = nil
         syncService.linearPanePresented = true
       } label: {
         LinearMark(size: 16)

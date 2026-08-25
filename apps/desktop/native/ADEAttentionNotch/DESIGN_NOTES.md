@@ -15,9 +15,11 @@ The ADE implementation owns its protocol, state reducer, panel geometry, hit
 testing, view hierarchy, animations, and particle rendering. These repositories
 are design references only and are not bundled dependencies.
 
-Provider marks are adapted from the MIT-licensed LobeHub Lobe Icons package.
-Only the five SVGs used by the helper are bundled. See
-`THIRD_PARTY_NOTICES.md` for attribution and license terms.
+Compact strip badges, panel rows, and takeover cards draw the canonical **state
+glyphs** (`NotchStateGlyph`), not provider logos. A row only has room for status
+and content; the provider is metadata. The five LobeHub Lobe Icons SVGs remain
+under `Resources/ProviderIcons` for attribution (see `THIRD_PARTY_NOTICES.md`)
+but are not drawn.
 
 ## Physical-notch geometry
 
@@ -95,15 +97,28 @@ Two wings around the cutout, both present in both modes:
 
 - **left** — every nonzero state group as glyph + count, urgency-ordered:
   needs-you (amber filled dot), failed (red triangle), planning (violet
-  notepad), working (blue open circle), done (emerald check). One hue is one
-  meaning; amber is "your move" and nothing else.
+  notepad), working (blue open circle), idle (neutral clock), done (emerald
+  check). One hue is one meaning; amber is "your move" and nothing else.
 - **right** — one signal with real content ("Checks failing #466", "Merged
   #1030", "Claude is asking"), falling back to a quiet machine summary.
 
 Width is derived from what the wings carry (`notchStripMetrics` →
 `notchCompactEarWidth`) and capped, so the strip hugs the hardware notch instead
 of padding out to the widest label it could ever hold. The ears are symmetric by
-construction: the cutout is centered on the display and so is the panel.
+construction: the cutout is centered on the display and so is the panel. The two
+wings cap differently because they fail differently: the signal's ceiling is a
+flat 150pt because prose truncates with an ellipsis that admits it, while the
+glyph wing's is derived from the group table itself
+(`notchStripWidestGlyphWingWidth`) — a clipped glyph wing silently drops its
+last group, which is the strip denying a state the account is in.
+
+Each compact-strip control is a click target, not a readout:
+
+- a **group badge** opens the Agents panel already showing that band (`revealGroup`);
+- the **trailing signal** opens the row it names, or expands the panel when the
+  wing is only a quiet machine summary (`revealTopSignal`);
+- **"+N more"** opens Activity in ADE (`open_center`);
+- the rest of the strip still toggles the panel.
 
 The needs-you card is a **timed takeover** (~10s), not a state: it auto-dismisses
 by morphing back into its amber glyph, and also ends on click, on explicit
@@ -113,16 +128,20 @@ needs-you row clears, the strip plays a brief "all clear" beat.
 ## Expanded panel
 
 `Agents` and `Events` tabs over the same section language as the desktop
-Activity dropdown: Needs you / Failed / Planning / Working / Done, from the one
-five-way table (`notchStripGroupKind`) the compact strip counts with, so a row
-the strip counts as red is a row the panel files under Failed. The table is
+Activity dropdown: Needs you / Failed / Planning / Working / Idle / Done, from
+the one six-way table (`notchStripGroupKind`) the compact strip counts with, so
+a row the strip counts as red is a row the panel files under Failed. `Idle` is
+its own band rather than a corner of `Done`: a session that went quiet mid-work
+and a session that finished are not the same fact, and folding the first into
+the second filled `Done` with week-old roster rows. The table is
 pinned to the renderer's canonical `activityStateGroup` by
 `ActivityStateGroupConformanceTests`, which runs the shared
 `src/shared/attention/activityStateGroup.cases.json` fixture through it.
 Events are clustered by repository and pull-request number —
 three failing checks on one PR are one story — and a takeover clicked through
 opens the panel already on the Events tab with that cluster expanded and
-focused. Sections and clusters collapse (Done starts collapsed), and the panel
+focused. Sections and clusters collapse (the two resting bands, Idle and Done,
+start collapsed — the same pair the desktop header popover leaves out), and the panel
 is keyboard navigable: arrows move through exactly the rows on screen,
 left/right work the disclosure, Tab swaps tabs, Return acts, Escape closes.
 

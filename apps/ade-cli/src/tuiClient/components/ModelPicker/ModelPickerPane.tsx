@@ -214,7 +214,6 @@ function RailLogoSlot({ mark, dim = false }: { mark: ProviderMark; dim?: boolean
 function settingIcon(kind: SetupPaneRowKind): string {
   switch (kind) {
     case "interface": return "⇄";
-    case "import-session": return "⇩";
     case "reasoning": return "✦";
     case "permission": return "◆";
     case "codex-fast": return "↯";
@@ -480,7 +479,7 @@ function emptyStateLabel(state: ModelPickerState, railEntry: ModelPickerRailEntr
 // truth for click hit-testing, replacing hand-derived offset math. Uses Ink
 // internals (yogaNode / parentNode) not in the public types, hence the casts;
 // fully guarded so any failure leaves the caller on its geometry-math fallback.
-function measurePaneOrigin(node: DOMElement): { x: number; y: number; width: number } | null {
+export function measurePaneOrigin(node: DOMElement): { x: number; y: number; width: number } | null {
   try {
     const rootYoga = (node as unknown as { yogaNode?: { getComputedWidth?: () => number } }).yogaNode;
     const width = rootYoga?.getComputedWidth?.() ?? 0;

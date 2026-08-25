@@ -80,8 +80,13 @@ function windowsChannelIdentity(adeDir: string, env: NodeJS.ProcessEnv): {
 /**
  * The on-disk casing of `value`, for the components that exist. Components that
  * do not exist yet can only be re-joined as they were given.
+ *
+ * Exported because the hardware anchor folds the same ADE home path into its
+ * hash and must agree with the pipe identity on what one path IS: `realpath`
+ * also expands 8.3 short names (`C:\Users\ADAOBI~1\.ade`) and resolves junction
+ * casing, so two spellings of one directory cannot become two machines.
  */
-function canonicalWindowsPath(value: string): string {
+export function canonicalWindowsPath(value: string): string {
   const original = path.win32.resolve(value).replace(/\//g, "\\");
   const missingParts: string[] = [];
   let cursor = original;

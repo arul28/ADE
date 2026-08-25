@@ -15,7 +15,8 @@ let workActiveProjectRosterSessionLimit = 200
 func overlayActiveProjectRoster(
   localSessions: [TerminalSessionSummary],
   localLanes: [LaneSummary],
-  roster: RemoteRosterProject?
+  roster: RemoteRosterProject?,
+  identitySessionIds: Set<String> = []
 ) -> WorkActiveProjectRosterProjection {
   // Match `work.listSessions(limit: 200)` and include chat rows only. Roster
   // terminal stubs deliberately lack PTY ids/offsets, so opening one as a
@@ -23,14 +24,16 @@ func overlayActiveProjectRoster(
   let rosterChats = Array(
     (roster?.chats ?? [])
       .lazy
-      .filter { $0.archived != true && $0.isChatTool }
+      .filter { $0.archived != true && $0.isChatTool && !$0.isIdentityChat }
       .prefix(workActiveProjectRosterSessionLimit)
   )
 
   var sessionIds = Set<String>()
   var sessions: [TerminalSessionSummary] = []
   sessions.reserveCapacity(localSessions.count + rosterChats.count)
-  for session in localSessions where sessionIds.insert(session.id).inserted {
+  for session in localSessions
+    where !identitySessionIds.contains(session.id) && sessionIds.insert(session.id).inserted
+  {
     sessions.append(session)
   }
 

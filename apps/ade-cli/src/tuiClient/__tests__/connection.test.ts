@@ -29,6 +29,7 @@ import {
 } from "../eventDedup";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import type { ProjectLaunchContext } from "../types";
+import type { ServiceManagerResult } from "../../serviceManager/common";
 
 const childProcess = vi.hoisted(() => {
   // `pid` stays undefined by default so the spawn record is a no-op for the
@@ -41,7 +42,9 @@ const childProcess = vi.hoisted(() => {
 });
 
 const runtimeService = vi.hoisted(() => ({
-  installRuntimeService: vi.fn(() => ({
+  // Typed as the real result so a test can set `starting`/`failureStep` — the
+  // two fields that decide whether a rival brain may be spawned.
+  installRuntimeService: vi.fn((): ServiceManagerResult => ({
     ok: false,
     serviceName: "com.ade.runtime",
     action: "install" as const,
@@ -386,6 +389,55 @@ describe("connectToAde embedded mode", () => {
     expect(requests).toEqual(["ade/initialize", "ade/initialized"]);
     await new Promise<void>((resolve) => server.close(() => resolve()));
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("allows a mismatched local runtime when ADE_CODE_SKIP_RUNTIME_CHECK=1", async () => {
+    const previous = process.env.ADE_CODE_SKIP_RUNTIME_CHECK;
+    process.env.ADE_CODE_SKIP_RUNTIME_CHECK = "1";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-skip-runtime-"));
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
+    const requests: string[] = [];
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string };
+          requests.push(request.method);
+          const result = request.method === "ade/initialize"
+            ? {
+                runtimeInfo: {
+                  defaultRole: "cto",
+                  projectRoot: "/other/project",
+                  buildHash: "installed-brain",
+                },
+              }
+            : null;
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    try {
+      const connection = await connectToAde({
+        project,
+        socketPath,
+        requireSocket: true,
+      });
+      await connection.close();
+      expect(requests).toEqual(["ade/initialize", "ade/initialized"]);
+    } finally {
+      if (previous === undefined) delete process.env.ADE_CODE_SKIP_RUNTIME_CHECK;
+      else process.env.ADE_CODE_SKIP_RUNTIME_CHECK = previous;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("registers the project and injects projectId when attached to the machine daemon", async () => {
@@ -866,6 +918,59 @@ describe("connectToAde embedded mode", () => {
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses to spawn a rival brain while the installed service is still starting", async () => {
+    // The installer left a live, supervised brain that had not answered yet.
+    // Falling through to spawnDaemon here is what put a second, unmanaged brain
+    // on the socket the service already owns.
+    useMissingMachineSocket();
+    runtimeService.installRuntimeService.mockReturnValue({
+      ok: true,
+      starting: true,
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: "/tmp/com.ade.runtime.plist",
+      message: "ADE brain service is registered and starting",
+    });
+    vi.spyOn(JsonRpcClient, "connect").mockRejectedValue(
+      Object.assign(new Error("connect ENOENT"), { code: "ENOENT" }),
+    );
+
+    vi.useFakeTimers();
+    try {
+      const attempt = connectToAde({ project, preferServiceRepair: true });
+      const rejection = expect(attempt).rejects.toThrow(
+        /background service is still starting/,
+      );
+      // Long enough to outlast the whole `starting` retry budget.
+      await vi.advanceTimersByTimeAsync(180_000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses to spawn a rival brain when the failed install left a registered replacement", async () => {
+    useMissingMachineSocket();
+    runtimeService.installRuntimeService.mockReturnValue({
+      ok: false,
+      failureStep: "replacement_responsive",
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: "/tmp/com.ade.runtime.plist",
+      message: "replacement did not answer in time",
+    });
+    vi.spyOn(JsonRpcClient, "connect").mockRejectedValue(
+      Object.assign(new Error("connect ENOENT"), { code: "ENOENT" }),
+    );
+
+    await expect(connectToAde({ project, preferServiceRepair: true })).rejects.toThrow(
+      /background service is still starting/,
+    );
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+  });
+
   it("keeps the script entrypoint argv shape when a CLI script is resolved", async () => {
     const socketPath = useMissingMachineSocket();
     const entrypointDir = fs.mkdtempSync(
@@ -1277,6 +1382,8 @@ describe("ade-code TUI state", () => {
       lastLaneByProject: {},
       draftKind: "chat",
       draftKindByProject: {},
+      lastModelByProject: {},
+      providerSettingsByProject: {},
     });
   });
 
@@ -1291,6 +1398,8 @@ describe("ade-code TUI state", () => {
       lastLaneByProject: {},
       draftKind: "cli",
       draftKindByProject: {},
+      lastModelByProject: {},
+      providerSettingsByProject: {},
     });
 
     expect(loadAdeCodeState()).toEqual({
@@ -1300,6 +1409,8 @@ describe("ade-code TUI state", () => {
       lastLaneByProject: {},
       draftKind: "cli",
       draftKindByProject: {},
+      lastModelByProject: {},
+      providerSettingsByProject: {},
     });
   });
 });

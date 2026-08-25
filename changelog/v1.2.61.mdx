@@ -1,0 +1,53 @@
+---
+title: "v1.2.61"
+description: "Release notes for ADE v1.2.61 - August 19, 2026"
+---
+
+Reinstalling and signing back in now fully repairs your account. Connection status says what is actually wrong instead of guessing, errors are written in plain words, and one click sends a diagnostic report to ADE.
+
+---
+
+## Account and machines
+
+- **Reinstall and sign in heals your account.** A machine is now recognized by the hardware it runs on, so signing in after a reinstall reconnects the machine you already had instead of leaving a stranded duplicate behind. Machines that were already duplicated are merged.
+- **Pairing recovers on its own.** When a machine is refused, ADE retries quietly in the background while you are signed in, and steps back when you removed that machine on purpose.
+- **A machine no longer loses its identity to a bad write.** Machine identity is saved durably with a backup, and a damaged file is repaired instead of turning the machine into a stranger.
+
+## GitHub connection
+
+- **A saved sign-in ADE cannot read no longer reads as "not connected".** That looked identical to a fresh install, so the fix was never obvious. ADE now says the sign-in cannot be read and points you at Repair.
+- **GitHub outages are told apart from broken credentials.** An outage no longer asks you to reconnect an account that is perfectly fine.
+- **PR checks stop burning your GitHub quota.** One open PR pane could spend an entire hour's worth of GitHub requests during an outage, blocking work elsewhere. ADE now slows down while GitHub is failing, keeps a reserve for the things you click, and recovers as soon as GitHub answers again.
+- **A failed check read no longer looks like a clean PR.** Checks and comments that could not be read now say so instead of showing "no checks ran".
+
+## Clearer errors and diagnostics
+
+- **Plain-language errors instead of raw system codes.** Storage and startup failures now describe what happened, with the technical detail kept in the report for support.
+- **Projects kept in iCloud or Dropbox are recognized.** ADE detects a project stored in a cloud-synced folder and tells you to move it out, instead of failing in a way that looks random.
+- **One-click "Send to ADE".** The redacted diagnostic report can be sent straight from the desktop app, from `ade report-issue --send`, and from `ade code` — and it works even when the background service is down.
+
+## Machine sleep
+
+- **ADE tells the truth about a sleeping machine.** A closed lid used to leave your phone reporting "Connected" to an unconscious Mac. Machines now announce sleep and wake, show battery and power state, and a turn interrupted by sleep pauses and picks up where it left off rather than failing.
+- **A chat on a sleeping Mac offers to wake it.** Links to a session carry the machine that owns it, so you land in the right place.
+- **Optional keep-awake.** A new setting can keep a Mac awake while agents are working. It is off by default, and each level states plainly what it does and does not survive.
+
+## Work and chat
+
+- **Cursor chats recover from an expired session.** A sign-in that quietly expired mid-conversation used to break every later message. ADE now reconnects the same chat and resends, instead of asking you to log out and back in.
+- **Claude chats recover after a usage-limit stop.** The chat keeps its identity, shows a card explaining the limit, and offers to continue locally — no forking required.
+- **Forking a Cursor chat carries the whole conversation.** Forks used to start from only the last few exchanges.
+- **Steer a Cursor chat mid-turn.** You can interrupt and continue, or queue your message for after the turn, the same way Claude chats already worked.
+- **Chats release their machine when the work is done.** A background task that never reported finishing could hold a chat's processes and memory open for the life of the app. Those now shut down, background-work time is reported honestly, and the Settle action stays available to stop the work.
+- **Actions follow the chat's machine.** Handoff, the tools pane, Git, Files, terminals, and the simulator, browser, and app panels now act on the machine the chat is actually running on, not the machine the tab happens to be pointed at.
+- **The @ mention menu closes when nothing matches.** Typing "@cursor is the runtime" no longer parks a suggestion list over the composer.
+
+## Connections and sync
+
+- **A forgotten pairing stops looping.** A phone whose pairing had been removed could retry forever. The device now learns the pairing is gone and stops, and repeated refusals are throttled.
+- **Lane PR badges match the branch you are on.**
+
+## iOS
+
+- **Mobile Work session cards are cleaner.**
+- **The iOS app is built and tested on every pull request.** It was the only part of ADE with no automated checks, which let three compile breaks land in a row.

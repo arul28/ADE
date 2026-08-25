@@ -1240,7 +1240,10 @@ export async function detectAllAuth(
     }
   }
 
-  // 2. API keys from config + secure local store
+  // 2. API keys from config + secure local store.
+  // Cursor.auth.login() mints a user API key into this store; that stored key
+  // is the connection signal. Do not treat ~/.cursor/sdk/auth.json as enough
+  // on its own.
   const mergedApiKeys = new Map<string, { key: string; source: Exclude<ApiKeySource, "env"> }>();
   const normalizedConfig = normalizeApiKeys(configApiKeys);
   const normalizedStore = await readStoredApiKeys();

@@ -10,7 +10,7 @@ import type {
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
-import { droidDisabledToolIdsForCategories, droidMcpToolsToDisable } from "./droidSdkProtocol";
+import { droidDisabledToolIdsForCategories, droidInteractionModeValue, droidMcpToolsToDisable } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
@@ -24,6 +24,18 @@ type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;
 let sdkModule: DroidSdkModule | null = null;
 let initState: DroidSdkWorkerInit | null = null;
 let session: DroidSession | null = null;
+/**
+ * Set when ADE put THIS session into Spec mode — on create, on the
+ * resume-failure fallback, or in applySettings. It is the only way back out,
+ * because the SDK has no exitSpecMode.
+ *
+ * Known limit: a session resumed into a fresh worker that a PREVIOUS worker had
+ * put into Spec starts with the flag false, and the SDK exposes no way to read
+ * the live mode back. Reaching that case needs a plan session, a worker
+ * restart, plan turned off, and no chosen permission mode — and the alternative
+ * (assuming Spec on every resume) would state a mode ADE does not own.
+ */
+let enteredSpecMode = false;
 const activeAborts = new Set<AbortController>();
 let waiterSeq = 0;
 const permissionWaiters = new Map<string, (decision: DroidSdkPermissionDecision) => void>();
@@ -49,22 +61,10 @@ async function getSdk(): Promise<DroidSdkModule> {
   return sdkModule;
 }
 
+// Still accepts null: settings cross a process boundary as JSON, so the
+// protocol type is a contract with the sender rather than a runtime guarantee.
 function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): DroidSdkTypes.ReasoningEffort | undefined {
   return value?.trim() ? value as DroidSdkTypes.ReasoningEffort : undefined;
-}
-
-function toDroidInteractionMode(
-  sdk: DroidSdkModule,
-  mode: DroidSdkSessionSettings["interactionMode"],
-): DroidSdkTypes.DroidInteractionMode {
-  switch (mode) {
-    case "spec":
-      return sdk.DroidInteractionMode.Spec;
-    case "agi":
-      return sdk.DroidInteractionMode.AGI;
-    default:
-      return sdk.DroidInteractionMode.Auto;
-  }
 }
 
 function sessionOptions(
@@ -72,12 +72,15 @@ function sessionOptions(
   init: DroidSdkWorkerInit,
   settings: DroidSdkSessionSettings,
 ): DroidSdkTypes.CreateSessionOptions {
+  const interactionMode = droidInteractionModeValue(sdk.DroidInteractionMode, settings.interactionMode);
   return {
     cwd: init.laneRoot,
     execPath: init.droidPath,
     modelId: settings.modelId,
-    autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel,
-    interactionMode: toDroidInteractionMode(sdk, settings.interactionMode),
+    // Omitted, not defaulted: both keys are optional in the SDK and each
+    // resolves independently from the user's settings.json when absent.
+    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
+    ...(interactionMode ? { interactionMode } : {}),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
     specModeModelId: settings.specModeModelId?.trim() || undefined,
     specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort),
@@ -235,14 +238,27 @@ function normalizeAvailableModels(initResult: unknown): DroidSdkReady["available
   });
 }
 
+/**
+ * The model Droid actually resolved for this session.
+ *
+ * `initResult.currentModelId` does not exist — @factory/droid-sdk reports the
+ * resolved settings under `initResult.settings`.
+ */
+function readResolvedModelId(initResult: unknown): string | null {
+  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
+  const settings = record?.settings && typeof record.settings === "object"
+    ? record.settings as Record<string, unknown>
+    : null;
+  const modelId = typeof settings?.modelId === "string" ? settings.modelId.trim() : "";
+  return modelId.length ? modelId : null;
+}
+
 function buildReady(): DroidSdkReady {
   if (!session) throw new Error("Droid SDK worker is not initialized.");
   const initResult = session.initResult as unknown;
-  const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
-  const currentModelId = typeof record?.currentModelId === "string" ? record.currentModelId : null;
   return {
     sessionId: session.sessionId,
-    currentModelId,
+    currentModelId: readResolvedModelId(initResult),
     availableModels: normalizeAvailableModels(initResult),
   };
 }
@@ -316,13 +332,22 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
       specModeModelId: settings.specModeModelId?.trim() || settings.modelId,
       specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort ?? settings.reasoningEffort),
     });
+    enteredSpecMode = true;
     if (disabledToolIds?.length) await session.updateSettings({ disabledToolIds });
     return;
   }
+  // Omitting the mode leaves Droid's own setting alone, which is the point —
+  // except when ADE is the one that put this session into Spec. The SDK has no
+  // exitSpecMode, so the only way back out is to state a mode, and a plan
+  // session that later turns plan off states nothing. Say it once, for a spec
+  // ADE itself entered, then go back to saying nothing.
+  const updateInteractionMode = droidInteractionModeValue(sdk.DroidInteractionMode, settings.interactionMode)
+    ?? (enteredSpecMode ? sdk.DroidInteractionMode.Auto : undefined);
+  if (updateInteractionMode) enteredSpecMode = false;
   await session.updateSettings({
     modelId: settings.modelId,
-    autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel,
-    interactionMode: toDroidInteractionMode(sdk, settings.interactionMode),
+    ...(settings.autonomyLevel ? { autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel } : {}),
+    ...(updateInteractionMode ? { interactionMode: updateInteractionMode } : {}),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
     ...(disabledToolIds ? { disabledToolIds } : {}),
   });
@@ -330,6 +355,7 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
 
 async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
   initState = init;
+  enteredSpecMode = false;
   const sdk = await getSdk();
   const resumeId = init.resumeSessionId?.trim();
   if (resumeId) {
@@ -341,6 +367,11 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         askUserHandler: requestAskUser,
         ...(init.mcpServers?.length ? { mcpServers: init.mcpServers as DroidSdkTypes.ResumeSessionOptions["mcpServers"] } : {}),
       });
+      // Deliberately NOT seeded from the mode Droid reports here. That reading
+      // cannot tell a Spec this ADE entered from one the user configured in
+      // ~/.factory/settings.json, and exiting the latter would be exactly the
+      // override this branch removes. applySettings below sets the flag when ADE
+      // itself restates Spec, which covers every resume ADE drives.
       await applySettings(init.settings);
     } catch (error) {
       post({
@@ -350,9 +381,11 @@ async function initWorker(init: DroidSdkWorkerInit): Promise<DroidSdkReady> {
         detail: { resumeSessionId: resumeId, error: errorMessage(error) },
       });
       session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+      enteredSpecMode = init.settings.interactionMode === "spec";
     }
   } else {
     session = await sdk.createSession(sessionOptions(sdk, init, init.settings));
+    enteredSpecMode = init.settings.interactionMode === "spec";
   }
   // `createSession`/`resumeSession` take `disabledToolIds`, but the ids are
   // only discoverable from the live session, so the lead's denial is pushed
@@ -443,6 +476,7 @@ async function dispose(): Promise<void> {
   await cancelRun().catch(() => undefined);
   await session?.close().catch(() => undefined);
   session = null;
+  enteredSpecMode = false;
   initState = null;
 }
 

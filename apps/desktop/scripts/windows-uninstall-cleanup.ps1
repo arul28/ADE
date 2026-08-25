@@ -205,7 +205,25 @@ function Remove-ChannelStartupWithoutPackagedCli(
       if ($supervisorPid -gt 0) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId = $supervisorPid" -ErrorAction SilentlyContinue
         if ($process -and ([string]$process.CommandLine).IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+          # Best effort: the supervisor may already be gone, and taskkill exits
+          # nonzero when it is. This is the only native command in the script and
+          # nothing after it resets `$LASTEXITCODE`, so leaving it set would make
+          # the uninstall cleanup report failure for a process that is already
+          # stopped - exactly the state it wanted.
           & taskkill.exe /PID $supervisorPid /T /F | Out-Null
+          $killExitCode = $LASTEXITCODE
+          $global:LASTEXITCODE = 0
+          # Best effort is not the same as unsaid. An uninstall must not refuse
+          # to finish over a process it could not stop - the PID record and the
+          # launcher are removed either way - but a supervisor that is STILL
+          # running after the kill is the one case worth a line, because the
+          # user is about to be told the product was removed.
+          if ($killExitCode -ne 0) {
+            $survivor = Get-CimInstance Win32_Process -Filter "ProcessId = $supervisorPid" -ErrorAction SilentlyContinue
+            if ($survivor -and ([string]$survivor.CommandLine).IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+              Write-Warning "ADE could not stop its background service (PID $supervisorPid). Sign out or restart to finish removing it."
+            }
+          }
         }
       }
     } catch {

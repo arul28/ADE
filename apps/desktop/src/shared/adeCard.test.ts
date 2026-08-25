@@ -6,6 +6,7 @@ import {
   adeCardProgressTotal,
   adeCardRowKey,
   describeAdeCard,
+  adeCardIsHiddenAfterDismiss,
   isKnownAdeCardVariant,
   normalizeAdeCardTone,
   readAdeCardPluginInstall,
@@ -34,11 +35,33 @@ describe("adeCard", () => {
     expect(normalizeAdeCardTone("something new")).toBe("neutral");
   });
 
+  it("hides a dismissed Claude session-quota card on every surface", () => {
+    expect(adeCardIsHiddenAfterDismiss(card({
+      variant: "claude_session_quota",
+      state: "terminal",
+    }))).toBe(true);
+    expect(adeCardIsHiddenAfterDismiss(card({
+      variant: "claude_session_quota",
+      state: "terminal",
+      actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+    }))).toBe(true);
+    expect(adeCardIsHiddenAfterDismiss(card({
+      variant: "claude_session_quota",
+      state: "live",
+      actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+    }))).toBe(false);
+    expect(adeCardIsHiddenAfterDismiss(card({
+      variant: "pr_ci",
+      state: "terminal",
+    }))).toBe(false);
+  });
+
   it("treats only shipped variants as known", () => {
     for (const variant of [
       "proof_artifact",
       "pr_ci",
       "pr_review",
+      "claude_session_quota",
       "pr_merged",
       "pr_merge_ready",
       "pr_conflict",

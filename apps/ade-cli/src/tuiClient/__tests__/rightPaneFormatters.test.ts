@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  CURSOR_CLOUD_PANE_NOTE,
   derivePrMergeReadiness,
+  formatCursorCloudFleetRows,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
@@ -9,6 +11,35 @@ import {
   formatPrSummary,
   formatSystemDetails,
 } from "../rightPaneFormatters";
+import type { CursorCloudFleetEntry } from "../../../../desktop/src/shared/types/config";
+
+function fleetEntry(args: {
+  agentId: string;
+  name: string;
+  status?: "running" | "finished" | "error";
+  runStatus?: "running" | "finished" | "error";
+  createdAt?: number | null;
+  lastModified?: number | null;
+}): CursorCloudFleetEntry {
+  const { agentId, name, status, runStatus, createdAt, lastModified } = args;
+  return {
+    agent: {
+      agentId,
+      name,
+      summary: "",
+      ...(status !== undefined ? { status } : {}),
+      ...(createdAt !== undefined ? { createdAt } : {}),
+      ...(lastModified !== undefined ? { lastModified } : {}),
+    },
+    latestRunId: null,
+    branch: null,
+    prUrl: null,
+    modelId: null,
+    ownership: { sessionId: null, sessionTitle: null, laneId: null, laneName: null, linearIssueId: null },
+    matchedBy: "repo",
+    ...(runStatus !== undefined ? { runStatus } : {}),
+  };
+}
 
 describe("rightPaneFormatters", () => {
   it("formats system details as stable rows", () => {
@@ -276,6 +307,51 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("CI: not run");
   });
 
+  it("shows a failed checks read as a failure, not as an empty suite", () => {
+    // `prService.getChecks` now REJECTS when neither checks source could be
+    // read, and `/pr checks` catches that into `{ error }`. Rendering that as
+    // "No PR checks." would tell the reader the commit ran nothing — the same
+    // false all-clear the host-side change exists to stop.
+    const body = formatPrChecks({ error: "GitHub API rate limit exceeded" });
+
+    expect(body).toContain("could not be read");
+    expect(body).toContain("GitHub API rate limit exceeded");
+    expect(body).not.toContain("No PR checks.");
+  });
+
+  it("shows a failed comments read as a failure", () => {
+    const body = formatPrComments({ error: "fetch failed" });
+
+    expect(body).toContain("could not be read");
+    expect(body).toContain("fetch failed");
+    expect(body).not.toContain("No actionable PR comments.");
+  });
+
+  it("names the sources that failed in a partial PR review read", () => {
+    // `/pr review` fires three reads and catches each independently, so a
+    // partial outage is the common case. The sources that answered still
+    // render; the ones that did not must not report a count of zero.
+    const body = formatPrReview({
+      reviews: [{ state: "approved", reviewer: "octocat" }],
+      threads: { error: "GitHub is unavailable" },
+      comments: { error: "GitHub is unavailable" },
+    });
+
+    expect(body).toContain("1 review");
+    expect(body).toContain("threads unavailable");
+    expect(body).toContain("comments unavailable");
+    expect(body).toContain("GitHub is unavailable");
+    expect(body).not.toContain("0 threads");
+    expect(body).not.toContain("No PR reviews or comments.");
+  });
+
+  it("keeps the empty verdict when every PR review read succeeded", () => {
+    const body = formatPrReview({ reviews: [], threads: [], comments: [] });
+
+    expect(body).toContain("No PR reviews or comments.");
+    expect(body).not.toContain("could not be read");
+  });
+
   it("summarizes PR review comments and threads", () => {
     const body = formatPrComments({
       summary: { checksStatus: "passing", actionableComments: 2 },
@@ -298,6 +374,33 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("open src/index.ts:12");
     expect(body).toContain("reviewer: Please handle the loading state.");
     expect(body).not.toContain("\"reviewThreads\"");
+  });
+
+  it("names a failed review-thread read instead of reporting nothing to action", () => {
+    // The aggregate preserves a thread-read failure rather than flattening it
+    // to `[]`. Rendering that as "No actionable PR comments." tells an agent a
+    // PR is clean on the strength of a read that never happened.
+    const body = formatPrComments({
+      summary: { checksStatus: "passing", actionableComments: 0 },
+      reviewThreads: [],
+      comments: [],
+      reviewThreadsUnavailable: "GitHub API request failed (HTTP 503)",
+    });
+
+    expect(body).toContain("Could not be read");
+    expect(body).toContain("review threads: GitHub API request failed (HTTP 503)");
+    expect(body).not.toContain("No actionable PR comments.");
+  });
+
+  it("still reports a genuinely empty comment set as empty", () => {
+    const body = formatPrComments({
+      summary: { checksStatus: "passing", actionableComments: 0 },
+      reviewThreads: [],
+      comments: [],
+    });
+
+    expect(body).toContain("No actionable PR comments.");
+    expect(body).not.toContain("Could not be read");
   });
 
   it("summarizes full PR review data", () => {
@@ -329,5 +432,83 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("auth       oauth");
     expect(body).toContain("expires    2026-05-14 06:54");
     expect(body).not.toContain("\"connected\"");
+  });
+
+  it("formats fleet rows as glyph · name · status · age, newest first", () => {
+    const now = Date.parse("2026-08-24T12:00:00Z");
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      const rows = formatCursorCloudFleetRows([
+        fleetEntry({ agentId: "agent-old", name: "old run", createdAt: now - 3 * 60 * 60 * 1000 }),
+        fleetEntry({ agentId: "agent-new", name: "new run", createdAt: now - 5 * 60 * 1000 }),
+      ]);
+      expect(rows[0]).toBe("○ new run · queued · 5m");
+      expect(rows[1]).toBe("○ old run · queued · 3h");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("orders running cloud agents ahead of finished ones and marks their status", () => {
+    const now = Date.now();
+    const rows = formatCursorCloudFleetRows([
+      fleetEntry({
+        agentId: "agent-done",
+        name: "done run",
+        status: "finished",
+        createdAt: now - 60 * 1000,
+        runStatus: "finished",
+      }),
+      fleetEntry({
+        agentId: "agent-live",
+        name: "live run",
+        status: "running",
+        createdAt: now - 10 * 60 * 60 * 1000,
+        runStatus: "running",
+      }),
+      fleetEntry({
+        agentId: "agent-broke",
+        name: "broke run",
+        status: "error",
+        createdAt: now - 2 * 60 * 1000,
+        runStatus: "error",
+      }),
+    ]);
+
+    expect(rows.map((row) => row.slice(0, 1))).toEqual(["●", "✓", "✗"]);
+    expect(rows[0]).toContain("live run · running");
+    expect(rows[1]).toContain("done run · finished · 1m");
+    expect(rows[2]).toContain("broke run · error · 2m");
+  });
+
+  it("appends the agent id only when the row fits the pane budget", () => {
+    const shortRows = formatCursorCloudFleetRows([
+      fleetEntry({ agentId: "abcdefghij", name: "tiny" }),
+    ]);
+    expect(shortRows[0]).toBe("○ tiny · queued · abcdefghij");
+
+    const longRows = formatCursorCloudFleetRows([
+      fleetEntry({ agentId: "abcdefghij", name: "a very long agent name that fills the row" }),
+    ]);
+    expect(longRows[0].endsWith("abcdefghij")).toBe(false);
+  });
+
+  it("falls back to lastModified for age when createdAt is missing", () => {
+    const now = Date.parse("2026-08-24T12:00:00Z");
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      const rows = formatCursorCloudFleetRows([
+        fleetEntry({ agentId: "agent-m", name: "modified only", lastModified: now - 2 * 60 * 1000 }),
+      ]);
+      expect(rows[0]).toBe("○ modified only · queued · 2m");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("keeps the management note pointing at desktop/iOS", () => {
+    expect(CURSOR_CLOUD_PANE_NOTE).toContain("desktop or iOS");
   });
 });

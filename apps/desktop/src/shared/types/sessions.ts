@@ -15,6 +15,20 @@ import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
+/**
+ * One agent SDK process a session currently owns.
+ *
+ * Deliberately thin: a pid and when it started is enough to answer "what is
+ * this chat holding open, and for how long", which is the question `ps` was
+ * being used for. Command lines and environments are not reported — they carry
+ * paths and flags that have no business on a status surface.
+ */
+export type RuntimeProcessSummary = {
+  pid: number;
+  /** ISO instant ADE spawned it. */
+  startedAt: string;
+};
+
 export type TerminalSessionStatus = "running" | "completed" | "failed" | "disposed" | "detached";
 
 export type TerminalToolType =
@@ -260,6 +274,15 @@ export type TerminalSessionSummary = {
    * so the mobile roster and push publisher keep reading one number.
    */
   backgroundWork?: SessionBackgroundWork;
+  /**
+   * ISO instant the live background work began. The elapsed shown beside
+   * "Background work" counts from here rather than from `lastActivityAt`, which
+   * every provider frame refreshes and which therefore reported a job that had
+   * run for hours as seconds old.
+   */
+  backgroundWorkSince?: string | null;
+  /** Agent SDK processes this session owns right now. See `AgentChatSessionSummary`. */
+  runtimeProcesses?: RuntimeProcessSummary[];
   /** First tag mirrored from the backing Claude SDK session pointer. */
   claudeTag?: string | null;
   /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */
@@ -282,6 +305,8 @@ export type TerminalSessionSummary = {
    */
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSpawnKind;
+  /** Cursor Cloud agent id when this chat is a live view of a cloud agent. */
+  cursorCloudAgentId?: string | null;
 };
 
 export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";
@@ -414,6 +439,12 @@ export type PtyDataEvent = {
    * transcript writes disabled, or the transcript byte cap was reached).
    */
   offset?: number | null;
+  /**
+   * True when `data` is SerializeAddon current-screen CSI (including alt-screen
+   * enter). Replacing hydrates must write it verbatim — transcript-grid
+   * normalization strips 1049h and can leave the pane blank.
+   */
+  screen?: boolean;
 };
 
 export type PtyExitEvent = {
@@ -538,7 +569,26 @@ export type TerminalSerializedSnapshot = {
   baseY: number;
   viewportY: number;
   serialized: string;
+  /**
+   * Current-screen CSI (`serialize({ scrollback: 0 })`). Distinct from
+   * `serialized`, which includes normal-buffer scrollback and can exceed the
+   * 256k mobile hydrate cap. Optional so older on-disk snapshots still parse.
+   */
+  screenSerialized?: string;
   visibleRows: TerminalSnapshotRow[];
+};
+
+/**
+ * Current-screen paint for mobile/web hydrate. Unlike the on-disk serialized
+ * snapshot this omits `visibleRows` (a 375×53 cell grid is >1 MiB) and is the
+ * CSI SerializeAddon output of the live headless xterm, including alt-screen
+ * enter when the PTY is on the alternate buffer.
+ */
+export type TerminalScreenSnapshot = {
+  cols: number;
+  rows: number;
+  bufferType: "normal" | "alternate";
+  serialized: string;
 };
 
 export type ChatTerminalPreviewArgs = {

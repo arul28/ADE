@@ -10,6 +10,33 @@ type SwitchSyncHostOptions = {
 const SYNC_HOST_COLD_BOOT_TIMEOUT_MS = 60_000;
 const SYNC_HOST_INITIALIZE_TIMEOUT_MS = 30_000;
 const SYNC_HOST_CONFIGURE_TIMEOUT_MS = 10_000;
+/**
+ * How long the brain waits for a sync-host switch that superseded its own to
+ * land before it gives up and retries the whole resolution.
+ */
+export const SYNC_HOST_ADOPT_TIMEOUT_MS = 30_000;
+const SYNC_HOST_ADOPT_POLL_MS = 250;
+
+/**
+ * Backoff after a failed project boot.
+ *
+ * A boot failure used to leave no trace beyond the deleted cache entry, so
+ * every caller that asked for the project re-ran a full runtime construction:
+ * one field machine did 41 full boots in 49 seconds, each one opening the
+ * project database again. The delay is `BASE * 2 ** attempts`, so the first
+ * retry waits two seconds and the fifth waits the capped thirty.
+ */
+const FAILED_SCOPE_BACKOFF_BASE_MS = 1_000;
+export const FAILED_SCOPE_BACKOFF_MAX_MS = 30_000;
+
+type FailedScopeBoot = {
+  /** The failure itself, rethrown verbatim so callers keep their coded error. */
+  error: unknown;
+  /** When the boot failed. */
+  atMs: number;
+  /** How many boots have failed in a row. */
+  attempts: number;
+};
 
 class SyncHostPhaseTimeoutError extends Error {}
 
@@ -58,6 +85,7 @@ export class ProjectScope {
 
 export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
+  private readonly failedScopes = new Map<ProjectId, FailedScopeBoot>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
   private syncHostProjectId: ProjectId | null = null;
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
@@ -77,8 +105,21 @@ export class ProjectScopeRegistry {
     private readonly options: {
       syncRuntime?: AdeRuntimeSyncOptions;
       onDisposeProject?: (projectId: ProjectId) => void;
+      /** Injectable clock for the failed-boot backoff. Tests only. */
+      now?: () => number;
     } = {},
   ) {}
+
+  private nowMs(): number {
+    return (this.options.now ?? Date.now)();
+  }
+
+  private failedScopeBackoffMs(attempts: number): number {
+    return Math.min(
+      FAILED_SCOPE_BACKOFF_MAX_MS,
+      FAILED_SCOPE_BACKOFF_BASE_MS * 2 ** attempts,
+    );
+  }
 
   onDispose(listener: (projectId: ProjectId) => void): () => void {
     this.disposeListeners.add(listener);
@@ -104,6 +145,17 @@ export class ProjectScopeRegistry {
   ): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
+
+    // A project whose boot just failed is very likely to fail the same way
+    // again, and a full boot is expensive: it opens the project database and
+    // constructs every runtime service. Serve the recorded failure until the
+    // backoff expires, so a room full of pollers costs one boot per window
+    // instead of one boot per call. The entry survives the expired window so
+    // repeated failures keep lengthening the backoff; only a success clears it.
+    const failed = this.failedScopes.get(projectId);
+    if (failed && this.nowMs() - failed.atMs < this.failedScopeBackoffMs(failed.attempts)) {
+      throw failed.error;
+    }
 
     const record = this.projectRegistry.get(projectId);
     if (!record) {
@@ -134,23 +186,40 @@ export class ProjectScopeRegistry {
     this.scopes.set(projectId, pending);
 
     try {
-      return await pending;
+      const scope = await pending;
+      // Only the attempt that still owns the cache entry may clear the
+      // backoff; an abandoned boot that succeeds late must not wipe a backoff
+      // a newer attempt earned.
+      if (this.scopes.get(projectId) === pending) {
+        this.failedScopes.delete(projectId);
+      }
+      return scope;
     } catch (error) {
       // A timed-out cold sync-host boot can be evicted and retried while the
       // original createAdeRuntime() promise is still settling. Never let that
-      // stale completion delete a newer retry from the cache or clear a host
-      // that the retry successfully promoted.
+      // stale completion delete a newer retry from the cache, clear a host that
+      // the retry successfully promoted, or hold a newer retry off with a
+      // backoff earned by the abandoned attempt.
       if (this.scopes.get(projectId) === pending) {
         this.scopes.delete(projectId);
         if (this.syncHostProjectId === projectId) {
           this.syncHostProjectId = null;
         }
+        this.failedScopes.set(projectId, {
+          error,
+          atMs: this.nowMs(),
+          attempts: (this.failedScopes.get(projectId)?.attempts ?? 0) + 1,
+        });
       }
       throw error;
     }
   }
 
   async dispose(projectId: ProjectId): Promise<void> {
+    // Disposing is how a repair asks for a clean slate, so it also drops the
+    // failed-boot backoff: the next `get` must boot rather than replay the
+    // failure the repair was meant to fix.
+    this.failedScopes.delete(projectId);
     const cached = this.scopes.get(projectId);
     if (!cached) return;
     this.scopes.delete(projectId);
@@ -168,6 +237,9 @@ export class ProjectScopeRegistry {
   async disposeAll(): Promise<void> {
     const projectIds = [...this.scopes.keys()];
     await Promise.all(projectIds.map((projectId) => this.dispose(projectId)));
+    // Projects that only ever failed to boot hold no scope, so the loop above
+    // never reaches them.
+    this.failedScopes.clear();
   }
 
   async ensureSyncHost(
@@ -179,6 +251,45 @@ export class ProjectScopeRegistry {
 
   getActiveSyncHostProjectId(): ProjectId | null {
     return this.syncHostProjectId;
+  }
+
+  /**
+   * The project a caller most recently asked to host sync, whether or not that
+   * switch has completed. `switchSyncHost` returns null both for "superseded by
+   * a newer switch" and for a genuinely absent host, and the brain's startup
+   * loop must not read the former as "no project, host projectless".
+   */
+  getRequestedSyncHostProjectId(): ProjectId | null {
+    return this.latestSyncHostTransitionProjectId;
+  }
+
+  /**
+   * Waits for a sync-host switch that superseded ours to land, and adopts its
+   * result.
+   *
+   * `switchSyncHost` returning null when a request is outstanding means
+   * "superseded": the RPC socket is published before the brain's startup loop
+   * runs, so a desktop that connected meanwhile may have requested its own
+   * switch and bumped the transition past ours. That is a project host in
+   * progress, not the absence of one — taking the projectless lease now would
+   * clobber it. Returns null if nothing lands inside the budget, which the
+   * caller retries.
+   */
+  async adoptRequestedSyncHost(
+    timeoutMs: number,
+    deps: { sleep?: (ms: number) => Promise<void>; now?: () => number; pollMs?: number } = {},
+  ): Promise<ProjectScope | null> {
+    const now = deps.now ?? Date.now;
+    const sleep = deps.sleep
+      ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const pollMs = Math.max(1, deps.pollMs ?? SYNC_HOST_ADOPT_POLL_MS);
+    const deadline = now() + Math.max(0, timeoutMs);
+    while (now() < deadline) {
+      const activeId = this.getActiveSyncHostProjectId();
+      if (activeId) return await this.get(activeId);
+      await sleep(pollMs);
+    }
+    return null;
   }
 
   async resolveActiveSyncHost(): Promise<ProjectScope | null> {

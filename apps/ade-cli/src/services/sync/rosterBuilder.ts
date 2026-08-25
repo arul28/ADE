@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
+import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
   SyncRosterChat,
   SyncRosterChatStatus,
@@ -65,27 +66,20 @@ export type RosterLiveSession = {
    */
   activeBackgroundTaskCount?: number | null;
   /**
-   * Set on CTO/identity chats. The roster still carries these rows — the mobile
-   * hub renders them — but the Activity feed must not, because the desktop
-   * sidebar strips them and the two counts have to agree. The roster's job is
-   * only to label them; see `RosterChat.identityKey`.
+   * Set on CTO/identity chats. Identity sessions are deliberately omitted from
+   * the normal project roster, but this marker remains available as a
+   * defensive signal for older or alternate roster producers.
    */
   identityKey?: string | null;
 };
 
-/**
- * A roster chat plus the additive `identityKey` label. Deliberately NOT folded
- * into the shared `SyncRosterChat` wire type: this is a hint for one consumer
- * (the Activity publisher, which excludes identity chats from the feed), and
- * every other consumer — the mobile hub above all — keeps rendering the rows
- * exactly as before and simply ignores the extra field.
- */
-export type RosterChat = SyncRosterChat & { identityKey?: string | null };
+/** A roster chat with the optional identity marker retained for compatibility. */
+export type RosterChat = SyncRosterChat;
 
 export type RosterAgentChatService = {
   listSessions(
     laneId?: string,
-    options?: { includeArchived?: boolean },
+    options?: { includeArchived?: boolean; includeIdentity?: boolean },
   ): Promise<RosterLiveSession[]>;
 };
 
@@ -146,6 +140,8 @@ type TerminalSessionRow = {
   attention_requested_at: string | null;
   attention_message: string | null;
   last_turn_failed_at: string | null;
+  snoozed_until: string | null;
+  snoozed_at: string | null;
 };
 
 type DiskProjectData = {
@@ -299,13 +295,20 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
           const lastTurnFailedAtColumn = hasColumn(activeDb, "terminal_sessions", "last_turn_failed_at")
             ? "last_turn_failed_at"
             : "null as last_turn_failed_at";
+          const snoozedUntilColumn = hasColumn(activeDb, "terminal_sessions", "snoozed_until")
+            ? "snoozed_until"
+            : "null as snoozed_until";
+          const snoozedAtColumn = hasColumn(activeDb, "terminal_sessions", "snoozed_at")
+            ? "snoozed_at"
+            : "null as snoozed_at";
           return activeDb
             .prepare(
               `
                 select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, last_output_preview,
                        last_output_at, pinned, exit_code, started_at,
                        ${settledAtColumn}, ${statusNoteColumn}, ${attentionRequestedAtColumn},
-                       ${attentionMessageColumn}, ${lastTurnFailedAtColumn}
+                       ${attentionMessageColumn}, ${lastTurnFailedAtColumn},
+                       ${snoozedUntilColumn}, ${snoozedAtColumn}
                 from terminal_sessions
                 where archived_at is null
               `,
@@ -353,6 +356,14 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
 
 // Disk-only status (un-booted project): the truthful persisted state. `running`
 // collapses to `idle` because no live runtime is streaming the turn.
+//
+// Leave that collapse alone. `idle` is a first-class state now, not a softer
+// word for "done" — see `ACTIVITY_STATE_GLYPHS.idle` in
+// apps/desktop/src/renderer/components/activity/activityPresentation.ts, where
+// it means "went quiet mid-work", sorts above `done` and reads "is idle". A row
+// whose project is not booted is exactly that: last seen working, nothing
+// streaming it now. Promoting it back to `running` would be the lie — the
+// Activity island claiming live agents on a machine that has none.
 function diskChatStatus(row: TerminalSessionRow, sidecarAwaiting: boolean): SyncRosterChatStatus {
   if (row.attention_requested_at || sidecarAwaiting) return "awaiting";
   if (row.last_turn_failed_at) return "failed";
@@ -434,7 +445,7 @@ async function buildRosterProject(
     if (agentChatService) {
       booted = true;
       const liveSessions = await agentChatService
-        .listSessions(undefined, { includeArchived: false })
+        .listSessions(undefined, { includeArchived: false, includeIdentity: true })
         .catch(() => [] as RosterLiveSession[]);
       for (const live of liveSessions) {
         if (live?.sessionId) liveBySessionId.set(live.sessionId, live);
@@ -449,13 +460,39 @@ async function buildRosterProject(
     .sort(compareLanes);
   const visibleLaneIds = new Set(visibleLanes.map((lane) => lane.id));
 
+  const visibleRows = desktopVisibleRosterRows(disk.chats, visibleLaneIds);
+  const identitySessionIds = new Set<string>();
+  for (const row of visibleRows) {
+    const liveIdentityKey = liveBySessionId.get(row.id)?.identityKey?.trim() || null;
+    const diskIdentityKey = readChatSidecar(chatSessionsDir, row.id)?.identityKey?.trim() || null;
+    if (liveIdentityKey || diskIdentityKey) identitySessionIds.add(row.id);
+  }
+  let identityDescendantAdded = true;
+  while (identityDescendantAdded) {
+    identityDescendantAdded = false;
+    for (const row of visibleRows) {
+      const parentSessionId = normalizedParentSessionId(row);
+      if (parentSessionId
+        && identitySessionIds.has(parentSessionId)
+        && !identitySessionIds.has(row.id)) {
+        identitySessionIds.add(row.id);
+        identityDescendantAdded = true;
+      }
+    }
+  }
+
   const chats: RosterChat[] = [];
   let runningCount = 0;
   let attentionCount = 0;
-  for (const row of desktopVisibleRosterRows(disk.chats, visibleLaneIds)) {
+  for (const row of visibleRows) {
     const live = liveBySessionId.get(row.id);
     const sidecar = readChatSidecar(chatSessionsDir, row.id);
-    const identityKey = live?.identityKey ?? sidecar?.identityKey ?? null;
+    const identityKey = (live?.identityKey ?? sidecar?.identityKey ?? null)
+      ?.trim() || null;
+    // CTO/identity sessions have their own surface and attention path. They
+    // must never become ordinary project-roster rows or contribute to Hub
+    // counts, even when their sidecar is the only identity signal available.
+    if (identitySessionIds.has(row.id)) continue;
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
@@ -472,7 +509,11 @@ async function buildRosterProject(
           ? "failed"
           : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
     const awaitingInput = status === "awaiting";
-    if (status === "running") runningCount += 1;
+    const snoozed = isSessionSnoozed({
+      snoozedUntil: row.snoozed_until,
+      snoozedAt: row.snoozed_at,
+    });
+    if (status === "running" && !snoozed) runningCount += 1;
     // Attention drives hub badges AND attention-first project sorting. Only
     // chat rows (and their attached shells) count: a standalone CLI session
     // that exited non-zero months ago must not pin its project to the top
@@ -508,6 +549,8 @@ async function buildRosterProject(
       attentionMessage: row.attention_message,
       lastTurnFailedAt: row.last_turn_failed_at,
       exitCode: row.exit_code,
+      snoozedUntil: row.snoozed_until,
+      snoozedAt: row.snoozed_at,
     });
   }
 

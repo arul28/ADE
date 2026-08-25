@@ -278,11 +278,32 @@ struct AccountMachineRow: View {
   let machine: AccountMachine
   let onConnect: (AccountMachine) -> Void
 
-  private var reachabilityText: String {
-    machineReachabilityText(
-      isConnected: false,
-      directoryOnline: machine.online,
+  /// The same reading the MACHINES list below uses. Two lists of the same
+  /// machines on one screen, one offering "Connect" and one "Wake", would be
+  /// the contradiction this pass exists to remove.
+  ///
+  /// Presence, not wake-need: what a row SAYS is bounded by the ten-minute
+  /// inference window the desktop uses, so a Mac powered off six hours ago
+  /// reads "Offline" instead of "Asleep" beside a Wake button that cannot work.
+  /// The far longer `syncMachineRecentlySeenWindow` still governs whether a
+  /// tapped link is allowed to offer a wake.
+  private var isAsleep: Bool {
+    syncMachinePresence(
+      connected: false,
+      online: machine.online,
+      sleepState: machine.sleepState,
+      sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt),
       lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt)
+    ) == .asleep
+  }
+
+  private var reachabilityText: String {
+    accountMachineDetailLine(
+      isConnected: false,
+      isAsleep: isAsleep,
+      directoryOnline: machine.online,
+      lastSeenAt: machineLastSeenDate(epochMilliseconds: machine.lastSeenAt),
+      power: machine.power
     )
   }
 
@@ -298,12 +319,12 @@ struct AccountMachineRow: View {
         routeHint: reachabilityText,
         online: machine.online,
         statusPill: nil,
-        affordance: .connect,
+        affordance: isAsleep ? .wake : .connect,
         surface: .row
       )
     }
     .buttonStyle(ADEScaleButtonStyle())
     .accessibilityLabel("\(machine.displayName), \(reachabilityText)")
-    .accessibilityHint("Connect.")
+    .accessibilityHint(isAsleep ? "Wake and connect." : "Connect.")
   }
 }

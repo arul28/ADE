@@ -210,13 +210,42 @@ struct HubProjectPresentation: Equatable, Identifiable {
   /// were computed by the roster and used only as a sort tiebreak until now.
   let attentionCount: Int
   let runningCount: Int
+  /// "6 lanes", and nothing else. The chat clause that used to follow it said
+  /// the same thing twice: the header already draws a glyph-and-count per state,
+  /// and those sum to the chat count, so "6 lanes · 7 chats" printed a total
+  /// beside its own breakdown.
   let metaLine: String
-  /// "2 need you · 3 working", or nil when the project is quiet. Rendered
-  /// beside the lane/chat counts with a status dot per clause.
+  /// "2 need you · 3 working", or nil when the project is quiet — the same
+  /// tally the card header renders, written out.
+  ///
+  /// No longer what the header draws: it shows `HubStateSummary` (glyph +
+  /// count), whose VoiceOver line is composed from the canonical state labels so
+  /// the project card and the lane header below it speak identically. This stays
+  /// as the sentence form for a caller that wants words, and because the counts
+  /// reaching the card at all is a locked contract.
   let statusLine: String?
   fileprivate let renderSignature: Int
 
   var id: String { project.id }
+
+  /// The card header's glyph-and-count summary: the whole project's chats,
+  /// broken down by state.
+  ///
+  /// Tallied from the lane tree rather than from `attentionCount` /
+  /// `runningCount`, which are the only two totals the roster projects — those
+  /// two can say how many are waiting or running but never that the rest are
+  /// idle, so a project with nothing live rendered no summary and, once the chat
+  /// clause left `metaLine`, nothing at all.
+  ///
+  /// Collapse-safe by construction: the tree is built from the roster in
+  /// `buildHubProjectPresentation`, so folding the card away changes what is
+  /// drawn and never what is counted. Child rows are counted too — see
+  /// `HubChatRowPresentation.accumulateStateTally`.
+  var stateCounts: [HubStateCount] {
+    var tally: [ActivityStateGroup: Int] = [:]
+    for lane in lanes { lane.accumulateStateTally(into: &tally) }
+    return hubTreeStateCounts(tally)
+  }
 
   init(
     project: MobileProjectSummary,
@@ -238,9 +267,7 @@ struct HubProjectPresentation: Equatable, Identifiable {
     self.lanes = lanes
     self.attentionCount = attentionCount
     self.runningCount = runningCount
-    let lanePart = "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
-    let chatPart = "\(chatCount) chat\(chatCount == 1 ? "" : "s")"
-    self.metaLine = "\(lanePart) · \(chatPart)"
+    self.metaLine = "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
     self.statusLine = hubProjectStatusLine(
       attentionCount: attentionCount,
       runningCount: runningCount
@@ -271,6 +298,30 @@ struct HubLanePresentation: Equatable, Identifiable {
 
   var id: String { lane.id }
 
+  /// The lane header's glyph-and-count summary: one clause per state present,
+  /// resting bands included.
+  ///
+  /// Every state, not just the live ones, because this summary is now the only
+  /// thing the divider says about its rows — the total that used to sit beside
+  /// it is gone. Dropping `idle` and `done` here would leave a lane of quiet
+  /// chats with a blank header instead of the count it used to carry.
+  ///
+  /// Computed rather than stored, and deliberately outside `renderSignature`:
+  /// every input is a row `stateGroup`, which each row's own signature already
+  /// covers, so a stored copy could only ever be a second thing to keep in sync.
+  var stateCounts: [HubStateCount] {
+    var tally: [ActivityStateGroup: Int] = [:]
+    accumulateStateTally(into: &tally)
+    return hubTreeStateCounts(tally)
+  }
+
+  /// Adds this lane's whole subtree to a running tally, so the project card can
+  /// sum its lanes instead of re-walking the tree with its own rules and
+  /// arriving at a number the divider below it contradicts.
+  func accumulateStateTally(into tally: inout [ActivityStateGroup: Int]) {
+    for row in rows { row.accumulateStateTally(into: &tally) }
+  }
+
   init(
     lane: RemoteRosterLane,
     rows: [HubChatRowPresentation],
@@ -298,11 +349,29 @@ struct HubChatRowPresentation: Equatable, Identifiable {
   let providerKey: String?
   let activityLabel: String?
   let statusString: String
+  /// Which of the six canonical states this row is in — the vocabulary the notch,
+  /// the Activity sheet and the widget header all count by.
+  ///
+  /// Derived from the chat, not from `statusString`: that string files a failed
+  /// session under the same "ended" bucket as a clean one, so the tree drew the
+  /// identical neutral mark on a run that crashed and a run that finished.
+  let stateGroup: ActivityStateGroup
   let childRows: [HubChatRowPresentation]
   fileprivate let renderSignature: Int
 
   var id: String { chat.id }
   var childCount: Int { childRows.count }
+
+  /// Adds this row and everything nested under it to a header's tally.
+  ///
+  /// Children are counted even though the tree does not draw them: a CLI session
+  /// spawned from a chat is folded into its parent row, so counting only the
+  /// top level is how a run that needs you goes unreported on both the lane
+  /// divider and the project card.
+  func accumulateStateTally(into tally: inout [ActivityStateGroup: Int]) {
+    tally[stateGroup, default: 0] += 1
+    for child in childRows { child.accumulateStateTally(into: &tally) }
+  }
 
   init(
     chat: RemoteRosterChat,
@@ -319,6 +388,11 @@ struct HubChatRowPresentation: Equatable, Identifiable {
     self.providerKey = providerKey
     self.activityLabel = activityLabel
     self.statusString = statusString
+    // Not an init parameter: it is a pure function of `chat`, and a caller that
+    // could pass a different one is a caller that could make the mark disagree
+    // with the row it sits on.
+    let stateGroup = hubChatStateGroup(chat)
+    self.stateGroup = stateGroup
     self.childRows = childRows
     self.renderSignature = hubChatRowRenderSignature(
       chat: chat,
@@ -327,6 +401,7 @@ struct HubChatRowPresentation: Equatable, Identifiable {
       providerKey: providerKey,
       activityLabel: activityLabel,
       statusString: statusString,
+      stateGroup: stateGroup,
       childRows: childRows
     )
   }
@@ -417,6 +492,7 @@ private func hubChatRowRenderSignature(
   providerKey: String?,
   activityLabel: String?,
   statusString: String,
+  stateGroup: ActivityStateGroup,
   childRows: [HubChatRowPresentation]
 ) -> Int {
   var hasher = Hasher()
@@ -428,9 +504,16 @@ private func hubChatRowRenderSignature(
   hasher.combine(providerKey)
   hasher.combine(activityLabel)
   hasher.combine(statusString)
+  // Hashed on its own even though `statusString` is here: the two states that
+  // string cannot tell apart — a clean end and a failed one — are the two whose
+  // marks differ most, so a run that crashed under a row that had ended would
+  // keep the wrong glyph until some unrelated field moved.
+  hasher.combine(stateGroup)
   hasher.combine(chat.pinned)
   hasher.combine(chat.archived)
   hasher.combine(chat.lastActivityAt)
+  hasher.combine(chat.snoozedUntil)
+  hasher.combine(chat.snoozedAt)
   hasher.combine(childRows.map(\.renderSignature))
   return hasher.finalize()
 }
@@ -453,8 +536,9 @@ func buildHubProjectPresentation(
     )
   }
 
-  let laneById = Dictionary(roster.lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
-  let visibleChats = roster.chats.filter { chat in
+  let safeRoster = roster.excludingIdentityChats()
+  let laneById = Dictionary(safeRoster.lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+  let visibleChats = safeRoster.chats.filter { chat in
     chat.archived != true && laneById[chat.laneId] != nil
   }
   let chatToolIds = Set(visibleChats.filter(\.isChatTool).map(\.id))
@@ -478,7 +562,7 @@ func buildHubProjectPresentation(
   let topLevelChats = visibleChats.filter { !isChildRow($0) }
   let topLevelChatsByLane = Dictionary(grouping: topLevelChats, by: \.laneId)
 
-  let lanes = roster.lanes.compactMap { lane -> HubLanePresentation? in
+  let lanes = safeRoster.lanes.compactMap { lane -> HubLanePresentation? in
     let laneChats = (topLevelChatsByLane[lane.id] ?? [])
       .sorted { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
     guard !laneChats.isEmpty else { return nil }
@@ -498,11 +582,11 @@ func buildHubProjectPresentation(
     isActive: isActive,
     isSwitching: isSwitching,
     isLoading: false,
-    laneCount: roster.lanes.count,
+    laneCount: safeRoster.lanes.count,
     chatCount: chatCount,
     lanes: lanes,
-    attentionCount: roster.attentionCount,
-    runningCount: roster.runningCount
+    attentionCount: safeRoster.attentionCount,
+    runningCount: safeRoster.runningCount
   )
 }
 
@@ -594,28 +678,23 @@ struct HubProjectCard: View, Equatable {
       }
       .buttonStyle(.plain)
 
-      // Lane/chat counts live to the left of the open arrow now that the name
-      // owns the full leading run, with the live status stacked above them.
+      // The lane count lives to the left of the open arrow now that the name
+      // owns the full leading run, with the state breakdown stacked above it.
       VStack(alignment: .trailing, spacing: 2) {
-        if presentation.attentionCount > 0 || presentation.runningCount > 0 {
-          HStack(spacing: 5) {
-            if presentation.attentionCount > 0 {
-              HubStatusDot(status: "awaiting-input")
-              Text("\(presentation.attentionCount) need you")
-                .font(.system(.caption2, design: .rounded).weight(.semibold))
-                .foregroundStyle(ADEColor.warning)
-            }
-            if presentation.runningCount > 0 {
-              HubStatusDot(status: "active")
-              Text("\(presentation.runningCount) working")
-                .font(.system(.caption2, design: .rounded).weight(.semibold))
-                .foregroundStyle(ADEColor.success)
-            }
-          }
-          .lineLimit(1)
-          .fixedSize()
-          .accessibilityElement(children: .combine)
-          .accessibilityLabel(presentation.statusLine ?? "")
+        // Glyph + count, not dot + sentence. The two clauses this used to spell
+        // out ran to about 22 characters beside a project name that already
+        // wanted the row, and they hard-coded their own hues — `ADEColor.success`
+        // for working, where the one-hue rule makes work in flight blue and
+        // reserves green for finished.
+        //
+        // Gated here as well as inside the summary: a stack applies its spacing
+        // around an empty child, so a project with no chats at all would carry a
+        // 2pt hole above its lane count and sit a hair lower than a busy one.
+        // Bound to a local because that gate reads it a second time, and
+        // `stateCounts` walks the whole lane tree on each ask.
+        let stateCounts = presentation.stateCounts
+        if !stateCounts.isEmpty {
+          HubStateSummary(counts: stateCounts)
         }
 
         Text(presentation.metaLine)
@@ -710,9 +789,12 @@ struct HubLaneSection: View, Equatable {
 
   private var laneIcon: LaneIcon? { lane.icon.flatMap(LaneIcon.init(rawValue:)) }
 
+  private var stateCounts: [HubStateCount] { presentation.stateCounts }
+
   var body: some View {
     // Mirrors the Work tab's lane section header: chevron, lane logo mark, and
-    // the lane name in its own color, with a count badge on the trailing edge.
+    // the lane name in its own color, with the state breakdown on the trailing
+    // edge.
     VStack(alignment: .leading, spacing: 4) {
       Button(action: onToggle) {
         HStack(spacing: 8) {
@@ -727,12 +809,14 @@ struct HubLaneSection: View, Equatable {
             .foregroundStyle(laneTint)
             .lineLimit(1)
           Spacer(minLength: 6)
-          Text("\(presentation.totalCount)")
-            .font(.system(.caption2, design: .rounded).weight(.semibold).monospacedDigit())
-            .foregroundStyle(ADEColor.textMuted)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule())
+          // The whole trailing edge, in the same glyph+count language as the
+          // project header above it. It replaced a live summary followed by a
+          // grey total capsule, which printed a breakdown and then its own sum
+          // side by side and read as two competing numbers. Gated so a lane with
+          // no rows does not pay the HStack's 8pt for an empty child.
+          if !stateCounts.isEmpty {
+            HubStateSummary(counts: stateCounts)
+          }
         }
         .padding(.vertical, 4)
         .contentShape(Rectangle())
@@ -781,14 +865,17 @@ struct HubChatRow: View, Equatable {
   let onDelete: () -> Void
 
   var body: some View {
-    // Provider logo, a status dot, the chat name, and the relative timestamp.
-    // The status the roster already carried was never rendered here, so a row
-    // asking for input looked exactly like one that finished an hour ago.
+    // Provider logo and chat name on the leading edge; state and time together
+    // on the trailing edge.
+    //
+    // The state mark used to sit immediately after the provider logo, which put
+    // two glyphs side by side saying different things and left the state
+    // separated from the word and the timestamp it belongs with. All three
+    // status facts now live in one trailing cluster, so the row reads
+    // "who · what" then "how it is going".
     Button(action: onOpen) {
       HStack(spacing: 10) {
         WorkProviderBareLogo(provider: row.providerKey, fallbackSymbol: "terminal.fill", tint: ADEColor.textSecondary, size: compact ? 16 : 20)
-
-        HubStatusDot(status: row.statusString)
 
         Text(row.title)
           .font(.system(.footnote, design: .rounded).weight(.medium))
@@ -796,28 +883,36 @@ struct HubChatRow: View, Equatable {
           .lineLimit(1)
           .frame(maxWidth: .infinity, alignment: .leading)
 
-        if let status = hubChatStatusLabel(row.statusString) {
-          Text(status)
-            .font(.system(.caption2, design: .rounded).weight(.semibold))
-            .foregroundStyle(workChatStatusTint(row.statusString))
-            .lineLimit(1)
-            .fixedSize()
-        }
+        // One cluster, tight spacing: word, mark, time. `.fixedSize()` on the
+        // whole group is what stops a long chat name from eating the state —
+        // the title's flexible frame above is the only child allowed to give.
+        HStack(spacing: 5) {
+          if let status = hubChatStateLabel(row.stateGroup) {
+            Text(status)
+              .font(.system(.caption2, design: .rounded).weight(.semibold))
+              .foregroundStyle(activityToneColor(row.stateGroup.tone))
+              .lineLimit(1)
+          }
 
-        if let activity = row.activityLabel {
-          Text(activity)
-            .font(.system(.caption2, design: .rounded))
-            .foregroundStyle(ADEColor.textMuted)
+          HubStateGlyph(group: row.stateGroup)
+
+          if let activity = row.activityLabel {
+            Text(activity)
+              .font(.system(.caption2, design: .rounded))
+              .foregroundStyle(ADEColor.textMuted)
+          }
         }
+        .fixedSize()
       }
       .padding(.horizontal, 8)
       .padding(.vertical, compact ? 5 : 7)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(
-      hubChatStatusLabel(row.statusString).map { "\(row.title), \($0)" } ?? row.title
-    )
+    // Always the state word, including the resting ones the row shows as a glyph
+    // alone. The button overrides its children's labels, so a mark with no word
+    // beside it is silent unless the word is stated here.
+    .accessibilityLabel("\(row.title), \(row.stateGroup.label)")
     .accessibilityHint(row.chat.isChatTool ? "Opens chat." : "Opens session.")
     // The hub uses a scrolling LazyVStack (not a List), where SwiftUI
     // `.swipeActions` are unavailable — so pin/archive/close are offered through
@@ -837,26 +932,6 @@ struct HubChatRow: View, Equatable {
 
   static func == (lhs: HubChatRow, rhs: HubChatRow) -> Bool {
     lhs.row == rhs.row && lhs.compact == rhs.compact
-  }
-}
-
-/// Row status in one word, and only when it says something. A resting chat
-/// gets its dot and nothing else — the timestamp already tells that story.
-func hubChatStatusLabel(_ status: String) -> String? {
-  switch status {
-  case "awaiting-input": return "Needs you"
-  case "active": return "Working"
-  default: return nil
-  }
-}
-
-struct HubStatusDot: View {
-  let status: String
-  var body: some View {
-    Circle()
-      .fill(workChatStatusTint(status))
-      .frame(width: 8, height: 8)
-      .accessibilityHidden(true)
   }
 }
 
@@ -1119,7 +1194,14 @@ func hubRelativeTimestamp(_ value: String?) -> String? {
   guard let date = HubTimestampFormatters.fractional.date(from: value)
     ?? HubTimestampFormatters.plain.date(from: value)
   else { return nil }
-  let label = HubTimestampFormatters.relative.localizedString(for: date, relativeTo: Date())
+  // Clamped to the past. The host stamps `lastActivityAt` from its own clock,
+  // so a phone running a second or two behind gets a future date and
+  // `RelativeDateTimeFormatter` renders it "in 0s" — a live session reading as
+  // though it starts in the future. Anything at or ahead of now is "now".
+  let now = Date()
+  let label = date >= now.addingTimeInterval(-1)
+    ? "now"
+    : HubTimestampFormatters.relative.localizedString(for: date, relativeTo: now)
   hubRelativeTimestampCache.setObject(label as NSString, forKey: cacheKey)
   return label
 }

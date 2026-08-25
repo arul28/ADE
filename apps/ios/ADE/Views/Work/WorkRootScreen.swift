@@ -643,7 +643,7 @@ struct WorkRootScreen: View {
         }
       }
       .listStyle(.plain)
-      .listSectionSpacing(.compact)
+      .listSectionSpacing(.custom(Self.workGroupSectionSpacing))
       .scrollContentBackground(.hidden)
       .scrollDismissesKeyboard(.interactively)
       .contentMargins(.bottom, workRootBottomTabBarScrollMargin, for: .scrollContent)
@@ -687,6 +687,10 @@ struct WorkRootScreen: View {
             // there are none. Opens the pane directly for a single plugin, a
             // menu for several — the slot is ~38pt and cannot grow per install.
             PluginEntryMenuButton(syncService: syncService)
+            // Cursor Cloud fleet button, immediately left of the Linear one;
+            // gated on an active project plus the host advertising the fleet
+            // commands; the pane resolves connection state itself.
+            CursorCloudPaneToolbarButton()
           }
         }
       }
@@ -986,6 +990,11 @@ struct WorkRootScreen: View {
   /// drawn in that gutter, so it costs no card width of its own.
   private static let workLaneRailGutter: CGFloat = 9
 
+  /// One deliberate gap between adjacent lane/status sections. Card-to-card
+  /// breathing room stays inside each row; this value owns only the transition
+  /// between groups, including a headerless singleton and the next grouped lane.
+  private static let workGroupSectionSpacing: CGFloat = 16
+
   /// Absolute leading indent of a nested child-shell block, measured from the
   /// list's own 16pt margin. Held constant whether or not a lane rail is present
   /// so a nested shell never reads as double-indented under the rail.
@@ -1041,7 +1050,6 @@ struct WorkRootScreen: View {
   private func workSessionGroupSectionWithHeader(_ group: WorkSessionGroup) -> some View {
     let isLaneDeleting = group.laneId.map(syncService.pendingLaneDeletionIds.contains) ?? false
     let collapsed = workGroupIsCollapsed(group)
-    let isQuietRow = group.isQuiet && collapsed
     // Real lane sections get the accent rail; status/time headers span multiple
     // lanes, so a single lane color would be a lie there.
     let railColor: Color? = group.laneId == nil
@@ -1114,9 +1122,9 @@ struct WorkRootScreen: View {
       .listRowBackground(ADEColor.pageBackground)
       .listRowSeparator(.hidden)
       .listRowInsets(EdgeInsets(
-        top: isQuietRow ? 2 : 8,
+        top: 0,
         leading: 16,
-        bottom: isQuietRow ? 0 : 2,
+        bottom: 0,
         trailing: 16
       ))
     }
@@ -1241,6 +1249,9 @@ struct WorkRootScreen: View {
       onKeepActive: keepSessionActive,
       onSnooze: snoozeSession,
       onWake: wakeSession,
+      onDemoteToPeer: demoteSessionToPeer,
+      onPromoteToSubagent: promoteSessionToSubagent,
+      spawnKindUpdateAvailable: syncService.supportsSpawnKindUpdate,
       deleteSessionAvailable: syncService.supportsWorkSessionDeletion,
       onDeleteSession: deleteWorkSession,
       onOpenInWeb: openSessionInWeb,

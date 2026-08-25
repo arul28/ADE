@@ -1,0 +1,27 @@
+---
+title: "v1.2.59"
+description: "Release notes for ADE v1.2.59 - August 14, 2026"
+---
+
+ADE now keeps machines, chats, and activity in sync across desktop, web, CLI, and iOS. This release adds account-aware machine connections, Cursor Cloud routing, a desktop-parity work list, and safer recovery when authentication or runtime connectivity goes wrong.
+
+---
+
+## Connections and sync
+
+- **Manage your ADE machines from one place.** Account connections now show the machines linked to your account, with clearer pairing, rename, and recovery states across desktop and web.
+- **Cursor Cloud is connected end to end.** Cursor Cloud sessions can mirror into ADE, while inbound sync is accepted only when the target machine is present and authorized.
+- **Sync failures explain themselves.** Connection errors distinguish authentication, pairing, and runtime conditions instead of collapsing into a generic failure.
+- **Credential recovery is safer.** The keychain repair path now handles unreadable or stale material without silently losing the account session.
+
+## Work and chat
+
+- **ADE Code gets a desktop-parity work list.** The terminal client now groups sessions and work rows with the same structure used by desktop.
+- **Model choices follow the machine running the chat.** The model picker refreshes after Cursor authentication and no longer offers a machine's models to chats running elsewhere.
+- **Subagents show their actual model.** Chat info reports each subagent's selected model, with inherited values used only when no explicit model exists; human chats are no longer silently demoted.
+- **Mobile terminal sessions rehydrate correctly.** iOS can rebuild a CLI session from the live screen state instead of showing an incomplete terminal after reconnecting.
+
+## Activity
+
+- **Activity state is consistent everywhere.** Desktop surfaces, the iOS hub and widgets, and push notifications now share the same canonical activity state and presentation.
+

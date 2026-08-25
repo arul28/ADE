@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
+import { projectBindingKey } from "../shared/projectIdentity";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
@@ -31,7 +32,14 @@ import {
   REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
 } from "./pinnedRuntimeEvents";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
-import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type { ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
+import type {
+  DiagnosticReportPayload,
+  DiagnosticReportRequestPayload,
+  DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendResult,
+  DiagnosticsSharingStatus,
+} from "../shared/types/diagnostics";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
@@ -79,6 +87,9 @@ import type {
   AppNavigationRequest,
   AppZoomCommand,
   AutoUpdatePreferences,
+  KeepAwakeFixResult,
+  KeepAwakeLevel,
+  KeepAwakeSnapshot,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -126,6 +137,9 @@ import type {
   PiAuthStatusEvent,
   PiLoginMethod,
   PiLoginProvider,
+  CursorSdkAuthEvent,
+  CursorSdkAuthStatus,
+  CursorSdkLoginResult,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -138,6 +152,12 @@ import type {
   CursorCloudRepository,
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
+  CursorCloudWatchMirrorRequest,
+  CursorCloudFleetResult,
+  CursorCloudFleetEvent,
+  CursorCloudPullIntoLaneResult,
+  CursorAgentUsage,
+  CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
   OpenCodeRuntimeSnapshot,
@@ -233,6 +253,10 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionListArgs,
   ExternalSessionSummary,
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
+  ExternalSessionDetailUpdatedEvent,
+  ExternalSessionDetailWatchArgs,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -267,6 +291,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
@@ -278,6 +303,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSessionRepairResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountPairMachineProgress,
@@ -349,6 +375,8 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexResetMemoryArgs,
+  AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCreateArgs,
   AgentChatLaunchArgs,
@@ -451,9 +479,11 @@ import type {
   OnboardingDetectionResult,
   OnboardingHelpState,
   OnboardingStatus,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   ListOverlapsArgs,
   ListLanesArgs,
@@ -661,9 +691,12 @@ import type {
   IosSimulatorInspectPointArgs,
   IosSimulatorInspectResult,
   IosSimulatorLaunchArgs,
+  IosSimulatorLaunchResult,
   IosSimulatorLaunchTarget,
   IosSimulatorListLaunchTargetsArgs,
+  IosSimulatorPrivacyPane,
   IosSimulatorScreenshot,
+  IosSimulatorScreenshotArgs,
   IosSimulatorSelectResult,
   IosSimulatorSession,
   IosSimulatorShutdownArgs,
@@ -671,8 +704,9 @@ import type {
   IosSimulatorStartStreamArgs,
   IosSimulatorStatus,
   IosSimulatorStreamStatus,
+  IosSimulatorWindowCaptureSessionHint,
+  IosSimulatorWindowSourcesResult,
   IosSimulatorWindowState,
-  IosSimulatorWindowSource,
   AppControlClickArgs,
   AppControlConnectArgs,
   AppControlEventPayload,
@@ -758,6 +792,7 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
 
 type ShortIpcCache<T> = {
   clear: () => void;
@@ -865,6 +900,27 @@ function parseIpcCacheArgs<T>(key: string, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+// The preload process is shared by every machine a window talks to, so a read
+// cache keyed by arguments alone is machine-blind: once an action can carry a
+// pin, one machine's rows could be served to — or overwritten by — another's.
+// Every cached read is namespaced by the binding it was resolved against.
+const BOUND_READ_CACHE_KEY_SEPARATOR = "\u0000";
+
+function boundReadCacheKey(args?: unknown): string {
+  const bindingKey = currentProjectBinding
+    ? projectBindingKey(currentProjectBinding)
+    : "";
+  return `${bindingKey}${BOUND_READ_CACHE_KEY_SEPARATOR}${serializeIpcCacheArgs(args)}`;
+}
+
+function parseBoundReadCacheArgs<T>(key: string, fallback: T): T {
+  const separator = key.indexOf(BOUND_READ_CACHE_KEY_SEPARATOR);
+  return parseIpcCacheArgs<T>(
+    separator < 0 ? key : key.slice(separator + 1),
+    fallback,
+  );
 }
 
 const projectConfigSnapshotCache = createShortIpcCache<ProjectConfigSnapshot>(
@@ -995,7 +1051,7 @@ const agentChatSummaryCache =
     1_000,
   );
 
-const iosSimulatorStatusCache = createShortIpcCache<IosSimulatorStatus>(
+const iosSimulatorStatusCache = createKeyedShortIpcCache<IosSimulatorStatus>(
   () =>
     callProjectRuntimeActionOr("ios_simulator", "getStatus", {}, () =>
       ipcRenderer.invoke(IPC.iosSimulatorGetStatus),
@@ -1003,7 +1059,7 @@ const iosSimulatorStatusCache = createShortIpcCache<IosSimulatorStatus>(
   2_000,
 );
 
-const iosSimulatorDevicesCache = createShortIpcCache<IosSimulatorDevice[]>(
+const iosSimulatorDevicesCache = createKeyedShortIpcCache<IosSimulatorDevice[]>(
   () =>
     callProjectRuntimeActionOr("ios_simulator", "listDevices", {}, () =>
       ipcRenderer.invoke(IPC.iosSimulatorListDevices),
@@ -1011,7 +1067,10 @@ const iosSimulatorDevicesCache = createShortIpcCache<IosSimulatorDevice[]>(
   2_000,
 );
 
-const appControlStatusCache = createShortIpcCache<AppControlStatus>(
+// Keyed by binding only (the read takes no arguments): an unpinned status read
+// resolves against whatever machine this window is bound to, so the previous
+// machine's session must not answer for the new one inside the TTL.
+const appControlStatusCache = createKeyedShortIpcCache<AppControlStatus>(
   () =>
     callProjectRuntimeActionOr("app_control", "getStatus", {}, () =>
       ipcRenderer.invoke(IPC.appControlGetStatus),
@@ -1019,6 +1078,9 @@ const appControlStatusCache = createShortIpcCache<AppControlStatus>(
   1_000,
 );
 
+// Deliberately NOT binding-keyed: only the unpinned read is cached, and the
+// unpinned read always lands on this window's own main process, which owns the
+// browser view. A pinned read bypasses the cache entirely.
 const builtInBrowserStatusCache = createKeyedShortIpcCache<BuiltInBrowserStatus>(
   (key) => {
     const args = parseIpcCacheArgs<BuiltInBrowserProjectScopeArgs>(key, {});
@@ -1055,7 +1117,7 @@ const diffChangesCache = createKeyedShortIpcCache<DiffChanges>(
   (key) =>
     ipcRenderer.invoke(
       IPC.diffGetChanges,
-      parseIpcCacheArgs<GetDiffChangesArgs>(key, {} as GetDiffChangesArgs),
+      parseBoundReadCacheArgs<GetDiffChangesArgs>(key, {} as GetDiffChangesArgs),
     ),
   2_000,
 );
@@ -1064,7 +1126,7 @@ const gitBranchesCache = createKeyedShortIpcCache<GitBranchSummary[]>(
   (key) =>
     ipcRenderer.invoke(
       IPC.gitListBranches,
-      parseIpcCacheArgs<GitListBranchesArgs>(key, {} as GitListBranchesArgs),
+      parseBoundReadCacheArgs<GitListBranchesArgs>(key, {} as GitListBranchesArgs),
     ),
   2_000,
 );
@@ -1349,10 +1411,11 @@ async function callLocalProjectActionStrictIfBound<T>(
 }
 
 // Chat actions that mutate runtime state. Only these are gated by the
-// project-transition guard: read-only chat queries (e.g. `listSessions`,
-// `getSessionSummary`, `getAvailableModels`, `getChatEventHistory`) must be
-// allowed to fall through to IPC while a project switch is in flight, so the
-// UI can render summaries and history during the transition.
+// project-transition guard. Most read-only chat queries (e.g. `listSessions`,
+// `getSessionSummary`, `getChatEventHistory`) fall through to IPC while a
+// project switch is in flight so the UI can keep rendering. Machine
+// inventories (`modelCatalog`, `getAvailableModels`) stay on the runtime —
+// Electron's in-process registry is not that machine's OpenCode list.
 const MUTATING_CHAT_ACTIONS = new Set<string>([
   "sendMessage",
   "respondToInput",
@@ -1392,11 +1455,21 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "setCodexGoal",
   "setCodexGoalStatus",
   "clearCodexGoal",
+  "resetCodexMemory",
+  "terminateCodexBackgroundTerminal",
   // Private draft state must never fall through to the process-global IPC
   // database while the owning project binding is changing.
   "listPromptStashes",
   "createPromptStash",
   "deletePromptStash",
+]);
+
+// Live model inventories (OpenCode, ollama, LM Studio, cursor-agent) are facts
+// about one machine. Falling through to Electron during a project-tab switch
+// answers with the window process's registry, not that machine's OpenCode.
+const MACHINE_INVENTORY_CHAT_ACTIONS = new Set<string>([
+  "modelCatalog",
+  "getAvailableModels",
 ]);
 
 const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
@@ -1512,7 +1585,14 @@ async function callProjectRuntimeActionIfBound<T>(
   }
   // During a project transition, let read-only chat calls fall through to
   // their IPC fallback instead of binding to a possibly-stale runtime.
-  if (freshBinding && !isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
+  // Model catalogs must not: Electron's in-process registry is not the
+  // selected machine's OpenCode inventory.
+  if (
+    freshBinding
+    && !isMutatingChatAction
+    && projectRuntimeTransitionDepth > 0
+    && !MACHINE_INVENTORY_CHAT_ACTIONS.has(action)
+  ) {
     return { handled: false };
   }
   let rebindAttempts = 0;
@@ -1629,6 +1709,45 @@ function callPrReadRuntimeActionOr<T>(
   return callPinnedOrBoundRuntimeActionOr(pin, "pr", action, request, local);
 }
 
+// The simulator, the controlled app, and a run's captured artifacts all live on
+// the machine that owns the lane, so every one of these calls is per-lane in
+// exactly the way `callPrReadRuntimeActionOr` documents. Domain-bound wrappers
+// keep the domain string from being retyped at ~50 call sites (where a typo is
+// a silent "unknown action" at runtime) while leaving each method statically
+// greppable by name.
+function callIosSimulatorActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(pin, "ios_simulator", action, request, local);
+}
+
+function callAppControlActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(pin, "app_control", action, request, local);
+}
+
+function callComputerUseArtifactActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(
+    pin,
+    "computer_use_artifacts",
+    action,
+    request,
+    local,
+  );
+}
+
 async function callProjectFileRuntimeActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
@@ -1651,6 +1770,33 @@ async function callProjectFileRuntimeActionOr<T>(
   return localRuntime.handled ? localRuntime.result : local();
 }
 
+// A file lives on the disk of the machine that owns the lane, so a file read or
+// write is a per-machine fact exactly like a chat, a terminal, or a PR record —
+// and takes a pin for the same reason. Without one, every file call resolves
+// against whichever machine the project tab happens to be bound to, so a file
+// belonging to a session on another machine read the wrong machine's bytes (or
+// failed outright) until the tab was rebound to that machine.
+//
+// `pin: null` is not "no opinion" — it means "the machine this project tab is
+// bound to", which is exactly right for the Files tab, the window-scoped
+// surface. Every call site states which of the two it wants.
+//
+// Writes are pinned for the same reason reads are: a file on another connected
+// machine is fully editable, so writeText/createFile/rename/delete must land on
+// the machine that owns the bytes, not on whatever machine the tab is showing.
+// A pinned call is explicitly targeted work, so — exactly as
+// `callPinnedRuntimeAction` documents — it bypasses the project-transition
+// guard, which only protects the ambiguous *active* binding.
+function callPinnedFileActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  if (pin) return callPinnedRuntimeAction<T>(pin, "file", action, request);
+  return callProjectFileRuntimeActionOr<T>(action, request, local);
+}
+
 function isExternalFilesWorkspaceId(workspaceId: string | null | undefined): boolean {
   return typeof workspaceId === "string" && workspaceId.startsWith(EXTERNAL_FILES_WORKSPACE_ID_PREFIX);
 }
@@ -1660,11 +1806,19 @@ function callFilesWorkspaceActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
+  pin?: OpenProjectBinding | null,
 ): Promise<T> {
+  // An `external-local:*` workspace is a loose folder this desktop opened from
+  // its own Finder/drag-drop. It is registered only in THIS process's file
+  // service and its root path is meaningful only on this disk, so it is
+  // local-only by construction: no runtime — bound or pinned — can resolve it.
+  // The pin is therefore deliberately dropped here rather than merely never
+  // being supplied, so a caller that pins every file call uniformly still gets
+  // the correct local behaviour for these workspaces.
   if (isExternalFilesWorkspaceId(workspaceId)) {
     return local();
   }
-  return callProjectFileRuntimeActionOr<T>(action, request, local);
+  return callPinnedFileActionOr<T>(pin, action, request, local);
 }
 
 async function callRemoteProjectSyncIfBound<T>(
@@ -1763,6 +1917,7 @@ const remoteOpenCodeOAuthStatusCallbacks = new Set<
   (payload: OpenCodeOAuthStatusEvent) => void
 >();
 const remotePiAuthStatusCallbacks = new Set<(payload: PiAuthStatusEvent) => void>();
+const remoteCursorAuthStatusCallbacks = new Set<(payload: CursorSdkAuthEvent) => void>();
 const remoteLaneDiagnosticsEventCallbacks = new Set<
   (payload: RuntimeDiagnosticsEvent) => void
 >();
@@ -1888,6 +2043,11 @@ const subscribeLocalPiAuthStatusEvents =
     IPC.aiPiAuthStatus,
     "Pi sign-in status",
   );
+const subscribeLocalCursorAuthStatusEvents =
+  createLocalIpcEventSubscription<CursorSdkAuthEvent>(
+    IPC.aiCursorAuthEvent,
+    "Cursor sign-in status",
+  );
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
@@ -1963,6 +2123,7 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteLaneOAuthEventCallbacks.size > 0 ||
     remoteOpenCodeOAuthStatusCallbacks.size > 0 ||
     remotePiAuthStatusCallbacks.size > 0 ||
+    remoteCursorAuthStatusCallbacks.size > 0 ||
     remoteLaneDiagnosticsEventCallbacks.size > 0 ||
     remotePtyDataEventCallbacks.size > 0 ||
     remotePtyExitEventCallbacks.size > 0 ||
@@ -2336,6 +2497,19 @@ function dispatchRemoteRuntimeEventPayload(
           cb(event as unknown as PiAuthStatusEvent);
         } catch (error) {
           console.error("preload remote Pi sign-in status listener failed", error);
+        }
+      }
+    }
+  }
+
+  if (payload.kind === "cursorAuthStatus" && isRecord(payload.event)) {
+    const event = payload.event;
+    if (event.providerId === "cursor" && typeof event.state === "string") {
+      for (const cb of [...remoteCursorAuthStatusCallbacks]) {
+        try {
+          cb(event as unknown as CursorSdkAuthEvent);
+        } catch (error) {
+          console.error("preload remote Cursor sign-in status listener failed", error);
         }
       }
     }
@@ -2909,6 +3083,16 @@ function subscribeRemotePiAuthStatusEvents(
   };
 }
 
+function subscribeRemoteCursorAuthStatusEvents(
+  cb: (payload: CursorSdkAuthEvent) => void,
+): () => void {
+  remoteCursorAuthStatusCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteCursorAuthStatusCallbacks.delete(cb);
+  };
+}
+
 function subscribeRemoteLaneDiagnosticsEvents(
   cb: (payload: RuntimeDiagnosticsEvent) => void,
 ): () => void {
@@ -3261,7 +3445,23 @@ function subscribeComputerUseEvents(
 
 function subscribeIosSimulatorEvents(
   cb: (payload: IosSimulatorEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  // A pinned panel drives the simulator on the chat's machine, so it has to
+  // hear that machine's session events. Without this it got status reads and
+  // no live updates, and the bound machine's stream would describe a different
+  // simulator entirely.
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<IosSimulatorEventPayload>(
+      payload,
+      "ios_simulator_event",
+    ),
+    cb,
+    "iOS simulator",
+    clearIosSimulatorStatusCaches,
+  );
+  if (removePinned) return removePinned;
   const removeLocal = iosSimulatorEventFanout(cb);
   const removeRemote = subscribeRemoteIosSimulatorEvents(cb);
   return () => {
@@ -3272,13 +3472,53 @@ function subscribeIosSimulatorEvents(
 
 function subscribeAppControlEvents(
   cb: (payload: AppControlEventPayload) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<AppControlEventPayload>(
+      payload,
+      "app_control_event",
+    ),
+    cb,
+    "App Control",
+    () => appControlStatusCache.clear(),
+  );
+  if (removePinned) return removePinned;
   const removeLocal = appControlEventFanout(cb);
   const removeRemote = subscribeRemoteAppControlEvents(cb);
   return () => {
     removeRemote();
     removeLocal();
   };
+}
+
+function subscribeBuiltInBrowserEvents(
+  cb: (payload: BuiltInBrowserEventPayload) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  // Unlike every sibling panel, the built-in browser is hosted by THIS desktop's
+  // main process (it owns a WebContentsView); the runtime daemon only proxies
+  // calls into it over the desktop bridge socket. So a pin on another *local*
+  // checkout still drives this machine's browser and must keep reading the local
+  // IPC stream. A pin on another *machine* is the case that breaks: those calls
+  // land on that desktop's browser, so this window's local stream describes a
+  // browser the panel is not driving, and the pinned runtime stream is the only
+  // one that can describe it.
+  if (pin?.kind === "remote") {
+    const removePinned = subscribePinnedProjectRuntimeEvents(
+      pin,
+      (payload) => toWrappedEvent<BuiltInBrowserEventPayload>(
+        payload,
+        "built_in_browser_event",
+      ),
+      cb,
+      "built-in browser",
+      () => builtInBrowserStatusCache.clear(),
+    );
+    if (removePinned) return removePinned;
+  }
+  return builtInBrowserEventFanout(cb);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -3542,7 +3782,11 @@ const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
  */
 const remotePluginChangeCallbacks = new Set<(payload: PluginChangeEvent) => void>();
 
-contextBridge.exposeInMainWorld("ade", {
+// The bridge object is checked against the declared `Window["ade"]` contract so
+// a preload signature that drifts from global.d.ts — a missing `pin` parameter,
+// most of all — is a compile error instead of a renderer that silently talks to
+// the wrong machine.
+const adeBridge = {
   analytics: {
     capture: async (
       input: Omit<ProductAnalyticsCapture, "surface">,
@@ -3925,11 +4169,58 @@ contextBridge.exposeInMainWorld("ade", {
       };
     },
   },
+  diagnostics: {
+    openIssue: (
+      context: DiagnosticReportRequestPayload,
+    ): Promise<DiagnosticReportPayload> =>
+      ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
+    autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
+    sendManual: (): Promise<DiagnosticsManualSendResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsSendManual),
+    getSharing: (): Promise<DiagnosticsSharingStatus> =>
+      ipcRenderer.invoke(IPC.diagnosticsGetSharing),
+    setSharing: (enabled: boolean): Promise<DiagnosticsSharingStatus> =>
+      ipcRenderer.invoke(IPC.diagnosticsSetSharing, { enabled }),
+    revealReport: (reportPath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsRevealReport, { reportPath }),
+    /**
+     * "I have shown these to the user." Main stops offering them; anything it
+     * does not hear about is offered again next time a renderer subscribes.
+     */
+    ackAutoSent: (references: string[]): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsAckAutoSent, { references }),
+    onAutoSent: (cb: (payload: DiagnosticsAutoSentPayload) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: DiagnosticsAutoSentPayload,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.diagnosticsAutoSent, listener);
+      // Subscribing is what asks for any send the brain made while no window
+      // was listening, so a headless auto-send still gets its toast and nothing
+      // has to poll for one. Registered before the call, so the reply cannot
+      // arrive ahead of the listener.
+      void ipcRenderer.invoke(IPC.diagnosticsFlushAutoSent).catch(() => undefined);
+      return () => {
+        ipcRenderer.removeListener(IPC.diagnosticsAutoSent, listener);
+      };
+    },
+  },
   recovery: {
     diagnose: (projectRoot: string): Promise<ProjectRecoveryDiagnosis> =>
       ipcRenderer.invoke(IPC.recoveryDiagnose, { projectRoot }),
     repair: (projectRoot: string): Promise<ProjectRepairReport> =>
       ipcRenderer.invoke(IPC.recoveryRepair, { projectRoot }),
+    onRepairStep: (
+      cb: (payload: { projectRoot: string; step: RepairStepResult }) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: { projectRoot: string; step: RepairStepResult },
+      ) => cb(payload);
+      ipcRenderer.on(IPC.recoveryRepairStep, listener);
+      return () => ipcRenderer.removeListener(IPC.recoveryRepairStep, listener);
+    },
   },
   remoteRuntime: {
     listTargets: async (): Promise<RemoteRuntimeTarget[]> =>
@@ -4197,8 +4488,10 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ai", "getOpenCodeRuntimeDiagnostics", {}, () =>
         ipcRenderer.invoke(IPC.aiGetOpenCodeRuntimeDiagnostics),
       ),
-    isOpenCodeInstalled: async (): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> =>
-      callProjectRuntimeActionOr("ai", "isOpenCodeInstalled", {}, () =>
+    isOpenCodeInstalled: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ installed: boolean; source: "user-installed" | "tools-cache" | "bundled" | "missing" }> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "isOpenCodeInstalled", {}, () =>
         ipcRenderer.invoke(IPC.aiIsOpenCodeInstalled),
       ),
     // Machine-local, not project-scoped: the tools cache lives beside this
@@ -4353,6 +4646,38 @@ contextBridge.exposeInMainWorld("ade", {
         removeLocal();
       };
     },
+    cursorAuthStatus: async (): Promise<CursorSdkAuthStatus> =>
+      callProjectRuntimeActionOr("ai", "cursorAuthStatus", {}, () =>
+        ipcRenderer.invoke(IPC.aiCursorAuthStatus),
+      ),
+    cursorAuthLogin: async (): Promise<CursorSdkLoginResult> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "cursorAuthLogin", {}, () =>
+            ipcRenderer.invoke(IPC.aiCursorAuthLogin),
+          ),
+      ),
+    cursorAuthLogout: async (): Promise<{ ok: boolean; error?: string }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "cursorAuthLogout", {}, () =>
+            ipcRenderer.invoke(IPC.aiCursorAuthLogout),
+          ),
+      ),
+    cursorAuthCancel: async (): Promise<void> =>
+      callProjectRuntimeActionOr("ai", "cursorAuthCancel", {}, () =>
+        ipcRenderer.invoke(IPC.aiCursorAuthCancel),
+      ),
+    onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void) => {
+      const removeLocal = subscribeLocalCursorAuthStatusEvents(cb);
+      const removeRemote = subscribeRemoteCursorAuthStatusEvents(cb);
+      return () => {
+        removeRemote();
+        removeLocal();
+      };
+    },
     cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>
       callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", {}, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),
@@ -4381,6 +4706,13 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<CursorCloudCreateRunResult> =>
       callProjectRuntimeActionOr("ai", "createCursorCloudRun", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudCreateRun, args),
+      ),
+    cursorCloudGetLaneSecretNames: async (laneId: string): Promise<string[]> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "getCursorCloudLaneSecretNames",
+        { args: { laneId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudGetLaneSecretNames, { laneId }),
       ),
     cursorCloudArchiveAgent: async (agentId: string): Promise<void> =>
       callProjectRuntimeActionOr(
@@ -4411,6 +4743,15 @@ contextBridge.exposeInMainWorld("ade", {
         "getCursorCloudAgent",
         { args: { agentId } },
         () => ipcRenderer.invoke(IPC.aiCursorCloudGetAgent, { agentId }),
+      ),
+    cursorCloudGetUsage: async (
+      args: CursorAgentUsageRequest,
+    ): Promise<CursorAgentUsage> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "getCursorAgentUsage",
+        { args },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudGetUsage, args),
       ),
     cursorCloudStreamRun: async (
       args: CursorCloudStreamRunRequest,
@@ -4456,6 +4797,63 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("ai", "openCursorCloudChat", { args }, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
       ),
+    cursorCloudWatchMirror: async (
+      args: CursorCloudWatchMirrorRequest,
+    ): Promise<void> =>
+      callProjectRuntimeActionOr("ai", "watchCursorCloudMirror", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudWatchMirror, args),
+      ),
+    cursorCloudFleet: async (
+      args?: { includeArchived?: boolean; limit?: number },
+    ): Promise<CursorCloudFleetResult> =>
+      callProjectRuntimeActionOr("ai", "getCursorCloudFleet", { args: args ?? {} }, () =>
+        ipcRenderer.invoke(IPC.aiCursorCloudFleet, args ?? {}),
+      ),
+    cursorCloudPullIntoLane: async (
+      agentId: string,
+    ): Promise<CursorCloudPullIntoLaneResult> => {
+      const result = await callProjectRuntimeActionOr(
+        "ai",
+        "pullCursorCloudAgentIntoLane",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudPullIntoLane, { agentId }),
+      );
+      // Pull can create a lane (importBranch) and moves refs; lane caches must
+      // not serve pre-pull answers.
+      clearGitReadCaches();
+      return result;
+    },
+    cursorCloudResolveLane: async (
+      agentId: string,
+    ): Promise<{ laneId: string; laneName: string; created: boolean }> => {
+      const result = await callProjectRuntimeActionOr(
+        "ai",
+        "resolveCursorCloudAgentLane",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudResolveLane, { agentId }),
+      );
+      if (result.created) clearGitReadCaches();
+      return result;
+    },
+    cursorCloudStopRun: async (
+      agentId: string,
+    ): Promise<{ stopped: boolean }> =>
+      callProjectRuntimeActionOr(
+        "ai",
+        "stopCursorCloudAgentRun",
+        { args: { agentId } },
+        () => ipcRenderer.invoke(IPC.aiCursorCloudStopRun, { agentId }),
+      ),
+    onCursorCloudFleetEvent: (cb: (event: CursorCloudFleetEvent) => void): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: CursorCloudFleetEvent,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.aiCursorCloudFleetEvent, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC.aiCursorCloudFleetEvent, listener);
+      };
+    },
   },
   audio: {
     // Hand captured mono PCM to the main process as a transferable ArrayBuffer;
@@ -5350,6 +5748,29 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("lane", "listLinearIssuesForLaneSessions", { args }, () =>
         ipcRenderer.invoke(IPC.lanesListLinearIssuesForLaneSessions, args),
       ),
+    attachGitHubIssueToSession: async (args: {
+      chatSessionId: string;
+      issues: LaneGitHubIssue[];
+      role?: string;
+      source?: string;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+    }): Promise<SessionGitHubIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "attachGitHubIssueToSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesAttachGitHubIssueToSession, args),
+      ),
+    detachGitHubIssueFromSession: async (args: { chatSessionId: string; issueId?: string }): Promise<boolean> =>
+      callProjectRuntimeActionOr("lane", "detachGitHubIssueFromSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDetachGitHubIssueFromSession, args),
+      ),
+    listGitHubIssuesForSession: async (args: { chatSessionId: string }): Promise<SessionGitHubIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listGitHubIssuesForSession", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListGitHubIssuesForSession, args),
+      ),
+    listGitHubIssuesForLaneSessions: async (args: { laneId: string }): Promise<SessionGitHubIssueLink[]> =>
+      callProjectRuntimeActionOr("lane", "listGitHubIssuesForLaneSessions", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesListGitHubIssuesForLaneSessions, args),
+      ),
     unlinkLinearIssues: async (args: { laneId: string; issueId?: string }): Promise<boolean> =>
       callProjectRuntimeActionOr("lane", "unlinkLinearIssues", { args }, () =>
         ipcRenderer.invoke(IPC.lanesUnlinkLinearIssues, args),
@@ -6016,7 +6437,10 @@ contextBridge.exposeInMainWorld("ade", {
       >("chat", "listSessions", {
         argsList: [
           args.laneId,
-          { includeAutomation: args.includeAutomation === true },
+          {
+            includeAutomation: args.includeAutomation === true,
+            includeIdentity: args.includeIdentity === true,
+          },
         ],
       });
       return runtime.handled
@@ -6151,20 +6575,23 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     prepareCrossMachineHandoff: async (
       args: AgentChatPrepareCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatPrepareCrossMachineHandoffResult> =>
-      callProjectRuntimeActionOr("chat", "prepareCrossMachineHandoff", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "prepareCrossMachineHandoff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatPrepareCrossMachineHandoff, args),
       ),
     validateCrossMachineSource: async (
       args: AgentChatValidateCrossMachineSourceArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<void> =>
-      callProjectRuntimeActionOr("chat", "validateCrossMachineSource", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "validateCrossMachineSource", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatValidateCrossMachineSource, args),
       ),
     markCrossMachineHandoff: async (
       args: AgentChatMarkCrossMachineHandoffArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<void> =>
-      callProjectRuntimeActionOr("chat", "markCrossMachineHandoff", { args }, () =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "markCrossMachineHandoff", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatMarkCrossMachineHandoff, args),
       ),
     send: async (args: AgentChatSendArgs, pin?: OpenProjectBinding | null): Promise<void> => {
@@ -6386,9 +6813,23 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatModels, args);
     },
+    // Pinned exactly like `models`: the catalog enumerates ollama/LM Studio
+    // endpoints, the installed cursor-agent and the opencode inventory, all of
+    // which are facts about the machine that serves the action. A composer
+    // targeting another machine must read THAT machine's catalog rather than
+    // the one this window's project tab happens to be bound to.
     modelCatalog: async (
       args?: AgentChatModelCatalogArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AgentChatModelCatalog> => {
+      if (pin) {
+        return callPinnedRuntimeAction<AgentChatModelCatalog>(
+          pin,
+          "chat",
+          "modelCatalog",
+          { args: args ?? {} },
+        );
+      }
       const runtime = await callProjectRuntimeActionIfBound<
         AgentChatModelCatalog
       >("chat", "modelCatalog", { args: args ?? {} });
@@ -6856,6 +7297,22 @@ contextBridge.exposeInMainWorld("ade", {
         agentChatSummaryCache.clear();
         return goal as CodexThreadGoal | null;
       },
+      resetMemory: async (
+        args: AgentChatCodexResetMemoryArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<void> => {
+        await callPinnedOrBoundRuntimeActionOr(pin, "chat", "resetCodexMemory", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexResetMemory, args),
+        );
+      },
+      terminateBackgroundTerminal: async (
+        args: AgentChatCodexTerminateBackgroundTerminalArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<void> => {
+        await callPinnedOrBoundRuntimeActionOr(pin, "chat", "terminateCodexBackgroundTerminal", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexTerminateBackgroundTerminal, args),
+        );
+      },
     },
     readTranscript: (args: {
       sessionId: string;
@@ -6903,12 +7360,13 @@ contextBridge.exposeInMainWorld("ade", {
         : computerUseOwnerSnapshotCache.get(serializeIpcCacheArgs(args)),
     deleteArtifacts: async (
       args: ComputerUseArtifactDeleteArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<ComputerUseArtifactDeleteResult> =>
       clearAround(
         () => computerUseOwnerSnapshotCache.clear(),
         () =>
-          callProjectRuntimeActionOr(
-            "computer_use_artifacts",
+          callComputerUseArtifactActionOr(
+            pin,
             "deleteArtifacts",
             { args },
             () => ipcRenderer.invoke(IPC.computerUseDeleteArtifacts, args),
@@ -6936,12 +7394,13 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     recoverArtifact: async (
       args: { artifactId: string },
+      pin?: OpenProjectBinding | null,
     ): Promise<ComputerUseArtifactView> =>
       clearAround(
         () => computerUseOwnerSnapshotCache.clear(),
         () =>
-          callProjectRuntimeActionOr(
-            "computer_use_artifacts",
+          callComputerUseArtifactActionOr(
+            pin,
             "recoverArtifact",
             { args },
             () => ipcRenderer.invoke(IPC.computerUseRecoverArtifact, args),
@@ -6960,11 +7419,12 @@ contextBridge.exposeInMainWorld("ade", {
             () => ipcRenderer.invoke(IPC.computerUseUpdateArtifactReview, args),
           ),
       ),
-    readArtifactPreview: async (args: {
-      uri: string;
-    }): Promise<string | null> =>
-      callProjectRuntimeActionOr(
-        "computer_use_artifacts",
+    readArtifactPreview: async (
+      args: { uri: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<string | null> =>
+      callComputerUseArtifactActionOr(
+        pin,
         "readArtifactPreview",
         { args },
         () => ipcRenderer.invoke(IPC.computerUseReadArtifactPreview, args),
@@ -6972,26 +7432,46 @@ contextBridge.exposeInMainWorld("ade", {
     onEvent: subscribeComputerUseEvents,
   },
   iosSimulator: {
-    getStatus: async (): Promise<IosSimulatorStatus> =>
-      iosSimulatorStatusCache.get(),
-    listDevices: async (): Promise<IosSimulatorDevice[]> =>
-      iosSimulatorDevicesCache.get(),
+    getStatus: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorStatus> =>
+      pin
+        ? callPinnedRuntimeAction<IosSimulatorStatus>(
+            pin,
+            "ios_simulator",
+            "getStatus",
+            {},
+          )
+        : iosSimulatorStatusCache.get(boundReadCacheKey()),
+    listDevices: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorDevice[]> =>
+      pin
+        ? callPinnedRuntimeAction<IosSimulatorDevice[]>(
+            pin,
+            "ios_simulator",
+            "listDevices",
+            {},
+          )
+        : iosSimulatorDevicesCache.get(boundReadCacheKey()),
     listLaunchTargets: async (
       args: IosSimulatorListLaunchTargetsArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorLaunchTarget[]> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "listLaunchTargets",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorListLaunchTargets, args),
       ),
     launch: async (
       args: IosSimulatorLaunchArgs = {},
-    ): Promise<IosSimulatorSession> => {
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorLaunchResult> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callProjectRuntimeActionOr(
-          "ios_simulator",
+        return await callIosSimulatorActionOr(
+          pin,
           "launch",
           { args },
           () => ipcRenderer.invoke(IPC.iosSimulatorLaunch, args),
@@ -7000,16 +7480,26 @@ contextBridge.exposeInMainWorld("ade", {
         clearIosSimulatorStatusCaches();
       }
     },
-    attachToChatSession: async (args: {
-      chatSessionId: string | null;
-      callerChatSessionId?: string | null;
-    }): Promise<IosSimulatorSession | null> => {
+    attachToChatSession: async (
+      args: {
+        chatSessionId: string | null;
+        callerChatSessionId?: string | null;
+        takeOver?: boolean;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorSession | null> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callProjectRuntimeActionOr(
-          "ios_simulator",
+        return await callIosSimulatorActionOr(
+          pin,
           "attachToChatSession",
-          { argsList: [args.chatSessionId, args.callerChatSessionId] },
+          {
+            argsList: [
+              args.chatSessionId,
+              args.callerChatSessionId,
+              { takeOver: args.takeOver === true },
+            ],
+          },
           () => ipcRenderer.invoke(IPC.iosSimulatorAttachToChatSession, args),
         );
       } finally {
@@ -7018,11 +7508,12 @@ contextBridge.exposeInMainWorld("ade", {
     },
     shutdown: async (
       args: IosSimulatorShutdownArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorShutdownResult> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callProjectRuntimeActionOr(
-          "ios_simulator",
+        return await callIosSimulatorActionOr(
+          pin,
           "shutdown",
           { args },
           () => ipcRenderer.invoke(IPC.iosSimulatorShutdown, args),
@@ -7032,108 +7523,120 @@ contextBridge.exposeInMainWorld("ade", {
       }
     },
     screenshot: async (
-      args: { deviceUdid?: string | null } = {},
+      args: IosSimulatorScreenshotArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorScreenshot> =>
-      callProjectRuntimeActionOr("ios_simulator", "screenshot", { args }, () =>
+      callIosSimulatorActionOr(pin, "screenshot", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorScreenshot, args),
       ),
     getScreenSnapshot: async (
       args: IosScreenSnapshotArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosScreenSnapshot> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "getScreenSnapshot",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorGetScreenSnapshot, args),
       ),
     getInspectorSnapshot: async (
       args: { deviceUdid?: string | null } = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosInspectorSnapshot | null> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "getInspectorSnapshot",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorGetInspectorSnapshot, args),
       ),
     inspectPoint: async (
       args: IosSimulatorInspectPointArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorInspectResult> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "inspectPoint",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorInspectPoint, args),
       ),
     getPreviewCapability: async (
       args: IosSimulatorListPreviewsArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorPreviewCapability> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "getPreviewCapability",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorGetPreviewCapability, args),
       ),
     listPreviewTargets: async (
       args: IosSimulatorListPreviewsArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorPreviewTarget[]> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "listPreviewTargets",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorListPreviewTargets, args),
       ),
     resolvePreviewMatch: async (
       args: IosSimulatorListPreviewsArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorPreviewMatch> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "resolvePreviewMatch",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorResolvePreviewMatch, args),
       ),
     ensurePreviewWorkspace: async (
       args: IosSimulatorEnsurePreviewWorkspaceArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorEnsurePreviewWorkspaceResult> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "ensurePreviewWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorEnsurePreviewWorkspace, args),
       ),
     renderCurrentPreview: async (
       args: IosSimulatorRenderCurrentPreviewArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorRenderCurrentPreviewResult> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "renderCurrentPreview",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorRenderCurrentPreview, args),
       ),
     renderPreview: async (
       args: IosSimulatorRenderPreviewArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorRenderPreviewResult> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "renderPreview",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorRenderPreview, args),
       ),
     openPreviewWorkspace: async (
       args: IosSimulatorOpenPreviewWorkspaceArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true; path: string }> =>
-      callProjectRuntimeActionOr(
-        "ios_simulator",
+      callIosSimulatorActionOr(
+        pin,
         "openPreviewWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorOpenPreviewWorkspace, args),
       ),
     startStream: async (
       args: IosSimulatorStartStreamArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<IosSimulatorStreamStatus> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callProjectRuntimeActionOr(
-          "ios_simulator",
+        return await callIosSimulatorActionOr(
+          pin,
           "startStream",
           { args },
           () => ipcRenderer.invoke(IPC.iosSimulatorStartStream, args),
@@ -7142,11 +7645,13 @@ contextBridge.exposeInMainWorld("ade", {
         clearIosSimulatorStatusCaches();
       }
     },
-    stopStream: async (): Promise<IosSimulatorStreamStatus> => {
+    stopStream: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorStreamStatus> => {
       clearIosSimulatorStatusCaches();
       try {
-        return await callProjectRuntimeActionOr(
-          "ios_simulator",
+        return await callIosSimulatorActionOr(
+          pin,
           "stopStream",
           {},
           () => ipcRenderer.invoke(IPC.iosSimulatorStopStream),
@@ -7155,173 +7660,258 @@ contextBridge.exposeInMainWorld("ade", {
         clearIosSimulatorStatusCaches();
       }
     },
-    getStreamStatus: async (): Promise<IosSimulatorStreamStatus> =>
-      callProjectRuntimeActionOr("ios_simulator", "getStreamStatus", {}, () =>
+    getStreamStatus: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorStreamStatus> =>
+      callIosSimulatorActionOr(pin, "getStreamStatus", {}, () =>
         ipcRenderer.invoke(IPC.iosSimulatorGetStreamStatus),
       ),
     getSimulatorWindowState: async (): Promise<IosSimulatorWindowState> => {
       await assertLocalProjectHostAction("iOS Simulator window state");
       return ipcRenderer.invoke(IPC.iosSimulatorGetWindowState);
     },
-    listSimulatorWindowSources: async (): Promise<
-      IosSimulatorWindowSource[]
-    > => {
+    listSimulatorWindowSources: async (
+      opts: {
+        session?: IosSimulatorWindowCaptureSessionHint | null;
+      } = {},
+    ): Promise<IosSimulatorWindowSourcesResult> => {
+      // The root is never the caller's to choose: window capture is always
+      // scoped to the window's own bound local project.
       const binding = await requireLocalProjectHostBinding("iOS Simulator window sources");
+      // Window parking runs in Electron main, whose simulator service never sees
+      // a launch the brain daemon owns. Callers that already hold the runtime
+      // session pass it here so parking keys off a session that exists.
       return ipcRenderer.invoke(IPC.iosSimulatorListWindowSources, {
         projectRoot: binding.rootPath,
+        ...(opts.session ? { session: opts.session } : {}),
       });
     },
-    tap: async (args: {
-      deviceUdid?: string | null;
-      projectRoot?: string | null;
-      x: number;
-      y: number;
-    }): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("ios_simulator", "tap", { args }, () =>
+    // Registers this surface as depending on the parking claim. It has to be
+    // its own local-only channel rather than a side effect of `startStream`:
+    // with a local project bound — which window capture requires —
+    // `startStream` is answered by the brain daemon, which has no BrowserWindow
+    // and no parking concept, so nothing in Electron main ever runs for it.
+    // Same transport as `releaseWindowParking` below, so the two always pair up.
+    //
+    // Resolves whether the host actually counted the holder — it refuses one
+    // from a window that does not own the claim — so the caller only pairs a
+    // release with a retain that really happened. Never throws, and a failure
+    // is reported as "not held" for the same reason.
+    retainWindowParking: async (): Promise<boolean> => {
+      try {
+        const result = await ipcRenderer.invoke(IPC.iosSimulatorRetainWindowParking) as { ok?: unknown } | null;
+        return result?.ok === true;
+      } catch {
+        /* parking is best-effort */
+        return false;
+      }
+    },
+    // The mirror image of the call above: capture arms the window-parking
+    // follow in this process, so whoever stops capturing has to disarm it here
+    // too. Deliberately not routed through the runtime — parking is a local
+    // Electron-main concern — and deliberately never throws, because every
+    // caller is a teardown path.
+    releaseWindowParking: async (): Promise<void> => {
+      try {
+        await ipcRenderer.invoke(IPC.iosSimulatorReleaseWindowParking);
+      } catch {
+        /* teardown is best-effort */
+      }
+    },
+    openSystemSettings: async (args: {
+      pane: IosSimulatorPrivacyPane;
+    }): Promise<{ ok: boolean }> => {
+      await assertLocalProjectHostAction("iOS Simulator system settings");
+      return ipcRenderer.invoke(IPC.iosSimulatorOpenSystemSettings, args);
+    },
+    revealSimulator: async (): Promise<{ ok: boolean; message: string | null }> => {
+      await assertLocalProjectHostAction("iOS Simulator reveal");
+      return ipcRenderer.invoke(IPC.iosSimulatorRevealWindow);
+    },
+    tap: async (
+      args: { deviceUdid?: string | null; x: number; y: number },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorActionOr(pin, "tap", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTap, args),
       ),
-    typeText: async (args: {
-      deviceUdid?: string | null;
-      projectRoot?: string | null;
-      text: string;
-    }): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("ios_simulator", "typeText", { args }, () =>
+    typeText: async (
+      args: { deviceUdid?: string | null; text: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorActionOr(pin, "typeText", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTypeText, args),
       ),
-    drag: async (args: IosSimulatorDragArgs): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("ios_simulator", "drag", { args }, () =>
+    drag: async (
+      args: IosSimulatorDragArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorActionOr(pin, "drag", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorDrag, args),
       ),
-    swipe: async (args: IosSimulatorDragArgs): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("ios_simulator", "swipe", { args }, () =>
+    swipe: async (
+      args: IosSimulatorDragArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callIosSimulatorActionOr(pin, "swipe", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorSwipe, args),
       ),
-    selectPoint: async (args: {
-      deviceUdid?: string | null;
-      projectRoot?: string | null;
-      x: number;
-      y: number;
-    }): Promise<IosSimulatorSelectResult> =>
-      callProjectRuntimeActionOr("ios_simulator", "selectPoint", { args }, () =>
+    selectPoint: async (
+      args: {
+        deviceUdid?: string | null;
+        projectRoot?: string | null;
+        laneId?: string | null;
+        x: number;
+        y: number;
+      },
+      pin?: OpenProjectBinding | null,
+    ): Promise<IosSimulatorSelectResult> =>
+      callIosSimulatorActionOr(pin, "selectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorSelectPoint, args),
       ),
     onEvent: subscribeIosSimulatorEvents,
   },
   appControl: {
-    getStatus: async (): Promise<AppControlStatus> =>
-      appControlStatusCache.get(),
+    getStatus: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlStatus> =>
+      pin
+        ? callPinnedRuntimeAction<AppControlStatus>(
+            pin,
+            "app_control",
+            "getStatus",
+            {},
+          )
+        : appControlStatusCache.get(boundReadCacheKey()),
     launch: async (
       args: AppControlLaunchArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<AppControlSession> =>
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr("app_control", "launch", { args }, () =>
+          callAppControlActionOr(pin, "launch", { args }, () =>
             ipcRenderer.invoke(IPC.appControlLaunch, args),
           ),
       ),
     launchInTerminal: async (
       args: AppControlLaunchArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<AppControlSession> =>
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr(
-            "app_control",
+          callAppControlActionOr(
+            pin,
             "launchInTerminal",
             { args },
             () => ipcRenderer.invoke(IPC.appControlLaunchInTerminal, args),
           ),
       ),
-    connect: async (args: AppControlConnectArgs): Promise<AppControlSession> =>
+    connect: async (
+      args: AppControlConnectArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlSession> =>
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr("app_control", "connect", { args }, () =>
+          callAppControlActionOr(pin, "connect", { args }, () =>
             ipcRenderer.invoke(IPC.appControlConnect, args),
           ),
       ),
     stop: async (
       args: AppControlStopArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true; previousSession: AppControlSession | null }> =>
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr("app_control", "stop", { args }, () =>
+          callAppControlActionOr(pin, "stop", { args }, () =>
             ipcRenderer.invoke(IPC.appControlStop, args),
           ),
       ),
-    focusWindow: async (): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("app_control", "focusWindow", {}, () =>
+    focusWindow: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callAppControlActionOr(pin, "focusWindow", {}, () =>
         ipcRenderer.invoke(IPC.appControlFocusWindow),
       ),
-    minimizeWindow: async (): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("app_control", "minimizeWindow", {}, () =>
+    minimizeWindow: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callAppControlActionOr(pin, "minimizeWindow", {}, () =>
         ipcRenderer.invoke(IPC.appControlMinimizeWindow),
       ),
-    screenshot: async (): Promise<AppControlScreenshot> =>
-      callProjectRuntimeActionOr("app_control", "screenshot", {}, () =>
+    screenshot: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlScreenshot> =>
+      callAppControlActionOr(pin, "screenshot", {}, () =>
         ipcRenderer.invoke(IPC.appControlScreenshot),
       ),
     getSnapshot: async (
       args: AppControlSnapshotArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<AppControlSnapshot> =>
-      callProjectRuntimeActionOr("app_control", "getSnapshot", { args }, () =>
+      callAppControlActionOr(pin, "getSnapshot", { args }, () =>
         ipcRenderer.invoke(IPC.appControlGetSnapshot, args),
       ),
     inspectPoint: async (
       args: AppControlInspectPointArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AppControlInspectResult> =>
-      callProjectRuntimeActionOr("app_control", "inspectPoint", { args }, () =>
+      callAppControlActionOr(pin, "inspectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.appControlInspectPoint, args),
       ),
     selectPoint: async (
       args: AppControlInspectPointArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<AppControlSelectResult> =>
-      callProjectRuntimeActionOr("app_control", "selectPoint", { args }, () =>
+      callAppControlActionOr(pin, "selectPoint", { args }, () =>
         ipcRenderer.invoke(IPC.appControlSelectPoint, args),
       ),
-    click: async (args: AppControlClickArgs): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("app_control", "click", { args }, () =>
+    click: async (
+      args: AppControlClickArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callAppControlActionOr(pin, "click", { args }, () =>
         ipcRenderer.invoke(IPC.appControlClick, args),
       ),
-    typeText: async (args: AppControlTypeTextArgs): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("app_control", "typeText", { args }, () =>
+    typeText: async (
+      args: AppControlTypeTextArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callAppControlActionOr(pin, "typeText", { args }, () =>
         ipcRenderer.invoke(IPC.appControlTypeText, args),
       ),
-    scroll: async (args: {
-      x: number;
-      y: number;
-      deltaX: number;
-      deltaY: number;
-      scale?: number | null;
-      coordinateSpace?: "screenshot" | "viewport" | null;
-    }): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("app_control", "scroll", { args }, () =>
+    scroll: async (
+      args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null; coordinateSpace?: "screenshot" | "viewport" | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callAppControlActionOr(pin, "scroll", { args }, () =>
         ipcRenderer.invoke(IPC.appControlScroll, args),
       ),
-    dispatchKey: async (args: {
-      type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
-      key?: string | null;
-      code?: string | null;
-      text?: string | null;
-      modifiers?: number | null;
-    }): Promise<{ ok: true }> =>
-      callProjectRuntimeActionOr("app_control", "dispatchKey", { args }, () =>
+    dispatchKey: async (
+      args: { type: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key?: string | null; code?: string | null; text?: string | null; modifiers?: number | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callAppControlActionOr(pin, "dispatchKey", { args }, () =>
         ipcRenderer.invoke(IPC.appControlDispatchKey, args),
       ),
-    listTargets: async (): Promise<AppControlTarget[]> =>
-      callProjectRuntimeActionOr("app_control", "listTargets", {}, () =>
+    listTargets: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlTarget[]> =>
+      callAppControlActionOr(pin, "listTargets", {}, () =>
         ipcRenderer.invoke(IPC.appControlListTargets),
       ),
-    attachToTarget: async (args: {
-      targetId: string;
-    }): Promise<AppControlSession> =>
+    attachToTarget: async (
+      args: { targetId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppControlSession> =>
       clearAround(
         () => appControlStatusCache.clear(),
         () =>
-          callProjectRuntimeActionOr(
-            "app_control",
+          callAppControlActionOr(
+            pin,
             "attachToTarget",
             { argsList: [args.targetId] },
             () => ipcRenderer.invoke(IPC.appControlAttachToTarget, args),
@@ -7332,15 +7922,21 @@ contextBridge.exposeInMainWorld("ade", {
   builtInBrowser: {
     getStatus: async (
       args: BuiltInBrowserProjectScopeArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "getStatus", { args })
+        : builtInBrowserStatusCache.get(serializeIpcCacheArgs(args)),
     requestOriginAccess: async (
       args: BuiltInBrowserRequestOriginAccessArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserOriginAccessResult> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserRequestOriginAccess, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserOriginAccessResult>(pin, "built_in_browser", "requestOriginAccess", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserRequestOriginAccess, args),
+          ),
     getProfileDiagnostics: async (): Promise<BuiltInBrowserProfileDiagnostics> =>
       ipcRenderer.invoke(IPC.builtInBrowserGetProfileDiagnostics),
     listPermissions: async (): Promise<BuiltInBrowserPermissionsResult> =>
@@ -7351,18 +7947,24 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.builtInBrowserClearPermissions, args),
     showPanel: async (
       args: BuiltInBrowserOpenPanelArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserShowPanel, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "showPanel", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserShowPanel, args),
+          ),
     setBounds: async (
       args: BuiltInBrowserBoundsArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "setBounds", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSetBounds, args),
+          ),
     attachWebview: async (
       args: BuiltInBrowserAttachWebviewArgs,
     ): Promise<BuiltInBrowserStatus> =>
@@ -7372,119 +7974,160 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     navigate: async (
       args: BuiltInBrowserNavigateArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserNavigate, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "navigate", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserNavigate, args),
+          ),
     createTab: async (
       args: BuiltInBrowserCreateTabArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserCreateTab, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "createTab", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserCreateTab, args),
+          ),
     switchTab: async (
       args: BuiltInBrowserTabArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserSwitchTab, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "switchTab", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserSwitchTab, args),
+          ),
     closeTab: async (
       args: BuiltInBrowserTabArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "closeTab", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
+          ),
     reload: async (
       args: BuiltInBrowserTabTargetArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserReload, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "reload", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserReload, args),
+          ),
     goBack: async (
       args: BuiltInBrowserTabTargetArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserGoBack, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "goBack", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserGoBack, args),
+          ),
     goForward: async (
       args: BuiltInBrowserTabTargetArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserGoForward, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "goForward", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserGoForward, args),
+          ),
     stop: async (
       args: BuiltInBrowserTabTargetArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserStop, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "stop", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserStop, args),
+          ),
     startInspect: async (
       args: BuiltInBrowserProjectScopeArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserStartInspect, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "startInspect", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserStartInspect, args),
+          ),
     stopInspect: async (
       args: BuiltInBrowserProjectScopeArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserStatus> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserStatus>(pin, "built_in_browser", "stopInspect", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserStopInspect, args),
+          ),
     captureScreenshot: async (
       args: BuiltInBrowserTabTargetArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserScreenshot> =>
-      ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserScreenshot>(pin, "built_in_browser", "captureScreenshot", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
     selectPoint: async (
       args: BuiltInBrowserSelectPointArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserSelectResult> =>
-      ipcRenderer.invoke(IPC.builtInBrowserSelectPoint, args),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserSelectResult>(pin, "built_in_browser", "selectPoint", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserSelectPoint, args),
     selectCurrent: async (
       args: BuiltInBrowserProjectScopeArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserSelectResult> =>
-      ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent, args),
+      pin
+        ? callPinnedRuntimeAction<BuiltInBrowserSelectResult>(pin, "built_in_browser", "selectCurrent", { args })
+        : ipcRenderer.invoke(IPC.builtInBrowserSelectCurrent, args),
     clearSelection: async (
       args: BuiltInBrowserProjectScopeArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<{ ok: true }> =>
-      clearAround(
-        () => builtInBrowserStatusCache.clear(),
-        () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
-      ),
-    onEvent: builtInBrowserEventFanout,
+      pin
+        ? callPinnedRuntimeAction<{ ok: true }>(pin, "built_in_browser", "clearSelection", { args })
+        : clearAround(
+            () => builtInBrowserStatusCache.clear(),
+            () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
+          ),
+    onEvent: subscribeBuiltInBrowserEvents,
   },
   terminal: {
     list: async (
       args: ChatTerminalListArgs = {},
-    ): Promise<ChatTerminalSession[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<
-        ChatTerminalSession[]
-      >("terminal", "list", { args });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.terminalList, args);
-    },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatTerminalSession[]> =>
+      callPinnedOrBoundRuntimeActionOr<ChatTerminalSession[]>(
+        pin,
+        "terminal",
+        "list",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalList, args),
+      ),
     read: async (
       args: ChatTerminalReadArgs = {},
-    ): Promise<ChatTerminalReadResult> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<ChatTerminalReadResult>(
-          "terminal",
-          "read",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.terminalRead, args);
-    },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatTerminalReadResult> =>
+      callPinnedOrBoundRuntimeActionOr<ChatTerminalReadResult>(
+        pin,
+        "terminal",
+        "read",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalRead, args),
+      ),
     preview: async (
       args: ChatTerminalPreviewArgs = {},
       pin?: OpenProjectBinding | null,
@@ -7496,52 +8139,50 @@ contextBridge.exposeInMainWorld("ade", {
         { args },
         () => ipcRenderer.invoke(IPC.terminalPreview, args),
       ),
-    write: async (args: ChatTerminalWriteArgs): Promise<{ ok: true }> => {
-      const runtime = await callProjectRuntimeActionIfBound<{ ok: true }>(
+    write: async (
+      args: ChatTerminalWriteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callPinnedOrBoundRuntimeActionOr<{ ok: true }>(
+        pin,
         "terminal",
         "write",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.terminalWrite, args);
-    },
-    signal: async (args: ChatTerminalSignalArgs): Promise<{ ok: true }> => {
-      const runtime = await callProjectRuntimeActionIfBound<{ ok: true }>(
+        () => ipcRenderer.invoke(IPC.terminalWrite, args),
+      ),
+    signal: async (
+      args: ChatTerminalSignalArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true }> =>
+      callPinnedOrBoundRuntimeActionOr<{ ok: true }>(
+        pin,
         "terminal",
         "signal",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.terminalSignal, args);
-    },
+        () => ipcRenderer.invoke(IPC.terminalSignal, args),
+      ),
     activeForChat: async (
       args: ChatTerminalActiveForChatArgs,
-    ): Promise<ChatTerminalSession | null> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<ChatTerminalSession | null>(
-          "terminal",
-          "activeForChat",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.terminalActiveForChat, args);
-    },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatTerminalSession | null> =>
+      callPinnedOrBoundRuntimeActionOr<ChatTerminalSession | null>(
+        pin,
+        "terminal",
+        "activeForChat",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalActiveForChat, args),
+      ),
     reattachChatCli: async (
       args: ChatTerminalReattachArgs,
-    ): Promise<ChatTerminalReattachResult> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<ChatTerminalReattachResult>(
-          "terminal",
-          "reattachChatCli",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.terminalReattachChatCli, args);
-    },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatTerminalReattachResult> =>
+      callPinnedOrBoundRuntimeActionOr<ChatTerminalReattachResult>(
+        pin,
+        "terminal",
+        "reattachChatCli",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalReattachChatCli, args),
+      ),
   },
   localhost: {
     probePort: async (port: number): Promise<boolean> =>
@@ -7567,7 +8208,15 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   externalSessions: {
-    list: async (args: ExternalSessionListArgs = {}): Promise<ExternalSessionSummary[]> => {
+    list: async (
+      args: ExternalSessionListArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<ExternalSessionSummary[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<ExternalSessionSummary[]>(pin, "external-sessions", "list", {
+          args: { ...args },
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<ExternalSessionSummary[]>(
         "external-sessions",
         "list",
@@ -7577,7 +8226,15 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result ?? []
         : ipcRenderer.invoke(IPC.externalSessionsList, args);
     },
-    import: async (args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult> => {
+    import: async (
+      args: ExternalSessionImportArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ExternalSessionImportResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<ExternalSessionImportResult>(pin, "external-sessions", "import", {
+          args: { ...args },
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<ExternalSessionImportResult>(
         "external-sessions",
         "import",
@@ -7587,6 +8244,38 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.externalSessionsImport, args);
     },
+    getDetail: async (
+      args: ExternalSessionDetailArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ExternalSessionDetail> => {
+      if (pin) {
+        return callPinnedRuntimeAction<ExternalSessionDetail>(pin, "external-sessions", "getDetail", {
+          args: { ...args },
+        });
+      }
+      const runtime = await callProjectRuntimeActionIfBound<ExternalSessionDetail>(
+        "external-sessions",
+        "getDetail",
+        { args: { ...args } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.externalSessionsGetDetail, args);
+    },
+    // Unlike `list`/`import`/`getDetail`, the watch pair never routes through the
+    // `external-sessions` ADE action domain: updates arrive on a per-sender
+    // Electron IPC channel with no remote-runtime equivalent, so live detail
+    // watching is local-machine only even when a project runtime is bound.
+    watchDetail: async (args: ExternalSessionDetailWatchArgs): Promise<ExternalSessionDetail> => {
+      return ipcRenderer.invoke(IPC.externalSessionsWatchDetail, args);
+    },
+    unwatchDetail: async (args: { watchId: string }): Promise<{ ok: true }> => {
+      return ipcRenderer.invoke(IPC.externalSessionsUnwatchDetail, args);
+    },
+    onDetailUpdated: createLocalIpcEventSubscription<ExternalSessionDetailUpdatedEvent>(
+      IPC.externalSessionsDetailUpdated,
+      "external session detail updated",
+    ),
   },
   plugins: createPluginBridge({
     callStrictOr: (action, args, local) =>
@@ -7695,17 +8384,29 @@ contextBridge.exposeInMainWorld("ade", {
     onExit: subscribePtyExitEvents,
   },
   diff: {
-    getChanges: async (args: GetDiffChangesArgs): Promise<DiffChanges> => {
+    getChanges: async (
+      args: GetDiffChangesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<DiffChanges> => {
+      if (pin) {
+        return callPinnedRuntimeAction<DiffChanges>(pin, "diff", "getChanges", {
+          arg: args.laneId,
+        });
+      }
       const runtime = await callProjectRuntimeActionIfBound<DiffChanges>(
         "diff",
         "getChanges",
         { arg: args.laneId },
       );
       if (runtime.handled) return runtime.result;
-      return diffChangesCache.get(serializeIpcCacheArgs(args));
+      return diffChangesCache.get(boundReadCacheKey(args));
     },
-    getFile: async (args: GetFileDiffArgs): Promise<FileDiff> => {
-      const runtime = await callProjectRuntimeActionIfBound<FileDiff>(
+    getFile: async (
+      args: GetFileDiffArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FileDiff> =>
+      callPinnedOrBoundRuntimeActionOr<FileDiff>(
+        pin,
         "diff",
         "getFileDiff",
         {
@@ -7717,13 +8418,14 @@ contextBridge.exposeInMainWorld("ade", {
             compareTo: args.compareTo,
           },
         },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.diffGetFile, args);
-    },
-    getFilePatch: async (args: GetFilePatchArgs): Promise<FilePatch> => {
-      const runtime = await callProjectRuntimeActionIfBound<FilePatch>(
+        () => ipcRenderer.invoke(IPC.diffGetFile, args),
+      ),
+    getFilePatch: async (
+      args: GetFilePatchArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FilePatch> =>
+      callPinnedOrBoundRuntimeActionOr<FilePatch>(
+        pin,
         "diff",
         "getFilePatch",
         {
@@ -7735,15 +8437,21 @@ contextBridge.exposeInMainWorld("ade", {
             compareTo: args.compareTo,
           },
         },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.diffGetFilePatch, args);
-    },
+        () => ipcRenderer.invoke(IPC.diffGetFilePatch, args),
+      ),
   },
   files: {
-    writeTextAtomic: async (args: WriteTextAtomicArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+    // Every method here takes an optional trailing `pin`. See
+    // `callPinnedFileActionOr` for why files are a per-machine fact and what
+    // `pin: null` means (the machine this project tab is bound to).
+    writeTextAtomic: async (
+      args: WriteTextAtomicArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
+      // Lane-scoped and repo-relative, so the args are already machine-portable:
+      // the pin decides whose lane worktree the write lands in.
+      await callPinnedFileActionOr<void>(
+        pin,
         "writeTextAtomic",
         { args },
         () => ipcRenderer.invoke(IPC.filesWriteTextAtomic, args),
@@ -7751,151 +8459,203 @@ contextBridge.exposeInMainWorld("ade", {
     },
     listWorkspaces: async (
       args: FilesListWorkspacesArgs = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesWorkspace[]> => {
-      return callProjectFileRuntimeActionOr<FilesWorkspace[]>(
+      // No workspaceId to key off yet — this is the call that discovers them —
+      // so the pin is the only way to ask another machine what it has.
+      return callPinnedFileActionOr<FilesWorkspace[]>(
+        pin,
         "listWorkspaces",
         { args },
         () => ipcRenderer.invoke(IPC.filesListWorkspaces, args),
       );
     },
-    listTree: async (args: FilesListTreeArgs): Promise<FileTreeNode[]> => {
+    listTree: async (
+      args: FilesListTreeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FileTreeNode[]> => {
       return callFilesWorkspaceActionOr<FileTreeNode[]>(
         args.workspaceId,
         "listTree",
         { args },
         () => ipcRenderer.invoke(IPC.filesListTree, args),
+        pin,
       );
     },
     listTreeChildren: async (
       args: FilesListTreeChildrenArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesListTreeChildrenResult> => {
       return callFilesWorkspaceActionOr<FilesListTreeChildrenResult>(
         args.workspaceId,
         "listTreeChildren",
         { args },
         () => ipcRenderer.invoke(IPC.filesListTreeChildren, args),
+        pin,
       );
     },
     refreshGitDecorations: async (
       args: FilesRefreshGitDecorationsArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesGitStatusEvent> => {
       return callFilesWorkspaceActionOr<FilesGitStatusEvent>(
         args.workspaceId,
         "refreshGitDecorations",
         { args },
         () => ipcRenderer.invoke(IPC.filesRefreshGitDecorations, args),
+        pin,
       );
     },
+    // Deliberately unpinned, and deliberately not routed to any runtime: the
+    // path comes from THIS machine's Finder, Electron open-file dialog, or OS
+    // drag/drop, so it only exists on this disk. There is no `file` action for
+    // it on the runtime surface either — exposing a pin here would hand callers
+    // a capability no runtime can serve.
     openExternalPath: async (args: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
       return ipcRenderer.invoke(IPC.filesOpenExternalPath, args);
     },
-    readFile: async (args: FilesReadFileArgs): Promise<FileContent> => {
+    readFile: async (
+      args: FilesReadFileArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FileContent> => {
       return callFilesWorkspaceActionOr<FileContent>(
         args.workspaceId,
         "readFile",
         { args },
         () => ipcRenderer.invoke(IPC.filesReadFile, args),
+        pin,
       );
     },
-    readFileRange: async (args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> => {
+    readFileRange: async (
+      args: FilesReadFileRangeArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FilesReadFileRangeResult> => {
       return callFilesWorkspaceActionOr<FilesReadFileRangeResult>(
         args.workspaceId,
         "readFileRange",
         { args },
         () => ipcRenderer.invoke(IPC.filesReadFileRange, args),
+        pin,
       );
     },
-    gitBlame: async (args: FilesGitBlameArgs): Promise<FilesGitBlameResult> => {
+    gitBlame: async (
+      args: FilesGitBlameArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<FilesGitBlameResult> => {
       return callFilesWorkspaceActionOr<FilesGitBlameResult>(
         args.workspaceId,
         "blame",
         { args },
         () => ipcRenderer.invoke(IPC.filesGitBlame, args),
+        pin,
       );
     },
-    writeText: async (args: FilesWriteTextArgs): Promise<void> => {
+    writeText: async (
+      args: FilesWriteTextArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "writeWorkspaceText",
         { args },
         () => ipcRenderer.invoke(IPC.filesWriteText, args),
+        pin,
       );
     },
-    createFile: async (args: FilesCreateFileArgs): Promise<void> => {
+    createFile: async (
+      args: FilesCreateFileArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "createFile",
         { args },
         () => ipcRenderer.invoke(IPC.filesCreateFile, args),
+        pin,
       );
     },
-    createDirectory: async (args: FilesCreateDirectoryArgs): Promise<void> => {
+    createDirectory: async (
+      args: FilesCreateDirectoryArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "createDirectory",
         { args },
         () => ipcRenderer.invoke(IPC.filesCreateDirectory, args),
+        pin,
       );
     },
-    rename: async (args: FilesRenameArgs): Promise<void> => {
+    rename: async (
+      args: FilesRenameArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "rename",
         { args },
         () => ipcRenderer.invoke(IPC.filesRename, args),
+        pin,
       );
     },
-    delete: async (args: FilesDeleteArgs): Promise<void> => {
+    delete: async (
+      args: FilesDeleteArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "deletePath",
         { args },
         () => ipcRenderer.invoke(IPC.filesDelete, args),
+        pin,
       );
     },
-    watchChanges: async (args: FilesWatchArgs): Promise<void> => {
+    watchChanges: async (
+      args: FilesWatchArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "watchWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.filesWatchChanges, args),
+        pin,
       );
     },
-    stopWatching: async (args: FilesWatchArgs): Promise<void> => {
+    stopWatching: async (
+      args: FilesWatchArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<void> => {
       await callFilesWorkspaceActionOr<void>(
         args.workspaceId,
         "stopWatching",
         { args },
         () => ipcRenderer.invoke(IPC.filesStopWatching, args),
+        pin,
       );
     },
     quickOpen: async (
       args: FilesQuickOpenArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<FilesQuickOpenItem[]> => {
-      if (pin) {
-        return callPinnedRuntimeAction<FilesQuickOpenItem[]>(
-          pin,
-          "file",
-          "quickOpen",
-          { args },
-        );
-      }
       return callFilesWorkspaceActionOr<FilesQuickOpenItem[]>(
         args.workspaceId,
         "quickOpen",
         { args },
         () => ipcRenderer.invoke(IPC.filesQuickOpen, args),
+        pin,
       );
     },
     searchText: async (
       args: FilesSearchTextArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<FilesSearchTextMatch[]> => {
       return callFilesWorkspaceActionOr<FilesSearchTextMatch[]>(
         args.workspaceId,
         "searchText",
         { args },
         () => ipcRenderer.invoke(IPC.filesSearchText, args),
+        pin,
       );
     },
     onChange: (cb: (ev: FileChangeEvent) => void) => {
@@ -7912,305 +8672,320 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   git: {
-    stageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
+    stageFile: async (
+      args: GitFileActionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "stageFile",
         { args },
+        () => ipcRenderer.invoke(IPC.gitStageFile, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitStageFile, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
     stageAll: async (
       args: GitBatchFileActionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "stageAll",
         { args },
+        () => ipcRenderer.invoke(IPC.gitStageAll, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitStageAll, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    unstageFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
+    unstageFile: async (
+      args: GitFileActionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "unstageFile",
         { args },
+        () => ipcRenderer.invoke(IPC.gitUnstageFile, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitUnstageFile, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
     unstageAll: async (
       args: GitBatchFileActionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "unstageAll",
         { args },
+        () => ipcRenderer.invoke(IPC.gitUnstageAll, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitUnstageAll, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    discardFile: async (args: GitFileActionArgs): Promise<GitActionResult> => {
+    discardFile: async (
+      args: GitFileActionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "discardFile",
         { args },
+        () => ipcRenderer.invoke(IPC.gitDiscardFile, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitDiscardFile, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
     restoreStagedFile: async (
       args: GitFileActionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "restoreStagedFile",
         { args },
+        () => ipcRenderer.invoke(IPC.gitRestoreStagedFile, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitRestoreStagedFile, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    commit: async (args: GitCommitArgs): Promise<GitActionResult> => {
+    commit: async (
+      args: GitCommitArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "commit",
         { args },
+        () => ipcRenderer.invoke(IPC.gitCommit, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitCommit, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
     generateCommitMessage: async (
       args: GitGenerateCommitMessageArgs,
-    ): Promise<GitGenerateCommitMessageResult> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<GitGenerateCommitMessageResult>(
-          "git",
-          "generateCommitMessage",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args);
-    },
-    listRecentCommits: async (args: {
-      laneId: string;
-      limit?: number;
-    }): Promise<GitCommitSummary[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<GitCommitSummary[]>(
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitGenerateCommitMessageResult> =>
+      callPinnedOrBoundRuntimeActionOr<GitGenerateCommitMessageResult>(
+        pin,
+        "git",
+        "generateCommitMessage",
+        { args },
+        () => ipcRenderer.invoke(IPC.gitGenerateCommitMessage, args),
+      ),
+    listRecentCommits: async (
+      args: { laneId: string; limit?: number },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitCommitSummary[]> =>
+      callPinnedOrBoundRuntimeActionOr<GitCommitSummary[]>(
+        pin,
         "git",
         "listRecentCommits",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitListRecentCommits, args);
-    },
+        () => ipcRenderer.invoke(IPC.gitListRecentCommits, args),
+      ),
     listCommitFiles: async (
       args: GitListCommitFilesArgs,
-    ): Promise<string[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<string[]>(
+      pin?: OpenProjectBinding | null,
+    ): Promise<string[]> =>
+      callPinnedOrBoundRuntimeActionOr<string[]>(
+        pin,
         "git",
         "listCommitFiles",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitListCommitFiles, args);
-    },
+        () => ipcRenderer.invoke(IPC.gitListCommitFiles, args),
+      ),
     getCommitMessage: async (
       args: GitGetCommitMessageArgs,
-    ): Promise<string> => {
-      const runtime = await callProjectRuntimeActionIfBound<string>(
+      pin?: OpenProjectBinding | null,
+    ): Promise<string> =>
+      callPinnedOrBoundRuntimeActionOr<string>(
+        pin,
         "git",
         "getCommitMessage",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGetCommitMessage, args);
-    },
+        () => ipcRenderer.invoke(IPC.gitGetCommitMessage, args),
+      ),
     getCommit: async (
       args: { laneId: string; commitSha: string },
-    ): Promise<GitCommitSummary | null> => {
-      const runtime = await callProjectRuntimeActionIfBound<GitCommitSummary | null>(
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitCommitSummary | null> =>
+      callPinnedOrBoundRuntimeActionOr<GitCommitSummary | null>(
+        pin,
         "git",
         "getCommit",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGetCommit, args);
-    },
+        () => ipcRenderer.invoke(IPC.gitGetCommit, args),
+      ),
     isCommitInLaneHistory: async (
       args: { laneId: string; commitSha: string },
-    ): Promise<boolean> => {
-      const runtime = await callProjectRuntimeActionIfBound<boolean>(
+      pin?: OpenProjectBinding | null,
+    ): Promise<boolean> =>
+      callPinnedOrBoundRuntimeActionOr<boolean>(
+        pin,
         "git",
         "isCommitInLaneHistory",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitIsCommitInLaneHistory, args);
-    },
-    revertCommit: async (args: GitRevertArgs): Promise<GitActionResult> => {
+        () => ipcRenderer.invoke(IPC.gitIsCommitInLaneHistory, args),
+      ),
+    revertCommit: async (
+      args: GitRevertArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "revertCommit",
         { args },
+        () => ipcRenderer.invoke(IPC.gitRevertCommit, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitRevertCommit, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
     cherryPickCommit: async (
       args: GitCherryPickArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "cherryPickCommit",
         { args },
+        () => ipcRenderer.invoke(IPC.gitCherryPickCommit, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitCherryPickCommit, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    createTag: async (args: GitCreateTagArgs): Promise<GitActionResult> => {
+    createTag: async (
+      args: GitCreateTagArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "createTag",
         { args },
+        () => ipcRenderer.invoke(IPC.gitCreateTag, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitCreateTag, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
     resetToCommit: async (
       args: GitResetCommitArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "resetToCommit",
         { args },
+        () => ipcRenderer.invoke(IPC.gitResetToCommit, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitResetToCommit, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    stashPush: async (args: GitStashPushArgs): Promise<GitActionResult> => {
+    stashPush: async (
+      args: GitStashPushArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "stashPush",
         { args },
+        () => ipcRenderer.invoke(IPC.gitStashPush, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitStashPush, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    stashList: async (args: { laneId: string }): Promise<GitStashSummary[]> => {
-      const runtime = await callProjectRuntimeActionIfBound<GitStashSummary[]>(
+    stashList: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitStashSummary[]> =>
+      callPinnedOrBoundRuntimeActionOr<GitStashSummary[]>(
+        pin,
         "git",
         "listStashes",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitStashList, args);
-    },
-    stashApply: async (args: GitStashRefArgs): Promise<GitActionResult> => {
+        () => ipcRenderer.invoke(IPC.gitStashList, args),
+      ),
+    stashApply: async (
+      args: GitStashRefArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "stashApply",
         { args },
+        () => ipcRenderer.invoke(IPC.gitStashApply, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitStashApply, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    stashPop: async (args: GitStashRefArgs): Promise<GitActionResult> => {
+    stashPop: async (
+      args: GitStashRefArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "stashPop",
         { args },
+        () => ipcRenderer.invoke(IPC.gitStashPop, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitStashPop, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    stashDrop: async (args: GitStashRefArgs): Promise<GitActionResult> => {
+    stashDrop: async (
+      args: GitStashRefArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "stashDrop",
         { args },
+        () => ipcRenderer.invoke(IPC.gitStashDrop, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitStashDrop, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    stashClear: async (args: { laneId: string }): Promise<GitActionResult> => {
+    stashClear: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "stashClear",
         { args },
+        () => ipcRenderer.invoke(IPC.gitStashClear, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitStashClear, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
@@ -8231,167 +9006,181 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    pull: async (args: GitPullArgs): Promise<GitActionResult> => {
+    pull: async (
+      args: GitPullArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "pull",
         { args },
+        () => ipcRenderer.invoke(IPC.gitPull, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitPull, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    undoLastHeadChange: async (args: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+    undoLastHeadChange: async (
+      args: GitHeadChangeActionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "undoLastHeadChange",
         { args },
+        () => ipcRenderer.invoke(IPC.gitUndoLastHeadChange, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitUndoLastHeadChange, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    redoLastHeadChange: async (args: GitHeadChangeActionArgs): Promise<GitActionResult> => {
+    redoLastHeadChange: async (
+      args: GitHeadChangeActionArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "redoLastHeadChange",
         { args },
+        () => ipcRenderer.invoke(IPC.gitRedoLastHeadChange, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitRedoLastHeadChange, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    getSyncStatus: async (args: {
-      laneId: string;
-    }): Promise<GitUpstreamSyncStatus> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<GitUpstreamSyncStatus>(
-          "git",
-          "getSyncStatus",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGetSyncStatus, args);
-    },
-    getOriginRemote: async (args: {
-      laneId: string;
-    }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
-      const runtime = await callProjectRuntimeActionIfBound<{
+    getSyncStatus: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitUpstreamSyncStatus> =>
+      callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
+        pin,
+        "git",
+        "getSyncStatus",
+        { args },
+        () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
+      ),
+    getOriginRemote: async (
+      args: { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ remoteUrl: string | null; branch: string | null }> =>
+      callPinnedOrBoundRuntimeActionOr<{
         remoteUrl: string | null;
         branch: string | null;
-      }>("git", "getOriginRemote", { args });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGetOriginRemote, args);
-    },
-    getOpenPrForBranch: async (args: {
-      laneId: string;
-      branch?: string;
-    }): Promise<{
+      }>(pin, "git", "getOriginRemote", { args }, () =>
+        ipcRenderer.invoke(IPC.gitGetOriginRemote, args),
+      ),
+    getOpenPrForBranch: async (
+      args: { laneId: string; branch?: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{
       prUrl: string | null;
       prNumber: number | null;
       title: string | null;
       headRefName: string | null;
-    }> => {
-      const runtime = await callProjectRuntimeActionIfBound<{
+    }> =>
+      callPinnedOrBoundRuntimeActionOr<{
         prUrl: string | null;
         prNumber: number | null;
         title: string | null;
         headRefName: string | null;
-      }>("git", "getOpenPrForBranch", { args });
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGetOpenPrForBranch, args);
-    },
-    sync: async (args: GitSyncArgs): Promise<GitActionResult> => {
+      }>(pin, "git", "getOpenPrForBranch", { args }, () =>
+        ipcRenderer.invoke(IPC.gitGetOpenPrForBranch, args),
+      ),
+    sync: async (
+      args: GitSyncArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "sync",
         { args },
+        () => ipcRenderer.invoke(IPC.gitSync, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitSync, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    push: async (args: GitPushArgs): Promise<GitActionResult> => {
+    push: async (
+      args: GitPushArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "push",
         { args },
+        () => ipcRenderer.invoke(IPC.gitPush, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitPush, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    getConflictState: async (laneId: string): Promise<GitConflictState> => {
-      const runtime = await callProjectRuntimeActionIfBound<GitConflictState>(
+    getConflictState: async (
+      laneId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitConflictState> =>
+      callPinnedOrBoundRuntimeActionOr<GitConflictState>(
+        pin,
         "git",
         "getConflictState",
         { args: { laneId } },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGetConflictState, { laneId });
-    },
-    rebaseContinue: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+        () => ipcRenderer.invoke(IPC.gitGetConflictState, { laneId }),
+      ),
+    rebaseContinue: async (
+      args: string | { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       const laneId = normalizeLaneIdArg(args);
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      return callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "rebaseContinue",
         { args: { laneId } },
+        () => ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId }),
       );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitRebaseContinue, { laneId });
     },
-    rebaseAbort: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+    rebaseAbort: async (
+      args: string | { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       const laneId = normalizeLaneIdArg(args);
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      return callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "rebaseAbort",
         { args: { laneId } },
+        () => ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId }),
       );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitRebaseAbort, { laneId });
     },
-    mergeContinue: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+    mergeContinue: async (
+      args: string | { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       const laneId = normalizeLaneIdArg(args);
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      return callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "mergeContinue",
         { args: { laneId } },
+        () => ipcRenderer.invoke(IPC.gitMergeContinue, { laneId }),
       );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitMergeContinue, { laneId });
     },
-    mergeAbort: async (args: string | { laneId: string }): Promise<GitActionResult> => {
+    mergeAbort: async (
+      args: string | { laneId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitActionResult> => {
       const laneId = normalizeLaneIdArg(args);
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      return callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "mergeAbort",
         { args: { laneId } },
+        () => ipcRenderer.invoke(IPC.gitMergeAbort, { laneId }),
       );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitMergeAbort, { laneId });
     },
     listBranches: async (
       args: GitListBranchesArgs,
@@ -8406,32 +9195,31 @@ contextBridge.exposeInMainWorld("ade", {
         { args },
       );
       if (runtime.handled) return runtime.result;
-      return gitBranchesCache.get(serializeIpcCacheArgs(args));
+      return gitBranchesCache.get(boundReadCacheKey(args));
     },
     getUserIdentity: async (
       args: GitGetUserIdentityArgs,
-    ): Promise<GitUserIdentity> => {
-      const runtime = await callProjectRuntimeActionIfBound<GitUserIdentity>(
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitUserIdentity> =>
+      callPinnedOrBoundRuntimeActionOr<GitUserIdentity>(
+        pin,
         "git",
         "getUserIdentity",
         { args },
-      );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.gitGetUserIdentity, args);
-    },
+        () => ipcRenderer.invoke(IPC.gitGetUserIdentity, args),
+      ),
     checkoutBranch: async (
       args: GitCheckoutBranchArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+      const result = await callPinnedOrBoundRuntimeActionOr<GitActionResult>(
+        pin,
         "git",
         "checkoutBranch",
         { args },
+        () => ipcRenderer.invoke(IPC.gitCheckoutBranch, args),
       );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitCheckoutBranch, args);
       clearGitReadCaches();
       return result as GitActionResult;
     },
@@ -8612,6 +9400,12 @@ contextBridge.exposeInMainWorld("ade", {
             : githubStatusCache.get(),
       );
     },
+    // Deliberately not cached: a stale "you may proceed" is the answer that
+    // burned the quota. The read is free, so there is nothing to save.
+    getRequestBudget: async (): Promise<GitHubRequestBudget> =>
+      callProjectRuntimeActionOr("github", "getRequestBudget", {}, () =>
+        ipcRenderer.invoke(IPC.githubGetRequestBudget),
+      ),
     getRemoteStatus: async (opts?: {
       forceRefresh?: boolean;
     }): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> => {
@@ -8689,6 +9483,23 @@ contextBridge.exposeInMainWorld("ade", {
       const status = await githubStatusCache.get();
       return status.repo;
     },
+    listRepoIssues: async (args: {
+      owner?: string;
+      name?: string;
+      state?: "open" | "closed" | "all";
+      since?: string;
+    } = {}): Promise<GitHubIssueLike[]> =>
+      callProjectRuntimeActionOr("github", "listRepoIssues", { args }, () =>
+        ipcRenderer.invoke(IPC.githubListRepoIssues, args),
+      ),
+    getIssue: async (args: {
+      owner?: string;
+      name?: string;
+      number: number;
+    }): Promise<GitHubIssueLike | null> =>
+      callProjectRuntimeActionOr("github", "getIssue", { args }, () =>
+        ipcRenderer.invoke(IPC.githubGetIssue, args),
+      ),
     listRepoAutolinks: async (args: {
       owner?: string;
       name?: string;
@@ -8851,6 +9662,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.accountRemoveMachine, { machineKey }),
     repairMachinePairing: (): Promise<AdeAccountMachinePairingRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairMachinePairing),
+    repairSession: (): Promise<AdeAccountSessionRepairResult> =>
+      ipcRenderer.invoke(IPC.accountRepairSession),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>
@@ -9890,6 +10703,11 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.invoke(IPC.ctoGetAttention),
       ),
   },
+  keepAwakeGet: (): Promise<KeepAwakeSnapshot> => ipcRenderer.invoke(IPC.keepAwakeGet),
+  keepAwakeSetLevel: (level: KeepAwakeLevel): Promise<KeepAwakeSnapshot> =>
+    ipcRenderer.invoke(IPC.keepAwakeSetLevel, level),
+  keepAwakeFixSystemSleep: (): Promise<KeepAwakeFixResult> =>
+    ipcRenderer.invoke(IPC.keepAwakeFixSystemSleep),
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),
@@ -9924,4 +10742,6 @@ contextBridge.exposeInMainWorld("ade", {
     }) => ipcRenderer.invoke(IPC.perfScenarioComplete, args),
     finalize: () => ipcRenderer.invoke(IPC.perfFinalize),
   },
-});
+} satisfies Window["ade"];
+
+contextBridge.exposeInMainWorld("ade", adeBridge);

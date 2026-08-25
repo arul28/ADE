@@ -85,6 +85,43 @@ describe("AdeCard", () => {
     }
   });
 
+  it("renders a Claude session-quota rail with a fork action", () => {
+    const onAction = vi.fn();
+    render(
+      <AdeCard
+        card={card({
+          variant: "claude_session_quota",
+          state: "live",
+          title: "Claude session limit · resets 7:00 PM",
+          subtitle: "Send again after reset, or fork this thread.",
+          fallbackText: "Claude session limit",
+          metrics: [{ label: "used", value: "82%", tone: "warning" }],
+          progress: { passed: 0, failed: 82, running: 0, queued: 18 },
+          actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+        })}
+        onAction={onAction}
+      />,
+    );
+    expect(screen.getByText("Claude session limit · resets 7:00 PM")).toBeTruthy();
+    fireEvent.click(screen.getByText("Fork in this lane"));
+    expect(onAction).toHaveBeenCalledWith("fork-local");
+  });
+
+  it("hides a dismissed Claude session-quota card", () => {
+    const { container } = render(
+      <AdeCard
+        card={card({
+          variant: "claude_session_quota",
+          state: "terminal",
+          title: "Claude session resumed",
+          fallbackText: "Claude session resumed.",
+          actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+        })}
+      />,
+    );
+    expect(container.innerHTML).toBe("");
+  });
+
   it("fires the action without also navigating the card", () => {
     const onAction = vi.fn();
     const listener = vi.fn();

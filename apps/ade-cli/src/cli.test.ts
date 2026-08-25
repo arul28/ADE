@@ -1,9 +1,10 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "./services/account/accountMachinePublisherService";
 import {
@@ -14,15 +15,21 @@ import {
   buildCliPlan,
   checkLinearReadiness,
   detectAccountLoginMode,
+  describeLastFailureForStartupLog,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,
   includeHostProjectInCatalog,
+  iosSimulatorErrorHint,
+  iosSimulatorSubcommandFromArgv,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
+  monitorBrainSocketOwnership,
+  unlinkOwnedRuntimeSocket,
   parseCliArgs,
   parseSnoozeDurationMs,
   readRuntimeIdleExitMs,
@@ -35,7 +42,10 @@ import {
   startHeadlessRpcSocketServer,
   startHeadlessRpcTcpServer,
   shouldAutoRegisterProjectForPlan,
+  formatBrainStatus,
+  formatGithubAppUserAuth,
   shouldBlockManualMachineRuntimeSpawn,
+  shouldProbeBrainStartupState,
   shouldEnforceMachineRuntimeBuildCompatibility,
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
@@ -52,6 +62,7 @@ import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { readBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
@@ -60,6 +71,53 @@ process.env.ADE_ENABLE_AUTOMATIONS = "1";
 process.env.ADE_ENABLE_MACOS_VM = "1";
 
 const crdtHostIt = process.platform === "darwin" ? it : it.skip;
+
+/**
+ * Waits for a DETACHED test brain to leave, and kills it if it will not.
+ *
+ * A brain owns its ADE_HOME for as long as it runs: it writes the credential
+ * store, that store's lock file, and the relay configuration under
+ * `secrets/`, plus its heartbeat under `runtime/`. `ade runtime stop` returns
+ * when the shutdown request is answered, not when the process is gone, and it
+ * reports rather than throws when it never reached a brain at all. A teardown
+ * that removes ADE_HOME on that signal alone races those writes: one file
+ * created between `rmSync`'s readdir and its rmdir fails the whole teardown
+ * with ENOTEMPTY.
+ */
+async function waitForDetachedProcessExit(
+  pid: number | null,
+  timeoutMs = 10_000,
+): Promise<void> {
+  if (pid === null || !Number.isInteger(pid) || pid <= 0) return;
+  // Same rule as the brain's "self" heartbeat verdict: never signal your own
+  // process. A stale heartbeat naming this pid would SIGKILL the test runner.
+  if (pid === process.pid) return;
+  const isRunning = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error: unknown) {
+      // EPERM means the process exists and belongs to somebody else, which is
+      // still "running" for this purpose. Only ESRCH means it is gone.
+      return (error as NodeJS.ErrnoException | null)?.code !== "ESRCH";
+    }
+  };
+  const waitUntilGone = async (deadline: number): Promise<boolean> => {
+    while (Date.now() < deadline) {
+      if (!isRunning()) return true;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return !isRunning();
+  };
+  if (await waitUntilGone(Date.now() + timeoutMs)) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // Already gone, or not ours to signal.
+  }
+  // SIGKILL is not synchronous either: the process still has to be reaped.
+  await waitUntilGone(Date.now() + 2_000);
+}
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -147,6 +205,64 @@ function writeSyncHostSingletonLock(args: {
       updatedAt: now,
     },
   }, null, 2)}\n`, "utf8");
+}
+
+function withTsxNodeOptions(value: string | undefined): string {
+  const existing = value?.trim();
+  return existing ? `${existing} --import tsx` : "--import tsx";
+}
+
+/**
+ * A sync-host singleton lock owned by a SAME-channel brain (same ADE_HOME),
+ * which the startup loop retries against forever rather than failing the brain
+ * outright the way a cross-channel owner does.
+ */
+function writeSameChannelSyncHostLock(args: {
+  lockPath: string;
+  pid: number;
+  port: number;
+  adeHome: string;
+}): void {
+  const now = new Date().toISOString();
+  fs.mkdirSync(path.dirname(args.lockPath), { recursive: true });
+  fs.writeFileSync(args.lockPath, `${JSON.stringify({
+    version: 1,
+    owner: {
+      id: "sync-host-squatter",
+      pid: args.pid,
+      port: args.port,
+      appName: "ADE",
+      packageChannel: null,
+      adeHome: args.adeHome,
+      serviceName: "com.ade.runtime",
+      socketPath: path.join(args.adeHome, "sock", "ade.sock"),
+      projectRoot: null,
+      commandLine: null,
+      quitCommand: `ADE_HOME='${args.adeHome}' ade brain stop --text`,
+      createdAt: now,
+      updatedAt: now,
+    },
+  }, null, 2)}\n`, "utf8");
+}
+
+function readSyncHostLockOwnerPid(lockPath: string): number | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as {
+      owner?: { pid?: unknown };
+    };
+    return typeof parsed.owner?.pid === "number" ? parsed.owner.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function killChildQuietly(child: ChildProcess | null, signal: NodeJS.Signals): void {
+  if (!child || child.exitCode != null || child.signalCode != null) return;
+  try {
+    child.kill(signal);
+  } catch {
+    // Already gone.
+  }
 }
 
 describe("ADE CLI", () => {
@@ -464,6 +580,34 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "account-machines",
     )).toContain("unreachable");
+    // A machine that announced its own suspend must read "Asleep" here, not
+    // "online" — the whole point of publishing the announcement is that the
+    // heartbeat window alone cannot tell a shut lid from a live machine. The
+    // battery slot is absent for a machine that reported none, so a desktop
+    // never renders as one at 0%.
+    const sleeping = formatOutput(
+      {
+        state: "ok",
+        message: null,
+        machines: [{
+          machineKey: "laptop",
+          deviceId: "device-laptop",
+          name: "MacBook Pro",
+          platform: "macOS",
+          deviceType: "desktop",
+          reachableEndpoints: [],
+          lastSeenAt: Date.now(),
+          online: true,
+          sleepState: "asleep",
+          sleepStateAt: Date.now(),
+          power: { batteryPercent: 82, charging: false, onExternalPower: false },
+        }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "account-machines",
+    );
+    expect(sleeping).toContain("Asleep · 82% battery");
+    expect(sleeping).toContain("wakes when you connect to it");
     const rawActionPlan = expectExecutePlan(buildCliPlan(["actions", "run", "account.status"]));
     expect(rawActionPlan.steps[0]).toMatchObject({
       method: "account.call",
@@ -957,6 +1101,151 @@ describe("ADE CLI", () => {
     }
   });
 
+  /**
+   * `ade serve` publishes its RPC socket BEFORE the mobile sync host is up.
+   *
+   * The brain used to bind `ade.sock` only after `runSyncHostStartupLoop`
+   * returned, which coupled desktop reachability to phone-sync hosting: a busy
+   * sync port band, a stale lease from a just-killed predecessor, a slow
+   * project scope — anything that loop retried kept the socket unpublished,
+   * and the desktop's service handover budget expired against a brain that was
+   * alive and healthy ("the background service couldn't be set up — click
+   * Repair", then "ADE couldn't open this project").
+   *
+   * This drives a real `ade serve` child with the machine-wide sync-host lease
+   * held by a live same-channel pid, so the startup loop can never finish, and
+   * proves the socket is nonetheless bound, listening, and answering RPC.
+   * Verified to fail against the pre-reorder `cli.ts` (socket never appears).
+   *
+   * A child process rather than an in-process `runCli`: a fully started brain
+   * owns background services (ingress pollers, sync status refreshers) whose
+   * teardown races surface as unhandled rejections in the runner, and killing
+   * a child is the only way to end a brain the way the OS does.
+   */
+  // DARWIN-GATE: booting a real brain needs the cr-sqlite extension, which ships
+  // only for macOS, so this can run nowhere else.
+  crdtHostIt(
+    "binds and serves the RPC socket while the mobile sync host is still retrying",
+    async () => {
+      const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+      const cliPath = path.join(packageRoot, "src", "cli.ts");
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-serve-order-"));
+      const projectRoot = path.join(adeHome, "project");
+      const lockPath = path.join(adeHome, "sync-host-lock.json");
+      // Deliberately NOT `<adeHome>/sock/ade.sock`: that is the machine layout
+      // socket, which would make this brain the "primary" one and start the
+      // freshness-monitor / service-reinstall paths this test has no business
+      // in.
+      const socketPath = path.join(adeHome, "sock", "ade-order.sock");
+      fs.mkdirSync(projectRoot, { recursive: true });
+
+      // A live pid the sync-host singleton must treat as a real owner.
+      const squatter = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
+        stdio: "ignore",
+      });
+      squatter.on("error", () => {});
+      if (!squatter.pid) throw new Error("Failed to start the fake sync-host owner process.");
+      writeSameChannelSyncHostLock({ lockPath, pid: squatter.pid, port: 8802, adeHome });
+
+      let brain: ChildProcess | null = null;
+      let brainExit: { code: number | null; signal: NodeJS.Signals | null } | null = null;
+      let stderr = "";
+      try {
+        brain = spawn(process.execPath, [cliPath, "serve", "--socket", socketPath], {
+          cwd: packageRoot,
+          env: {
+            ...process.env,
+            ADE_HOME: adeHome,
+            ADE_PROJECT_ROOT: projectRoot,
+            ADE_PACKAGE_CHANNEL: "",
+            ADE_SYNC_HOST_LOCK_PATH: lockPath,
+            ADE_SYNC_HOST_SINGLETON_TEST_MODE: "1",
+            ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+            ADE_DISABLE_TOOLS_FETCH: "1",
+            NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
+          },
+          stdio: ["ignore", "ignore", "pipe"],
+        });
+        brain.stderr?.setEncoding("utf8");
+        brain.stderr?.on("data", (chunk: string) => { stderr += chunk; });
+        brain.on("exit", (code, signal) => { brainExit = { code, signal }; });
+
+        let client: JsonRpcClient | null = null;
+        // 60s + 45s worst case leaves headroom inside the 150s test timeout, so
+        // a stuck brain fails with the diagnostic below and still runs `finally`
+        // (which kills the squatter) instead of being cut off by the runner.
+        const deadline = Date.now() + 60_000;
+        for (;;) {
+          if (brainExit) {
+            throw new Error(
+              `ADE brain exited (${JSON.stringify(brainExit)}) instead of serving:\n${stderr}`,
+            );
+          }
+          if (fs.existsSync(socketPath)) {
+            try {
+              client = await JsonRpcClient.connect(socketPath);
+              break;
+            } catch {
+              // Not listening yet.
+            }
+          }
+          if (Date.now() >= deadline) {
+            throw new Error(`Timed out waiting for ${socketPath} to accept connections:\n${stderr}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+
+        try {
+          // Bound is not enough: it has to be serving desktop RPC.
+          await client.request("ade/initialize", {
+            protocolVersion: "2025-06-18",
+            clientName: "serve-socket-ordering-test",
+            identity: { role: "external", callerId: "serve-socket-ordering-test" },
+          });
+          await expect(client.request("ping")).resolves.toMatchObject({ pong: true });
+        } finally {
+          client.close();
+        }
+
+        // ...and the sync host is provably still down: the squatter keeps the
+        // machine-wide lease, so the startup loop is still retrying. This is
+        // the assertion the old ordering could not satisfy — the socket did
+        // not exist until that loop returned.
+        expect(readSyncHostLockOwnerPid(lockPath)).toBe(squatter.pid);
+
+        // The loop is genuinely running and losing, not silently skipped. Not
+        // asserted at the moment of connect on purpose: the socket can be (and
+        // routinely is) reachable before the first attempt has even failed
+        // once, which is the whole point of the reorder.
+        const logDeadline = Date.now() + 45_000;
+        while (!stderr.includes("ADE brain sync host failed")) {
+          if (Date.now() >= logDeadline) {
+            throw new Error(`ADE brain never reported a sync host failure:\n${stderr}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+        // A sync host that never starts must not take the brain down with it,
+        // and must not hand the lease over either.
+        expect(brainExit).toBeNull();
+        expect(readSyncHostLockOwnerPid(lockPath)).toBe(squatter.pid);
+      } finally {
+        // SIGKILL, not SIGTERM: a graceful brain shutdown spends seconds
+        // tearing down scopes, and the next test in this file spawns its own
+        // brain — leaving this one competing for CPU is how neighbouring
+        // startup waits start timing out.
+        const exited = brain ? new Promise<void>((resolve) => {
+          if (brain?.exitCode != null || brain?.signalCode != null) resolve();
+          else brain?.once("exit", () => resolve());
+        }) : null;
+        killChildQuietly(brain, "SIGKILL");
+        if (exited) await exited;
+        killChildQuietly(squatter, "SIGKILL");
+        fs.rmSync(adeHome, { recursive: true, force: true });
+      }
+    },
+    150_000,
+  );
+
   const posixIt = process.platform === "win32" ? it.skip : it;
   posixIt(
     "creates the headless RPC unix socket with 0600 perms and parent dir 0700",
@@ -1134,6 +1423,130 @@ describe("ADE CLI", () => {
     expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(false);
+  });
+
+  it("renders the brain starting verdict in --text next to the last-failure line", () => {
+    const text = formatBrainStatus({
+      ok: false,
+      starting: true,
+      runtime: { running: false, starting: true, socketPath: "/Users/example/.ade/sock/ade.sock" },
+      service: { message: "ADE login service is loaded." },
+      lastFailure: "brain serve failed 2x",
+    });
+    expect(text).toContain("nothing to repair");
+    expect(text).toContain("brain serve failed 2x");
+    // The same output has to read as a plain failure when nothing is coming up.
+    expect(formatBrainStatus({ ok: false, starting: false, runtime: { running: false } }))
+      .not.toContain("nothing to repair");
+  });
+
+  it("reports the GitHub App credential state, not the access-token expiry", () => {
+    // A lapsed 8-hour access token behind a live refresh token is healthy. An
+    // agent that reads `expiresAt` re-authorizes a working credential, so the
+    // printed verdict has to come from `credentialState`.
+    const authorized = formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: "2026-08-20T01:00:00.000Z",
+      refreshTokenExpiresAt: "2026-11-18T01:00:00.000Z",
+      credentialState: "authorized",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    });
+    expect(authorized).toContain("Authorized as octocat");
+    expect(authorized).not.toContain("app-auth login");
+
+    // "blocked" must never read as a request to re-authorize, and the reason
+    // must survive whole — the generic record renderer truncates it as JSON.
+    const blocked = formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: null,
+      refreshTokenExpiresAt: "2026-11-18T01:00:00.000Z",
+      credentialState: "blocked",
+      refreshBlockedUntil: "2026-08-20T12:05:00.000Z",
+      lastRefreshError: {
+        kind: "rate_limited",
+        message: "GitHub is rate-limiting ADE's sign-in requests right now. Try again in a few minutes.",
+        status: 429,
+        at: "2026-08-20T12:00:00.000Z",
+      },
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    });
+    expect(blocked).toContain("do not re-authorize");
+    expect(blocked).toContain("2026-08-20T12:05:00.000Z");
+    expect(blocked).toContain("rate_limited (HTTP 429)");
+    expect(blocked).toContain("Try again in a few minutes.");
+
+    // Only a dead refresh token may ask for a login.
+    expect(formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: null,
+      refreshTokenExpiresAt: null,
+      credentialState: "needs_reauth",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    })).toContain("ade --role cto github app-auth login");
+
+    // An older host sends no credentialState at all. The shared derivation
+    // judges by the refresh token, so a lapsed 8-hour access token next to a
+    // live refresh token still reads as authorized — never as "log in again".
+    expect(formatGithubAppUserAuth({
+      configured: true,
+      tokenStored: true,
+      userLogin: "octocat",
+      expiresAt: "2026-08-20T04:00:00.000Z",
+      refreshTokenExpiresAt: "2099-01-01T00:00:00.000Z",
+      refreshBlockedUntil: null,
+      lastRefreshError: null,
+      checkedAt: "2026-08-20T12:00:00.000Z",
+      error: null,
+    })).toContain("ADE renews this credential on its own");
+  });
+
+  it("skips the brain-starting probe inside supervisor and handover probe children", () => {
+    // Those children run `ade runtime status` with the install lock set. On
+    // Windows the probe would ask the service manager, which spawns another
+    // `ade runtime status` — an unbounded recursive fan-out that leaks
+    // descendants past the spawn timeout.
+    expect(shouldProbeBrainStartupState({
+      socketOverride: null,
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: { ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1" },
+    })).toBe(false);
+    expect(shouldProbeBrainStartupState({
+      socketOverride: null,
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(true);
+  });
+
+  it("skips the brain-starting probe when --socket points at another runtime", () => {
+    expect(shouldProbeBrainStartupState({
+      socketOverride: "/tmp/other.sock",
+      socketPath: "/tmp/other.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(false);
+    // An override that resolves back to this machine's own brain is still the
+    // machine brain, so it keeps the starting verdict.
+    expect(shouldProbeBrainStartupState({
+      socketOverride: "/Users/example/.ade/sock/ade.sock",
+      socketPath: "/Users/example/.ade/sock/ade.sock",
+      machineSocketPath: "/Users/example/.ade/sock/ade.sock",
+      env: {},
+    })).toBe(true);
   });
 
   it("parses runtime idle expiry with a minimum clamp", () => {
@@ -2252,6 +2665,48 @@ describe("ADE CLI", () => {
     expect(maintenanceText).toContain("manual");
     expect(maintenanceText).toContain("automation_ingress_events");
     expect(maintenanceText).toContain("skipped: not due");
+  });
+
+  it("ade session show reports what a session is DOING, not just its columns", () => {
+    // `runtime state` alone reads `idle` for a chat holding a warm agent
+    // process and two background jobs open — the state people were dropping to
+    // `ps` to diagnose. The words come from the shared presentation module, so
+    // this also pins that the CLI has not grown its own vocabulary.
+    const now = Date.now();
+    const text = formatOutput(
+      {
+        sessionId: "chat-1",
+        title: "Reap stale runtimes",
+        laneId: "lane-1",
+        status: "running",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+        startedAt: new Date(now - 3 * 60 * 60_000).toISOString(),
+        lastActivityAt: new Date(now - 3_000).toISOString(),
+        backgroundWorkSince: new Date(now - 2 * 60 * 60_000).toISOString(),
+        activeBackgroundTaskCount: 2,
+        backgroundWork: { workingCount: 1, monitoringCount: 1 },
+        runtimeProcesses: [{ pid: 59213, startedAt: new Date(now - 2 * 60 * 60_000).toISOString() }],
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    // Elapsed counts from when the work started, not from the last frame the
+    // provider happened to emit three seconds ago.
+    expect(text).toMatch(/^status\s+Background work \u00d72 2h$/mu);
+    expect(text).toContain("pid 59213 (2h)");
+  });
+
+  it("ade session show mutation acks carry no activity lines", () => {
+    // The same formatter renders snooze/wake acks, which have none of these
+    // fields. Every added line must disappear rather than render empty.
+    const text = formatOutput(
+      { sessionId: "chat-1", snoozedUntil: new Date(Date.now() + 3_600_000).toISOString(), ok: true },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "session-lifecycle",
+    );
+    expect(text).not.toMatch(/^agent processes\s/mu);
+    expect(text).not.toMatch(/^status\s/mu);
   });
 
   it("formats external session action results as text", () => {
@@ -3577,6 +4032,8 @@ describe("ADE CLI", () => {
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
       expect(help.text).toContain("ade chat ask");
+      expect(help.text).toContain("ade chat demote");
+      expect(help.text).toContain("ade chat promote");
       // Settling is user-/PR-merge-driven only; the help must say so rather
       // than advertise a command that no longer exists.
       expect(help.text).toContain("'chat settle' / 'chat unsettle' were removed");
@@ -3914,6 +4371,57 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("passes chat steer --dispatch through without restating provider rules", () => {
+    // The host owns which providers honor which active-turn dispatch mode
+    // (`ACTIVE_TURN_DISPATCH_MODES`), so the CLI forwards the mode verbatim for
+    // every provider — Cursor's "interrupt" must not be filtered out here.
+    const interrupt = expectExecutePlan(buildCliPlan([
+      "chat",
+      "steer",
+      "chat-1",
+      "--text",
+      "switch to the other repro",
+      "--dispatch",
+      "interrupt",
+    ]));
+    expect(interrupt.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "steer",
+        args: { sessionId: "chat-1", text: "switch to the other repro", dispatchMode: "interrupt" },
+      },
+    });
+
+    const inline = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch-mode", "inline",
+    ]));
+    expect(inline.steps[0]?.params).toMatchObject({
+      arguments: { args: { dispatchMode: "inline" } },
+    });
+
+    const personal = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "personal-1", "--personal", "--text", "context", "--dispatch", "interrupt",
+    ]));
+    expect(personal.steps[0]).toMatchObject({
+      params: { action: "steer", args: { sessionId: "personal-1", text: "context", dispatchMode: "interrupt" } },
+    });
+
+    // Omitting the flag stages the message, so no mode reaches the host.
+    const staged = expectExecutePlan(buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context",
+    ]));
+    expect(
+      (staged.steps[0]?.params as { arguments?: { args?: Record<string, unknown> } })?.arguments?.args,
+    ).not.toHaveProperty("dispatchMode");
+
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "queue",
+    ])).toThrow(/stages the message for the next turn/);
+    expect(() => buildCliPlan([
+      "chat", "steer", "chat-1", "--text", "context", "--dispatch", "later",
+    ])).toThrow(/must be inline or interrupt/);
+  });
+
   it("routes queue-aware interruption and recovery for project and personal chats", () => {
     const stopOnly = expectExecutePlan(buildCliPlan([
       "chat",
@@ -3991,6 +4499,48 @@ describe("ADE CLI", () => {
       "restore-queue",
       "chat-1",
     ])).toThrow(/recoveryId/);
+  });
+
+  it("routes chat demote, promote, and keep-reporting to spawn-kind actions", () => {
+    const demote = expectExecutePlan(buildCliPlan(["chat", "demote", "chat-1"]));
+    expect(demote.label).toBe("chat demote");
+    expect(demote.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "setSpawnKind",
+        args: { sessionId: "chat-1", spawnKind: "peer" },
+      },
+    });
+
+    const promote = expectExecutePlan(buildCliPlan(["chat", "promote", "chat-1"]));
+    expect(promote.label).toBe("chat promote");
+    expect(promote.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "setSpawnKind",
+        args: { sessionId: "chat-1", spawnKind: "subagent" },
+      },
+    });
+
+    const keep = expectExecutePlan(buildCliPlan(["chat", "keep-reporting", "chat-1"]));
+    expect(keep.label).toBe("chat keep-reporting");
+    expect(keep.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "dismissSubagentTakeoverPrompt",
+        args: { sessionId: "chat-1" },
+      },
+    });
+
+    const envDemote = withEnv({ ADE_CHAT_SESSION_ID: "env-chat" }, () =>
+      expectExecutePlan(buildCliPlan(["chat", "demote"])));
+    expect(envDemote.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "setSpawnKind",
+        args: { sessionId: "env-chat", spawnKind: "peer" },
+      },
+    });
   });
 
   it.each([
@@ -5173,11 +5723,17 @@ describe("ADE CLI", () => {
       expect(codeRequests).toBe(1);
       expect(tokenRequests).toBe(1);
     } finally {
+      // Read the pid BEFORE the stop: a clean shutdown removes the heartbeat
+      // file on its way out.
+      const brainPid = readBrainHeartbeat(path.join(adeHome, "runtime"))?.pid ?? null;
       try {
         await runCli(["--socket", socketPath, "runtime", "stop", "--text"]);
       } catch {
         // Best-effort cleanup if the detached test runtime never became available.
       }
+      // The brain writes into `adeHome` for as long as it lives. Removing the
+      // directory under a live one is what fails this teardown with ENOTEMPTY.
+      await waitForDetachedProcessExit(brainPid);
       stderrWrite.mockRestore();
       process.argv[1] = previousArgvEntry;
       for (const [key, value] of previousEnv) {
@@ -5187,7 +5743,9 @@ describe("ADE CLI", () => {
       await new Promise<void>((resolve) => directory.close(() => resolve()));
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
-  }, 30_000);
+    // The teardown above waits for a detached brain to leave, which costs up to
+    // 12 seconds on its own before the login flow's own budget is counted.
+  }, 45_000);
 
   posixIt("accepts current-session deadline success but rejects a stale signed-in account", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-deadline-sock-"));
@@ -8281,6 +8839,38 @@ describe("ADE CLI", () => {
     if (typeHelp.kind !== "help") return;
     expect(typeHelp.text).toContain("iOS Simulator: type");
     expect(typeHelp.text).toContain("--value, --message <v>");
+
+    // `claim` is implemented and listed in the top-level help, so asking for
+    // its help must not answer "unknown subcommand".
+    const claimHelp = buildCliPlan(["ios-sim", "claim", "--help"]);
+    expect(claimHelp.kind).toBe("help");
+    if (claimHelp.kind !== "help") return;
+    expect(claimHelp.text).toContain("iOS Simulator: claim");
+    expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
+  });
+
+  it("rejects an unknown ios-sim --backend as a usage error", () => {
+    // A bare Error here printed a stack trace and exited 1; a usage error
+    // prints the message and exits 2.
+    let thrown: unknown;
+    try {
+      buildCliPlan(["ios-sim", "live-start", "--backend", "nope"]);
+    } catch (error) {
+      thrown = error;
+    }
+    expect((thrown as Error | undefined)?.constructor.name).toBe(
+      "CliUsageError",
+    );
+    // The message names the subcommand the caller actually typed and the
+    // values that would have worked.
+    expect((thrown as Error).message).toContain("ios-sim live-start");
+    expect((thrown as Error).message).toContain("unknown --backend 'nope'");
+    expect((thrown as Error).message).toContain("auto, simulator-window-capture");
+    // Every valid value still builds a plan.
+    for (const backend of ["auto", "simulator-window-capture"]) {
+      const plan = buildCliPlan(["ios-sim", "stream-start", "--backend", backend]);
+      expect(plan.kind).toBe("execute");
+    }
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
@@ -9329,6 +9919,83 @@ describe("ADE CLI", () => {
     });
   });
 
+  // SKILL.md and the feature README both tell agents to recover from
+  // IOS_SIMULATOR_OWNED_BY_OTHER_SESSION with `launch --force`. The flag was
+  // documented but never parsed, so it was silently dropped and the retry
+  // failed with the identical ownership error.
+  it("ios-sim launch forwards --force and omits it otherwise", () => {
+    for (const flag of ["--force", "-f"]) {
+      const forced = buildCliPlan(["ios-sim", "launch", "--target", "app", flag]);
+      expect(forced.kind).toBe("execute");
+      if (forced.kind !== "execute") return;
+      expect(forced.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "launch",
+          args: { targetId: "app", force: true },
+        },
+      });
+    }
+
+    const plain = buildCliPlan(["ios-sim", "launch", "--target", "app"]);
+    expect(plain.kind).toBe("execute");
+    if (plain.kind !== "execute") return;
+    const params = plain.steps[0]?.params as
+      | { arguments?: { args?: Record<string, unknown> } }
+      | undefined;
+    expect(params?.arguments?.args).not.toHaveProperty("force");
+  });
+
+  // `parseCliArgs` consumes the global `--project-root` prefix before the
+  // subcommand sees it, so `ade --project-root /repo ios-sim apps` used to fall
+  // back to the caller's cwd and scan the wrong checkout.
+  it("ios-sim root defaults prefer the global --project-root over the caller cwd", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      const parsed = parseCliArgs(["--project-root", "/tmp/global-repo", "ios-sim", "apps"]);
+      const plan = buildCliPlan(parsed.command, parsed.options);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "listLaunchTargets",
+          args: { projectRoot: path.resolve("/tmp/global-repo") },
+        },
+      });
+
+      // A subcommand-level --project-root still wins over the global prefix.
+      const scoped = parseCliArgs([
+        "--project-root",
+        "/tmp/global-repo",
+        "ios-sim",
+        "apps",
+        "--project-root",
+        "/tmp/scoped-repo",
+      ]);
+      const scopedPlan = buildCliPlan(scoped.command, scoped.options);
+      expect(scopedPlan.kind).toBe("execute");
+      if (scopedPlan.kind !== "execute") return;
+      expect(scopedPlan.steps[0]?.params).toMatchObject({
+        arguments: { args: { projectRoot: path.resolve("/tmp/scoped-repo") } },
+      });
+
+      // A relative subcommand root must resolve against the caller cwd, not the
+      // brain process cwd, so the daemon and the shell agree on the path.
+      const relative = parseCliArgs(["ios-sim", "apps", "--project-root", "relative-repo"]);
+      const relativePlan = buildCliPlan(relative.command, relative.options);
+      expect(relativePlan.kind).toBe("execute");
+      if (relativePlan.kind !== "execute") return;
+      expect(relativePlan.steps[0]?.params).toMatchObject({
+        arguments: { args: { projectRoot: path.resolve("relative-repo") } },
+      });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+    }
+  });
+
   it("ios-sim preview stream aliases map to live view actions", () => {
     const start = buildCliPlan(["ios-sim", "preview-start", "--fps", "30"]);
     expect(start.kind).toBe("execute");
@@ -9383,6 +10050,62 @@ describe("ADE CLI", () => {
           },
         },
       });
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
+  });
+
+  // `ios-sim claim` parsed no flags of its own, so the ownership bypass spelled
+  // the way launch/shutdown spell it was dropped on the floor and the claim was
+  // refused as if the caller had never asked — the silent flag-drop class this
+  // lane already fixed twice.
+  it("forwards the ios-sim claim ownership bypass flags to the service", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+
+      const forced = buildCliPlan(["ios-sim", "claim", "--lane", "lane-a", "--force"]);
+      expect(forced.kind).toBe("execute");
+      if (forced.kind !== "execute") return;
+      expect(forced.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "claim",
+          args: { laneId: "lane-a", force: true },
+        },
+      });
+
+      const ignored = buildCliPlan([
+        "ios-sim",
+        "claim",
+        "--lane",
+        "lane-a",
+        "--ignore-ownership",
+      ]);
+      expect(ignored.kind).toBe("execute");
+      if (ignored.kind !== "execute") return;
+      expect(ignored.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "claim",
+          args: { laneId: "lane-a", ignoreOwnership: true },
+        },
+      });
+
+      // Neither flag means neither key: a plain claim must not smuggle a
+      // takeover through as `force: false`.
+      const plain = buildCliPlan(["ios-sim", "claim", "--lane", "lane-a"]);
+      expect(plain.kind).toBe("execute");
+      if (plain.kind !== "execute") return;
+      const plainArgs = (plain.steps[0]?.params as { arguments: { args: Record<string, unknown> } })
+        .arguments.args;
+      expect(plainArgs).not.toHaveProperty("force");
+      expect(plainArgs).not.toHaveProperty("ignoreOwnership");
     } finally {
       if (previousLane === undefined) delete process.env.ADE_LANE_ID;
       else process.env.ADE_LANE_ID = previousLane;
@@ -9482,7 +10205,7 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "ios_simulator",
         action: "openPreviewWorkspace",
-        args: { projectRoot: "/tmp/app" },
+        args: { projectRoot: path.resolve("/tmp/app") },
       },
     });
   });
@@ -9507,7 +10230,7 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "resolvePreviewMatch",
         args: {
-          projectRoot: "/tmp/app",
+          projectRoot: path.resolve("/tmp/app"),
           sourceFile: "Views/HomeView.swift",
           sourceLine: 44,
           elementLabel: "Settings",
@@ -9614,7 +10337,7 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "renderCurrentPreview",
         args: {
-          projectRoot: "/tmp/app",
+          projectRoot: path.resolve("/tmp/app"),
           sourceFile: "Views/HomeView.swift",
           sourceLine: 44,
           elementLabel: "Settings",
@@ -10850,6 +11573,334 @@ describe("ADE CLI", () => {
     }
   });
 
+  describe("ios-sim build root and capture flags", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+
+    const launchArgsFor = (argv: string[]): Record<string, unknown> => {
+      const plan = buildCliPlan(argv);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { args?: Record<string, unknown> } }
+        | undefined;
+      return params?.arguments?.args ?? {};
+    };
+
+    beforeEach(() => {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+      process.env.ADE_WORKSPACE_ROOT = "/tmp/ade-project/.ade/worktrees/lane-a";
+    });
+
+    afterEach(() => {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousWorkspace === undefined) delete process.env.ADE_WORKSPACE_ROOT;
+      else process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    });
+
+    it("routes rooted subcommands at the lane, then the caller's worktree", () => {
+      // An agent in a lane: the lane resolves the build root service-side, so
+      // the CLI must not pin a projectRoot that would override it.
+      process.env.ADE_LANE_ID = "lane-ios-1";
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "apps"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "apps"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "snapshot"])).toMatchObject({
+        laneId: "lane-ios-1",
+      });
+      expect(launchArgsFor(["ios-sim", "snapshot"]).projectRoot).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "previews", "--source", "A.swift"]))
+        .toMatchObject({ laneId: "lane-ios-1" });
+
+      // A plain shell inside the worktree with no ADE_LANE_ID still builds the
+      // worktree it is standing in, not the primary checkout.
+      delete process.env.ADE_LANE_ID;
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        projectRoot: path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"),
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).laneId).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "select", "120", "420"])).toMatchObject({
+        projectRoot: path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"),
+      });
+    });
+
+    it("lets an explicit --project-root beat the lane default", () => {
+      process.env.ADE_LANE_ID = "lane-ios-1";
+      expect(
+        launchArgsFor(["ios-sim", "launch", "--project-root", "/tmp/primary"]),
+      ).toMatchObject({ projectRoot: path.resolve("/tmp/primary") });
+      expect(
+        launchArgsFor(["ios-sim", "apps", "--root", "/tmp/primary"]),
+      ).toMatchObject({
+        projectRoot: path.resolve("/tmp/primary"),
+        laneId: "lane-ios-1",
+      });
+    });
+
+    it("keeps the simulator in the background unless asked otherwise", () => {
+      expect(launchArgsFor(["ios-sim", "launch"])).toMatchObject({
+        keepSimulatorInBackground: true,
+      });
+      expect(launchArgsFor(["ios-sim", "launch"]).openDrawer).toBeUndefined();
+      // Back-compat: --background was the old opt-in and must stay harmless.
+      expect(launchArgsFor(["ios-sim", "launch", "--background"])).toMatchObject({
+        keepSimulatorInBackground: true,
+      });
+      expect(launchArgsFor(["ios-sim", "launch", "--foreground"])).toMatchObject({
+        keepSimulatorInBackground: false,
+      });
+      expect(launchArgsFor(["ios-sim", "launch", "--open-drawer"])).toMatchObject({
+        openDrawer: true,
+        keepSimulatorInBackground: true,
+      });
+    });
+
+    it("gives launch the daemon's own budget and a follow notice", () => {
+      const plan = buildCliPlan(["ios-sim", "launch", "--follow"]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.formatter).toBe("ios-sim-launch");
+      expect(plan.minTimeoutMs).toBe(17 * 60_000);
+      expect(plan.progressNotice).toContain("not streamed");
+
+      const quiet = buildCliPlan(["ios-sim", "launch"]);
+      expect(quiet.kind).toBe("execute");
+      if (quiet.kind !== "execute") return;
+      expect(quiet.progressNotice).toBeUndefined();
+    });
+
+    it("sends the caller's chat session on shutdown so the owner guard can bite", () => {
+      // Without a caller identity the service can only evict unconditionally,
+      // which is exactly the "you cannot take another chat's session" promise
+      // the docs make.
+      process.env.ADE_CHAT_SESSION_ID = "chat-owner-1";
+      expect(launchArgsFor(["ios-sim", "shutdown"])).toMatchObject({
+        chatSessionId: "chat-owner-1",
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown"]).force).toBeUndefined();
+      // An explicit flag still wins over the environment.
+      expect(
+        launchArgsFor(["ios-sim", "stop", "--chat-session", "chat-other"]),
+      ).toMatchObject({ chatSessionId: "chat-other" });
+      // --force is the documented override and must still reach the service.
+      expect(launchArgsFor(["ios-sim", "shutdown", "--force"])).toMatchObject({
+        chatSessionId: "chat-owner-1",
+        force: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown", "-f"])).toMatchObject({
+        force: true,
+      });
+    });
+
+    // Same silent flag-drop as claim: help and docs name `--ignore-ownership`,
+    // and until it was parsed the documented bypass was a no-op that pushed
+    // callers onto `--force` (the hard reset).
+    it("forwards shutdown --ignore-ownership instead of silently dropping it", () => {
+      expect(launchArgsFor(["ios-sim", "shutdown", "--ignore-ownership"])).toMatchObject({
+        ignoreOwnership: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown", "--ignore-owner"])).toMatchObject({
+        ignoreOwnership: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown"])).not.toHaveProperty("ignoreOwnership");
+      expect(launchArgsFor(["ios-sim", "shutdown", "--force"])).not.toHaveProperty(
+        "ignoreOwnership",
+      );
+    });
+
+    it("does not invent a build root for tap, drag, or type", () => {
+      // These act on whatever is already on the device; the service takes no
+      // root, so sending one advertised a flag that silently did nothing.
+      expect(launchArgsFor(["ios-sim", "tap", "120", "420"]).projectRoot)
+        .toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "tap", "120", "420"]).laneId)
+        .toBeUndefined();
+      expect(
+        launchArgsFor(["ios-sim", "drag", "120", "700", "120", "250"])
+          .projectRoot,
+      ).toBeUndefined();
+      expect(launchArgsFor(["ios-sim", "type", "--value", "hi"]).projectRoot)
+        .toBeUndefined();
+      // `select` does match Swift sources, so it keeps its root.
+      expect(
+        launchArgsFor(["ios-sim", "select", "120", "420"]).projectRoot,
+      ).toBe(path.resolve("/tmp/ade-project/.ade/worktrees/lane-a"));
+    });
+
+    it("passes --out through to the screenshot action", () => {
+      expect(
+        launchArgsFor(["ios-sim", "screenshot", "--out", "shot.png"]),
+      ).toMatchObject({ outPath: "shot.png" });
+      expect(launchArgsFor(["ios-sim", "screenshot"]).outPath).toBeUndefined();
+
+      // The written path is what an agent reads next, so it prints raw and
+      // untruncated rather than as a table cell.
+      const longPath = `/Users/someone/Projects/ADE/.ade/worktrees/${"a".repeat(80)}/shot.png`;
+      const output = formatOutput(
+        { deviceUdid: "UDID-1", filePath: longPath, width: 393, height: 852 },
+        { text: true } as any,
+        inferFormatter({
+          kind: "execute",
+          label: "iOS simulator screenshot",
+          steps: [],
+        }),
+      );
+      expect(output).toContain(`file: ${longPath}`);
+    });
+
+    it("files an ios-sim proof as screenshot-then-ingest", () => {
+      const plan = buildCliPlan([
+        "ios-sim",
+        "proof",
+        "--caption",
+        "Settings after the fix",
+      ]);
+      expect(plan.kind).toBe("execute");
+      if (plan.kind !== "execute") return;
+      expect(plan.steps).toHaveLength(2);
+      expect(plan.steps[0]).toMatchObject({
+        key: "screenshot",
+        params: {
+          arguments: { domain: "ios_simulator", action: "screenshot" },
+        },
+      });
+      const ingest = plan.steps[1]?.params;
+      expect(typeof ingest).toBe("function");
+      if (typeof ingest !== "function") return;
+      // The action envelope, not the bare record: that is what the runtime
+      // actually answers with.
+      expect(
+        ingest({
+          screenshot: {
+            domain: "ios_simulator",
+            action: "screenshot",
+            result: { filePath: "/tmp/lane-a/.ade/ios/shot.png" },
+          },
+        }),
+      ).toMatchObject({
+        name: "ingest_computer_use_artifacts",
+        arguments: {
+          backendName: "ade-ios-simulator",
+          toolName: "ios-sim proof",
+          inputs: [
+            {
+              kind: "screenshot",
+              title: "Settings after the fix",
+              description: "Settings after the fix",
+              path: "/tmp/lane-a/.ade/ios/shot.png",
+            },
+          ],
+        },
+      });
+      expect(() => ingest({ screenshot: { result: {} } })).toThrow(
+        /could not find the captured screenshot path/,
+      );
+    });
+
+    it("turns the new simulator error codes into one actionable line", () => {
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_TARGET_ROOT_MISMATCH: launch target x is outside the build root /tmp/a.",
+        ),
+      ).toContain("ade ios-sim apps");
+      // The service message already carries the launch id; the hint adds only
+      // the command, so it no longer re-extracts the id with a regex over
+      // someone else's prose.
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_LAUNCH_IN_PROGRESS: an iOS simulator launch (launch-7) is already running.",
+        ),
+      ).toContain("ade ios-sim shutdown --force");
+      expect(
+        iosSimulatorErrorHint("IOS_SIMULATOR_NO_BUILDABLE_TARGET: none under /tmp/a."),
+      ).toContain("--target-id");
+      // These two moved here from the service, which now states only the fact
+      // and the code — this layer is the one home for command advice.
+      expect(
+        iosSimulatorErrorHint(
+          "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.",
+        ),
+      ).toContain("ade ios-sim shutdown --force");
+      expect(
+        iosSimulatorErrorHint("IOS_SIMULATOR_LANE_NOT_RESOLVED: no worktree resolved for lane lane-x."),
+      ).toContain("--project-root");
+      expect(iosSimulatorErrorHint("something else went wrong")).toBeNull();
+    });
+
+    // A refused `claim` wanted to re-attribute a session, not tear one down, so
+    // it must not be pointed at the hard reset: `shutdown --force` stops the
+    // owner's idb companions and clears the launch lock to do a job the
+    // non-destructive bypass does without any of it.
+    it("points a refused claim at the non-destructive bypass, not shutdown --force", () => {
+      const owned =
+        "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.";
+
+      const claimHint = iosSimulatorErrorHint(owned, "claim");
+      expect(claimHint).toContain("--ignore-ownership");
+      expect(claimHint).not.toContain("shutdown --force");
+
+      // Every other subcommand keeps the takeover advice it already had.
+      expect(iosSimulatorErrorHint(owned, "launch")).toContain("shutdown --force");
+      expect(iosSimulatorErrorHint(owned, "shutdown")).toContain("shutdown --force");
+      expect(iosSimulatorErrorHint(owned, null)).toContain("shutdown --force");
+    });
+
+    // The hint is emitted from `main`, which only has raw argv, so the wiring
+    // that recovers the subcommand is what actually decides which line prints.
+    it("recovers the ios-sim subcommand from raw argv, aliases and global flags included", () => {
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "claim", "--lane", "lane-a"])).toBe("claim");
+      expect(iosSimulatorSubcommandFromArgv(["--socket", "ios-sim", "claim"])).toBe("claim");
+      // A global flag that carries a value must not be mistaken for the command.
+      expect(
+        iosSimulatorSubcommandFromArgv(["--project-root", "/tmp/root", "ios", "claim"]),
+      ).toBe("claim");
+      // Aliases resolve to the canonical name the hint keys on.
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "stop"])).toBe("shutdown");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "open"])).toBe("launch");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim"])).toBe("status");
+      expect(iosSimulatorSubcommandFromArgv(["lanes", "list"])).toBeNull();
+    });
+
+    it("summarises a launch with its build root, warning, and capabilities", () => {
+      const output = formatOutput(
+        {
+          id: "sess-1",
+          deviceUdid: "UDID-1",
+          deviceName: "iPhone 16",
+          bundleId: "com.example.app",
+          appName: "Example",
+          laneId: "lane-ios-1",
+          mode: "live",
+          keepSimulatorInBackground: true,
+          buildRoot: "/Users/x/Projects/ADE/.ade/worktrees/lane-a",
+          usedInstalledBinary: true,
+          capabilities: {
+            canTap: true,
+            canType: true,
+            canDrag: false,
+            canInspect: false,
+          },
+        },
+        { text: true } as any,
+        "ios-sim-launch",
+      );
+      expect(output).toContain("iPhone 16 (UDID-1)");
+      expect(output).toContain("build root: …/ADE/.ade/worktrees/lane-a");
+      expect(output).toContain("tap/type/drag/inspect  yes/yes/no/no");
+      expect(output).toContain("prebuilt binary");
+    });
+  });
+
   it("update commands map to auto-update actions", () => {
     const status = buildCliPlan(["update", "status"]);
     expect(status.kind).toBe("execute");
@@ -11251,5 +12302,252 @@ describe("ADE CLI", () => {
     expect((summarized as any).visual).toContain(
       "\\- child (id: child) [feature]",
     );
+  });
+});
+
+describe("describeLastFailureForStartupLog", () => {
+  it("names the real cause instead of the 'unknown' bucket", () => {
+    // The credential-store decrypt failure that took a user's machine down for
+    // an evening classified as `unknown`, so the only line launchd printed was
+    // "after repeated failures: unknown".
+    expect(describeLastFailureForStartupLog({
+      code: "unknown",
+      detail: "Error: Unsupported state or unable to authenticate data\n    at Decipheriv.final",
+    })).toBe("unknown · Error: Unsupported state or unable to authenticate data");
+  });
+
+  it("falls back to the code alone when nothing was recorded", () => {
+    expect(describeLastFailureForStartupLog({ code: "disk_full" })).toBe("disk_full");
+  });
+
+  it("bounds a long detail so one startup line cannot flood the log", () => {
+    const described = describeLastFailureForStartupLog(
+      { code: "db_integrity", detail: "x".repeat(500) },
+      40,
+    );
+    expect(described.length).toBeLessThanOrEqual("db_integrity · ".length + 40);
+    expect(described.endsWith("…")).toBe(true);
+  });
+});
+
+describe("monitorBrainSocketOwnership", () => {
+  const flush = async (): Promise<void> => {
+    // The monitor floors its poll interval at 250ms; outlast one tick.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  };
+  const socketPath = "/tmp/ade-ownership/ade.sock";
+
+  it("ends the brain when another brain replaces the socket it bound", async () => {
+    let inode: bigint | null = 100n;
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => inode,
+    });
+    await flush();
+    expect(lost).toEqual([]);
+    // A rival that had already probed this path as stale unlinked our inode
+    // and bound its own. No EADDRINUSE ever happened; only the inode changed.
+    inode = 200n;
+    await flush();
+    expect(lost).toEqual(["replaced"]);
+    stop();
+  });
+
+  it("ends the brain when the socket path is removed underneath it", async () => {
+    let inode: bigint | null = 100n;
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => inode,
+    });
+    inode = null;
+    await flush();
+    expect(lost).toEqual(["removed"]);
+    stop();
+  });
+
+  it("stays quiet while the inode is unchanged, and reports nothing after stop", async () => {
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => 100n,
+    });
+    await flush();
+    stop();
+    await flush();
+    expect(lost).toEqual([]);
+  });
+
+  it("is a no-op for a Windows named pipe, which has no directory entry to steal", () => {
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(
+      String.raw`\\.\pipe\ade-runtime-abc`,
+      (reason) => lost.push(reason),
+      { intervalMs: 250, readInode: () => { throw new Error("must not stat a named pipe"); } },
+    );
+    stop();
+    expect(lost).toEqual([]);
+  });
+
+  it("fails open when the socket reports no inode", () => {
+    const lost: string[] = [];
+    const stop = monitorBrainSocketOwnership(socketPath, (reason) => lost.push(reason), {
+      intervalMs: 250,
+      readInode: () => null,
+    });
+    stop();
+    expect(lost).toEqual([]);
+  });
+});
+
+describe("unlinkOwnedRuntimeSocket", () => {
+  const socketPath = "/tmp/ade-ownership/ade.sock";
+
+  // Regression: the shutdown that follows a "replaced" ownership loss used to
+  // unlink unconditionally, deleting the rival brain's socket — the winner
+  // then listened on an inode nothing could reach.
+  it("refuses to remove a socket another process rebound", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 200n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("not_owned");
+    expect(unlinked).toEqual([]);
+  });
+
+  it("removes the socket while we still own the inode we bound", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("unlinked");
+    expect(unlinked).toEqual([socketPath]);
+  });
+
+  it("reports an already-gone socket without touching the filesystem", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => null,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("absent");
+    expect(unlinked).toEqual([]);
+  });
+
+  // A failed unlink used to be reported as "absent", which is the opposite of
+  // what happened: the socket file is still there, still ours, and the next
+  // brain will probe it as stale. The caller logs the difference.
+  it("reports a failed unlink as failed, not absent", () => {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: () => { throw new Error("EPERM"); },
+    });
+
+    expect(outcome).toBe("failed");
+  });
+
+  // ENOENT between the stat and the unlink is the one failure that is not a
+  // failure: the path is gone, which is exactly what we were trying to do.
+  it("reports an unlink that lost the race to ENOENT as absent", () => {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, 100n, {
+      readInode: () => 100n,
+      unlink: () => {
+        throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+      },
+    });
+
+    expect(outcome).toBe("absent");
+  });
+
+  it("falls back to the unconditional unlink when no inode was recorded at bind time", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, null, {
+      readInode: () => 200n,
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("unlinked");
+    expect(unlinked).toEqual([socketPath]);
+  });
+
+  it("never unlinks a Windows named pipe, which has no directory entry", () => {
+    const unlinked: string[] = [];
+    const outcome = unlinkOwnedRuntimeSocket(String.raw`\\.\pipe\ade-runtime-abc`, 100n, {
+      readInode: () => { throw new Error("must not stat a named pipe"); },
+      unlink: (target) => unlinked.push(target),
+    });
+
+    expect(outcome).toBe("not_owned");
+    expect(unlinked).toEqual([]);
+  });
+});
+
+describe("formatDiagnosticError", () => {
+  it("never prints the fields of a thrown non-Error, which can carry a token", () => {
+    // sync.connectToBrain hands the draft's token to the request it builds; a
+    // rejection that carried that request used to be JSON.stringify'd whole
+    // into launchd.err.log, which `ade report-issue` tails into a report the
+    // user is told to paste into a public GitHub issue.
+    // Assembled from segments so the working tree never carries a
+    // secret-shaped literal the secret scanner would flag (same convention as
+    // diagnosticReport.test.ts).
+    const fakeAdeToken = ["ade", "live", "9f3c1b7d24a54e6f8c0b1d2e3f4a5b6c"].join("_");
+    const fakeSkToken = ["sk", "live", "abcdefghijklmnopqrstuvwxyz"].join("-");
+    const thrown = {
+      code: "ECONNREFUSED",
+      token: fakeAdeToken,
+      body: { authorization: `Bearer ${fakeSkToken}` },
+    };
+
+    const formatted = formatDiagnosticError(thrown);
+
+    expect(formatted).not.toContain(fakeAdeToken);
+    expect(formatted).not.toContain(fakeSkToken);
+    // The shape still has to be diagnosable: the errno and the key names that
+    // locate the throw site survive.
+    expect(formatted).toContain("code=ECONNREFUSED");
+    expect(formatted).toContain("token");
+  });
+
+  it("redacts a credential that an Error carried in its own message", () => {
+    const fakeUrlToken = ["6f1c", "8a2b", "4d9e", "7f30"].join("");
+    const formatted = formatDiagnosticError(
+      new Error(`connect failed: tcp://127.0.0.1:5051?token=${fakeUrlToken}`),
+    );
+
+    expect(formatted).not.toContain(fakeUrlToken);
+    expect(formatted).toContain("token=<redacted>");
+    // Loopback is the fact a maintainer needs and identifies nobody.
+    expect(formatted).toContain("127.0.0.1");
+  });
+
+  it("caps a runaway error so one throw cannot bury the log it is written to", () => {
+    const formatted = formatDiagnosticError("x".repeat(20_000));
+
+    expect(formatted.length).toBeLessThan(4_200);
+    expect(formatted).toMatch(/characters truncated/);
+  });
+
+  it("keeps a plain string error and survives a value that throws while described", () => {
+    expect(formatDiagnosticError("brain socket vanished")).toBe("brain socket vanished");
+
+    const hostile = new Proxy(
+      {},
+      {
+        ownKeys: () => {
+          throw new Error("no keys for you");
+        },
+        get: () => {
+          throw new Error("no fields for you");
+        },
+      },
+    );
+    expect(() => formatDiagnosticError(hostile)).not.toThrow();
   });
 });

@@ -1,0 +1,35 @@
+---
+title: "v1.2.58"
+description: "Release notes for ADE v1.2.58 - August 11, 2026"
+---
+
+A large performance release: chats sync far less data to your phone, the iOS app feels instant, long threads scroll smoothly on desktop, and settling a chat now actually stops its background work. Plus Pi as a new agent, readable chat threads, and reliable subagent updates.
+
+---
+
+## Performance
+
+- **Phones receive a fraction of the data they used to.** Chat events are compacted before they cross the wire, heavy PR detail is fetched on demand instead of pre-synced to every device, compressed sync frames ship as binary, and streamed replies are folded before replay — reopening a long thread transfers up to 79% less.
+- **The iOS app responds instantly.** Your message appears the moment you tap send (images too), scrolling up through history no longer jumps, and streaming replies render up to 39× faster with smarter caching.
+- **Desktop threads scroll smoothly.** Older history loads before you reach the top, the view no longer shifts while pages load, and each page carries real content.
+- **Less background churn.** Fewer git processes per refresh, GitHub requests back off properly when rate-limited, never-pushed branches skip the API entirely, and the local database stays smaller with paced cleanup.
+- **A crashed window recovers itself.** If the app window dies, it reloads in about a second instead of staying white.
+
+## Chat
+
+- **File edits no longer clutter the thread.** While an agent edits, the status line reads "Editing…"; when the turn ends you get one collapsed summary of changed files with lane-relative paths and Undo.
+- **File names in chat are real links.** Click one to open it in the Files tab, in the right lane, at the right line.
+- **Mention chats, PRs, and more with tags**, browse your prompt history, and see PR details in a dedicated pane.
+- Usage tracking got an upgrade, and pasted images are compressed instead of rejected.
+
+## Agents
+
+- **Pi joins Claude, Codex, Cursor, Droid, and OpenCode** as a first-class agent.
+- **You can see when agents are still working.** Sessions with live background work show as working or monitoring everywhere — the Work list, the top bar, the dock badge, and your phone.
+- **Settling a chat now stops its work.** Monitors, background shells, and subagent fleets shut down when you settle; open terminals stay. If something can't be stopped, the row says so instead of hiding it. Starting a new turn always wins over a settle in progress.
+- **Parent chats hear back from their subagents reliably**, including turns started by scheduled work.
+
+## iOS
+
+- **Pairing tells you the truth.** If a saved key can't be read, the app says so and offers Repair instead of pretending you never paired.
+- Instant send, stable scrolling, and faster streaming, as above.

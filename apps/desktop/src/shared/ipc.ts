@@ -77,6 +77,41 @@ export const IPC = {
   projectSwitchToPath: "ade.project.switchToPath",
   recoveryDiagnose: "ade.recovery.diagnose",
   recoveryRepair: "ade.recovery.repair",
+  /** Main → renderer: one repair step as it finishes, so a long repair reads live. */
+  recoveryRepairStep: "ade.recovery.repairStep",
+  /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
+  diagnosticsOpenIssue: "ade.diagnostics.openIssue",
+  /** Renderer-detected failure asking main to consider one automatic send. */
+  diagnosticsAutoReport: "ade.diagnostics.autoReport",
+  /**
+   * "Send a report to ADE", pressed by hand in Settings, with nothing visibly
+   * broken. Main owns the report, the per-device manual budget and the upload;
+   * unlike the automatic path it answers with what happened, because someone is
+   * watching.
+   */
+  diagnosticsSendManual: "ade.diagnostics.sendManual",
+  /** Read the "share diagnostics automatically" setting. */
+  diagnosticsGetSharing: "ade.diagnostics.getSharing",
+  /** Flip that setting; also what the toast's "Turn off" action calls. */
+  diagnosticsSetSharing: "ade.diagnostics.setSharing",
+  /** Reveal a saved auto-report in Finder/Explorer. Reports directory only. */
+  diagnosticsRevealReport: "ade.diagnostics.revealReport",
+  /** Main → renderer: one automatic report was sent, so a toast can say so. */
+  diagnosticsAutoSent: "ade.diagnostics.autoSent",
+  /**
+   * List the sends nobody has been shown yet — the brain's, and any made while
+   * no window was listening — and deliver them. Called by a renderer as it
+   * subscribes, so a headless auto-send still gets its toast without anything
+   * polling for one. Reading does not retire anything; the ack below does.
+   */
+  diagnosticsFlushAutoSent: "ade.diagnostics.flushAutoSent",
+  /**
+   * Renderer → main: these references are now on screen, stop offering them.
+   * Sent AFTER the toast is rendered, by whichever path delivered it, which is
+   * what keeps a notice from being toasted again on the next launch and what
+   * keeps "pending" meaning shown rather than merely handed over.
+   */
+  diagnosticsAckAutoSent: "ade.diagnostics.ackAutoSent",
   projectForgetRecent: "ade.project.forgetRecent",
   projectReorderRecent: "ade.project.reorderRecent",
   projectSetRecentPinned: "ade.project.setRecentPinned",
@@ -162,6 +197,10 @@ export const IPC = {
   lanesDetachLinearIssueFromSession: "ade.lanes.detachLinearIssueFromSession",
   lanesListLinearIssuesForSession: "ade.lanes.listLinearIssuesForSession",
   lanesListLinearIssuesForLaneSessions: "ade.lanes.listLinearIssuesForLaneSessions",
+  lanesAttachGitHubIssueToSession: "ade.lanes.attachGitHubIssueToSession",
+  lanesDetachGitHubIssueFromSession: "ade.lanes.detachGitHubIssueFromSession",
+  lanesListGitHubIssuesForSession: "ade.lanes.listGitHubIssuesForSession",
+  lanesListGitHubIssuesForLaneSessions: "ade.lanes.listGitHubIssuesForLaneSessions",
   lanesUnlinkLinearIssues: "ade.lanes.unlinkLinearIssues",
   lanesRebaseStart: "ade.lanes.rebaseStart",
   lanesRebasePush: "ade.lanes.rebasePush",
@@ -302,6 +341,8 @@ export const IPC = {
   agentChatCodexSetGoal: "ade.agentChat.codex.goal.set",
   agentChatCodexSetGoalStatus: "ade.agentChat.codex.goal.setStatus",
   agentChatCodexClearGoal: "ade.agentChat.codex.goal.clear",
+  agentChatCodexResetMemory: "ade.agentChat.codex.memory.reset",
+  agentChatCodexTerminateBackgroundTerminal: "ade.agentChat.codex.backgroundTerminals.terminate",
   orchestrationRunCreate: "ade.orchestration.runCreate",
   orchestrationBundleRead: "ade.orchestration.bundleRead",
   orchestrationManifestReadSection: "ade.orchestration.manifestReadSection",
@@ -348,6 +389,10 @@ export const IPC = {
   iosSimulatorGetStreamStatus: "ade.iosSimulator.getStreamStatus",
   iosSimulatorGetWindowState: "ade.iosSimulator.getWindowState",
   iosSimulatorListWindowSources: "ade.iosSimulator.listWindowSources",
+  iosSimulatorRetainWindowParking: "ade.iosSimulator.retainWindowParking",
+  iosSimulatorReleaseWindowParking: "ade.iosSimulator.releaseWindowParking",
+  iosSimulatorOpenSystemSettings: "ade.iosSimulator.openSystemSettings",
+  iosSimulatorRevealWindow: "ade.iosSimulator.revealWindow",
   iosSimulatorTap: "ade.iosSimulator.tap",
   iosSimulatorTypeText: "ade.iosSimulator.typeText",
   iosSimulatorDrag: "ade.iosSimulator.drag",
@@ -441,6 +486,10 @@ export const IPC = {
   pluginWebviewBridge: "ade.plugin.webview.bridge",
   pluginWebviewHandshake: "ade.plugin.webview.handshake",
   pluginWebviewEvent: "ade.plugin.webview.event",
+  externalSessionsGetDetail: "ade.externalSessions.getDetail",
+  externalSessionsWatchDetail: "ade.externalSessions.watchDetail",
+  externalSessionsUnwatchDetail: "ade.externalSessions.unwatchDetail",
+  externalSessionsDetailUpdated: "ade.externalSessions.detailUpdated",
   diffGetChanges: "ade.diff.getChanges",
   diffGetFile: "ade.diff.getFile",
   diffGetFilePatch: "ade.diff.getFilePatch",
@@ -595,6 +644,11 @@ export const IPC = {
   aiPiLoginSubmit: "ade.ai.piLoginSubmit",
   aiPiLoginCancel: "ade.ai.piLoginCancel",
   aiPiAuthStatus: "ade.ai.piAuthStatus",
+  aiCursorAuthStatus: "ade.ai.cursorAuthStatus",
+  aiCursorAuthLogin: "ade.ai.cursorAuthLogin",
+  aiCursorAuthLogout: "ade.ai.cursorAuthLogout",
+  aiCursorAuthCancel: "ade.ai.cursorAuthCancel",
+  aiCursorAuthEvent: "ade.ai.cursorAuthEvent",
   aiGetToolsCache: "ade.ai.getToolsCache",
   aiEnsureToolsCache: "ade.ai.ensureToolsCache",
   aiToolsCacheEvent: "ade.ai.toolsCacheEvent",
@@ -610,6 +664,7 @@ export const IPC = {
   aiCursorCloudListAgents: "ade.ai.cursorCloud.listAgents",
   aiCursorCloudListRuns: "ade.ai.cursorCloud.listRuns",
   aiCursorCloudCreateRun: "ade.ai.cursorCloud.createRun",
+  aiCursorCloudGetLaneSecretNames: "ade.ai.cursorCloud.getLaneSecretNames",
   aiCursorCloudArchiveAgent: "ade.ai.cursorCloud.archiveAgent",
   aiCursorCloudUnarchiveAgent: "ade.ai.cursorCloud.unarchiveAgent",
   aiCursorCloudDeleteAgent: "ade.ai.cursorCloud.deleteAgent",
@@ -620,6 +675,13 @@ export const IPC = {
   aiCursorCloudListArtifacts: "ade.ai.cursorCloud.listArtifacts",
   aiCursorCloudDownloadArtifact: "ade.ai.cursorCloud.downloadArtifact",
   aiCursorCloudOpenChat: "ade.ai.cursorCloud.openChat",
+  aiCursorCloudWatchMirror: "ade.ai.cursorCloud.watchMirror",
+  aiCursorCloudGetUsage: "ade.ai.cursorCloud.getUsage",
+  aiCursorCloudFleet: "ade.ai.cursorCloud.fleet",
+  aiCursorCloudPullIntoLane: "ade.ai.cursorCloud.pullIntoLane",
+  aiCursorCloudResolveLane: "ade.ai.cursorCloud.resolveLane",
+  aiCursorCloudStopRun: "ade.ai.cursorCloud.stopRun",
+  aiCursorCloudFleetEvent: "ade.ai.cursorCloud.fleetEvent",
   syncGetStatus: "ade.sync.getStatus",
   syncGetLocalStatus: "ade.sync.getLocalStatus",
   syncRefreshDiscovery: "ade.sync.refreshDiscovery",
@@ -649,6 +711,7 @@ export const IPC = {
   githubSetToken: "ade.github.setToken",
   githubClearToken: "ade.github.clearToken",
   githubStatusChanged: "ade.github.statusChanged",
+  githubGetRequestBudget: "ade.github.getRequestBudget",
   githubGetAppUserAuthStatus: "ade.github.getAppUserAuthStatus",
   githubStartAppUserDeviceAuth: "ade.github.startAppUserDeviceAuth",
   githubPollAppUserDeviceAuth: "ade.github.pollAppUserDeviceAuth",
@@ -661,6 +724,7 @@ export const IPC = {
   githubGetRepoStarState: "ade.github.getRepoStarState",
   githubSetRepoStarred: "ade.github.setRepoStarred",
   githubListRepoIssues: "ade.github.listRepoIssues",
+  githubGetIssue: "ade.github.getIssue",
   githubListMyRepos: "ade.github.listMyRepos",
   githubPublishCurrentProject: "ade.github.publishCurrentProject",
   accountStatus: "ade.account.status",
@@ -678,6 +742,7 @@ export const IPC = {
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
   accountRepairMachinePairing: "ade.account.repairMachinePairing",
+  accountRepairSession: "ade.account.repairSession",
   prsCreateFromLane: "ade.prs.createFromLane",
   prsLinkToLane: "ade.prs.linkToLane",
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",
@@ -864,6 +929,9 @@ export const IPC = {
   feedbackSubmitDraft: "ade.feedback.submitDraft",
   feedbackList: "ade.feedback.list",
   feedbackOnUpdate: "ade.feedback.onUpdate",
+  keepAwakeGet: "ade.keepAwake.get",
+  keepAwakeSetLevel: "ade.keepAwake.setLevel",
+  keepAwakeFixSystemSleep: "ade.keepAwake.fixSystemSleep",
   updateCheckForUpdates: "ade.update.checkForUpdates",
   updateGetState: "ade.update.getState",
   updateGetPreferences: "ade.update.getPreferences",

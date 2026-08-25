@@ -6,6 +6,7 @@ import {
 import {
   activityAlertFingerprint,
   activityContentFingerprint,
+  activityRosterFingerprint,
 } from "./activityFingerprint";
 
 function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
@@ -103,5 +104,29 @@ describe("Activity fingerprints", () => {
       .not.toBe(activityAlertFingerprint(firstQuestion));
     expect(activityAlertFingerprint(reenteredReview))
       .not.toBe(activityAlertFingerprint(firstReview));
+  });
+
+  it("holds the roster hash steady across republish churn but not real change", () => {
+    // The 30 s roster-carrying heartbeat only stays inside its write budget if
+    // this hash ignores what a republish moves on its own — `revision` (a
+    // timestamp), `updatedAt`, `expiresAt`, machine presence. If it did not,
+    // every heartbeat would look like a change and write.
+    const running = item();
+    const other = item({ id: "agent:machine:session-2" });
+    const republished = item({
+      revision: 99,
+      updatedAt: "2026-08-01T12:00:48.000Z",
+      expiresAt: "2026-08-01T14:00:48.000Z",
+      preview: "Working for 48.9s · 8,420 tokens · 27 files",
+    });
+    const wentIdle = item({ phase: "stale", title: "Codex is idle" });
+
+    expect(activityRosterFingerprint([republished], [other]))
+      .toBe(activityRosterFingerprint([running], [other]));
+    expect(activityRosterFingerprint([wentIdle], [other]))
+      .not.toBe(activityRosterFingerprint([running], [other]));
+    // A row crossing the machine cap is a tombstone the relay still needs.
+    expect(activityRosterFingerprint([running], []))
+      .not.toBe(activityRosterFingerprint([running], [other]));
   });
 });

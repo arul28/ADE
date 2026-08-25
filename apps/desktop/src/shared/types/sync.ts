@@ -387,7 +387,16 @@ export type SyncTailnetDiscoveryStatus = {
 
 export type SyncAccountDirectoryState =
   | "published"
+  /** Sync is genuinely turned off on this computer. Nothing is trying. */
   | "sync_disabled"
+  /**
+   * Sync is meant to run here but has not come up yet — the publisher has made
+   * no attempt, or the sync host is still failing and retrying. Distinct from
+   * `sync_disabled` because the copy for the two is not the same sentence:
+   * this state was reported as "sync is off on this computer" while ADE was in
+   * fact retrying a read it could not complete.
+   */
+  | "sync_not_started"
   | "no_active_sync_scope"
   | "snapshot_failed"
   | "machine_key_unavailable"
@@ -421,6 +430,7 @@ export function isBrainAccountSessionFailure(
 const SYNC_ACCOUNT_DIRECTORY_STATES: readonly SyncAccountDirectoryState[] = [
   "published",
   "sync_disabled",
+  "sync_not_started",
   "no_active_sync_scope",
   "snapshot_failed",
   "machine_key_unavailable",
@@ -494,6 +504,14 @@ export function describeUnpublishedAccountDirectory(
       return {
         summary: "sync is off on this computer, so other devices can't reach it",
         nextAction: null,
+      };
+    case "sync_not_started":
+      // Only ever true, never "off": this is also what a brain reports while
+      // its sync host is failing and retrying, and telling someone sync is off
+      // sends them looking for a switch that is already on.
+      return {
+        summary: "sync hasn't started on this computer yet",
+        nextAction: "ade doctor",
       };
     case "missing_pairing_connect_info":
       return {
@@ -823,6 +841,11 @@ export type SyncRosterChat = {
   laneId: string;
   /** Parent chat/session id for attached shell rows. Mirrors TerminalSessionSummary.chatSessionId. */
   chatSessionId?: string | null;
+  /**
+   * Identity-session marker used to reject stale/legacy roster rows on clients.
+   * Current hosts omit identity sessions from the normal roster entirely.
+   */
+  identityKey?: string | null;
   title?: string | null;
   provider?: string | null;
   model?: string | null;
@@ -844,6 +867,13 @@ export type SyncRosterChat = {
   attentionMessage?: string | null;
   lastTurnFailedAt?: string | null;
   exitCode?: number | null;
+  /**
+   * Snooze overlay. Optional so older hosts omit it and older phones ignore it.
+   * A snoozed chat is still the phase it was; Activity must not count it as
+   * working just because `status` stayed `running`.
+   */
+  snoozedUntil?: string | null;
+  snoozedAt?: string | null;
 };
 
 export type SyncRosterLane = {
@@ -1247,16 +1277,20 @@ export type SyncHelloErrorPayload =
        * pair again. Clients must classify from this code and never by matching
        * the host-sent message text.
        *
-       * The two codes below it exist because `auth_failed` reads as "pair it
-       * again" on every client, and that is the wrong instruction for a host
-       * that simply cannot verify accounts yet (`host_update_required` — update
-       * it there) or whose account session moved under the handshake
-       * (`account_session_changed` — sign in, then retry). Neither is a reason
-       * to destroy a saved pairing.
+       * The specific codes below it exist because `auth_failed` reads as "pair
+       * it again" on every client, and that is the wrong instruction for a host
+       * that is signed out (`account_not_signed_in`), cannot verify the account
+       * session (`account_verification_failed` — check sign-in and account
+       * configuration there), is too old to verify accounts
+       * (`host_update_required` — update it there), or whose account session
+       * moved under the handshake (`account_session_changed` — sign in, then
+       * retry). None of those is a reason to destroy a saved pairing.
        */
       code:
         | "auth_failed"
         | "repair_required"
+        | "account_not_signed_in"
+        | "account_verification_failed"
         | "host_update_required"
         | "account_session_changed"
         | "invalid_hello"
@@ -1318,6 +1352,15 @@ export type SyncCloudRelayStatus = {
   lastBridgeValidationAt: string | null;
   lastControlError: string | null;
   lastError: string | null;
+  /**
+   * The relay self-probe: ADE dialing its own relay endpoint and reading the
+   * echo back. Declared optional because only the brain's status builder fills
+   * them in and only `ade doctor` reads them; every other producer of this type
+   * omits all three, and did so while these fields were travelling untyped.
+   */
+  relayEndToEndVerifiedAt?: string | null;
+  relayEndToEndFailure?: string | null;
+  relayEndToEndRoundTripMs?: number | null;
 };
 
 /**
@@ -1458,6 +1501,13 @@ export type SyncFileBlob = {
   dataUrl?: string;
   contentOmitted?: boolean;
   omittedReason?: "too_large" | "unsupported_binary";
+  /**
+   * True when the host sent only the start of the file because it exceeds the
+   * editor read cap. `size` is the full on-disk size either way, so a client
+   * that ignores this renders a prefix as if it were the whole file.
+   */
+  isPartial?: boolean;
+  totalSize?: number;
 };
 
 export type SyncFileRequest =
@@ -1507,6 +1557,13 @@ export type SyncTerminalUnsubscribePayload = {
   sessionId: string;
 };
 
+export type SyncTerminalScreenSnapshot = {
+  cols: number;
+  rows: number;
+  bufferType: "normal" | "alternate";
+  serialized: string;
+};
+
 export type SyncTerminalSnapshotPayload = {
   sessionId: string;
   transcript: string;
@@ -1526,6 +1583,13 @@ export type SyncTerminalSnapshotPayload = {
    * surface a resume affordance instead of silently accepting keystrokes.
    */
   live?: boolean;
+  /**
+   * Current-screen CSI for replacing hydrates. Alt-screen TUIs (Claude Code)
+   * cannot be reconstructed from a transcript tail — the DECSET is long gone
+   * and the tail is incremental CUP at the desktop width. Older clients ignore
+   * this field and keep replaying `transcript`. Omitted on delta resumes.
+   */
+  screen?: SyncTerminalScreenSnapshot | null;
 };
 
 export type SyncTerminalDataPayload = {
@@ -1851,6 +1915,10 @@ export type SyncRemoteCommandAction =
   | "lanes.delete"
   | "lanes.getStackChain"
   | "lanes.getChildren"
+  | "lanes.attachGitHubIssueToSession"
+  | "lanes.detachGitHubIssueFromSession"
+  | "lanes.listGitHubIssuesForSession"
+  | "lanes.listGitHubIssuesForLaneSessions"
   | "lanes.rebaseStart"
   | "lanes.rebasePush"
   | "lanes.rebaseRollback"
@@ -1910,6 +1978,9 @@ export type SyncRemoteCommandAction =
   | "chat.rewindFiles"
   | "chat.getTurnFileDiff"
   | "chat.saveTempAttachment"
+  | "chat.listPromptStashes"
+  | "chat.createPromptStash"
+  | "chat.deletePromptStash"
   | "chat.warmupModel"
   | "chat.launch"
   | "chat.launchCli"
@@ -1943,6 +2014,8 @@ export type SyncRemoteCommandAction =
   | "chat.respondToInput"
   | "chat.restart"
   | "chat.updateSession"
+  | "chat.setSpawnKind"
+  | "chat.dismissSubagentTakeoverPrompt"
   | "chat.getCodexGoal"
   | "chat.setCodexGoal"
   | "chat.setCodexGoalStatus"
@@ -2023,12 +2096,22 @@ export type SyncRemoteCommandAction =
   | "history.listOperations"
   | "github.getStatus"
   | "github.getRemoteStatus"
+  | "github.getRequestBudget"
+  | "github.detectRepo"
+  | "github.listRepoIssues"
+  | "github.getIssue"
   | "github.publishCurrentProject"
   | "projectConfig.get"
   | "projectConfig.save"
   | "ai.getStatus"
   | "ai.updateConfig"
   | "ai.deleteApiKey"
+  | "ai.openCursorCloudChat"
+  | "ai.watchCursorCloudMirror"
+  | "ai.cursorCloudFleet"
+  | "ai.cursorCloudResolveLane"
+  | "ai.cursorCloudPullIntoLane"
+  | "ai.cursorCloudStopRun"
   | "orchestration.runCreate"
   | "prs.list"
   | "prs.listOpenForRepo"

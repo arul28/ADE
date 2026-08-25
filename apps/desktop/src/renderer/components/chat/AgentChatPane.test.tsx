@@ -8,6 +8,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
+  AgentChatHandoffResult,
   AgentChatModelCatalog,
   AgentChatParallelLaunchState,
   AgentChatSession,
@@ -25,10 +26,16 @@ import type {
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
-import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import {
+  AI_STATUS_CACHE_UPDATED_EVENT,
+  getAiStatusCached,
+  invalidateAiDiscoveryCache,
+  type AiStatusCacheUpdatedEventDetail,
+} from "../../lib/aiDiscoveryCache";
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import {
   resetBuiltinSurfacePlugins,
   seedBuiltinSurfacePlugins,
@@ -99,7 +106,11 @@ vi.mock("./ChatIosSimulatorPanel", () => {
 vi.mock("./ChatAppControlPanel", () => {
   const ReactMod = require("react") as typeof React;
   return {
-    ChatAppControlPanel: () => ReactMod.createElement("div", { "data-testid": "app-control-panel" }, "Electron Control panel mounted"),
+    ChatAppControlPanel: (props: { runtimePin?: { key: string } | null }) => ReactMod.createElement(
+      "div",
+      { "data-testid": "app-control-panel", "data-runtime-pin": props?.runtimePin?.key ?? "" },
+      "Electron Control panel mounted",
+    ),
   };
 });
 
@@ -238,6 +249,16 @@ function buildStatusStartedTranscript(sessionId: string): string {
   })}\n`;
 }
 
+const WORK_PANE_CATALOG_SCOPE = "local:/tmp/project-under-test";
+
+function rememberWorkPaneCatalog(catalog: AgentChatModelCatalog): void {
+  rememberRuntimeCatalog(catalog, {
+    mode: "cached",
+    scopeKey: WORK_PANE_CATALOG_SCOPE,
+  });
+  descriptorsFromAgentChatModelCatalog(catalog, undefined, WORK_PANE_CATALOG_SCOPE);
+}
+
 function seedRuntimeModelCatalog(): void {
   rememberRuntimeCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
@@ -342,7 +363,7 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
     serviceTiers: ["fast"],
     cursorAvailability: { cli: true, sdk: true },
   });
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "cursor",
@@ -371,7 +392,7 @@ function seedFastCursorRuntimeModelCatalog(): { modelId: string; fastAlias: stri
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return { modelId: model.id, fastAlias: "composer-2.5-speed-fast" };
 }
 
@@ -388,7 +409,7 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
       { modelId: concreteModel, reasoningEffort: "medium", fastMode: true },
     ],
   });
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "cursor",
@@ -419,13 +440,13 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return { modelId: model.id, concreteModel };
 }
 
 function seedFastOpenCodeRuntimeModelCatalog(): string {
   const modelId = "opencode/openai/gpt-5.4";
-  rememberRuntimeCatalog({
+  rememberWorkPaneCatalog({
     fetchedAt: "2026-05-22T00:00:00.000Z",
     groups: [{
       key: "opencode",
@@ -452,7 +473,7 @@ function seedFastOpenCodeRuntimeModelCatalog(): string {
         }],
       }],
     }],
-  } as AgentChatModelCatalog, { mode: "cached" });
+  } as AgentChatModelCatalog);
   return modelId;
 }
 
@@ -512,7 +533,7 @@ function installAdeMocks(options?: {
   steerResult?: AgentChatSteerResult;
   listError?: Error;
   createError?: Error;
-  handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean } | Promise<{ session: AgentChatSession; usedFallbackSummary: boolean }>;
+  handoffResult?: AgentChatHandoffResult | Promise<AgentChatHandoffResult>;
   handoffError?: Error;
   sessions?: AgentChatSessionSummary[];
   eventHistory?: AgentChatEventHistorySnapshot | ((args: { sessionId: string; maxEvents?: number }) => Promise<AgentChatEventHistorySnapshot> | AgentChatEventHistorySnapshot);
@@ -738,6 +759,8 @@ function installAdeMocks(options?: {
         setGoal: setCodexGoal,
         clearGoal: clearCodexGoal,
         setGoalStatus: setCodexGoalStatus,
+        resetMemory: vi.fn().mockResolvedValue(undefined),
+        terminateBackgroundTerminal: vi.fn().mockResolvedValue(undefined),
       },
       fileSearch: vi.fn().mockResolvedValue([]),
       saveTempAttachment,
@@ -780,6 +803,13 @@ function installAdeMocks(options?: {
     files: {
       listWorkspaces: vi.fn().mockResolvedValue([]),
     },
+    projectSecrets: {
+      list: vi.fn().mockResolvedValue({
+        secrets: [],
+        storage: { path: "/tmp/secrets", encrypted: true, scope: "project" },
+      }),
+      get: vi.fn().mockRejectedValue(new Error("renderer must not read secret values")),
+    },
     lanes: {
       list: vi.fn().mockResolvedValue([]),
       listSnapshots: vi.fn().mockResolvedValue([]),
@@ -793,6 +823,7 @@ function installAdeMocks(options?: {
       listBranches: vi.fn().mockResolvedValue([
         { name: "main", isRemote: false, isCurrent: true, upstream: "origin/main" },
       ]),
+      getOriginRemote: vi.fn().mockResolvedValue({ remoteUrl: null, branch: null }),
       getActionRuntime: vi.fn().mockResolvedValue(null),
       onActionRuntimeEvent: vi.fn().mockImplementation(() => () => undefined),
     },
@@ -916,7 +947,7 @@ const originalNavigatorPlatform = window.navigator.platform;
 const originalMatchMedia = window.matchMedia;
 const LOCAL_PROJECT_BINDING: OpenProjectBinding = {
   kind: "local",
-  key: "local:/tmp/project-under-test",
+  key: WORK_PANE_CATALOG_SCOPE,
   rootPath: "/tmp/project-under-test",
   displayName: "project-under-test",
   gitOriginUrl: null,
@@ -1204,7 +1235,9 @@ function renderAutoCreateDraftPane(args?: {
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   onDraftMachineChange?: React.ComponentProps<typeof AgentChatPane>["onDraftMachineChange"];
+  onImportedSession?: React.ComponentProps<typeof AgentChatPane>["onImportedSession"];
   initialDraftMachineId?: string | null;
+  laneId?: string | null;
   lanes?: any[];
   project?: { rootPath: string; displayName?: string };
   projectBinding?: OpenProjectBinding;
@@ -1241,7 +1274,7 @@ function renderAutoCreateDraftPane(args?: {
           element={(
             <>
               <AgentChatPane
-                laneId="lane-1"
+                laneId={args?.laneId ?? "lane-1"}
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
@@ -1252,6 +1285,7 @@ function renderAutoCreateDraftPane(args?: {
                 initialDraftMachineId={args?.initialDraftMachineId}
                 onSessionCreated={args?.onSessionCreated}
                 onLaunchCliSession={args?.onLaunchCliSession}
+                onImportedSession={args?.onImportedSession}
               />
               <LocationProbe />
             </>
@@ -1359,6 +1393,361 @@ describe("AgentChatPane remote startup", () => {
     await Promise.resolve();
 
     expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A Work tab unions chats from every machine on the account, so the machine a
+   * chat runs on is frequently NOT the one the project tab is bound to. What the
+   * prompt box offers — which models exist, and their thinking levels — is a
+   * fact about the machine that will run the turn.
+   *
+   * The bridge here answers differently per machine, exactly as two real Macs
+   * would: unpinned calls land on the bound machine (that is what preload's
+   * bound path does), pinned calls on the chat's own. Before the composer
+   * carried the pin, the picker for a chat on the Studio was filled from this
+   * Mac's catalog and offered `ollama/bound-only`, a model the Studio cannot run.
+   */
+  it("fills the prompt box from the chat's own machine, not the bound one", async () => {
+    const boundRoot = "/tmp/project-under-test";
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const catalogFor = (localModelId: string, displayName: string) => ({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "ollama",
+        displayName: "Ollama",
+        providers: [{
+          key: "ollama",
+          displayName: "Ollama",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "ollama",
+            label: "Ollama",
+            models: [{
+              id: localModelId,
+              runtimeModelId: localModelId,
+              provider: "ollama",
+              providerKey: "ollama",
+              groupKey: "ollama",
+              displayName,
+              isDefault: false,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    });
+
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    installAdeMocks({ sessions: [session] });
+
+    const modelCatalog = vi.fn(async (_args?: unknown, pin?: { targetId?: string } | null) => (
+      pin?.targetId === "target-studio"
+        ? catalogFor("ollama/studio-only", "Studio Only")
+        : catalogFor("ollama/bound-only", "Bound Only")
+    ));
+    (window.ade.agentChat as any).modelCatalog = modelCatalog;
+
+    useAppStore.setState({
+      project: { rootPath: boundRoot, displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+
+    // The catalog request is addressed to the machine the chat runs on.
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "cached" }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
+    });
+
+    // ...and the rows the user can pick under the local-models rail come from
+    // that machine: the Studio's ollama endpoint, never this Mac's.
+    fireEvent.click(await screen.findByRole("tab", { name: /^Ollama$/i }));
+    await waitFor(() => {
+      expect(document.querySelector('[data-model-id="ollama/studio-only"]')).toBeTruthy();
+    });
+    expect(document.querySelector('[data-model-id="ollama/bound-only"]')).toBeNull();
+  });
+
+  it("applies shared AI status cache updates so Cursor unlocks without remount or force refresh", async () => {
+    const projectRoot = "/tmp/project-under-test";
+    const unauthorizedStatus: AiSettingsStatus = {
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+      ],
+      availableModelIds: ["openai/gpt-5.4"],
+    } as AiSettingsStatus;
+    const authorizedStatus: AiSettingsStatus = {
+      ...unauthorizedStatus,
+      availableProviders: {
+        ...unauthorizedStatus.availableProviders,
+        cursor: true,
+      },
+      detectedAuth: [
+        { type: "cli-subscription", cli: "codex", authenticated: true },
+        { type: "api-key", provider: "cursor" },
+      ],
+      availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+    } as AiSettingsStatus;
+
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session], aiStatus: unauthorizedStatus });
+    useAppStore.setState({
+      project: { rootPath: projectRoot } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      lanes: [{
+        id: session.laneId,
+        name: "Lane 1",
+        laneType: "worktree",
+        branchRef: "refs/heads/lane-1",
+        worktreePath: `${projectRoot}/lane-1`,
+      } as any],
+      selectedLaneId: session.laneId,
+    });
+    seedCursorRuntimeModelCatalog();
+
+    renderPane(session);
+
+    const trigger = await screen.findByRole("button", { name: /^Select model/ });
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+    expect(await screen.findByText("Connect Cursor")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    vi.mocked(window.ade.ai.getStatus).mockClear();
+    vi.mocked(window.ade.ai.getStatus).mockResolvedValue(authorizedStatus);
+
+    // Simulate Settings writing the shared cache, then broadcasting UPDATED.
+    await act(async () => {
+      await getAiStatusCached({ projectRoot, force: true });
+    });
+    const forceCallsAfterSharedRefresh = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+      (call) => call[0]?.force === true,
+    ).length;
+    expect(forceCallsAfterSharedRefresh).toBeGreaterThanOrEqual(1);
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent<AiStatusCacheUpdatedEventDetail>(
+        AI_STATUS_CACHE_UPDATED_EVENT,
+        { detail: { projectRoot } },
+      ));
+    });
+
+    fireEvent.pointerDown(trigger, { button: 0 });
+    fireEvent.click(trigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText("Connect Cursor")).toBeNull();
+    });
+    expect(screen.queryByRole("button", { name: /Set up Cursor/i })).toBeNull();
+
+    const forceCallsAfterPickerOpen = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+      (call) => call[0]?.force === true,
+    ).length;
+    // Pane must not issue another force probe after the shared-cache writer.
+    expect(forceCallsAfterPickerOpen).toBe(forceCallsAfterSharedRefresh);
+  });
+
+  it("settles an AI status invalidate with a non-force refill, not a force probe", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const projectRoot = "/tmp/project-under-test";
+      const unauthorizedStatus: AiSettingsStatus = {
+        mode: "subscription",
+        availableProviders: {
+          claude: {
+            binary: { present: false, source: "missing", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: true,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+        ],
+        availableModelIds: ["openai/gpt-5.4"],
+      } as AiSettingsStatus;
+      const authorizedStatus: AiSettingsStatus = {
+        ...unauthorizedStatus,
+        availableProviders: {
+          ...unauthorizedStatus.availableProviders,
+          cursor: true,
+        },
+        detectedAuth: [
+          { type: "cli-subscription", cli: "codex", authenticated: true },
+          { type: "api-key", provider: "cursor" },
+        ],
+        availableModelIds: ["openai/gpt-5.4", "cursor/auto"],
+      } as AiSettingsStatus;
+
+      const session = buildSession("session-1", { status: "idle" });
+      installAdeMocks({ sessions: [session], aiStatus: unauthorizedStatus });
+      useAppStore.setState({
+        project: { rootPath: projectRoot } as any,
+        projectBinding: LOCAL_PROJECT_BINDING,
+        lanes: [{
+          id: session.laneId,
+          name: "Lane 1",
+          laneType: "worktree",
+          branchRef: "refs/heads/lane-1",
+          worktreePath: `${projectRoot}/lane-1`,
+        } as any],
+        selectedLaneId: session.laneId,
+      });
+      seedCursorRuntimeModelCatalog();
+
+      renderPane(session);
+      await screen.findByRole("button", { name: /^Select model/ });
+
+      vi.mocked(window.ade.ai.getStatus).mockClear();
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(authorizedStatus);
+
+      await act(async () => {
+        invalidateAiDiscoveryCache(projectRoot);
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      await waitFor(() => {
+        expect(vi.mocked(window.ade.ai.getStatus)).toHaveBeenCalled();
+      });
+      const forceCalls = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+        (call) => call[0]?.force === true,
+      );
+      expect(forceCalls).toHaveLength(0);
+
+      const trigger = screen.getByRole("button", { name: /^Select model/ });
+      fireEvent.pointerDown(trigger, { button: 0 });
+      fireEvent.click(trigger);
+      fireEvent.click(await screen.findByRole("tab", { name: /^Cursor$/i }));
+      await waitFor(() => {
+        expect(screen.queryByText("Connect Cursor")).toBeNull();
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles an OpenCode AI status invalidate with refreshOpenCodeInventory", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const projectRoot = "/tmp/project-under-test";
+      const openCodeStatus: AiSettingsStatus = {
+        mode: "subscription",
+        availableProviders: {
+          claude: {
+            binary: { present: false, source: "missing", path: null },
+            auth: { ready: false, mode: "none", detail: null },
+          },
+          codex: false,
+          cursor: false,
+          droid: false,
+        },
+        models: { claude: [], codex: [], cursor: [], droid: [] },
+        features: [],
+        detectedAuth: [],
+        availableModelIds: ["opencode/openai/gpt-5.4"],
+        opencodeBinaryInstalled: true,
+      } as AiSettingsStatus;
+
+      const session = buildSession("session-opencode-1", {
+        status: "idle",
+        provider: "opencode",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      installAdeMocks({ sessions: [session], aiStatus: openCodeStatus });
+      useAppStore.setState({
+        project: { rootPath: projectRoot } as any,
+        projectBinding: LOCAL_PROJECT_BINDING,
+        lanes: [{
+          id: session.laneId,
+          name: "Lane 1",
+          laneType: "worktree",
+          branchRef: "refs/heads/lane-1",
+          worktreePath: `${projectRoot}/lane-1`,
+        } as any],
+        selectedLaneId: session.laneId,
+      });
+
+      renderPane(session);
+      await screen.findByRole("button", { name: /^Select model/ });
+
+      vi.mocked(window.ade.ai.getStatus).mockClear();
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(openCodeStatus);
+
+      await act(async () => {
+        invalidateAiDiscoveryCache(projectRoot);
+        await vi.advanceTimersByTimeAsync(300);
+      });
+
+      await waitFor(() => {
+        expect(vi.mocked(window.ade.ai.getStatus)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            refreshOpenCodeInventory: true,
+          }),
+        );
+      });
+      const forceCalls = vi.mocked(window.ade.ai.getStatus).mock.calls.filter(
+        (call) => call[0]?.force === true,
+      );
+      expect(forceCalls).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("skips mount-time session delta fetches for remote chats", async () => {
@@ -1513,9 +1902,68 @@ describe("AgentChatPane pane reserve", () => {
     expect(await screen.findByAltText("ADE")).toBeTruthy();
     expect(readLeftReserve(container)).toBe("0px");
   });
+
+  it("never persists a phantom-open PR pane from the draft surface's PR pill", async () => {
+    installAdeMocks({ sessions: [] });
+    seedDrawerStore();
+    // Regression: the draft surface renders no PR pane (no selected session),
+    // so its header pill must fall back to the toolbar's inline menu instead
+    // of toggling persisted open state for a pane that cannot appear here.
+    render(
+      <MemoryRouter>
+        <AgentChatPane laneId="lane-1" hideSessionTabs onSessionCreated={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByAltText("ADE")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "PR" }));
+    await act(async () => {});
+
+    expect(readChatCompanionUiState("draft:lane-1").prPaneOpen).toBe(false);
+  });
 });
 
 describe("AgentChatPane companion drawers", () => {
+  // The chip was set only by the live `session-started` event, so the two
+  // commonest cases had no signal at all: opening ADE on a running session, and
+  // switching chats and back (which clears it unconditionally).
+  it("seeds the simulator chip from a session that was already live", async () => {
+    const session = buildSession("session-1", { title: "Drawer audit chat" });
+    installAdeMocks({ sessions: [session] });
+    seedDrawerStore();
+    (window as any).ade.iosSimulator.getStatus = vi.fn().mockResolvedValue({
+      platform: "darwin",
+      activeSession: {
+        chatSessionId: session.sessionId,
+        laneId: session.laneId,
+        deviceName: "iPhone 17 Pro",
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Simulator running")).toBeTruthy();
+
+    // Another chat's release must not clear this pane's chip — the guard its two
+    // sibling handlers already had.
+    await waitFor(() => expect(typeof iosEventListener).toBe("function"));
+    act(() => {
+      iosEventListener?.({
+        type: "session-released",
+        previousSession: { chatSessionId: "session-other", laneId: "lane-other" },
+      } as never);
+    });
+    expect(screen.getByText("Simulator running")).toBeTruthy();
+
+    act(() => {
+      iosEventListener?.({
+        type: "session-released",
+        previousSession: { chatSessionId: session.sessionId, laneId: session.laneId },
+      } as never);
+    });
+    await waitFor(() => expect(screen.queryByText("Simulator running")).toBeNull());
+  });
+
   it("opens and closes the iOS simulator and Electron Control drawers from chat chrome", async () => {
     renderDrawerPane();
 
@@ -1791,7 +2239,7 @@ describe("AgentChatPane companion drawers", () => {
     fireEvent.change(restoreSelect, { target: { value: "archived-session" } });
 
     await waitFor(() => {
-      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" });
+      expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" }, null);
     });
   });
 
@@ -1855,7 +2303,7 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         steerId: "steer-unprocessed",
         action: "run_next",
-      });
+      }, null);
     });
   });
 
@@ -1886,7 +2334,7 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         steerId: "steer-unprocessed",
         action: "dismiss",
-      });
+      }, null);
     });
   });
 
@@ -1924,12 +2372,12 @@ describe("AgentChatPane durable recovery actions", () => {
         sessionId: session.sessionId,
         turnId: "turn-1",
         action: "restart_resume",
-      });
+      }, null);
       expect(recoverCodexTurn).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         turnId: "turn-1",
         action: "restart_resume_thread",
-      });
+      }, null);
     });
   });
 
@@ -2082,7 +2530,7 @@ describe("AgentChatPane submit recovery", () => {
           },
         }],
         metadata: { source: "auth-retry-test" },
-      });
+      }, null);
     });
   });
 
@@ -2808,7 +3256,7 @@ describe("AgentChatPane submit recovery", () => {
         itemId: "approval-1",
         decision: "decline",
         responseText: "Add the rollback risks before implementation.",
-      });
+      }, null);
     });
     expect(send).not.toHaveBeenCalled();
     expect(steer).not.toHaveBeenCalled();
@@ -2907,7 +3355,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Ship the transcript cleanup.",
         displayText: "Ship the transcript cleanup.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -2929,7 +3377,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(send).toHaveBeenCalled();
-      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      expect(getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Retry this idle turn.");
     });
   });
@@ -2987,7 +3435,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Ship the optimistic bubble.",
-      }));
+      }), null);
     });
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
 
@@ -3010,7 +3458,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Open the simulator screen in preview.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
 
@@ -3131,7 +3579,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Stop checking docs and just drive the browser.",
         displayText: "Stop checking docs and just drive the browser.",
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -3163,6 +3611,7 @@ describe("AgentChatPane submit recovery", () => {
           displayText: "Fold this into the live turn.",
           dispatchMode: "inline",
         }),
+        null,
       );
     });
     expect(dispatchSteer).not.toHaveBeenCalled();
@@ -3231,7 +3680,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         steerId: "steer-edit",
         requireQueued: true,
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
       expect(screen.queryByText("queued.md")).toBeNull();
     });
@@ -3274,6 +3723,7 @@ describe("AgentChatPane submit recovery", () => {
           displayText: "Actually, do this instead.",
           dispatchMode: "interrupt",
         }),
+        null,
       );
     });
     expect(dispatchSteer).not.toHaveBeenCalled();
@@ -3481,7 +3931,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Keep shipping the fix.",
-      }));
+      }), null);
     });
     send.mockClear();
 
@@ -3505,7 +3955,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Continue in a new turn.",
-      }));
+      }), null);
     });
   });
 
@@ -3564,7 +4014,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Retry the original prompt.",
-      }));
+      }), null);
     });
     expect((await screen.findByRole("alert")).textContent).toContain(
       "A turn is already active in this thread. Wait for it to finish before retrying.",
@@ -3736,11 +4186,11 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
         displayText: "Recover by starting a new turn.",
-      });
+      }, null);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Recover by starting a new turn.",
-      }));
+      }), null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -3765,7 +4215,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Please keep going.",
         displayText: "Please keep going.",
-      });
+      }, null);
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
     });
   });
@@ -3823,7 +4273,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         interactionMode: "plan",
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -3835,7 +4285,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: session.sessionId,
         text: "Just plan the implementation.",
         interactionMode: "plan",
-      }));
+      }), null);
     });
   });
 
@@ -3878,7 +4328,7 @@ describe("AgentChatPane submit recovery", () => {
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
         codexConfigSource: "flags",
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -3896,7 +4346,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Make the change now.",
-      }));
+      }), null);
     });
   });
 
@@ -3936,7 +4386,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         fastMode: true,
-      }));
+      }), null);
     });
 
     const textbox = await screen.findByRole("textbox");
@@ -3951,7 +4401,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Use the faster tier.",
-      }));
+      }), null);
     });
   });
 
@@ -3980,7 +4430,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         reasoningEffort: "high",
-      });
+      }, null);
     });
   });
 
@@ -4406,7 +4856,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }));
+      }), null);
     });
     expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
     expect(warmupModel).not.toHaveBeenCalled();
@@ -4431,7 +4881,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(warmupModel).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      });
+      }, null);
     });
   });
 
@@ -4464,7 +4914,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         modelId: "anthropic/claude-sonnet-5",
-      }));
+      }), null);
     });
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
@@ -4691,7 +5141,7 @@ describe("AgentChatPane submit recovery", () => {
         codexConfigSource: "flags",
         cursorModeId: "agent",
         cursorConfigValues: {},
-      }));
+      }), null);
       expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
     });
   });
@@ -4782,7 +5232,7 @@ describe("AgentChatPane submit recovery", () => {
         mode: "brief",
         claudePermissionMode: "plan",
         permissionMode: "plan",
-      }));
+      }), null);
     });
   });
 
@@ -4825,11 +5275,11 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         targetModelId: "anthropic/claude-sonnet-5",
         mode: "fork",
-      }));
+      }), null);
     });
   });
 
-  it("disables the fork tab and defaults to brief for a Cursor source", async () => {
+  it("offers fork, defaults to it, and states both Cursor caveats for a Cursor source", async () => {
     const { bothId } = seedCursorRuntimeModelCatalog();
     const session = buildSession("session-1", {
       provider: "cursor",
@@ -4845,18 +5295,35 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
 
+    // Fork is offered for every source now — Cursor forks by replaying the
+    // full transcript into a new chat rather than via a native provider fork.
     const forkTab = await screen.findByRole("button", { name: /^Fork$/ });
     const briefTab = await screen.findByRole("button", { name: /^Brief$/ });
-    expect((forkTab as HTMLButtonElement).disabled).toBe(true);
-    expect(briefTab.getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByText(/Cursor can.t fork chat history/i)).toBeTruthy();
-    // The brief-only lane selector is present.
-    expect(screen.getByRole("button", { name: "Destination lane for handoff" })).toBeTruthy();
+    expect((forkTab as HTMLButtonElement).disabled).toBe(false);
+    expect(forkTab.getAttribute("aria-pressed")).toBe("true");
+    expect(briefTab.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByText(/can.t fork chat history/i)).toBeNull();
+    // Both caveats belong here: Cursor's same-provider fork is ADE-side context
+    // seeding, and any other model gets the verbatim transcript replay.
+    expect(screen.getByText(/Cursor threads can.t be resumed twice/i)).toBeTruthy();
+    expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Fork chat" })).toBeTruthy();
   });
 
-  it("constrains the fork model picker to the source provider", async () => {
+  it("lets fork target an out-of-family model and forks it as a full-transcript replay", async () => {
     const session = buildSession("session-1", { status: "idle" }); // codex source
-    installAdeMocks({ includeClaudeModel: true, sessions: [session] });
+    const { handoff } = installAdeMocks({
+      includeClaudeModel: true,
+      sessions: [session],
+      handoffResult: {
+        session: buildCreatedSession("session-2", {
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-5",
+        }),
+        usedFallbackSummary: false,
+      },
+    });
 
     renderPane(session);
 
@@ -4864,13 +5331,63 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
 
-    // Fork tab is active for a codex source; its picker excludes cross-provider models.
-    const localViewConstrained = await screen.findByTestId("handoff-local");
-    fireEvent.click(within(localViewConstrained).getByRole("button", { name: /^Select model/ }));
-    const anthropicTab = screen.queryByRole("tab", { name: /^Anthropic$/i });
-    if (anthropicTab) fireEvent.click(anthropicTab);
-    const claudeForkOptions = screen.queryAllByRole("option", { name: /Claude/i });
-    expect(claudeForkOptions.some((option) => option.getAttribute("aria-disabled") !== "true")).toBe(false);
+    // Fork is the default tab, and its picker is no longer constrained to the
+    // source provider's own family — an Anthropic target is selectable.
+    const localViewCrossFamily = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localViewCrossFamily).getByRole("button", { name: /^Select model/ }));
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+    // The cross-family path is disclosed as a verbatim replay, truncated only
+    // when the transcript overflows the target model's context window.
+    expect(screen.getByText(/full transcript replayed verbatim/i)).toBeTruthy();
+    expect(screen.getByText(/Oldest turns drop only if the transcript exceeds the target context window/i)).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
+
+    await waitFor(() => {
+      expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        targetModelId: "anthropic/claude-sonnet-5",
+        mode: "fork",
+      }), null);
+    });
+  });
+
+  it("shows replay truncation disclosure after fork handoff", async () => {
+    const session = buildSession("session-1", { status: "idle" }); // codex source
+    installAdeMocks({
+      includeClaudeModel: true,
+      sessions: [session],
+      handoffResult: {
+        session: buildCreatedSession("session-2", {
+          provider: "claude",
+          model: "sonnet",
+          modelId: "anthropic/claude-sonnet-5",
+        }),
+        usedFallbackSummary: false,
+        replayFork: { truncated: true, keptTurnCount: 18, truncatedTurnCount: 4 },
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+
+    const localView = await screen.findByTestId("handoff-local");
+    fireEvent.click(within(localView).getByRole("button", { name: /^Select model/ }));
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+    fireEvent.click(await screen.findByRole("button", { name: "Fork chat" }));
+
+    // The pre-fork hint only predicts truncation; the completed fork has to
+    // report what it actually dropped.
+    expect(await screen.findByText(/Forked chat replayed 18 turns/i)).toBeTruthy();
+    expect(screen.getByText(/4 oldest turns didn't fit/i)).toBeTruthy();
   });
 
   it("routes a brief handoff into a newly auto-created lane", async () => {
@@ -4889,12 +5406,189 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }));
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({ name: expect.any(String) }), null);
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
         mode: "brief",
         targetLaneId: "lane-created",
-      }));
+      }), null);
+    });
+  });
+
+  /**
+   * Handoff is a fact about the machine the CHAT runs on, not about whichever
+   * project this tab happens to be bound to. A Work tab unions chats from every
+   * machine, so a local chat is routinely viewed from a remote-bound tab — and
+   * the cross-machine card used to be disabled purely because of that tab.
+   */
+  it("offers cross-machine handoff for a local chat viewed from a remote-bound tab", async () => {
+    const session = buildSession("session-local", { status: "idle", laneId: "lane-local" });
+    installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/Volumes/work/project-under-test", displayName: "project-under-test" } as any,
+      // The TAB is bound to a remote machine…
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-studio:project-studio",
+        targetId: "target-studio",
+        projectId: "project-studio",
+        runtimeName: "Mac Studio",
+        displayName: "project-under-test",
+        rootPath: "/Volumes/work/project-under-test",
+      } as any,
+      // …while this chat's lane lives on this Mac.
+      crossMachineLanesByMachineId: {
+        local: {
+          machineId: "local",
+          machineName: "This Mac",
+          targetId: null,
+          projectId: null,
+          binding: LOCAL_PROJECT_BINDING,
+          online: true,
+          lanes: [{
+            id: "lane-local",
+            name: "local lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/local-lane",
+            worktreePath: "/tmp/project-under-test/.ade/worktrees/local-lane",
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+
+    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
+    expect((card as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText(/cross-machine handoff/i)).toBeNull();
+  });
+
+  /**
+   * The reverse: the chat itself lives on another machine. Only that machine can
+   * package its history, so the card stays off — and says which machine to open.
+   */
+  it("blocks cross-machine handoff for a chat pinned to another machine and names it", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test", displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+
+    const card = await screen.findByRole("button", { name: /Continue on another machine/i });
+    expect((card as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/This chat runs on Mac Studio\./i)).toBeTruthy();
+  });
+
+  /**
+   * The auto-created lane has to be made on the chat's machine: the pinned
+   * handoff that follows rejects a lane the runtime it targets has never heard
+   * of ("Unknown or unavailable lane").
+   */
+  it("auto-creates the brief handoff's lane on the chat's machine", async () => {
+    const studioBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-studio",
+      targetId: "target-studio",
+      projectId: "project-studio",
+      runtimeName: "Mac Studio",
+      displayName: "project-under-test",
+      rootPath: "/Volumes/work/project-under-test",
+    };
+    const session = buildSession("session-studio", { status: "idle", laneId: "lane-studio" });
+    const { handoff, createLane } = installAdeMocks({ sessions: [session] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test", displayName: "project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+      openRemoteProjectTabs: [studioBinding] as any,
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Mac Studio",
+          targetId: studioBinding.targetId,
+          projectId: studioBinding.projectId,
+          binding: studioBinding,
+          online: true,
+          lanes: [{
+            id: "lane-studio",
+            name: "studio lane",
+            laneType: "worktree",
+            branchRef: "refs/heads/studio-lane",
+            worktreePath: `${studioBinding.rootPath}/.ade/worktrees/studio-lane`,
+          }],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      } as any,
+      selectedLaneId: "lane-studio",
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Hand off locally/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Brief$/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Destination lane for handoff" }));
+    fireEvent.click(await screen.findByText("Auto-create lane"));
+    fireEvent.click(await screen.findByRole("button", { name: "Start brief handoff" }));
+
+    await waitFor(() => {
+      expect(createLane).toHaveBeenCalledWith(
+        expect.objectContaining({ name: expect.any(String) }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
+      expect(handoff).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "brief", targetLaneId: "lane-created" }),
+        expect.objectContaining({ targetId: "target-studio" }),
+      );
     });
   });
 
@@ -4932,7 +5626,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         mode: "brief",
         targetLaneId: "lane-2",
-      }));
+      }), null);
     });
   });
 
@@ -4987,7 +5681,7 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "Ship the instant route fix.",
         displayText: "Ship the instant route fix.",
-      }));
+      }), null);
       expect(writeClipboardText).toHaveBeenCalledWith("Ship the instant route fix.");
     });
   });
@@ -5051,7 +5745,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }));
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ text: "Copy quietly." }), null);
       expect(writeClipboardText).toHaveBeenCalledWith("Copy quietly.");
     });
   });
@@ -5084,7 +5778,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         text: "Do not copy this prompt.",
-      }));
+      }), null);
     });
     expect(writeClipboardText).not.toHaveBeenCalled();
   });
@@ -5125,7 +5819,7 @@ describe("AgentChatPane submit recovery", () => {
         expect(send).toHaveBeenCalledWith(expect.objectContaining({
           sessionId: "created-session",
           text: "Keep sending despite callback failure.",
-        }));
+        }), null);
       });
       await waitFor(() => {
         expect(consoleError).toHaveBeenCalledWith("notifySessionCreated failed:", expect.any(Error));
@@ -5461,7 +6155,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("keeps Auto-create selected while routing Work tools through Primary", async () => {
+  it("keeps Auto-create selected without changing the lane", async () => {
     installAdeMocks({ sessions: [] });
     const onLaneChange = vi.fn();
     renderAutoCreateDraftPane({ onLaneChange });
@@ -5469,11 +6163,31 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
+    expect(onLaneChange).not.toHaveBeenCalled();
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
   });
 
-  it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {
+  it("keeps external import available when Auto-create is selected", async () => {
+    installAdeMocks({ sessions: [] });
+    const list = vi.fn().mockResolvedValue([]);
+    (window.ade as any).externalSessions = {
+      list,
+      import: vi.fn(),
+    };
+    renderAutoCreateDraftPane({
+      onImportedSession: vi.fn(),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import an external CLI session" }));
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    expect(await screen.findByText("No chats found")).toBeTruthy();
+    expect(list.mock.calls.every(([args]) => args.laneId === "lane-1")).toBe(true);
+  });
+
+  it("keeps Auto-create selected when the available lanes have no Primary lane", async () => {
     installAdeMocks({ sessions: [] });
     const onLaneChange = vi.fn();
     renderAutoCreateDraftPane({
@@ -5492,10 +6206,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
+    expect(onLaneChange).not.toHaveBeenCalled();
   });
 
-  it("recovers a bare Auto-create selection from an unavailable persisted machine", async () => {
+  it("keeps machine and lane unchanged for Auto-create on an unavailable machine", async () => {
     installAdeMocks({ sessions: [] });
     const onDraftMachineChange = vi.fn();
     const onLaneChange = vi.fn();
@@ -5508,9 +6222,37 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
-    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
-    expect(screen.queryByText(/selected machine is not currently available/i)).toBeNull();
+    expect(onDraftMachineChange).not.toHaveBeenCalled();
+    expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unavailable draft lane instead of launching against the bound project", async () => {
+    seedRuntimeModelCatalog();
+    const { create } = installAdeMocks({ sessions: [] });
+    const onSessionCreated = vi.fn();
+    renderAutoCreateDraftPane({
+      laneId: "lane-only-on-another-machine",
+      onSessionCreated,
+    });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Do not launch this unavailable lane." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("draft-launch-job").textContent).toContain(
+        "Selected lane is not available on the selected machine",
+      );
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(onSessionCreated).not.toHaveBeenCalled();
   });
 
   it("auto-creates on this computer from a remote-bound tab without rebinding the project", async () => {
@@ -7539,7 +8281,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
         text: "Ship it.",
-      }));
+      }), null);
     });
 
     expect(await screen.findByText("Fresh session reply")).toBeTruthy();
@@ -7708,8 +8450,8 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-      }));
-      expect(window.ade.agentChat.getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId });
+      }), null);
+      expect(window.ade.agentChat.getSummary).toHaveBeenCalledWith({ sessionId: session.sessionId }, null);
       expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
     });
   });
@@ -7758,7 +8500,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(window.ade.agentChat.getEventHistory).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-      }));
+      }), null);
       expect(window.ade.sessions.readTranscriptTail).not.toHaveBeenCalled();
     });
   });
@@ -7881,7 +8623,7 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(backgroundTab);
     await waitFor(() => {
-      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }), null);
     });
 
     fireEvent.click(primaryTab);
@@ -7901,7 +8643,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(backgroundTab);
 
     expect(await screen.findByText("Recovered from transcript on revisit")).toBeTruthy();
-    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }));
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-2" }), null);
   });
 
   it("subscribes to live chat events before reading the authoritative history snapshot", async () => {
@@ -7962,7 +8704,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     expect(await screen.findByText("Visible inactive grid tile loaded")).toBeTruthy();
-    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+    expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }), null);
   });
 
   it("keeps the Claude login prompt pinned in compact grid tiles", async () => {
@@ -8112,7 +8854,7 @@ describe("AgentChatPane submit recovery", () => {
       });
 
       expect(screen.getByText("Recovered grid tile output")).toBeTruthy();
-      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+      expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }), null);
     } finally {
       vi.useRealTimers();
     }
@@ -9828,20 +10570,21 @@ describe("AgentChatPane per-chat runtime routing", () => {
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
 
-  it("does not mount machine-control panels against the globally bound runtime for a foreign chat", async () => {
+  it("routes machine-control panels to the chat's machine instead of refusing them", async () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
     installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
 
     renderPane(session);
 
+    // Support is asked of the chat's machine, not the tab's.
+    await waitFor(() => expect(window.ade.appControl.getStatus).toHaveBeenCalledWith(machineB));
+
     const appControlButton = (await screen.findAllByRole("button", { name: "Open Electron Control drawer" }))[0]!;
     fireEvent.click(appControlButton);
 
-    expect(screen.queryByTestId("app-control-panel")).toBeNull();
-    expect(screen.getByText(
-      "Switch this project tab to machine-b before using this tool. Chat and attachments remain pinned to that machine.",
-    )).toBeTruthy();
+    const panel = await screen.findByTestId("app-control-panel");
+    expect(panel.getAttribute("data-runtime-pin")).toBe(machineB.key);
   });
 
   it("pins This computer history and live events while the project tab stays remote-bound", async () => {
@@ -9872,9 +10615,11 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     const getEventHistory = window.ade.agentChat.getEventHistory as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
-    // No pin argument at all — byte-for-byte the pre-routing call.
+    // A null pin — the unpinned path. Preload branches on `if (pin)`, so this
+    // routes exactly as the pre-routing call did.
     expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-a" }),
+      null,
     );
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
   });
@@ -9970,6 +10715,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
 
     await waitFor(() => expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
+      null,
     ));
     expect(getEventHistory).not.toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: incoming.sessionId }),
@@ -9989,6 +10735,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     await waitFor(() => expect(getEventHistory.mock.calls.length).toBeGreaterThan(0));
     expect(getEventHistory).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: "chat-on-b" }),
+      null,
     );
   });
 
@@ -10127,5 +10874,736 @@ describe("AgentChatPane per-chat runtime routing", () => {
       machineB,
     ));
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
+  });
+});
+
+/**
+ * Cursor Cloud lives in the composer itself: the machine picker's "Cursor Cloud" row is the
+ * whole entry point, the lane picker decides the branch, and the model picker decides the model.
+ * There is no separate cloud form and no cloud toggle glyph.
+ */
+describe("AgentChatPane Cursor Cloud composer mode", () => {
+  const CURSOR_MODEL_ID = "cursor/composer-cloud";
+
+  function seedCursorChatCatalog(): string {
+    const model = createDynamicCursorCliModelDescriptor("composer-cloud", "Composer Cloud", {
+      cursorAvailability: { cli: true, sdk: true },
+    });
+    rememberWorkPaneCatalog({
+      fetchedAt: "2026-05-22T00:00:00.000Z",
+      groups: [{
+        key: "cursor",
+        displayName: "Cursor",
+        providers: [{
+          key: "cursor",
+          displayName: "Cursor",
+          badgeColor: "#8B5CF6",
+          modelCount: 1,
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: [{
+              id: model.id,
+              runtimeModelId: model.providerModelId,
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: model.displayName,
+              isDefault: true,
+              isAvailable: true,
+              aliases: model.aliases,
+              serviceTiers: model.serviceTiers,
+              cursorAvailability: model.cursorAvailability,
+            }],
+          }],
+        }],
+      }],
+    } as AgentChatModelCatalog);
+    return model.id;
+  }
+
+  function cursorAvailableAiStatus(): AiSettingsStatus {
+    return {
+      mode: "subscription",
+      availableProviders: { claude: false, codex: false, cursor: true, droid: false },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [],
+      availableModelIds: [CURSOR_MODEL_ID],
+      providerConnections: {
+        claude: null,
+        codex: null,
+        cursor: {
+          provider: "cursor",
+          authAvailable: true,
+          runtimeDetected: true,
+          runtimeAvailable: true,
+          usageAvailable: true,
+          path: "/usr/local/bin/cursor-agent",
+          blocker: null,
+          lastCheckedAt: "2026-05-26T00:00:00.000Z",
+          sources: [{ kind: "cli", detected: true, authenticated: true, path: "/usr/local/bin/cursor-agent" }],
+        },
+        droid: null,
+      },
+    } as unknown as AiSettingsStatus;
+  }
+
+  function installCursorCloudMocks(overrides?: {
+    push?: ReturnType<typeof vi.fn>;
+    repos?: Array<{ url: string; name?: string }>;
+    laneBranch?: string;
+  }) {
+    const createRun = vi.fn().mockResolvedValue({
+      agent: { agentId: "cloud-agent-1", name: "Tidy the cloud composer" },
+      run: { runId: "run-1" },
+    });
+    const openChat = vi.fn().mockResolvedValue({
+      sessionId: "cloud-session-1",
+      session: buildSession("cloud-session-1", { laneId: "lane-1", provider: "cursor" }),
+    });
+    const listRepositories = vi.fn().mockResolvedValue(
+      overrides?.repos ?? [{ url: "https://github.com/acme/project.git", name: "project" }],
+    );
+    const push = overrides?.push ?? vi.fn().mockResolvedValue({ operationId: "op-1" });
+    const getOriginRemote = vi.fn().mockResolvedValue({
+      remoteUrl: "git@github.com:acme/project.git",
+      branch: overrides?.laneBranch ?? "current-lane",
+    });
+    const getOpenPrForBranch = vi.fn().mockResolvedValue(null);
+    Object.assign(window.ade.ai, {
+      cursorCloudListRepositories: listRepositories,
+      cursorCloudCreateRun: createRun,
+      cursorCloudOpenChat: openChat,
+      cursorCloudWatchMirror: vi.fn().mockResolvedValue(undefined),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+    Object.assign(window.ade.git, {
+      getOriginRemote,
+      push,
+      getOpenPrForBranch,
+    });
+    return { createRun, openChat, listRepositories, push, getOriginRemote, getOpenPrForBranch };
+  }
+
+  async function selectCursorCloudMachine() {
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ }));
+  }
+
+  function renderCursorCloudDraft(args?: Parameters<typeof renderAutoCreateDraftPane>[0]) {
+    // Pin the draft to the Cursor chat model the way a returning user's saved launch config does;
+    // cloud mode is only offered for a Cursor model.
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "chat",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: CURSOR_MODEL_ID,
+      reasoningEffort: null,
+      fastMode: false,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+    return renderAutoCreateDraftPane(args);
+  }
+
+  beforeEach(() => {
+    seedCursorChatCatalog();
+  });
+
+  it("offers Cursor Cloud in the machine picker and puts the cloud glyph on Send", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    installCursorCloudMocks();
+    renderCursorCloudDraft();
+
+    await screen.findByRole("button", { name: /Choose machine/ });
+    // No standalone cloud toggle: the machine picker is the only way in.
+    expect(screen.queryByRole("button", { name: /Send to Cursor Cloud$/ })).toBeNull();
+    expect(await screen.findByRole("button", { name: "Send" })).toBeTruthy();
+
+    await selectCursorCloudMachine();
+
+    expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
+  });
+
+  it("keeps an existing lane's branch as the cloud agent's starting ref", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, openChat } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Fix the flaky test." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      promptText: "Fix the flaky test.",
+      repoUrl: "https://github.com/acme/project.git",
+      startingRef: "current-lane",
+      workOnCurrentBranch: true,
+      autoCreatePR: false,
+    }));
+    // Cursor's own name for the agent becomes the ADE session title.
+    await waitFor(() => expect(openChat).toHaveBeenCalledWith(expect.objectContaining({
+      cloudAgentId: "cloud-agent-1",
+      laneId: "lane-1",
+      agentName: "Tidy the cloud composer",
+    })));
+  });
+
+  it("creates the lane and pushes its branch before starting a cloud agent on auto-create", async () => {
+    const mocks = installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, push, getOriginRemote } = installCursorCloudMocks({ laneBranch: "ade/new-lane" });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(mocks.createLane).toHaveBeenCalled();
+    expect(push).toHaveBeenCalledWith({ laneId: "lane-created" });
+    expect(getOriginRemote).toHaveBeenCalledWith({ laneId: "lane-created" });
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      startingRef: "ade/new-lane",
+      workOnCurrentBranch: true,
+    }));
+  });
+
+  it("aborts the cloud send when the new branch cannot be pushed", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const push = vi.fn().mockRejectedValue(new Error("remote: permission denied"));
+    const { createRun } = installCursorCloudMocks({ push });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    expect((await screen.findAllByText(/remote: permission denied/)).length).toBeGreaterThan(0);
+    expect(createRun).not.toHaveBeenCalled();
+  });
+
+  it("reports the cloud launch stages while it waits on Cursor", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    let releaseCreate: (() => void) | null = null;
+    const { openChat } = installCursorCloudMocks();
+    window.ade.ai.cursorCloudCreateRun = vi.fn().mockImplementation(async () => {
+      await new Promise<void>((resolve) => { releaseCreate = resolve; });
+      return { agent: { agentId: "cloud-agent-1", name: "Named by Cursor" }, run: { runId: "run-1" } };
+    }) as any;
+    let releaseOpen: (() => void) | null = null;
+    window.ade.ai.cursorCloudOpenChat = vi.fn().mockImplementation(async (args: unknown) => {
+      await new Promise<void>((resolve) => { releaseOpen = resolve; });
+      return openChat(args);
+    }) as any;
+
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Take your time." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    expect(await screen.findByText(/Sending to Cursor Cloud/)).toBeTruthy();
+    await act(async () => { releaseCreate?.(); await Promise.resolve(); });
+    expect(await screen.findByText(/Connecting to Cursor Cloud/)).toBeTruthy();
+    await act(async () => { releaseOpen?.(); await Promise.resolve(); });
+  });
+
+  it("narrows the model picker to Cursor models in cloud mode", async () => {
+    const status = cursorAvailableAiStatus();
+    (status as unknown as { availableModelIds: string[] }).availableModelIds = [
+      CURSOR_MODEL_ID,
+      "gpt-5.4",
+    ];
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: status });
+    installCursorCloudMocks();
+    renderCursorCloudDraft();
+
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await findModelTrigger());
+    await waitFor(() => expect(screen.getAllByText(/Composer Cloud/).length).toBeGreaterThan(0));
+    expect(screen.queryByText("gpt-5.4")).toBeNull();
+  });
+
+  async function revealRowTooltip(row: HTMLElement) {
+    fireEvent.mouseEnter(row.parentElement ?? row);
+  }
+
+  it("re-reads the target lane branch at launch instead of the stale snapshot", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, getOriginRemote } = installCursorCloudMocks({ laneBranch: "stale-from-previous-lane" });
+    let branch = "stale-from-previous-lane";
+    getOriginRemote.mockImplementation(async () => ({
+      remoteUrl: "git@github.com:acme/project.git",
+      branch,
+    }));
+    renderCursorCloudDraft();
+
+    await waitFor(() => expect(getOriginRemote).toHaveBeenCalled());
+    branch = "fresh-target-lane";
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use the live branch." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      startingRef: "fresh-target-lane",
+      workOnCurrentBranch: true,
+    }));
+    expect(createRun).not.toHaveBeenCalledWith(expect.objectContaining({
+      startingRef: "stale-from-previous-lane",
+    }));
+  });
+
+  it("leaves the draft for the new session even when open-chat fails after create", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, openChat } = installCursorCloudMocks();
+    createRun.mockResolvedValue({
+      agent: {
+        agentId: "cloud-agent-1",
+        name: "Tidy the cloud composer",
+        webUrl: "https://cursor.com/agents?id=cloud-agent-1",
+      },
+      run: { runId: "run-1" },
+    });
+    openChat.mockRejectedValue(new Error("Failed to open the cloud chat"));
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Retry this draft." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(openChat).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Launch failed/)).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Send to Cursor Cloud" })).toBeNull();
+    });
+  });
+
+  it("reuses the cloud idempotency key when create fails", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun } = installCursorCloudMocks();
+    createRun.mockRejectedValue(new Error("Cursor Cloud create failed"));
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Retry this draft." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    expect((await screen.findAllByText(/Cursor Cloud create failed/)).length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+    await waitFor(() => expect(createRun).toHaveBeenCalledTimes(2));
+    const firstKey = createRun.mock.calls[0]?.[0]?.idempotencyKey;
+    const secondKey = createRun.mock.calls[1]?.[0]?.idempotencyKey;
+    expect(typeof firstKey).toBe("string");
+    expect(firstKey).toBe(secondKey);
+  });
+
+  it("clears cloud mode when parallel models turns on and disables the cloud row", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    expect(await screen.findByRole("button", { name: "Send to Cursor Cloud" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Advanced" })).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "More composer controls" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Parallel models/i }));
+
+    expect(await screen.findByRole("button", { name: "Send to lanes" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send to Cursor Cloud" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Parallel models runs locally.")).toBeTruthy();
+  });
+
+  it("disables the cloud row while repos load and surfaces the real API-key error with retry", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { listRepositories } = installCursorCloudMocks();
+    listRepositories.mockReset();
+    listRepositories.mockRejectedValue(
+      new Error("Error invoking remote method 'ai:cursorCloudListRepositories': Add a Cursor API key before using Cursor Cloud agents."),
+    );
+    renderCursorCloudDraft();
+
+    await waitFor(() => expect(listRepositories.mock.calls.length).toBeGreaterThan(0));
+    await act(async () => { await Promise.resolve(); });
+    const callsBeforeOpen = listRepositories.mock.calls.length;
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    await waitFor(() => expect(listRepositories.mock.calls.length).toBeGreaterThan(callsBeforeOpen));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Add a Cursor API key before using Cursor Cloud agents.")).toBeTruthy();
+    expect(screen.queryByText(/Connect this repo to Cursor/)).toBeNull();
+  });
+
+  it("disables the cloud row with a checking reason while the repo list is in flight", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { listRepositories } = installCursorCloudMocks();
+    listRepositories.mockReset();
+    listRepositories.mockImplementation(() => new Promise(() => {}));
+    renderCursorCloudDraft();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Checking Cursor Cloud…")).toBeTruthy();
+    expect(listRepositories).toHaveBeenCalled();
+  });
+
+  it("disables Cursor Cloud when a remote draft machine is selected", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    installCursorCloudMocks();
+    const localBinding = {
+      kind: "local" as const,
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: "git@github.com:acme/project.git",
+    };
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio (12)",
+      projectId: "project-a",
+      rootPath: "/Volumes/work/project-under-test",
+      displayName: "project-under-test",
+      gitOriginUrl: "https://github.com/acme/project.git",
+    };
+    useAppStore.setState({
+      project: { rootPath: localBinding.rootPath, displayName: localBinding.displayName } as any,
+      projectBinding: localBinding,
+      openProjectTabRoots: [localBinding.rootPath],
+      openRemoteProjectTabs: [remoteBinding],
+      crossMachineLanesByMachineId: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: remoteBinding.runtimeName,
+          targetId: remoteBinding.targetId,
+          projectId: remoteBinding.projectId,
+          binding: remoteBinding,
+          online: true,
+          lanes: [{ id: "lane-1", name: "current-lane", laneType: "worktree" }] as any,
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+    (window.ade.project.listRecent as ReturnType<typeof vi.fn>).mockResolvedValue([{
+      rootPath: localBinding.rootPath,
+      displayName: localBinding.displayName,
+      lastOpenedAt: "2026-07-28T12:00:00.000Z",
+      exists: true,
+      kind: "local",
+      gitOriginUrl: localBinding.gitOriginUrl,
+    }]);
+    window.ade.remoteRuntime = {
+      getConnectionSnapshot: vi.fn().mockResolvedValue({
+        connections: [{
+          state: "connected",
+          target: {
+            id: remoteBinding.targetId,
+            name: remoteBinding.runtimeName,
+            hostname: "studio",
+          },
+          projects: [{
+            projectId: remoteBinding.projectId,
+            rootPath: remoteBinding.rootPath,
+            displayName: remoteBinding.displayName,
+            gitOriginUrl: remoteBinding.gitOriginUrl,
+          }],
+        }],
+        connectedCount: 1,
+        updatedAt: Date.now(),
+      }),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    } as any;
+
+    renderCursorCloudDraft({
+      project: { rootPath: localBinding.rootPath, displayName: localBinding.displayName },
+      projectBinding: localBinding,
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Mac Studio/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /currently Mac Studio/ }));
+    const cloudRow = await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ });
+    expect((cloudRow as HTMLButtonElement).disabled).toBe(true);
+    await revealRowTooltip(cloudRow);
+    expect(await screen.findByText("Cursor Cloud launches from this computer.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send to Cursor Cloud" })).toBeNull();
+  });
+
+  it("passes autoCreatePR when the Open a PR chip is on", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));
+    const autoPr = await screen.findByRole("menuitemcheckbox", { name: /Open a PR/ });
+    expect(autoPr.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(autoPr);
+    expect(autoPr.getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Open a PR when done." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      autoCreatePR: true,
+      promptText: "Open a PR when done.",
+    }));
+  });
+
+  it("sends without selected secrets and does not block on an empty picker", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, openChat } = installCursorCloudMocks();
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    expect(await screen.findByRole("button", { name: "Advanced" })).toBeTruthy();
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "No secrets this time." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      promptText: "No secrets this time.",
+      secretNames: [],
+      rememberSecretNames: false,
+      laneId: "lane-1",
+    }));
+    const createArgs = createRun.mock.calls[0]?.[0] as { sessionId?: string };
+    expect(createArgs.sessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+    expect(openChat).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: createArgs.sessionId,
+      laneId: "lane-1",
+    }));
+  });
+
+  it("passes selected secret names and remember-for-lane, hiding CURSOR_ names", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun } = installCursorCloudMocks();
+    (window.ade.projectSecrets.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      secrets: [
+        { name: "NPM_TOKEN", createdAt: "", updatedAt: "", valueLength: 8 },
+        { name: "CURSOR_API_KEY", createdAt: "", updatedAt: "", valueLength: 8 },
+        { name: "GH_TOKEN", createdAt: "", updatedAt: "", valueLength: 8 },
+      ],
+      storage: { path: "/tmp/secrets", encrypted: true, scope: "project" },
+    });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));
+    expect(await screen.findByRole("menuitemcheckbox", { name: "NPM_TOKEN" })).toBeTruthy();
+    expect(screen.queryByRole("menuitemcheckbox", { name: "CURSOR_API_KEY" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "NPM_TOKEN" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Remember for this lane" }));
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use the token." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      secretNames: ["NPM_TOKEN"],
+      rememberSecretNames: true,
+    }));
+  });
+
+  it("attaches to an existing PR instead of auto-creating another", async () => {
+    installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
+    const { createRun, getOpenPrForBranch } = installCursorCloudMocks();
+    getOpenPrForBranch.mockResolvedValue({
+      prUrl: "https://github.com/acme/project/pull/12",
+      prNumber: 12,
+      title: "Fix flakes",
+      headRefName: "current-lane",
+    });
+    renderCursorCloudDraft();
+    await selectCursorCloudMachine();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));
+    expect(await screen.findByText("Attach to PR #12")).toBeTruthy();
+    expect(screen.queryByRole("menuitemcheckbox", { name: /Open a PR/ })).toBeNull();
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Work on the existing PR." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
+
+    await waitFor(() => expect(createRun).toHaveBeenCalled());
+    expect(createRun).toHaveBeenCalledWith(expect.objectContaining({
+      autoCreatePR: false,
+      prUrl: "https://github.com/acme/project/pull/12",
+      workOnCurrentBranch: true,
+      promptText: "Work on the existing PR.",
+    }));
+  });
+
+  it("shows a retry state when hydrating an empty cloud chat fails", async () => {
+    const session = buildSession("cloud-empty-1", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-749a9047-4f2a-470c-8425-5087b725ba65",
+    });
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    Object.assign(window.ade.ai, {
+      cursorCloudOpenChat: vi.fn().mockRejectedValue(new Error("conversation was empty")),
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByTestId("cursor-cloud-hydrate-failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.queryByTestId("cursor-cloud-connecting")).toBeNull();
+    expect(screen.getByTestId("cursor-cloud-header-link")).toBeTruthy();
+    expect(screen.queryByText(/Live view of Cursor Cloud/)).toBeNull();
+  });
+
+  it("watches an open cloud chat while visible and unwatches on unmount", async () => {
+    const session = buildSession("cloud-watch-1", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-watch-1",
+    });
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    const watchMirror = vi.fn().mockResolvedValue(undefined);
+    Object.assign(window.ade.ai, {
+      cursorCloudWatchMirror: watchMirror,
+      cursorCloudOpenChat: vi.fn().mockResolvedValue({ sessionId: session.sessionId, session }),
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+
+    const view = renderPane(session);
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: true,
+    }));
+
+    view.unmount();
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: false,
+    }));
+  });
+
+  it("unwatches a cloud chat when the document is hidden", async () => {
+    const session = buildSession("cloud-watch-hidden", {
+      provider: "cursor",
+      model: "composer-2",
+      modelId: CURSOR_MODEL_ID,
+      title: "Cursor Chat",
+      cursorCloudAgentId: "bc-watch-hidden",
+    });
+    installAdeMocks({
+      sessions: [session],
+      cursorModels: [{ id: "composer-cloud" }],
+      aiStatus: cursorAvailableAiStatus(),
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+    seedDrawerStore();
+    const watchMirror = vi.fn().mockResolvedValue(undefined);
+    Object.assign(window.ade.ai, {
+      cursorCloudWatchMirror: watchMirror,
+      cursorCloudOpenChat: vi.fn().mockResolvedValue({ sessionId: session.sessionId, session }),
+      cursorCloudListRepositories: vi.fn().mockResolvedValue([]),
+      cursorCloudListAgents: vi.fn().mockResolvedValue({ items: [] }),
+      cursorCloudGetLaneSecretNames: vi.fn().mockResolvedValue([]),
+    });
+
+    const view = renderPane(session);
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: true,
+    }));
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(watchMirror).toHaveBeenCalledWith({
+      sessionId: session.sessionId,
+      watching: false,
+    }));
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    view.unmount();
   });
 });

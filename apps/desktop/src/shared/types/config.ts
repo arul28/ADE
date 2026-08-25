@@ -549,6 +549,8 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "linear.issue_assigned",
   "linear.issue_status_changed",
   "linear.issue_labeled",
+  "cursor.cloud_finished",
+  "cursor.cloud_error",
   "github-webhook",
   "webhook",
   /**
@@ -973,6 +975,7 @@ export type AiProviderCredentialSource =
   | "cursor-admin-env"
   | "cursor-env"
   | "cursor-api-key-store"
+  | "cursor-oauth"
   | "factory-env"
   | "pi-auth-file"
   | "pi-models-file";
@@ -997,6 +1000,8 @@ export type AiProviderConnectionStatus = {
   blocker: string | null;
   lastCheckedAt: string;
   sources: AiProviderConnectionSource[];
+  /** Cursor OAuth: email from Cursor.auth.status() when the SDK reports logged-in. */
+  accountEmail?: string;
 };
 
 export type AiProviderConnections = {
@@ -1065,6 +1070,21 @@ export type CursorCloudCreateRunRequest = {
   skipReviewerRequest?: boolean;
   /** Existing PR url to attach the cloud agent to. */
   prUrl?: string | null;
+  /** ADE chat session id used to open the local mirror; not sent as cloud.metadata. */
+  sessionId?: string | null;
+  /** ADE lane id used to open the local mirror; not sent as cloud.metadata. */
+  laneId?: string | null;
+  /**
+   * Canonical ADE projects.id. Callers should omit this and let main look it
+   * up; never invent a new id. Not sent as cloud.metadata.
+   */
+  projectId?: string | null;
+  /** Linear identifier such as ADE-12. Kept on the ADE session; not sent as cloud.metadata. */
+  linearIssueId?: string | null;
+  /** Project secret names to inject as cloud.envVars. Values are resolved in main. */
+  secretNames?: string[];
+  /** Persist secretNames as the next preselection for this lane. */
+  rememberSecretNames?: boolean;
 };
 
 export type CursorCloudCreateRunResult = {
@@ -1083,6 +1103,30 @@ export type CursorCloudFollowUpResult = {
   status: string;
 };
 
+export type CursorAgentUsageCost = {
+  rawCostCents: number | null;
+  chargedCents: number | null;
+  /** Dollars for Settings. Never copy this onto chat transcript events. */
+  costUsd: number | null;
+};
+
+export type CursorAgentUsage = {
+  agentId: string;
+  runId?: string | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  totalTokens: number | null;
+  reasoningTokens: number | null;
+  cost: CursorAgentUsageCost | null;
+};
+
+export type CursorAgentUsageRequest = {
+  agentId: string;
+  runId?: string | null;
+};
+
 export type CursorCloudArtifactSummary = {
   path: string;
   sizeBytes?: number;
@@ -1098,14 +1142,96 @@ export type CursorCloudArtifactDownload = {
   sizeBytes: number;
 };
 
+/**
+ * Precise run-level status for a fleet row. The agent list only reports
+ * running/finished/error; creating/cancelled/expired come from the latest run.
+ */
+export type CursorCloudFleetRunStatus =
+  | "creating"
+  | "running"
+  | "finished"
+  | "error"
+  | "cancelled"
+  | "expired";
+
+export type CursorCloudFleetOwnership = {
+  sessionId: string | null;
+  sessionTitle: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  /** Linear identifier such as ADE-12, from the owning lane. */
+  linearIssueId: string | null;
+};
+
+export type CursorCloudFleetEntry = {
+  agent: CursorCloudAgentSummary;
+  /** Latest-run status when known; falls back to the agent list status. */
+  runStatus?: CursorCloudFleetRunStatus;
+  latestRunId: string | null;
+  branch: string | null;
+  prUrl: string | null;
+  modelId: string | null;
+  ownership: CursorCloudFleetOwnership;
+  /**
+   * Why this entry is in the open project's fleet: a linked ADE session
+   * ("session"), a repo match against the project origin ("repo"), or both.
+   */
+  matchedBy: "session" | "repo" | "both";
+};
+
+export type CursorCloudFleetRelayState = "unconfigured" | "ready" | "error";
+
+export type CursorCloudFleetResult = {
+  items: CursorCloudFleetEntry[];
+  relayState: CursorCloudFleetRelayState;
+  lastEventAt: string | null;
+  fetchedAt: string;
+};
+
+export type CursorCloudPullIntoLaneResult = {
+  status: "pulled" | "created_lane";
+  laneId: string;
+  laneName: string;
+  sessionId: string | null;
+  mergedBranch: string;
+};
+
+/** Relay wake for the fleet view; also drives the top-bar finish badge. */
+export type CursorCloudFleetEvent = {
+  agentId: string;
+  status: string;
+  summary: string;
+  branchName: string | null;
+  prUrl: string | null;
+  eventId: string;
+  createdAt: string;
+};
+
 export type CursorCloudOpenChatRequest = {
   cloudAgentId: string;
   laneId: string;
+  /**
+   * Cursor's own name for the agent. Adopted as the ADE session title so this chat and
+   * cursor.com read the same, and so ADE's session auto-naming stands down for it.
+   */
+  agentName?: string | null;
+  /**
+   * Predetermined ADE session id, typically the same id stamped as
+   * cloud.metadata.ade_session_id at Agent.create.
+   */
+  sessionId?: string | null;
+  /** Cursor model id (with or without the `cursor/` prefix) for a newly created ADE session. */
+  modelId?: string | null;
 };
 
 export type CursorCloudOpenChatResult = {
   sessionId: string;
   session?: AgentChatSession;
+};
+
+export type CursorCloudWatchMirrorRequest = {
+  sessionId: string;
+  watching: boolean;
 };
 
 export type CursorCloudStreamRunRequest = {
@@ -1343,6 +1469,33 @@ export type PiAuthStatusEvent = {
   notice?: PiAuthNotice;
   error?: string;
 };
+
+/**
+ * Cursor.auth.login() progress. Never carries the minted API key — that stays
+ * in ADE's encrypted store. `url` is the browser login page for SSH / no-browser
+ * hosts to copy.
+ */
+export type CursorSdkAuthEvent = {
+  providerId: "cursor";
+  state: "pending" | "success" | "error" | "cancelled" | "logged-out";
+  url?: string;
+  email?: string;
+  error?: string;
+};
+
+export type CursorSdkAuthStatus = {
+  sdkStatus: "logged-in" | "logged-out";
+  email?: string;
+  apiKeyExpiresAtMs?: number;
+  adeKeyPresent: boolean;
+  credentialSource?: AiProviderCredentialSource;
+  loginInProgress: boolean;
+  loginUrl?: string;
+};
+
+export type CursorSdkLoginResult =
+  | { ok: true; email?: string; apiKeyExpiresAtMs?: number }
+  | { ok: false; error: string };
 
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";

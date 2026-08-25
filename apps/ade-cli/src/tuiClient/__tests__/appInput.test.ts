@@ -25,6 +25,7 @@ import {
   formatLaneDeleteRisk,
   formatLaneReclaimPreview,
   formFieldUsesPromptInput,
+  isTwoStepConfirmCommand,
   isChatFlushEdge,
   isChatSessionAnimating,
   isPromptLineBackspace,
@@ -66,6 +67,7 @@ import {
   resolveTuiUnprocessedMessageRequest,
   resolveTuiUnprocessedMessageDraft,
   shouldHandlePendingQuestionKey,
+  resolveChatEscapeAction,
   resolveModelPickerEscape,
   nextModelPickerProviderTabKey,
   gridTabNavigationTarget,
@@ -588,8 +590,15 @@ describe("lane delete form helpers", () => {
   it("does not treat lane-delete select and toggle rows as prompt text", () => {
     expect(formFieldUsesPromptInput("lane-delete", "scope")).toBe(false);
     expect(formFieldUsesPromptInput("lane-delete", "force")).toBe(false);
-    expect(formFieldUsesPromptInput("lane-delete", "confirm")).toBe(true);
+    expect(formFieldUsesPromptInput("lane-delete", "remoteName")).toBe(true);
+    expect(formFieldUsesPromptInput("chat-delete", "confirm")).toBe(false);
     expect(formFieldUsesPromptInput("feedback", "body")).toBe(true);
+  });
+
+  it("treats chat and lane delete as two-step enter confirms", () => {
+    expect(isTwoStepConfirmCommand("chat-delete")).toBe(true);
+    expect(isTwoStepConfirmCommand("lane-delete")).toBe(true);
+    expect(isTwoStepConfirmCommand("rename")).toBe(false);
   });
 
   it("does not treat new-lane select/toggle/button rows as prompt text", () => {
@@ -745,6 +754,7 @@ describe("right pane context defaults", () => {
       scheduledWork: [],
       backgroundWork: [],
       pr: null,
+      title: "Lane one chat",
       snapshots: [],
       inspectedSubagentId: null,
       streaming: false,
@@ -754,7 +764,10 @@ describe("right pane context defaults", () => {
     };
   }
 
-  it("keeps the new-chat setup pane ahead of stale lane drawer highlights", () => {
+  // Phase 2: starting a new chat no longer auto-opens a model pane. The draft
+  // surface stays clear (the model line under the composer reports what will be
+  // used) and it still wins over a stale lane-details highlight.
+  it("leaves the right pane empty on the new-chat draft surface", () => {
     const lane = laneForContext();
     const pane = resolveContextDefault({
       draftChatActive: true,
@@ -762,7 +775,6 @@ describe("right pane context defaults", () => {
       activeLane: lane,
       liveAgentCount: 0,
       highlightedDrawerLane: lane,
-      drawerMode: "lanes",
       drawerNav: null,
       chatInfo: chatInfoForContext(),
       subagentSnapshots: [],
@@ -775,22 +787,92 @@ describe("right pane context defaults", () => {
       unavailableLaneIds: new Set(),
     });
 
-    expect(pane).toMatchObject({
-      kind: "model-picker",
-      surface: "new-chat",
-      laneId: "lane-1",
-      laneLabel: "Lane one",
-      selection: { kind: "provider", provider: "claude" },
-      // Two-stage nav: the picker opens in the model list (Stage 1), NOT focused
-      // on the Confirm button — Enter is the gate into the settings.
-      footerFocus: null,
-      focusedIndex: 0,
+    expect(pane).toEqual({ kind: "empty" });
+  });
+
+  it("leaves the right pane empty for the sessions pane's new-chat row too", () => {
+    const lane = laneForContext();
+    expect(resolveContextDefault({
+      draftChatActive: false,
+      activeSession: null,
+      activeLane: lane,
+      liveAgentCount: 0,
+      highlightedDrawerLane: lane,
+      drawerNav: { kind: "new-chat", laneId: lane.id, laneLabel: lane.name, rows: [] },
+      chatInfo: chatInfoForContext(),
+      subagentSnapshots: [],
+      provider: "claude",
+      newChatSetup: null,
+      unavailableLaneIds: new Set(),
+    })).toEqual({ kind: "empty" });
+  });
+
+  it("keeps chat info when a session is active and no lane header is highlighted", () => {
+    const lane = laneForContext();
+    const info = chatInfoForContext();
+    const pane = resolveContextDefault({
+      draftChatActive: false,
+      activeSession: {
+        sessionId: "chat-1",
+        laneId: lane.id,
+        provider: "claude",
+        model: "claude-sonnet-4-5",
+        status: "active",
+        startedAt: "2026-05-20T00:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-20T00:01:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+        nextWakeAt: null,
+      },
+      activeLane: lane,
+      liveAgentCount: 1,
+      highlightedDrawerLane: null,
+      drawerNav: { kind: "chat", info },
+      chatInfo: info,
+      subagentSnapshots: [],
+      provider: "claude",
+      newChatSetup: null,
+      unavailableLaneIds: new Set(),
     });
+    expect(pane).toEqual({ kind: "chat-info", info });
+  });
+
+  it("opens lane details when the sessions pane is on a lane header, even with an active chat", () => {
+    const lane = laneForContext();
+    const pane = resolveContextDefault({
+      draftChatActive: false,
+      activeSession: {
+        sessionId: "chat-1",
+        laneId: lane.id,
+        provider: "claude",
+        model: "claude-sonnet-4-5",
+        status: "active",
+        startedAt: "2026-05-20T00:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-20T00:01:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+        nextWakeAt: null,
+      },
+      activeLane: lane,
+      liveAgentCount: 1,
+      highlightedDrawerLane: lane,
+      drawerNav: { kind: "lane", lane },
+      chatInfo: chatInfoForContext(),
+      subagentSnapshots: [],
+      provider: "claude",
+      newChatSetup: null,
+      unavailableLaneIds: new Set(),
+    });
+    expect(pane.kind).toBe("lane-details");
+    if (pane.kind !== "lane-details") return;
+    expect(pane.lane.id).toBe(lane.id);
   });
 
   // First-send draft commit: only the new-chat setup surface is swapped for
   // chat-info — panes the user opened deliberately mid-draft are untouched.
-  it("isNewChatSetupPane matches exactly the new-chat model-picker surface", () => {
+  it("isNewChatSetupPane matches the new-chat model surfaces only", () => {
     const picker = (surface: "chat" | "new-chat"): RightPaneContent => ({
       kind: "model-picker",
       surface,
@@ -810,6 +892,17 @@ describe("right pane context defaults", () => {
       fields: [{ name: "name", label: "Name" }],
     })).toBe(false);
     expect(isNewChatSetupPane({ kind: "details", title: "Diff", body: "" })).toBe(false);
+    // The /model wizard opened on the new-chat surface is the same setup pane.
+    const wizard = (surface: "chat" | "new-chat"): RightPaneContent => ({
+      kind: "model-wizard",
+      surface,
+      step: "provider",
+      provider: null,
+      familyKey: null,
+      index: 0,
+    });
+    expect(isNewChatSetupPane(wizard("new-chat"))).toBe(true);
+    expect(isNewChatSetupPane(wizard("chat"))).toBe(false);
   });
 });
 
@@ -991,8 +1084,8 @@ describe("model picker provider normalization and locking", () => {
   });
 });
 
-describe("drawer mouse hit testing", () => {
-  it("widens the drawer responsively on larger terminals", () => {
+describe("sessions pane mouse hit testing", () => {
+  it("widens the pane responsively on larger terminals", () => {
     expect(resolveDrawerPaneWidth(100, false)).toBe(0);
     expect(resolveDrawerPaneWidth(100, true)).toBe(32);
     expect(resolveDrawerPaneWidth(160, true)).toBe(38);
@@ -1000,8 +1093,9 @@ describe("drawer mouse hit testing", () => {
     expect(resolveDrawerPaneWidth(400, true)).toBe(48);
   });
 
-  // Drawer mouse hit-testing now lives in drawerLayout.ts and is covered by
-  // __tests__/drawerLayout.test.ts against the shared layout model.
+  // Row hit-testing now lives in workListLayout.ts — `workListMouseHitForLayout`
+  // and `workListHitRects` — and is covered by __tests__/workListLayout.test.ts
+  // against the same layout the pane renders from.
 });
 
 describe("prompt mouse hit testing", () => {
@@ -1637,6 +1731,42 @@ describe("model picker escape handling", () => {
   });
 });
 
+describe("chat escape precedence", () => {
+  const base = {
+    pane: "chat",
+    textInputActive: true,
+    modified: false,
+    composerTriggerOpen: false,
+    chatSelectionActive: false,
+    vimModeEnabled: false,
+  };
+
+  it("closes the @/slash palette before vim mode or a mouse selection consumes Esc", () => {
+    // The palette footer advertises "Esc close", so it must win even when vim
+    // mode would otherwise swallow every Esc in the composer.
+    expect(resolveChatEscapeAction({ ...base, composerTriggerOpen: true, vimModeEnabled: true }))
+      .toBe("dismiss-composer-trigger");
+    expect(resolveChatEscapeAction({ ...base, composerTriggerOpen: true, chatSelectionActive: true }))
+      .toBe("dismiss-composer-trigger");
+  });
+
+  it("falls back to the selection and vim consumers once no palette is open", () => {
+    expect(resolveChatEscapeAction({ ...base, chatSelectionActive: true, vimModeEnabled: true }))
+      .toBe("clear-chat-selection");
+    expect(resolveChatEscapeAction({ ...base, vimModeEnabled: true })).toBe("vim-normal");
+    expect(resolveChatEscapeAction(base)).toBe(null);
+  });
+
+  it("leaves Esc to the generic handlers outside the chat composer", () => {
+    expect(resolveChatEscapeAction({ ...base, pane: "details", composerTriggerOpen: true })).toBe(null);
+    expect(resolveChatEscapeAction({ ...base, textInputActive: false, vimModeEnabled: true })).toBe(null);
+    expect(resolveChatEscapeAction({ ...base, modified: true, vimModeEnabled: true })).toBe(null);
+    // A mouse selection is cleared from any pane, matching the pre-existing branch.
+    expect(resolveChatEscapeAction({ ...base, pane: "details", chatSelectionActive: true }))
+      .toBe("clear-chat-selection");
+  });
+});
+
 describe("terminal control toggle", () => {
   it("recognizes ctrl-t from Ink key data and raw terminal bytes", () => {
     expect(isTerminalControlToggle("t", { ctrl: true })).toBe(true);
@@ -1948,7 +2078,7 @@ describe("prompt editing helpers", () => {
     expect(movePromptCursorVertical("a🙂bcde", 4, 7, -1)).toBe(3);
   });
 
-  it("detects prompt visual-row edges for attachment and model-row navigation", () => {
+  it("detects prompt visual-row edges for attachment and history navigation", () => {
     expect(isPromptCursorOnFirstVisualRow("abcdef", 3, 1)).toBe(true);
     expect(isPromptCursorOnFirstVisualRow("abcdef", 3, 4)).toBe(false);
     expect(isPromptCursorOnLastVisualRow("abcdef", 3, 6)).toBe(true);
@@ -2043,17 +2173,15 @@ describe("prompt editing helpers", () => {
     expect(cursorSourceForInterfaceMode("chat")).toBe("sdk");
     expect(cursorSourceForInterfaceMode("cli")).toBe("cli");
 
-    const toggled = reconcileCursorModelStateForInterface(
-      cursorModelState(),
-      "cli",
-      [sdkOnly, cliOnly],
-    );
-    expect(toggled).toMatchObject({
-      interfaceMode: "cli",
-      modelId: "cursor/cli-only",
-      model: "cli-only-default",
-      displayName: "CLI only",
+    const before = cursorModelState({
+      reasoningEffort: "high",
+      fastMode: true,
+      permissionMode: "full-auto",
+      interactionMode: "plan",
+      cursorModeId: "ask",
     });
+    const toggled = reconcileCursorModelStateForInterface(before, "cli");
+    expect(toggled).toEqual({ ...before, interfaceMode: "cli" });
 
     expect(() => resolveCursorCliModelForLaunch(cursorModelState(), [sdkOnly]))
       .toThrow(/available for chat only/i);
@@ -2207,13 +2335,24 @@ describe("latestAuthFailedPrompt", () => {
 });
 
 describe("terminal mouse tracking", () => {
-  it("uses one conservative cross-terminal mouse baseline", () => {
-    expect(terminalMouseTrackingEnableSequence()).toBe("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
-    expect(terminalMouseTrackingEnableSequence()).not.toContain("\x1b[?1003h");
+  it("enables SGR 1003 hover motion by default", () => {
+    const previous = process.env.ADE_CODE_HOVER;
+    delete process.env.ADE_CODE_HOVER;
+    expect(terminalMouseTrackingEnableSequence()).toBe("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
     expect(terminalMouseTrackingEnableSequence()).not.toContain("\x1b[?1015h");
-
     expect(terminalMouseTrackingDisableSequence()).toContain("\x1b[?1003l");
     expect(terminalMouseTrackingDisableSequence()).toContain("\x1b[?1015l");
+    if (previous === undefined) delete process.env.ADE_CODE_HOVER;
+    else process.env.ADE_CODE_HOVER = previous;
+  });
+
+  it("can restore the press/drag-only baseline with ADE_CODE_HOVER=0", () => {
+    const previous = process.env.ADE_CODE_HOVER;
+    process.env.ADE_CODE_HOVER = "0";
+    expect(terminalMouseTrackingEnableSequence()).toBe("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+    expect(terminalMouseTrackingEnableSequence()).not.toContain("\x1b[?1003h");
+    if (previous === undefined) delete process.env.ADE_CODE_HOVER;
+    else process.env.ADE_CODE_HOVER = previous;
   });
 
   it("restores mouse tracking, alternate scroll, and the alt screen together", () => {

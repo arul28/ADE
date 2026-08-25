@@ -228,7 +228,7 @@ export function terminateChildProcessTree(
 export function spawnAsync(
   command: string,
   args: string[],
-  opts?: { timeout?: number; maxOutputBytes?: number },
+  opts?: { timeout?: number; maxOutputBytes?: number; cwd?: string },
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     try {
@@ -238,6 +238,7 @@ export function spawnAsync(
         detached: process.platform !== "win32",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
+        ...(opts?.cwd ? { cwd: opts.cwd } : {}),
       });
       let stdout = "";
       let stderr = "";

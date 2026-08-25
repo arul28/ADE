@@ -6,9 +6,12 @@ import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
   isCurrentProcessDescendantOfPid,
+  MATERIALIZE_DATALESS_FILES_KEY,
   listStaleChannelServePids,
+  readPidElapsedMs,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
+  RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
   serviceManagerResultText,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
@@ -21,6 +24,13 @@ import {
   installLaunchdWatchdogAgent,
   uninstallLaunchdWatchdogAgent,
 } from "./installLaunchdWatchdog";
+import {
+  awaitServiceHandover,
+  awaitYoungBrainStart,
+  defaultResponsivenessProbe,
+  type HandoverWaitDeps,
+  serviceHandoverSleep,
+} from "./serviceHandover";
 import {
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
@@ -47,6 +57,10 @@ type LaunchdServiceManagerDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   handoverPidAlive?: (pid: number) => boolean;
+  /** Age of a live service pid; tests inject it, production asks `ps`. */
+  pidElapsedMs?: (pid: number, run: ServiceManagerSpawnSync) => number | null;
+  /** Whether the brain has recorded a fresh streak of startup failures; tests inject it. */
+  recentCrashLoop?: () => boolean;
   sleep?: (ms: number) => Promise<void>;
 };
 
@@ -82,8 +96,18 @@ function launchdPrintOutputText(result: ReturnType<ServiceManagerSpawnSync>): st
   return "";
 }
 
-export function launchAgentPath(homeDir = os.homedir()): string {
-  return path.join(homeDir, "Library", "LaunchAgents", `${ADE_RUNTIME_SERVICE_NAME}.plist`);
+/**
+ * `serviceName` is a parameter rather than only the module constant because
+ * `ADE_RUNTIME_SERVICE_NAME` is frozen from `process.env` at import time.
+ * Callers that resolve a channel from an environment they were handed — the
+ * diagnostic collector, and every test that points ADE at a temp home — would
+ * otherwise silently read the stable channel's plist.
+ */
+export function launchAgentPath(
+  homeDir = os.homedir(),
+  serviceName: string = ADE_RUNTIME_SERVICE_NAME,
+): string {
+  return path.join(homeDir, "Library", "LaunchAgents", `${serviceName}.plist`);
 }
 
 export function isLaunchdPrintRunning(output: string): boolean {
@@ -154,6 +178,34 @@ function selfServiceMutationBlock(args: {
  * `Cannot find module '/serve'` loop. The floor is what turns that into a slow,
  * self-healing retry instead of a hot spin, so it should not silently inherit
  * whatever a future launchd decides the default is.
+ *
+ * `MaterializeDatalessFiles` is why a brain can read a user's project at all
+ * when that project lives in iCloud Drive, Dropbox, or any other provider that
+ * evicts file contents. `read(2)` returns EDEADLK -- which libuv has no name for
+ * and reports as "Unknown system error -11" -- when the file is a dataless
+ * placeholder and the reading process's I/O policy disallows on-demand
+ * materialization (read(2) and setiopolicy_np(3)). The per-process switch is
+ * `setiopolicy_np(IOPOL_TYPE_VFS_MATERIALIZE_DATALESS_FILES, ...)`, which Node
+ * and Electron do not expose; launchd.plist(5) exposes the same switch as this
+ * key, so the launch agent can grant it without any native code. Set it on the
+ * job and every read the brain makes downloads what it needs, exactly as the
+ * desktop app's own reads do.
+ *
+ * `ProcessType` is `Interactive` because launchd otherwise "applies light
+ * resource limits to the job, throttling its CPU usage and I/O bandwidth".
+ * The brain is not a background chore: every action the user takes in the
+ * desktop app is a blocking RPC to this process. launchd.plist(5) reserves
+ * `Interactive` for jobs whose responsiveness the app depends on and that
+ * cannot be made `Adaptive` -- `Adaptive` tracks activity over XPC connections,
+ * which a Node process does not open. Both conditions describe this job.
+ *
+ * `LowPriorityIO` is stated for the same reason as `ThrottleInterval`: the
+ * failure being fixed here is a filesystem-I/O failure, so the job says out
+ * loud that its reads are not low priority instead of inheriting a default.
+ *
+ * All three are optional keys that describe policy, not structure: a macOS old
+ * enough not to know one of them still has a complete, loadable job definition
+ * without it, and falls back to exactly today's behaviour.
  */
 export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.homedir()): string {
   const envEntries = Object.entries(command.env ?? {});
@@ -185,6 +237,12 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
   <true/>
   <key>ThrottleInterval</key>
   <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>${MATERIALIZE_DATALESS_FILES_KEY}</key>
+  <true/>
+  <key>LowPriorityIO</key>
+  <false/>
   <key>StandardOutPath</key>
   <string>${escapeXml(path.join(runtimeLogDir, "launchd.out.log"))}</string>
   <key>StandardErrorPath</key>
@@ -237,50 +295,6 @@ function launchdTerminateDeps(deps: TerminatePidDeps | undefined): TerminatePidD
   return { ...deps, platform: deps?.platform ?? "darwin" };
 }
 
-async function sleepAsync(ms: number): Promise<void> {
-  // Awaited lifecycle delays must stay referenced: in a standalone CLI the
-  // handover polling can be the only pending work, and an unref'd timer lets
-  // the process exit mid-repair (before SIGKILL escalation / launchctl load).
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function runtimeStatusArgs(command: AdeServiceCommand, socketPath: string): string[] {
-  const args = [...command.args];
-  const serveIndex = args.lastIndexOf("serve");
-  if (serveIndex >= 0) {
-    args.splice(serveIndex, 1, "runtime", "status");
-  } else {
-    args.push("runtime", "status");
-  }
-  args.push("--socket", socketPath, "--timeout", "1500", "--text");
-  return args;
-}
-
-function defaultResponsivenessProbe(args: {
-  socketPath: string;
-  timeoutMs: number;
-  command: AdeServiceCommand;
-}): boolean {
-  const env = {
-    ...process.env,
-    ...(args.command.env ?? {}),
-    ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
-  };
-  const result = spawnSync(
-    args.command.command,
-    runtimeStatusArgs(args.command, args.socketPath),
-    {
-      encoding: "utf8",
-      env,
-      timeout: args.timeoutMs,
-      stdio: "ignore",
-    },
-  );
-  return result.status === 0 && !result.error;
-}
-
 function handoverFailure(
   servicePath: string,
   failureStep: NonNullable<ServiceManagerResult["failureStep"]>,
@@ -321,7 +335,7 @@ export async function installLaunchdService(
     : null;
   const plistUnchanged = existingPlist === plist;
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
-  const loaded = getLoadedLaunchdState(run);
+  let loaded = getLoadedLaunchdState(run);
   if (!forceRestart && plistUnchanged && loaded?.running === true) {
     if (
       deps.probeResponsiveness === false
@@ -339,6 +353,61 @@ export async function installLaunchdService(
         message: "ADE service launchd service is already installed and running.",
       };
     }
+  }
+  const isAlive = deps.handoverPidAlive ?? deps.terminateDeps?.pidAlive ?? pidAlive;
+  const sleep = deps.sleep ?? serviceHandoverSleep;
+  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS);
+  const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
+  const pidElapsedMs = deps.pidElapsedMs ?? readPidElapsedMs;
+
+  const handoverWait: HandoverWaitDeps = {
+    readSupervisedPid: () => {
+      const replacement = getLoadedLaunchdState(run);
+      return replacement?.running === true ? replacement.pid : null;
+    },
+    isAlive,
+    probeResponsiveness,
+    socketPath,
+    command,
+    sleep,
+    pollMs,
+  };
+
+  const young = await awaitYoungBrainStart({
+    definitionUnchanged: plistUnchanged,
+    supervisedPid: loaded?.pid,
+    running: loaded?.running === true,
+    adeHome,
+    recentCrashLoop: deps.recentCrashLoop,
+    run,
+    pidElapsedMs,
+    timeoutMs,
+    wait: handoverWait,
+  });
+  if (young.kind === "responsive") {
+    installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+    return {
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: "ADE service launchd service is already installed; its background service finished starting.",
+    };
+  }
+  if (young.kind === "starting") {
+    installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+    return {
+      ok: true,
+      starting: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: `ADE service launchd service is installed; the background service (pid ${young.pid}) is still starting.`,
+    };
+  }
+  if (young.kind === "died") {
+    // The young child died while we waited: fall through and (re)start it.
+    loaded = getLoadedLaunchdState(run);
   }
   const selfBlock = selfServiceMutationBlock({
     action: "install",
@@ -414,30 +483,14 @@ export async function installLaunchdService(
     };
   }
   const oldPid = loaded?.pid ?? null;
-  const isAlive = deps.handoverPidAlive ?? deps.terminateDeps?.pidAlive ?? pidAlive;
-  const sleep = deps.sleep ?? sleepAsync;
-  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? 10_000);
-  const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
-  const deadline = Date.now() + timeoutMs;
-  let predecessorGone = oldPid == null || !isAlive(oldPid);
-  let replacementPid: number | null = null;
-  let replacementResponsive = false;
-  do {
-    predecessorGone = oldPid == null || !isAlive(oldPid);
-    const replacement = getLoadedLaunchdState(run);
-    replacementPid = replacement?.running === true ? replacement.pid : null;
-    const replacementDiffers = replacementPid != null && replacementPid !== oldPid;
-    if (predecessorGone && replacementDiffers) {
-      replacementResponsive = probeResponsiveness({
-        socketPath,
-        timeoutMs: Math.min(1_500, Math.max(1, deadline - Date.now())),
-        command,
-      });
-      if (replacementResponsive) break;
-    }
-    if (Date.now() >= deadline) break;
-    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
-  } while (Date.now() <= deadline);
+  // A fresh full budget: the young-brain wait above may have spent all of its
+  // own, and the real handover is the one whose outcome decides whether this
+  // install reports `starting` or a failure.
+  const { predecessorGone, replacementPid, replacementResponsive } = await awaitServiceHandover(
+    handoverWait,
+    oldPid,
+    timeoutMs,
+  );
 
   if (!predecessorGone) {
     return handoverFailure(
@@ -454,6 +507,25 @@ export async function installLaunchdService(
     );
   }
   if (!replacementResponsive) {
+    // `replacementPid != null` first: `isAlive` is injectable, and a test (or
+    // a future caller) that answers `true` unconditionally must not turn "no
+    // replacement at all" into a `starting` result the caller waits on.
+    if (replacementPid != null && isAlive(replacementPid)) {
+      // launchd owns a live replacement that has not answered yet. That is a
+      // slow start, not a failed install; the supervisor keeps the child and
+      // the caller keeps waiting for the endpoint. Reporting this as a failure
+      // was what made every slow machine read as a broken one.
+      installLaunchdWatchdogAgent({ command, homeDir, spawnSync: run });
+      return {
+        ok: true,
+        starting: true,
+        restarted: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: `ADE service launchd service installed; the background service (pid ${replacementPid}) is still starting after ${timeoutMs}ms.`,
+      };
+    }
     return handoverFailure(
       servicePath,
       "replacement_responsive",
@@ -470,6 +542,7 @@ export async function installLaunchdService(
   });
   return {
     ok: true,
+    restarted: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: "install",
     path: servicePath,

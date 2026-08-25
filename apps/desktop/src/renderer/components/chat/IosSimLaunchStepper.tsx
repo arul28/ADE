@@ -1,0 +1,146 @@
+import { CheckCircle, Circle, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
+import type { IosSimulatorLaunchProgress } from "../../../shared/types";
+import { abbreviatePathTail } from "../../../shared/pathDisplay";
+import { cn } from "../ui/cn";
+import { formatElapsed } from "./iosSimContracts";
+
+const IOS_SIM_LAUNCH_STEP_ORDER: IosSimulatorLaunchProgress["step"][] = [
+  "resolve-device",
+  "boot-simulator",
+  "open-simulator",
+  "resolve-target",
+  "build-app",
+  "install-app",
+  "launch-app",
+  "ready",
+];
+
+const STEP_LABEL: Record<IosSimulatorLaunchProgress["step"], string> = {
+  "resolve-device": "Device",
+  "boot-simulator": "Boot",
+  "open-simulator": "Open Simulator",
+  "resolve-target": "Target",
+  "build-app": "Build",
+  "install-app": "Install",
+  "launch-app": "Launch",
+  ready: "Ready",
+};
+
+/** Newest progress row per step for the most recent launch, in canonical order. */
+export function selectLaunchSteps(progress: IosSimulatorLaunchProgress[]): IosSimulatorLaunchProgress[] {
+  const latestLaunchId = progress.length ? progress[progress.length - 1]?.launchId ?? null : null;
+  if (!latestLaunchId) return [];
+  return IOS_SIM_LAUNCH_STEP_ORDER
+    .map((step) => {
+      for (let index = progress.length - 1; index >= 0; index -= 1) {
+        const item = progress[index];
+        if (item?.launchId === latestLaunchId && item.step === step) return item;
+      }
+      return undefined;
+    })
+    .filter((item): item is IosSimulatorLaunchProgress => Boolean(item));
+}
+
+type IosSimLaunchStepperProps = {
+  steps: IosSimulatorLaunchProgress[];
+  /** Absolute build output root, so a wrong-worktree build is visible at a glance. */
+  buildRoot: string | null;
+  /** True when the launch reused an already-installed app instead of building. */
+  usedInstalledBinary: boolean;
+  now: number;
+  /**
+   * Closes a stepper the user is done with. Only offered once a step has
+   * failed: a running launch has nothing to dismiss, while a failed one used to
+   * sit over every other mode — including the toggle that leaves it.
+   */
+  onDismiss?: () => void;
+};
+
+/**
+ * Slim stepper. The running step carries elapsed time; the build step also
+ * carries the tail of its output root because "built the wrong checkout" is the
+ * failure mode that otherwise looks identical to a slow build.
+ */
+export function IosSimLaunchStepper({ steps, buildRoot, usedInstalledBinary, now, onDismiss }: IosSimLaunchStepperProps) {
+  const anyFailed = steps.some((step) => step.status === "failed");
+  return (
+    <div className="flex h-full min-h-[300px] flex-col justify-center gap-2 px-5 py-4">
+      <div className="flex items-center gap-2">
+        <div className="font-sans text-[11px] font-medium uppercase tracking-wider text-muted-fg/60">Launching</div>
+        {usedInstalledBinary ? (
+          <span className="inline-flex h-5 items-center rounded-full border border-amber-300/24 bg-amber-400/[0.09] px-2 font-sans text-[10px] font-medium text-amber-50/85">
+            prebuilt — changes not included
+          </span>
+        ) : null}
+        {anyFailed && onDismiss ? (
+          <button
+            type="button"
+            className="ml-auto inline-flex h-6 items-center rounded border border-white/[0.08] bg-white/[0.03] px-2 font-sans text-[10px] text-muted-fg/70 transition-colors hover:text-fg/90"
+            onClick={onDismiss}
+          >
+            Close
+          </button>
+        ) : null}
+      </div>
+      <div className="flex flex-col">
+        {steps.map((step, index) => {
+          const running = step.status === "running";
+          const failed = step.status === "failed";
+          const done = step.status === "complete" || step.status === "skipped";
+          const startedAt = Date.parse(step.updatedAt);
+          const elapsed = running && Number.isFinite(startedAt) ? formatElapsed(now - startedAt) : null;
+          // The build root matters *while the build runs* — a wrong-checkout
+          // build otherwise looks identical to a slow one — so the progress
+          // step carries it, and the resolved launch root is the fallback.
+          const stepBuildRoot = step.step === "build-app" ? step.buildRoot ?? buildRoot : null;
+          const buildRootTail = stepBuildRoot ? abbreviatePathTail(stepBuildRoot) : null;
+          return (
+            <div key={`${step.launchId}:${step.step}`} className="flex items-start gap-2">
+              <div className="flex flex-col items-center self-stretch">
+                {done ? (
+                  <CheckCircle size={13} weight="fill" className="mt-1 shrink-0 text-emerald-300/85" />
+                ) : failed ? (
+                  <WarningCircle size={13} weight="fill" className="mt-1 shrink-0 text-rose-300/85" />
+                ) : running ? (
+                  <SpinnerGap size={13} className="mt-1 shrink-0 animate-spin text-cyan-200/90" />
+                ) : (
+                  <Circle size={13} className="mt-1 shrink-0 text-muted-fg/30" />
+                )}
+                {index < steps.length - 1 ? (
+                  <div className={cn("w-px flex-1", done ? "bg-emerald-300/25" : "bg-white/[0.07]")} />
+                ) : null}
+              </div>
+              <div className="min-w-0 flex-1 pb-2">
+                <div className="flex items-baseline gap-2">
+                  <span
+                    className={cn(
+                      "font-sans text-[11px]",
+                      failed ? "font-medium text-rose-100/90" : running ? "font-medium text-fg/88" : done ? "text-fg/62" : "text-muted-fg/45",
+                    )}
+                    title={step.message}
+                  >
+                    {STEP_LABEL[step.step] ?? step.message}
+                  </span>
+                  {elapsed ? (
+                    <span className="font-sans text-[10px] tabular-nums text-cyan-100/70">{elapsed}</span>
+                  ) : null}
+                  {buildRootTail ? (
+                    <code
+                      className="min-w-0 truncate font-mono text-[10px] text-muted-fg/55"
+                      title={stepBuildRoot ?? step.message}
+                    >
+                      {buildRootTail}
+                    </code>
+                  ) : null}
+                </div>
+                {failed && step.detail ? (
+                  <div className="mt-0.5 line-clamp-2 font-sans text-[10px] leading-4 text-rose-100/60">{step.detail}</div>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}

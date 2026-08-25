@@ -194,9 +194,29 @@ describe("RemoteTargetList", () => {
       },
     });
 
-    render(<RemoteTargetList />);
-    expect(await screen.findByText(/route publish failing for 5 min/)).toBeTruthy();
+    render(<RemoteTargetList accountSignedIn />);
+    expect(await screen.findByText(/couldn't publish it for 5 min/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
+  });
+
+  it("hides a publish-failing banner while signed out", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+    appMock.getInfo.mockResolvedValue({
+      localRuntime: {
+        publishHealth: {
+          state: "http_error",
+          failingSinceMs: Date.now() - 5 * 60_000,
+          lastLegDurations: { snapshot: null, token: null, http: null },
+        },
+      },
+    });
+
+    render(<RemoteTargetList accountSignedIn={false} />);
+    await screen.findByRole("button", { name: "Add machine" });
+    expect(screen.queryByText(/couldn't publish it/)).toBeNull();
+    expect(screen.queryByText(/route publish failing/)).toBeNull();
   });
 
   it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {
@@ -405,9 +425,9 @@ describe("RemoteTargetList", () => {
     remoteRuntimeMock.connect.mockResolvedValue({
       target,
       arch: "darwin-arm64",
-      version: "1.0.0",
+      version: "0.9.0",
       compatibilityWarnings: [
-        "Remote ADE service reported 0.9.0; local ADE is 1.0.0. ADE will connect because the RPC capabilities are compatible.",
+        "This machine is on ADE 1.0.0. The other machine is on 0.9.0. They can still connect — update the other machine when you can.",
       ],
       projects: [project],
     });
@@ -427,9 +447,12 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
-    expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText(/RPC capabilities are compatible/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
+    expect(screen.queryByText(/Never connected/)).toBeNull();
+    expect(screen.getByText(/Last connected/)).toBeTruthy();
+    expect(
+      screen.getByText("This machine is on ADE 1.0.0. Mac Studio is on 0.9.0. They can still connect — update Mac Studio when you can."),
+    ).toBeTruthy();
     expect(screen.queryByText("/remote/ADE")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
 
@@ -439,7 +462,7 @@ describe("RemoteTargetList", () => {
         manual: true,
       }),
     );
-    expect(screen.getByText("Not connected")).toBeTruthy();
+    expect(screen.getByText(/Not connected · Last connected/)).toBeTruthy();
   });
 
   it("does not let an older event overwrite a local connection-setting snapshot", async () => {
@@ -571,10 +594,12 @@ describe("RemoteTargetList", () => {
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
 
     await waitFor(() =>
-      expect(onDisconnectRequested).toHaveBeenCalledWith(target),
+      expect(onDisconnectRequested).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "target-1", name: "Mac Studio" }),
+      ),
     );
     expect(remoteRuntimeMock.disconnect).not.toHaveBeenCalled();
-    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
   });
 
   it("toggles the saved machine edit details from the Edit button", async () => {
@@ -1055,7 +1080,7 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Connected Mac").length).toBeGreaterThan(0),
     );
-    expect(screen.getByText("CONNECTED")).toBeTruthy();
+    expect(screen.getByText("Connected")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
 
     openAddMode("Find nearby computers");
@@ -1213,7 +1238,7 @@ describe("RemoteTargetList", () => {
     // A brand-new user's first read is the call to action, not an explanation
     // of optional software they never asked about.
     expect(
-      await screen.findByText("No computers yet. Choose Add machine to connect one."),
+      await screen.findByText("No computers yet. Add a machine to connect one."),
     ).toBeTruthy();
     expect(screen.queryByText("Tailscale not installed — LAN discovery only.")).toBeNull();
 
@@ -1247,7 +1272,7 @@ describe("RemoteTargetList", () => {
       screen.getByText("Tailscale discovery failed; LAN discovery still ran."),
     );
     expect(warning.querySelector("svg")).not.toBeNull();
-    expect(screen.getByText("No computers yet. Choose Add machine to connect one.")).toBeTruthy();
+    expect(screen.getByText("No computers yet. Add a machine to connect one.")).toBeTruthy();
   });
 
   it("adopts a desktop account machine as paired-only instead of saving a broken SSH target", async () => {
@@ -1463,9 +1488,30 @@ describe("RemoteTargetList", () => {
     );
 
     await waitFor(() =>
-      expect(screen.getByText(/couldn't reach your ADE account/i)).toBeTruthy(),
+      expect(screen.getByText(/Couldn't load machines from your account/i)).toBeTruthy(),
     );
     expect(screen.queryByText(/No computers yet/i)).toBeNull();
+  });
+
+  it("does not repeat the account-load failure while signed out", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[]}
+        accountMachinesState="unavailable"
+        accountSignedIn={false}
+      />,
+    );
+
+    await screen.findByRole("button", { name: "Add machine" });
+    expect(screen.queryByText(/Couldn't load machines from your account/i)).toBeNull();
+    expect(screen.queryByText(/couldn't reach your ADE account/i)).toBeNull();
   });
 
   it("shows an account connect failure only on the machine that failed", async () => {

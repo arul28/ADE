@@ -597,3 +597,164 @@ struct SendToMacCard: View {
     UIApplication.shared.open(url)
   }
 }
+
+/// Shown when a tapped link points at work on a machine that isn't awake.
+///
+/// Deliberately one line of context, one line of state, and one decision —
+/// connecting is what wakes the machine, so there is nothing to explain and no
+/// second step to describe. Reads `SyncService` live rather than taking a
+/// snapshot, so the same card carries the tap through to its outcome.
+struct MachineWakeCard: View {
+  @EnvironmentObject private var syncService: SyncService
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  var body: some View {
+    Group {
+      if let request = syncService.pendingMachineWake {
+        content(request)
+      } else {
+        // Resolved out from under us. Nothing to say; the sheet is closing.
+        Color.clear
+      }
+    }
+    .presentationDetents([.height(240)])
+    .presentationDragIndicator(.visible)
+    .interactiveDismissDisabled(syncService.pendingMachineWake?.stage == .waking)
+  }
+
+  private func content(_ request: SyncMachineWakeRequest) -> some View {
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(alignment: .top, spacing: 12) {
+        Image(systemName: symbol(request.stage))
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(tint(request.stage))
+          .frame(width: 34, height: 34)
+          .background(
+            tint(request.stage).opacity(0.15),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+          )
+
+        VStack(alignment: .leading, spacing: 4) {
+          Text("This chat lives on \(request.machineName)")
+            .font(.system(.body, design: .rounded).weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+
+          HStack(spacing: 7) {
+            if request.stage == .waking {
+              ProgressView().controlSize(.mini)
+            }
+            Text(statusLine(request))
+              .font(.system(.footnote, design: .rounded))
+              .foregroundStyle(statusTint(request.stage))
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        Spacer(minLength: 0)
+      }
+
+      Spacer(minLength: 0)
+
+      actions(request)
+    }
+    .padding(.horizontal, 20)
+    .padding(.top, 24)
+    .padding(.bottom, 24)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .background(ADEColor.surfaceBackground)
+    .animation(ADEMotion.standard(reduceMotion: reduceMotion), value: request.stage)
+  }
+
+  @ViewBuilder
+  private func actions(_ request: SyncMachineWakeRequest) -> some View {
+    switch request.stage {
+    case .waking:
+      // No buttons on purpose: the dial is bounded and resolves this card
+      // itself, either by closing it or by replacing this line with a reason.
+      EmptyView()
+    case .confirm:
+      buttonRow(
+        dismissTitle: "Not now",
+        confirmTitle: "Wake & open",
+        request: request
+      )
+    case .failed:
+      buttonRow(
+        dismissTitle: "Close",
+        confirmTitle: "Try again",
+        request: request
+      )
+    }
+  }
+
+  private func buttonRow(
+    dismissTitle: String,
+    confirmTitle: String,
+    request: SyncMachineWakeRequest
+  ) -> some View {
+    HStack(spacing: 10) {
+      Button {
+        syncService.resolveMachineWake(request.id, wake: false)
+      } label: {
+        Text(dismissTitle)
+          .font(.system(.body, design: .rounded).weight(.medium))
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 12)
+          .foregroundStyle(ADEColor.textPrimary)
+          .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .stroke(ADEColor.border, lineWidth: 1)
+          )
+      }
+      .buttonStyle(.plain)
+
+      Button {
+        syncService.resolveMachineWake(request.id, wake: true)
+      } label: {
+        Text(confirmTitle)
+          .font(.system(.body, design: .rounded).weight(.semibold))
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 12)
+          .foregroundStyle(.white)
+          .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      }
+      .buttonStyle(.plain)
+    }
+  }
+
+  private func statusLine(_ request: SyncMachineWakeRequest) -> String {
+    switch request.stage {
+    case .confirm: return request.need.statusLabel
+    case .waking: return "Waking it up\u{2026}"
+    case .failed(let message): return message
+    }
+  }
+
+  private func symbol(_ stage: SyncMachineWakeRequest.Stage) -> String {
+    switch stage {
+    case .confirm: return "moon.zzz.fill"
+    case .waking: return "power"
+    case .failed: return "exclamationmark.triangle.fill"
+    }
+  }
+
+  private func tint(_ stage: SyncMachineWakeRequest.Stage) -> Color {
+    switch stage {
+    case .confirm: return ADEColor.accent
+    case .waking: return ADEColor.warning
+    case .failed: return ADEColor.danger
+    }
+  }
+
+  private func statusTint(_ stage: SyncMachineWakeRequest.Stage) -> Color {
+    stage.isFailed ? ADEColor.danger : ADEColor.textSecondary
+  }
+}
+
+private extension SyncMachineWakeRequest.Stage {
+  var isFailed: Bool {
+    if case .failed = self { return true }
+    return false
+  }
+}

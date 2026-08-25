@@ -103,6 +103,8 @@ type CachedRuntime = {
   hydrateRetryTimer: ReturnType<typeof setTimeout> | null;
   /** Full-snapshot bytes held until the first successful fit; see `replaceRuntimeTerminalData`. */
   pendingReplaceData: string | null;
+  /** True when pendingReplaceData is SerializeAddon CSI, not a transcript tail. */
+  pendingReplaceIsScreen: boolean;
   replaceFitRetryTimer: ReturnType<typeof setTimeout> | null;
   replaceFitRetryAttempts: number;
   hydrationBackfillTimer: ReturnType<typeof setTimeout> | null;
@@ -1145,6 +1147,7 @@ function clearRuntimeHydrationTimers(runtime: CachedRuntime): void {
     runtime.replaceFitRetryTimer = null;
   }
   runtime.pendingReplaceData = null;
+  runtime.pendingReplaceIsScreen = false;
   runtime.replaceFitRetryAttempts = 0;
 }
 
@@ -1910,7 +1913,7 @@ function shouldDeliverPtyEvent(runtime: CachedRuntime, projectRoot: string | und
   return !(projectRoot && runtime.projectRoot && projectRoot !== runtime.projectRoot);
 }
 
-function replaceRuntimeTerminalData(runtime: CachedRuntime, data: string) {
+function replaceRuntimeTerminalData(runtime: CachedRuntime, data: string, opts?: { screen?: boolean }) {
   // Recovery snapshots are authoritative. Invalidate every pending hydration
   // read before clearing xterm so an older preview/transcript promise cannot
   // replay stale output over the recovered state.
@@ -1931,6 +1934,7 @@ function replaceRuntimeTerminalData(runtime: CachedRuntime, data: string) {
   void takePendingTerminalOffsetAnchor(runtime.sessionId);
 
   runtime.pendingReplaceData = data;
+  runtime.pendingReplaceIsScreen = opts?.screen === true;
   runtime.replaceFitRetryAttempts = 0;
   applyPendingReplaceWhenFitted(runtime);
 }
@@ -2007,7 +2011,9 @@ function applyPendingReplaceWhenFitted(
   }
 
   const data = runtime.pendingReplaceData;
+  const isScreen = runtime.pendingReplaceIsScreen;
   runtime.pendingReplaceData = null;
+  runtime.pendingReplaceIsScreen = false;
   runtime.replaceFitRetryAttempts = 0;
 
   // A live-subscribe snapshot is the SAME raw transcript the preview path
@@ -2045,6 +2051,11 @@ function applyPendingReplaceWhenFitted(
   };
 
   if (data) {
+    if (isScreen) {
+      runtime.lastHydrationNormalized = false;
+      writeReplace(data);
+      return;
+    }
     void normalizeTranscriptToGrid(trimToLikelyTerminalFrameBoundary(data), {
       maxRows: hydrationGridMaxRows(runtime),
     })
@@ -2078,7 +2089,7 @@ function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   }
 
   if (ev.replace === true) {
-    replaceRuntimeTerminalData(runtime, ev.data);
+    replaceRuntimeTerminalData(runtime, ev.data, { screen: ev.screen === true });
     return;
   }
 
@@ -2672,6 +2683,7 @@ function rehydrateAfterFit(runtime: CachedRuntime): void {
   // web client, is the ONLY content the session ever gets — losing it to a
   // transcript re-read leaves a blank pane.
   const queuedReplace = runtime.pendingReplaceData;
+  const queuedReplaceIsScreen = runtime.pendingReplaceIsScreen;
   clearRuntimeHydrationTimers(runtime);
   try {
     runtime.term.reset();
@@ -2702,6 +2714,7 @@ function rehydrateAfterFit(runtime: CachedRuntime): void {
     runtime.hydrationStarted = true;
     runtime.hydrationCompleted = true;
     runtime.pendingReplaceData = queuedReplace;
+    runtime.pendingReplaceIsScreen = queuedReplaceIsScreen;
     runtime.replaceFitRetryAttempts = 0;
     applyPendingReplaceWhenFitted(runtime);
     return;
@@ -3001,6 +3014,7 @@ function createRuntime(args: {
     hydrateTimer: null,
     hydrateRetryTimer: null,
     pendingReplaceData: null,
+    pendingReplaceIsScreen: false,
     replaceFitRetryTimer: null,
     replaceFitRetryAttempts: 0,
     hydrationBackfillTimer: null,

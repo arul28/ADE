@@ -1,0 +1,16 @@
+---
+title: "v1.2.62"
+description: "Release notes for ADE v1.2.62 - August 19, 2026"
+---
+
+When ADE fails, it can now tell us itself. Automatic diagnostic reports are on by default, cost nothing to you, and can be turned off in one click from the message that announces them.
+
+---
+
+## Automatic diagnostic reports
+
+- **Failures report themselves.** When a project cannot be opened, the app crashes, an update fails, pairing gives up, or a machine gets stuck publishing, ADE sends the same redacted report you could already send by hand — without you having to notice, remember, or ask.
+- **You are told every time, and can stop it in one click.** A short message says a report was sent, with **View** to read exactly what left your machine and **Turn off** to stop future ones.
+- **On by default, off in one click.** Settings has a Diagnostics sharing section, and `ade doctor` shows whether sharing is on. Turning it off applies immediately, everywhere.
+- **Nothing is sent twice.** Each kind of failure sends at most one report a day, with a small daily cap per machine, so a crash loop cannot flood anything.
+- **The same redaction as the manual report.** Paths, tokens, and personal detail are stripped before anything is sent.

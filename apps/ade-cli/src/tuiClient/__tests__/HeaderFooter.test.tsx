@@ -120,7 +120,7 @@ describe("FooterControls", () => {
     expect(frame).toContain("full-auto ·");
   });
 
-  it("renders the resting hint strip with lanes/pane/chat-info/cmds/help", () => {
+  it("renders the resting hint strip with work/pane/chat-info/cmds/help", () => {
     const result = render(
       <FooterControls
         provider="codex"
@@ -131,7 +131,8 @@ describe("FooterControls", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("^o");
-    expect(frame).toContain("lanes");
+    // The left pane is the sessions list now, not a lane drawer.
+    expect(frame).toContain("work");
     expect(frame).toContain("^p");
     expect(frame).toContain("pane");
     expect(frame).toContain("^a");

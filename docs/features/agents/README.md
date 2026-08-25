@@ -157,11 +157,10 @@ is fire-and-forget and leaves quiet turn-completion notes. Missing types and
 the legacy `none` value are rejected for new parented sessions.
 
 Subagent chat turns return their child turn id and latest bounded assistant
-summary, steering an active parent or waking an idle parent. A completion wakes
-the parent when the parent started that turn *or* still owns the child's
-mission — the most recent directive-class input to the child was
-parent-dispatched. The policy lives in
-`services/chat/spawnMissionOwnership.ts`. These inputs continue the mission in
+summary, steering an active parent or waking an idle parent. A subagent always
+wakes its parent; a peer never does. The policy lives in
+`services/chat/spawnMissionOwnership.ts` plus the child's persisted
+`spawnKind`. These inputs continue the mission in
 flight rather than reassigning it, so a subagent that self-schedules wakeups —
 an ADE ship loop polling CI, say — still wakes its parent when the mission
 finishes:
@@ -178,11 +177,13 @@ finishes:
 - `deliveryState: "queued"` — superseded by the delivered copy, which carries
   the authoritative metadata (the queue path strips `scheduledWake`).
 
-A direct human message is a directive and moves ownership to the human, making
-completions quiet notes until the parent dispatches again. A handoff prompt is
-also a directive — it carries a human's continuation intent. Ownership is read
-at completion time; ADE keeps no per-schedule provenance. Peer turns are always
-quiet notes.
+A direct human message on a subagent does not steal the report channel. The
+next wake names how many human messages landed in that turn. Taking over
+(demote to peer) is an explicit user action — composer banner, session menu,
+`ade chat demote`, or `/session demote` — and posts a quiet parent note that
+reports stop. Promoting restores the channel when the parent chat still
+exists. A later parent dispatch into a peer child auto-promotes it back to
+subagent. Peer turns are always quiet notes.
 
 All of this provenance is host-authored. `withTrustedAgentProvenance` runs on
 `chat.messageSession`, `chat.sendMessage` and `chat.steer` before any
@@ -317,6 +318,16 @@ OpenCode chats and workers retain the user's OpenCode configuration, project
 configuration, and MCP servers. Only an OpenCode orchestration lead receives
 ADE's isolated configuration and ADE-owned MCP lease. Other providers apply
 their equivalent lead gate without changing ordinary-chat configuration.
+
+That is one instance of a rule every provider adapter follows: ADE's settings
+land at the highest precedence tier each SDK offers, so ADE names a config key
+only when it genuinely owns it and leaves everything else absent for the
+provider's own precedence to resolve. The isolated orchestration-lead server is
+where the rule needs care, because `buildIsolatedOpenCodeEnv` rebuilds the
+environment from scratch and drops every inherited `OPENCODE_*` variable — the
+lead's server therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than
+inheriting it, so it cannot self-update the binary ADE pinned. See
+[Provider config ownership](../chat/agent-routing.md#provider-config-ownership).
 
 ## Smart memory and reconstruction
 

@@ -159,7 +159,7 @@ const autoConfirm = async () => true;
  * every test that touches them has to open it first.
  */
 function openPairing() {
-  fireEvent.click(screen.getByRole("button", { name: /^Pairing code/ }));
+  fireEvent.click(screen.getByRole("button", { name: /^Manual pairing code/ }));
 }
 
 describe("ThisMacCard", () => {
@@ -171,13 +171,13 @@ describe("ThisMacCard", () => {
   });
 
   it("shows the account state line for a signed-in Mac", () => {
-    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
     expect(screen.getByText("Studio")).toBeTruthy();
     expect(screen.getByText("Connected to your ADE account")).toBeTruthy();
   });
 
   it("says nothing about readiness or routes when this computer is healthy", () => {
-    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
     // A healthy host has no actionable status, so it gets no status line at all.
     expect(screen.queryByText("Ready to accept connections")).toBeNull();
     expect(screen.queryByText(/Reachable via/)).toBeNull();
@@ -187,13 +187,12 @@ describe("ThisMacCard", () => {
     render(
       <ThisMacCard
         sync={makeSync({ status: makeStatus({ pairingPinConfigured: false }) })}
-        accountSignedIn
+        sessionState="active"
       />,
     );
     // Connecting runs through the ADE account now; no code is a normal state.
     expect(screen.queryByText(/Set a pairing code/)).toBeNull();
-    expect(screen.getByRole("button", { name: /^Pairing code/ }).textContent)
-      .toContain("Not set");
+    expect(screen.getByRole("button", { name: /^Manual pairing code/ })).toBeTruthy();
   });
 
   it("renames this computer and mirrors the name into the account directory", async () => {
@@ -205,7 +204,7 @@ describe("ThisMacCard", () => {
         renameMachine,
       },
     };
-    render(<ThisMacCard sync={makeSync({ saveRuntimeName })} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync({ saveRuntimeName })} sessionState="active" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Rename Studio" }));
     fireEvent.change(screen.getByLabelText("Machine name"), { target: { value: "Workshop" } });
@@ -218,7 +217,7 @@ describe("ThisMacCard", () => {
   });
 
   it("keeps the pencil visible but inert while signed out", () => {
-    render(<ThisMacCard sync={makeSync()} accountSignedIn={false} />);
+    render(<ThisMacCard sync={makeSync()} sessionState="signed_out" />);
     const pencil = screen.getByRole("button", { name: "Rename Studio" });
     expect((pencil as HTMLButtonElement).disabled).toBe(true);
     expect(pencil.getAttribute("title")).toBe("Sign in to rename this computer");
@@ -232,7 +231,7 @@ describe("ThisMacCard", () => {
       skipReason: "The ADE brain is signed out of the ADE account.",
       lastHttpStatus: null,
     };
-    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
 
     // The brain's skipReason stays out of the card; the line says what is true.
     expect(screen.getByText(
@@ -247,16 +246,31 @@ describe("ThisMacCard", () => {
       blockingStateText: "Phone sync is unavailable in this ADE installation.",
     });
 
-    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
 
     expect(screen.getByRole("alert").textContent).toContain(
       "Phone sync is unavailable in this ADE installation.",
     );
     // The alert above carries the runtime's full explanation; the status line
     // does not repeat a one-liner version of it.
-    expect(screen.queryByRole("button", { name: /^Pairing code/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Manual pairing code/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Generate code/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
+  });
+
+  it("still offers Repair on a cold unreadable read while signed out", () => {
+    (globalThis.window as any).ade = { app: { restartBackgroundService: vi.fn() } };
+    render(
+      <ThisMacCard
+        sync={makeSync({ status: unreadableSessionStatus() })}
+        sessionState="unreadable"
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+    expect(
+      screen.getByText("Your session is still there — open your account to fix it"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Not signed in/)).toBeNull();
   });
 
   it("restarts the brain and re-reads health when repairing an unreadable session", async () => {
@@ -273,7 +287,7 @@ describe("ThisMacCard", () => {
     render(
       <ThisMacCard
         sync={makeSync({ status: unreadableSessionStatus(), refresh })}
-        accountSignedIn
+        sessionState="active"
       />,
     );
 
@@ -299,11 +313,12 @@ describe("ThisMacCard", () => {
       throw new Error("launchctl load failed.");
     });
     (globalThis.window as any).ade = { app: { restartBackgroundService } };
-    render(<ThisMacCard sync={makeSync({ status: unreadableSessionStatus() })} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync({ status: unreadableSessionStatus() })} sessionState="active" />);
 
     fireEvent.click(screen.getByRole("button", { name: "Repair" }));
-    const failure = await screen.findByText("Repair failed — quit and reopen ADE.");
-    // Terse copy on screen; the technical detail rides along as the tooltip.
+    // The reason the main process gave is the message, not a hidden tooltip:
+    // "Repair failed" alone left people with an instruction and no reason.
+    const failure = await screen.findByText("Repair didn't finish. launchctl load failed.");
     expect(failure.getAttribute("title")).toBe("launchctl load failed.");
     expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
   });
@@ -316,14 +331,14 @@ describe("ThisMacCard", () => {
       state: "http_error",
       skipReason: "The account directory rejected the publish.",
     };
-    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
   it("explains nearby fallback when signed out", () => {
-    render(<ThisMacCard sync={makeSync()} accountSignedIn={false} />);
+    render(<ThisMacCard sync={makeSync()} sessionState="signed_out" />);
     expect(
-      screen.getByText("Not signed in — nearby devices can still connect with the pairing code"),
+      screen.getByText("Not signed in — you can still connect to other machines manually"),
     ).toBeTruthy();
   });
 
@@ -332,7 +347,7 @@ describe("ThisMacCard", () => {
     render(
       <ThisMacCard
         sync={makeSync({ status: makeStatus({ pairingPinConfigured: false }), generatePin })}
-        accountSignedIn
+        sessionState="active"
       />,
     );
     // Closed on mount — nothing inside is reachable until it is opened.
@@ -348,7 +363,7 @@ describe("ThisMacCard", () => {
     render(
       <ThisMacCard
         sync={makeSync({ status: makeStatus({ pairingPin: "123456" }) })}
-        accountSignedIn
+        sessionState="active"
       />,
     );
     openPairing();
@@ -362,7 +377,7 @@ describe("ThisMacCard", () => {
     render(
       <ThisMacCard
         sync={makeSync({ status: makeStatus({ pairingPin: null, pairingPinConfigured: true }), generatePin, clearPin })}
-        accountSignedIn
+        sessionState="active"
       />,
     );
     openPairing();
@@ -373,14 +388,14 @@ describe("ThisMacCard", () => {
   });
 
   it("reopens the pairing disclosure closed every time, never remembering it", () => {
-    const { unmount } = render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    const { unmount } = render(<ThisMacCard sync={makeSync()} sessionState="active" />);
     openPairing();
-    expect(screen.getByRole("button", { name: /^Pairing code/ }).getAttribute("aria-expanded"))
+    expect(screen.getByRole("button", { name: /^Manual pairing code/ }).getAttribute("aria-expanded"))
       .toBe("true");
     unmount();
 
-    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
-    expect(screen.getByRole("button", { name: /^Pairing code/ }).getAttribute("aria-expanded"))
+    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
+    expect(screen.getByRole("button", { name: /^Manual pairing code/ }).getAttribute("aria-expanded"))
       .toBe("false");
   });
 
@@ -392,20 +407,18 @@ describe("ThisMacCard", () => {
     (globalThis.window as any).ade = {
       app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform })) },
     };
-    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
 
     expect(await screen.findByRole("img", { name: accessibleName })).toBeTruthy();
     // The logo is the platform statement, so the version line never repeats it.
-    expect(await screen.findByText("ADE 1.2.28")).toBeTruthy();
+    expect(await screen.findByText("This machine — ADE 1.2.28")).toBeTruthy();
     expect(screen.queryByText(new RegExp(`ADE 1\\.2\\.28.*${accessibleName}`))).toBeNull();
   });
 
-  it("labels this computer with a chip", () => {
-    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
-    // Composed from THIS_MACHINE_NAME, never spelled out: this badge was
-    // macOS-only copy ("This Mac") until ADE shipped on Windows, and pinning the
-    // literal here is what let Settings and Account miss the rename.
-    expect(screen.getByText(THIS_MACHINE_NAME)).toBeTruthy();
+  it("labels this pane as this machine", () => {
+    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
+    expect(screen.getByText("This machine")).toBeTruthy();
+    expect(screen.queryByText(THIS_MACHINE_NAME)).toBeNull();
   });
 
   it("swaps the version line for the fault while the listener is down", async () => {
@@ -418,15 +431,14 @@ describe("ThisMacCard", () => {
       listenerBound: false,
       reason: "Port 8787 is already in use.",
     };
-    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
 
     expect(await screen.findByText("Port 8787 is already in use.")).toBeTruthy();
-    // One slot, so the card never grows a line in the unhappy path.
-    expect(screen.queryByText("ADE 1.2.28")).toBeNull();
+    expect(screen.getByText("This machine — ADE 1.2.28")).toBeTruthy();
   });
 
   it("no longer embeds a Connect-a-phone disclosure — the Phone tab owns pairing", () => {
-    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
     expect(screen.queryByText("Connect a phone")).toBeNull();
     expect(screen.queryByText("Scan to pair")).toBeNull();
   });
@@ -435,7 +447,7 @@ describe("ThisMacCard", () => {
     render(
       <ThisMacCard
         sync={makeSync({ isRemoteBound: true, boundMachineName: "Mac Studio", localMachineName: "Studio" })}
-        accountSignedIn
+        sessionState="active"
       />,
     );
     // The card names the local machine, never the machine it routes to.
@@ -453,7 +465,7 @@ describe("ThisMacCard", () => {
           boundMachineName: "Mac Studio",
           generatePin,
         })}
-        accountSignedIn
+        sessionState="active"
       />,
     );
     openPairing();
@@ -768,18 +780,27 @@ describe("useSyncConnections local scoping", () => {
 });
 
 describe("accountDirectorySummary", () => {
-  it("reflects whether signed-out nearby pairing has a configured code", () => {
+  it("keeps an unreadable session distinct from signed out", () => {
+    const status = { pairingPinConfigured: true } as SyncRoleSnapshot;
+    expect(accountDirectorySummary(status, "unreadable")).toEqual({
+      label: "Your session is still there — open your account to fix it",
+      healthy: false,
+    });
+  });
+
+  it("uses one signed-out line whether a pairing code is set or not", () => {
     const status = { pairingPinConfigured: false } as SyncRoleSnapshot;
 
-    expect(accountDirectorySummary(status, false)).toEqual({
-      label: "Not signed in — set a pairing code so nearby devices can connect",
+    expect(accountDirectorySummary(status, "signed_out")).toEqual({
+      label: "Not signed in — you can still connect to other machines manually",
       healthy: false,
     });
 
     status.pairingPinConfigured = true;
-    expect(accountDirectorySummary(status, false).label).toContain(
-      "nearby devices can still connect with the pairing code",
-    );
+    expect(accountDirectorySummary(status, "signed_out")).toEqual({
+      label: "Not signed in — you can still connect to other machines manually",
+      healthy: false,
+    });
   });
 
   const summaryForState = (
@@ -792,7 +813,7 @@ describe("accountDirectorySummary", () => {
           accountDirectory: { state, skipReason, reachableEndpointCount: 0 },
         },
       } as SyncRoleSnapshot,
-      true,
+      "active",
     );
 
   it("never leaks the publisher's internal skipReason into user copy", () => {
@@ -826,6 +847,15 @@ describe("accountDirectorySummary", () => {
     );
   });
 
+  it("never calls sync off while it is still trying to start", () => {
+    // The regression: a brain whose sync host was failing and retrying reported
+    // the same state as a brain with sync switched off, so the pane told the
+    // user sync was off and sent them looking for a switch already on.
+    const label = summaryForState("sync_not_started", "Account-directory publishing has not started.").label;
+    expect(label).toBe("Signed in — sync hasn't started on this computer yet");
+    expect(label).not.toContain("off");
+  });
+
   it("falls back without a raw state string or a claim of permanence", () => {
     const label = summaryForState("snapshot_failed", "Snapshot build failed: EPERM").label;
     expect(label).toBe("Signed in — this computer isn't published yet");
@@ -834,9 +864,24 @@ describe("accountDirectorySummary", () => {
     expect(label).not.toContain("EPERM");
   });
 
+  it("survives a publish state this build's union does not carry", () => {
+    // A brain newer than this window can name a state this build never heard
+    // of. The shared advice table's switch is exhaustive over the union only,
+    // so it returns undefined for anything else — and the destructure used to
+    // throw a TypeError that blanked the whole Connections pane.
+    const summary = summaryForState(
+      "a_state_from_a_newer_brain" as SyncRoleSnapshot["routeHealth"]["accountDirectory"]["state"],
+      null,
+    );
+    expect(summary.healthy).toBe(false);
+    expect(summary.label).toBe("Signed in — sync state isn't available on this computer yet");
+    expect(summary.label).not.toContain("a_state_from_a_newer_brain");
+  });
+
   it("keeps every unpublished state free of underscores and skipReason text", () => {
     const states = [
       "sync_disabled",
+      "sync_not_started",
       "no_active_sync_scope",
       "snapshot_failed",
       "machine_key_unavailable",

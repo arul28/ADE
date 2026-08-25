@@ -3,6 +3,10 @@ import {
   SyncHostSingletonConflictError,
 } from "./syncHostSingleton";
 import { createFailureLogDeduper } from "../runtime/failureLogDeduper";
+import {
+  classifyStorageFault,
+  type StorageFault,
+} from "../../../../desktop/src/main/services/storage/storageErrnoClassifier";
 
 export type SyncHostStartupLoopDeps = {
   startSyncHost: () => Promise<unknown>;
@@ -13,17 +17,46 @@ export type SyncHostStartupLoopDeps = {
   // same-channel sibling; everything else waits, so two recovering brains can
   // never kill each other in a loop.
   getServiceMainPid?: () => number | null;
-  /**
-   * Checked before every retry. This loop retries forever by design so mobile
-   * sync recovers when a rival brain exits — but a brain that will never win
-   * the lease AND has lost its RPC socket to someone else has no reason to
-   * exist, and staying in the loop is how it becomes an immortal zombie
-   * (we found 18 stacked on one dev socket). Returning true aborts the loop.
-   */
-  abortIf?: () => boolean | Promise<boolean>;
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Where a classified storage fault is recorded so the desktop can show it.
+   * Wired at the call site to the machine-scoped last-failure report, which is
+   * the same file the recovery screen and `ade doctor` already read.
+   */
+  recordStorageFault?: (fault: StorageFault, detail: string) => void;
+  /**
+   * The structured half of {@link SyncHostStartupLoopDeps.log}.
+   *
+   * Every sync-host failure this loop has ever reported went out as free text
+   * on stderr and reached `launchd.err.log` and nowhere else — so the most
+   * frequent brain failure in the fleet was invisible to `brain.jsonl`, to the
+   * diagnostic report's structured sections, and to telemetry. This carries the
+   * same failures as facts, at the same deduped cadence as the human line.
+   */
+  logEvent?: (event: string, meta: Record<string, unknown>) => void;
+  /**
+   * Called once when storage faults have persisted past
+   * {@link SyncHostStartupLoopDeps.sustainedStorageFaultAttempts} consecutive
+   * attempts.
+   *
+   * The auto-diagnostics trigger used to hang off the account publisher, which
+   * exists only while this brain holds the sync-host lease — a lease taken only
+   * once the sync host starts. So the machines that could not start a sync host
+   * were exactly the machines that could never report why. This fires straight
+   * off the failure instead, with no publisher in the path.
+   *
+   * ONCE per loop: the sender's own per-code daily slot bounds the rest, but a
+   * loop that asked on every retry would spend the install's whole daily budget
+   * on one fault in the first two minutes.
+   */
+  onSustainedStorageFault?: (event: {
+    fault: StorageFault;
+    detail: string;
+    attempt: number;
+  }) => void;
+  sustainedStorageFaultAttempts?: number;
   env?: NodeJS.ProcessEnv;
   fastRetryDelayMs?: number;
   slowRetryDelayMs?: number;
@@ -73,14 +106,6 @@ async function terminatePidAsync(
   }
 }
 
-/** Thrown when `abortIf` asks the loop to stop; the caller decides how to exit. */
-export class SyncHostStartupAbortedError extends Error {
-  constructor() {
-    super("ADE brain sync host startup was aborted.");
-    this.name = "SyncHostStartupAbortedError";
-  }
-}
-
 // Keeps retrying mobile sync host startup until it succeeds or the brain
 // shuts down. Same-channel conflicts are transient by nature (update races,
 // restart overlap, a stale sibling about to be evicted), so they retry:
@@ -102,21 +127,87 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
   const fastRetryDelayMs = deps.fastRetryDelayMs ?? 2_000;
   const slowRetryDelayMs = deps.slowRetryDelayMs ?? 30_000;
   const fastRetryCount = deps.fastRetryCount ?? 5;
+  const sustainedStorageFaultAttempts = deps.sustainedStorageFaultAttempts ?? 3;
   let attempt = 0;
   let lastFailureSignature = "";
-  const failureLogs = createFailureLogDeduper({ log: deps.log });
+  let consecutiveStorageFaults = 0;
+  let reportedSustainedStorageFault = false;
+  // Telemetry must never become a second failure path in a retry loop, so
+  // every structured event in this loop goes out through this one guard.
+  const logEvent = (event: string, meta: Record<string, unknown>): void => {
+    try {
+      deps.logEvent?.(event, meta);
+    } catch {
+      // Ignored on purpose: see above.
+    }
+  };
+  // The deduper decides WHETHER this failure gets narrated (first occurrence,
+  // then once a minute); routing the structured event through the same
+  // callback is what keeps the two halves of the same failure at the same
+  // cadence instead of flooding `brain.jsonl` every 2s.
+  const failureLogs = createFailureLogDeduper({
+    log: (message, meta) => {
+      deps.log(message);
+      logEvent("sync.host_start_failed", { ...meta, message });
+    },
+  });
   while (!deps.isDone()) {
     try {
       await deps.startSyncHost();
       if (lastFailureSignature) failureLogs.clear(lastFailureSignature);
-      if (attempt > 0) deps.log("ADE brain mobile sync host recovered.");
+      if (attempt > 0) {
+        deps.log("ADE brain mobile sync host recovered.");
+        logEvent("sync.host_start_recovered", { attempts: attempt, lastFailureSignature });
+      }
       return;
     } catch (error) {
       attempt += 1;
       const message = error instanceof Error ? error.message : String(error);
-      const signature = error instanceof Error ? error.name : typeof error;
-      failureLogs.note(signature, `ADE brain sync host failed: ${message}`);
+      // A storage fault is permanent until the provider (or the disk, or the
+      // mount) comes back, so it gets the classified sentence in the log, a
+      // recorded failure the UI can show, and the slow cadence — never the raw
+      // errno on a two-second loop, which is what reached the user.
+      const storageFault = classifyStorageFault(error);
+      const signature = storageFault
+        ? storageFault.code
+        : error instanceof Error ? error.name : typeof error;
+      consecutiveStorageFaults = storageFault ? consecutiveStorageFaults + 1 : 0;
+      failureLogs.note(
+        signature,
+        storageFault
+          ? `ADE brain sync host failed: ${storageFault.message}`
+          : `ADE brain sync host failed: ${message}`,
+        {
+          signature,
+          attempt,
+          code: storageFault?.code ?? null,
+          errno: storageFault?.errno ?? null,
+          provider: storageFault?.provider ?? null,
+        },
+      );
       lastFailureSignature = signature;
+      if (storageFault) {
+        try {
+          deps.recordStorageFault?.(storageFault, message);
+        } catch {
+          // Recording the fault must not become a second failure path.
+        }
+        if (
+          !reportedSustainedStorageFault
+          && consecutiveStorageFaults >= sustainedStorageFaultAttempts
+        ) {
+          reportedSustainedStorageFault = true;
+          try {
+            deps.onSustainedStorageFault?.({ fault: storageFault, detail: message, attempt });
+          } catch {
+            // Same rule: asking for a diagnostic report is never allowed to
+            // break the retry that might still recover this machine.
+          }
+        }
+        if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
+        await sleep(slowRetryDelayMs);
+        continue;
+      }
       if (error instanceof SyncHostSingletonConflictError) {
         const owner = error.conflict.owner;
         const sameChannelOwner = isSameChannelSyncHostOwner(owner, deps.env);
@@ -128,7 +219,6 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
             throw error;
           }
           if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
-          if (await deps.abortIf?.()) throw new SyncHostStartupAbortedError();
           await sleep(slowRetryDelayMs);
           continue;
         }
@@ -146,7 +236,6 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         }
       }
       if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
-      if (await deps.abortIf?.()) throw new SyncHostStartupAbortedError();
       await sleep(attempt <= fastRetryCount ? fastRetryDelayMs : slowRetryDelayMs);
     }
   }

@@ -14,6 +14,13 @@ import type {
 // two data sources directly.
 const syncRef = { current: { devices: [] as SyncDeviceRuntimeState[] } };
 const snapshotRef = { current: { connections: [], connectedCount: 0, updatedAt: 0 } as RemoteRuntimeConnectionSnapshot };
+const accountRef = {
+  current: {
+    signedIn: true,
+    email: "ada@example.com" as string | null,
+    sessionState: undefined as undefined | "signed_out" | "expired" | "unreadable" | "active",
+  },
+};
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => syncRef.current,
@@ -31,7 +38,12 @@ vi.mock("../../lib/account", async () => {
   return {
     ...actual,
     useAccountStatus: () => ({
-      status: { ...actual.SIGNED_OUT_ACCOUNT, signedIn: true, email: "ada@example.com" },
+      status: {
+        ...actual.SIGNED_OUT_ACCOUNT,
+        signedIn: accountRef.current.signedIn,
+        email: accountRef.current.email,
+        sessionState: accountRef.current.sessionState,
+      },
       loading: false,
       refresh: vi.fn(),
     }),
@@ -66,6 +78,7 @@ describe("ConnectionsPanel tab dots", () => {
   beforeEach(() => {
     syncRef.current = { devices: [] };
     snapshotRef.current = { connections: [], connectedCount: 0, updatedAt: 0 };
+    accountRef.current = { signedIn: true, email: "ada@example.com", sessionState: undefined };
     window.ade = {
       github: { getStatus: vi.fn(async () => ({ connected: false })) },
       remoteRuntime: {
@@ -149,5 +162,22 @@ describe("ConnectionsPanel tab dots", () => {
     await waitFor(() => expect(window.ade.remoteRuntime.getConnectionSnapshot).toHaveBeenCalled());
 
     expect(within(screen.getByRole("tab", { name: /Phone/ })).queryByTitle("Active connection")).toBeNull();
+  });
+
+  it("offers Sign in when the account is signed out", async () => {
+    accountRef.current = { signedIn: false, email: null, sessionState: "signed_out" };
+    renderPanel();
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeTruthy();
+    expect(screen.getByText("Signed out")).toBeTruthy();
+    expect(screen.getByText("Sign in to easily connect your machines")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Manage account" })).toBeNull();
+  });
+
+  it("keeps unreadable sessions distinct from signed out", async () => {
+    accountRef.current = { signedIn: false, email: null, sessionState: "unreadable" };
+    renderPanel();
+    expect(await screen.findByRole("button", { name: "Fix sign-in" })).toBeTruthy();
+    expect(screen.getByText("Can't read your sign-in")).toBeTruthy();
+    expect(screen.queryByText("Signed out")).toBeNull();
   });
 });

@@ -251,6 +251,10 @@ export function StorageCleanupDialog({
   const [result, setResult] = React.useState<StorageCleanupResult | null>(null);
   const [report, setReport] = React.useState<MaintenanceRunReport | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  // Which half of the job failed. "Something went wrong" told people nothing;
+  // whether ADE failed to *look* or failed to *remove* changes both what is
+  // true about their disk and what they should do next.
+  const [errorPhase, setErrorPhase] = React.useState<"checking" | "removing">("checking");
 
   const maintenanceMode = Boolean(plan);
 
@@ -261,39 +265,57 @@ export function StorageCleanupDialog({
   const initRef = React.useRef({ targets });
   initRef.current = { targets };
 
-  React.useEffect(() => {
-    if (!open) return;
-    let active = true;
+  // Which read the dialog is currently showing. A close/reopen (or a Try again
+  // pressed twice) leaves the earlier `cleanupPreview` in flight, and those can
+  // land out of order — the stale one must not overwrite the fresh preview, nor
+  // drag a settled dialog back to "error".
+  const requestRef = React.useRef(0);
+
+  const loadPreview = React.useCallback((): Promise<void> => {
     const { targets: openTargets } = initRef.current;
+    const requestId = ++requestRef.current;
     setResult(null);
     setReport(null);
     setError(null);
     setStage("loading");
     setPreview(null);
-    void window.ade.storage
+    return window.ade.storage
       .cleanupPreview(openTargets)
       .then((next) => {
-        if (!active) return;
+        if (requestRef.current !== requestId) return;
         setPreview(next);
         setStage("review");
       })
       .catch((err: unknown) => {
-        if (!active) return;
+        if (requestRef.current !== requestId) return;
         setError(err instanceof Error ? err.message : String(err));
+        setErrorPhase("checking");
         setStage("error");
       });
+  }, []);
+
+  React.useEffect(() => {
+    if (!open) return;
+    void loadPreview();
     return () => {
-      active = false;
+      // A dialog closed mid-read has nothing to show; retire the request so a
+      // late answer cannot paint over whatever the next open reads.
+      requestRef.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const confirm = React.useCallback(async () => {
+    // Same generation guard the preview uses, for the same reason: a removal
+    // (and the maintenance run after it) outlives a close, and a completion
+    // that lands after the dialog reopened would push the fresh dialog to
+    // "done" and hand the parent a result for a job it is no longer showing.
+    const requestId = requestRef.current;
     setStage("removing");
     setError(null);
     try {
       if (!preview) {
-        setStage("review");
+        if (requestRef.current === requestId) setStage("review");
         return;
       }
       const filesystemResult = preview.items.length > 0
@@ -307,13 +329,16 @@ export function StorageCleanupDialog({
         ...filesystemResult,
         freedBytes: filesystemResult.freedBytes + maintenanceBytes,
       };
+      if (requestRef.current !== requestId) return;
       setReport(nextReport);
       setResult(next);
       setStage("done");
       onCleaned(next);
       if (nextReport) plan?.onMaintenanceDone?.(nextReport);
     } catch (err) {
+      if (requestRef.current !== requestId) return;
       setError(err instanceof Error ? err.message : String(err));
+      setErrorPhase("removing");
       setStage("error");
     }
   }, [plan, preview, targets, onCleaned]);
@@ -357,17 +382,39 @@ export function StorageCleanupDialog({
           {stage === "error" ? (
             <div
               style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
                 fontFamily: SANS_FONT,
                 fontSize: 12,
                 lineHeight: 1.5,
-                color: COLORS.danger,
+                color: COLORS.textSecondary,
                 background: "color-mix(in srgb, var(--color-error) 8%, transparent)",
                 border: "1px solid color-mix(in srgb, var(--color-error) 26%, transparent)",
                 borderRadius: 9,
                 padding: "10px 12px",
               }}
             >
-              {error ?? "Something went wrong."}
+              <span style={{ fontWeight: 600, color: COLORS.danger }}>
+                {errorPhase === "checking"
+                  ? "ADE couldn't check what's safe to remove."
+                  : "The cleanup didn't finish."}
+              </span>
+              <span>
+                {errorPhase === "checking"
+                  ? "Nothing was removed. Try again — if it keeps failing, close and reopen ADE, then come back here."
+                  : "Some items may still be on disk. Nothing outside this list was touched, and you can run it again."}
+              </span>
+              {error ? (
+                <details>
+                  <summary style={{ cursor: "pointer", userSelect: "none", color: COLORS.textMuted }}>
+                    Show technical details
+                  </summary>
+                  <div style={{ marginTop: 6, whiteSpace: "pre-wrap", wordBreak: "break-word", color: COLORS.textMuted }}>
+                    {error}
+                  </div>
+                </details>
+              ) : null}
             </div>
           ) : null}
 
@@ -562,6 +609,22 @@ export function StorageCleanupDialog({
             <button type="button" style={outlineButton({ height: 34 })} onClick={onClose}>
               Done
             </button>
+          ) : stage === "error" ? (
+            <>
+              <button type="button" style={outlineButton({ height: 34 })} onClick={onClose}>
+                Close
+              </button>
+              <button
+                type="button"
+                style={primaryButton({ height: 34 })}
+                onClick={() => {
+                  if (errorPhase === "removing" && preview) void confirm();
+                  else void loadPreview();
+                }}
+              >
+                Try again
+              </button>
+            </>
           ) : (
             <>
               <button

@@ -641,7 +641,12 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           fallbackTurnId: turnId,
           includePeer: false
         ) ?? .systemNotice(
-          kind: stringValue(eventDict["noticeKind"]),
+          // A host-sleep half is identified by `status`, not `noticeKind` —
+          // see `hostSleepNoticeKind(from:)`. Normalize here too so a chat
+          // opened from persisted history folds its sleep chip exactly like a
+          // live one does.
+          kind: hostSleepNoticeKind(from: optionalString(eventDict["status"]))?.rawValue
+            ?? stringValue(eventDict["noticeKind"]),
           message: stringValue(eventDict["message"]),
           detail: optionalString(prettyPrintedJSONString(eventDict["detail"])),
           turnId: turnId,

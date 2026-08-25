@@ -279,16 +279,18 @@ binding itself. Otherwise any signed-in account could claim a stranger's key,
 seed the ownership evidence the removal route checks, and terminal-403 that
 machine.
 
-`npm run deploy` now refuses to deploy unless both primary and secondary Clerk
+`npm run deploy` refuses to deploy unless both primary and secondary Clerk
 secret triples, `ADE_PUSH_RELAY_SMOKE_TOKEN`, and
-`ADE_PUSH_RELAY_SECONDARY_SMOKE_TOKEN` are present. The smoke tokens must be
-short-lived valid ADE Clerk tokens for their respective issuer, supplied only
-in the deploy environment; the script never prints them. After deployment, the
-pipeline verifies `/health` and then calls the authenticated account snapshot
-endpoint once with each issuer. This distinguishes a successful D1 migration
-or Worker upload from usable account authentication in either identity domain.
-The health response exposes only binding status and fixed error codes, never
-secret values.
+`ADE_PUSH_RELAY_SECONDARY_SMOKE_TOKEN` are present. Those smoke tokens are
+short-lived session JWTs for dedicated CI users on each issuer. GitHub Actions
+must not store the tokens. `npm run deploy:ci` mints a fresh pair from the
+durable Clerk backend keys plus `ADE_PUSH_RELAY_SMOKE_USER_ID` /
+`ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID`, then runs `npm run deploy`. The mint
+script never prints the tokens. After deployment, the pipeline verifies
+`/health` and then calls the authenticated account snapshot endpoint once with
+each issuer. This distinguishes a successful D1 migration or Worker upload from
+usable account authentication in either identity domain. The health response
+exposes only binding status and fixed error codes, never secret values.
 
 ## Local dev
 

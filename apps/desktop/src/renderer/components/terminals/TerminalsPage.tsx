@@ -5,6 +5,7 @@ import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
+import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
   type SessionContextMenuLaneActions,
@@ -29,6 +30,7 @@ import {
   formatSessionActionError,
   formatToolTypeLabel,
   isChatToolType,
+  isPtyContextInsertableToolType,
 } from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
@@ -104,14 +106,6 @@ function browserEventMatchesProject(event: unknown, projectRoot: string | null):
   if (root === undefined) return projectRoot == null;
   if (!projectRoot) return root === null;
   return root === projectRoot;
-}
-
-function isPtyContextInsertableToolType(toolType: TerminalSessionSummary["toolType"]): boolean {
-  return toolType === "claude"
-    || toolType === "codex"
-    || toolType === "cursor-cli"
-    || toolType === "droid"
-    || toolType === "opencode";
 }
 
 function buildDraftContextTargetId(laneId: string, draftKind: WorkDraftKind): string {
@@ -1039,11 +1033,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           }
         : null;
     }
-    // WorkSidebar's composer events and terminal.write call do not carry a
-    // runtime pin. Fail closed instead of inserting into the active machine.
-    if (activeWorkSessionRuntimePin) return null;
     if (activeWorkSession.laneId !== activeLaneId) return null;
     if (isChatToolType(activeWorkSession.toolType)) {
+      // Chat insertion is a DOM event consumed by the chat pane, which is not
+      // machine-addressed. Still fail closed for a chat on another machine.
+      if (activeWorkSessionRuntimePin) return null;
       return { kind: "chat", sessionId: activeWorkSession.id };
     }
     if (
@@ -1067,8 +1061,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = null;
   } else if (!activeWorkSession) {
     contextDisabledReason = "Select a lane before inserting tool context.";
-  } else if (activeWorkSessionRuntimePin) {
-    contextDisabledReason = "Tool context insertion is not available for sessions on another machine.";
+  } else if (activeWorkSessionRuntimePin && isChatToolType(activeWorkSession.toolType)) {
+    contextDisabledReason = "Tool context insertion is not available for chats on another machine.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
   } else if (activeWorkSession.toolType === "shell") {
@@ -1115,6 +1109,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       unsubscribeBrowserEvents?.();
     };
   }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, setOrchestratorEnabled]);
+
+  // A filename clicked in a chat opens in the tools-pane Files panel, which
+  // means the panel has to exist first. The request itself is held in the
+  // module channel until the workbench mounts and drains it, so this only has
+  // to reveal the panel — it never has to know the path.
+  useEffect(() => {
+    if (!active) return undefined;
+    return subscribeFilesOpenInTools(() => {
+      setWorkSidebarTab("files");
+    });
+  }, [active, setWorkSidebarTab]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
@@ -1399,6 +1404,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 onClose={closeWorkSidebar}
                 contextTarget={contextTarget}
                 contextDisabledReason={contextDisabledReason}
+                runtimePin={activeWorkSessionRuntimePin}
               />
             </motion.div>
           ) : null}
@@ -1420,6 +1426,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [
       activeLaneId,
       activeWorkSession,
+      activeWorkSessionRuntimePin,
       active,
       contextTarget,
       contextDisabledReason,

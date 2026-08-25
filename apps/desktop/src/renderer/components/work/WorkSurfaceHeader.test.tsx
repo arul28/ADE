@@ -218,4 +218,15 @@ describe("WorkSurfaceHeader", () => {
     await waitFor(() => expect(screen.getByText("New chat")).toBeTruthy());
     expect(screen.queryByText("Drink")).toBeNull();
   });
+
+  it("renders an optional title accessory after the title", () => {
+    render(
+      <WorkSurfaceHeader
+        title="Cursor Chat"
+        titleAccessory={<button type="button">Cursor Cloud</button>}
+      />,
+    );
+    const accessory = screen.getByRole("button", { name: "Cursor Cloud" });
+    expect(accessory.previousSibling?.textContent).toBe("Cursor Chat");
+  });
 });

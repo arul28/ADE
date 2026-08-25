@@ -17,7 +17,9 @@ import {
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   resolveRuntimeServiceName,
+  RUNTIME_SERVICE_YOUNG_BRAIN_MS,
   serviceManagerResultText,
+  WINDOWS_HANDOVER_TIMEOUT_MS,
   terminatePidGracefullyAsync,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
@@ -116,6 +118,14 @@ type WindowsServiceManagerDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Process liveness for the supervisor/brain pids in the record; tests inject
+   * it. Only ever a cheap gate on ENTERING the young-brain wait -- the
+   * authority on whether a recorded pid is really ours is the readiness
+   * probe's `Win32_Process` identity check, which runs inside that wait and
+   * decides whether the install may report `starting`.
+   */
+  pidAlive?: (pid: number) => boolean;
 };
 
 function resolvedServiceName(
@@ -257,6 +267,26 @@ export function buildWindowsQueryTaskArgs(
   return ["-NoProfile", "-NonInteractive", "-Command", query];
 }
 
+/**
+ * The task's whole XML definition, for a diagnostic report.
+ *
+ * `schtasks /Query /XML` writes UTF-16 to stdout, which a UTF-8 read turns into
+ * NUL-interleaved garbage. `Export-ScheduledTask` through `[Console]::Out`
+ * emits ordinary text, the same way every other task query in this file does.
+ */
+export function buildWindowsExportTaskArgs(
+  taskName = resolveWindowsTaskName(),
+): string[] {
+  const taskNameLiteral = powerShellSingleQuotedLiteral(taskName);
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `try { $xml = Export-ScheduledTask -TaskPath '\\' -TaskName ${taskNameLiteral} -ErrorAction Stop } catch { [Console]::Error.Write($_.Exception.Message); exit ${TASK_NOT_FOUND_EXIT_CODE} }`,
+    `if ($null -eq $xml) { exit ${TASK_NOT_FOUND_EXIT_CODE} }`,
+    "[Console]::Out.Write($xml)",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
 /** Delimits the Execute/Arguments fields emitted by the task action query. */
 export const WINDOWS_TASK_ACTION_FIELD_SEPARATOR = "\u001f";
 
@@ -374,6 +404,27 @@ export function resolveWindowsStartTaskName(taskName = resolveWindowsTaskName())
  * the Task Scheduler default is three days, and an always-on brain must not be
  * terminated by its own launcher on day four. Unregistering does not terminate
  * the process the task already started, so nothing is left registered.
+ *
+ * ---
+ *
+ * Why this task needs no counterpart to the launchd `MaterializeDatalessFiles`
+ * key.
+ *
+ * Windows has the same class of file the macOS key exists for: a OneDrive
+ * Files On-Demand placeholder holds no contents until something reads it. The
+ * difference is who is allowed to hydrate one. macOS gates materialization on a
+ * per-process I/O policy that a launchd job does not get by default; Windows
+ * gates it on the cloud filter driver being able to reach a sync engine running
+ * in the reader's own logon session, and grants it to every ordinary process
+ * there. This task registers no `-Principal`, so it runs as the user who
+ * installed it, in that user's session -- the same session their OneDrive runs
+ * in. Hydration is therefore already allowed, and there is no per-task setting
+ * that would grant or deny it.
+ *
+ * The failure mode Windows does have is a hydration that is attempted and does
+ * not finish: OneDrive signed out, offline, or paused. That surfaces as an
+ * ERROR_CLOUD_FILE_* code rather than as EDEADLK, and classifying it belongs to
+ * the storage errno classifier, not to this launcher.
  */
 export function buildWindowsStartTaskArgs(
   launcherPath: string,
@@ -780,14 +831,22 @@ async function installWindowsServiceImpl(
     machineLayout.runtimeDir,
     BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
   );
+  const renderedLauncher = `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
+    pidPath,
+    logPath,
+    heartbeatPath,
+    wedgeBreadcrumbPath,
+  })}`;
+  let existingLauncher: string | null = null;
+  try {
+    existingLauncher = fs.readFileSync(launcherPath, "utf8");
+  } catch {
+    existingLauncher = null;
+  }
+  const launcherUnchanged = existingLauncher === renderedLauncher;
   try {
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
-      pidPath,
-      logPath,
-      heartbeatPath,
-      wedgeBreadcrumbPath,
-    })}`, {
+    fs.writeFileSync(launcherPath, renderedLauncher, {
       encoding: "utf8",
       mode: 0o600,
     });
@@ -816,6 +875,56 @@ async function installWindowsServiceImpl(
       path: taskName,
       message: legacyRemoval.message,
     };
+  }
+  // launchd parity for the young-brain wait: an unchanged launcher whose
+  // supervisor and brain are alive, started less than RUNTIME_SERVICE_YOUNG_BRAIN_MS
+  // ago and never restarted, is a brain still coming up. Wait for it instead of
+  // ending and replacing it — every Repair used to kill exactly that brain.
+  const readPidRecord = deps.readPidRecord
+    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
+  const isAlive = deps.pidAlive ?? isPidAlive;
+  const youngRecord = launcherUnchanged ? readPidRecord(pidPath) : null;
+  if (
+    youngRecord
+    && youngRecord.restartCount === 0
+    && youngRecord.runtimePid != null
+    && youngRecord.runtimeStartedAtMs != null
+    && Date.now() - youngRecord.runtimeStartedAtMs < RUNTIME_SERVICE_YOUNG_BRAIN_MS
+    && isAlive(youngRecord.supervisorPid)
+    && isAlive(youngRecord.runtimePid)
+  ) {
+    const youngReadiness = await waitForWindowsRuntimeReadiness({
+      command: serviceCommand,
+      launcherPath,
+      pidPath,
+      socketPath,
+      spawnSync: run,
+      readPidRecord,
+      readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
+      timeoutMs: deps.handoverTimeoutMs ?? WINDOWS_HANDOVER_TIMEOUT_MS,
+      pollMs: deps.handoverPollMs ?? 100,
+      sleep: deps.sleep,
+    });
+    if (youngReadiness.ready) {
+      return {
+        ok: true,
+        serviceName,
+        action: "install",
+        path: taskName,
+        message: "ADE per-user startup entry is already installed; the channel brain finished starting.",
+      };
+    }
+    if (youngReadiness.supervised) {
+      return {
+        ok: true,
+        starting: true,
+        serviceName,
+        action: "install",
+        path: taskName,
+        message: `ADE per-user startup entry is installed; the channel brain is still starting on ${socketPath}: ${youngReadiness.diagnostic}`,
+      };
+    }
+    // The young brain died while we waited: fall through and replace it.
   }
   const currentRemoval = removeWindowsTaskIfPresent(
     run,
@@ -888,8 +997,6 @@ async function installWindowsServiceImpl(
       message: `ADE per-user startup entry was installed, but the background service failed to start: ${startFailure}`,
     };
   }
-  const readPidRecord = deps.readPidRecord
-    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
   const readiness = await waitForWindowsRuntimeReadiness({
     command: serviceCommand,
     launcherPath,
@@ -898,10 +1005,31 @@ async function installWindowsServiceImpl(
     spawnSync: run,
     readPidRecord,
     readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
-    timeoutMs: deps.handoverTimeoutMs ?? 15_000,
+    // Shorter than the POSIX budget on purpose: the Windows install
+    // already spends several PowerShell round-trips before this wait, and the
+    // whole child is bounded by `RUNTIME_SERVICE_START_WAIT_MS` (90s). A
+    // supervised brain that is not ready by then is reported as `starting`,
+    // not as a failure.
+    timeoutMs: deps.handoverTimeoutMs ?? WINDOWS_HANDOVER_TIMEOUT_MS,
     pollMs: deps.handoverPollMs ?? 100,
     sleep: deps.sleep,
   });
+  if (!readiness.ready && readiness.supervised) {
+    // Same contract as launchd: a supervised brain that has not answered yet
+    // is still starting, not broken. The supervisor keeps it; the caller keeps
+    // waiting for the endpoint.
+    return {
+      ok: true,
+      starting: true,
+      restarted: true,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message:
+        `ADE per-user startup entry installed; the channel brain is still starting on ${socketPath}: `
+        + readiness.diagnostic,
+    };
+  }
   if (!readiness.ready) {
     return {
       ok: false,
@@ -920,6 +1048,7 @@ async function installWindowsServiceImpl(
   const sessionBound = readPidRecord(pidPath)?.sessionBound === true;
   return {
     ok: true,
+    restarted: true,
     serviceName,
     action: "install",
     path: taskName,

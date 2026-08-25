@@ -34,6 +34,8 @@ import {
   Target,
   Clock,
   Cube,
+  Moon,
+  Play,
 } from "@phosphor-icons/react";
 import type {
   AgentChatApprovalDecision,
@@ -53,13 +55,19 @@ import type {
   OperatorNavigationSuggestion,
   TurnDiffSummary,
 } from "../../../shared/types";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
-import { navigateToAppTarget, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { navigateToAppTarget, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { normalizePath } from "../../lib/pathUtils";
 import { chatMarkdownUrlTransform } from "./chatMarkdown";
+import {
+  CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
+  splitChatOutputContextSegments,
+} from "../../../shared/chatOutputContext";
+import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import {
   ChatWorkspacePathProvider,
   looksLikeWorkspacePath,
@@ -76,12 +84,15 @@ import {
   CHAT_WORK_LOG_CARD_CLASS,
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { transcriptRowGapPx, useChatChromeTint } from "./chatAppearance";
-import { ChatAttachmentTray } from "./ChatAttachmentTray";
+import { UserMessageIssueContext } from "./UserMessageIssueContext";
+import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
+import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
   ChatToolActivityDetails,
@@ -96,6 +107,7 @@ import {
   collapseChatTranscriptEventsIncrementalWithContext,
   countRowsAppendedSince,
   deriveWebSearchResultDisplay,
+  formatDoneTurnTokenLine,
   formatStructuredValue,
   groupChatTranscriptRows,
   mergeAdjacentActivityBundleRows,
@@ -803,6 +815,18 @@ function parseLeadingIosContextChips(text: string): { chips: string[]; rest: str
   return { chips, rest: text.slice(i) };
 }
 
+function ChatOutputContextChip({ quote }: { quote: string }) {
+  return (
+    <span
+      className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-violet-50/90 align-baseline"
+      title={quote}
+      data-testid="user-message-chat-context-chip"
+    >
+      {CHAT_OUTPUT_CONTEXT_CHIP_LABEL}
+    </span>
+  );
+}
+
 function UserMessageSendConfirmations({
   event,
 }: {
@@ -814,7 +838,7 @@ function UserMessageSendConfirmations({
   const contextAttachments = event.contextAttachments ?? [];
   const hasImage = attachments.some((a) => a.type === "image");
   const hasFile = attachments.some((a) => a.type === "file");
-  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue");
+  const hasIssueContext = contextAttachments.some((a) => a.type === "linear_issue" || a.type === "github_issue");
   const showFilesRow = hasImage || hasFile;
   const showSimRow = event.text.startsWith(IOS_SIMULATOR_CONTEXT_PREFIX);
 
@@ -2765,25 +2789,35 @@ function renderEvent(
               );
             }
             const parsed = parseLeadingIosContextChips(event.text);
-            const body = !parsed.chips.length ? (
+            const contextSegments = splitChatOutputContextSegments(parsed.rest);
+            const hasOutputContext = contextSegments.some((segment) => segment.kind === "context");
+            const body = !parsed.chips.length && !hasOutputContext ? (
               <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                 {event.text}
               </div>
             ) : (
               <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
-                <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
-                  {parsed.chips.map((label, idx) => (
-                    <span
-                      key={`ios-chip-${idx}`}
-                      className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
-                      title={label}
-                      data-testid="user-message-ios-context-chip"
-                    >
-                      <span className="max-w-[200px] truncate">{label}</span>
-                    </span>
-                  ))}
-                </span>
-                {parsed.rest}
+                {parsed.chips.length ? (
+                  <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
+                    {parsed.chips.map((label, idx) => (
+                      <span
+                        key={`ios-chip-${idx}`}
+                        className="mx-0.5 inline-flex max-w-[260px] translate-y-[1px] items-center gap-1.5 rounded-md border border-cyan-300/22 bg-cyan-500/12 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-5 text-cyan-50/85 align-baseline"
+                        title={label}
+                        data-testid="user-message-ios-context-chip"
+                      >
+                        <span className="max-w-[200px] truncate">{label}</span>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
+                {hasOutputContext
+                  ? contextSegments.map((segment, idx) => (
+                    segment.kind === "text"
+                      ? <React.Fragment key={`chat-context-text-${idx}`}>{segment.text}</React.Fragment>
+                      : <ChatOutputContextChip key={`chat-context-chip-${idx}`} quote={segment.quote} />
+                  ))
+                  : parsed.rest}
               </div>
             );
             // Only the plain prompt body clamps. The hidden-prompt brief and the
@@ -2792,11 +2826,11 @@ function renderEvent(
             return <CollapsibleUserMessageBody rowKey={envelope.key}>{body}</CollapsibleUserMessageBody>;
           })()}
           {event.attachments?.length || event.contextAttachments?.length ? (
-            <ChatAttachmentTray
+            <UserMessageIssueContext
               attachments={event.attachments ?? []}
               contextAttachments={event.contextAttachments ?? []}
               mode={options?.surfaceMode ?? "standard"}
-              className="mt-1 px-0 py-0"
+              sessionId={options?.sessionId}
             />
           ) : null}
           <UserMessageSendConfirmations event={event} />
@@ -2833,7 +2867,7 @@ function renderEvent(
               />
             ) : null}
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0" data-assistant-output="true">
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
           </div>
         </div>
@@ -3407,6 +3441,26 @@ function renderEvent(
         </button>
       );
     }
+    if (event.noticeKind === "info" && event.status === "spawn_takeover") {
+      const takeover = event.detail && typeof event.detail === "object" ? event.detail.spawnTakeover : undefined;
+      const childTitle = takeover?.childTitle?.trim() || "chat";
+      const childSessionId = typeof takeover?.childSessionId === "string" && takeover.childSessionId.length
+        ? takeover.childSessionId
+        : null;
+      return (
+        <button
+          type="button"
+          disabled={!childSessionId}
+          onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
+          title={childSessionId ? "Open the chat the user took over" : undefined}
+        >
+          <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
+          <span className="min-w-0 truncate">The user took over "{childTitle}" — reports stop here.</span>
+          {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
+        </button>
+      );
+    }
     if (event.noticeKind === "info" && event.status === "spawn_completed") {
       const completion: AgentChatSpawnCompletion | undefined =
         event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
@@ -3430,23 +3484,31 @@ function renderEvent(
       );
     }
     if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") {
+      return null;
+    }
+    // ── Host sleep ──
+    // One quiet chip per sleep. The transcript fold hands the SAME row first
+    // the paused event and then the resumed one, so this renders whichever
+    // half is current — the row never doubles and never grows.
+    if (isHostSleepNoticeEvent(event)) {
+      const resumed = isHostResumedNoticeEvent(event);
+      const SleepIcon = resumed ? Play : Moon;
       return (
         <div
-          className="inline-flex max-w-full items-center gap-2 rounded-full border border-violet-300/22 px-3 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]"
-          style={{ background: "rgba(167,139,250,0.07)", color: "rgba(216,200,255,0.85)" }}
+          className={cn(
+            "inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-full border px-3 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] transition-colors",
+            resumed
+              ? "border-emerald-400/16 bg-emerald-400/[0.05] text-emerald-200/70"
+              : "border-sky-400/16 bg-sky-400/[0.05] text-sky-200/70",
+          )}
         >
-          <CloudArrowUp size={11} weight="fill" style={{ color: "#A78BFA" }} />
-          <span className="font-medium">Promoted to cloud</span>
-          <a
-            href="#/cloud"
-            onClick={(e) => {
-              e.preventDefault();
-              try { window.location.hash = "#/cloud"; } catch { /* noop */ }
-            }}
-            className="inline-flex items-center gap-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-violet-200/70 hover:text-violet-100"
-          >
-            open in /cloud
-          </a>
+          <SleepIcon
+            size={11}
+            weight={resumed ? "fill" : "duotone"}
+            className={cn("shrink-0", resumed ? "text-emerald-300/70" : "text-sky-300/70")}
+            aria-hidden
+          />
+          <span className="min-w-0 truncate">{event.message}</span>
         </div>
       );
     }
@@ -3843,27 +3905,22 @@ function renderEvent(
   /* ── Cloud status lifecycle ── */
   if (event.type === "cloud_status") {
     const status = (event.status ?? "").toLowerCase();
+    const failed = status === "error" || status === "cancelled" || status === "expired";
+    if (!failed && !event.prUrl) return null;
     const inProgress = status === "creating" || status === "running";
     const live = inProgress && Boolean(options?.turnActive);
-    const failed = status === "error" || status === "cancelled" || status === "expired";
     const tone = inProgress
       ? "text-violet-200/80"
       : failed
         ? "text-red-300/75"
         : "text-emerald-300/70";
-    const label = status === "creating"
-      ? "Provisioning cloud VM"
-      : status === "running"
-        ? "Running in cloud"
-        : status === "finished"
-          ? "Cloud run finished"
-          : status === "cancelled"
-            ? "Cloud run cancelled"
-            : status === "expired"
-              ? "Cloud run expired"
-              : status === "error"
-                ? "Cloud run failed"
-                : `Cloud · ${status}`;
+    const label = failed
+      ? (status === "cancelled"
+        ? "Cloud run cancelled"
+        : status === "expired"
+          ? "Cloud run expired"
+          : "Cloud run failed")
+      : "Pull request";
     return (
       <div className={cn(
         "inline-flex items-center gap-2 rounded-full border px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",
@@ -4269,6 +4326,7 @@ function DoneTurnDivider({
   const ranFor = durationMs !== null && durationMs > 1500
     ? `ran ${formatTurnDuration(durationMs)}`
     : null;
+  const tokenLine = formatDoneTurnTokenLine(event.usage);
   const hasToolActivity = toolEntries.length > 0;
   const content = (
     <span
@@ -4298,6 +4356,12 @@ function DoneTurnDivider({
           <>
             <span className="opacity-40">·</span>
             <span>{ranFor}</span>
+          </>
+        ) : null}
+        {tokenLine ? (
+          <>
+            <span className="opacity-40">·</span>
+            <span>{tokenLine}</span>
           </>
         ) : null}
       {hasToolActivity ? (
@@ -5269,9 +5333,10 @@ function AgentChatMessageListMain({
   respondingApprovalIds,
   pendingApprovalIds,
   laneId,
+  runtimePin = null,
   sessionId,
   sessionTitle,
-  sessionProvider,
+  sessionProvider = null,
   paneActive = true,
   transcriptCollapseCacheKey,
   onInsertDraft,
@@ -5320,12 +5385,19 @@ function AgentChatMessageListMain({
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
+  /**
+   * Machine that owns this chat. Null = the machine this project tab is bound
+   * to. Threaded through so a filename clicked in a foreign chat is looked up
+   * on the machine that actually has the file.
+   */
+  runtimePin?: OpenProjectBinding | null;
   sessionId?: string | null;
   /**
    * The chat's own title and runtime, threaded down for a plugin card's session
    * context. A plugin invoked from a card would otherwise see an empty title
    * and a null provider on the one surface where it has a real conversation to
-   * act on.
+   * act on. `sessionProvider` is the raw provider id, which is also what the
+   * Codex-only rows below key off.
    */
   sessionTitle?: string | null;
   sessionProvider?: string | null;
@@ -5363,7 +5435,11 @@ function AgentChatMessageListMain({
   onOpenProofDrawer?: () => void;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
-  const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
+  // The machine label belongs to the CHAT, not to the tab. A Work tab unions
+  // chats from every machine, so reading the tab's binding labelled a foreign
+  // chat's rows with whichever machine the tab happened to be pointed at.
+  const chatScope = useChatRuntimeScope();
+  const runtimeName = chatScope.isRemote ? chatScope.machineName : null;
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const listRootRef = useRef<HTMLDivElement | null>(null);
@@ -5694,6 +5770,7 @@ function AgentChatMessageListMain({
   const workspacePaths = useWorkspacePathOpener({
     laneId: currentLaneId,
     navigate,
+    runtimePin,
     onOpened: onOpenWorkspacePath,
   });
   const openWorkspacePath = workspacePaths.openWorkspacePath;
@@ -5716,6 +5793,10 @@ function AgentChatMessageListMain({
     let turnStartMs: number | null = null;
     for (const env of allGroupedRows) {
       const ts = Date.parse(env.timestamp);
+      if (env.event.type === "user_message" && Number.isFinite(ts)) {
+        turnStartMs = ts;
+        continue;
+      }
       if (turnStartMs === null && Number.isFinite(ts)) turnStartMs = ts;
       if (env.event.type === "done") {
         const start = turnStartMs ?? ts;
@@ -6520,8 +6601,10 @@ function AgentChatMessageListMain({
   );
 
   const minimapSourceEntries = useMemo(
-    () => collectUserMessageMinimapSourceEntries(groupedRows),
-    [groupedRows],
+    () => collectUserMessageMinimapSourceEntries(groupedRows, {
+      includeCodexExtras: sessionProvider === "codex",
+    }),
+    [groupedRows, sessionProvider],
   );
 
   const promptHistoryFocusIndex = useMemo(() => {
@@ -6895,6 +6978,7 @@ function AgentChatMessageListMain({
           <span>{newRowsSinceDetach > 0 ? `${newRowsSinceDetach} new · jump to latest` : "Jump to latest"}</span>
         </button>
       ) : null}
+      <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
     </div>
     </ChatWorkspacePathProvider>
   );

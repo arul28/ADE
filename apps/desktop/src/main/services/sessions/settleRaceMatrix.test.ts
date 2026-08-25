@@ -5,11 +5,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "./sessionService";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
-import { settleTeardownCompleted } from "./settlingStateRegistry";
+import type { SettleResidueItem, SettleTeardownContext } from "./sessionSettleTeardown";
+
 
 /**
  * The race matrix from the settle-teardown design (§2), tested directly against
- * the lifecycle revision and the settling window — with teardown still a NO-OP.
+ * the lifecycle revision and the settling window — with a real, awaited teardown.
  *
  * That ordering is the point. Every one of these races was previously argued
  * about in review rather than executed, and the six rounds of PR #1059 are what
@@ -46,7 +47,7 @@ function insertProjectGraph(db: Awaited<ReturnType<typeof openKvDb>>) {
   );
 }
 
-describe("settle race matrix (teardown is a no-op)", () => {
+describe("settle race matrix", () => {
   const disposers: Array<() => Promise<void>> = [];
   afterEach(async () => {
     while (disposers.length) await disposers.pop()?.();
@@ -59,16 +60,26 @@ describe("settle race matrix (teardown is a no-op)", () => {
     insertProjectGraph(db);
     // The teardown seam the race matrix drives. Whatever this does is what a
     // real provider stop would have been doing when the race landed.
-    let teardown: (sessionId: string) => void = () => {};
+    let teardown: (sessionId: string) => void | Promise<void> = () => {};
+    // Records what the seam was handed, so a test can assert the abort was
+    // visible to teardown WHILE it ran rather than only afterwards.
+    const teardownContexts: SettleTeardownContext[] = [];
+    let residue: SettleResidueItem[] = [];
+    const remoteWrites: Array<{ columns: string[]; changesetSessionCount: number }> = [];
     const service = createSessionService({
       db,
-      runSettleTeardown: (sessionId) => {
-        teardown(sessionId);
-        return settleTeardownCompleted();
+      onRemoteSettleWrite: (args) => { remoteWrites.push(args); },
+      runSettleTeardown: async (sessionId, ctx) => {
+        teardownContexts.push(ctx);
+        await teardown(sessionId);
+        return { residue, confirmed: true };
       },
     });
-    const setTeardown = (fn: (sessionId: string) => void) => {
+    const setTeardown = (fn: (sessionId: string) => void | Promise<void>) => {
       teardown = fn;
+    };
+    const setResidue = (items: SettleResidueItem[]) => {
+      residue = items;
     };
     const create = (id: string) =>
       service.create({
@@ -82,7 +93,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
         toolType: "codex-chat",
       });
     create("session-1");
-    return { db, service, create, setTeardown };
+    return { db, service, create, setTeardown, setResidue, teardownContexts, remoteWrites };
   }
 
   /**
@@ -92,13 +103,13 @@ describe("settle race matrix (teardown is a no-op)", () => {
    */
   it("R1: a turn starting during teardown abandons the settle", async () => {
     const { service, setTeardown } = await fixture();
-    service.settleSessions(["session-1"]);
+    await service.settleSessions(["session-1"]);
     service.unsettleSession("session-1");
 
     setTeardown(() => {
       service.clearTurnStartMarkers("session-1");
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     expect(outcome.settled).toEqual([]);
     expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "turn_start" }]);
@@ -121,7 +132,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
       teardownRan = true;
       service.requestAttention("session-1", "need you");
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     expect(teardownRan).toBe(true);
     expect(outcome.settled).toEqual([]);
@@ -136,7 +147,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
       // A stop against an already-finished task is a no-op, and nothing touches
       // the settle tuple.
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     expect(outcome.aborted).toEqual([]);
     expect(outcome.settled).toEqual(["session-1"]);
@@ -151,16 +162,16 @@ describe("settle race matrix (teardown is a no-op)", () => {
     const { service, setTeardown } = await fixture();
     let teardowns = 0;
 
-    let inner: ReturnType<typeof service.settleSessionsReportingAborts> | null = null;
-    setTeardown(() => {
+    let inner: Awaited<ReturnType<typeof service.settleSessionsReportingAborts>> | null = null;
+    setTeardown(async () => {
       teardowns += 1;
       // Re-entrant settle, exactly as a PR-merge poll landing mid-user-settle.
       // The window is already open, so this must JOIN rather than tear down
       // again — the teardown counter is what proves it.
-      inner = service.settleSessionsReportingAborts(["session-1"]);
+      inner = await service.settleSessionsReportingAborts(["session-1"]);
     });
 
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     expect(teardowns, "the joined settle must not start its own teardown").toBe(1);
     expect(outcome.settled).toEqual(["session-1"]);
@@ -189,7 +200,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
       service.setLastOutputPreview("session-1", "final chunk", { clearSettled: true });
       service.touchSessionActivity("session-1", "2026-08-11T00:09:00.000Z");
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     // 1. did not abort
     expect(outcome.aborted).toEqual([]);
@@ -205,7 +216,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
 
   it("R6b: the same output OUTSIDE the settling window clears normally", async () => {
     const { service } = await fixture();
-    service.settleSessions(["session-1"]);
+    await service.settleSessions(["session-1"]);
     expect(service.get("session-1")?.settledAt).toBeTruthy();
 
     service.setLastOutputPreview("session-1", "later output", { clearSettled: true });
@@ -223,9 +234,19 @@ describe("settle race matrix (teardown is a no-op)", () => {
    * deliberately left desktop peers replicating, so this is reachable in
    * production.
    *
-   * This test exists to show the BLAST RADIUS before teardown exists, per the
+   * This test exists to show the BLAST RADIUS before real teardown existed, per the
    * coordinator's step-3 review scope — it asserts today's real behavior, not
    * the behavior we want.
+   */
+  /**
+   * NOTE (step 3): R7 and R7b below still write the row with a raw `db.run`,
+   * which is a bypass NO inbound changeset can produce any more — the apply
+   * layer now hands settle-tuple writes to `reconcileRemoteSettleTuple`. They
+   * are kept, unchanged, because they still pin the underlying property they
+   * always pinned: a write that reaches the tuple without the chokepoint is
+   * invisible to the guard. That is the reason the apply layer must intercept,
+   * so deleting these would delete the evidence for the fix. The reconciled
+   * path is asserted immediately after them.
    */
   it("R7: a peer-style write that bypasses the writer is invisible to the guard", async () => {
     const { db, service, setTeardown } = await fixture();
@@ -239,7 +260,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
         ["2026-08-11T00:07:00.000Z", "user", "session-1"],
       );
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     // Observed behaviour, not the behaviour we would have guessed.
     //
@@ -279,7 +300,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
         ["2026-08-11T00:07:00.000Z", "user", "session-1"],
       );
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     const accountedFor = [
       ...outcome.settled,
@@ -287,7 +308,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
     ];
     expect(
       accountedFor,
-      "step 3 must account for an id the writer never saw change",
+      "an id the writer never saw change must not vanish from both lists",
     ).toEqual([]);
   });
 
@@ -303,7 +324,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
   it("refuses a multi-id clear rather than guessing one disposition for the batch", async () => {
     const { service, db, create } = await fixture();
     create("session-2");
-    service.settleSessions(["session-1", "session-2"]);
+    await service.settleSessions(["session-1", "session-2"]);
 
     // The service API cannot express a multi-id `clearOnActivity`, so reach the
     // writer directly — otherwise the refusal this test is named for is never
@@ -334,7 +355,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
     setTeardown((sessionId) => {
       if (sessionId === "session-1") throw new Error("provider stop failed");
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1", "session-2"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1", "session-2"]);
 
     expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "teardown_failed" }]);
     // The rest of the batch was still attempted and accounted for.
@@ -342,14 +363,26 @@ describe("settle race matrix (teardown is a no-op)", () => {
     expect(service.settlingSessionIds()).toEqual([]);
   });
 
-  /**
-   * An async teardown is now a COMPILE error, not a runtime one — the seam
-   * returns a branded value that only a synchronous body can produce, so both
-   * `async (id) => {}` and the adapter `id => asyncStop(id)` fail to typecheck.
-   * There is no runtime behaviour left to assert; the type is the test.
-   */
-
   /** A settling row found after a restart resolves to not-settled. */
+  it("stops a teardown whose window was force-closed out from under it", async () => {
+    const { service, setTeardown, teardownContexts } = await fixture();
+    let sawAbandoned: boolean | null = null;
+
+    setTeardown(() => {
+      // What `deleteSession` does mid-teardown: `forget` force-closes this
+      // window. Whatever occupies the id afterwards — nothing, or a fresh
+      // window opened by a later settle for a recreated session — is not ours,
+      // and a teardown reading `abortedBy` alone would see "not aborted" and
+      // keep issuing provider stops.
+      service.deleteSession("session-1");
+      sawAbandoned = teardownContexts.at(-1)?.isAborted() ?? null;
+    });
+
+    await service.settleSessionsReportingAborts(["session-1"]);
+
+    expect(sawAbandoned, "a teardown that lost its window must see itself abandoned").toBe(true);
+  });
+
   it("crash safety: the settling window does not survive the process", async () => {
     const { service, setTeardown } = await fixture();
     expect(service.settlingSessionIds()).toEqual([]);
@@ -361,7 +394,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
     setTeardown(() => {
       duringWindow = service.settlingSessionIds();
     });
-    const outcome = service.settleSessionsReportingAborts(["session-1"]);
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
     expect(outcome.aborted, "the teardown must not have thrown").toEqual([]);
     expect(duringWindow, "the session must be visibly settling mid-teardown").toEqual([
@@ -371,6 +404,40 @@ describe("settle race matrix (teardown is a no-op)", () => {
     // session permanently unsettleable.
     expect(service.settlingSessionIds()).toEqual([]);
   });
+  it("stops the queue when a persistence failure propagates", async () => {
+    const { service, db, create, setTeardown } = await fixture();
+    const ids = ["session-1"];
+    for (let n = 2; n <= 12; n += 1) {
+      create(`session-${n}`);
+      ids.push(`session-${n}`);
+    }
+
+    // Fail the write for one session only. The pool must stop taking new work
+    // rather than settling rows the caller has already given up on.
+    const realRunChanged = db.runChanged.bind(db);
+    let tornDown = 0;
+    setTeardown(() => { tornDown += 1; });
+    db.runChanged = ((sql: string, params?: unknown[]) => {
+      if (typeof sql === "string" && /update\s+terminal_sessions/i.test(sql)
+        && Array.isArray(params) && params.includes("session-2")) {
+        throw new Error("database is locked");
+      }
+      return realRunChanged(sql, params as never);
+    }) as typeof db.runChanged;
+
+    await expect(service.settleSessionsReportingAborts(ids)).rejects.toThrow(/locked/);
+    db.runChanged = realRunChanged;
+
+    // Far short of all twelve: the queue was drained, so the pool stopped
+    // taking new sessions instead of running on past the caller. The few
+    // already in flight when it failed still finish, which is the point —
+    // nothing is abandoned half-written.
+    expect(tornDown, "the pool must stop taking new sessions after a failure").toBeLessThan(ids.length);
+    // And every window closed, or those rows would be unsettleable for the
+    // life of the process.
+    expect(service.settlingSessionIds()).toEqual([]);
+  });
+
   it("keeps a persistence failure distinct from a failed teardown", async () => {
     const { service, db, setTeardown } = await fixture();
     let stopped = 0;
@@ -390,7 +457,7 @@ describe("settle race matrix (teardown is a no-op)", () => {
 
     // It must NOT come back as `teardown_failed`: the work really did stop, and
     // labelling it a teardown failure invites a caller to retry the stop.
-    expect(() => service.settleSessionsReportingAborts(["session-1"])).toThrow(/locked/);
+    await expect(service.settleSessionsReportingAborts(["session-1"])).rejects.toThrow(/locked/);
     expect(stopped, "teardown ran, so it must not be reported as failed").toBe(1);
     db.runChanged = realRunChanged;
     // The window still closed, or the session would be permanently unsettleable.
@@ -399,11 +466,11 @@ describe("settle race matrix (teardown is a no-op)", () => {
 
   it("does not erase an existing status note when a re-settle supplies none", async () => {
     const { service, db } = await fixture();
-    expect(service.settleSession("session-1", { outcome: "shipped the fix" })).toBe(true);
+    expect(await service.settleSession("session-1", { outcome: "shipped the fix" })).toBe(true);
     service.unsettleSession("session-1");
 
     // Re-settling with no outcome must leave the previous note alone.
-    expect(service.settleSession("session-1")).toBe(true);
+    expect(await service.settleSession("session-1")).toBe(true);
     const row = db.get<{ status_note: string | null }>(
       "select status_note from terminal_sessions where id = ?",
       ["session-1"],
@@ -419,14 +486,195 @@ describe("settle race matrix (teardown is a no-op)", () => {
     });
 
     // The boolean form must not claim success...
-    expect(service.settleSession("session-1")).toBe(false);
+    expect(await service.settleSession("session-1")).toBe(false);
     // ...and the typed form must say WHY, so a caller does not report a session
     // that is sitting right there working as "not found".
-    const aborted = service.settleSessionReportingAbort("session-1");
+    const aborted = await service.settleSessionReportingAbort("session-1");
     expect(aborted).toEqual({ found: true, settled: false, abortedBy: "turn_start" });
-    expect(service.settleSessionReportingAbort("no-such-session")).toEqual({
+    expect(await service.settleSessionReportingAbort("no-such-session")).toEqual({
       found: false,
       settled: false,
+    });
+  });
+  /**
+   * R5, end to end: an unconfirmed stop does NOT block the settle (3d option 3),
+   * and the residue is discoverable on the row afterwards rather than only
+   * returned to whoever happened to call.
+   */
+  it("R5: settles with recorded residue when teardown cannot confirm the stop", async () => {
+    const { service, setResidue } = await fixture();
+    setResidue([{
+      kind: "background_tasks",
+      reason: "no_stop_control",
+      count: 2,
+      detail: "2 jobs on codex could not be stopped",
+    }]);
+
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
+
+    // Filed, not blocked: option 1 (reject the settle) was explicitly not chosen.
+    expect(outcome.settled).toEqual(["session-1"]);
+    expect(outcome.aborted).toEqual([]);
+    expect(service.get("session-1")?.settledAt).not.toBeNull();
+
+    const residue = service.getSettleResidue("session-1");
+    expect(residue?.items).toEqual([{
+      kind: "background_tasks",
+      reason: "no_stop_control",
+      count: 2,
+      detail: "2 jobs on codex could not be stopped",
+    }]);
+  });
+
+  it("does not leave residue hanging on a session the user reactivated", async () => {
+    const { service, setResidue } = await fixture();
+    setResidue([{
+      kind: "background_tasks", reason: "timeout", count: 1, detail: "1 job could not be stopped",
+    }]);
+    await service.settleSessionsReportingAborts(["session-1"]);
+    expect(service.getSettleResidue("session-1")).not.toBeNull();
+
+    service.unsettleSession("session-1");
+
+    // The row is working again. A stale "1 job could not be stopped" marker
+    // would re-light a session that is fine.
+    expect(service.getSettleResidue("session-1")).toBeNull();
+  });
+
+  it("records no residue for a settle that was abandoned", async () => {
+    const { service, setResidue, setTeardown } = await fixture();
+    setResidue([{
+      kind: "background_tasks", reason: "timeout", count: 1, detail: "1 job could not be stopped",
+    }]);
+    setTeardown(() => {
+      service.clearTurnStartMarkers("session-1");
+    });
+
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
+
+    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "turn_start" }]);
+    // Nothing was filed, so there is no settled row for residue to describe.
+    expect(service.getSettleResidue("session-1")).toBeNull();
+  });
+  /**
+   * Decision 1 for step 3: finish host authority instead of building consensus
+   * machinery. A replicated settle-tuple write is routed back through the
+   * chokepoint, so it gains the revision, the settling window and the abort
+   * semantics a local decision has — no peer-visible concurrency token.
+   */
+  it("tears sessions down concurrently, and still reports in the caller's order", async () => {
+    const { service, create, setTeardown } = await fixture();
+    for (const id of ["session-2", "session-3"]) create(id);
+
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const release: Array<() => void> = [];
+    setTeardown(async () => {
+      inFlight += 1;
+      peakInFlight = Math.max(peakInFlight, inFlight);
+      await new Promise<void>((resolve) => { release.push(resolve); });
+      inFlight -= 1;
+    });
+
+    const pending = service.settleSessionsReportingAborts(["session-3", "session-1", "session-2"]);
+    // Let all three teardowns start before any finishes.
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    // Asserted BEFORE draining: serial teardown parks two of the three behind
+    // the first, and the drain below would then hang until vitest's timeout —
+    // a real failure, but reported as "test timed out" instead of as this.
+    expect(release.length, "bulk settle must not tear down one session at a time").toBeGreaterThan(1);
+    while (release.length) release.pop()!();
+    const outcome = await pending;
+
+    // Serial teardown was the regression: the confirmation budget is seconds,
+    // and iOS gives the whole command 30s.
+    expect(peakInFlight, "bulk settle must not tear down one session at a time").toBeGreaterThan(1);
+    // Order follows the request, not whichever teardown finished first.
+    expect(outcome.settled).toEqual(["session-3", "session-1", "session-2"]);
+  });
+
+  describe("remote settle-tuple reconciliation", () => {
+    /** Stands in for `applyChanges` having merged the peer's columns. */
+    const applyPeerWrite = (db: Awaited<ReturnType<typeof fixture>>["db"], sql: string, params: unknown[]) => {
+      db.run(sql, params as never);
+    };
+
+    it("bumps the revision for a peer settle, without re-deciding the value", async () => {
+      const { db, service, remoteWrites } = await fixture();
+      const revisionBefore = service.getSettleLifecycleRevision("session-1");
+      applyPeerWrite(
+        db,
+        "update terminal_sessions set settled_at = ?, settle_source = ? where id = ?",
+        ["2026-08-11T00:07:00.000Z", "user", "session-1"],
+      );
+
+      service.reconcileRemoteSettleTuple([
+        { sessionId: "session-1", column: "settled_at" },
+        { sessionId: "session-1", column: "settle_source" },
+      ]);
+
+      // The peer's value stands exactly as CRR merged it.
+      expect(service.get("session-1")?.settledAt).toBe("2026-08-11T00:07:00.000Z");
+      // And an in-flight settle can now see that the world moved.
+      expect(service.getSettleLifecycleRevision("session-1")).toBeGreaterThan(revisionBefore);
+      expect(remoteWrites).toEqual([{ columns: ["settle_source", "settled_at"], changesetSessionCount: 1 }]);
+    });
+
+    it("makes a peer reactivation abort an in-flight settle instead of being overwritten", async () => {
+      const { db, service, setTeardown, teardownContexts } = await fixture();
+      await service.settleSessionsReportingAborts(["session-1"]);
+      service.unsettleSession("session-1");
+
+      // Captured inside teardown: the window is closed by the time the call
+      // returns, so `isAborted` is only meaningful while it is still open.
+      let abortedDuringTeardown: boolean | null = null;
+      setTeardown(() => {
+        // The mirror case Codex raised: a peer reactivates the session while
+        // this host is mid-settle.
+        applyPeerWrite(
+          db,
+          "update terminal_sessions set settle_override = ? where id = ?",
+          ["active", "session-1"],
+        );
+        service.reconcileRemoteSettleTuple([
+          { sessionId: "session-1", column: "settle_override" },
+        ]);
+        abortedDuringTeardown = teardownContexts.at(-1)?.isAborted() ?? null;
+      });
+      const outcome = await service.settleSessionsReportingAborts(["session-1"]);
+
+      expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "remote_lifecycle_changed" }]);
+      expect(outcome.settled).toEqual([]);
+      // Visible to teardown WHILE it runs, not only after. The revision alone is
+      // re-read after the await, which would let teardown run to completion and
+      // interrupt a turn the user just started on the other device.
+      expect(abortedDuringTeardown, "teardown must see the abort while it is still running").toBe(true);
+      // The peer's reactivation survives.
+      expect(service.get("session-1")?.settleOverride).toBe("active");
+      expect(service.get("session-1")?.settledAt).toBeNull();
+    });
+
+    it("ignores a change for a row this host does not have", async () => {
+      const { service, remoteWrites } = await fixture();
+
+      service.reconcileRemoteSettleTuple([{ sessionId: "not-here", column: "settled_at" }]);
+
+      expect(remoteWrites).toEqual([]);
+    });
+
+    it("keeps reconciling the rest of the batch when one session is unknown", async () => {
+      const { db, service, create, remoteWrites } = await fixture();
+      create("session-2");
+      applyPeerWrite(db, "update terminal_sessions set settled_at = ? where id = ?", ["2026-08-11T00:07:00.000Z", "session-2"]);
+
+      service.reconcileRemoteSettleTuple([
+        { sessionId: "not-here", column: "settled_at" },
+        { sessionId: "session-2", column: "settled_at" },
+      ]);
+
+      // The missing row must not cost session-2 its revision bump — and the
+      // report is ONE event for the batch, not one per session.
+      expect(remoteWrites).toEqual([{ columns: ["settled_at"], changesetSessionCount: 2 }]);
     });
   });
 });

@@ -35,7 +35,6 @@ function renderExplorer(overrides: Partial<FilesExplorerProps> = {}) {
     searchQuery: "",
     inlineRenameRequest: null,
     onSearchQueryChange: vi.fn(),
-    singleRowHeader: true,
     onCreateFile: vi.fn(),
     onCreateDirectory: vi.fn(),
     onToggleDirectory: vi.fn(),
@@ -63,6 +62,58 @@ describe("FilesExplorer mutating controls", () => {
     fireEvent.click(newFolder);
     expect(props.onCreateFile).toHaveBeenCalledWith("");
     expect(props.onCreateDirectory).toHaveBeenCalledWith("");
+  });
+});
+
+describe("FilesExplorer header", () => {
+  it("renders the search field in the compact tools-pane layout", () => {
+    const props = renderExplorer({ compact: true });
+
+    const field = screen.getByLabelText("Search files") as HTMLInputElement;
+    expect(field.dataset.filesSearchField).toBe("1");
+    expect(screen.getByLabelText("New file")).toBeTruthy();
+    expect(screen.getByLabelText("New folder")).toBeTruthy();
+
+    fireEvent.change(field, { target: { value: "but" } });
+    expect(props.onSearchQueryChange).toHaveBeenCalledWith("but");
+  });
+
+  it("clears the query from the field's clear button", () => {
+    const props = renderExplorer({ searchQuery: "button" });
+
+    fireEvent.click(screen.getByLabelText("Clear search"));
+    expect(props.onSearchQueryChange).toHaveBeenCalledWith("");
+  });
+});
+
+describe("FilesExplorer search results", () => {
+  const tree: FileTreeNode[] = [
+    { name: "src", path: "src", type: "directory", children: [{ name: "Button.tsx", path: "src/Button.tsx", type: "file" }] },
+  ];
+
+  it("swaps the tree for the results in the same column while a query is active", () => {
+    renderExplorer({
+      tree,
+      searchQuery: "button",
+      searchResults: <div data-testid="results">results</div>,
+    });
+
+    expect(screen.getByTestId("results")).toBeTruthy();
+    // The tree is replaced, not overlaid, and the search field stays put.
+    expect(screen.queryByText("Button.tsx")).toBeNull();
+    expect(screen.getByLabelText("Search files")).toBeTruthy();
+  });
+
+  it("shows the tree again once the query is cleared", () => {
+    renderExplorer({
+      tree,
+      expanded: new Set(["src"]),
+      searchQuery: "",
+      searchResults: <div data-testid="results">results</div>,
+    });
+
+    expect(screen.queryByTestId("results")).toBeNull();
+    expect(screen.getByText("Button.tsx")).toBeTruthy();
   });
 });
 

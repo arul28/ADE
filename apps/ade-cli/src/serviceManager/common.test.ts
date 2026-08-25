@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import net from "node:net";
+import { EventEmitter } from "node:events";
 import { createHash } from "node:crypto";
 import { spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
@@ -9,6 +11,7 @@ import {
   buildWindowsParentPidQueryArgs,
   buildWindowsProcessCommandLineQueryArgs,
   listStaleChannelServePids,
+  parsePsElapsedMs,
   isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
   PARENT_PID_UNKNOWN,
@@ -20,6 +23,7 @@ import {
   type AdeServiceCommand,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
+  MATERIALIZE_DATALESS_FILES_KEY,
 } from "./common";
 
 describe("serviceManagerOwnsRuntimeRecovery", () => {
@@ -55,8 +59,15 @@ import {
   renderLaunchdPlist,
   uninstallLaunchdService,
 } from "./installLaunchd";
-import { resolveWatchdogServiceName } from "./installLaunchdWatchdog";
-import { installSystemdService, renderSystemdEnvironment, renderSystemdUnit, servicePath as systemdServicePath } from "./installSystemd";
+import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
+import {
+  installLaunchdWatchdogAgent,
+  renderWatchdogLaunchdPlist,
+  resolveWatchdogServiceName,
+  uninstallLaunchdWatchdogAgent,
+  watchdogCommand,
+  watchdogLaunchAgentPath,
+} from "./installLaunchdWatchdog";
 import { isWindowsTaskStateRunning } from "./installWindows";
 
 const originalArgv = [...process.argv];
@@ -735,6 +746,38 @@ describe("launchd service rendering", () => {
       `<string>${path.join("/Users/example/'ade'", "runtime", "launchd.err.log").replace(/'/g, "&apos;")}</string>`,
     );
   });
+
+  it("grants the brain the policy it needs to read cloud-evicted project files", () => {
+    const plist = renderLaunchdPlist({
+      command: "/Applications/ADE.app/Contents/MacOS/ade",
+      args: ["serve"],
+    }, "/Users/example");
+
+    // Without this key macOS refuses to download a dataless placeholder for
+    // this job and `read(2)` answers EDEADLK, which libuv reports as the
+    // unnamed "Unknown system error -11".
+    expect(plist).toContain(`<key>${MATERIALIZE_DATALESS_FILES_KEY}</key>`);
+    // The brain is on the blocking path of every user action, so it must not
+    // take launchd's default CPU and I/O throttling.
+    expect(plist).toContain("<key>ProcessType</key>");
+    expect(plist).toContain("<string>Interactive</string>");
+    expect(plist).toContain("<key>LowPriorityIO</key>");
+  });
+});
+
+describe("parsePsElapsedMs", () => {
+  it("reads every `ps -o etime=` shape", () => {
+    expect(parsePsElapsedMs("00:05")).toBe(5_000);
+    expect(parsePsElapsedMs("   12:34\n")).toBe((12 * 60 + 34) * 1_000);
+    expect(parsePsElapsedMs("01:02:03")).toBe(((1 * 60 + 2) * 60 + 3) * 1_000);
+    expect(parsePsElapsedMs("2-01:02:03")).toBe((((2 * 24 + 1) * 60 + 2) * 60 + 3) * 1_000);
+  });
+
+  it("fails open on anything it does not recognise", () => {
+    expect(parsePsElapsedMs("")).toBeNull();
+    expect(parsePsElapsedMs("garbage")).toBeNull();
+    expect(parsePsElapsedMs("1:2:3:4")).toBeNull();
+  });
 });
 
 describe("launchd service install", () => {
@@ -747,6 +790,10 @@ describe("launchd service install", () => {
     deps: NonNullable<Parameters<typeof installLaunchdService>[0]>,
   ) => installLaunchdService({
     responsivenessProbe: () => true,
+    // Unknown age by default, so a running-but-quiet agent takes the restart
+    // path these tests were written for; the young-brain tests inject an age.
+    pidElapsedMs: () => null,
+    recentCrashLoop: () => false,
     ...deps,
   });
 
@@ -806,6 +853,51 @@ describe("launchd service install", () => {
       // path, so it has to arm one too.
       { command: "launchctl", args: ["unload", watchdogPath(homeDir)] },
       { command: "launchctl", args: ["load", watchdogPath(homeDir)] },
+    ]);
+  });
+
+  it("rewrites a healthy launch agent that predates the materialization policy", async () => {
+    const homeDir = makeTempHome("ade-launchd-materialize-");
+    const servicePath = launchAgentPath(homeDir);
+    const current = renderLaunchdPlist(serviceCommand, homeDir);
+    const legacy = current
+      .replace("  <key>ProcessType</key>\n  <string>Interactive</string>\n", "")
+      .replace(`  <key>${MATERIALIZE_DATALESS_FILES_KEY}</key>\n  <true/>\n`, "")
+      .replace("  <key>LowPriorityIO</key>\n  <false/>\n", "");
+    expect(legacy).not.toBe(current);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, legacy, "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      // The installed brain is running and answering. Every existing macOS
+      // install is in exactly this state, so out-of-date plist content is the
+      // only thing that can carry the new policy to them.
+      responsivenessProbe: () => true,
+      currentPid: 9999,
+      parentPid: () => null,
+      handoverPidAlive: () => false,
+      terminateDeps: { kill: () => {}, pidAlive: () => false },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fs.readFileSync(servicePath, "utf8")).toBe(current);
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "print",
+      "unload",
+      "-axo",
+      "load",
+      "unload",
+      "load",
     ]);
   });
 
@@ -873,6 +965,199 @@ describe("launchd service install", () => {
       action: "install",
       failureStep: "replacement_responsive",
     });
+  });
+
+  it("reports a live replacement that has not answered yet as starting, not failed", async () => {
+    const homeDir = makeTempHome("ade-launchd-handover-starting-");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      // The handover poll sees launchd's replacement child running.
+      { status: 0, stdout: "state = running\npid = 4321\n", stderr: "" },
+    ]);
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => false,
+      handoverPidAlive: (pid) => pid === 4321,
+      handoverTimeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      starting: true,
+      action: "install",
+    });
+    expect(result.failureStep).toBeUndefined();
+    expect(result.message).toContain("still starting");
+  });
+
+  it("waits for a young unresponsive brain instead of restarting it", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-brain-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = runningAgentSpawn(calls, 1234);
+    // Not answering on the first probe, answering once waited for.
+    const responsivenessProbe = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" },
+      responsivenessProbe,
+      pidElapsedMs: () => 5_000,
+      handoverPidAlive: () => true,
+      terminateDeps: { kill, pidAlive: () => true },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.starting).toBeUndefined();
+    expect(kill).not.toHaveBeenCalled();
+    // No unload/load of the brain agent: only the watchdog is (re)armed.
+    expect(calls.filter((call) => call.command === "launchctl" && call.args[1] === servicePath)).toEqual([]);
+  });
+
+  it("restarts a young quiet brain anyway when the machine is crash-looping", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-crashloop-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" },
+      responsivenessProbe: () => true,
+      pidElapsedMs: () => 5_000,
+      recentCrashLoop: () => true,
+      currentPid: 9999,
+      parentPid: () => null,
+      terminateDeps: { kill, pidAlive: () => false },
+    });
+
+    expect(result).toMatchObject({ ok: true, restarted: true });
+    expect(calls.map((call) => call.args[0])).toContain("load");
+  });
+
+  it("does not restart a young brain that answers, even when a restart was forced", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-answering-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = runningAgentSpawn(calls, 1234);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" },
+      responsivenessProbe: () => true,
+      pidElapsedMs: () => 5_000,
+      handoverPidAlive: () => true,
+      terminateDeps: { kill, pidAlive: () => true },
+    });
+
+    expect(result.ok).toBe(true);
+    // Not a restart: the trust-reset caller must see that and try again later.
+    expect(result.restarted).toBeUndefined();
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("returns starting for a young brain that is still quiet after the wait", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-brain-quiet-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = runningAgentSpawn(calls, 1234);
+    const kill = vi.fn();
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => false,
+      pidElapsedMs: () => 5_000,
+      handoverPidAlive: () => true,
+      handoverTimeoutMs: 0,
+      terminateDeps: { kill, pidAlive: () => true },
+    });
+
+    expect(result).toMatchObject({ ok: true, starting: true });
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  // Regression: the young-brain wait and the real handover used to share one
+  // install-wide deadline. A young brain that died late in its wait left the
+  // restart that followed with ~0 ms, so a replacement launchd had not named
+  // yet was reported as a `replacement_pid` handover failure.
+  it("gives the restart a full handover window after a young brain dies mid-wait", async () => {
+    const homeDir = makeTempHome("ade-launchd-young-died-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+
+    let loadSeen = false;
+    let printsAfterLoad = 0;
+    const spawnSync: ServiceManagerSpawnSync = (command, args) => {
+      if (command === "launchctl" && args[0] === "load") {
+        loadSeen = true;
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      if (command === "launchctl" && args[0] === "print") {
+        if (!loadSeen) return { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" };
+        // launchd has not named the replacement yet for the first few polls.
+        printsAfterLoad += 1;
+        if (printsAfterLoad <= 3) return { status: 1, stdout: "", stderr: "not found" };
+        return { status: 0, stdout: "state = running\npid = 5678\n", stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    };
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => false,
+      // Young enough to wait for; it dies during the wait.
+      pidElapsedMs: () => 5_000,
+      handoverPidAlive: (pid) => pid !== 1234,
+      handoverTimeoutMs: 300,
+      handoverPollMs: 10,
+      terminateDeps: { kill: vi.fn(), pidAlive: () => false },
+      // This test's spawn stub answers only `launchctl`, so the ancestry probe
+      // would read an empty parent list and, on a host whose backend reports
+      // "unknown" for that, fail safe into the self-mutation block. Inject the
+      // chain like every other install test here: this case is about handover
+      // windows, not about who our parent is.
+      currentPid: 9999,
+      parentPid: () => null,
+    });
+
+    expect(result).toMatchObject({ ok: true, starting: true, restarted: true });
+    expect(result.message).toContain("5678");
   });
 
   it("reloads an unchanged running launch agent when a packaged trust reset requests it", async () => {
@@ -1253,126 +1538,19 @@ describe("launchd service install", () => {
   });
 });
 
-describe("systemd service rendering", () => {
-  it("renders the user service path under the home directory", () => {
-    expect(systemdServicePath("/home/example")).toBe(
-      path.join("/home/example", ".config", "systemd", "user", `${ADE_RUNTIME_SERVICE_NAME}.service`),
-    );
-  });
-
-  it("renders unit content with quoted ExecStart and escaped environment values", () => {
-    const unit = renderSystemdUnit({
-      command: "/opt/ADE CLI/node",
-      args: ["/opt/ade/cli.cjs", "serve"],
-      env: {
-        NODE_PATH: "/tmp/100%/node modules",
-        ADE_HOME: "/home/example/ade path\\with\"quotes",
-      },
-    });
-
-    expect(unit).toContain("Description=ADE runtime service");
-    expect(unit).toContain("Type=simple");
-    expect(unit).toContain("ExecStart='/opt/ADE CLI/node' '/opt/ade/cli.cjs' 'serve'");
-    expect(unit).toContain("Restart=always");
-    expect(unit).toContain("Environment=\"NODE_PATH=/tmp/100%%/node modules\"");
-    expect(unit).toContain("Environment=\"ADE_HOME=/home/example/ade path\\\\with\\\"quotes\"");
-    expect(unit).toContain("WantedBy=default.target");
-  });
-
-  it("quotes systemd environment assignments for whitespace, backslashes, quotes, and percent signs", () => {
-    expect(renderSystemdEnvironment("NODE_PATH", "C:\\ADE deps\\100% \"runtime\"")).toBe(
-      "Environment=\"NODE_PATH=C:\\\\ADE deps\\\\100%% \\\"runtime\\\"\"",
-    );
-  });
-});
-
-describe("systemd service install", () => {
-  const serviceCommand: AdeServiceCommand = {
-    command: "/opt/ade/bin/ade",
-    args: ["serve"],
-    env: { NODE_PATH: "/opt/ade/node_modules" },
+/** launchd that keeps reporting one running agent child, whatever is asked of it. */
+function runningAgentSpawn(
+  calls: Array<{ command: string; args: string[] }>,
+  pid: number,
+): ServiceManagerSpawnSync {
+  return (command, args) => {
+    calls.push({ command, args });
+    if (command === "launchctl" && args[0] === "print") {
+      return { status: 0, stdout: `state = running\npid = ${pid}\n`, stderr: "" };
+    }
+    return { status: 0, stdout: "", stderr: "" };
   };
-
-  it("writes the user unit and enables it immediately", () => {
-    const homeDir = makeTempHome("ade-systemd-install-");
-    const targetPath = systemdServicePath(homeDir);
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-    ]);
-
-    const result = installSystemdService({ command: serviceCommand, spawnSync, homeDir });
-
-    expect(result).toMatchObject({
-      ok: true,
-      serviceName: ADE_RUNTIME_SERVICE_NAME,
-      action: "install",
-      path: targetPath,
-    });
-    expect(fs.readFileSync(targetPath, "utf8")).toBe(renderSystemdUnit(serviceCommand));
-    expect(calls).toEqual([
-      { command: "systemctl", args: ["--user", "daemon-reload"] },
-      { command: "systemctl", args: ["--user", "enable", "--now", `${ADE_RUNTIME_SERVICE_NAME}.service`] },
-      { command: "systemctl", args: ["--user", "restart", `${ADE_RUNTIME_SERVICE_NAME}.service`] },
-    ]);
-  });
-
-  it("does not enable when daemon-reload fails", () => {
-    const homeDir = makeTempHome("ade-systemd-reload-fail-");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 1, stdout: "", stderr: "reload failed" },
-    ]);
-
-    const result = installSystemdService({ command: serviceCommand, spawnSync, homeDir });
-
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("reload failed");
-    expect(calls).toEqual([
-      { command: "systemctl", args: ["--user", "daemon-reload"] },
-    ]);
-  });
-
-  it("surfaces enable failures after a successful reload", () => {
-    const homeDir = makeTempHome("ade-systemd-enable-fail-");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 1, stdout: "", stderr: "enable failed" },
-    ]);
-
-    const result = installSystemdService({ command: serviceCommand, spawnSync, homeDir });
-
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("enable failed");
-    expect(calls.map((call) => call.args)).toEqual([
-      ["--user", "daemon-reload"],
-      ["--user", "enable", "--now", `${ADE_RUNTIME_SERVICE_NAME}.service`],
-    ]);
-  });
-
-  it("surfaces restart failures after enabling the user unit", () => {
-    const homeDir = makeTempHome("ade-systemd-restart-fail-");
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
-      { status: 1, stdout: "", stderr: "restart failed" },
-    ]);
-
-    const result = installSystemdService({ command: serviceCommand, spawnSync, homeDir });
-
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("restart failed");
-    expect(calls.map((call) => call.args)).toEqual([
-      ["--user", "daemon-reload"],
-      ["--user", "enable", "--now", `${ADE_RUNTIME_SERVICE_NAME}.service`],
-      ["--user", "restart", `${ADE_RUNTIME_SERVICE_NAME}.service`],
-    ]);
-  });
-});
-
+}
 
 function spawnSequence(
   calls: Array<{ command: string; args: string[] }>,
@@ -1394,3 +1572,268 @@ function spawnSequence(
     return next ?? { status: 0, stdout: "", stderr: "" };
   };
 }
+
+const watchdogServiceCommand: AdeServiceCommand = {
+  command: "/usr/local/bin/node",
+  args: ["/opt/ade/cli.cjs", "serve"],
+  env: { ADE_HOME: "/Users/example/.ade" },
+};
+
+describe("resolveWatchdogServiceName", () => {
+  it("keeps each channel on its own watchdog", () => {
+    expect(resolveWatchdogServiceName("com.ade.runtime")).toBe("com.ade.watchdog");
+    expect(resolveWatchdogServiceName("com.ade.runtime.beta")).toBe("com.ade.watchdog.beta");
+    expect(resolveWatchdogServiceName("com.example.custom")).toBe("com.example.custom.watchdog");
+  });
+});
+
+describe("watchdogCommand", () => {
+  it("runs the same binary the brain was installed from", () => {
+    expect(watchdogCommand(watchdogServiceCommand)).toEqual({
+      command: "/usr/local/bin/node",
+      args: ["/opt/ade/cli.cjs", "runtime", "watchdog-check"],
+      env: {
+        ADE_HOME: "/Users/example/.ade",
+        ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+      },
+    });
+  });
+
+  it("appends the check when the command has no serve argument", () => {
+    expect(watchdogCommand({ command: "/opt/ade/ade", args: [] }).args)
+      .toEqual(["runtime", "watchdog-check"]);
+  });
+});
+
+describe("renderWatchdogLaunchdPlist", () => {
+  it("runs on an interval and never keeps itself alive", () => {
+    const plist = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir: "/Users/example",
+    });
+    expect(plist).toContain("<string>com.ade.watchdog</string>");
+    expect(plist).toContain("<key>StartInterval</key>");
+    expect(plist).toContain("<integer>60</integer>");
+    expect(plist).toContain("<string>watchdog-check</string>");
+    // KeepAlive would make launchd respawn a one-shot check in a tight loop.
+    expect(plist).not.toContain("<key>KeepAlive</key>");
+  });
+
+  it("can read a heartbeat file the cloud has evicted", () => {
+    const plist = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir: "/Users/example",
+    });
+    // A heartbeat this agent cannot read yields no verdict at all, so a storage
+    // policy would leave it permanently blind to a wedged brain.
+    expect(plist).toContain(`<key>${MATERIALIZE_DATALESS_FILES_KEY}</key>`);
+    // Nothing waits on a once-a-minute check, so it claims no app-grade
+    // resource exemption the way the brain does.
+    expect(plist).not.toContain("<key>ProcessType</key>");
+  });
+
+  it("refuses an interval short enough to thrash", () => {
+    const plist = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir: "/Users/example",
+      startIntervalSeconds: 1,
+    });
+    expect(plist).toContain("<integer>15</integer>");
+  });
+});
+
+describe("installLaunchdWatchdogAgent", () => {
+  it("writes and loads the agent", () => {
+    const homeDir = makeTempHome("ade-watchdog-home-");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const result = installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: spawnSequence(calls, []),
+    });
+
+    const servicePath = watchdogLaunchAgentPath(homeDir);
+    expect(result.installed).toBe(true);
+    expect(fs.existsSync(servicePath)).toBe(true);
+    expect(calls.map((call) => call.args[0])).toEqual(["unload", "load"]);
+  });
+
+  it("rewrites an agent that predates the materialization policy", () => {
+    const homeDir = makeTempHome("ade-watchdog-home-");
+    const servicePath = watchdogLaunchAgentPath(homeDir);
+    const current = renderWatchdogLaunchdPlist({
+      command: watchdogServiceCommand,
+      homeDir,
+    });
+    const legacy = current.replace(`  <key>${MATERIALIZE_DATALESS_FILES_KEY}</key>\n  <true/>\n`, "");
+    expect(legacy).not.toBe(current);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, legacy, "utf8");
+
+    installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: spawnSequence([], []),
+    });
+
+    expect(fs.readFileSync(servicePath, "utf8")).toBe(current);
+  });
+
+  it("reports a load failure instead of claiming the agent is armed", () => {
+    const homeDir = makeTempHome("ade-watchdog-home-");
+    const result = installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: (command, args) =>
+        args[0] === "load"
+          ? { status: 1, stdout: "", stderr: "Load failed" }
+          : { status: 0, stdout: "", stderr: "" },
+    });
+    expect(result.installed).toBe(false);
+  });
+
+  it("removes the agent with the brain it guards", () => {
+    const homeDir = makeTempHome("ade-watchdog-home-");
+    installLaunchdWatchdogAgent({
+      command: watchdogServiceCommand,
+      homeDir,
+      spawnSync: spawnSequence([], []),
+    });
+    const servicePath = watchdogLaunchAgentPath(homeDir);
+    expect(fs.existsSync(servicePath)).toBe(true);
+
+    const calls: Array<{ command: string; args: string[] }> = [];
+    uninstallLaunchdWatchdogAgent({ homeDir, spawnSync: spawnSequence(calls, []) });
+
+    expect(fs.existsSync(servicePath)).toBe(false);
+    expect(calls.map((call) => call.args[0])).toEqual(["bootout", "unload"]);
+  });
+});
+
+/**
+ * A stand-in for the brain's JSON-RPC endpoint. `replies` maps a method to the
+ * result it answers with; anything absent is simply not answered, which is how
+ * a wedged brain behaves. `closeOnShutdown` models the brain whose orderly exit
+ * drops the socket before its own response gets out.
+ */
+function fakeEndpoint(
+  replies: Record<string, unknown>,
+  options: { closeOnShutdown?: boolean } = {},
+): {
+  socket: net.Socket;
+  written: string[];
+} {
+  const written: string[] = [];
+  const socket = new EventEmitter() as unknown as net.Socket & { destroy: () => void };
+  let buffer = "";
+  (socket as unknown as { write: unknown }).write = (payload: string) => {
+    written.push(payload);
+    buffer += payload;
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      const message = JSON.parse(line) as { id: number; method: string };
+      if (options.closeOnShutdown && message.method === "shutdown") {
+        queueMicrotask(() => socket.emit("close"));
+        continue;
+      }
+      if (!(message.method in replies)) continue;
+      queueMicrotask(() => {
+        socket.emit(
+          "data",
+          Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: replies[message.method] })}\n`),
+        );
+      });
+    }
+    return true;
+  };
+  (socket as unknown as { destroy: () => void }).destroy = () => {};
+  queueMicrotask(() => socket.emit("connect"));
+  return { socket, written };
+}
+
+describe("requestAdeRuntimeShutdown", () => {
+  const socketPath = String.raw`\\.\pipe\ade-runtime-stable-0123456789abcdef`;
+
+  it("identifies the endpoint before asking it to leave", async () => {
+    const endpoint = fakeEndpoint({ "runtime/info": { pid: 4242 }, shutdown: {} });
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({ requested: true });
+    const methods = endpoint.written.map((line) => (JSON.parse(line) as { method: string }).method);
+    expect(methods).toEqual(["runtime/info", "shutdown"]);
+  });
+
+  it("refuses to shut down a pid the endpoint does not belong to", async () => {
+    // A pid scraped from a port diagnosis or a supervisor record can have been
+    // recycled; shutting down whoever happens to answer would be a stranger.
+    const endpoint = fakeEndpoint({ "runtime/info": { pid: 999 }, shutdown: {} });
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result.requested).toBe(false);
+    const methods = endpoint.written.map((line) => (JSON.parse(line) as { method: string }).method);
+    expect(methods).toEqual(["runtime/info"]);
+  });
+
+  /**
+   * The orderly exit this path asks for tears down the brain's listening
+   * socket, which races the JSON-RPC response back to us. Reading the close as
+   * a refusal would send the caller to `taskkill /F` and cut the flush short.
+   */
+  it("treats a close after the request as the shutdown taking effect", async () => {
+    const endpoint = fakeEndpoint({ "runtime/info": { pid: 4242 } }, { closeOnShutdown: true });
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({ requested: true });
+  });
+
+  it("reports a close before the request as the endpoint hanging up", async () => {
+    const endpoint = fakeEndpoint({});
+    queueMicrotask(() => endpoint.socket.emit("close"));
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({
+      requested: false,
+      reason: "the runtime endpoint closed before it could be asked to stop",
+    });
+  });
+
+  it("gives up on a wedged endpoint instead of hanging the caller", async () => {
+    const endpoint = fakeEndpoint({});
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath,
+      timeoutMs: 250,
+      connect: () => endpoint.socket,
+    });
+    expect(result).toEqual({
+      requested: false,
+      reason: "the runtime endpoint did not answer within 250ms",
+    });
+  });
+
+  it("never dials a tcp runtime endpoint", async () => {
+    const result = await requestAdeRuntimeShutdown({
+      pid: 4242,
+      socketPath: "tcp://127.0.0.1:9999?token=secret",
+      connect: () => {
+        throw new Error("must not connect");
+      },
+    });
+    expect(result.requested).toBe(false);
+  });
+});

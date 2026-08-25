@@ -2,10 +2,15 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { assertVerifiedMachOPayloads } from "./native-archive-verification.mjs";
 
 const execFileAsync = promisify(execFile);
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const runtimeEntitlementsPath = path.join(packageRoot, "build", "entitlements.mac.plist");
+export const requiredRuntimeEntitlement = "com.apple.security.cs.allow-jit";
+export const forbiddenRuntimeEntitlement = "com.apple.security.cs.allow-unsigned-executable-memory";
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -92,7 +97,51 @@ async function isMachO(filePath) {
   }
 }
 
-async function signBinary(binaryPath, identity) {
+export function buildRuntimeCodesignArgs(binaryPath, identity, entitlementsPath = runtimeEntitlementsPath) {
+  return [
+    "--force",
+    "--options",
+    "runtime",
+    "--timestamp",
+    "--entitlements",
+    entitlementsPath,
+    "--sign",
+    identity,
+    binaryPath,
+  ];
+}
+
+function enabledEntitlementPatterns(entitlement) {
+  const escapedKey = entitlement.replaceAll(".", String.raw`\.`);
+  return {
+    xml: new RegExp(`<key>\\s*${escapedKey}\\s*</key>\\s*<true\\s*/>`, "u"),
+    codesign: new RegExp(
+      String.raw`\[Key\]\s*${escapedKey}\s*\[Value\]\s*\[Bool\]\s*true`,
+      "u",
+    ),
+  };
+}
+
+export function assertRuntimeEntitlements(entitlements, binaryPath) {
+  const requiredPatterns = enabledEntitlementPatterns(requiredRuntimeEntitlement);
+  const forbiddenPatterns = enabledEntitlementPatterns(forbiddenRuntimeEntitlement);
+  if (forbiddenPatterns.xml.test(entitlements) || forbiddenPatterns.codesign.test(entitlements)) {
+    throw new Error(`Signed ADE runtime grants ${forbiddenRuntimeEntitlement}: ${binaryPath}`);
+  }
+  if (!requiredPatterns.xml.test(entitlements) && !requiredPatterns.codesign.test(entitlements)) {
+    throw new Error(`Signed ADE runtime is missing ${requiredRuntimeEntitlement}: ${binaryPath}`);
+  }
+}
+
+async function signRuntimeBinary(binaryPath, identity) {
+  await assertExists(runtimeEntitlementsPath, "macOS runtime entitlements");
+  await run("codesign", buildRuntimeCodesignArgs(binaryPath, identity));
+  await run("codesign", ["--verify", "--strict", "--verbose=4", binaryPath]);
+  const { stdout, stderr } = await run("codesign", ["--display", "--entitlements", "-", binaryPath]);
+  assertRuntimeEntitlements(`${stdout}\n${stderr}`, binaryPath);
+}
+
+async function signNativeBinary(binaryPath, identity) {
   await run("codesign", [
     "--force",
     "--options",
@@ -120,7 +169,7 @@ async function signNativeArchiveIfPresent(binaryPath, identity) {
     let signed = 0;
     for (const filePath of files) {
       if (!(await isMachO(filePath))) continue;
-      await signBinary(filePath, identity);
+      await signNativeBinary(filePath, identity);
       signed += 1;
     }
 
@@ -227,51 +276,57 @@ function buildNotarytoolArgs(zipPath) {
   );
 }
 
-const binary = readFlag("--binary");
-if (!binary) {
-  throw new Error("Usage: node scripts/notarize-static-runtime.mjs --binary=/path/to/ade-darwin-arm64 [--sign-native-only|--verify-native-only]");
-}
-const signNativeOnly = process.argv.includes("--sign-native-only");
-const verifyNativeOnly = process.argv.includes("--verify-native-only");
-if (signNativeOnly && verifyNativeOnly) {
-  throw new Error("Use only one of --sign-native-only or --verify-native-only.");
-}
+async function main() {
+  const binary = readFlag("--binary");
+  if (!binary) {
+    throw new Error("Usage: node scripts/notarize-static-runtime.mjs --binary=/path/to/ade-darwin-arm64 [--sign-native-only|--verify-native-only]");
+  }
+  const signNativeOnly = process.argv.includes("--sign-native-only");
+  const verifyNativeOnly = process.argv.includes("--verify-native-only");
+  if (signNativeOnly && verifyNativeOnly) {
+    throw new Error("Use only one of --sign-native-only or --verify-native-only.");
+  }
 
-const binaryPath = path.resolve(binary);
-await assertExists(binaryPath, "ADE runtime binary");
+  const binaryPath = path.resolve(binary);
+  await assertExists(binaryPath, "ADE runtime binary");
 
-if (process.platform !== "darwin") {
-  throw new Error("Static runtime notarization must run on macOS.");
-}
+  if (process.platform !== "darwin") {
+    throw new Error("Static runtime notarization must run on macOS.");
+  }
 
-if (signNativeOnly) {
+  if (signNativeOnly) {
+    const identity = await findDeveloperIdIdentity();
+    console.log(`[runtime:notarize] Signing native archive payloads for ${binaryPath} with ${identity}`);
+    await signNativeArchiveIfPresent(binaryPath, identity);
+    return;
+  }
+
+  if (verifyNativeOnly) {
+    console.log(`[runtime:notarize] Verifying pre-signed native archive payloads for ${binaryPath}`);
+    await verifyNativeArchiveIfPresent(binaryPath);
+    return;
+  }
+
   const identity = await findDeveloperIdIdentity();
-  console.log(`[runtime:notarize] Signing native archive payloads for ${binaryPath} with ${identity}`);
+  console.log(`[runtime:notarize] Signing ${binaryPath} with ${identity}`);
+  await signRuntimeBinary(binaryPath, identity);
   await signNativeArchiveIfPresent(binaryPath, identity);
-  process.exit(0);
+
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-runtime-notary-"));
+  const zipPath = path.join(workDir, `${path.basename(binaryPath)}.zip`);
+  try {
+    console.log(`[runtime:notarize] Creating notarization archive ${zipPath}`);
+    await run("ditto", ["-c", "-k", "--keepParent", binaryPath, zipPath]);
+
+    console.log(`[runtime:notarize] Submitting ${path.basename(binaryPath)} to notarytool`);
+    await run("xcrun", buildNotarytoolArgs(zipPath));
+
+    await stapleBinaryIfSupported(binaryPath);
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
 }
 
-if (verifyNativeOnly) {
-  console.log(`[runtime:notarize] Verifying pre-signed native archive payloads for ${binaryPath}`);
-  await verifyNativeArchiveIfPresent(binaryPath);
-  process.exit(0);
-}
-
-const identity = await findDeveloperIdIdentity();
-console.log(`[runtime:notarize] Signing ${binaryPath} with ${identity}`);
-await signBinary(binaryPath, identity);
-await signNativeArchiveIfPresent(binaryPath, identity);
-
-const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-runtime-notary-"));
-const zipPath = path.join(workDir, `${path.basename(binaryPath)}.zip`);
-try {
-  console.log(`[runtime:notarize] Creating notarization archive ${zipPath}`);
-  await run("ditto", ["-c", "-k", "--keepParent", binaryPath, zipPath]);
-
-  console.log(`[runtime:notarize] Submitting ${path.basename(binaryPath)} to notarytool`);
-  await run("xcrun", buildNotarytoolArgs(zipPath));
-
-  await stapleBinaryIfSupported(binaryPath);
-} finally {
-  await fs.rm(workDir, { recursive: true, force: true });
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main();
 }

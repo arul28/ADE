@@ -2,6 +2,8 @@
 // Git types
 // ---------------------------------------------------------------------------
 
+import type { GitHubServiceHealth } from "../githubServiceHealth";
+
 export type GitSyncMode = "merge" | "rebase";
 export type GitPullMode = "ff-only" | "rebase" | "merge";
 
@@ -308,8 +310,56 @@ export type GitHubRateLimitState = {
 };
 
 export type GitHubAuthFailure = {
-  kind: "rate_limited" | "invalid_token" | "permission_denied" | "network" | "unknown";
+  // `service_unavailable` means GitHub itself returned 5xx. It is NOT a
+  // credential problem, and clients must not offer reconnect/re-auth for it —
+  // reconnecting during a GitHub outage cannot help and risks the user
+  // replacing a perfectly good token.
+  // `renewing` means ADE itself is renewing the credential: one process on the
+  // machine holds the refresh lease and the rest wait a moment. It is not an
+  // error, nothing is refused, and there is no user action to offer.
+  kind:
+    | "rate_limited"
+    | "invalid_token"
+    | "permission_denied"
+    | "service_unavailable"
+    | "network"
+    | "renewing"
+    | "unknown";
   message: string;
+  retryAt: string | null;
+};
+
+export type GitHubAuthFailureKind = GitHubAuthFailure["kind"];
+
+/**
+ * What every *automatic* GitHub reader needs to know before it spends a
+ * request, delivered as data rather than as an error message — a rejection
+ * cannot carry it, because Electron IPC and the runtime's JSON-RPC both flatten
+ * an error to its message.
+ *
+ * Zero-network to produce, so it is safe to consult on a timer and while GitHub
+ * is refusing. Every field is optional-by-nullability: a runtime that does not
+ * implement the read leaves clients on their own local backoff rather than
+ * breaking them. See `docs/features/pull-requests/README.md`, "Keeping
+ * automatic GitHub reads inside the quota".
+ */
+export type GitHubRequestBudget = {
+  /**
+   * The quota reset instant, set once an available credential reaches the
+   * 500-request background reserve; null while requests may proceed. Callers
+   * resume by themselves because the value is the instant the quota refills.
+   */
+  pausedUntil: string | null;
+  /**
+   * The worst failure currently recorded on a PR-read resource — worst meaning
+   * the one that justifies the longest stand-down — or null when the most
+   * recent request succeeded, or when the failure is old enough that it no
+   * longer describes the request the caller just made. `service_unavailable` carries no `pausedUntil`
+   * (a GitHub 5xx must never park a credential) but still tells a poller to
+   * lengthen its cadence.
+   */
+  failureKind: GitHubAuthFailureKind | null;
+  /** Retry instant GitHub supplied for {@link failureKind}, when it gave one. */
   retryAt: string | null;
 };
 
@@ -349,6 +399,18 @@ export type GitHubStatus = {
   tokenStored: boolean;
   patTokenStored: boolean;
   tokenDecryptionFailed: boolean;
+  /**
+   * True when ADE's encrypted credential store could not be decrypted on this
+   * read. Optional for compatibility with older remote runtimes, which simply
+   * omit it.
+   *
+   * An unreadable store returns an EMPTY view instead of throwing, so every
+   * "no token" conclusion downstream of it is indistinguishable from a fresh
+   * install. Clients MUST NOT render this as "never connected": the saved
+   * credentials are still on disk, and inviting the user to reconnect over them
+   * is how a recoverable read failure turns into real credential loss.
+   */
+  credentialStoreUnreadable?: boolean;
   storageScope: "app";
   authSource: "app" | "pat" | "environment" | "gh" | "none";
   tokenType?: GitHubTokenType;
@@ -367,6 +429,11 @@ export type GitHubStatus = {
   // flattened into "missing scopes" by clients.
   authFailure?: GitHubAuthFailure | null;
   rateLimit?: GitHubRateLimitState | null;
+  // Set only when a GitHub request failed AND githubstatus.com corroborates an
+  // incident on a surface ADE depends on. Present means "this failure is
+  // GitHub's, not the user's"; absent means ADE makes no claim either way (the
+  // status page lags real incidents, so absence proves nothing).
+  serviceHealth?: GitHubServiceHealth | null;
   // Optional for compatibility with older runtimes. These fields describe the
   // operation credential chain without exposing credential material.
   writeAuthSource?: Exclude<GitHubStatus["authSource"], "app">;
@@ -383,6 +450,22 @@ export type GitHubStatus = {
   // additionally require writeAuthSource !== "none".
   connected: boolean;
 };
+
+/**
+ * The one wording for `credentialStoreUnreadable`, shared by every surface that
+ * has to say it: the PR tab's empty state (built in the main process), the
+ * integration banner, and the Settings card. Lives beside the field rather than
+ * in a renderer helper because the main process needs it too, and two hand-kept
+ * copies of the same sentence is how the "not connected" masking survived in
+ * more than one place to begin with.
+ */
+export const GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY = {
+  subState: "credential-store-unreadable",
+  statusLabel: "Can't read sign-in",
+  title: "ADE can't read your saved sign-in on this computer",
+  detail: "Your GitHub connection may still be there — ADE just can't open it. Repair it in Settings → Connections.",
+  action: "Open connections",
+} as const;
 
 export type GitHubSetTokenResult = GitHubStatus & {
   credentialVerification: GitHubCredentialVerification;
@@ -406,6 +489,56 @@ export type GitHubAppInstallationStatus = {
   webhookLastSeenAt: string | null;
   checkedAt: string;
   error: string | null;
+  /**
+   * Set when this check could not run because ADE had no usable GitHub App user
+   * token, and null otherwise.
+   *
+   * The renderer used to learn this by matching `error` against a list of
+   * phrases ADE and its relay emit. That list is a compatibility shim for older
+   * hosts now: a reading taken without an account credential proves nothing
+   * about the installation, and the repo axis must say so from a typed field
+   * rather than from wording that can be reworded.
+   */
+  appUserAuthFailure: GitHubAppUserAuthUnavailable | null;
+};
+
+export type GitHubAppUserAuthCredentialState = "missing" | "authorized" | "blocked" | "needs_reauth";
+
+export type GitHubAppUserAuthRefreshError = {
+  kind: "rate_limited" | "outage" | "network" | "dead_token" | "unknown";
+  message: string;
+  status: number | null;
+  at: string;
+};
+
+/**
+ * The shared default sentence for ADE renewing the App authorization itself.
+ * Surfaces may word their own variant (the PR snapshot error does); what they
+ * must share is the stance:
+ * One process on the machine runs the renewal and the rest wait a moment for
+ * it. Nothing is wrong, nothing was refused, and there is nothing to do — so
+ * the sentence names ADE, not GitHub, and asks for nothing.
+ */
+export const GITHUB_APP_USER_AUTH_RENEWING_COPY =
+  "ADE is renewing this authorization — this takes a moment.";
+
+/**
+ * Why ADE has no GitHub App user token for a check that needed one.
+ *
+ * Carried through so the repo axis can name the account problem instead of
+ * reporting the relay's 401 — which reads as "this repository is broken" when
+ * the truth is "ADE's own authorization is not usable right now".
+ */
+export type GitHubAppUserAuthUnavailable = {
+  message: string;
+  credentialState: GitHubAppUserAuthCredentialState | null;
+  retryAt: string | null;
+  /**
+   * What GitHub refused, when it refused anything. Null means nothing was
+   * refused: the credential is blocked because ADE itself is mid-renewal, and
+   * the copy for that must not blame GitHub.
+   */
+  failureKind: GitHubAppUserAuthRefreshError["kind"] | null;
 };
 
 export type GitHubAppUserAuthStatus = {
@@ -414,8 +547,25 @@ export type GitHubAppUserAuthStatus = {
   userLogin: string | null;
   expiresAt: string | null;
   refreshTokenExpiresAt: string | null;
+  // The honest account state. An access token past its 8-hour life with a live
+  // refresh token is still "authorized": it renews on use. "blocked" means the
+  // refresh endpoint is failing transiently (rate limit, outage, network) and
+  // retries are paused until refreshBlockedUntil. "needs_reauth" means the
+  // refresh token is absent, expired, or rejected by GitHub — only then may the
+  // UI ask the user to re-authorize.
+  credentialState: GitHubAppUserAuthCredentialState;
+  refreshBlockedUntil: string | null;
+  lastRefreshError: GitHubAppUserAuthRefreshError | null;
   checkedAt: string;
   error: string | null;
+  /**
+   * Declared by a host that cannot hold this credential at all, and by nothing
+   * else. Only the standalone web-client adapter sets it: that build has no
+   * machine behind it, so its answer is a stub rather than a report of "not
+   * authorized", and a renderer that cannot tell the two apart flashes a false
+   * banner on every hosted-web project.
+   */
+  appUserAuthSupported?: false;
 };
 
 export type GitHubAppDeviceAuthStartResult = {

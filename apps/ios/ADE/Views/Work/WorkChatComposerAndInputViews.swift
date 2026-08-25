@@ -582,111 +582,103 @@ struct WorkComposerChipStrip: View {
 
 }
 
+/// The strip only ever renders messages the user explicitly queued — an
+/// atomically dispatched send never produces a staged row — so it no longer
+/// hides behind an accordion. A single queued message is one compact card with
+/// its four actions visible; only a pile-up gets a slim count above the rows.
 struct WorkQueuedSteerStrip: View {
   let steers: [WorkPendingSteerModel]
   @Binding var drafts: [String: String]
   let busy: Bool
   let isLive: Bool
+  /// Drives the queued card's live indicator: a message waiting behind a
+  /// running turn breathes, one waiting on an idle session sits still.
+  let turnActive: Bool
   let onCancel: @MainActor (String) async -> Void
   let onSaveEdit: @MainActor (String, String) async -> Void
   let onDispatchInline: (@MainActor (String) async -> Void)?
   let onDispatchInterrupt: (@MainActor (String) async -> Void)?
 
-  // Expanded by default so Send now / Interrupt / Edit / Cancel have the same
-  // immediate affordance as desktop and the TUI after a steer is staged.
-  @State private var isExpanded: Bool = true
   // Cancel haptic token: bumped each time a row's cancel lands so the
   // whole strip can drive a single sensoryFeedback modifier.
   @State private var cancelHapticToken: Int = 0
-  // Always expand while any row is actively being edited so edits aren't
-  // hidden behind a collapse tap.
-  private var anyEditing: Bool {
-    steers.contains(where: { drafts[$0.id] != nil })
-  }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      header
+    VStack(alignment: .leading, spacing: 6) {
+      if steers.count > 1 { header }
 
-      if isExpanded || anyEditing {
-        VStack(spacing: 6) {
-          ForEach(steers) { steer in
-            WorkQueuedSteerRow(
-              steer: steer,
-              draft: Binding(
-                get: { drafts[steer.id] ?? steer.text },
-                set: { drafts[steer.id] = $0 }
-              ),
-              isEditing: drafts[steer.id] != nil,
-              busy: busy,
-              isLive: isLive,
-              onBeginEdit: { drafts[steer.id] = steer.text },
-              onCancelEdit: { drafts.removeValue(forKey: steer.id) },
-              onCancel: {
-                cancelHapticToken &+= 1
-                await onCancel(steer.id)
-              },
-              onSave: { text in await onSaveEdit(steer.id, text) },
-              onDispatchInline: onDispatchInline.map { dispatch in
-                { await dispatch(steer.id) }
-              },
-              onDispatchInterrupt: onDispatchInterrupt.map { dispatch in
-                { await dispatch(steer.id) }
-              }
-            )
+      ForEach(steers) { steer in
+        WorkQueuedSteerRow(
+          steer: steer,
+          draft: Binding(
+            get: { drafts[steer.id] ?? steer.text },
+            set: { drafts[steer.id] = $0 }
+          ),
+          isEditing: drafts[steer.id] != nil,
+          busy: busy,
+          isLive: isLive,
+          turnActive: turnActive,
+          onBeginEdit: { drafts[steer.id] = steer.text },
+          onCancelEdit: { drafts.removeValue(forKey: steer.id) },
+          onCancel: {
+            cancelHapticToken &+= 1
+            await onCancel(steer.id)
+          },
+          onSave: { text in await onSaveEdit(steer.id, text) },
+          onDispatchInline: onDispatchInline.map { dispatch in
+            { await dispatch(steer.id) }
+          },
+          onDispatchInterrupt: onDispatchInterrupt.map { dispatch in
+            { await dispatch(steer.id) }
           }
-        }
-        .transition(.opacity.combined(with: .move(edge: .top)))
+        )
       }
     }
-    .padding(10)
+    .padding(6)
     .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
     )
     .sensoryFeedback(.impact(weight: .light), trigger: cancelHapticToken)
-    .animation(.smooth(duration: 0.22), value: isExpanded)
-    .animation(.smooth(duration: 0.22), value: anyEditing)
     .accessibilityElement(children: .contain)
   }
 
+  /// Static label, not a disclosure control — the rows below it are always
+  /// visible. Kept only so a queue of several reads as a queue.
   private var header: some View {
-    Button {
-      withAnimation(.smooth(duration: 0.22)) {
-        isExpanded.toggle()
-      }
-    } label: {
-      HStack(spacing: 6) {
-        Image(systemName: "paperplane.circle")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text(steers.count == 1 ? "1 staged" : "\(steers.count) staged")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        if !isExpanded && !anyEditing, let preview = steers.first?.text {
-          Text("·")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-          Text(preview)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-        }
-        Spacer(minLength: 4)
-        Image(systemName: isExpanded || anyEditing ? "chevron.up" : "chevron.down")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(steers.count == 1 ? "1 staged message" : "\(steers.count) staged messages")
-    .accessibilityHint(isExpanded || anyEditing ? "Collapse staged messages" : "Expand to send now, interrupt, edit, or cancel staged messages")
-    .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
-    .disabled(anyEditing)
+    Text("\(steers.count) queued")
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(ADEColor.textSecondary)
+      .padding(.horizontal, 4)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityLabel("\(steers.count) queued messages")
+      .accessibilityIdentifier("Work.Chat.StagedStrip.Header")
   }
+}
+
+/// Clock glyph that breathes while a turn is running, so a queued message reads
+/// as waiting rather than stuck. Still under Reduce Motion, where the glyph is
+/// simply drawn at full strength.
+private struct WorkQueuedSteerWaitingGlyph: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  let waiting: Bool
+
+  @State private var pulsing = false
+
+  var body: some View {
+    Image(systemName: "clock")
+      .font(.system(size: 13, weight: .semibold))
+      .foregroundStyle(ADEColor.accent)
+      .opacity(animates && pulsing ? 0.4 : 1)
+      .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: pulsing)
+      .onAppear { pulsing = animates }
+      .onChange(of: animates) { _, isAnimating in pulsing = isAnimating }
+      .accessibilityHidden(true)
+  }
+
+  private var animates: Bool { waiting && !reduceMotion }
 }
 
 struct WorkQueuedSteerRow: View {
@@ -695,6 +687,7 @@ struct WorkQueuedSteerRow: View {
   let isEditing: Bool
   let busy: Bool
   let isLive: Bool
+  let turnActive: Bool
   let onBeginEdit: () -> Void
   let onCancelEdit: () -> Void
   let onCancel: @MainActor () async -> Void
@@ -750,77 +743,78 @@ struct WorkQueuedSteerRow: View {
           }
         }
       } else {
-        // Compact row (mirrors the desktop staged strip): one truncated line of
-        // text, then a muted disposition + timestamp line with icon-only actions.
-        // Icon-only buttons are the fix for mid-word label wrapping ("Inter-rupt")
-        // that the old titleAndIcon chips hit in this non-scrolling HStack.
-        Text(steer.text)
-          .font(.system(size: 13.5))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
+        // One compact card, no accordion: waiting glyph, a single truncated line
+        // of the message with its disposition beneath it, and the four actions
+        // as icon-only buttons. Icon-only is the fix for mid-word label wrapping
+        // ("Inter-rupt") that the old titleAndIcon chips hit in this
+        // non-scrolling HStack; the tap targets stay 44pt tall regardless.
+        HStack(spacing: 8) {
+          WorkQueuedSteerWaitingGlyph(waiting: turnActive)
+
+          VStack(alignment: .leading, spacing: 1) {
+            Text(steer.text)
+              .font(.system(size: 13.5))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .truncationMode(.tail)
+
+            Text(dispositionText)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+          }
           .frame(maxWidth: .infinity, alignment: .leading)
 
-        HStack(spacing: 6) {
-          Text("Sends after turn")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-          Text("·")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-          Text(relativeTimestamp(steer.timestamp))
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-
-          Spacer(minLength: 8)
-
-          if let onDispatchInline {
-            steerActionButton(
-              systemImage: "paperplane.fill",
-              tint: ADEColor.accent,
-              label: "Send now",
-              hint: "Fold this message into the active turn",
-              identifier: "Work.Chat.StagedStrip.SendNow"
-            ) {
-              await onDispatchInline()
+          HStack(spacing: 0) {
+            if let onDispatchInline {
+              steerActionButton(
+                systemImage: "paperplane.fill",
+                tint: ADEColor.accent,
+                label: "Send now",
+                hint: "Fold this message into the active turn",
+                identifier: "Work.Chat.StagedStrip.SendNow"
+              ) {
+                await onDispatchInline()
+              }
             }
-          }
 
-          if let onDispatchInterrupt {
-            steerActionButton(
-              systemImage: "bolt.fill",
-              tint: ADEColor.warning,
-              label: "Interrupt",
-              hint: "Stop the current turn and run this instead",
-              identifier: "Work.Chat.StagedStrip.Interrupt"
-            ) {
-              await onDispatchInterrupt()
+            if let onDispatchInterrupt {
+              steerActionButton(
+                systemImage: "bolt.fill",
+                tint: ADEColor.warning,
+                label: "Interrupt",
+                hint: "Stop the current turn and run this instead",
+                identifier: "Work.Chat.StagedStrip.Interrupt"
+              ) {
+                await onDispatchInterrupt()
+              }
             }
-          }
 
-          steerActionButton(
-            systemImage: "pencil",
-            tint: ADEColor.textSecondary,
-            label: "Edit",
-            hint: nil,
-            identifier: "Work.Chat.StagedStrip.Edit"
-          ) {
-            onBeginEdit()
-          }
+            steerActionButton(
+              systemImage: "pencil",
+              tint: ADEColor.textSecondary,
+              label: "Edit",
+              hint: nil,
+              identifier: "Work.Chat.StagedStrip.Edit"
+            ) {
+              onBeginEdit()
+            }
 
-          steerActionButton(
-            systemImage: "xmark",
-            tint: ADEColor.danger,
-            label: "Cancel staged message",
-            hint: nil,
-            identifier: "Work.Chat.StagedStrip.Cancel"
-          ) {
-            await onCancel()
+            steerActionButton(
+              systemImage: "xmark",
+              tint: ADEColor.danger,
+              label: "Cancel queued message",
+              hint: nil,
+              identifier: "Work.Chat.StagedStrip.Cancel"
+            ) {
+              await onCancel()
+            }
           }
         }
       }
     }
-    .padding(10)
+    .padding(.horizontal, 10)
+    .padding(.vertical, isEditing ? 10 : 2)
     .background(ADEColor.surfaceBackground.opacity(0.86), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -829,8 +823,15 @@ struct WorkQueuedSteerRow: View {
     .accessibilityElement(children: .contain)
   }
 
-  // Icon-only tap target (≥32pt) with an accessibility label so the row's
-  // actions stay compact and never wrap their titles.
+  /// Says what happens next, not when it was typed: a queued message's
+  /// timestamp is always "a moment ago" and carried no information.
+  private var dispositionText: String {
+    turnActive ? "sends when turn ends" : "after turn"
+  }
+
+  // Icon-only tap target with an accessibility label so the row's actions stay
+  // compact and never wrap their titles. The glyph is small; the touch area is
+  // a full 44pt tall via contentShape.
   @ViewBuilder
   private func steerActionButton(
     systemImage: String,
@@ -844,9 +845,9 @@ struct WorkQueuedSteerRow: View {
       Task { await action() }
     } label: {
       Image(systemName: systemImage)
-        .font(.system(size: 14, weight: .semibold))
+        .font(.system(size: 13.5, weight: .semibold))
         .foregroundStyle(tint)
-        .frame(width: 34, height: 32)
+        .frame(width: 38, height: 44)
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -1832,8 +1833,13 @@ struct WorkModelSelectionPendingCard: View {
           selectedModel = option
           selectedModelId = option.id
           selectedProvider = provider
-          selectedReasoningEffort = pickedReasoning ?? ""
-          selectedCodexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
+          let nextReasoning = pickedReasoning ?? ""
+          if nextReasoning != selectedReasoningEffort {
+            selectedReasoningEffort = nextReasoning
+          }
+          if pickedFastMode != selectedCodexFastMode {
+            selectedCodexFastMode = pickedFastMode
+          }
         }
       )
       .environmentObject(syncService)

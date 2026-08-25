@@ -19,13 +19,24 @@ struct FilesSearchScreen: View {
   let workspace: FilesWorkspace
   let isLive: Bool
   let needsRepairing: Bool
+  /// Seed text for the field. A chat file link that matched several files hands
+  /// the ambiguous name over here rather than guessing which one to open.
+  var initialQuery: String = ""
   let onOpenFile: (_ path: String, _ focusLine: Int?) -> Void
 
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
   @FocusState private var searchFieldFocused: Bool
 
+  /// Ignored trees (build output, `.env`, most of `.ade/`) stay out of results
+  /// unless the user asks for them. Key and default match the desktop panel's,
+  /// but the stores are separate — this preference does not sync between them.
+  @AppStorage("ade.files.search.includeIgnored") private var includeIgnored = false
+
   @State private var query = ""
+  /// The last value this view seeded, so a newer seed may replace it while
+  /// anything the user typed is left alone.
+  @State private var seededQuery = ""
   @State private var fileResults: [FilesQuickOpenItem] = []
   @State private var contentGroups: [FilesSearchContentGroup] = []
   @State private var collapsedGroups: Set<String> = []
@@ -37,7 +48,12 @@ struct FilesSearchScreen: View {
   }
 
   private var searchKey: FilesSearchKey {
-    FilesSearchKey(workspaceId: workspace.id, query: trimmedQuery, isLive: isLive)
+    FilesSearchKey(
+      workspaceId: workspace.id,
+      query: trimmedQuery,
+      isLive: isLive,
+      includeIgnored: includeIgnored
+    )
   }
 
   private var totalMatches: Int {
@@ -76,6 +92,9 @@ struct FilesSearchScreen: View {
         }
       }
       .adeScreenBackground()
+      .safeAreaInset(edge: .top, spacing: 0) {
+        searchOptionsBar
+      }
       .navigationTitle("Search files")
       .adeAnalyticsScreen(.fileSearch)
       .navigationBarTitleDisplayMode(.inline)
@@ -99,12 +118,46 @@ struct FilesSearchScreen: View {
     .task(id: searchKey) {
       await runSearch()
     }
+    // Keyed on the seed: a second ambiguous chat link can arrive while this
+    // sheet is already open, and an unkeyed task would not rerun, leaving the
+    // field showing the previous request's name.
+    .task(id: initialQuery) {
+      // Seeded from a chat file link that matched more than one file. A new
+      // seed replaces an older seed, but never what the user has typed since.
+      let seed = initialQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !seed.isEmpty else { return }
+      if query.isEmpty || query == seededQuery {
+        query = seed
+        seededQuery = seed
+      }
+    }
     .task {
       // Raise the keyboard on the search field once the page settles in.
       try? await Task.sleep(nanoseconds: 280_000_000)
       guard !Task.isCancelled else { return }
       searchFieldFocused = true
     }
+  }
+
+  // MARK: - Search options
+
+  /// Sits directly under the search field so it reads as a search option.
+  /// Flipping it changes `searchKey`, which re-runs the current query.
+  private var searchOptionsBar: some View {
+    Toggle(isOn: $includeIgnored) {
+      Text("Include ignored files")
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+    }
+    .toggleStyle(.switch)
+    .tint(ADEColor.accent)
+    .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    .padding(.horizontal, 16)
+    .padding(.vertical, 2)
+    .background(ADEColor.pageBackground.opacity(0.94))
+    .accessibilityLabel("Include ignored files")
+    .accessibilityHint("Also searches files Git ignores, such as build output.")
   }
 
   // MARK: - Results
@@ -259,10 +312,10 @@ struct FilesSearchScreen: View {
 
     do {
       async let files = syncService.quickOpen(
-        workspaceId: workspace.id, query: q, limit: 30, includeIgnored: true
+        workspaceId: workspace.id, query: q, limit: 30, includeIgnored: includeIgnored
       )
       async let matches = syncService.searchText(
-        workspaceId: workspace.id, query: q, limit: 300, includeIgnored: true
+        workspaceId: workspace.id, query: q, limit: 300, includeIgnored: includeIgnored
       )
       let (fileItems, contentMatches) = try await (files, matches)
       guard !Task.isCancelled, trimmedQuery == q, isLive else { return }

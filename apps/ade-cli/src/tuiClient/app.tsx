@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
-import { Box, Text, useApp, useInput } from "ink";
+import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import {
   getModelById,
   modelSupportsFastMode,
@@ -15,14 +15,22 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  activeTurnInterruptContinues,
+  supportsActiveTurnDispatchMode,
+  unsupportedActiveTurnDispatchModeMessage,
+} from "../../../desktop/src/shared/types/chat";
+import { providerDisplayLabel } from "../../../desktop/src/shared/pendingInputLabels";
+import {
   composerFileSearchQuery,
   composerTriggerForSelection,
   composerTriggerHasConfirmedPrefix,
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
+  isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
+  type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
 import { isChatMentionTokenBody } from "../../../desktop/src/shared/chatMentions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
@@ -69,9 +77,8 @@ import {
 } from "../../../desktop/src/shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
-import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
+import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
-  DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
   archiveChatSession,
   buildPtyContinuationLaunchFields,
@@ -97,6 +104,8 @@ import {
   pushModelPickerRecent,
   toggleModelPickerFavorite,
   getOpenCodeRuntimeDiagnostics,
+  watchCursorCloudMirror,
+  getCursorCloudFleet,
   getSlashCommands,
   getScheduledWorkState,
   getStoredApiKeyProviders,
@@ -122,6 +131,7 @@ import {
   listLanes,
   listPrsByLane,
   listSessionSummaries,
+  listSubagents,
   messageChatSession,
   mergeLaneStatusSnapshots,
   navigateDesktop,
@@ -141,6 +151,7 @@ import {
   saveRuntimeTempAttachment,
   sendChatMessage,
   sendToTerminalSession,
+  setChatSpawnKind,
   signalTerminal,
   setClaudeOutputStyle,
   setSessionStatusNote,
@@ -160,7 +171,7 @@ import {
   type TokenStats,
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
-import { deriveChatInfoSnapshot } from "./chatInfo";
+import { deriveChatInfoSnapshot, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import {
   resolveSessionTarget,
@@ -176,17 +187,42 @@ import type { SnoozeDurationKey } from "../../../desktop/src/renderer/lib/sessio
 import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde, INTERACTIVE_PROJECT_REGISTRATION } from "./connection";
+// Imported from the service manager rather than re-exported through
+// ./connection: several suites mock ./connection with a partial factory, and a
+// startup screen must not depend on an export those mocks have to remember.
+import { RuntimeServiceStillStartingError } from "../serviceManager/common";
 import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "./productAnalytics";
-import { Drawer, type DrawerPrSummary } from "./components/Drawer";
+import { WorkSessionsPane } from "./components/WorkSessionsPane";
 import {
-  computeDrawerLayout,
-  drawerLaneWindow,
-  drawerMouseHitForLayout,
-  visibleDrawerChatCount,
-  visibleDrawerLaneCount,
-  type DrawerLaneInput,
-  type DrawerLayout,
-} from "./drawerLayout";
+  computeWorkListLayout,
+  workListHitRects,
+  workListMouseHitForLayout,
+  type WorkListHitRegion,
+  type WorkListLayout,
+} from "./workListLayout";
+import {
+  buildWorkListModel,
+  foreignRowsFromAttention,
+  resolveWorkListSelection,
+  stepWorkListSelection,
+  workListRowIndex,
+  workListSelectionCopyText,
+  type WorkListForeignSession,
+  type WorkListModel,
+  type WorkListRow,
+  type WorkListSessionRow,
+  type WorkListShelfKind,
+} from "./workListModel";
+import {
+  LOCAL_MACHINE_KEY,
+  buildMachinePickerRows,
+  coerceProjectRecords,
+  createAdeCodeConnectionPool,
+  loadMachinePickerSources,
+  pickProjectRecord,
+  rankProjectsForPicker,
+  type MachineQuery,
+} from "./connectionPool";
 import {
   buildNewLaneSubmission,
   cycleNewLaneColor,
@@ -223,10 +259,20 @@ import {
   terminalPageStep,
 } from "./components/TerminalScrollState";
 import { Header } from "./components/Header";
-import { CHAT_INFO_RESUME_ROW_LINES, chatInfoSelectionOffset, computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
-import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
-import { modelPickerGeometry } from "./components/ModelPicker/modelPickerGeometry";
-import { buildModelPickerLayoutInput, modelPickerRefreshProvider } from "./modelPickerController";
+import { chatInfoPreambleLines, chatInfoSelectionOffset, computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, resolveChatInfoRosterViewState, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
+import { collectModelPickerEntries } from "./components/ModelPicker/modelPickerLayout";
+import { modelWizardGeometry } from "./components/ModelPicker/modelWizardGeometry";
+import {
+  advanceModelWizard,
+  backModelWizard,
+  buildModelWizardView,
+  cycleModelWizardSetting,
+  initialModelWizardSelection,
+  moveModelWizardIndex,
+  normalizeModelWizardSelection,
+  type ModelWizardInput,
+  type ModelWizardSelection,
+} from "./modelWizard";
 import {
   CODEX_PRESETS,
   CLAUDE_PERMISSION_OPTIONS,
@@ -247,14 +293,16 @@ import {
   modeAccentColor,
   modeDescription,
   modelCatalogRefreshCacheKey,
-  modelInfoSupportsFastMode,
+  modelMemoryFromState,
   modelReasoningEfforts,
   modelStatePatchForModel,
+  modelStatePatchFromMemory,
   permissionSummary,
   providerModelsCacheKey,
   reasoningEffortDisplayLabel,
   reconcileCursorModelStateForInterface,
   registryModelsForProvider,
+  seedModelStateFromMemory,
   resolveCodexPreset,
   resolveCursorCliModelForLaunch,
   runtimeProviderForUiProvider,
@@ -271,26 +319,22 @@ import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalett
 import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from "./components/CommandPalette";
 import { ApprovalPrompt } from "./components/ApprovalPrompt";
 import { ModelStatus } from "./components/ModelStatus";
+import { ExternalSessionPreview } from "./components/ExternalSessionPreview";
 import { FooterControls } from "./components/FooterControls";
 import { MultiChatGrid } from "./components/MultiChatGrid";
 import { AddChatModeBanner } from "./components/AddChatMode";
 import { theme } from "./theme";
 import { resolveTuiChatRefreshTarget } from "./project";
-import { chatSelectionCopyText, resolveDrawerChatSelection } from "./drawerSelection";
 import {
   RIGHT_CHAT_CLOSED_TOGGLE_ID,
-  buildDrawerChatItems,
   closedCliRightPaneRow,
   deriveClosedCliSessions,
-  deriveOpenDrawerSessions,
-  drawerChatActionForItem,
+  deriveOpenWorkSessions,
   isTerminalSessionResumable,
-  sessionFromDrawerChatItem,
   sortSessionsByRecentActivity,
   terminalSessionProvider,
   terminalSessionToChatSummary,
-  type DrawerChatAction,
-  type DrawerChatListItem,
+  type WorkChatAction,
 } from "./closedCliSessions";
 import { sortLanesForStackGraph } from "./laneTree";
 import {
@@ -319,7 +363,15 @@ import {
   splitByDisplayCells,
   terminalDisplayWidth,
 } from "./displayWidth";
-import { flushAdeCodeStateWrites, loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
+import {
+  flushAdeCodeStateWrites,
+  loadAdeCodeState,
+  saveAdeCodeModelMemory,
+  saveAdeCodeProjectState,
+  scopedAdeCodeModelMemory,
+  scopedAdeCodeState,
+  type AdeCodeModelMemory,
+} from "./state";
 import {
   clampExternalSessionBrowserContent,
   externalSessionActionKey,
@@ -333,9 +385,11 @@ import {
 } from "./externalSessionBrowser";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
+import { executeIssueToolRequest } from "./issueCommands";
 import {
   formatLinearIssueComments,
   derivePrMergeReadiness,
+  formatCursorCloudFleetRows,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
@@ -343,6 +397,7 @@ import {
   formatPrReview,
   formatPrSummary,
   formatSystemDetails,
+  CURSOR_CLOUD_PANE_NOTE,
 } from "./rightPaneFormatters";
 import {
   buildFeedbackDraftInput,
@@ -387,6 +442,8 @@ import {
   buildActivityPaneModel,
   loadActivitySnapshot,
 } from "./activityPane";
+import type { AttentionSnapshot } from "../../../desktop/src/shared/types/attention";
+import { deriveProjectId } from "../services/projects/projectRegistry";
 import {
   bindingKey,
   buildPluginPaneModel,
@@ -417,6 +474,24 @@ import {
   deletePromptSmartLinkForward,
   formatPromptSmartLinkStrip,
 } from "./promptSmartLinks";
+import {
+  clearComposerDraft,
+  createComposerDraftStore,
+  deleteImageTokenBackward,
+  deleteImageTokenForward,
+  expandImageTokensForSend,
+  findImageTokens,
+  formatImageToken,
+  imageTokenAtCursor,
+  insertImageToken,
+  readComposerDraft,
+  sessionHasDraft,
+  referencedAttachmentPaths,
+  retainReferencedAttachments,
+  saveComposerDraft,
+  uniqueImageTokenLabel,
+  type ComposerDraftAttachment,
+} from "./composerDrafts";
 import {
   buildSubagentPaneRows,
   buildSubagentTranscriptEvents,
@@ -477,7 +552,29 @@ const MODEL_CATALOG_LOCAL_CLIENT_REFRESH_TTL_MS = 30_000;
 type PaneFocus = "drawer" | "chat" | "details" | "addMode";
 type AddModeState = { cursorLaneId: string; cursorChatId: string | null };
 export type FooterControl = "drawer" | "details" | "agents";
-type DrawerLaneAction = "new-lane";
+
+/**
+ * What the sessions pane currently has under its cursor. Replaces the drawer's
+ * `"lanes" | "chats"` MODE: the pane no longer has modes, so "am I looking at a
+ * lane or a chat" is now a property of the selected row, not of the pane.
+ */
+export type WorkSelectionKind = "session" | "lane" | "new-chat" | "shelf" | null;
+
+/**
+ * Per-lane PR rollup, kept for the chat-info pane's PR block. It used to live in
+ * the lane drawer, which rendered it as a pill; the sessions pane that replaced
+ * the drawer is session-first and shows lane PRs through `/prs` and lane details
+ * instead, so app.tsx is now the only owner.
+ */
+export type LanePrSummary = {
+  number: number;
+  state: "open" | "closed" | "merged";
+  checksPassed: number;
+  checksTotal: number;
+  /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
+  checksStatus?: PrChecksStatus;
+  stack?: GitHubPrStackMembership | null;
+};
 
 // Streaming chat events are coalesced into a single React render per frame
 // (~40fps) instead of one render per token. Lifecycle edges (turn start/stop,
@@ -632,6 +729,38 @@ export function formatLaneReclaimPreview(risk: LaneReclaimRisk): string {
     "",
     nextCommand,
   ].join("\n");
+}
+
+// Three different features want Esc while the chat composer has focus, so the
+// order between them is a product decision rather than an accident of where the
+// branches happen to sit in the key handler. Resolved in one pure place so the
+// precedence is testable and stays explicit:
+//   1. the @/slash palette — it floats over the composer and advertises
+//      "Esc close", so the visible affordance wins;
+//   2. an active chat mouse selection;
+//   3. vim insert -> normal.
+// Each is one Esc: with the palette open and vim on, the first Esc only closes
+// the palette and a second Esc then switches vim to normal.
+export type ChatEscapeAction =
+  | "dismiss-composer-trigger"
+  | "clear-chat-selection"
+  | "vim-normal"
+  | null;
+
+export function resolveChatEscapeAction(args: {
+  pane: string;
+  textInputActive: boolean;
+  modified: boolean;
+  composerTriggerOpen: boolean;
+  chatSelectionActive: boolean;
+  vimModeEnabled: boolean;
+}): ChatEscapeAction {
+  if (args.pane === "chat" && args.composerTriggerOpen) return "dismiss-composer-trigger";
+  if (args.chatSelectionActive) return "clear-chat-selection";
+  if (args.pane === "chat" && args.textInputActive && args.vimModeEnabled && !args.modified) {
+    return "vim-normal";
+  }
+  return null;
 }
 
 export type ModelPickerEscapeAction =
@@ -1539,7 +1668,7 @@ export function latestAuthFailedPrompt(events: readonly AgentChatEventEnvelope[]
 function deriveDrawerPreviewChatInfo(
   session: AgentChatSessionSummary,
   previewEvents: AgentChatEventEnvelope[],
-  laneLabel: string | null,
+  lane: { name: string; icon?: string | null; color?: string | null } | null,
 ): Extract<RightPaneContent, { kind: "chat-info" }>["info"] {
   const snapshots = subagentSnapshotsFromEvents(previewEvents);
   const fallbackContext = session.modelId ? getModelById(session.modelId)?.contextWindow ?? null : null;
@@ -1549,7 +1678,9 @@ function deriveDrawerPreviewChatInfo(
     activeSession: session,
     provider: normalizeProvider(session.provider),
     modelLabel: session.model ?? normalizeProvider(session.provider),
-    laneLabel,
+    laneLabel: lane?.name ?? null,
+    laneIcon: lane?.icon ?? null,
+    laneColor: lane?.color ?? null,
     snapshots,
     tokenStats: stats,
     goal: latestGoal(previewEvents),
@@ -1568,8 +1699,11 @@ type ContextDefaultArgs = {
   activeSession: AgentChatSessionSummary | null;
   activeLane: LaneSummary | null;
   liveAgentCount: number;
+  /**
+   * The lane the sessions pane is pointing at, or null when it is pointing at a
+   * chat. Already gated by the caller, so this is the whole lane-details rule.
+   */
   highlightedDrawerLane: LaneSummary | null;
-  drawerMode: "chats" | "lanes";
   drawerNav: DrawerNavTarget | null;
   chatInfo: Extract<RightPaneContent, { kind: "chat-info" }>["info"];
   subagentSnapshots: SubagentSnapshot[];
@@ -1585,20 +1719,10 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
       case "lane":
         return seedLaneDetails(nav.lane, !args.unavailableLaneIds.has(nav.lane.id));
       case "new-chat":
-        return {
-          kind: "model-picker",
-          surface: "new-chat",
-          query: "",
-          searchMode: false,
-          selection: { kind: "provider", provider: args.provider },
-          providerTabKey: null,
-          focusedIndex: 0,
-          footerFocus: null,
-          railFocused: true,
-          settingsRows: nav.rows,
-          laneId: nav.laneId,
-          laneLabel: nav.laneLabel,
-        };
+        // Starting a new chat NEVER auto-opens a model pane: the model that will
+        // be used is shown as a compact line under the composer, and /model
+        // opens the wizard on demand.
+        return { kind: "empty" };
       case "chat":
         return { kind: "chat-info", info: nav.info };
     }
@@ -1608,22 +1732,10 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
     && args.newChatSetup
     && !args.unavailableLaneIds.has(args.newChatSetup.laneId)
   ) {
-    return {
-      kind: "model-picker",
-      surface: "new-chat",
-      query: "",
-      searchMode: false,
-      selection: { kind: "provider", provider: args.provider },
-      providerTabKey: null,
-      focusedIndex: 0,
-      footerFocus: null,
-      railFocused: true,
-      settingsRows: args.newChatSetup.rows,
-      laneId: args.newChatSetup.laneId,
-      laneLabel: args.newChatSetup.laneLabel,
-    };
+    // Same rule as the pane's new-chat row: the draft surface stays clear.
+    return { kind: "empty" };
   }
-  if (args.drawerMode === "lanes" && args.highlightedDrawerLane) {
+  if (args.highlightedDrawerLane) {
     return seedLaneDetails(args.highlightedDrawerLane, !args.unavailableLaneIds.has(args.highlightedDrawerLane.id));
   }
   if (args.activeSession) {
@@ -1646,12 +1758,16 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
  * the right pane was deliberately opened by the user and is never hijacked.
  */
 export function isNewChatSetupPane(pane: RightPaneContent): boolean {
-  return pane.kind === "model-picker" && pane.surface === "new-chat";
+  return (pane.kind === "model-picker" || pane.kind === "model-wizard") && pane.surface === "new-chat";
 }
 
 function formatOutputStyles(styles: Awaited<ReturnType<typeof listClaudeOutputStyles>>, activeStyle?: string | null): string {
   if (!styles.length) return "No Claude output styles were found.";
-  const activeKey = activeStyle?.trim().toLowerCase() ?? "";
+  // A session carries no output style until a settings file names one — ADE no
+  // longer substitutes a value into the SDK options. For the *listing* only, an
+  // unset selection still reads as Claude's own "Default", which is what the
+  // desktop's `/output-style` handler shows. Display, never written back.
+  const activeKey = (activeStyle?.trim() || "Default").toLowerCase();
   return [
     "Claude output styles:",
     "",
@@ -2243,6 +2359,10 @@ export function deletePromptBackward(
   const safeCursor = clampPromptCursor(value, cursor);
   if (safeCursor <= 0) return { value, cursor: safeCursor };
   if (mode !== "line") {
+    // An image chip is one thing on screen, so it is one thing to delete —
+    // same rule the URL chips follow.
+    const imageDeletion = deleteImageTokenBackward(value, safeCursor);
+    if (imageDeletion) return imageDeletion;
     const linkDeletion = deletePromptSmartLinkBackward(value, safeCursor);
     if (linkDeletion) return linkDeletion;
   }
@@ -2260,6 +2380,8 @@ export function deletePromptBackward(
 export function deletePromptForward(value: string, cursor: number): PromptEditResult {
   const safeCursor = clampPromptCursor(value, cursor);
   if (safeCursor >= value.length) return { value, cursor: safeCursor };
+  const imageDeletion = deleteImageTokenForward(value, safeCursor);
+  if (imageDeletion) return imageDeletion;
   const linkDeletion = deletePromptSmartLinkForward(value, safeCursor);
   if (linkDeletion) return linkDeletion;
   const end = nextPromptCharacterBoundary(value, safeCursor);
@@ -2323,6 +2445,44 @@ function inputBeforeLineBreak(input: string): string | null {
 
 const PROMPT_MAX_ROWS = 5;
 
+/**
+ * Cells the prompt box consumes around a wrapped row, subtracted from the pane
+ * width to get the wrap budget.
+ *
+ * The box is `width={promptPaneWidth}` with `borderStyle="round"` (2) and
+ * `paddingX={1}` (2), leaving `promptPaneWidth - 4` usable cells. Each row then
+ * spends 2 more on the `"› "` / `"  "` gutter, and up to 1 more on the inverse
+ * cursor cell — which has no character under it when the caret sits at the end
+ * of a line that a literal "\n" terminated, so a space is painted instead.
+ *
+ * Getting this wrong is not cosmetic: a row that overruns the box makes Ink
+ * re-wrap it with `wrap-ansi`'s `hard: true`, which splits the row mid-word
+ * onto an extra terminal line. That reads as a duplicated newline plus letters
+ * of one word scattered across two lines.
+ */
+export const PROMPT_ROW_CHROME_CELLS = 7;
+
+/** Cells a trailing prompt-row hint (`^V paste image`, `^B open image`) needs. */
+const PROMPT_ROW_HINT_CELLS = 16;
+
+/**
+ * Wrap budget for one prompt row. Never lets a row plus its chrome exceed the
+ * box's inner width, so Ink never re-wraps a row we already wrapped.
+ */
+export function promptWrapWidth(promptPaneWidth: number): number {
+  return Math.max(1, Math.floor(promptPaneWidth) - PROMPT_ROW_CHROME_CELLS);
+}
+
+/**
+ * Whether a trailing hint still fits beside a row. Rendering it unconditionally
+ * pushes the row past the box and triggers the same mid-word re-wrap the
+ * chrome budget exists to prevent.
+ */
+export function promptRowHintFits(rowText: string, promptPaneWidth: number): boolean {
+  const used = PROMPT_ROW_CHROME_CELLS + terminalDisplayWidth(rowText);
+  return used + PROMPT_ROW_HINT_CELLS <= Math.floor(promptPaneWidth);
+}
+
 type PromptVisualRow = {
   text: string;
   start: number;
@@ -2353,22 +2513,42 @@ function buildPromptVisualRows(value: string, width: number): PromptVisualRow[] 
   let start = 0;
   let text = "";
   let textWidth = 0;
+  // Code-unit offset just past the last space/tab on the row being built: the
+  // point we rewind to so wrapping breaks between words instead of through the
+  // middle of one. Reset at every row boundary.
+  let breakOffset: number | null = null;
   for (const cluster of displayClusters(value)) {
     if (cluster.text === "\n") {
       rows.push({ text, start, end: cluster.start });
       start = cluster.end;
       text = "";
       textWidth = 0;
+      breakOffset = null;
       continue;
     }
     if (text && textWidth + cluster.width > safeWidth) {
-      rows.push({ text, start, end: cluster.start });
-      start = cluster.start;
-      text = "";
-      textWidth = 0;
+      const isSpaceCluster = cluster.text === " " || cluster.text === "\t";
+      if (breakOffset != null && breakOffset > start && !isSpaceCluster) {
+        // Carry the partial word down to the next row. It fit alongside the
+        // row prefix, so it is never wider than the row on its own.
+        const carry = value.slice(breakOffset, cluster.start);
+        rows.push({ text: value.slice(start, breakOffset), start, end: breakOffset });
+        start = breakOffset;
+        text = carry;
+        textWidth = terminalDisplayWidth(carry);
+      } else {
+        // No break opportunity (or the overflow is the space itself): hard
+        // break, which is also the only option for a word wider than the row.
+        rows.push({ text, start, end: cluster.start });
+        start = cluster.start;
+        text = "";
+        textWidth = 0;
+      }
+      breakOffset = null;
     }
     text += cluster.text;
     textWidth += cluster.width;
+    if (cluster.text === " " || cluster.text === "\t") breakOffset = cluster.end;
   }
   if (text.length > 0) rows.push({ text, start, end: value.length });
   if (!rows.length || (start === value.length && text.length === 0)) {
@@ -2531,15 +2711,19 @@ function loginUnavailableHint(provider: AdeCodeProvider): string {
  * the renderer can style `@file` / `/command` chips. `rowStart` is the prompt
  * code-unit offset of `text[0]`; token ranges are in prompt coordinates.
  */
-type PromptRenderTokenRange = ComposerTokenRange | { kind: "link"; start: number; end: number };
+type PromptRenderTokenKind = "plain" | "file" | "command" | "mention" | "link" | "image";
+
+type PromptRenderTokenRange =
+  | ComposerTokenRange
+  | { kind: "link" | "image"; start: number; end: number };
 
 function segmentPromptLineText(
   text: string,
   rowStart: number,
   tokens: PromptRenderTokenRange[],
-): Array<{ text: string; kind: "plain" | "file" | "command" | "mention" | "link" }> {
+): Array<{ text: string; kind: PromptRenderTokenKind }> {
   if (!tokens.length || !text) return text ? [{ text, kind: "plain" }] : [];
-  const segments: Array<{ text: string; kind: "plain" | "file" | "command" | "mention" | "link" }> = [];
+  const segments: Array<{ text: string; kind: PromptRenderTokenKind }> = [];
   let pos = 0;
   for (const token of tokens) {
     const start = Math.max(0, token.start - rowStart);
@@ -2745,8 +2929,8 @@ function parseTerminalMouseInputs(input: string): TerminalMouseInput[] {
   return events.sort((left, right) => left.index - right.index).map(({ event }) => event);
 }
 
-// Drawer mouse hit-testing lives in ./drawerLayout (drawerMouseHitForLayout)
-// so the row math is shared with the Drawer renderer.
+// Sessions-pane hit-testing lives in ./workListLayout
+// (workListMouseHitForLayout) so the row math is shared with the renderer.
 
 type LaneDeleteScope = "worktree" | "local_branch" | "remote_branch";
 const LANE_DELETE_SCOPES: LaneDeleteScope[] = ["worktree", "local_branch", "remote_branch"];
@@ -2762,7 +2946,12 @@ export function cycleLaneDeleteScope(value: string | null | undefined, delta: nu
   return LANE_DELETE_SCOPES[next] ?? "worktree";
 }
 
+export function isTwoStepConfirmCommand(command: string): boolean {
+  return command === "chat-delete" || command === "lane-delete";
+}
+
 export function formFieldUsesPromptInput(command: string, fieldName: string): boolean {
+  if (command === "chat-delete") return false;
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
   if (
     command === "new-lane"
@@ -2870,7 +3059,14 @@ export function chatSelectionEdgeDirectionForMouseY({
 }
 
 export function terminalMouseTrackingEnableSequence(): string {
-  return "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+  const hover = process.env.ADE_CODE_HOVER?.trim().toLowerCase();
+  const hoverOff = hover === "0" || hover === "off" || hover === "false";
+  // Default on: SGR 1003 motion so hit-test hover highlighting actually
+  // receives events. ADE_CODE_HOVER=0 restores the press/drag-only baseline
+  // for terminals that flood input on motion.
+  return hoverOff
+    ? "\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+    : "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 }
 
 export function terminalMouseTrackingDisableSequence(): string {
@@ -2931,9 +3127,9 @@ function registerTerminalProcessRestore(): () => void {
 }
 
 function enableTerminalMouseTracking(): void {
-  // Universal baseline: button press/release + button-drag in SGR 1006 mode.
-  // Avoid 1003 all-motion; it turns every hover into terminal input and makes
-  // selection feel broken in terminals that faithfully report it.
+  // Button press/release + drag in SGR 1006, plus all-motion (1003) so hover
+  // highlighting on hit-test targets actually receives events. Move events
+  // only update hover and return; they do not start or extend a selection.
   process.stdout.write(terminalMouseTrackingEnableSequence());
 }
 
@@ -3191,7 +3387,7 @@ function modelStatePatchForArg(
   provider: AdeCodeProvider,
   currentModels: AgentChatModelInfo[],
   value: string,
-): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
+): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName"> {
   const model = findModelForArg(provider, currentModels, value);
   if (model) return modelStatePatchForModel(provider, model);
   return {
@@ -3199,7 +3395,6 @@ function modelStatePatchForArg(
     model: value,
     modelId: value,
     displayName: value,
-    reasoningEffort: provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null,
   };
 }
 
@@ -3236,12 +3431,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [mode, setMode] = useState<RuntimeMode | "connecting">("connecting");
   const [accountLabel, setAccountLabel] = useState("account loading…");
   const [connectionRetrySeq, setConnectionRetrySeq] = useState(0);
+  const connectionPoolRef = useRef(createAdeCodeConnectionPool());
+  const [activeMachineKey, setActiveMachineKey] = useState(LOCAL_MACHINE_KEY);
+  const [activeRemoteLabel, setActiveRemoteLabel] = useState<string | null>(
+    remoteLaunch ? project.remoteLabel ?? "remote" : null,
+  );
+  const [activeProjectRoot, setActiveProjectRoot] = useState(project.projectRoot);
+  const machinePickerQueryByIdRef = useRef(new Map<string, MachineQuery>());
+  const projectPickerRootByIdRef = useRef(new Map<string, string>());
+  const openProjectPickerRef = useRef<(options?: { notice?: boolean }) => Promise<void>>(async () => {});
+  const projectPickerAutoOpenedRef = useRef(false);
+  const hopInFlightRef = useRef(false);
   // True after an attached socket drops unexpectedly, until we re-attach. Drives
   // the reconnect probe below and a one-shot "reconnecting…" notice.
   const [connectionLost, setConnectionLost] = useState(false);
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const lanesRef = useRef<LaneSummary[]>([]);
-  const [prByLaneId, setPrByLaneId] = useState<Record<string, DrawerPrSummary>>({});
+  const [prByLaneId, setPrByLaneId] = useState<Record<string, LanePrSummary>>({});
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [terminalSessions, setTerminalSessions] = useState<ChatTerminalSession[]>([]);
@@ -3295,7 +3501,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       ? { lastChatByLane: {}, lastLaneId: null, draftKind: "chat" as AdeCodeInterfaceMode }
       : scopedAdeCodeState(loadAdeCodeState(), project.projectRoot)
   ));
-  const [modelState, setModelState] = useState<AdeCodeModelState>(() => initialModelState(initialAdeCodeState.draftKind));
+  // A new chat in this project defaults to the model + settings the project last
+  // used (state.ts, project-scoped like lastChatByLane). Remote launches always
+  // start from the registry default — the memory is per local project root.
+  const [initialModelMemory] = useState<AdeCodeModelMemory | null>(() => (
+    remoteLaunch ? null : scopedAdeCodeModelMemory(loadAdeCodeState(), project.projectRoot)
+  ));
+  const [modelState, setModelState] = useState<AdeCodeModelState>(
+    () => seedModelStateFromMemory(initialModelState(initialAdeCodeState.draftKind), initialModelMemory),
+  );
+  // ── Project-scoped model memory ───────────────────────────────────────────
+  // Written on every successful chat start and on every /model commit; read
+  // above to seed a new chat, and per-provider on wizard step 4.
+  const rememberModelChoice = useCallback((state: AdeCodeModelState) => {
+    saveAdeCodeModelMemory(project.projectRoot, modelMemoryFromState(state));
+  }, [project.projectRoot]);
   const [modeChangeNotice, setModeChangeNotice] = useState<{ summary: string; key: string } | null>(null);
   const lastPermissionSummaryRef = useRef<string | null>(null);
   const modeNoticeTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -3376,7 +3596,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (target.type === "toggle-earlier") {
       updateSubagentPaneViewState((current) => ({
         ...current,
-        earlierExpanded: { ...current.earlierExpanded, [target.section]: current.earlierExpanded?.[target.section] !== true },
+        earlierExpanded: {
+          ...current.earlierExpanded,
+          [target.section]: !(current.earlierExpanded?.[target.section] ?? true),
+        },
       }));
       return;
     }
@@ -3393,7 +3616,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }));
   }, [updateSubagentPaneViewState]);
   const [rightChatsClosedExpanded, setRightChatsClosedExpanded] = useState(false);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(false);
   const rightOpenRef = useRef(false);
   rightOpenRef.current = rightOpen;
@@ -3402,6 +3625,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [promptCursor, setPromptCursor] = useState(0);
   const [backgroundLaunchStatus, setBackgroundLaunchStatus] = useState<BackgroundLaunchStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The last connect failed only because a supervised brain had not answered
+   * yet. Nothing is broken and nothing needs repairing, so the startup screen
+   * says so and keeps waiting instead of showing a red failure.
+   */
+  const [startupServiceStarting, setStartupServiceStarting] = useState(false);
   const [contextPercent, setContextPercent] = useState<number | null>(null);
   const [tokenSummary, setTokenSummary] = useState<string | null>(null);
   const [statusLineStats, setStatusLineStats] = useState<TokenStats | null>(null);
@@ -3489,16 +3718,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => buildHelpIndex(BUILTIN_COMMANDS, keybindings, mergedKeybindings.pluginBindings),
     [keybindings, mergedKeybindings.pluginBindings],
   );
-  const [drawerSection, setDrawerSection] = useState<"lanes" | "chats">("lanes");
+  // The sessions pane is SESSION-FIRST: there is no lanes-vs-chats mode to
+  // switch between any more. Its whole navigable state is one selected row key
+  // over one flat row list (`workListModel`), plus which quiet shelves are open.
+  const [workSelectedKey, setWorkSelectedKey] = useState<string | null>(null);
+  // Shared attention snapshot: the /activity pane already fetches it, and the
+  // sessions pane reads the same copy for its cross-machine rows. Deliberately
+  // ONE cache and no second poll loop — `refreshState` tops it up on the
+  // cadence the app already runs.
+  const [attentionSnapshot, setAttentionSnapshot] = useState<AttentionSnapshot | null>(null);
+  const [workExpandedShelves, setWorkExpandedShelves] = useState<Set<WorkListShelfKind>>(() => new Set());
   const [drawerPreviewSessionId, setDrawerPreviewSessionId] = useState<string | null>(null);
   const [drawerPreviewEvents, setDrawerPreviewEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [drawerLaneId, setDrawerLaneId] = useState<string | null>(null);
-  const [drawerClosedCliExpandedLaneIds, setDrawerClosedCliExpandedLaneIds] = useState<Set<string>>(() => new Set());
   const [selectedDrawerLaneId, setSelectedDrawerLaneId] = useState<string | null>(null);
   const [selectedDrawerChatId, setSelectedDrawerChatId] = useState<string | null>(null);
-  const [selectedDrawerLaneAction, setSelectedDrawerLaneAction] = useState<DrawerLaneAction | null>(null);
-  const [selectedDrawerChatAction, setSelectedDrawerChatAction] = useState<DrawerChatAction | null>(null);
+  const [selectedWorkChatAction, setSelectedWorkChatAction] = useState<WorkChatAction | null>(null);
   const [, setFormDiscardArmedState] = useState(false);
+  const [formConfirmArmed, setFormConfirmArmedState] = useState(false);
   const [footerControl, setFooterControl] = useState<FooterControl | null>(null);
   const [inlineRowFocus, setInlineRowFocus] = useState<{ cell: InlineRowCellName | null }>({ cell: null });
   const inlineRowFocused = inlineRowFocus.cell !== null;
@@ -3538,6 +3775,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // whole app hit-target set on every coalesced flush.
   const chatLinkTargetIdsRef = useRef<string[]>([]);
   const previousDimensionsRef = useRef<[number, number]>([columns, rows]);
+  // Per-session composer drafts (text + caret + image attachments), stashed on
+  // the way out of a chat and restored on the way back in. Process-local by
+  // design — see composerDrafts.ts.
+  const composerDraftsRef = useRef(createComposerDraftStore());
+  const promptImageAttachmentsRef = useRef<ComposerDraftAttachment[]>([]);
   const draftChatActiveRef = useRef(false);
   // Each new-chat draft gets a fresh notice scope key so transient feedback
   // ("Model set to…", "Press Esc again…") fired in one draft can't persist into
@@ -3546,6 +3788,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const draftScopeSeqRef = useRef(0);
   const draftScopeKeyRef = useRef<string | null>(null);
   const formDiscardArmedRef = useRef(false);
+  const formConfirmArmedRef = useRef(false);
   const activePaneRef = useRef<PaneFocus>("chat");
   const keybindingDispatchStateRef = useRef<KeybindingDispatchState>({ prefix: null, prefixAt: 0 });
   const footerControlRef = useRef<FooterControl | null>(null);
@@ -3554,6 +3797,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const setFormDiscardArmed = useCallback((next: boolean) => {
     formDiscardArmedRef.current = next;
     setFormDiscardArmedState(next);
+  }, []);
+  const setFormConfirmArmed = useCallback((next: boolean) => {
+    formConfirmArmedRef.current = next;
+    setFormConfirmArmedState(next);
   }, []);
   const promptRef = useRef("");
   const promptCursorRef = useRef(0);
@@ -3623,17 +3870,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const claudeTerminalSubmitQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const lastModelPickerClaudeSentKeyRef = useRef<string | null>(null);
   const exitRequestedRef = useRef(false);
-  const modelStateRef = useRef<AdeCodeModelState>(initialModelState(initialAdeCodeState.draftKind));
+  const modelStateRef = useRef<AdeCodeModelState>(
+    seedModelStateFromMemory(initialModelState(initialAdeCodeState.draftKind), initialModelMemory),
+  );
   const chatMouseSelectionRef = useRef<ChatSelectionState | null>(null);
   const chatSelectionAnchorRef = useRef<ChatSelectionPoint | null>(null);
   const selectableChatRowCountRef = useRef(0);
   const selectableChatRowTextBuilderRef = useRef<() => string[]>(() => []);
   const drawerPreviewGenerationRef = useRef(0);
-  const drawerOpenRef = useRef(false);
-  const drawerSectionRef = useRef<"lanes" | "chats">("lanes");
+  const drawerOpenRef = useRef(true);
   const drawerLaneIdRef = useRef<string | null>(null);
   const selectedDrawerChatIdRef = useRef<string | null>(null);
-  const selectedDrawerChatActionRef = useRef<DrawerChatAction | null>(null);
+  const selectedWorkChatActionRef = useRef<WorkChatAction | null>(null);
   const clearedAtRef = useRef<string | null>(null);
   const chatSelectionEdgeScrollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const chatSelectionEdgeScrollRef = useRef<{ direction: ChatSelectionEdgeDirection; column: number } | null>(null);
@@ -3716,28 +3964,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     addModeRef.current = addMode;
   }, [addMode]);
 
-  useEffect(() => {
-    if (!connection) return;
-    const screen = deriveTuiAnalyticsScreen({
-      activePane,
-      drawerSection,
-      rightPaneKind: rightPane.kind,
-      gridViewActive,
-      addModeActive: addMode !== null,
-      terminalControlActive: attachedTerminalId !== null,
-    });
-    if (lastAnalyticsScreenRef.current === screen) return;
-    lastAnalyticsScreenRef.current = screen;
-    void captureTuiProductAnalytics(connection, {
-      event: "ade_screen_viewed",
-      properties: {
-        screen,
-        source: "ade_code",
-      },
-      dedupeKey: `tui_screen:${screen}`,
-      minimumIntervalMs: 2_000,
-    }).catch(() => undefined);
-  }, [activePane, addMode, attachedTerminalId, connection, drawerSection, gridViewActive, rightPane.kind]);
 
   useEffect(() => {
     streamingBySessionIdRef.current = streamingBySessionId;
@@ -3978,6 +4204,36 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const selectActiveSessionId = useCallback((sessionId: string | null) => {
     if (activeSessionIdRef.current !== sessionId) {
+      // Stash the outgoing chat's draft and load the incoming one. Doing it
+      // here — the single funnel every "put a session on screen" path goes
+      // through — is what keeps a half-written prompt (and any image token in
+      // it) tied to the chat it was written for, instead of following the user
+      // into the next chat.
+      // Prefer the live prompt over the stashed copy: some composer paths
+      // (mention insertion) update the prompt without writing chatDraftRef,
+      // and the draft we stash must be what is actually on screen.
+      const outgoingText = activePaneRef.current === "chat"
+        ? (promptRef.current || chatDraftRef.current)
+        : chatDraftRef.current;
+      saveComposerDraft(composerDraftsRef.current, activeSessionIdRef.current, {
+        text: outgoingText,
+        cursor: promptCursorRef.current,
+        attachments: promptImageAttachmentsRef.current,
+      });
+      const incoming = readComposerDraft(composerDraftsRef.current, sessionId);
+      promptImageAttachmentsRef.current = incoming.attachments;
+      chatDraftRef.current = incoming.text;
+      // Inlined rather than calling setPromptValue: that callback is declared
+      // further down this component, so naming it in the dependency array here
+      // would be a temporal-dead-zone ReferenceError during render.
+      if (activePaneRef.current === "chat") {
+        const restoredCursor = clampPromptCursor(incoming.text, incoming.cursor);
+        promptRef.current = incoming.text;
+        promptCursorRef.current = restoredCursor;
+        setPromptCursor(restoredCursor);
+        setAttachmentFocusIndex(null);
+        setPrompt(incoming.text);
+      }
       setChatScrollOffset(0);
       setCurrentGoal(null);
       lastUserOpenedPaneRef.current = null;
@@ -4000,7 +4256,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       newChatPreviewLaneIdRef.current = null;
       draftChatActiveRef.current = false;
       setDraftChatActive(false);
-      setSelectedDrawerChatAction(null);
+      setSelectedWorkChatAction(null);
       const laneId = activeLaneIdRef.current;
       if (laneId && lastChatByLaneRef.current.get(laneId) !== sessionId) {
         lastChatByLaneRef.current.set(laneId, sessionId);
@@ -4051,16 +4307,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     clearedAtRef.current = clearedAt;
     drawerOpenRef.current = drawerOpen;
-    drawerSectionRef.current = drawerSection;
     drawerLaneIdRef.current = drawerLaneId;
     selectedDrawerChatIdRef.current = selectedDrawerChatId;
-    selectedDrawerChatActionRef.current = selectedDrawerChatAction;
+    selectedWorkChatActionRef.current = selectedWorkChatAction;
   }, [
     clearedAt,
     drawerLaneId,
     drawerOpen,
-    drawerSection,
-    selectedDrawerChatAction,
+    selectedWorkChatAction,
     selectedDrawerChatId,
   ]);
 
@@ -4238,6 +4492,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const clearChatPromptDraft = useCallback(() => {
     setPromptValue("");
     chatDraftRef.current = "";
+    promptImageAttachmentsRef.current = [];
+    clearComposerDraft(composerDraftsRef.current, activeSessionIdRef.current);
   }, [setPromptValue]);
 
   const toggleDrawerPane = useCallback(() => {
@@ -4295,7 +4551,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     focusChat();
   }, [drawerOpen, focusChat, focusDrawerOnly]);
 
-  const projectName = path.basename(project.projectRoot);
+  const projectName = path.basename(activeProjectRoot);
   const activeLane = useMemo(
     () => lanes.find((lane) => lane.id === activeLaneId) ?? null,
     [activeLaneId, lanes],
@@ -4315,6 +4571,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => sessions.find((session) => session.sessionId === activeSessionId) ?? null,
     [activeSessionId, sessions],
   );
+  useEffect(() => {
+    const sessionId = activeSession?.sessionId;
+    const agentId = activeSession?.cursorCloudAgentId?.trim();
+    if (!connection || !sessionId || !agentId) return;
+    void watchCursorCloudMirror(connection, sessionId, true).catch(() => undefined);
+    return () => {
+      void watchCursorCloudMirror(connection, sessionId, false).catch(() => undefined);
+    };
+  }, [activeSession?.cursorCloudAgentId, activeSession?.sessionId, connection]);
   const activeTerminalSession = useMemo(
     () => terminalSessions.find((session) => session.terminalId === activeSessionId) ?? null,
     [activeSessionId, terminalSessions],
@@ -4383,7 +4648,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     [terminalScheduledWorkById, terminalSessions],
   );
   const openDrawerSessions = useMemo(
-    () => deriveOpenDrawerSessions(displaySessions, closedCliSessions),
+    () => deriveOpenWorkSessions(displaySessions, closedCliSessions),
     [closedCliSessions, displaySessions],
   );
   const sessionBySessionId = useMemo(() => {
@@ -4479,40 +4744,65 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       && !rightOpen,
   );
   const shouldDeriveFullChatInfo = chatInfoPaneVisible || inspectedSubagentId != null || shouldAutoOpenSubagentPane;
+  const [runtimeSubagentSnapshots, setRuntimeSubagentSnapshots] = useState<SubagentSnapshot[]>([]);
+  useEffect(() => {
+    if (!chatInfoPaneVisible || !activeSessionId || !connection) {
+      setRuntimeSubagentSnapshots([]);
+      return;
+    }
+    let cancelled = false;
+    void listSubagents(connection, { sessionId: activeSessionId })
+      .then((rows) => {
+        if (!cancelled) setRuntimeSubagentSnapshots(rows.map(snapshotFromRuntimeSubagent));
+      })
+      .catch(() => {
+        if (!cancelled) setRuntimeSubagentSnapshots([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, chatInfoPaneVisible, connection, events.length]);
   const subagentSnapshots = useMemo(
-    () => shouldDeriveFullChatInfo ? subagentSnapshotsFromEvents(events) : EMPTY_SUBAGENT_SNAPSHOTS,
-    [events, shouldDeriveFullChatInfo],
+    () => {
+      const fromEvents = shouldDeriveFullChatInfo ? subagentSnapshotsFromEvents(events) : EMPTY_SUBAGENT_SNAPSHOTS;
+      return mergeSubagentSnapshots(fromEvents, runtimeSubagentSnapshots);
+    },
+    [events, runtimeSubagentSnapshots, shouldDeriveFullChatInfo],
   );
+  const chatInfoRosterViewState = resolveChatInfoRosterViewState(subagentPaneViewState);
   const chatInfoEvents = shouldDeriveFullChatInfo ? events : EMPTY_CHAT_EVENTS;
   const liveAgentCount = shouldDeriveFullChatInfo
     ? subagentSnapshots.filter((snap) => snap.status === "running").length
     : subagentActivity.runningCount;
   const chatInfo = useMemo(() => {
     const chatLaneId = activeDisplaySession?.laneId ?? activeLaneId;
+    const sessionLane = (chatLaneId ? lanes.find((lane) => lane.id === chatLaneId) : null) ?? activeLane;
     return deriveChatInfoSnapshot({
       events: chatInfoEvents,
       activeSession: activeDisplaySession,
       provider: modelState.provider,
       modelLabel: modelState.displayName || modelState.model || modelState.provider,
-      laneLabel: activeLane?.name ?? null,
+      laneLabel: sessionLane?.name ?? null,
+      laneIcon: sessionLane?.icon ?? null,
+      laneColor: sessionLane?.color ?? null,
+      title: activeDisplaySession?.title ?? null,
       snapshots: subagentSnapshots,
       tokenStats: statusLineStats,
       goal: currentGoal,
       streaming,
       inspectedSubagentId,
       pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
-      // Closed-but-resumable Claude terminal → chat-info shows the orange
-      // resume row (activating it calls resumeClosedTerminalSession).
       resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
     });
   }, [
     activeDisplaySession,
-    activeLane?.name,
+    activeLane,
     activeLaneId,
     activeTerminalSession,
     chatInfoEvents,
     currentGoal,
     inspectedSubagentId,
+    lanes,
     modelState.displayName,
     modelState.model,
     modelState.provider,
@@ -4523,13 +4813,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   ]);
   const buildChatInfoSnapshot = useCallback(() => {
     const chatLaneId = activeDisplaySession?.laneId ?? activeLaneId;
-    const snapshots = shouldDeriveFullChatInfo ? subagentSnapshots : subagentSnapshotsFromEvents(events);
+    const sessionLane = (chatLaneId ? lanes.find((lane) => lane.id === chatLaneId) : null) ?? activeLane;
+    const snapshots = shouldDeriveFullChatInfo
+      ? subagentSnapshots
+      : mergeSubagentSnapshots(subagentSnapshotsFromEvents(events), runtimeSubagentSnapshots);
     return deriveChatInfoSnapshot({
       events,
       activeSession: activeDisplaySession,
       provider: modelState.provider,
       modelLabel: modelState.displayName || modelState.model || modelState.provider,
-      laneLabel: activeLane?.name ?? null,
+      laneLabel: sessionLane?.name ?? null,
+      laneIcon: sessionLane?.icon ?? null,
+      laneColor: sessionLane?.color ?? null,
+      title: activeDisplaySession?.title ?? null,
       snapshots,
       tokenStats: statusLineStats,
       goal: currentGoal,
@@ -4540,16 +4836,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     });
   }, [
     activeDisplaySession,
-    activeLane?.name,
+    activeLane,
     activeLaneId,
     activeTerminalSession,
     currentGoal,
     events,
     inspectedSubagentId,
+    lanes,
     modelState.displayName,
     modelState.model,
     modelState.provider,
     prByLaneId,
+    runtimeSubagentSnapshots,
     shouldDeriveFullChatInfo,
     statusLineStats,
     streaming,
@@ -4604,9 +4902,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // visible (0 = resume, 1 = main, …). Clamp prior selection back into range
     // when the roster shrinks (e.g., a subagent finishes and is reaped).
     const resumeOffset = rightPane.kind === "chat-info" ? chatInfoSelectionOffset(rightPane.info) : 0;
-    const rowCount = buildSubagentPaneRows(content, subagentPaneViewState).filter((row) => row.kind === "snapshot").length + resumeOffset;
+    const rowCount = buildSubagentPaneRows(content, chatInfoRosterViewState).filter((row) => row.kind === "snapshot").length + resumeOffset;
     setRightSelectionIndex((index) => Math.max(0, Math.min(Number.isFinite(index) ? Math.floor(index) : 0, rowCount)));
-  }, [rightPane, subagentPaneViewState]);
+  }, [chatInfoRosterViewState, rightPane]);
   useEffect(() => {
     if (!inspectedSubagentId) return;
     if (rightPane.kind !== "chat-info" || !rightOpen || !subagentSnapshots.some((snap) => snap.id === inspectedSubagentId)) {
@@ -4727,7 +5025,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     : null;
   const goalBannerRows = goalBannerText ? 1 : 0;
   const addModeRows = addMode ? 1 : 0;
-  const rightPaneMaxWidth = rightPane.kind === "model-picker" || rightPane.kind === "external-session-browser"
+  const rightPaneMaxWidth = rightPane.kind === "model-picker" || rightPane.kind === "model-wizard" || rightPane.kind === "external-session-browser"
     ? MODEL_PICKER_RIGHT_PANE_MAX_WIDTH
     : RIGHT_PANE_MAX_WIDTH;
   const rightPaneWidth = resolveRightPaneWidth(columns, rightOpen, drawerOpen, rightPaneMaxWidth);
@@ -4736,7 +5034,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // this instead — otherwise every first open looks like a too-narrow terminal.
   const prospectiveRightPaneWidth = resolveRightPaneWidth(columns, true, drawerOpen, rightPaneMaxWidth);
   const centerWidth = resolveCenterPaneWidth(columns, drawerOpen, rightPaneWidth);
-  const promptPaneWidth = Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(columns, MIN_CENTER_PANE_WIDTH));
+  const promptPaneWidth = Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(centerWidth, MIN_CENTER_PANE_WIDTH));
   // Confirmed chip tokens in the prompt: mentions that were actually inserted
   // from the picker and /commands matching the known catalog. Rendered as
   // colored tokens in the prompt rows below.
@@ -4754,172 +5052,146 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         isCommand: (body) => commandNames.has(body.toLowerCase()),
       }),
       ...promptSmartLinks.map(({ start, end }) => ({ kind: "link" as const, start, end })),
+      // Inline image tokens are self-delimiting, so they paint straight from
+      // the draft text without consulting the attachment registry.
+      ...findImageTokens(prompt).map(({ start, end }) => ({ kind: "image" as const, start, end })),
     ].sort((left, right) => left.start - right.start);
   }, [prompt, promptSmartLinks, selectedMentions, slashCommands]);
-  const promptDisplay = promptDisplayRowsWithCursor(prompt, Math.max(1, promptPaneWidth - 5), promptCursor, PROMPT_MAX_ROWS);
+  // Drives the "^B open image" composer hint: only offer the key when it has
+  // something to act on.
+  const promptCursorOnImageToken = useMemo(
+    () => imageTokenAtCursor(prompt, promptCursor) !== null,
+    [prompt, promptCursor],
+  );
+  const promptDisplay = promptDisplayRowsWithCursor(prompt, promptWrapWidth(promptPaneWidth), promptCursor, PROMPT_MAX_ROWS);
   const promptRows = promptDisplay.rows;
   const smartLinkRows = promptSmartLinks.length > 0 ? 1 : 0;
-  const chatRowBudget = Math.max(4, rows - 8 - (promptRows.length - 1) - smartLinkRows - statusRows - goalBannerRows - addModeRows - backgroundLaunchRows);
+  // Header is the ADE wordmark row plus its bottom rule (2), then optional banners.
+  const headerChromeRows = 2 + goalBannerRows + addModeRows;
+  const sessionsPaneHeight = Math.max(8, rows - headerChromeRows);
+  const chatRowBudget = Math.max(4, sessionsPaneHeight - 7 - (promptRows.length - 1) - smartLinkRows - statusRows - backgroundLaunchRows);
   const chatWrapWidth = resolveChatWrapWidth(centerWidth, drawerOpen, rightPaneWidth);
   const terminalPaneWidth = resolveTerminalPaneWidth(centerWidth);
   const orderedDrawerLanes = useMemo(
     () => sortLanesForStackGraph(lanes),
     [lanes],
   );
-	  const drawerLaneRows = useMemo(
-	    () => {
-	      const count = visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length);
-	      const start = Math.max(0, Math.min(drawerScrollOffsetRows, Math.max(0, orderedDrawerLanes.length - count)));
-	      return orderedDrawerLanes.slice(start, start + count);
-	    },
-	    [chatRowBudget, drawerScrollOffsetRows, orderedDrawerLanes],
-	  );
   const diffLaneIdsKey = useMemo(
     () => lanes.filter((lane) => !lane.archivedAt).map((lane) => lane.id).sort().join("\n"),
     [lanes],
   );
-  const drawerLaneSessions = useMemo(
-    () => openDrawerSessions.filter((session) => session.laneId === drawerLaneId),
-    [drawerLaneId, openDrawerSessions],
-  );
-  const drawerLaneClosedSessions = useMemo(
-    () => closedCliSessions.filter((session) => session.laneId === (drawerLaneId ?? activeLaneId)),
-    [activeLaneId, closedCliSessions, drawerLaneId],
-  );
-  const selectedLaneIndex = useMemo(() => {
-    if (selectedDrawerLaneAction === "new-lane") return drawerLaneRows.length;
-    const targetId = selectedDrawerLaneId ?? drawerLaneId ?? activeLaneId;
-    const index = drawerLaneRows.findIndex((lane) => lane.id === targetId);
-    return index >= 0 ? index : 0;
-  }, [activeLaneId, drawerLaneId, drawerLaneRows, selectedDrawerLaneAction, selectedDrawerLaneId]);
-  const addModeLaneIndex = useMemo(() => {
-    if (!addMode) return selectedLaneIndex;
-    const index = drawerLaneRows.findIndex((lane) => lane.id === addMode.cursorLaneId);
-    return index >= 0 ? index : 0;
-  }, [addMode, drawerLaneRows, selectedLaneIndex]);
-  // Single source of truth for the drawer's row layout, shared with the
-  // Drawer renderer (which derives the identical layout from the same inputs)
-  // so mouse hit-testing cannot drift from what is on screen.
-  const drawerSessionsSource = addMode ? tileableDisplaySessions : openDrawerSessions;
-  const drawerLayoutValue = useMemo<DrawerLayout>(() => {
-    const mode = addMode ? "chats" : drawerSection;
-    const sliceSelected = addMode ? addModeLaneIndex : selectedLaneIndex;
-    const browsing = addMode?.cursorLaneId ?? drawerLaneId ?? activeLaneId;
-    const { start, count } = drawerLaneWindow(chatRowBudget, orderedDrawerLanes.length, drawerScrollOffsetRows);
-    const selectedAbsolute = sliceSelected >= 0 && sliceSelected < count ? start + sliceSelected : null;
-    const expandedAbsolute = mode === "chats"
-      ? (() => {
-          const index = orderedDrawerLanes.findIndex((lane) => lane.id === browsing);
-          return index >= 0 ? index : null;
-        })()
-      : selectedAbsolute;
-    return computeDrawerLayout({
-      panelHeight: chatRowBudget,
-      lanes: orderedDrawerLanes.map((lane): DrawerLaneInput => ({
-        laneId: lane.id,
-        chatCount: drawerSessionsSource.filter((session) => session.laneId === lane.id).length,
-        closedChatCount: addMode ? 0 : closedCliSessions.filter((session) => session.laneId === lane.id).length,
-        closedExpanded: drawerClosedCliExpandedLaneIds.has(lane.id),
-        worktreeAvailable: !unavailableLaneIds.has(lane.id),
-      })),
-      expandedLaneIndex: expandedAbsolute,
-      selectedLaneIndex: selectedAbsolute,
-      scrollOffsetRows: drawerScrollOffsetRows,
-    });
-  }, [
-    activeLaneId,
-    addMode,
-    addModeLaneIndex,
-    chatRowBudget,
-    drawerLaneId,
-    drawerScrollOffsetRows,
-    drawerSection,
-    drawerSessionsSource,
-    drawerClosedCliExpandedLaneIds,
-    closedCliSessions,
-    orderedDrawerLanes,
-    selectedLaneIndex,
-    unavailableLaneIds,
-  ]);
-  const drawerLayoutValueRef = useRef(drawerLayoutValue);
-  useEffect(() => {
-    drawerLayoutValueRef.current = drawerLayoutValue;
-  }, [drawerLayoutValue]);
-  /** Resolve a drawer chat hit (window-relative lane + chat index) to its session. */
-  const drawerSessionForChatHit = useCallback((
-    hit: { laneIndex: number; chatIndex: number },
-    layout: DrawerLayout,
-  ): AgentChatSessionSummary | null => {
-    const plan = layout.lanes[hit.laneIndex];
-    if (!plan) return null;
-    const laneSessions = drawerSessionsSource
-      .filter((session) => session.laneId === plan.laneId)
-      .slice(0, plan.visibleChatCount);
-    return laneSessions[hit.chatIndex] ?? null;
-  }, [drawerSessionsSource]);
-  const drawerClosedSessionForHit = useCallback((
-    hit: { laneIndex: number; closedIndex: number },
-    layout: DrawerLayout,
-  ): AgentChatSessionSummary | null => {
-    const plan = layout.lanes[hit.laneIndex];
-    if (!plan) return null;
-    const laneSessions = closedCliSessions
-      .filter((session) => session.laneId === plan.laneId)
-      .slice(0, plan.visibleClosedChatCount);
-    return laneSessions[hit.closedIndex] ?? null;
-  }, [closedCliSessions]);
-  const drawerVisibleLaneSessions = useMemo(() => {
-    // Cap the browsable chat list at what the drawer actually renders for the
-    // expanded lane so keyboard selection can't land on an invisible row.
-    const laneId = drawerLaneId ?? activeLaneId;
-    const plan = drawerLayoutValue.lanes.find((entry) => entry.laneId === laneId && entry.expanded) ?? null;
-    const cap = plan ? plan.visibleChatCount : visibleDrawerChatCount(drawerLaneSessions.length);
-    return drawerLaneSessions.slice(0, cap);
-  }, [activeLaneId, drawerLaneId, drawerLaneSessions, drawerLayoutValue]);
-  const drawerVisibleLaneClosedSessions = useMemo(() => {
-    const laneId = drawerLaneId ?? activeLaneId;
-    const plan = drawerLayoutValue.lanes.find((entry) => entry.laneId === laneId && entry.expanded) ?? null;
-    const cap = plan?.visibleClosedChatCount ?? 0;
-    return drawerLaneClosedSessions.slice(0, cap);
-  }, [activeLaneId, drawerLaneClosedSessions, drawerLaneId, drawerLayoutValue]);
-  const drawerVisibleChatItems = useMemo(() => {
-    const laneId = drawerLaneId ?? activeLaneId;
-    const plan = drawerLayoutValue.lanes.find((entry) => entry.laneId === laneId && entry.expanded) ?? null;
-    return buildDrawerChatItems({
-      laneId,
-      openSessions: drawerVisibleLaneSessions,
-      closedSessions: drawerVisibleLaneClosedSessions,
-      closedToggleVisible: plan?.closedToggleVisible ?? false,
-      closedExpanded: plan?.closedExpanded ?? false,
-    });
-  }, [activeLaneId, drawerLaneId, drawerLayoutValue, drawerVisibleLaneClosedSessions, drawerVisibleLaneSessions]);
-  const selectedChatIndex = useMemo(() => {
-    if (selectedDrawerChatAction === "new-chat") return drawerVisibleChatItems.length;
-    if (selectedDrawerChatAction === "closed-toggle") {
-      const index = drawerVisibleChatItems.findIndex((item) => item.kind === "closed-toggle");
-      return index >= 0 ? index : 0;
+  // Chats holding an unsent composer draft, for the pane's ✎ indicator. Drafts
+  // are stashed on chat switch and mutate as you type, so the identity of the
+  // open chat and the current prompt are what make this recompute — no timer.
+  const workDraftSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const session of displaySessions) {
+      if (sessionHasDraft(composerDraftsRef.current, session.sessionId)) ids.add(session.sessionId);
     }
-    const targetId = selectedDrawerChatId
-      ?? (drawerLaneId === activeLaneId ? activeSessionId : null);
-    const index = drawerVisibleChatItems.findIndex((item) => {
-      const session = sessionFromDrawerChatItem(item);
-      return session?.sessionId === targetId;
+    if (activeSessionId && prompt.length > 0) ids.add(activeSessionId);
+    return ids;
+  }, [activeSessionId, displaySessions, prompt]);
+  const projectCanonicalId = useMemo(
+    () => (project.projectRoot ? deriveProjectId(project.projectRoot) : null),
+    [project.projectRoot],
+  );
+  const localSessionIds = useMemo(
+    () => new Set(displaySessions.map((session) => session.sessionId)),
+    [displaySessions],
+  );
+  // Cross-machine rows, first pass: the attention snapshot the /activity pane
+  // already fetches, narrowed to this project and to machines that are not this
+  // one. A live per-machine RPC fan-out (desktop `crossMachineLanes`) arrives
+  // with transparent connect; until then the snapshot's `online` flag is the
+  // only reachability signal, and it is enough to dim a group honestly.
+  const workForeignSessions = useMemo<WorkListForeignSession[]>(() => {
+    if (!attentionSnapshot) return [];
+    return foreignRowsFromAttention({
+      items: attentionSnapshot.items,
+      projectCanonicalId: projectCanonicalId,
+      projectRootPath: project.projectRoot,
+      localSessionIds,
     });
-    return index >= 0 ? index : 0;
-  }, [activeLaneId, activeSessionId, drawerLaneId, drawerVisibleChatItems, selectedDrawerChatAction, selectedDrawerChatId]);
-  const addModeChatIndex = useMemo(() => {
-    if (!addMode) return selectedChatIndex;
-    const allLaneSessions = tileableDisplaySessions.filter((session) => session.laneId === addMode.cursorLaneId);
-    // Cap at what the drawer actually renders for the expanded (cursor) lane so
-    // the add-mode cursor can't sit on an invisible row.
-    const plan = drawerLayoutValue.lanes.find((entry) => entry.laneId === addMode.cursorLaneId && entry.expanded) ?? null;
-    const cap = plan ? plan.visibleChatCount : visibleDrawerChatCount(allLaneSessions.length);
-    const laneSessions = allLaneSessions.slice(0, cap);
-    const index = laneSessions.findIndex((session) => session.sessionId === addMode.cursorChatId);
-    return index >= 0 ? index : 0;
-  }, [addMode, drawerLayoutValue, selectedChatIndex, tileableDisplaySessions]);
+  }, [attentionSnapshot, localSessionIds, project.projectRoot, projectCanonicalId]);
+  // The one model behind the sessions pane. Add-mode reuses it as a picker over
+  // the grid-tileable chats, so the picker and the pane can never disagree
+  // about what a row is or where it sits.
+  const workListModel = useMemo<WorkListModel>(() => buildWorkListModel({
+    lanes,
+    sessions: (addMode ? tileableDisplaySessions : openDrawerSessions) as TuiChatSessionSummary[],
+    foreign: addMode ? [] : workForeignSessions,
+    activeSessionId,
+    draftSessionIds: workDraftSessionIds,
+    expandedShelves: workExpandedShelves,
+    unavailableLaneIds,
+    hideNewChat: true,
+  }), [
+    activeSessionId,
+    addMode,
+    lanes,
+    openDrawerSessions,
+    tileableDisplaySessions,
+    unavailableLaneIds,
+    workDraftSessionIds,
+    workExpandedShelves,
+    workForeignSessions,
+  ]);
+  // In add-mode the pane is a chooser and the cursor lives on addMode state; in
+  // normal use it is the pane's own selected key.
+  const workSelectedRowKey = addMode
+    ? (addMode.cursorChatId ? `session:${addMode.cursorChatId}` : null)
+    : workSelectedKey;
+  const workSelectedIndex = workListRowIndex(workListModel.rows, workSelectedRowKey);
+  const workSelectedRow: WorkListRow | null = workSelectedIndex >= 0
+    ? workListModel.rows[workSelectedIndex]!
+    : null;
+  const workSelectionKind: WorkSelectionKind = !drawerOpen
+    ? null
+    : workSelectedRow?.kind === "lane-header"
+      ? "lane"
+      : workSelectedRow?.kind ?? null;
+  // Single source of truth for the pane's row geometry, shared with the mouse
+  // handler below so hit-testing cannot drift from what is on screen.
+  const workListLayoutValue = useMemo<WorkListLayout>(() => computeWorkListLayout({
+    panelHeight: sessionsPaneHeight,
+    rows: workListModel.rows,
+    scrollOffsetRows: drawerScrollOffsetRows,
+    selectedIndex: workSelectedIndex,
+    headerRows: addMode ? 2 : 1,
+  }), [addMode, drawerScrollOffsetRows, sessionsPaneHeight, workListModel.rows, workSelectedIndex]);
+  useEffect(() => {
+    if (!connection) return;
+    const screen = deriveTuiAnalyticsScreen({
+      activePane,
+      workSelectionKind,
+      rightPaneKind: rightPane.kind,
+      gridViewActive,
+      addModeActive: addMode !== null,
+      terminalControlActive: attachedTerminalId !== null,
+    });
+    if (lastAnalyticsScreenRef.current === screen) return;
+    lastAnalyticsScreenRef.current = screen;
+    void captureTuiProductAnalytics(connection, {
+      event: "ade_screen_viewed",
+      properties: {
+        screen,
+        source: "ade_code",
+      },
+      dedupeKey: `tui_screen:${screen}`,
+      minimumIntervalMs: 2_000,
+    }).catch(() => undefined);
+  }, [activePane, addMode, attachedTerminalId, connection, gridViewActive, rightPane.kind, workSelectionKind]);
+
+  const workListLayoutRef = useRef(workListLayoutValue);
+  const workListModelRef = useRef(workListModel);
+  const workSelectedKeyRef = useRef(workSelectedRowKey);
+  useEffect(() => {
+    workListLayoutRef.current = workListLayoutValue;
+    workListModelRef.current = workListModel;
+    workSelectedKeyRef.current = workSelectedRowKey;
+  }, [workListLayoutValue, workListModel, workSelectedRowKey]);
   const applyDrawerChatSelection = useCallback((
-    selection: { session: AgentChatSessionSummary | null; action: DrawerChatAction | null },
+    selection: { session: AgentChatSessionSummary | null; action: WorkChatAction | null },
   ) => {
     const clearLoadedTranscript = (): void => {
       clearOlderHistoryCursor(activeSessionIdRef.current);
@@ -5080,45 +5352,72 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     })();
   }, [captureHydratedEventsWatermark, clearOlderHistoryCursor, commitActiveSessionEvents, mergeHydratedEventsWithLive, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, setDraftChatMode, setGridView, setSessionInterrupted, setSessionStreaming, setStreaming]);
-  const toggleDrawerClosedCliGroup = useCallback((laneId: string | null) => {
-    if (!laneId) return;
-    setDrawerClosedCliExpandedLaneIds((prev) => {
+  const toggleWorkShelf = useCallback((shelf: WorkListShelfKind) => {
+    setWorkExpandedShelves((prev) => {
       const next = new Set(prev);
-      if (next.has(laneId)) next.delete(laneId);
-      else next.add(laneId);
+      if (next.has(shelf)) next.delete(shelf);
+      else next.add(shelf);
       return next;
     });
-    setSelectedDrawerChatAction("closed-toggle");
-    setSelectedDrawerChatId(null);
   }, []);
-  const selectDrawerChatIndex = useCallback((index: number) => {
-    const item = drawerVisibleChatItems[index] ?? null;
-    const session = sessionFromDrawerChatItem(item);
-    const action = item ? drawerChatActionForItem(item) : "new-chat";
-    setSelectedDrawerChatAction(action);
-    setSelectedDrawerChatId(session?.sessionId ?? null);
-    if (action !== "closed-toggle") {
-      applyDrawerChatSelection({ session, action });
+  /**
+   * Open a foreign row by hopping this TUI onto that machine's paired runtime.
+   * Assigned after refreshState exists; the ref keeps selectWorkRow stable.
+   */
+  const hopToForeignRowRef = useRef<(row: WorkListSessionRow) => void>(() => {});
+  const openRemoteSession = useCallback((row: WorkListSessionRow) => {
+    hopToForeignRowRef.current(row);
+  }, []);
+  /**
+   * Move the pane's cursor onto a row. Landing on a chat OPENS it (the drawer
+   * behaved the same way: browsing is previewing), which is why selection and
+   * activation share this one path — a click and an arrow key cannot diverge.
+   */
+  const selectWorkRow = useCallback((row: WorkListRow | null) => {
+    if (!row) return;
+    setWorkSelectedKey(row.key);
+    switch (row.kind) {
+      case "session": {
+        if (row.machine) {
+          openRemoteSession(row);
+          return;
+        }
+        const session = displaySessionsRef.current.find(
+          (entry) => entry.sessionId === row.sessionId,
+        ) ?? null;
+        if (row.laneId) {
+          setDrawerLaneId(row.laneId);
+          setSelectedDrawerLaneId(row.laneId);
+        }
+        setSelectedWorkChatAction(null);
+        setSelectedDrawerChatId(row.sessionId);
+        applyDrawerChatSelection({ session, action: null });
+        return;
+      }
+      case "new-chat": {
+        setDrawerLaneId(row.laneId);
+        setSelectedDrawerLaneId(row.laneId);
+        selectActiveLaneId(row.laneId);
+        setSelectedDrawerChatId(null);
+        setSelectedWorkChatAction("new-chat");
+        applyDrawerChatSelection({ session: null, action: "new-chat" });
+        return;
+      }
+      case "lane-header": {
+        // Lane rows only move the highlight; opening lane details is Enter's
+        // job, so arrowing past a lane header never swaps the right pane.
+        if (row.laneId) setSelectedDrawerLaneId(row.laneId);
+        return;
+      }
+      case "shelf":
+        return;
+      default: {
+        const _exhaustive: never = row;
+        return _exhaustive;
+      }
     }
-  }, [applyDrawerChatSelection, drawerVisibleChatItems]);
-  const enterDrawerChatListForLane = useCallback((lane: LaneSummary) => {
-    const laneSessions = openDrawerSessions.filter((entry) => entry.laneId === lane.id);
-    const visibleSessions = laneSessions.slice(0, visibleDrawerChatCount(laneSessions.length));
-    const lastSessionId = lastChatByLaneRef.current.get(lane.id);
-    const session =
-      visibleSessions.find((entry) => entry.sessionId === lastSessionId)
-      ?? newestSession(visibleSessions);
-    const action: DrawerChatAction | null = session ? null : "new-chat";
-    setDrawerSection("chats");
-    setDrawerLaneId(lane.id);
-    setSelectedDrawerLaneId(lane.id);
-    setSelectedDrawerLaneAction(null);
-    selectActiveLaneId(lane.id);
-    setSelectedDrawerChatId(session?.sessionId ?? null);
-    setSelectedDrawerChatAction(action);
-    applyDrawerChatSelection({ session: session ?? null, action });
-  }, [applyDrawerChatSelection, openDrawerSessions, selectActiveLaneId]);
-  const activeComposerTrigger = useMemo(() => {
+  }, [applyDrawerChatSelection, openRemoteSession, selectActiveLaneId]);
+  const liveComposerTrigger = useMemo(() => {
     if (activePane !== "chat") return null;
     const trigger = detectComposerTrigger(prompt, promptCursor);
     if (!trigger) return null;
@@ -5134,6 +5433,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       isMention: confirmedMention,
     }) ? null : trigger;
   }, [activePane, prompt, promptCursor, selectedMentions]);
+  // Esc closes the @/slash palette, and it must stay closed while the user
+  // keeps typing that same token — suggestion search only narrows, so the
+  // menu the user just dismissed would otherwise reopen on the next keystroke.
+  // Backspacing out of the dismissed query, editing it into a different one,
+  // or starting a fresh trigger elsewhere all reopen normally.
+  const [dismissedComposerTrigger, setDismissedComposerTrigger] = useState<ComposerTriggerDismissal | null>(null);
+  const activeComposerTrigger = useMemo(() => (
+    liveComposerTrigger && isComposerTriggerDismissed(liveComposerTrigger, dismissedComposerTrigger)
+      ? null
+      : liveComposerTrigger
+  ), [dismissedComposerTrigger, liveComposerTrigger]);
+  useEffect(() => {
+    if (!dismissedComposerTrigger) return;
+    if (liveComposerTrigger && isComposerTriggerDismissed(liveComposerTrigger, dismissedComposerTrigger)) return;
+    setDismissedComposerTrigger(null);
+  }, [dismissedComposerTrigger, liveComposerTrigger]);
   const activeMentionRange = useMemo(() => (
     activeComposerTrigger?.type === "at"
       ? { start: activeComposerTrigger.start, query: activeComposerTrigger.query }
@@ -5503,29 +5818,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => buildProviderReadinessRows(aiStatus, storedApiKeyProviders, openCodeDiagnostics),
     [aiStatus, openCodeDiagnostics, storedApiKeyProviders],
   );
-  const newChatImportLaneId = drawerLaneId ?? activeLaneId;
-  const newChatImportEnabled = Boolean(newChatImportLaneId && !unavailableLaneIds.has(newChatImportLaneId));
-  const newChatImportDetail = !newChatImportLaneId
-    ? "Select a lane first — imports need a lane folder"
-    : unavailableLaneIds.has(newChatImportLaneId)
-      ? "Lane folder unavailable"
-      : "Browse external CLI sessions";
+  // Importing an external CLI session is NOT a new-chat setting — it is its own
+  // command (`/import`). The new-chat rows carry model/interface/permission only.
   const newChatSetupRows = useMemo(
     () => buildSetupRows({
       modelState,
       models,
       includeRefresh: false,
       includeApply: true,
-      includeImportSession: true,
-      importSessionEnabled: newChatImportEnabled,
-      importSessionDetail: newChatImportDetail,
       outputStyle: "default",
       outputStyleEditable: false,
       // Draft: the interface is the user's editable Chat/CLI choice.
       interfaceMode: modelState.interfaceMode,
       interfaceEditable: true,
     }),
-    [modelState, models, newChatImportDetail, newChatImportEnabled],
+    [modelState, models],
   );
   // Once a session exists the interface is fixed by its type (a CLI terminal is
   // active ⇒ CLI; an SDK chat ⇒ Chat). With no committed session yet (/model on a
@@ -5560,6 +5867,55 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
       : row);
   }, [modelSetupRows, providerLocked]);
+
+  // ── /model wizard ─────────────────────────────────────────────────────────
+  // One pool (the same helper the legacy picker layout derives its entries
+  // from) feeds every wizard step, so provider/family/model lists can never
+  // disagree about which models exist. The view is rebuilt on every render of
+  // the wizard pane, so the render, the keyboard handler, and the click
+  // hit-test all read identical rows.
+  const modelWizardEntries = useMemo(
+    () => collectModelPickerEntries({
+      models,
+      catalog: modelCatalog,
+      favorites: modelPickerFavorites,
+      activeReasoningEffort: modelState.reasoningEffort,
+      aiStatus,
+      interfaceMode: modelState.interfaceMode,
+    }),
+    [aiStatus, modelCatalog, modelPickerFavorites, modelState.interfaceMode, modelState.reasoningEffort, models],
+  );
+  const modelWizardSettingsRows = rightPane.kind === "model-wizard" && rightPane.surface === "new-chat"
+    ? newChatSetupRows
+    : modelPickerRows;
+  const modelWizardInput = useMemo<ModelWizardInput | null>(() => {
+    if (rightPane.kind !== "model-wizard") return null;
+    return {
+      selection: {
+        step: rightPane.step,
+        provider: rightPane.provider,
+        familyKey: rightPane.familyKey,
+        index: rightPane.index,
+      },
+      entries: modelWizardEntries,
+      recents: modelPickerRecents,
+      settingsRows: modelWizardSettingsRows,
+      activeModelId: modelState.modelId,
+    };
+  }, [modelPickerRecents, modelState.modelId, modelWizardEntries, modelWizardSettingsRows, rightPane]);
+  const modelWizardView = useMemo(
+    () => (modelWizardInput ? buildModelWizardView(modelWizardInput) : null),
+    [modelWizardInput],
+  );
+
+  // Row highlighted in the /import browser — previewed in the CENTER pane so the
+  // transcript is readable before Enter commits the import.
+  const externalSessionPreviewTarget = useMemo(() => {
+    if (rightPane.kind !== "external-session-browser") return null;
+    const visible = visibleExternalSessions(rightPane.sessions, rightPane.providerFilter, rightPane.query);
+    if (!visible.length) return null;
+    return visible[Math.min(Math.max(0, rightPane.selectedIndex), visible.length - 1)] ?? null;
+  }, [rightPane]);
 
   useEffect(() => {
     activeLaneIdRef.current = activeLaneId;
@@ -5869,19 +6225,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // changes — but leaves the pane alone while a slash command (sticky) or any
   // other non-default content is showing. The sticky marker is cleared on chat
   // switch (in selectActiveSessionId) and on explicit close (Esc / pane:close).
+  // Lane details auto-open only when the cursor is on a lane header. A
+  // session, shelf, or still-hydrating selection must not borrow the active
+  // lane — that was the Primary ↔ Chat Info strobe on first paint, and the
+  // reason clicking snoozed/settled swapped the right pane.
   const highlightedDrawerLane = useMemo(() => {
-    if (drawerSection !== "lanes") return null;
+    if (workSelectionKind !== "lane") return null;
     const id = selectedDrawerLaneId ?? drawerLaneId ?? activeLaneId;
     if (!id) return null;
     return lanes.find((lane) => lane.id === id) ?? null;
-  }, [activeLaneId, drawerLaneId, drawerSection, lanes, selectedDrawerLaneId]);
+  }, [activeLaneId, drawerLaneId, lanes, selectedDrawerLaneId, workSelectionKind]);
 
   const drawerPreviewSession = useMemo(() => {
-    if (drawerSection !== "chats" || selectedDrawerChatAction !== null || !selectedDrawerChatId) {
-      return null;
-    }
+    if (workSelectionKind !== "session" || !selectedDrawerChatId) return null;
     return displaySessions.find((session) => session.sessionId === selectedDrawerChatId) ?? null;
-  }, [displaySessions, drawerSection, selectedDrawerChatAction, selectedDrawerChatId]);
+  }, [displaySessions, selectedDrawerChatId, workSelectionKind]);
 
   const drawerPreviewChatInfo = useMemo(() => {
     if (!drawerPreviewSession) return null;
@@ -5893,11 +6251,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     } else if (drawerPreviewSessionId === drawerPreviewSession.sessionId) {
       previewEvents = drawerPreviewEvents;
     }
-    const lane = lanes.find((entry) => entry.id === drawerPreviewSession.laneId) ?? null;
+    const lane = lanes.find((entry) => entry.id === drawerPreviewSession.laneId) ?? drawerLane ?? null;
     return deriveDrawerPreviewChatInfo(
       drawerPreviewSession,
       previewEvents,
-      lane?.name ?? drawerLane?.name ?? null,
+      lane,
     );
   }, [
     activeSessionId,
@@ -5912,11 +6270,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const drawerNavTarget = useMemo((): DrawerNavTarget | null => {
     if (!drawerOpen) return null;
-    if (drawerSection === "lanes") {
+    if (workSelectionKind === "lane") {
       const lane = highlightedDrawerLane ?? drawerLane ?? activeLane;
       return lane ? { kind: "lane", lane } : null;
     }
-    if (selectedDrawerChatAction === "new-chat") {
+    if (workSelectionKind === "new-chat" || selectedWorkChatAction === "new-chat") {
       const laneId = drawerLaneId ?? activeLaneId;
       const lane = lanes.find((entry) => entry.id === laneId) ?? drawerLane ?? activeLane;
       if (!laneId || !lane || unavailableLaneIds.has(laneId)) return null;
@@ -5938,11 +6296,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     drawerOpen,
     drawerPreviewChatInfo,
     drawerPreviewSession,
-    drawerSection,
     highlightedDrawerLane,
     lanes,
     newChatSetupRows,
-    selectedDrawerChatAction,
+    workSelectionKind,
+    selectedWorkChatAction,
     unavailableLaneIds,
     activeLaneId,
   ]);
@@ -5954,12 +6312,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [chatInfo, drawerOpen, drawerPreviewChatInfo, drawerPreviewSession, rightPane.kind]);
 
   useEffect(() => {
-    if (!drawerOpen || activePane !== "drawer" || drawerSection !== "chats") {
+    if (!drawerOpen || activePane !== "drawer" || workSelectionKind !== "session") {
       setDrawerPreviewSessionId(null);
       setDrawerPreviewEvents([]);
       return;
     }
-    if (selectedDrawerChatAction !== null || !selectedDrawerChatId) {
+    if (selectedWorkChatAction !== null || !selectedDrawerChatId) {
       setDrawerPreviewSessionId(null);
       setDrawerPreviewEvents([]);
       return;
@@ -6002,17 +6360,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeSessionId,
     displaySessions,
     drawerOpen,
-    drawerSection,
-    selectedDrawerChatAction,
+    selectedWorkChatAction,
     selectedDrawerChatId,
+    workSelectionKind,
   ]);
 
   useEffect(() => {
     // If the user explicitly opened a pane via a slash command, leave it alone.
     if (lastUserOpenedPaneRef.current !== null) return;
+    // A closed pane must stay closed: rewriting its contents every poll is what
+    // made the right column strobe on first load.
+    if (!rightOpen) return;
     // Form panes (rename, new-lane, pr-open) are user-driven; never overwrite.
     if (rightPane.kind === "form") return;
     if (rightPane.kind === "model-picker") return;
+    if (rightPane.kind === "model-wizard") return;
     if (rightPane.kind === "external-session-browser") return;
     if (pendingQuestionStateRef.current) return;
     const next = resolveContextDefault({
@@ -6023,7 +6385,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       activeLane,
       liveAgentCount,
       highlightedDrawerLane,
-      drawerMode: drawerSection,
       drawerNav: drawerNavTarget,
       chatInfo,
       subagentSnapshots,
@@ -6039,7 +6400,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     });
     setRightPane((prev) => {
       if (prev.kind === "chat-info" && next.kind === "chat-info") {
-        return next;
+        return prev;
+      }
+      // Do not bounce Chat Info to Primary lane-details while the active
+      // session is still hydrating. Opening lane details is Enter, a
+      // singleton identity click, or `/lane details` — not this effect.
+      if (prev.kind === "chat-info" && next.kind === "lane-details") {
+        return prev;
       }
       if (prev.kind === "model-picker" && prev.surface === "new-chat" && next.kind === "model-picker" && next.surface === "new-chat") {
         return mergeNewChatModelPickerContext(prev, next);
@@ -6066,35 +6433,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     drawerLane,
     drawerLaneId,
     drawerNavTarget,
-    drawerSection,
     highlightedDrawerLane,
     liveAgentCount,
     modelState.provider,
     newChatSetupRows,
+    rightOpen,
     rightPane.kind,
-    selectedDrawerChatAction,
+    selectedWorkChatAction,
     subagentSnapshots,
     unavailableLaneIds,
   ]);
 
   useEffect(() => {
-    if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat") {
+    if (rightPane.kind === "model-wizard" && rightPane.surface === "new-chat") {
+      // The wizard's rows are re-derived live (modelWizardSettingsRows); only
+      // the lane it will commit into has to be kept current here.
       setRightPane((prev) => {
-        if (prev.kind !== "model-picker" || prev.surface !== "new-chat") return prev;
-        if (drawerNavTarget?.kind === "new-chat") {
-          return {
-            ...prev,
-            laneId: drawerNavTarget.laneId,
-            laneLabel: drawerNavTarget.laneLabel,
-            settingsRows: drawerNavTarget.rows,
-          };
-        }
-        return {
-          ...prev,
-          laneId: activeLaneId ?? prev.laneId,
-          laneLabel: activeLane?.name ?? prev.laneLabel,
-          settingsRows: newChatSetupRows,
-        };
+        if (prev.kind !== "model-wizard" || prev.surface !== "new-chat") return prev;
+        const laneId = drawerNavTarget?.kind === "new-chat" ? drawerNavTarget.laneId : activeLaneId ?? prev.laneId;
+        const laneLabel = drawerNavTarget?.kind === "new-chat"
+          ? drawerNavTarget.laneLabel
+          : activeLane?.name ?? prev.laneLabel;
+        return prev.laneId === laneId && prev.laneLabel === laneLabel
+          ? prev
+          : { ...prev, laneId, laneLabel };
       });
     } else if (rightPane.kind === "lane-details") {
       setRightPane((prev) => prev.kind === "lane-details"
@@ -6103,12 +6465,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             chats: computeLaneChatCounts(displaySessions, prev.lane.id),
           }
         : prev);
-    } else if (rightPane.kind === "model-picker" && rightPane.surface === "chat") {
-      setRightPane((prev) => prev.kind === "model-picker" && prev.surface === "chat"
-        ? { ...prev, settingsRows: providerLocked ? modelPickerRows : modelSetupRows }
-        : prev);
     }
-  }, [activeLane?.name, activeLaneId, displaySessions, drawerNavTarget, modelPickerRows, modelSetupRows, newChatSetupRows, providerLocked, rightPane.kind]);
+  }, [activeLane?.name, activeLaneId, displaySessions, drawerNavTarget, rightPane.kind]);
 
   useEffect(() => {
     const { config } = readClaudeStatusLineConfig(project.workspaceRoot);
@@ -6409,28 +6767,35 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [activeLaneId, drawerLaneId, lanes]);
 
   useEffect(() => {
-    if (selectedDrawerLaneAction) return;
-    if (selectedDrawerLaneId && drawerLaneRows.some((lane) => lane.id === selectedDrawerLaneId)) return;
-    setSelectedDrawerLaneId(drawerLaneId ?? activeLaneId ?? drawerLaneRows[0]?.id ?? null);
-  }, [activeLaneId, drawerLaneId, drawerLaneRows, selectedDrawerLaneAction, selectedDrawerLaneId]);
+    if (selectedDrawerLaneId && lanes.some((lane) => lane.id === selectedDrawerLaneId)) return;
+    setSelectedDrawerLaneId(drawerLaneId ?? activeLaneId ?? lanes[0]?.id ?? null);
+  }, [activeLaneId, drawerLaneId, lanes, selectedDrawerLaneId]);
 
+  // Keep the pane's cursor on a row that still exists. One key over one flat row
+  // list, so unlike the drawer's three-way reconcile it cannot land on a row the
+  // pane never rendered.
   useEffect(() => {
-    const next = resolveDrawerChatSelection({
-      activeLaneId,
+    if (addMode) return;
+    const next = resolveWorkListSelection({
+      rows: workListModel.rows,
+      selectedKey: workSelectedKey,
       activeSessionId,
-      draftChatActive,
-      drawerLaneId,
-      drawerVisibleLaneSessions: drawerVisibleChatItems
-        .map(sessionFromDrawerChatItem)
-        .filter((session): session is AgentChatSessionSummary => Boolean(session)),
-      closedToggleVisible: drawerVisibleChatItems.some((item) => item.kind === "closed-toggle"),
-      selectedDrawerChatAction,
-      selectedDrawerChatId,
+      draftLaneId: draftChatActive ? drawerLaneId ?? activeLaneId : null,
     });
     if (!next) return;
-    setSelectedDrawerChatId(next.selectedDrawerChatId);
-    setSelectedDrawerChatAction(next.selectedDrawerChatAction);
-  }, [activeLaneId, activeSessionId, draftChatActive, drawerLaneId, drawerVisibleChatItems, selectedDrawerChatAction, selectedDrawerChatId]);
+    setWorkSelectedKey(next.selectedKey);
+    const row = workListModel.rows.find((entry) => entry.key === next.selectedKey) ?? null;
+    if (row?.kind === "session") {
+      setSelectedDrawerChatId(row.sessionId);
+      setSelectedWorkChatAction(null);
+      if (row.laneId) {
+        setDrawerLaneId(row.laneId);
+        setSelectedDrawerLaneId(row.laneId);
+      }
+    } else if (row?.kind === "lane-header" && row.laneId) {
+      setSelectedDrawerLaneId(row.laneId);
+    }
+  }, [activeLaneId, activeSessionId, addMode, draftChatActive, drawerLaneId, workListModel.rows, workSelectedKey]);
 
   useEffect(() => {
     setSlashIndex(0);
@@ -6447,6 +6812,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       { id: noticeId(), timestamp: new Date().toISOString(), text, tone, sessionId },
     ]);
   }, []);
+  const openLaneDetailsPane = useCallback((lane: LaneSummary) => {
+    selectActiveLaneId(lane.id);
+    setDrawerLaneId(lane.id);
+    setSelectedDrawerLaneId(lane.id);
+    setRightPane(seedLaneDetails(lane, !laneWorktreeUnavailableMessage(lane)));
+    setRightOpen(true);
+    lastUserOpenedPaneRef.current = "lane-details";
+    const unavailableMessage = laneWorktreeUnavailableMessage(lane);
+    if (unavailableMessage) addNotice(unavailableMessage, "error");
+  }, [addNotice, selectActiveLaneId]);
 
   /**
    * Say why a plugin's shortcut is not bound — once, in the matrix's own words.
@@ -6529,13 +6904,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const session =
       laneSessions.find((entry) => entry.sessionId === lastSessionId)
       ?? newestSession(laneSessions);
-    const action: DrawerChatAction | null = session ? null : "new-chat";
+    const action: WorkChatAction | null = session ? null : "new-chat";
     selectActiveLaneId(lane.id);
     setDrawerLaneId(lane.id);
     setSelectedDrawerLaneId(lane.id);
-    setSelectedDrawerLaneAction(null);
     setSelectedDrawerChatId(session?.sessionId ?? null);
-    setSelectedDrawerChatAction(action);
+    setSelectedWorkChatAction(action);
+    setWorkSelectedKey(session ? `session:${session.sessionId}` : `new-chat:${lane.id}`);
     applyDrawerChatSelection({ session: session ?? null, action });
     if (options.notify) addNotice(`Switched to lane ${lane.name}.`, "success");
   }, [addNotice, applyDrawerChatSelection, openDrawerSessions, selectActiveLaneId]);
@@ -6809,7 +7184,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       : laneSessions[0]?.sessionId ?? null;
     setAddMode({ cursorLaneId: laneId, cursorChatId });
     setDrawerOpen(true);
-    setDrawerSection("chats");
     setDrawerLaneId(laneId);
     setPaneFocus("addMode");
   }, [addNotice, orderedDrawerLanes, setPaneFocus, tileableDisplaySessions]);
@@ -6896,7 +7270,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (tile.sessionId !== activeSessionIdRef.current) {
       selectActiveSessionId(tile.sessionId);
       setSelectedDrawerChatId(tile.sessionId);
-      setSelectedDrawerChatAction(null);
+      setSelectedWorkChatAction(null);
     }
     if (!eventsBySessionIdRef.current[tile.sessionId]) {
       void hydrateTileHistory(tile.sessionId).catch(() => undefined);
@@ -6939,7 +7313,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         diagnostics.warnings.length ? "error" : "success",
       );
     }
-  }, [addNotice, displaySessions, drawerSection, selectedDrawerChatAction, selectedDrawerChatId]);
+  }, [addNotice]);
 
   useEffect(() => {
     const filePath = defaultKeybindingsPath();
@@ -7007,12 +7381,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const model = nextModels.find((entry) => entry.isDefault) ?? nextModels[0] ?? null;
       setModelState((prev) => {
         const patch = model ? modelStatePatchForModel(provider, model) : fallbackModelStatePatch(provider);
-        const fallbackDescriptor = !model && patch.modelId ? getModelById(patch.modelId) : undefined;
-        const fastSupported = model ? modelInfoSupportsFastMode(model) : modelSupportsFastMode(fallbackDescriptor);
         return {
           ...prev,
           ...patch,
-          fastMode: fastSupported ? prev.fastMode : false,
         };
       });
     }
@@ -7110,6 +7481,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setFormValues(nextValues);
     setFormFieldIndex(0);
     setFormDiscardArmed(false);
+    setFormConfirmArmed(false);
     setPrompt(firstField && formFieldUsesPromptInput(content.command, firstField.name)
       ? firstField.initialValue ?? ""
       : "");
@@ -7119,7 +7491,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // resolver doesn't overwrite them.
     lastUserOpenedPaneRef.current = "form";
     setPaneFocus("details");
-  }, [setPaneFocus, stashActiveInput]);
+  }, [setFormConfirmArmed, setPaneFocus, stashActiveInput]);
 
   const openNewLaneForm = useCallback(() => {
     const activeLaneName = lanes.find((lane) => lane.id === activeLaneIdRef.current)?.name ?? null;
@@ -7208,7 +7580,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           { name: "scope", label: "Scope", initialValue: "worktree" },
           { name: "remoteName", label: "Remote name", placeholder: "origin", initialValue: "origin" },
           { name: "force", label: "Force delete", initialValue: "no" },
-          { name: "confirm", label: "Type lane name", required: true, placeholder: lane.name },
         ],
       });
     })();
@@ -7251,10 +7622,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       command: "chat-delete",
       sessionId: targetId,
       chatDelete: { sessionId: targetId, title },
-      description: "This removes the chat session and its transcript from ADE.",
-      fields: [
-        { name: "confirm", label: "Type chat title", required: true, placeholder: title },
-      ],
+      description: "Removes this chat and its transcript.",
+      fields: [],
     });
   }, [activeSession, focusDetails, openForm, sessions]);
 
@@ -7312,7 +7681,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setDraftChatMode(false);
       selectActiveSessionId(null);
       setSelectedDrawerChatId(null);
-      setSelectedDrawerChatAction(null);
+      setSelectedWorkChatAction(null);
       setRightPane(seedLaneDetails(lane, false));
       setRightOpen(true);
       addNotice(unavailableMessage, "error");
@@ -7344,29 +7713,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setPrompt("");
     setRightSelectionIndex(defaultSetupSelectionIndex(newChatSetupRows));
     setFormDiscardArmed(false);
-    setRightPane({
-      kind: "model-picker",
-      surface: "new-chat",
-      query: "",
-      searchMode: false,
-      selection: { kind: "provider", provider: modelState.provider },
-      providerTabKey: null,
-      focusedIndex: 0,
-      footerFocus: null,
-      railFocused: true,
-      settingsRows: newChatSetupRows,
-      laneId,
-      laneLabel: lane.name,
-    });
-    setRightOpen(true);
-    setPaneFocus("details");
+    // The new-chat page opens on the composer, NOT on a model pane. The model
+    // that will be used is summarised on the line under the prompt box; /model
+    // opens the wizard when the user actually wants to change it.
+    setRightPane({ kind: "empty" });
+    setRightOpen(false);
+    focusChat();
     void refreshAiSetupStatus().catch(() => undefined);
     void loadProviderModels(modelState.provider, { applyDefault: false }).catch(() => undefined);
-    // Load the model catalog so the new-chat picker has provider rails + models
-    // even in a fresh runtime — without this it opens on the empty favorites rail
-    // ("0 models") until the catalog is loaded by some other path (/model, etc.).
+    // Warm the catalog anyway so /model opens instantly with real provider rows.
     void refreshModelCatalog().catch(() => undefined);
-  }, [activeLane, addNotice, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, refreshModelCatalog, selectActiveSessionId, setDraftChatMode, setGridView, setPaneFocus, stashActiveInput]);
+  }, [activeLane, addNotice, focusChat, focusDetails, lanes, loadProviderModels, modelState.provider, newChatSetupRows, refreshAiSetupStatus, refreshModelCatalog, selectActiveSessionId, setDraftChatMode, setGridView, stashActiveInput]);
 
   // Hydrate favorites/recents from the ade-cli RPC once the connection is up.
   useEffect(() => {
@@ -7402,66 +7759,36 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // the catalog lands, the picker falls back to the single active-provider list
   // (which looked like "only the codex group" in the rail).
   useEffect(() => {
-    if (rightPane.kind !== "model-picker") return;
+    if (rightPane.kind !== "model-wizard") return;
     if (modelCatalogRef.current) return;
     void refreshModelCatalog().catch(() => undefined);
   }, [rightPane.kind, refreshModelCatalog]);
 
-  // Right-pane model picker — replaces the inline-row focus path when launched
-  // via /model or new-chat. Reuses the same data the inline row uses (models)
-  // plus favorites/recents sourced from ade-cli for cross-surface sync.
-	  const openModelPicker = useCallback(
-	    (options: { surface?: "chat" | "new-chat"; forceRefresh?: boolean; focusKind?: SetupPaneRowKind } = {}) => {
-	      void refreshModelCatalog();
-	      const surface = options.surface ?? "chat";
-      // Build a starter selection from current activeModelId/recents so the
-      // picker opens with relevant content already filtered.
+  /**
+   * `/model` — opens the TRANSIENT wizard. It replaces the old rail + graph +
+   * search picker: four single-list steps (provider → family → model →
+   * settings), Enter advances, Esc walks back, and committing the last step
+   * closes the pane. Opening from a live chat retargets that chat through the
+   * normal continuation path; opening from the new-chat page edits the draft.
+   */
+  const openModelWizard = useCallback(
+    (options: { surface?: "chat" | "new-chat"; startAtSettings?: boolean; forceRefresh?: boolean } = {}) => {
+      void refreshModelCatalog();
+      const surface = options.surface ?? (activeSessionIdRef.current ? "chat" : "new-chat");
       const provider = modelState.provider;
-	      const layoutSeed = buildModelPickerLayout(buildModelPickerLayoutInput({
-	        picker: {
-	          kind: "model-picker",
-	          surface,
-	          query: "",
-	          searchMode: false,
-	          selection: { kind: "provider", provider },
-	          providerTabKey: null,
-	          focusedIndex: 0,
-	          railFocused: true,
-	          footerFocus: options.focusKind ?? null,
-	          settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
-	          laneLabel: surface === "new-chat"
-	            ? (lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? activeLane?.name ?? null)
-	            : null,
-	        },
-	        models,
-	        catalog: modelCatalogRef.current ?? modelCatalog,
-	        favorites: modelPickerFavorites,
-	        recents: modelPickerRecents,
-	        modelState,
-	        aiStatus,
-	        refreshingProvider: modelCatalogRefreshingProvider,
-	      }));
-      const selection = defaultSelectionFor(
-        modelState.modelId,
-        modelPickerRecents,
-        layoutSeed.railEntries,
-      );
-      // Open Stage 1 (model list) positioned on the active model for an existing
-      // chat; new chats start at the top of the list.
-      const activeFocusIndex = surface === "chat" && selection.kind === "provider"
-        ? Math.max(0, layoutSeed.entries.findIndex((entry) => entry.modelId === modelState.modelId))
-        : 0;
+      const selection = initialModelWizardSelection({
+        entries: modelWizardEntries,
+        provider,
+        activeModelId: modelState.modelId,
+        ...(options.startAtSettings ? { startAtSettings: true } : {}),
+      });
       setRightPane({
-        kind: "model-picker",
+        kind: "model-wizard",
         surface,
-        query: "",
-		        searchMode: false,
-	        selection,
-	        providerTabKey: null,
-	        focusedIndex: activeFocusIndex,
-        footerFocus: options.focusKind ?? null,
-        railFocused: surface === "new-chat",
-        settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
+        step: selection.step,
+        provider: selection.provider,
+        familyKey: selection.familyKey,
+        index: selection.index,
         ...(surface === "new-chat"
           ? {
               laneId: activeLaneIdRef.current,
@@ -7471,29 +7798,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       setRightOpen(true);
       setPaneFocus("details");
-      lastUserOpenedPaneRef.current = "model-picker";
-	      void refreshAiSetupStatus({ force: options.forceRefresh === true }).catch(() => undefined);
-	      void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
-	    },
+      lastUserOpenedPaneRef.current = "model-wizard";
+      void refreshAiSetupStatus({ force: options.forceRefresh === true }).catch(() => undefined);
+      void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
+    },
     [
       activeLane?.name,
-      aiStatus,
       lanes,
       loadProviderModels,
       modelPickerRows,
-      modelPickerFavorites,
-      modelPickerRecents,
-      modelSetupRows,
       modelState.modelId,
-		      modelState.provider,
-		      models,
+      modelState.provider,
+      modelWizardEntries,
       newChatSetupRows,
-		      modelCatalog,
-	      refreshAiSetupStatus,
-	      refreshModelCatalog,
-	      setPaneFocus,
+      refreshAiSetupStatus,
+      refreshModelCatalog,
+      setPaneFocus,
     ],
   );
+
+  const closeModelWizard = useCallback(() => {
+    setRightOpen(false);
+    setRightPane({ kind: "empty" });
+    lastUserOpenedPaneRef.current = null;
+    focusChat();
+  }, [focusChat]);
 
   const toggleModelPickerFavoriteId = useCallback(
     (modelId: string) => {
@@ -7697,6 +8026,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       sessionSummaries,
     );
     const nextTerminalSessions = mergeOptimisticTerminalSessions(enrichedTerminalSessions, optimisticTerminalSessionsRef.current);
+    // Cross-machine rows ride the refresh the app already runs — no second poll
+    // loop — and only while the pane that shows them is open.
+    if (drawerOpenRef.current) {
+      void loadActivitySnapshot(conn, { hostName: project.remoteLabel })
+        .then((snapshot) => {
+          if (isCurrentRefresh()) setAttentionSnapshot(snapshot);
+        })
+        .catch(() => undefined);
+    }
     const nextDisplaySessions = sortSessionsByRecentActivity([
       ...nextSessions,
       ...nextTerminalSessions.map((session) => terminalSessionToChatSummary(session)),
@@ -7712,14 +8050,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       draftChatActive: draftMode,
       initialNewChatPreview: initialNewChatPreviewRef.current,
       newChatPreviewLaneId: newChatPreviewLaneIdRef.current,
-      selectedDrawerChatAction,
+      selectedWorkChatAction,
       drawerLaneId,
-      drawerBrowsingChatId: drawerOpenRef.current && drawerSectionRef.current === "chats"
+      drawerBrowsingChatId: drawerOpenRef.current
         ? selectedDrawerChatIdRef.current
         : null,
       drawerBrowsingNewChat: drawerOpenRef.current
-        && drawerSectionRef.current === "chats"
-        && selectedDrawerChatActionRef.current === "new-chat",
+        && selectedWorkChatActionRef.current === "new-chat",
     });
     const nextLane = target.lane;
     const nextLaneId = target.laneId;
@@ -7865,15 +8202,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       newChatPreviewLaneIdRef.current = nextLaneId;
       // Start as a true draft new chat so the center always shows the splash and
       // NO existing chat is resolved/hydrated. Draft mode cascades through the
-      // drawer-selection + preview effects (they keep "new-chat", skip the
-      // history preview), so opening the drawer below can't activate a chat.
+      // pane-selection + preview effects (they keep "new-chat", skip the
+      // history preview), so opening the pane below can't activate a chat.
       setDraftChatMode(true);
-      setDrawerSection("chats");
       setDrawerLaneId(nextLaneId);
       setSelectedDrawerLaneId(nextLaneId);
-      setSelectedDrawerLaneAction(null);
       setSelectedDrawerChatId(null);
-      setSelectedDrawerChatAction(nextLaneId ? "new-chat" : null);
+      setSelectedWorkChatAction(nextLaneId ? "new-chat" : null);
+      setWorkSelectedKey(nextLaneId ? `new-chat:${nextLaneId}` : null);
       // Open BOTH side panes so `ade code` launches with the full layout.
       setDrawerOpen(true);
       setRightOpen(true);
@@ -7936,7 +8272,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (draftMode) draftSeededFromHistoryRef.current = true;
     }
-  }, [captureHydratedEventsWatermark, clearedAt, clearOlderHistoryCursor, commitActiveSessionEvents, drawerLaneId, loadProviderModels, mergeHydratedEventsWithLive, modelState.provider, project, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, selectedDrawerChatAction, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
+  }, [captureHydratedEventsWatermark, clearedAt, clearOlderHistoryCursor, commitActiveSessionEvents, drawerLaneId, loadProviderModels, mergeHydratedEventsWithLive, modelState.provider, project, seedOlderHistoryCursor, selectActiveLaneId, selectActiveSessionId, selectedWorkChatAction, setDraftChatMode, setSessionInterrupted, setSessionStreaming, setStreaming]);
 
   const renameLane = useCallback(async (laneIdArg: string | null, name: string) => {
     const conn = connectionRef.current;
@@ -8021,7 +8357,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       && !entry.archivedAt
     )) ?? null;
     setSelectedDrawerChatId(fallback?.sessionId ?? null);
-    setSelectedDrawerChatAction(fallback ? null : "new-chat");
+    setSelectedWorkChatAction(fallback ? null : "new-chat");
     applyDrawerChatSelection({ session: fallback, action: fallback ? null : "new-chat" });
   }, [applyDrawerChatSelection, displaySessions]);
 
@@ -8070,7 +8406,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setDrawerLaneId(match.laneId);
       setSelectedDrawerLaneId(match.laneId);
       setSelectedDrawerChatId(match.sessionId);
-      setSelectedDrawerChatAction(null);
+      setSelectedWorkChatAction(null);
       applyDrawerChatSelection({ session: match, action: null });
     } catch (err) {
       addNotice(err instanceof Error ? err.message : String(err), "error");
@@ -8173,6 +8509,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       connectionRetryTimerRef.current = null;
     }
     setError(null);
+    setStartupServiceStarting(false);
     setMode("connecting");
     setConnectionRetrySeq((seq) => seq + 1);
   }, []);
@@ -8185,6 +8522,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     setMode("connecting");
     setError(null);
+    setStartupServiceStarting(false);
     void (async () => {
       try {
         const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote: remoteLaunch, projectRegistration: INTERACTIVE_PROJECT_REGISTRATION });
@@ -8206,6 +8544,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             },
           });
         connectionRef.current = conn;
+        connectionPoolRef.current.setLocal({
+          connection: conn,
+          projectRoot: project.projectRoot,
+        });
+        setActiveMachineKey(LOCAL_MACHINE_KEY);
+        setActiveRemoteLabel(remoteLaunch ? project.remoteLabel ?? "remote" : null);
+        setActiveProjectRoot(conn.projectRoot || project.projectRoot);
         setConnection(conn);
         setMode(conn.mode);
         if (!analyticsAppOpenedRef.current) {
@@ -8230,12 +8575,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         eventCountRef.current = 0;
         setEvents([]);
         await refreshState();
+        if (
+          !cancelled
+          && !project.skipProjectPicker
+          && !project.sessionHint
+          && !projectPickerAutoOpenedRef.current
+        ) {
+          projectPickerAutoOpenedRef.current = true;
+          await openProjectPickerRef.current({ notice: true });
+        }
       } catch (err) {
         if (cancelled) return;
         heartbeatRef.current?.stop();
         heartbeatRef.current = null;
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
+        setStartupServiceStarting(err instanceof RuntimeServiceStillStartingError);
         setMode("connecting");
         connectionRetryTimerRef.current = setTimeout(() => {
           connectionRetryTimerRef.current = null;
@@ -8262,9 +8617,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         feedbackCloseTimerRef.current = null;
       }
       pendingModelCommitStateRef.current = null;
-      const conn = connectionRef.current;
       connectionRef.current = null;
-      void conn?.close().catch(() => {});
+      void connectionPoolRef.current.closeAll().catch(() => {});
     };
   }, [connectionRetrySeq, flushPendingAdeCodeState, forceEmbedded, preferServiceRepair, project, remoteLaunch, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
@@ -8275,6 +8629,189 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     refreshStateRef.current = refreshState;
   }, [refreshState]);
+
+  const adoptPooledConnection = useCallback(async (
+    entry: { machineKey: string; label: string; connection: AdeCodeConnection; projectRoot: string; remoteLabel: string | null },
+    sessionId?: string | null,
+  ) => {
+    connectionRef.current = entry.connection;
+    setConnection(entry.connection);
+    setMode(entry.connection.mode);
+    setActiveMachineKey(entry.machineKey);
+    setActiveRemoteLabel(entry.remoteLabel);
+    setActiveProjectRoot(entry.projectRoot);
+    connectionLostRef.current = false;
+    setConnectionLost(false);
+    if (sessionId) selectActiveSessionId(sessionId);
+    await refreshStateRef.current();
+  }, [selectActiveSessionId]);
+
+  const hopToLocal = useCallback(async (sessionId?: string | null) => {
+    const local = connectionPoolRef.current.local();
+    if (!local) {
+      addNotice("This machine's ADE connection is gone. Retry from the connecting screen.", "error");
+      return;
+    }
+    await adoptPooledConnection(local, sessionId);
+    addNotice("Back on this machine.", "success");
+  }, [addNotice, adoptPooledConnection]);
+
+  const hopToMachine = useCallback(async (
+    query: MachineQuery,
+    options: {
+      sessionId?: string | null;
+      projectCanonicalId?: string | null;
+      projectRootPath?: string | null;
+      projectQuery?: string | null;
+    } = {},
+  ) => {
+    if (query.machineKey === LOCAL_MACHINE_KEY) {
+      await hopToLocal(options.sessionId);
+      return;
+    }
+    if (hopInFlightRef.current) {
+      addNotice("Already connecting to another machine.", "info");
+      return;
+    }
+    const pooled = connectionPoolRef.current.get(query.machineKey);
+    if (pooled) {
+      await adoptPooledConnection(pooled, options.sessionId);
+      addNotice(`Opened ${pooled.label}.`, "success");
+      return;
+    }
+    hopInFlightRef.current = true;
+    const name = query.name?.trim() || query.machineKey;
+    addNotice(`Connecting to ${name}…`, "info");
+    try {
+      const entry = await connectionPoolRef.current.connectRemote({
+        query,
+        projectCanonicalId: options.projectCanonicalId,
+        projectRootPath: options.projectRootPath,
+        projectQuery: options.projectQuery,
+        accountProjectRoots: [project.projectRoot],
+      });
+      await adoptPooledConnection(entry, options.sessionId);
+      addNotice(`Connected to ${entry.label} via paired runtime.`, "success");
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    } finally {
+      hopInFlightRef.current = false;
+    }
+  }, [addNotice, adoptPooledConnection, hopToLocal, project.projectRoot]);
+
+  hopToForeignRowRef.current = (row) => {
+    if (!row.machine) return;
+    if (row.machine.online === false) {
+      addNotice(`${row.machine.name} is offline.`, "error");
+      return;
+    }
+    void hopToMachine({
+      machineKey: row.machine.machineKey,
+      accountMachineKey: row.machine.accountMachineKey,
+      deviceId: row.machine.deviceId,
+      name: row.machine.name,
+    }, {
+      sessionId: row.sessionId,
+      projectCanonicalId: row.projectCanonicalId,
+      projectRootPath: row.projectRootPath,
+    });
+  };
+
+  const switchProjectOnCurrentMachine = useCallback(async (rootPath: string) => {
+    const conn = connectionRef.current;
+    if (!conn?.socketPath) {
+      addNotice("No ADE socket is available to switch projects.", "error");
+      return;
+    }
+    addNotice("Switching project…", "info");
+    try {
+      const next = await connectToAde({
+        project: {
+          launchCwd: rootPath,
+          projectRoot: rootPath,
+          workspaceRoot: rootPath,
+          laneHint: null,
+          sessionHint: null,
+          remote: activeMachineKey !== LOCAL_MACHINE_KEY || remoteLaunch,
+          remoteLabel: activeRemoteLabel,
+        },
+        socketPath: conn.socketPath,
+        requireSocket: true,
+        remote: activeMachineKey !== LOCAL_MACHINE_KEY || remoteLaunch,
+        projectRegistration: INTERACTIVE_PROJECT_REGISTRATION,
+      });
+      const previous = conn;
+      if (activeMachineKey === LOCAL_MACHINE_KEY) {
+        connectionPoolRef.current.setLocal({ connection: next, projectRoot: rootPath });
+      }
+      connectionRef.current = next;
+      setConnection(next);
+      setMode(next.mode);
+      setActiveProjectRoot(rootPath);
+      if (previous !== next) await previous.close().catch(() => undefined);
+      await refreshStateRef.current();
+      addNotice(`Opened ${path.basename(rootPath)}.`, "success");
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  }, [activeMachineKey, activeRemoteLabel, addNotice, remoteLaunch]);
+
+  const openProjectPicker = useCallback(async (options?: { notice?: boolean; query?: string }) => {
+    const conn = connectionRef.current;
+    if (!conn) {
+      if (!options?.notice) {
+        setRightPane({
+          kind: "details",
+          title: "Projects",
+          body: "ADE is still connecting. Retry when the runtime is ready.",
+        });
+        setRightOpen(true);
+        setPaneFocus("details");
+      }
+      return;
+    }
+    try {
+      const raw = await conn.request("projects.list", {});
+      const ranked = rankProjectsForPicker(coerceProjectRecords(raw), activeProjectRoot);
+      const query = options?.query?.trim() ?? "";
+      const filtered = query
+        ? ranked.filter((entry) => `${entry.displayName} ${entry.rootPath} ${entry.projectId}`.toLowerCase().includes(query.toLowerCase()))
+        : ranked;
+      const picked = query ? pickProjectRecord(filtered, { name: query, rootPath: query, projectId: query }) : null;
+      if (picked && query) {
+        await switchProjectOnCurrentMachine(picked.rootPath);
+        return;
+      }
+      // Startup: nothing to choose, so don't flash the right pane.
+      if (options?.notice && !query && ranked.length <= 1) return;
+      projectPickerRootByIdRef.current = new Map(filtered.map((entry) => [entry.projectId, entry.rootPath]));
+      setRightSelectionIndex(Math.max(0, filtered.findIndex((entry) => entry.rootPath === activeProjectRoot)));
+      setRightPane({
+        kind: "list",
+        title: "Projects",
+        rows: filtered.map((entry) => (
+          `${entry.rootPath === activeProjectRoot ? "● " : "  "}${entry.displayName}  ${entry.rootPath}`
+        )),
+        emptyText: "No projects registered on this machine.",
+        action: { kind: "switch-project", ids: filtered.map((entry) => entry.projectId) },
+      });
+      setRightOpen(true);
+      setPaneFocus("details");
+      if (options?.notice) {
+        addNotice("Pick a project to open. The current one is at the top.", "info");
+      }
+    } catch (error) {
+      if (options?.notice) return;
+      setRightPane({
+        kind: "details",
+        title: "Projects",
+        body: error instanceof Error ? error.message : String(error),
+      });
+      setRightOpen(true);
+      setPaneFocus("details");
+    }
+  }, [activeProjectRoot, addNotice, setPaneFocus, switchProjectOnCurrentMachine]);
+  openProjectPickerRef.current = openProjectPicker;
 
   const runBackgroundRefresh = useCallback(() => {
     if (backgroundRefreshInFlightRef.current) {
@@ -8417,8 +8954,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           : [activeSessionIdRef.current].filter((value): value is string => Boolean(value)),
       );
       const drawerBrowsingChatId = drawerOpenRef.current
-        && drawerSectionRef.current === "chats"
-        && selectedDrawerChatActionRef.current == null
+        && selectedWorkChatActionRef.current == null
         ? selectedDrawerChatIdRef.current
         : null;
       if (drawerBrowsingChatId) openSessionIds.add(drawerBrowsingChatId);
@@ -8450,9 +8986,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         if (isActiveSessionEvent && activePaneRef.current !== "drawer") {
           setRightPane((prev) => {
             if (prev.kind === "chat-info") return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
-            if (prev.kind !== "empty" && prev.kind !== "lane-details") return prev;
-            setRightOpen(true);
-            return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
+            return prev;
           });
         }
       }
@@ -8830,8 +9364,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const refreshPrsByLane = async () => {
       try {
         // ADE-135: `PrLaneSummary` now carries the service's canonical
-        // `checksStatus` (set by `summaryToLanePrSummary`), so the pill gates on
-        // that instead of inferring a pass from `checksPassed === checksTotal`.
+        // `checksStatus`, so consumers gate on that instead of inferring a pass
+        // from `checksPassed === checksTotal`.
         // An earlier revision joined a second unscoped `pr listAll` call for the
         // same field: redundant, an extra whole-history serialization on a 30s
         // refresh, and strictly less correct — projection-backed and detached
@@ -8840,7 +9374,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // ticket exists to remove.
         const prs = await listPrsByLane(connection);
         if (cancelled) return;
-        const next: Record<string, DrawerPrSummary> = {};
+        const next: Record<string, LanePrSummary> = {};
         for (const pr of prs) {
           next[pr.laneId] = {
             number: pr.number,
@@ -8934,6 +9468,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           }
           const previous = connectionRef.current;
           connectionRef.current = attached;
+          connectionPoolRef.current.setLocal({
+            connection: attached,
+            projectRoot: project.projectRoot,
+          });
+          for (const entry of connectionPoolRef.current.list()) {
+            if (entry.machineKey !== LOCAL_MACHINE_KEY) {
+              void connectionPoolRef.current.close(entry.machineKey);
+            }
+          }
+          setActiveMachineKey(LOCAL_MACHINE_KEY);
+          setActiveRemoteLabel(remoteLaunch ? project.remoteLabel ?? "remote" : null);
+          setActiveProjectRoot(attached.projectRoot || project.projectRoot);
           setConnection(attached);
           setMode(attached.mode);
           if (connectionLostRef.current) {
@@ -8996,6 +9542,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     const normalized = { ...modelState, ...applyProviderPermissionMode(modelState) };
     const runtimeProvider = runtimeProviderForUiProvider(normalized.provider);
+    if (runtimeProvider === "cursor") {
+      const cursorModel = models.find((entry) => (
+        entry.id === normalized.modelId
+          || entry.modelId === normalized.modelId
+          || entry.id === normalized.model
+          || entry.modelId === normalized.model
+      )) ?? modelInfoFromDescriptor(normalized.modelId ?? normalized.model);
+      if (!cursorModel || !cursorModelAvailableForInterface(cursorModel, normalized.interfaceMode)) {
+        addNotice(
+          normalized.interfaceMode === "cli"
+            ? "This Cursor model is available for chat only. Choose a Cursor CLI model."
+            : "This Cursor model is available for CLI only. Switch Interface to CLI or choose a chat model.",
+          "error",
+        );
+        return null;
+      }
+    }
     const requestedTitle = pendingNewChatTitleRef.current;
     const created = await createChatSession({
       connection: conn,
@@ -9017,6 +9580,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cursorConfigValues: normalized.cursorConfigValues,
     });
     pendingNewChatTitleRef.current = null;
+    // This project's next new chat defaults to exactly what just launched.
+    rememberModelChoice(normalized);
     const optimisticSummary = chatSessionToOptimisticSummary(created, requestedTitle);
     optimisticChatSessionsRef.current.set(created.id, optimisticSummary);
     setSessions((current) => mergeOptimisticChatSessions(current, optimisticChatSessionsRef.current));
@@ -9025,7 +9590,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     showChatInfoAfterDraftCommit();
     await refreshState();
     return created.id;
-  }, [addNotice, lanes, modelState, refreshState, selectActiveSessionId, sessions, setDraftChatMode, showChatInfoAfterDraftCommit]);
+  }, [addNotice, lanes, modelState, refreshState, rememberModelChoice, selectActiveSessionId, sessions, setDraftChatMode, showChatInfoAfterDraftCommit]);
 
   const resolvePendingApproval = useCallback(async (
     approval: PendingApproval,
@@ -9293,11 +9858,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
   }, []);
 
+  /**
+   * `/import` — the single home for pulling an external CLI session into ADE.
+   * Only meaningful while a NEW chat is being started (the import lands as that
+   * chat), so the caller gates on the draft; here we only need the lane.
+   */
   const openExternalSessionBrowser = useCallback(() => {
     const currentPane = rightPaneRef.current;
-    const laneId = currentPane.kind === "model-picker" && currentPane.surface === "new-chat" && currentPane.laneId
-      ? currentPane.laneId
-      : drawerLaneIdRef.current ?? activeLaneIdRef.current;
+    const paneLaneId = (currentPane.kind === "model-picker" || currentPane.kind === "model-wizard")
+      && currentPane.surface === "new-chat"
+      ? currentPane.laneId ?? null
+      : null;
+    const laneId = paneLaneId ?? drawerLaneIdRef.current ?? activeLaneIdRef.current;
     const lane = laneId ? lanesById[laneId] ?? null : null;
     if (!laneId || !lane) {
       addNotice("Select a lane first — imports need a lane folder.", "info");
@@ -9335,13 +9907,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setDraftChatMode(false);
     setGridView(false);
     setAttachedTerminalId(null);
-    setDrawerSection("chats");
-    setSelectedDrawerLaneAction(null);
     setSelectedDrawerLaneId(laneId);
     setDrawerLaneId(laneId);
-    setSelectedDrawerChatAction(null);
+    setSelectedWorkChatAction(null);
     selectActiveLaneId(laneId);
     setSelectedDrawerChatId(sessionId);
+    setWorkSelectedKey(`session:${sessionId}`);
     selectActiveSessionId(sessionId);
     lastUserOpenedPaneRef.current = null;
     userDismissedRightPaneRef.current = false;
@@ -9677,12 +10248,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const copyChatSelection = useCallback((selection?: ChatTextSelection | null): boolean => {
     const resolvedSelection = selection ?? chatMouseSelectionRef.current;
     if (!isChatTextSelectionRange(resolvedSelection)) {
-      const drawerCopyText = chatSelectionCopyText({
-        drawerSection,
-        displaySessions,
-        selectedDrawerChatAction,
-        selectedDrawerChatId,
-      });
+      const drawerCopyText = workListSelectionCopyText(
+        workListModelRef.current.rows,
+        workSelectedKeyRef.current,
+      );
       if (!drawerCopyText) {
         addNotice("No chat text selected.", "info");
         return false;
@@ -9705,7 +10274,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     addNotice("Copied selected chat text.", "success");
     return true;
-  }, [addNotice, displaySessions, drawerSection, selectedDrawerChatAction, selectedDrawerChatId]);
+  }, [addNotice]);
 
   const copyProjectSecret = useCallback(async (name: string): Promise<void> => {
     const conn = connectionRef.current;
@@ -10090,14 +10659,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
    * plus the surface's own contributed actions.
    *
    * `argument` picks the subject explicitly (`lane` / `chat`); with none, the
-   * drawer's current section decides, because that is the row the user is
-   * looking at. Both sections are reachable either way so the command works from
-   * the chat pane too, where nothing in the drawer has focus.
+   * focused work-list row decides, because that is the row the user is looking
+   * at. Both subjects are reachable either way so the command works from the
+   * chat pane too, where nothing in the work list has focus.
    */
   const openPluginActionsPane = useCallback((argument: string): void => {
     const requested = argument.trim().toLowerCase();
+    // The work list is session-first: a `session:`/`foreign:` row key means the
+    // user is looking at a chat, and anything else (a lane header, a shelf) is
+    // a lane. With nothing focused at all the lane branch below still answers.
+    const chatRowFocused = Boolean(
+      workSelectedKey?.startsWith("session:") || workSelectedKey?.startsWith("foreign:"),
+    );
     const wantsChat = requested === "chat" || requested === "chats" || requested === "session"
-      || (requested === "" && drawerSection === "chats");
+      || (requested === "" && chatRowFocused);
     const laneId = selectedDrawerLaneId ?? drawerLaneId ?? activeLaneId;
     const lane = laneId ? lanes.find((entry) => entry.id === laneId) ?? null : null;
     const sessionId = selectedDrawerChatId ?? activeSessionId;
@@ -10164,12 +10739,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     addNotice,
     displaySessions,
     drawerLaneId,
-    drawerSection,
     lanes,
     pluginContributions,
     prospectiveRightPaneWidth,
     selectedDrawerChatId,
     selectedDrawerLaneId,
+    workSelectedKey,
   ]);
 
   /**
@@ -10293,6 +10868,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       void openPluginPane(selectedId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       return;
     }
+    if (actionKind === "switch-machine") {
+      const query = machinePickerQueryByIdRef.current.get(selectedId);
+      if (!query) return;
+      setRightPane({ kind: "empty" });
+      void hopToMachine(query);
+      return;
+    }
+    if (actionKind === "switch-project") {
+      const rootPath = projectPickerRootByIdRef.current.get(selectedId);
+      if (!rootPath) return;
+      setRightPane({ kind: "empty" });
+      if (rootPath === activeProjectRoot) {
+        addNotice(`Already in ${path.basename(rootPath)}.`, "info");
+        focusChat();
+        return;
+      }
+      void switchProjectOnCurrentMachine(rootPath);
+      return;
+    }
     if (actionKind === "switch-lane") {
       const lane = lanes.find((entry) => entry.id === selectedId);
       if (!lane) return;
@@ -10308,7 +10902,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     selectActiveLaneId(session.laneId);
     setDrawerLaneId(session.laneId);
     setSelectedDrawerLaneId(session.laneId);
-    setSelectedDrawerChatAction(null);
+    setSelectedWorkChatAction(null);
     setSelectedDrawerChatId(session.sessionId);
     const terminal = actionKind === "chat-list"
       ? terminalSessions.find((entry) => entry.terminalId === session.sessionId && entry.status !== "running") ?? null
@@ -10329,16 +10923,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     addNotice(`Switched to chat ${session.title ?? session.sessionId}.`, "success");
   }, [
     activateLaneWithLastChat,
+    activeProjectRoot,
     addNotice,
     applySessionSnooze,
     copyProjectSecret,
     displaySessions,
+    focusChat,
+    hopToMachine,
     lanes,
     openPluginPane,
     runPluginRowAction,
     resumeClosedTerminalSession,
     selectActiveLaneId,
     selectActiveSessionId,
+    switchProjectOnCurrentMachine,
     terminalSessions,
     toggleRightChatsClosedGroup,
   ]);
@@ -10392,8 +10990,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // A full steer queue drops the message server-side. Surface it the same way
       // the primary messageSession path does — throw so submitPrompt restores the
       // typed text and shows an error — instead of falsely implying it was sent.
+      // Every queue-bearing runtime can hit this (Claude, Cursor, Droid,
+      // OpenCode), so the message names the session's own agent.
       if (result.reason === "queue_full") {
-        throw new Error("The Claude steer queue is full; the message was not queued.");
+        const agentLabel = providerDisplayLabel(
+          sessions.find((session) => session.sessionId === sessionId)?.provider,
+          "agent",
+        );
+        throw new Error(`The ${agentLabel} steer queue is full; the message was not queued.`);
       }
       if (result.queued) {
         addNotice("Staged message — sends after the current turn.", "info");
@@ -10491,6 +11095,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const snapshot = await loadActivitySnapshot(conn, {
       hostName: project.remoteLabel,
     });
+    setAttentionSnapshot(snapshot);
     const model = buildActivityPaneModel(snapshot);
     setRightSelectionIndex((index) => Math.max(0, Math.min(index, Math.max(0, model.items.length - 1))));
     setRightPane({ kind: "activity", model });
@@ -10524,6 +11129,66 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // explicit close (Esc / pane:close). Commands like /new chat and
     // /new lane re-enter their own flows below which clear this marker.
     lastUserOpenedPaneRef.current = "details";
+
+    if (name === "/lane details") {
+      const reference = args.trim();
+      const selectedLaneId = workSelectedRow?.kind === "lane-header" || workSelectedRow?.kind === "session"
+        ? workSelectedRow.laneId
+        : null;
+      const lane = reference
+        ? resolveLaneReference(lanes, reference)
+        : (selectedLaneId ? lanes.find((entry) => entry.id === selectedLaneId) ?? null : null) ?? activeLane;
+      if (!lane) {
+        setRightPane({
+          kind: "details",
+          title: "Lane details",
+          body: reference
+            ? `No lane matched "${reference}". Use an exact lane name or id.`
+            : "No active lane is selected.",
+        });
+        return;
+      }
+      openLaneDetailsPane(lane);
+      return;
+    }
+
+    if (name === "/report-issue") {
+      // Deliberately above the `!conn` gate: the report reads local files only,
+      // so it still answers while the runtime is unreachable — the state a bug
+      // report is most worth filing from.
+      // `--send` too: the CLI spelling is the one half these users already know,
+      // including alongside other flags they may carry over (`--open --send`).
+      const wantsSend = args
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .some((argument) => /^--?send$/.test(argument) || argument === "send");
+      try {
+        const { buildTuiDiagnosticReport, sendTuiDiagnosticReport } = await import("./reportIssue");
+        const built = buildTuiDiagnosticReport({ projectRoot: project.projectRoot });
+        // Shown before anything is sent, so the file path and the issue URL are
+        // in hand no matter how the upload goes.
+        setRightPane({ kind: "details", title: "Report issue", body: built.body });
+        if (!wantsSend) return;
+        addNotice("Sending the report to ADE…", "info");
+        const sent = await sendTuiDiagnosticReport(built);
+        setRightPane({ kind: "details", title: "Report issue", body: sent.body });
+        addNotice(sent.notice, sent.result.ok ? "success" : "error");
+      } catch (error) {
+        setRightPane({
+          kind: "details",
+          title: "Report issue",
+          body: [
+            "The report could not be built.",
+            "",
+            error instanceof Error ? error.message : String(error),
+            "",
+            "Run ade report-issue --open in any terminal instead.",
+          ].join("\n"),
+        });
+      }
+      return;
+    }
 
     if (!conn) {
       if (name === "/help") {
@@ -10559,12 +11224,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         });
         return;
       }
+      if (name === "/machines" || name === "/project") {
+        setRightPane({
+          kind: "details",
+          title: name === "/machines" ? "Machines" : "Projects",
+          body: "ADE is still connecting. Retry when the runtime is ready.",
+        });
+        return;
+      }
       if (name === "/feedback") {
         openFeedbackForm();
         return;
       }
       if (name === "/model") {
-        openModelPicker();
+        openModelWizard();
+        return;
+      }
+      if (name === "/import") {
+        // Import needs the runtime to enumerate provider transcripts.
+        addNotice("Import needs the ADE runtime — retry once it is connected.", "info");
         return;
       }
       if (name === "/secrets") {
@@ -10572,7 +11250,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (name === "/effort") {
-        openModelPicker({ focusKind: "reasoning" });
+        openModelWizard({ startAtSettings: true });
         return;
       }
       if (name === "/info") {
@@ -10618,6 +11296,75 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     if (name === "/plugin-actions") {
       openPluginActionsPane(args);
+      return;
+    }
+    if (name === "/machines") {
+      setRightPane({
+        kind: "details",
+        title: "Machines",
+        body: "Loading paired machines…",
+      });
+      setRightOpen(true);
+      try {
+        const sources = await loadMachinePickerSources([project.projectRoot]);
+        const rows = buildMachinePickerRows({
+          localLabel: "this machine",
+          localProjectRoot: activeProjectRoot,
+          pooled: connectionPoolRef.current.list(),
+          targets: sources.targets,
+          accountMachines: sources.accountMachines,
+          activeMachineKey,
+        });
+        const query = args.trim();
+        const filtered = query
+          ? rows.filter((row) => `${row.label} ${row.detail} ${row.id}`.toLowerCase().includes(query.toLowerCase()))
+          : rows;
+        machinePickerQueryByIdRef.current = new Map(filtered.map((row) => [row.id, row.query]));
+        setRightSelectionIndex(Math.max(0, filtered.findIndex((row) => row.id === activeMachineKey)));
+        setRightPane({
+          kind: "list",
+          title: "Machines",
+          rows: filtered.map((row) => `${row.label}  ${row.detail}`),
+          emptyText: "No other machines. Sign in and pair one from desktop, then retry.",
+          action: { kind: "switch-machine", ids: filtered.map((row) => row.id) },
+        });
+      } catch (error) {
+        setRightPane({
+          kind: "details",
+          title: "Machines",
+          body: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (name === "/cloud") {
+      setRightPane({
+        kind: "list",
+        title: "Cloud agents",
+        rows: [],
+        emptyText: "Loading Cursor Cloud agents…",
+      });
+      setRightOpen(true);
+      try {
+        const fleet = await getCursorCloudFleet(conn);
+        setRightPane({
+          kind: "list",
+          title: fleet.items.length ? `Cloud agents · ${fleet.items.length}` : "Cloud agents",
+          rows: formatCursorCloudFleetRows(fleet.items),
+          emptyText: "No Cursor Cloud agents for this project.",
+          footnote: CURSOR_CLOUD_PANE_NOTE,
+        });
+      } catch (error) {
+        setRightPane({
+          kind: "details",
+          title: "Cloud agents",
+          body: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (name === "/project") {
+      await openProjectPicker({ query: args.trim() });
       return;
     }
     if (name === "/keybindings") {
@@ -10822,7 +11569,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setRightPane({ kind: "details", title: "Plugins", body: formatClaudePlugins(plugins) });
       return;
     }
-    if (name === "/new chat") {
+    if (name === "/new chat" || name === "/new") {
       if (!laneId) {
         setRightPane({ kind: "details", title: "New chat", body: "No active lane is available." });
         return;
@@ -10831,10 +11578,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/steer") {
+      // Which dispatch commands this pane advertises comes off the canonical
+      // per-provider table (desktop shared/types/chat.ts), the same source the
+      // /steer commands and the desktop staged strip read — Claude offers both,
+      // Cursor only the interrupt, everything else stages until the turn ends.
+      const steerProvider = activeSession?.provider;
+      const dispatchHint = [
+        supportsActiveTurnDispatchMode(steerProvider, "inline") ? "/steer send" : null,
+        supportsActiveTurnDispatchMode(steerProvider, "interrupt") ? "/steer interrupt" : null,
+      ].filter((entry): entry is string => entry != null);
+      const hintLine = pendingSteers.length
+        ? dispatchHint.length
+          ? `${dispatchHint.join(" · ")} · /steer edit · /steer cancel`
+          : "Sends when the current turn finishes · /steer edit · /steer cancel"
+        : null;
       const body = pendingSteers.length
-        ? pendingSteers
-            .map((steer, index) => `${index + 1}. ${steer.text}`)
-            .join("\n")
+        ? [
+            pendingSteers.map((steer, index) => `${index + 1}. ${steer.text}`).join("\n"),
+            ...(hintLine ? ["", hintLine] : []),
+          ].join("\n")
         : "No staged steer messages are waiting.";
       setRightPane({ kind: "details", title: "Staged messages", body });
       return;
@@ -10850,14 +11612,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setDrawerLaneId(created.id);
       setSelectedDrawerLaneId(created.id);
       setSelectedDrawerChatId(null);
-      setSelectedDrawerLaneAction(null);
-      setSelectedDrawerChatAction(null);
-      setDrawerSection("lanes");
+      setSelectedWorkChatAction(null);
+      setWorkSelectedKey(`lane:${created.id}`);
       setRightPane({ kind: "details", title: "New lane", body: renderObject(created, 20) });
       await refreshState();
       setDrawerLaneId(created.id);
       setSelectedDrawerLaneId(created.id);
-      setSelectedDrawerLaneAction(null);
       runLaneSetupAfterCreate(conn, created);
       return;
     }
@@ -11448,6 +12208,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setRightPane({ kind: "details", title: request.title, body: renderObject(result, 24) });
       return;
     }
+    if (name === "/issue" || name.startsWith("/issue ")) {
+      const issueInput = `${name.slice("/issue".length)} ${args}`.trim();
+      await executeIssueToolRequest(issueInput, {
+        sessionId: sessionId ?? null,
+        conn,
+        setDetails: (title, body) => setRightPane({ kind: "details", title, body }),
+        notifySuccess: (message) => addNotice(message, "success"),
+        render: renderObject,
+      });
+      return;
+    }
     if (name === "/feedback") {
       openFeedbackForm();
       return;
@@ -11487,7 +12258,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         selectActiveLaneId(chat.laneId);
         setDrawerLaneId(chat.laneId);
         setSelectedDrawerLaneId(chat.laneId);
-        setSelectedDrawerChatAction(null);
+        setSelectedWorkChatAction(null);
         setSelectedDrawerChatId(chat.sessionId);
         applyDrawerChatSelection({ session: chat, action: null });
         addNotice(`Switched to chat ${chat.title ?? chat.sessionId}.`, "success");
@@ -11627,11 +12398,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/model") {
-      openModelPicker();
+      openModelWizard();
       return;
     }
     if (name === "/effort") {
-      openModelPicker({ focusKind: "reasoning" });
+      openModelWizard({ startAtSettings: true });
+      return;
+    }
+    if (name === "/import") {
+      // Single home for external-session import. Outside a new chat it explains
+      // itself instead of silently doing nothing.
+      if (!draftChatActiveRef.current) {
+        addNotice("Import only applies when starting a new chat — run /new chat first, then /import.", "info");
+        return;
+      }
+      openExternalSessionBrowser();
       return;
     }
     if (name === "/info") {
@@ -11712,6 +12493,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           "  /session settle [id] [outcome]       file the row as done",
           "  /session unsettle [id]               undo a settle",
           "  /session keep-active [id]            pin the row active against a later settle",
+          "  /session demote [id]                 take over a subagent so reports stop",
+          "  /session promote [id]                restore a peer as a subagent",
           "",
           "Run /session snooze with no duration to pick one from the list.",
         ].join("\n"),
@@ -11770,7 +12553,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         } else if (lifecycleVerb === "unsettle") {
           await unsettleSession(conn, target.sessionId);
           addNotice(`Removed the session's settled state.${scope}`, "success");
-        } else {
+        } else if (lifecycleVerb === "demote") {
+          await setChatSpawnKind(conn, target.sessionId, "peer");
+          addNotice(`Took over the chat. Reports to the parent stop.${scope}`, "success");
+        } else if (lifecycleVerb === "promote") {
+          await setChatSpawnKind(conn, target.sessionId, "subagent");
+          addNotice(`Restored the chat as a subagent. Reports resume.${scope}`, "success");
+        } else if (lifecycleVerb === "keep-active") {
           // keep-active: the tri-state override's "active" pin. It suppresses
           // the settled tier for a row even if something later writes
           // settled_at (e.g. the PR-merge policy), so the user can hold a row
@@ -11778,6 +12567,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           // exit is "ended", never "settled" (see sessionCanonicalState.ts).
           await setSessionSettleOverride(conn, target.sessionId, "active");
           addNotice(`Pinned the session active.${scope}`, "success");
+        } else {
+          const _exhaustive: never = lifecycleVerb;
+          return _exhaustive;
         }
         await refreshState();
       } catch (err) {
@@ -11830,7 +12622,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, applySessionSnooze, archiveChat, archiveLane, displaySessions, ensureActiveSession, focusChat, focusDetails, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openPluginActionsPane, openPluginPane, openSecretsPane, openSnoozeDurationPalette, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
+  }, [activateLaneWithLastChat, activeCommandProvider, activeLane, activeMachineKey, activeProjectRoot, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, applySessionSnooze, archiveChat, archiveLane, displaySessions, ensureActiveSession, focusChat, focusDetails, hopToMachine, lanes, mode, modelState.modelId, modelState.provider, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openChatsListPane, openExternalSessionBrowser, openFeedbackForm, openForm, openLaneDeleteForm, openLaneDetailsPane, openLaneRenameForm, openModelWizard, openNewChatSetup, openNewLaneForm, openPluginActionsPane, openPluginPane, openProjectPicker, openSecretsPane, openSnoozeDurationPalette, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, switchProjectOnCurrentMachine, unarchiveChat, unarchiveLane, workSelectedRow]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -12133,12 +12925,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (name === "/steer send" || name === "/steer interrupt") {
-        if (activeSession?.provider !== "claude") {
-          addNotice("Only Claude staged messages support send-now and interrupt dispatch.", "error");
+        // Which modes each provider honors lives in one table (desktop
+        // shared/types/chat.ts); this branch only maps commands onto it.
+        const provider = activeSession?.provider;
+        const mode = name === "/steer send" ? "inline" : "interrupt";
+        if (!supportsActiveTurnDispatchMode(provider, mode)) {
+          addNotice(unsupportedActiveTurnDispatchModeMessage(provider, mode), "error");
           return;
         }
-        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, name === "/steer send" ? "inline" : "interrupt");
-        addNotice(name === "/steer send" ? "Sent staged message into the active Claude turn." : "Interrupting Claude to run the staged message.", "info");
+        const agentLabel = providerDisplayLabel(provider, "the agent");
+        // Cursor's interrupt cancels the run and resends on the same thread, so
+        // it continues rather than starting something new — same wording the
+        // desktop composer and iOS use, off the same shared fact.
+        const interruptContinues = activeTurnInterruptContinues(provider);
+        await dispatchSteerMessage(conn, sessionId, latestSteer.steerId, mode);
+        addNotice(
+          mode === "inline"
+            ? `Sent staged message into the active ${agentLabel} turn.`
+            : interruptContinues
+              ? `Interrupting ${agentLabel} and continuing with the staged message.`
+              : `Interrupting ${agentLabel} to run the staged message.`,
+          "info",
+        );
         await refreshState();
         return;
       }
@@ -12253,11 +13061,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setDrawerLaneId(created.id);
       setSelectedDrawerLaneId(created.id);
       setSelectedDrawerChatId(null);
-      setSelectedDrawerLaneAction(null);
-      setSelectedDrawerChatAction(null);
-      setDrawerSection("lanes");
+      setSelectedWorkChatAction(null);
+      setWorkSelectedKey(`lane:${created.id}`);
       // Land on the new lane's details pane (same view as highlighting a lane
-      // in the drawer) instead of closing the right pane to empty.
+      // in the sessions pane) instead of closing the right pane to empty.
       setRightPane(seedLaneDetails(
         submission.color ? { ...created, color: submission.color } : created,
       ));
@@ -12269,7 +13076,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       await refreshState();
       setDrawerLaneId(created.id);
       setSelectedDrawerLaneId(created.id);
-      setSelectedDrawerLaneAction(null);
       return;
     }
 
@@ -12291,9 +13097,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setDrawerLaneId(created.id);
         setSelectedDrawerLaneId(created.id);
         setSelectedDrawerChatId(null);
-        setSelectedDrawerLaneAction(null);
-        setSelectedDrawerChatAction(null);
-        setDrawerSection("lanes");
+        setSelectedWorkChatAction(null);
+        setWorkSelectedKey(`lane:${created.id}`);
         setRightOpen(false);
         setRightPane({ kind: "empty" });
         lastUserOpenedPaneRef.current = null;
@@ -12360,12 +13165,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice("Primary lane cannot be deleted.", "error");
         return;
       }
-      const confirm = requireField("confirm", "Lane name");
-      if (!confirm) return;
-      if (confirm !== lane.name) {
-        addNotice(`Type "${lane.name}" exactly to delete this lane.`, "error");
-        return;
-      }
       const scope = normalizeLaneDeleteScope(values.scope);
       const deleteArgs: Record<string, unknown> = {
         laneId: targetLaneId,
@@ -12410,12 +13209,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       const expected = form.chatDelete?.title ?? session.title ?? session.goal ?? session.sessionId;
-      const confirm = requireField("confirm", "Chat title");
-      if (!confirm) return;
-      if (confirm !== expected) {
-        addNotice(`Type "${expected}" exactly to delete this chat.`, "error");
-        return;
-      }
       setRightPane({ kind: "details", title: "Delete chat", body: `Deleting ${expected}...` });
       await deleteChatSession(conn, targetSessionId);
       setFormDiscardArmed(false);
@@ -12532,13 +13325,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
   }, [activeLaneId, addNotice, focusAfterDetails, lanes, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, selectFallbackChatAfterRemoval, sessions]);
 
-  const openLatestImage = useCallback(() => {
-    const target = latestOpenableImageTarget(events);
-    if (!target) {
-      addNotice("No image to open in the recent history.", "info");
-      return;
-    }
-    const openTarget = target;
+  /**
+   * Hand a path/URL to the OS viewer. Best-effort by contract: every failure
+   * mode becomes a notice, never a throw — this runs inside React event
+   * handlers where an exception would tear down the Ink render.
+   */
+  const openImageTarget = useCallback((openTarget: string) => {
     try {
       const child = process.platform === "darwin"
         ? spawn("open", [openTarget], { stdio: "ignore", detached: true })
@@ -12555,7 +13347,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     } catch (err) {
       addNotice(err instanceof Error ? err.message : String(err), "error");
     }
-  }, [addNotice, events]);
+  }, [addNotice]);
+
+  const openLatestImage = useCallback(() => {
+    const target = latestOpenableImageTarget(events);
+    if (!target) {
+      addNotice("No image to open in the recent history.", "info");
+      return;
+    }
+    openImageTarget(target);
+  }, [addNotice, events, openImageTarget]);
+
+  /**
+   * Open the image whose inline token the caret is sitting on. Returns false
+   * when the caret is not on a token so the caller can fall through to its
+   * other meaning for the key.
+   */
+  const openImageTokenAtCursor = useCallback((): boolean => {
+    const token = imageTokenAtCursor(promptRef.current, promptCursorRef.current);
+    if (!token) return false;
+    const attachment = promptImageAttachmentsRef.current.find((entry) => entry.label === token.label);
+    if (!attachment) {
+      addNotice(`No file is attached to ${formatImageToken(token.label)} any more.`, "info");
+      return true;
+    }
+    openImageTarget(attachment.path);
+    return true;
+  }, [addNotice, openImageTarget]);
 
   // Slash commands typed while a turn is streaming or rate-limited used to slip
   // past the dispatcher and get queued/sent as plain text. interceptLocalSlashCommand
@@ -12677,7 +13495,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       selectActiveLaneId(session.laneId);
       setDrawerLaneId(session.laneId);
       setSelectedDrawerLaneId(session.laneId);
-      setSelectedDrawerChatAction(null);
+      setSelectedWorkChatAction(null);
       setSelectedDrawerChatId(session.sessionId);
       applyDrawerChatSelection({ session, action: null });
       addNotice(`Switched to chat ${session.title ?? session.sessionId}.`, "success");
@@ -12689,13 +13507,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const submitPrompt = useCallback(async (value: string) => {
     const text = value.trim();
     const submittedValue = value;
-    const promptAttachments: AgentChatFileRef[] = selectedMentions
-      .filter((mention) => (
-        mention.kind === "file"
-        && mention.filePath
-        && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-      ))
-      .map((mention) => ({ type: isImageFilePath(mention.filePath!) ? "image" : "file", path: mention.filePath! }));
+    const draftImageAttachments = promptImageAttachmentsRef.current;
+    const promptAttachments: AgentChatFileRef[] = [
+      ...selectedMentions
+        .filter((mention) => (
+          mention.kind === "file"
+          && mention.filePath
+          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
+        ))
+        .map((mention) => ({
+          type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
+          path: mention.filePath!,
+        })),
+      // Inline image tokens ride the SAME structured envelope as @file
+      // attachments, so providers that consume AgentChatFileRef[] are
+      // unaffected by the switch from detached chips to tokens.
+      ...referencedAttachmentPaths(text, draftImageAttachments)
+        .map((filePath) => ({ type: "image" as const, path: filePath })),
+    ];
+    // ...and the outgoing *text* names the file too, because the chip glyph is
+    // meaningless to a model. This is in addition to the envelope, never
+    // instead of it.
+    const outgoingText = expandImageTokensForSend(text, draftImageAttachments);
     const activeTerminalForBlankResume = activeTerminalSessionRef.current;
     // A plugin field owning the composer behaves like a form field: an empty
     // submission clears it rather than being swallowed, and a value starting
@@ -12733,6 +13566,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (activePaneRef.current === "chat") {
         chatDraftRef.current = "";
       }
+      // The draft (tokens and all) is gone from the composer, so its image
+      // registry and stashed copy go with it.
+      promptImageAttachmentsRef.current = [];
+      clearComposerDraft(composerDraftsRef.current, activeSessionIdRef.current);
       setError(null);
       if (blankResumeRequest && activeTerminalForBlankResume) {
         await resumeClosedTerminalSession(activeTerminalForBlankResume);
@@ -12844,7 +13681,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`${parsed?.name} is a desktop-only surface; opened ADE desktop.`, "info");
         return;
       }
-      const terminalPrompt = promptTextForTerminal(text, promptAttachments);
+      const terminalPrompt = promptTextForTerminal(outgoingText, promptAttachments);
       // In grid view the focused tile is the sole submit target. If it's a Claude
       // terminal tile, route the prompt there; otherwise fall through to the chat
       // path with that tile's session id. We never spawn a NEW terminal from a grid
@@ -12868,7 +13705,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       if (activeChatSessionId) {
         lastLocalSendAtRef.current = Date.now();
-        await sendOrSteerChatMessage(activeChatSessionId, text || "Use the attached image.", promptAttachments);
+        await sendOrSteerChatMessage(activeChatSessionId, outgoingText || "Use the attached image.", promptAttachments);
         setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
         return;
       }
@@ -12888,7 +13725,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       lastLocalSendAtRef.current = Date.now();
-      await sendOrSteerChatMessage(sessionId, text || "Use the attached image.", promptAttachments);
+      await sendOrSteerChatMessage(sessionId, outgoingText || "Use the attached image.", promptAttachments);
       setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -12896,6 +13733,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (submittedValue.trim() || promptAttachments.length) {
         setPrompt(submittedValue);
         promptRef.current = submittedValue;
+        // The prompt is back, so its image tokens must resolve again.
+        promptImageAttachmentsRef.current = retainReferencedAttachments(submittedValue, draftImageAttachments);
         if (activePaneRef.current === "chat") chatDraftRef.current = submittedValue;
       }
       addNotice(message, "error");
@@ -12905,13 +13744,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const launchPromptInBackground = useCallback(async (value: string) => {
     const text = value.trim();
     const submittedValue = value;
-    const promptAttachments: AgentChatFileRef[] = selectedMentions
-      .filter((mention) => (
-        mention.kind === "file"
-        && mention.filePath
-        && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
-      ))
-      .map((mention) => ({ type: isImageFilePath(mention.filePath!) ? "image" : "file", path: mention.filePath! }));
+    const draftImageAttachments = promptImageAttachmentsRef.current;
+    const promptAttachments: AgentChatFileRef[] = [
+      ...selectedMentions
+        .filter((mention) => (
+          mention.kind === "file"
+          && mention.filePath
+          && (mention.attachment || (mention.insertText.length > 0 && text.includes(mention.insertText)))
+        ))
+        .map((mention) => ({
+          type: isImageFilePath(mention.filePath!) ? ("image" as const) : ("file" as const),
+          path: mention.filePath!,
+        })),
+      ...referencedAttachmentPaths(text, draftImageAttachments)
+        .map((filePath) => ({ type: "image" as const, path: filePath })),
+    ];
+    const outgoingText = expandImageTokensForSend(text, draftImageAttachments);
     if (!text && !promptAttachments.length) return;
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
@@ -12966,7 +13814,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           : normalized.modelId ?? normalized.model;
         const cols = clampTerminalPaneCols(terminalPaneWidth);
         const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
-        const terminalPrompt = promptTextForTerminal(text, promptAttachments);
+        const terminalPrompt = promptTextForTerminal(outgoingText, promptAttachments);
         const cliTitle = pendingNewChatTitleRef.current ?? LAUNCH_PROFILE_TITLE[cliProvider];
         const createdTerminal = await startCliTerminalSession({
           connection: conn,
@@ -12994,6 +13842,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         launched = true;
       } else {
+        if (runtimeProvider === "cursor") {
+          const cursorModel = models.find((entry) => (
+            entry.id === normalized.modelId
+              || entry.modelId === normalized.modelId
+              || entry.id === normalized.model
+              || entry.modelId === normalized.model
+          )) ?? modelInfoFromDescriptor(normalized.modelId ?? normalized.model);
+          if (!cursorModel || !cursorModelAvailableForInterface(cursorModel, normalized.interfaceMode)) {
+            throw new Error(
+              normalized.interfaceMode === "cli"
+                ? "This Cursor model is available for chat only. Choose a Cursor CLI model."
+                : "This Cursor model is available for CLI only. Switch Interface to CLI or choose a chat model.",
+            );
+          }
+        }
         const requestedTitle = pendingNewChatTitleRef.current;
         const created = await createChatSession({
           connection: conn,
@@ -13018,11 +13881,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         optimisticChatSessionsRef.current.set(created.id, optimisticSummary);
         setSessions((current) => mergeOptimisticChatSessions(current, optimisticChatSessionsRef.current));
         lastLocalSendAtRef.current = Date.now();
-        await sendChatMessage(conn, created.id, text || "Use the attached image.", promptAttachments);
+        await sendChatMessage(conn, created.id, outgoingText || "Use the attached image.", promptAttachments);
         launched = true;
       }
       pendingNewChatTitleRef.current = null;
+      if (launched) rememberModelChoice(normalized);
       setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
+      promptImageAttachmentsRef.current = [];
+      clearComposerDraft(composerDraftsRef.current, activeSessionIdRef.current);
       await refreshState().catch((refreshError) => {
         addNotice(`Launched chat, but refresh failed: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`, "error");
       });
@@ -13035,6 +13901,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       promptRef.current = submittedValue;
       promptCursorRef.current = submittedValue.length;
       chatDraftRef.current = submittedValue;
+      promptImageAttachmentsRef.current = retainReferencedAttachments(submittedValue, draftImageAttachments);
       setDraftChatMode(true);
       setBackgroundLaunchStatus((prev) => prev?.id === launchId
         ? { ...prev, status: "failed", error: message }
@@ -13121,7 +13988,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : catalogProvider ?? modelStateRef.current.provider;
       if (modelPickerProviderSwitchBlocked({
         providerLocked: providerLockedRef.current,
-        surface: rightPane.kind === "model-picker" ? rightPane.surface : "chat",
+        surface: rightPane.kind === "model-picker" || rightPane.kind === "model-wizard"
+          ? rightPane.surface
+          : "chat",
         currentProvider: modelStateRef.current.provider,
         nextProvider: provider,
       })) {
@@ -13138,12 +14007,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	        );
 	        return;
 	      }
-	      const nextModelState: AdeCodeModelState = {
-	        ...previousModelState,
+      const nextModelState: AdeCodeModelState = {
+        ...previousModelState,
         ...modelStatePatchForModel(provider, target),
-        fastMode: (target.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast") || modelSupportsFastMode(descriptor))
-          ? previousModelState.fastMode
-          : false,
       };
       modelStateRef.current = nextModelState;
       setModelState(nextModelState);
@@ -13211,12 +14077,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const model = immediateModels.find((entry) => entry.isDefault) ?? immediateModels[0] ?? null;
     applyModelState((prev) => {
       const patch = model ? modelStatePatchForModel(provider, model) : fallbackModelStatePatch(provider);
-      const fallbackDescriptor = !model && patch.modelId ? getModelById(patch.modelId) : undefined;
-      const fastSupported = model ? modelInfoSupportsFastMode(model) : modelSupportsFastMode(fallbackDescriptor);
       return {
         ...prev,
         ...patch,
-        fastMode: fastSupported ? prev.fastMode : false,
       };
     });
     void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
@@ -13242,9 +14105,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     applyModelState((prev) => ({
       ...prev,
       ...modelStatePatchForModel(modelState.provider, nextModel),
-      fastMode: (nextModel.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast") || modelSupportsFastMode(getModelById(nextModel.modelId ?? nextModel.id)))
-        ? prev.fastMode
-        : false,
     }));
   }, [applyModelState, modelState.modelId, modelState.provider, models]);
 
@@ -13332,25 +14192,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // rows only (disabled rows return above); a committed session's interface
       // is fixed by its type.
       const nextInterface = modelStateRef.current.interfaceMode === "cli" ? "chat" : "cli";
-      const cursorModels = providerModelsCacheRef.current.get(providerModelsCacheKey("cursor", nextInterface))
-        ?? (modelStateRef.current.provider === "cursor" ? models : registryModelsForProvider("cursor"));
       persistExplicitDraftKind(nextInterface);
-      applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, cursorModels));
+      applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface));
       if (modelStateRef.current.provider === "cursor") {
         void loadProviderModels("cursor", {
           applyDefault: false,
           force: true,
           interfaceMode: nextInterface,
-        }).then((loaded) => {
+        }).then(() => {
           const current = modelStateRef.current;
           if (current.provider !== "cursor" || current.interfaceMode !== nextInterface) return;
-          applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, loaded));
+          applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface));
         }).catch(() => undefined);
       }
-      return;
-    }
-    if (row.kind === "import-session") {
-      openExternalSessionBrowser();
       return;
     }
     if (row.kind === "model") {
@@ -13418,7 +14272,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       lastUserOpenedPaneRef.current = null;
       focusChat();
     }
-	  }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, loadProviderModels, models, openExternalSessionBrowser, persistExplicitDraftKind, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
+	  }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, loadProviderModels, models, persistExplicitDraftKind, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
 
   const recallPromptHistory = useCallback((direction: "previous" | "next"): boolean => {
     const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
@@ -13426,7 +14280,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       ? promptHistoryBySessionIdRef.current[focusedSessionId] ?? []
       : promptHistoryRef.current;
     if (!history.length) {
-      addNotice("No prompt history in this chat yet.", "info");
+      if (direction === "previous") {
+        addNotice("No prompt history in this chat yet.", "info");
+      }
       return true;
     }
     if (activePaneRef.current !== "chat") {
@@ -13481,21 +14337,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setPaneFocus("details");
   }, [setPaneFocus]);
 
+  /**
+   * Put a materialized image into the draft as an inline `⟦image:png⟧`
+   * token at the caret.
+   *
+   * The token — not a detached chip hanging off the composer — is the image.
+   * That is what makes it belong to this chat's draft (so it can't leak into
+   * another chat), removable with a single Backspace, and visible in the text
+   * the user is composing.
+   */
   const addImageMention = useCallback((filePath: string): void => {
-    const insertText = `@${path.basename(filePath)}`;
-    setSelectedMentions((prev) => {
-      if (prev.some((entry) => entry.filePath === filePath)) return prev;
-      return [...prev, {
-        kind: "file" as const,
-        label: path.basename(filePath),
-        insertText,
-        detail: filePath,
-        filePath,
-        attachment: true,
-      }].slice(-12);
-    });
+    const existing = promptImageAttachmentsRef.current;
+    const alreadyAttached = existing.find((entry) => entry.path === filePath);
+    if (alreadyAttached && promptRef.current.includes(alreadyAttached.label)) {
+      addNotice("That image is already in the prompt.", "info");
+      return;
+    }
+    const label = uniqueImageTokenLabel(
+      existing.map((entry) => entry.label),
+      path.basename(filePath),
+    );
+    const next = insertImageToken(promptRef.current, promptCursorRef.current, label);
+    promptImageAttachmentsRef.current = [...existing, { label, path: filePath }].slice(-12);
+    chatDraftRef.current = next.value;
+    setPromptValue(next.value, next.cursor);
     addNotice("Attached clipboard image.", "success");
-  }, [addNotice]);
+  }, [addNotice, setPromptValue]);
 
   const attachClipboardImage = useCallback((): boolean => {
     // The clipboard always lives on the machine running the TUI. When the
@@ -13739,7 +14606,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     }
     if (action === "chat:modelPicker") {
-      openModelPicker();
+      openModelWizard();
       return true;
     }
     if (action === "chat:fastMode") {
@@ -13766,14 +14633,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     }
     if (action === "chat:new-line" || action === "chat:newline") {
-      const nextPrompt = `${prompt}\n`;
+      // Insert at the caret, not at the end of the draft, and move the caret
+      // past it — appending blind put the break in the wrong place whenever the
+      // user had arrowed back into the text, and left the caret behind it.
+      const next = insertPromptText(promptRef.current, promptCursorRef.current, "\n");
       setFormDiscardArmed(false);
-      if (activePaneRef.current === "chat") chatDraftRef.current = nextPrompt;
-      setPrompt(nextPrompt);
+      if (activePaneRef.current === "chat") chatDraftRef.current = next.value;
+      setPromptValue(next.value, next.cursor);
       return true;
     }
     if (action === "chat:paste-image" || action === "chat:imagePaste") {
       return attachClipboardImage();
+    }
+    if (action === "chat:open-image" || action === "chat:openImage") {
+      if (openImageTokenAtCursor()) return true;
+      openLatestImage();
+      return true;
     }
     if (action === "chat:open-editor" || action === "chat:externalEditor") {
       const edited = editPromptInExternalEditor(prompt);
@@ -13873,7 +14748,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (action === "footer:up" || action === "footer:down") {
       if (action === "footer:up") {
         selectFooterControl(null);
-        setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
+        focusChat();
       } else {
         selectFooterControl(footerControls[0] ?? "drawer");
       }
@@ -14024,7 +14899,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return reportUnavailable();
     }
     return reportUnavailable();
-  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, clearOlderHistoryCursor, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openCommandPalette, openHistorySearch, openModelPicker, prompt, recallPromptHistory, refreshState, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, runPluginKeybindingAction, selectFooterControl, setChatScrollOffset, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
+  }, [addNotice, applyModelState, attachClipboardImage, chatRowBudget, clearOlderHistoryCursor, copyChatSelection, cycleFooterControl, cyclePaneFocus, cyclePermission, cycleReasoning, drawerOpen, focusAfterDetails, focusChat, focusDetails, footerControls, launchPromptInBackground, modelState.provider, openCommandPalette, openHistorySearch, openModelWizard, prompt, recallPromptHistory, refreshState, openImageTokenAtCursor, openLatestImage, requestAppExit, resolveFocusedDeeplinkRow, rightOpen, runPluginKeybindingAction, selectFooterControl, setChatScrollOffset, setPromptValue, submitPrompt, toggleDetailsPane, toggleSubagentsPane]);
 
   const chatPointFromMouse = useCallback((
     x: number | null,
@@ -14109,6 +14984,136 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       maxScrollOffsetRows: chatScrollMaxOffsetRef.current,
     });
   }, [addModeRows, chatRowBudget, goalBannerRows]);
+
+
+  /**
+   * Enter (or a click) on a sessions-pane row. Shelf clicks only toggle the
+   * drawer — they must not steal the work-list cursor, or the right pane
+   * falls back to lane details. Singleton identity clicks open lane details
+   * the same way a lane-header row does.
+   */
+  const activateWorkRow = useCallback((row: WorkListRow, region: WorkListHitRegion = "body") => {
+    if (row.kind === "shelf") {
+      toggleWorkShelf(row.shelf);
+      return;
+    }
+    if (
+      row.kind === "session"
+      && region === "lane-identity"
+      && row.showLaneIdentity
+      && row.laneId
+    ) {
+      const lane = lanesRef.current.find((entry) => entry.id === row.laneId) ?? null;
+      if (lane) {
+        setWorkSelectedKey(row.key);
+        setSelectedDrawerChatId(row.sessionId);
+        setSelectedWorkChatAction(null);
+        openLaneDetailsPane(lane);
+        return;
+      }
+    }
+    selectWorkRow(row);
+    switch (row.kind) {
+      case "session": {
+        if (row.machine) return; // `selectWorkRow` already showed the connect notice.
+        const closedTerminal = terminalSessionsRef.current.find(
+          (terminal) => terminal.terminalId === row.sessionId && terminal.status !== "running",
+        ) ?? null;
+        if (closedTerminal) {
+          if (!isTerminalSessionResumable(closedTerminal)) {
+            addNotice("This CLI session cannot be resumed.", "info");
+            return;
+          }
+          void resumeClosedTerminalSession(closedTerminal)
+            .then((resumed) => {
+              if (resumed) addNotice("Resuming CLI session…", "info");
+            })
+            .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          return;
+        }
+        focusChat();
+        setRightPane({ kind: "chat-info", info: buildChatInfoSnapshotRef.current() });
+        setRightOpen(true);
+        lastUserOpenedPaneRef.current = "chat-info";
+        return;
+      }
+      case "lane-header": {
+        const lane = row.laneId ? lanesRef.current.find((entry) => entry.id === row.laneId) ?? null : null;
+        if (!lane) return;
+        openLaneDetailsPane(lane);
+        return;
+      }
+      case "new-chat":
+        openNewChatSetup();
+        return;
+      default: {
+        const _exhaustive: never = row;
+        return _exhaustive;
+      }
+    }
+  }, [
+    addNotice,
+    focusChat,
+    openLaneDetailsPane,
+    openNewChatSetup,
+    resumeClosedTerminalSession,
+    selectWorkRow,
+    toggleWorkShelf,
+  ]);
+
+  /**
+   * The sessions pane's whole keyboard surface, in ONE place. The drawer needed
+   * six branches in the global key chain (two arrow branches × two modes, Tab,
+   * Enter, and two hotkey branches); the pane needs one, because there is one
+   * flat row list and one cursor.
+   *
+   * Returns true when it consumed the key.
+   */
+  const handleWorkPaneKey = useCallback((input: string, key: InkKey): boolean => {
+    const rows = workListModelRef.current.rows;
+    const selectedKey = workSelectedKeyRef.current;
+    const selectedRow = rows[workListRowIndex(rows, selectedKey)] ?? null;
+    if (key.upArrow || key.downArrow) {
+      const nextKey = stepWorkListSelection(rows, selectedKey, key.upArrow ? -1 : 1);
+      const nextRow = rows[workListRowIndex(rows, nextKey)] ?? null;
+      if (nextRow) selectWorkRow(nextRow);
+      return true;
+    }
+    if (key.return) {
+      if (selectedRow) activateWorkRow(selectedRow);
+      return true;
+    }
+    // Row hotkeys: r=rename, a=archive, x=delete. Modified keystrokes belong to
+    // the global chain (e.g. Ctrl+R history search).
+    if (!key.ctrl && !key.meta && /^[raxRAX]$/.test(input)) {
+      const hotkey = input.toLowerCase();
+      if (selectedRow?.kind === "session" && !selectedRow.machine) {
+        if (!sessionsRef.current.some((session) => session.sessionId === selectedRow.sessionId)) return false;
+        if (hotkey === "r") openChatRenameForm(selectedRow.sessionId);
+        else if (hotkey === "a") void archiveChat(selectedRow.sessionId);
+        else openChatDeleteForm(selectedRow.sessionId);
+        return true;
+      }
+      if (selectedRow?.kind === "lane-header" && selectedRow.laneId) {
+        const lane = lanesRef.current.find((entry) => entry.id === selectedRow.laneId) ?? null;
+        if (!lane || lane.laneType === "primary") return false;
+        if (hotkey === "r") openLaneRenameForm(lane.id);
+        else if (hotkey === "a") void archiveLane(lane.id);
+        else openLaneDeleteForm(lane.id);
+        return true;
+      }
+    }
+    return false;
+  }, [
+    activateWorkRow,
+    archiveChat,
+    archiveLane,
+    openChatDeleteForm,
+    openChatRenameForm,
+    openLaneDeleteForm,
+    openLaneRenameForm,
+    selectWorkRow,
+  ]);
 
   useInput((input, key) => {
     if (!connectionRef.current && error) {
@@ -14217,7 +15222,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const drawerWidth = resolveDrawerPaneWidth(columns, drawerOpen);
       const rightStart = columns - rightWidth + 1;
       const mainPaneTopRow = 3 + goalBannerRows + addModeRows;
-      const drawerBottomRow = mainPaneTopRow + Math.max(1, chatRowBudget) - 1;
+      const drawerBottomRow = mainPaneTopRow + Math.max(1, sessionsPaneHeight) - 1;
       const drawerLocalY = mouse.y == null ? null : mouse.y - mainPaneTopRow + 1;
       const inDrawerPane = mouse.x != null
         && mouse.y != null
@@ -14246,13 +15251,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
       }
       if (mouse.kind === "drag" && inDrawerPane) {
-        const hit = drawerMouseHitForLayout({ y: drawerLocalY, layout: drawerLayoutValue });
-        if (hit?.kind === "chat") {
-          const session = drawerSessionForChatHit(hit, drawerLayoutValue);
-          if (session) {
-            dragAddSessionRef.current = { sessionId: session.sessionId, laneId: session.laneId };
-            return;
-          }
+        // Drag a session card onto the center pane to add it to the grid. Only
+        // local rows can be dragged: a foreign row has no live session here.
+        const hit = workListMouseHitForLayout({ y: drawerLocalY, layout: workListLayoutValue });
+        const dragRow = hit ? workListModel.rows[hit.index] : null;
+        if (dragRow?.kind === "session" && !dragRow.machine && dragRow.laneId) {
+          dragAddSessionRef.current = { sessionId: dragRow.sessionId, laneId: dragRow.laneId };
+          return;
         }
       }
       if (mouse.kind === "release" && dragAddSessionRef.current) {
@@ -14273,7 +15278,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           extraPromptRows: smartLinkRows,
           modelStatusRows: modelStatusOverlayRows,
           footerRows: 1,
-        })) {
+        }) && (mouse.x == null || (mouse.x > drawerWidth && mouse.x < rightStart))) {
           stopChatSelectionEdgeScroll();
           chatSelectionAnchorRef.current = null;
           if (activeSelection) updateChatMouseSelection(null);
@@ -14285,69 +15290,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           chatSelectionAnchorRef.current = null;
           if (activeSelection) updateChatMouseSelection(null);
           focusDrawerOnly();
-          const hit = drawerMouseHitForLayout({ y: drawerLocalY, layout: drawerLayoutValue });
-          if (hit?.kind === "new-lane") {
-            if (!addModeRef.current) {
-              setDrawerSection("lanes");
-              setSelectedDrawerLaneAction("new-lane");
-              setSelectedDrawerLaneId(null);
-              openNewLaneForm();
-            }
-          } else if (hit?.kind === "lane") {
-            const lane = drawerLaneRows[hit.index];
-            if (lane) {
-              setDrawerSection("lanes");
-              setSelectedDrawerLaneAction(null);
-              setSelectedDrawerLaneId(lane.id);
-              setDrawerLaneId(lane.id);
-              selectActiveLaneId(lane.id);
-              applyDrawerChatSelection({ session: null, action: null });
-            }
-          } else if (hit?.kind === "chat") {
-            const session = drawerSessionForChatHit(hit, drawerLayoutValue);
-            const lane = drawerLaneRows[hit.laneIndex];
-            if (session && lane) {
-              // Clicking a chat under any lane card selects that lane too, so
-              // the always-visible previews are directly clickable.
-              setSelectedDrawerLaneAction(null);
-              setSelectedDrawerLaneId(lane.id);
-              setDrawerLaneId(lane.id);
-              selectActiveLaneId(lane.id);
-              setDrawerSection("chats");
-              setSelectedDrawerChatAction(null);
-              setSelectedDrawerChatId(session.sessionId);
-              applyDrawerChatSelection({ session, action: null });
-            }
-          } else if (hit?.kind === "closed-toggle") {
-            const lane = drawerLaneRows[hit.laneIndex];
-            if (lane) {
-              setSelectedDrawerLaneAction(null);
-              setSelectedDrawerLaneId(lane.id);
-              setDrawerLaneId(lane.id);
-              selectActiveLaneId(lane.id);
-              setDrawerSection("chats");
-              toggleDrawerClosedCliGroup(lane.id);
-            }
-          } else if (hit?.kind === "closed-chat") {
-            const session = drawerClosedSessionForHit(hit, drawerLayoutValue);
-            const lane = drawerLaneRows[hit.laneIndex];
-            if (session && lane) {
-              setSelectedDrawerLaneAction(null);
-              setSelectedDrawerLaneId(lane.id);
-              setDrawerLaneId(lane.id);
-              selectActiveLaneId(lane.id);
-              setDrawerSection("chats");
-              setSelectedDrawerChatAction(null);
-              setSelectedDrawerChatId(session.sessionId);
-              applyDrawerChatSelection({ session, action: null });
-            }
-          } else if (hit?.kind === "new-chat") {
-            setDrawerSection("chats");
-            setSelectedDrawerChatAction("new-chat");
-            setSelectedDrawerChatId(null);
-            openNewChatSetup();
-            setRightOpen(true);
-          }
+          // Click uses the same row activation as Enter, except a singleton
+          // card's first line is the lane identity (lane details) rather than
+          // Chat Info.
+          const hit = workListMouseHitForLayout({ y: drawerLocalY, layout: workListLayoutValue });
+          const clicked = hit ? workListModel.rows[hit.index] ?? null : null;
+          if (clicked) activateWorkRow(clicked, hit?.region ?? "body");
           return;
         }
         if (mouse.x != null && mouse.y != null && rightOpen && rightWidth > 0 && mouse.x >= rightStart) {
@@ -14362,10 +15310,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             // goal-banner / add-mode header lines) and map roster indices back
             // into the shifted selection space.
             const resumeOffset = chatInfoSelectionOffset(rightPane.info);
-            const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
+            const subagentPaneTop = 2 + goalBannerRows + addModeRows + 1 + chatInfoPreambleLines(rightPane.info) - 4;
             const subagentContent = subagentPaneContentFromRightPane(rightPane);
             const target = subagentContent
-              ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset, subagentPaneViewState, SUBAGENT_PANE_ROSTER_CAPACITY)
+              ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset, chatInfoRosterViewState, SUBAGENT_PANE_ROSTER_CAPACITY)
               : null;
             if (target) activateSubagentPaneTarget(target, resumeOffset);
           }
@@ -14452,8 +15400,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	      const inRightPane = mouse.x != null && rightOpen && rightWidth > 0 && mouse.x >= rightStart;
 	      const inTranscriptRows = mouse.y == null || mouse.y > 2;
 	      if (mouse.kind === "wheel" && inDrawerPane) {
-	        const visibleCount = visibleDrawerLaneCount(chatRowBudget, orderedDrawerLanes.length);
-	        const maxOffset = Math.max(0, orderedDrawerLanes.length - visibleCount);
+	        // Scroll by ROWS of the flat list; the layout clamps the window, so
+	        // the ceiling only has to stop the offset running past the last row.
+	        const maxOffset = Math.max(0, workListModel.rows.length - 1);
 	        const delta = mouse.direction === "down" ? 3 : mouse.direction === "up" ? -3 : 0;
 	        if (delta !== 0) {
 	          setDrawerScrollOffsetRows((offset) => Math.max(0, Math.min(maxOffset, offset + delta)));
@@ -14497,10 +15446,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           // Resume row shifts the roster down — see the chat-info hover
           // handler above for the offset rationale.
           const resumeOffset = chatInfoSelectionOffset(rightPane.info);
-          const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
+          const subagentPaneTop = 2 + goalBannerRows + addModeRows + 1 + chatInfoPreambleLines(rightPane.info) - 4;
           const subagentContent = subagentPaneContentFromRightPane(rightPane);
           const target = subagentContent
-            ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset, subagentPaneViewState, SUBAGENT_PANE_ROSTER_CAPACITY)
+            ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset, chatInfoRosterViewState, SUBAGENT_PANE_ROSTER_CAPACITY)
             : null;
           if (target) activateSubagentPaneTarget(target, resumeOffset);
           setRightOpen(true);
@@ -14511,11 +15460,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     const pane = activePaneRef.current;
-    const detailsFormActive = (pane === "details" && rightOpen && rightPane.kind === "form")
-      // A plugin field that has taken the composer types like a form field.
-      || (pane === "details" && rightOpen && rightPane.kind === "plugin-panel" && rightPane.state.editing != null);
+    const detailsFormActive = pane === "details" && rightOpen && rightPane.kind === "form";
+    const detailsFormField = detailsFormActive && rightPane.kind === "form"
+      ? (rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null)
+      : null;
+    const detailsFormPromptActive = Boolean(
+      detailsFormField && formFieldUsesPromptInput(rightPane.kind === "form" ? rightPane.command : "", detailsFormField.name),
+    );
+    // A plugin field that has taken the composer types like a form field.
+    const pluginComposerFieldActive = pane === "details"
+      && rightOpen
+      && rightPane.kind === "plugin-panel"
+      && rightPane.state.editing != null;
     const footerActive = footerControlRef.current != null;
-    const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
+    const textInputActive = (pane === "chat" && !footerActive)
+      || detailsFormPromptActive
+      || pluginComposerFieldActive;
     const pendingQuestionApproval = pendingApproval?.mode === "question" ? pendingApproval : null;
     const pendingQuestionKeyActive = shouldHandlePendingQuestionKey({
       pane,
@@ -14719,11 +15679,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
-    // Inline model row state machine. Lives above the chat-pane arrow handlers
-    // so navigation events route here first when the row is focused.
-    // Down arrow cycles values in the current cell; up arrow exits to prompt;
-    // left/right moves between cells. Provider cell is skipped when chat is
-    // already underway (providerLocked).
+    // Inline model row is click-only (or /model). Arrow keys never enter it
+    // from the composer — up/down there cycle prompt history instead.
     if (inlineRowFocused) {
       const cell = inlineRowFocus.cell;
       if (key.upArrow) {
@@ -14829,13 +15786,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // "/") so mid-sentence triggers get palette navigation too.
       const slashOrMentionOpen = slashRows.length > 0 || activeMentionRange != null;
       if (key.upArrow && !slashOrMentionOpen) {
-        if (prompt.length === 0 && attachedImageChips.length === 0) {
-          recallPromptHistory("previous");
-          return;
-        } else {
-          movePromptCursorVerticalAndMaybeAttach(-1);
-          return;
-        }
+        movePromptCursorVerticalAndMaybeAttach(-1);
+        return;
       }
       if (key.downArrow && !slashOrMentionOpen) {
         movePromptCursorVerticalAndMaybeAttach(1);
@@ -14868,10 +15820,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const end = Boolean((key as { end?: boolean }).end);
       const paletteOpen = activeMentionRange != null || slashRows.length > 0;
       const pageRows = Math.max(1, chatRowBudget - 2);
-      if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0 && !pendingQuestionKeyActive) {
-        setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
-        return;
-      }
       const halfPageUp = isCtrlInput(input, key, "u");
       const halfPageDown = isCtrlInput(input, key, "d");
       if (pageUp || halfPageUp) {
@@ -14941,38 +15889,88 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
     }
-    if (
-      pane === "details"
-      && rightOpen
-      && rightPane.kind === "model-picker"
-      && key.tab
-      && !key.ctrl
-      && !key.meta
-      && !rightPane.searchMode
-      && rightPane.footerFocus == null
-    ) {
-      const picker = rightPane;
-      const layout = buildModelPickerLayout(buildModelPickerLayoutInput({
-        picker,
-        models,
-        catalog: modelCatalogRef.current ?? modelCatalog,
-        favorites: modelPickerFavorites,
-        recents: modelPickerRecents,
-	        modelState,
-	        aiStatus,
-	        refreshingProvider: modelCatalogRefreshingProvider,
-	      }));
-      const nextTabKey = nextModelPickerProviderTabKey({
-        providerTabs: layout.providerTabs,
-        providerTabIndex: layout.providerTabIndex,
-        delta: key.shift ? -1 : 1,
-      });
-      if (nextTabKey) {
-        setRightPane({ ...picker, providerTabKey: nextTabKey, focusedIndex: 0, footerFocus: null, railFocused: false });
-      } else {
-        setRightPane({ ...picker, railFocused: picker.railFocused !== true });
+    // ── /model wizard ────────────────────────────────────────────────────────
+    // ONE branch owns every wizard key. It deliberately handles only the keys
+    // the wizard defines (esc / ↑↓ / ←→ / ↵) and falls through for everything
+    // else, so Ctrl+C, pane cycling, and the configurable keybinding layer keep
+    // working exactly as they do over any other right-pane kind.
+    if (pane === "details" && rightOpen && rightPane.kind === "model-wizard" && modelWizardInput && modelWizardView) {
+      const wizard = rightPane;
+      const applyWizardSelection = (selection: ModelWizardSelection) => {
+        setRightPane({
+          ...wizard,
+          step: selection.step,
+          provider: selection.provider,
+          familyKey: selection.familyKey,
+          index: selection.index,
+        });
+      };
+      const cycleWizardSettingRow = (settingKind: SetupPaneRowKind, direction: 1 | -1) => {
+        const row = modelWizardInput.settingsRows.find((entry) => entry.kind === settingKind);
+        if (row) handleSetupRow(row, direction);
+      };
+      if (key.escape) {
+        const back = backModelWizard(modelWizardInput);
+        if (back.kind === "close") closeModelWizard();
+        else applyWizardSelection(back.selection);
+        return;
       }
-      return;
+      if (key.upArrow || key.downArrow) {
+        const index = moveModelWizardIndex(modelWizardView, key.upArrow ? -1 : 1);
+        if (index !== wizard.index) setRightPane({ ...wizard, index });
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        const cycle = cycleModelWizardSetting(modelWizardInput, key.leftArrow ? -1 : 1);
+        if (cycle) cycleWizardSettingRow(cycle.settingKind, cycle.direction);
+        return;
+      }
+      // Favorites stay first-class without rebuilding the old rail: `f` toggles
+      // the focused model through the same modelPicker.* RPC store the desktop
+      // picker uses, and step 1's recent shortcuts mark favorites.
+      if (input === "f" && !key.ctrl && !key.meta && modelWizardView.step === "model") {
+        const focused = modelWizardView.options[modelWizardView.index];
+        if (focused?.modelId) toggleModelPickerFavoriteId(focused.modelId);
+        return;
+      }
+      if (key.return) {
+        const advance = advanceModelWizard(modelWizardInput);
+        switch (advance.kind) {
+          case "step":
+            applyWizardSelection(advance.selection);
+            return;
+          case "select-provider": {
+            if (modelPickerProviderSwitchBlocked({
+              providerLocked: providerLockedRef.current,
+              surface: wizard.surface,
+              currentProvider: modelStateRef.current.provider,
+              nextProvider: advance.provider,
+            })) {
+              addNotice("Provider is locked for this chat. /new chat to switch.", "info");
+              return;
+            }
+            selectProvider(advance.provider);
+            applyWizardSelection(advance.selection);
+            return;
+          }
+          case "select-model":
+            commitModelPickerSelection(advance.modelId);
+            applyWizardSelection(advance.selection);
+            return;
+          case "sign-in":
+            void runInlineCommand("/login", advance.provider);
+            return;
+          case "cycle-setting":
+            cycleWizardSettingRow(advance.settingKind, advance.direction);
+            return;
+          case "commit":
+            rememberModelChoice(modelStateRef.current);
+            closeModelWizard();
+            return;
+          default:
+            return;
+        }
+      }
     }
     if (pane === "details" && rightOpen && rightPane.kind === "external-session-browser") {
       const browser = rightPane;
@@ -15141,7 +16139,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       newChatPreviewLaneIdRef.current = null;
       draftChatActiveRef.current = false;
       setDraftChatMode(false);
-      setSelectedDrawerChatAction(null);
+      setSelectedWorkChatAction(null);
       clearChatPromptDraft();
       setRightPane((prev) => prev.kind === "model-picker" && prev.surface === "new-chat" ? { kind: "empty" } : prev);
       setRightOpen(false);
@@ -15257,7 +16255,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (key.upArrow) {
         selectFooterControl(null);
-        setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
+        focusChat();
         return;
       }
       if (key.escape) {
@@ -15390,18 +16388,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
-    if (key.escape && chatMouseSelectionRef.current) {
-      stopChatSelectionEdgeScroll();
-      chatSelectionAnchorRef.current = null;
-      updateChatMouseSelection(null);
-      return;
-    }
-
-    if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
-      if (key.escape) {
+    // Single arbitration point for the three composer-adjacent Esc consumers —
+    // see resolveChatEscapeAction for the precedence and why. Keeping it ahead
+    // of both the vim block and the generic Esc chain is what makes the
+    // palette's advertised "Esc close" actually reachable with vim mode on.
+    if (key.escape) {
+      const chatEscapeAction = resolveChatEscapeAction({
+        pane,
+        textInputActive,
+        modified: Boolean(key.ctrl || key.meta),
+        composerTriggerOpen: Boolean(activeComposerTrigger),
+        chatSelectionActive: Boolean(chatMouseSelectionRef.current),
+        vimModeEnabled,
+      });
+      if (chatEscapeAction === "dismiss-composer-trigger" && activeComposerTrigger) {
+        // Recording the dismissal is what makes the palette stay closed as the
+        // user finishes typing the token instead of reopening on the very next
+        // keystroke.
+        setDismissedComposerTrigger({
+          type: activeComposerTrigger.type,
+          start: activeComposerTrigger.start,
+          query: activeComposerTrigger.query,
+        });
+        return;
+      }
+      if (chatEscapeAction === "clear-chat-selection") {
+        stopChatSelectionEdgeScroll();
+        chatSelectionAnchorRef.current = null;
+        updateChatMouseSelection(null);
+        return;
+      }
+      if (chatEscapeAction === "vim-normal") {
         setVimMode("normal");
         return;
       }
+    }
+
+    if (pane === "chat" && textInputActive && vimModeEnabled && !key.ctrl && !key.meta) {
       if (vimMode === "normal") {
         if (input === "i" || input === "a") {
           setVimMode("insert");
@@ -15426,21 +16449,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         return;
       }
-    }
-
-    if (key.escape && pane === "details" && rightOpen && rightPane.kind === "model-picker") {
-      const escapeAction = resolveModelPickerEscape(rightPane);
-      if (escapeAction.kind === "clear-search") {
-        setRightPane(escapeAction.pane);
-        return;
-      }
-      if (escapeAction.kind === "return-new-chat") {
-        if (confirmOrDiscardChatDraft()) return;
-      }
-      setRightPane({ kind: "empty" });
-      setRightOpen(false);
-      setPaneFocus("chat");
-      return;
     }
 
     if (key.escape) {
@@ -15478,9 +16486,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (pane === "details" && rightOpen) {
-        if (rightPane.kind === "model-picker" && rightPane.surface === "new-chat" && confirmOrDiscardChatDraft()) {
-          return;
-        }
         if (rightPane.kind === "form") {
           const values = currentFormValues();
           if (formHasChanges(values) && !formDiscardArmedRef.current) {
@@ -15505,13 +16510,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (pane === "drawer") {
-        if (drawerSection === "chats") {
-          setDrawerSection("lanes");
-          setSelectedDrawerChatAction(null);
-          setSelectedDrawerChatId(null);
-          return;
-        }
-        setDrawerOpen(false);
+        // Esc on the sessions pane returns to the chat. It no longer has an
+        // intermediate mode to back out of first, which is exactly why the
+        // second Esc used to be needed.
         focusChat();
         return;
       }
@@ -15569,6 +16570,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const nextScope = cycleLaneDeleteScope(nextValues.scope, key.leftArrow ? -1 : 1);
           const values = { ...nextValues, scope: nextScope };
           setFormValues(values);
+          setFormConfirmArmed(false);
           setPrompt("");
           return;
         }
@@ -15581,6 +16583,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const nextScope = scopeByKey[input];
           const values = { ...nextValues, scope: nextScope };
           setFormValues(values);
+          setFormConfirmArmed(false);
           setPrompt("");
           return;
         }
@@ -15591,6 +16594,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const nextForce = nextValues.force === "yes" ? "no" : "yes";
           const values = { ...nextValues, force: nextForce };
           setFormValues(values);
+          setFormConfirmArmed(false);
           setPrompt("");
           return;
         }
@@ -15722,13 +16726,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (key.return) {
         if (prompt.trim().startsWith("/")) {
           void submitPrompt(prompt);
+        } else if (isTwoStepConfirmCommand(rightPane.command) && !formConfirmArmedRef.current) {
+          setFormConfirmArmed(true);
         } else {
           setFormDiscardArmed(false);
+          setFormConfirmArmed(false);
           void submitRightForm(rightPane, nextValues)
             .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
         }
         return;
       }
+      setFormConfirmArmed(false);
       const delta = key.upArrow ? -1 : 1;
       const nextIndex = fields.length ? (formFieldIndex + delta + fields.length) % fields.length : 0;
       setFormValues(nextValues);
@@ -15753,7 +16761,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     ) {
       const subagentContent = subagentPaneContentFromRightPane(rightPane);
       if (!subagentContent) return;
-      const paneRows = buildSubagentPaneRows(subagentContent, subagentPaneViewState);
+      const paneRows = buildSubagentPaneRows(subagentContent, chatInfoRosterViewState);
       const snapshotRows = paneRows
         .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
       // Selection: 0 = main row; 1..N = subagent rows — shifted down by one
@@ -15788,7 +16796,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (chatInfoDisclosureKey === "x") {
-        if (subagentPaneViewState.earlierExpanded?.[focusedSection] !== true) return;
+        if (!(chatInfoRosterViewState.earlierExpanded?.[focusedSection] ?? true)) return;
         const clearIds = paneRows
           .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => (
             row.kind === "snapshot" && row.section === focusedSection && row.group === "earlier"
@@ -15869,192 +16877,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
-    if (pane === "details" && rightOpen && rightPane.kind === "model-picker") {
-      const picker = rightPane;
-	      // Re-derive layout each keystroke so we never select stale indexes.
-		      const layout = buildModelPickerLayout(buildModelPickerLayoutInput({
-		        picker,
-		        models,
-		        catalog: modelCatalogRef.current ?? modelCatalog,
-		        favorites: modelPickerFavorites,
-		        recents: modelPickerRecents,
-	        modelState,
-	        aiStatus,
-	        refreshingProvider: modelCatalogRefreshingProvider,
-	      }));
-      const pickerSettingsRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
-      const lastModelIndex = Math.max(0, layout.entries.length - 1);
-      // Navigation has two stages. Stage 1 is the SELECTION AREA — two columns:
-      // the category rail (favorites/recents/providers) and the model list. ←/→
-      // move focus between the columns; ↑/↓ navigate within the focused column
-      // (rail = change category, list = move the model cursor). Enter on a rail
-      // entry steps right into its models; Enter on a model picks it and drops
-      // into Stage 2 = the settings (footerFocus !== null), where ↑/↓ walk the
-      // rows, ←/→ cycle a row's value, and ↑ off the first row returns to the
-      // model list. Down never spills the list into the settings.
-      const inSettings = picker.footerFocus != null && pickerSettingsRows.length > 0;
-      const settingIndex = inSettings
-        ? Math.max(0, pickerSettingsRows.findIndex((row) => row.kind === picker.footerFocus))
-        : -1;
-      // Search hides the rail (results are cross-provider), so treat focus as
-      // the list there — ↑/↓ move results, not rail categories.
-      const railFocused = !inSettings && !picker.searchMode && picker.railFocused === true;
-
-      // Move the rail selection by one (clamped), refreshing dynamic providers
-      // and switching the model list to the newly selected category. Keeps focus
-      // on the rail column.
-      const moveRail = (delta: -1 | 1) => {
-        const total = layout.railEntries.length;
-        if (total === 0) return;
-        const nextIndex = Math.max(0, Math.min(total - 1, layout.railIndex + delta));
-        const nextEntry = layout.railEntries[nextIndex];
-        if (!nextEntry || nextIndex === layout.railIndex) return;
-        const nextSelection =
-          nextEntry.kind === "favorites"
-            ? ({ kind: "favorites" } as const)
-            : nextEntry.kind === "recents"
-              ? ({ kind: "recents" } as const)
-              : ({ kind: "provider", provider: nextEntry.provider } as const);
-	        if (nextSelection.kind === "provider") {
-	          const refreshProvider = modelPickerRefreshProvider(nextSelection.provider);
-	          if (refreshProvider) void refreshModelCatalog({ refreshProvider });
-	        }
-        setRightPane({ ...picker, selection: nextSelection, providerTabKey: null, focusedIndex: 0, footerFocus: null, railFocused: true, query: "", searchMode: false });
-      };
-
-      if (key.upArrow) {
-        if (inSettings) {
-          if (settingIndex <= 0) {
-            // Off the top of the settings → back to Stage 1's model list, re-homed
-            // onto the active model so focus lands where the user expects.
-            const activeIdx = Math.max(0, layout.entries.findIndex((entry) => entry.modelId === modelState.modelId));
-            setRightPane({ ...picker, footerFocus: null, railFocused: false, focusedIndex: activeIdx });
-          } else {
-            setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex - 1]?.kind ?? null });
-          }
-          return;
-        }
-        if (railFocused) { moveRail(-1); return; }
-        const next = Math.max(0, layout.focusedIndex - 1);
-        if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
-        return;
-      }
-      if (key.downArrow) {
-        if (inSettings) {
-          if (settingIndex < pickerSettingsRows.length - 1) {
-            setRightPane({ ...picker, footerFocus: pickerSettingsRows[settingIndex + 1]?.kind ?? null });
-          }
-          return;
-        }
-        if (railFocused) { moveRail(1); return; }
-        // Model list: clamp at the last model. Down does NOT spill into the
-        // settings — Enter on a model is the only gate into Stage 2.
-        const next = Math.min(lastModelIndex, layout.focusedIndex + 1);
-        if (next !== picker.focusedIndex) setRightPane({ ...picker, focusedIndex: next });
-        return;
-      }
-      if (key.leftArrow) {
-        if (inSettings) {
-          const row = pickerSettingsRows[settingIndex];
-          if (row) handleSetupRow(row, -1);
-          return;
-        }
-        // Move focus left, onto the category rail (no-op if already there, or
-        // while searching where the rail is hidden).
-        if (!railFocused && !picker.searchMode) setRightPane({ ...picker, railFocused: true });
-        return;
-      }
-      if (key.rightArrow) {
-        if (inSettings) {
-          const row = pickerSettingsRows[settingIndex];
-          if (row) handleSetupRow(row, 1);
-          return;
-        }
-        // Move focus right, onto the model list (no-op if already there).
-        if (railFocused) setRightPane({ ...picker, railFocused: false });
-        return;
-      }
-      if (key.tab) {
-        if (inSettings) return;
-        // Tab toggles between the rail and the model list (same axis as ←/→).
-        setRightPane({ ...picker, railFocused: !railFocused });
-        return;
-      }
-      if (key.return) {
-        if (inSettings) {
-          const row = pickerSettingsRows[settingIndex];
-          if (row) handleSetupRow(row, 1);
-          return;
-        }
-        if (railFocused) {
-          // Step from the rail into its model list.
-          setRightPane({ ...picker, railFocused: false, focusedIndex: 0 });
-          return;
-        }
-        const target = layout.entries[layout.focusedIndex];
-        if (target?.isAvailable) {
-          commitModelPickerSelection(target.modelId);
-        } else if (target) {
-          void runInlineCommand("/login", target.family);
-        }
-        return;
-      }
-	      if ((input === "[" || input === "]") && !picker.searchMode && layout.providerTabs.length > 1) {
-	        const delta = input === "[" ? -1 : 1;
-	        const nextTabKey = nextModelPickerProviderTabKey({
-	          providerTabs: layout.providerTabs,
-	          providerTabIndex: layout.providerTabIndex,
-	          delta,
-	        });
-		        if (nextTabKey) {
-		          setRightPane({ ...picker, providerTabKey: nextTabKey, focusedIndex: 0, footerFocus: null, railFocused: false });
-		        }
-	        return;
-	      }
-      // 'f' toggles favorite on focused row when not actively editing a search.
-      if (input === "f" && !picker.searchMode && !key.ctrl && !key.meta) {
-        const target = layout.entries[layout.focusedIndex];
-        if (target) toggleModelPickerFavoriteId(target.modelId);
-        return;
-      }
-      // '/' enters search mode — clears any previous query.
-      if (input === "/" && !picker.searchMode) {
-        setRightPane({ ...picker, searchMode: true, query: "", focusedIndex: 0 });
-        return;
-      }
-      // Backspace shortens the active query; if empty, exit search mode.
-      if (key.backspace || key.delete) {
-        if (!picker.searchMode && !picker.query.length) return;
-        const nextQuery = picker.query.slice(0, -1);
-        setRightPane({
-          ...picker,
-          query: nextQuery,
-          searchMode: nextQuery.length > 0,
-          focusedIndex: 0,
-        });
-        return;
-      }
-      // Printable input extends the query only once search is active (entered
-      // via '/'), so single-letter shortcuts (s/f) and bracket tab-cycling stay
-      // usable while browsing and aren't swallowed as the first search char.
-      if (
-        picker.searchMode
-        && typeof input === "string"
-        && input.length === 1
-        && !key.ctrl
-        && !key.meta
-        && input >= " "
-      ) {
-        setRightPane({
-          ...picker,
-          query: picker.query + input,
-          searchMode: true,
-          focusedIndex: 0,
-        });
-        return;
-      }
-      return;
-    }
 
     if (pane === "details" && rightOpen && rightPane.kind === "lane-details") {
       const laneDetails = rightPane;
@@ -16277,168 +17099,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       insertSlashCommand();
       return;
     }
-    if (pane === "chat" && key.downArrow && !activeMentionRange && !slashRows.length) {
-      setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
-      setPaneFocus("chat");
-      return;
-    }
 
-    // Per-lane hotkeys on the selected lane card: r=rename, a=archive, x=delete.
-    // Skips the primary lane and the "+ new lane" action row, and ignores
-    // modified keystrokes (e.g. Ctrl+R history search).
-    if (
-      pane === "drawer"
-      && drawerOpen
-      && drawerSection === "lanes"
-      && selectedDrawerLaneAction !== "new-lane"
-      && !key.ctrl
-      && !key.meta
-      && (input === "r" || input === "R" || input === "a" || input === "A" || input === "x" || input === "X")
-    ) {
-      const selectedLane = drawerLaneRows[selectedLaneIndex] ?? null;
-      if (selectedLane && selectedLane.laneType !== "primary") {
-        const hotkey = input.toLowerCase();
-        if (hotkey === "r") openLaneRenameForm(selectedLane.id);
-        else if (hotkey === "a") void archiveLane(selectedLane.id);
-        else openLaneDeleteForm(selectedLane.id);
-        return;
-      }
-    }
-    if (
-      pane === "drawer"
-      && drawerOpen
-      && drawerSection === "chats"
-      && selectedDrawerChatAction !== "new-chat"
-      && !key.ctrl
-      && !key.meta
-      && (input === "r" || input === "R" || input === "a" || input === "A" || input === "x" || input === "X")
-    ) {
-      const selectedItem = drawerVisibleChatItems[selectedChatIndex] ?? null;
-      const selectedChat = selectedItem?.kind === "chat" ? selectedItem.session : null;
-      if (selectedChat && sessions.some((session) => session.sessionId === selectedChat.sessionId)) {
-        const hotkey = input.toLowerCase();
-        if (hotkey === "r") openChatRenameForm(selectedChat.sessionId);
-        else if (hotkey === "a") void archiveChat(selectedChat.sessionId);
-        else openChatDeleteForm(selectedChat.sessionId);
-        return;
-      }
-    }
-    if (pane === "drawer" && drawerOpen && key.tab) {
-      setDrawerSection((section) => section === "lanes" ? "chats" : "lanes");
-      return;
-    }
-    if (pane === "drawer" && drawerOpen && key.upArrow) {
-      if (drawerSection === "lanes") {
-        const nextIndex = Math.max(0, selectedLaneIndex - 1);
-        const lane = drawerLaneRows[nextIndex] ?? null;
-        if (lane) {
-          setSelectedDrawerLaneAction(null);
-          setSelectedDrawerLaneId(lane.id);
-          setDrawerLaneId(lane.id);
-          selectActiveLaneId(lane.id);
-          applyDrawerChatSelection({ session: null, action: null });
-        }
-      } else {
-        // Chats section: clamp at the top — never pop back into lanes via arrows.
-        // The user uses Tab / Esc / Enter on the lane card to switch sections.
-        if (selectedChatIndex <= 0 && selectedDrawerChatAction !== "new-chat") return;
-        const nextIndex = Math.max(0, selectedChatIndex - 1);
-        selectDrawerChatIndex(nextIndex);
-      }
-      return;
-    }
-    if (pane === "drawer" && drawerOpen && key.downArrow) {
-      if (drawerSection === "lanes") {
-        // Arrow keys at lane-card level always navigate between lane cards.
-        // Entering a lane's chat list now requires Enter (or Tab to flip sections).
-        if (selectedDrawerLaneAction === "new-lane") return;
-        const nextIndex = Math.min(drawerLaneRows.length, selectedLaneIndex + 1);
-        const lane = drawerLaneRows[nextIndex] ?? null;
-        if (lane) {
-          setSelectedDrawerLaneAction(null);
-          setSelectedDrawerLaneId(lane.id);
-          setDrawerLaneId(lane.id);
-          selectActiveLaneId(lane.id);
-          applyDrawerChatSelection({ session: null, action: null });
-        } else if (drawerLaneRows.length > 0) {
-          setSelectedDrawerLaneAction("new-lane");
-          setSelectedDrawerLaneId(null);
-        }
-      } else {
-        // Chats section: clamp at the bottom (the "+ new chat" row) instead of
-        // popping over to the next lane card.
-        const atChatBottom = selectedDrawerChatAction === "new-chat"
-          || selectedChatIndex >= drawerVisibleChatItems.length;
-        if (atChatBottom) return;
-        const nextIndex = Math.min(drawerVisibleChatItems.length, selectedChatIndex + 1);
-        selectDrawerChatIndex(nextIndex);
-      }
-      return;
-    }
-    if (pane === "drawer" && drawerOpen && key.return) {
-      if (drawerSection === "lanes") {
-        if (selectedDrawerLaneAction === "new-lane" || selectedLaneIndex >= drawerLaneRows.length) {
-          openNewLaneForm();
-          return;
-        }
-        const lane = drawerLaneRows[selectedLaneIndex];
-        if (lane) {
-          selectActiveLaneId(lane.id);
-          setDrawerLaneId(lane.id);
-          setSelectedDrawerLaneId(lane.id);
-          setSelectedDrawerLaneAction(null);
-          const unavailableMessage = laneWorktreeUnavailableMessage(lane);
-          if (unavailableMessage) {
-            setDraftChatMode(false);
-            selectActiveSessionId(null);
-            setSelectedDrawerChatId(null);
-            setSelectedDrawerChatAction(null);
-            setRightPane(seedLaneDetails(lane, false));
-            setRightOpen(true);
-            addNotice(unavailableMessage, "error");
-            return;
-          }
-          const laneSessions = openDrawerSessions.filter((entry) => entry.laneId === lane.id);
-          const lastSessionId = lastChatByLaneRef.current.get(lane.id);
-          const session =
-            laneSessions.find((s) => s.sessionId === lastSessionId)
-            ?? newestSession(laneSessions);
-          setSelectedDrawerChatId(session?.sessionId ?? null);
-          setSelectedDrawerChatAction(session ? null : "new-chat");
-          setDrawerSection("chats");
-          applyDrawerChatSelection({
-            session: session ?? null,
-            action: session ? null : "new-chat",
-          });
-        }
-      } else {
-        if (selectedDrawerChatAction === "new-chat" || selectedChatIndex >= drawerVisibleChatItems.length) {
-          openNewChatSetup();
-          setRightOpen(true);
-          return;
-        }
-        if (selectedDrawerChatAction === "closed-toggle") {
-          toggleDrawerClosedCliGroup(drawerLaneId ?? activeLaneId);
-          return;
-        }
-        const selectedSession = sessionFromDrawerChatItem(drawerVisibleChatItems[selectedChatIndex]);
-        const selectedTerminal = selectedSession
-          ? terminalSessions.find((terminal) => terminal.terminalId === selectedSession.sessionId && terminal.status !== "running")
-          : null;
-        if (selectedTerminal) {
-          if (!isTerminalSessionResumable(selectedTerminal)) {
-            addNotice("This CLI session cannot be resumed.", "info");
-            return;
-          }
-          void resumeClosedTerminalSession(selectedTerminal)
-            .then((resumed) => {
-              if (resumed) addNotice("Resuming CLI session…", "info");
-            })
-            .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
-          return;
-        }
-        focusChat();
-      }
+    // The sessions pane owns its whole keyboard surface (arrows, Enter, row
+    // hotkeys) behind ONE branch — see `handleWorkPaneKey`.
+    if (pane === "drawer" && drawerOpen && handleWorkPaneKey(input, key)) {
       return;
     }
 
@@ -16473,6 +17137,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         else next.add(expandableLineId);
         return next;
       });
+      return;
+    }
+    // Ctrl+B opens the image the caret is sitting on. Ctrl+H (the older
+    // "open the last image" binding) can't carry this: with a non-empty
+    // prompt it is already word-backspace, and a token only exists when the
+    // prompt is non-empty.
+    if (textInputActive && !key.meta && isCtrlInput(input, key, "b")) {
+      if (!openImageTokenAtCursor()) {
+        addNotice("Put the cursor on an ⟦image:png⟧ chip to open it.", "info");
+      }
       return;
     }
     if (
@@ -16520,6 +17194,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const handlePromptChange = useCallback((value: string, cursor: number = value.length) => {
     setFormDiscardArmed(false);
+    setFormConfirmArmed(false);
     if (activePaneRef.current === "chat" && value === "?") {
       renderHelpPane("", 0, helpRecentsRef.current);
       focusDetails();
@@ -16538,7 +17213,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setFormValues((prev) => ({ ...prev, [activeFormField.name]: value }));
     }
     setPromptValue(value, cursor);
-  }, [activeFormField, focusDetails, rightPane, setPromptValue]);
+  }, [activeFormField, focusDetails, rightPane, setFormConfirmArmed, setPromptValue]);
 
   const attachedImageChips = useMemo(() => {
     return selectedMentions
@@ -16582,25 +17257,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [prompt]);
 
   const movePromptCursorVerticalAndMaybeAttach = useCallback((delta: -1 | 1) => {
-    const width = Math.max(1, promptPaneWidth - 5);
+    const width = promptWrapWidth(promptPaneWidth);
     const current = promptCursorRef.current;
     if (delta < 0 && isPromptCursorOnFirstVisualRow(prompt, width, current) && attachedImageChips.length) {
       setAttachmentFocusIndex(0);
       return;
     }
+    if (delta < 0 && isPromptCursorOnFirstVisualRow(prompt, width, current)) {
+      recallPromptHistory("previous");
+      return;
+    }
     if (delta > 0 && isPromptCursorOnLastVisualRow(prompt, width, current)) {
       setAttachmentFocusIndex(null);
-      // Down past the last prompt row opens the full model picker pane. The
-      // footer inline model row mirrors the same `modelState`, so both surfaces
-      // stay in sync live; surface follows whether we're drafting a new chat.
-      openModelPicker({ surface: activeSessionIdRef.current ? "chat" : "new-chat" });
+      recallPromptHistory("next");
       return;
     }
     const next = movePromptCursorVertical(prompt, width, current, delta);
     promptCursorRef.current = next;
     setPromptCursor(next);
     setAttachmentFocusIndex(null);
-  }, [attachedImageChips.length, openModelPicker, prompt, promptPaneWidth]);
+  }, [attachedImageChips.length, prompt, promptPaneWidth, recallPromptHistory]);
 
   const rightPaneVisible = rightPaneWidth > 0;
   const laneName = activeLane?.name ?? "main";
@@ -16648,15 +17324,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     return start;
   })();
-  // Drawer selected-chat index: in add-mode the cursor tracks the candidate
-  // chat to add; otherwise we only highlight when the drawer is on the chats
-  // section, leaving lane rows un-marked.
-  const drawerSelectedChatIndex = (() => {
-    if (addMode) return addModeChatIndex;
-    if (drawerSection === "chats") return selectedChatIndex;
-    return -1;
-  })();
-
   useEffect(() => {
     const registry = hitTestRegistryRef.current;
     for (const id of appHitTargetIdsRef.current) registry.unregister(id);
@@ -16689,8 +17356,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       rect: { x: 1, y: rows, w: Math.max(10, Math.floor(columns * 0.55)), h: 1 },
       onClick: () => {
         selectFooterControl(null);
-        setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
-        setPaneFocus("chat");
+        openModelWizard();
       },
       zIndex: 2,
     });
@@ -16729,7 +17395,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         selectFooterControl(null);
         setPaneFocus("chat");
         setInlineRowFocus({ cell: "model" });
-        openModelPicker();
+        openModelWizard();
       });
       footerX += width;
     }
@@ -16817,7 +17483,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       );
     } else {
       rightFooterItems.push(
-        { id: "footer:lanes-exact", label: "^o lanes", onClick: () => toggleDrawerPane() },
+        { id: "footer:lanes-exact", label: "^o work", onClick: () => toggleDrawerPane() },
         { id: "footer:pane-exact", label: "^p pane", onClick: () => toggleDetailsPane() },
       );
       if (!subagentPaneCommandAvailable) {
@@ -16923,133 +17589,44 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     });
 
     if (drawerOpen && drawerPaneWidth > 0) {
-      const drawerTopRow = 3 + goalBannerRows + addModeRows;
-      const drawerBottomRow = drawerTopRow + Math.max(1, chatRowBudget) - 1;
-      for (let y = drawerTopRow; y <= drawerBottomRow; y += 1) {
-        const localY = y - drawerTopRow + 1;
-        const hit = drawerMouseHitForLayout({ y: localY, layout: drawerLayoutValue });
-        if (hit?.kind === "lane") {
-          const lane = drawerLaneRows[hit.index];
-          if (!lane) continue;
-          addTarget({
-            id: `drawer:lane:${lane.id}:${y}`,
-            rect: { x: 1, y, w: drawerPaneWidth, h: 1 },
-            onClick: () => {
-              if (addModeRef.current) {
-                const laneSessions = tileableDisplaySessions.filter((session) => session.laneId === lane.id);
-                setAddMode({ cursorLaneId: lane.id, cursorChatId: laneSessions[0]?.sessionId ?? null });
-                setDrawerLaneId(lane.id);
-                return;
+      // Rects come from the same layout the pane rendered. Singleton cards
+      // split the first line so a lane-name click opens lane details.
+      const rects = workListHitRects({
+        layout: workListLayoutValue,
+        paneTopRow: 3 + goalBannerRows + addModeRows,
+        paneLeft: 1,
+        paneWidth: drawerPaneWidth,
+      });
+      for (const entry of rects) {
+        const row = workListModel.rows[entry.index];
+        if (!row) continue;
+        addTarget({
+          id: entry.region === "lane-identity"
+            ? `work:${entry.key}:lane-identity`
+            : `work:${entry.key}`,
+          rect: entry.rect,
+          onClick: () => {
+            if (addModeRef.current) {
+              // Picker mode: a lane header moves the cursor, a chat is added.
+              if (row.kind === "session" && !row.machine && row.laneId) {
+                addTileToGrid(row.sessionId, row.laneId);
+              } else if (row.kind === "lane-header" && row.laneId) {
+                const laneSessions = tileableDisplaySessions.filter((session) => session.laneId === row.laneId);
+                setAddMode({ cursorLaneId: row.laneId, cursorChatId: laneSessions[0]?.sessionId ?? null });
+                setDrawerLaneId(row.laneId);
               }
-              focusDrawerOnly();
-              setDrawerSection("lanes");
-              setSelectedDrawerLaneAction(null);
-              setSelectedDrawerLaneId(lane.id);
-              setDrawerLaneId(lane.id);
-              selectActiveLaneId(lane.id);
-              applyDrawerChatSelection({ session: null, action: null });
-            },
-            zIndex: 2,
-          });
-        } else if (hit?.kind === "chat") {
-          const session = drawerSessionForChatHit(hit, drawerLayoutValue);
-          const hitLane = drawerLaneRows[hit.laneIndex];
-          if (!session) continue;
-          addTarget({
-            id: `drawer:chat:${session.sessionId}:${y}`,
-            rect: { x: 1, y, w: drawerPaneWidth, h: 1 },
-            onClick: () => {
-              if (addModeRef.current) {
-                addTileToGrid(session.sessionId, session.laneId);
-                return;
+              return;
+            }
+            focusDrawerOnly();
+            activateWorkRow(row, entry.region);
+          },
+          onDragStart: row.kind === "session" && !row.machine && row.laneId
+            ? () => {
+                dragAddSessionRef.current = { sessionId: row.sessionId, laneId: row.laneId! };
               }
-              focusDrawerOnly();
-              if (hitLane) {
-                setSelectedDrawerLaneAction(null);
-                setSelectedDrawerLaneId(hitLane.id);
-                setDrawerLaneId(hitLane.id);
-                selectActiveLaneId(hitLane.id);
-              }
-              setDrawerSection("chats");
-              setSelectedDrawerChatAction(null);
-              setSelectedDrawerChatId(session.sessionId);
-              applyDrawerChatSelection({ session, action: null });
-            },
-            onDragStart: () => {
-              dragAddSessionRef.current = { sessionId: session.sessionId, laneId: session.laneId };
-            },
-            zIndex: 2,
-          });
-        } else if (hit?.kind === "closed-toggle") {
-          const hitLane = drawerLaneRows[hit.laneIndex];
-          if (!hitLane) continue;
-          addTarget({
-            id: `drawer:closed-toggle:${hitLane.id}:${y}`,
-            rect: { x: 1, y, w: drawerPaneWidth, h: 1 },
-            onClick: () => {
-              if (addModeRef.current) return;
-              focusDrawerOnly();
-              setSelectedDrawerLaneAction(null);
-              setSelectedDrawerLaneId(hitLane.id);
-              setDrawerLaneId(hitLane.id);
-              selectActiveLaneId(hitLane.id);
-              setDrawerSection("chats");
-              toggleDrawerClosedCliGroup(hitLane.id);
-            },
-            zIndex: 2,
-          });
-        } else if (hit?.kind === "closed-chat") {
-          const session = drawerClosedSessionForHit(hit, drawerLayoutValue);
-          const hitLane = drawerLaneRows[hit.laneIndex];
-          if (!session) continue;
-          addTarget({
-            id: `drawer:closed-chat:${session.sessionId}:${y}`,
-            rect: { x: 1, y, w: drawerPaneWidth, h: 1 },
-            onClick: () => {
-              if (addModeRef.current) return;
-              focusDrawerOnly();
-              if (hitLane) {
-                setSelectedDrawerLaneAction(null);
-                setSelectedDrawerLaneId(hitLane.id);
-                setDrawerLaneId(hitLane.id);
-                selectActiveLaneId(hitLane.id);
-              }
-              setDrawerSection("chats");
-              setSelectedDrawerChatAction(null);
-              setSelectedDrawerChatId(session.sessionId);
-              applyDrawerChatSelection({ session, action: null });
-            },
-            zIndex: 2,
-          });
-        } else if (hit?.kind === "new-chat") {
-          addTarget({
-            id: `drawer:new-chat:${y}`,
-            rect: { x: 1, y, w: drawerPaneWidth, h: 1 },
-            onClick: () => {
-              if (addModeRef.current) return;
-              focusDrawerOnly();
-              setDrawerSection("chats");
-              setSelectedDrawerChatAction("new-chat");
-              setSelectedDrawerChatId(null);
-              openNewChatSetup();
-              setRightOpen(true);
-            },
-            zIndex: 2,
-          });
-        } else if (hit?.kind === "new-lane" && !addMode) {
-          addTarget({
-            id: "drawer:new-lane",
-            rect: { x: 1, y, w: drawerPaneWidth, h: 1 },
-            onClick: () => {
-              focusDrawerOnly();
-              setDrawerSection("lanes");
-              setSelectedDrawerLaneAction("new-lane");
-              setSelectedDrawerLaneId(null);
-              openNewLaneForm();
-            },
-            zIndex: 4,
-          });
-        }
+            : undefined,
+          zIndex: 2,
+        });
       }
     }
 
@@ -17149,24 +17726,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (rightPaneVisible && rightPaneWidth > 0) {
       const rightStartColumn = columns - rightPaneWidth + 1;
       const rightBodyTop = 2 + goalBannerRows + addModeRows;
-      if (rightPane.kind === "model-picker") {
-        const picker = rightPane;
-        const layout = buildModelPickerLayout(buildModelPickerLayoutInput({
-          picker,
-          models,
-          catalog: modelCatalogRef.current ?? modelCatalog,
-          favorites: modelPickerFavorites,
-          recents: modelPickerRecents,
-	          modelState,
-	          aiStatus,
-	          refreshingProvider: modelCatalogRefreshingProvider,
-	        }));
-        // Single geometry source: derive every clickable rect from the SAME
-        // constants + windowing the render uses (modelPickerGeometry), so a
-        // click lands on the row the user sees. Prefer the pane's MEASURED
-        // content origin (reported by ModelPickerPane via Ink/Yoga) — that's
-        // where rows actually paint at any window size, no hardcoded offset.
-        // Fall back to geometry math when no/implausible measurement exists.
+      if (rightPane.kind === "model-wizard" && modelWizardInput && modelWizardView) {
+        // Every wizard row is clickable. Rects come from modelWizardGeometry —
+        // the same windowing ModelWizardPane renders with — anchored on the
+        // pane's MEASURED content origin when Ink reported one.
+        const wizard = rightPane;
+        const wizardInput = modelWizardInput;
         const measured = pickerMeasuredOrigin;
         const measuredOk = Boolean(
           measured
@@ -17181,122 +17746,85 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               paneLeft: rightStartColumn,
               paneWidth: rightPaneWidth,
             });
-        const geometry = modelPickerGeometry({
+        const geometry = modelWizardGeometry({
           paneLeft: paneOrigin.paneLeft,
           paneTop: paneOrigin.paneTop,
           paneWidth: paneOrigin.paneWidth,
-          state: layout,
-          rows,
+          view: modelWizardView,
         });
-        addTarget({
-          id: "right:model-picker:search",
-          rect: geometry.search,
-          onClick: () => setRightPane({ ...picker, searchMode: true, query: picker.query, focusedIndex: 0 }),
-          zIndex: 4,
-        });
-        geometry.rail.forEach(({ id, rect }, index) => {
-          const entry = layout.railEntries[index];
-          if (!entry) return;
+        geometry.options.forEach(({ id, index, rect }) => {
           addTarget({
             id,
             rect,
             onClick: () => {
-              const nextSelection = railEntrySelection(entry);
-              if (nextSelection.kind === "provider") {
-                const refreshProvider = modelPickerRefreshProvider(nextSelection.provider);
-                if (refreshProvider) void refreshModelCatalog({ refreshProvider });
-              }
-              setRightPane({
-                ...picker,
-                selection: nextSelection,
-                providerTabKey: null,
-                focusedIndex: 0,
-                footerFocus: null,
-                railFocused: true,
-                query: "",
-                searchMode: false,
-              });
-            },
-            zIndex: 4,
-          });
-        });
-        geometry.providerTabs.forEach(({ id, tabKey, rect }) => {
-          addTarget({
-            id,
-            rect,
-            onClick: () => {
-              setRightPane({
-                ...picker,
-                providerTabKey: tabKey,
-                focusedIndex: 0,
-                footerFocus: null,
-                railFocused: false,
-                query: "",
-                searchMode: false,
-              });
-            },
-            zIndex: 6,
-          });
-        });
-        geometry.favorites.forEach(({ modelId, rect }) => {
-          addTarget({
-            id: `right:model-picker:favorite:${modelId}`,
-            rect,
-            onClick: () => toggleModelPickerFavoriteId(modelId),
-            zIndex: 6,
-          });
-        });
-        geometry.entries.forEach(({ id, index, modelId, rect }) => {
-          const entry = layout.entries[index];
-          addTarget({
-            id,
-            rect,
-            onClick: () => {
-              setRightPane({ ...picker, focusedIndex: index, railFocused: false });
-              if (entry?.isAvailable) {
-                commitModelPickerSelection(modelId);
-              } else if (entry) {
-                void runInlineCommand("/login", entry.family);
+              // Click = move the cursor there, then Enter — one code path with
+              // the keyboard so a click can never activate a different row than
+              // the one the arrow keys would have.
+              setRightPane({ ...wizard, index });
+              const advance = advanceModelWizard({ ...wizardInput, selection: { ...wizardInput.selection, index } });
+              switch (advance.kind) {
+                case "step":
+                  setRightPane({
+                    ...wizard,
+                    step: advance.selection.step,
+                    provider: advance.selection.provider,
+                    familyKey: advance.selection.familyKey,
+                    index: advance.selection.index,
+                  });
+                  return;
+                case "select-provider": {
+                  if (modelPickerProviderSwitchBlocked({
+                    providerLocked: providerLockedRef.current,
+                    surface: wizard.surface,
+                    currentProvider: modelStateRef.current.provider,
+                    nextProvider: advance.provider,
+                  })) {
+                    addNotice("Provider is locked for this chat. /new chat to switch.", "info");
+                    return;
+                  }
+                  selectProvider(advance.provider);
+                  setRightPane({
+                    ...wizard,
+                    step: advance.selection.step,
+                    provider: advance.selection.provider,
+                    familyKey: advance.selection.familyKey,
+                    index: advance.selection.index,
+                  });
+                  return;
+                }
+                case "select-model":
+                  commitModelPickerSelection(advance.modelId);
+                  setRightPane({
+                    ...wizard,
+                    step: advance.selection.step,
+                    provider: advance.selection.provider,
+                    familyKey: advance.selection.familyKey,
+                    index: advance.selection.index,
+                  });
+                  return;
+                case "sign-in":
+                  void runInlineCommand("/login", advance.provider);
+                  return;
+                case "cycle-setting": {
+                  const row = wizardInput.settingsRows.find((entry) => entry.kind === advance.settingKind);
+                  if (row) handleSetupRow(row, advance.direction);
+                  return;
+                }
+                case "commit":
+                  rememberModelChoice(modelStateRef.current);
+                  closeModelWizard();
+                  return;
+                default:
+                  return;
               }
             },
             zIndex: 5,
           });
         });
-        geometry.settings.forEach(({ id, rect }, index) => {
-          const row = layout.settingsRows
-            .filter((r) => r.kind !== "provider" && r.kind !== "model" && r.kind !== "apply")[index];
-          if (!row) return;
-          addTarget({
-            id,
-            rect,
-            onClick: () => {
-              setRightPane({ ...picker, footerFocus: row.kind });
-              handleSetupRow(row, 1);
-            },
-            zIndex: 5,
-          });
-        });
-        if (geometry.apply) {
-          const applyRow = layout.settingsRows.find((r) => r.kind === "apply");
-          if (applyRow) {
-            addTarget({
-              id: "right:model-picker:setting:apply",
-              rect: geometry.apply,
-              onClick: () => {
-                setRightPane({ ...picker, footerFocus: "apply" });
-                handleSetupRow(applyRow, 1);
-              },
-              zIndex: 6,
-            });
-          }
-        }
       } else if (rightPane.kind === "chat-info") {
         const subagentContent = subagentPaneContentFromRightPane(rightPane);
-        // The resume row (when visible) adds CHAT_INFO_RESUME_ROW_LINES above
-        // the roster, so the roster's pane-top offset shifts down by the same
-        // amount — exactly how goalBannerRows/addModeRows are folded in.
         const resumeOffset = chatInfoSelectionOffset(rightPane.info);
-        const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
+        const subagentPaneTop = 2 + goalBannerRows + addModeRows + 1 + chatInfoPreambleLines(rightPane.info) - 4;
         if (resumeOffset) {
           // Dedicated hit-target for the resume row (it renders as the first
           // body line, directly below the pane title) — chat-info roster rows
@@ -17323,7 +17851,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         if (subagentContent) {
           for (let y = rightBodyTop; y <= Math.max(rightBodyTop, rows - 2); y += 1) {
-            const target = subagentIndexForPaneLine(subagentContent, y - subagentPaneTop, rightSelectionIndex - resumeOffset, subagentPaneViewState, SUBAGENT_PANE_ROSTER_CAPACITY);
+            const target = subagentIndexForPaneLine(subagentContent, y - subagentPaneTop, rightSelectionIndex - resumeOffset, chatInfoRosterViewState, SUBAGENT_PANE_ROSTER_CAPACITY);
             if (!target) continue;
             const targetKey = target.type === "snapshot" ? `${target.type}:${target.index}` : `${target.type}:${target.section}`;
             addTarget({
@@ -17419,7 +17947,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const newLaneOffsets = rightPane.command === "new-lane" ? newLaneFormFieldRowOffsets(rightPane.fields) : null;
         rightPane.fields.forEach((field, index) => {
           const y = rightPane.command === "lane-delete"
-            ? rightBodyTop + ([7, 11, 14, 17][index] ?? (3 + index))
+            ? rightBodyTop + ([7, 11, 14][index] ?? (3 + index))
             : newLaneOffsets
               ? rightBodyTop + 3 + (newLaneOffsets[index] ?? (3 * index + 1))
               : rightBodyTop + 3 + index;
@@ -17439,6 +17967,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             onClick: (ev) => {
               setFormFieldIndex(index);
               setFormDiscardArmed(false);
+              setFormConfirmArmed(false);
               if (rightPane.command === "lane-delete" && field.name === "scope") {
                 const relX = Math.max(0, (ev.x ?? rightStartColumn) - rightStartColumn);
                 const scope: LaneDeleteScope = relX < 14 ? "worktree" : relX < 22 ? "local_branch" : "remote_branch";
@@ -17520,8 +18049,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
   }, [
     addMode,
-    addModeChatIndex,
-    addModeLaneIndex,
     addModeRows,
     addNotice,
     addTileToGrid,
@@ -17542,13 +18069,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     cycleProvider,
     cycleReasoning,
     displaySessions,
-    drawerLaneRows,
-    drawerLayoutValue,
     drawerOpen,
     drawerPaneWidth,
-    drawerClosedSessionForHit,
-    drawerSessionForChatHit,
-    drawerVisibleLaneSessions,
     focusChat,
     focusDrawerOnly,
     formValues,
@@ -17564,13 +18086,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     mentionSuggestions,
     modelState,
     modelCatalog,
+    modelWizardInput,
+    modelWizardView,
     pickerMeasuredOrigin,
     modelPickerFavorites,
     modelPickerRecents,
     modelStatusOverlayRows,
     models,
     multiView,
-    openModelPicker,
+    openModelWizard,
+    closeModelWizard,
+    rememberModelChoice,
+    runInlineCommand,
+    selectProvider,
     openMoveUnstagedForm,
     openNewLaneForm,
     openNewChatSetup,
@@ -17596,8 +18124,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     selectActiveLaneId,
     selectActiveSessionId,
     selectFooterControl,
-    selectedLaneIndex,
-    selectedChatIndex,
     rightSelectionIndex,
     refreshModelCatalog,
     setFormDiscardArmed,
@@ -17614,7 +18140,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     submitSelectedPendingQuestion,
     submitPrompt,
     tileableDisplaySessions,
-    toggleDrawerClosedCliGroup,
     toggleDetailsPane,
     toggleDrawerPane,
     toggleModelPickerFavoriteId,
@@ -17744,6 +18269,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   if (error && !connection) {
     const remoteLabel = project.remoteLabel?.trim() || "the remote computer";
+    // A supervised brain that has not answered yet is not a failure. Mirror the
+    // desktop's `brain_starting` recovery copy: say what is happening, promise
+    // it opens on its own, and offer nothing to repair.
+    if (startupServiceStarting) {
+      return (
+        <Box flexDirection="column">
+          <Text color={theme.color.warning}>ADE's background service is starting</Text>
+          <Text>
+            This can take a minute the first time or right after an update.
+            ADE Code opens as soon as it is ready — there is nothing to do.
+          </Text>
+          <Text color={theme.color.mutedFg} dimColor>
+            Waiting automatically · r retry now · Ctrl+C quit
+          </Text>
+        </Box>
+      );
+    }
     return (
       <Box flexDirection="column">
         <Text color="red">
@@ -17760,6 +18302,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         <Text color={theme.color.mutedFg} dimColor>
           Retrying automatically · r retry now · Ctrl+C quit
         </Text>
+        <Text color={theme.color.mutedFg} dimColor>
+          Run ade report-issue --open --send in another terminal to send a report to ADE and post it. Personal information is removed.
+        </Text>
       </Box>
     );
   }
@@ -17772,7 +18317,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           projectName={projectName}
           lane={activeLane}
           chatTitle={draftChatActive ? "New chat" : activeTerminalSession?.title ?? activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? null}
-          remoteLabel={remoteLaunch ? project.remoteLabel ?? "remote" : null}
+          remoteLabel={activeRemoteLabel}
           accountLabel={accountLabel}
         />
         {goalBannerText ? (
@@ -17782,33 +18327,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           </Box>
         ) : null}
         {addMode ? <AddChatModeBanner /> : null}
-        <Box flexGrow={1} minHeight={8}>
+        <Box flexDirection="row" flexGrow={1} minHeight={8}>
           {drawerOpen ? (
-            <Drawer
-              lanes={lanes}
-              sessions={addMode ? tileableDisplaySessions : openDrawerSessions}
-              closedSessions={addMode ? [] : closedCliSessions}
-              activeLaneId={activeLaneId}
-              activeSessionId={activeSessionId}
-              browsingLaneId={addMode?.cursorLaneId ?? drawerLaneId ?? activeLaneId}
-              selectedLaneIndex={addMode ? addModeLaneIndex : selectedLaneIndex}
-              selectedChatIndex={drawerSelectedChatIndex}
-              panelHeight={chatRowBudget}
-              focused={activePane === "drawer" || activePane === "addMode"}
-              addMode={Boolean(addMode)}
-              mode={addMode ? "chats" : drawerSection}
-              loading={mode === "connecting" || lanes.length === 0}
-              prByLaneId={prByLaneId}
-              diffByLaneId={diffByLaneId}
-              unavailableLaneIds={unavailableLaneIds}
+            <WorkSessionsPane
+              model={workListModel}
+              layout={workListLayoutValue}
+              selectedKey={workSelectedRowKey}
+              panelHeight={sessionsPaneHeight}
               width={drawerPaneWidth}
+              focused={activePane === "drawer" || activePane === "addMode"}
+              pickerMode={Boolean(addMode)}
+              loading={mode === "connecting" || lanes.length === 0}
               scrollOffsetRows={drawerScrollOffsetRows}
-              closedCliExpandedLaneIds={drawerClosedCliExpandedLaneIds}
               pluginLaneBadges={pluginLaneBadges}
               pluginChatBadges={pluginChatBadges}
             />
           ) : null}
-          <Box width={centerWidth} flexDirection="column">
+          <Box width={centerWidth} height={sessionsPaneHeight} flexDirection="column" flexGrow={1}>
+            <Box flexGrow={1} flexShrink={1} minHeight={0} flexDirection="column" overflow="hidden">
             {pendingApproval?.highStakes ? (
               <ApprovalPrompt approval={pendingApproval} modal questionState={pendingQuestionState} draft={prompt} />
             ) : (gridViewActive && multiView) ? (
@@ -17838,6 +18374,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 attachedTerminalId={attachedTerminalId}
                 onFocusTile={focusMultiViewTile}
                 onRemoveTile={removeMultiViewTile}
+              />
+            ) : externalSessionPreviewTarget ? (
+              // /import: the highlighted row previews here before Enter commits.
+              <ExternalSessionPreview
+                session={externalSessionPreviewTarget}
+                width={chatWrapWidth}
+                maxRows={chatRowBudget}
               />
             ) : activeTerminalSession ? (
               <TerminalPane
@@ -17886,56 +18429,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 <ApprovalPrompt approval={pendingApproval} questionState={pendingQuestionState} width={centerWidth} draft={prompt} />
               </>
             )}
-          </Box>
-          {rightPaneVisible ? (
-            <RightPane
-              content={rightPane}
-              formValues={formValues}
-              activeFormField={formFieldIndex}
-              selectedIndex={rightSelectionIndex}
-              focused={activePane === "details"}
-	              activeProvider={activeCommandProvider as AdeCodeProvider}
-	              width={rightPaneWidth}
-              scrollOffsetRows={rightPaneScrollOffsetRows}
-              subagentPaneViewState={subagentPaneViewState}
-              pluginEditingValue={rightPane.kind === "plugin-panel" && rightPane.state.editing != null ? prompt : null}
-              modelPickerInputs={rightPaneModelPickerInputs}
-              onModelPickerMeasureOrigin={handlePickerMeasureOrigin}
-            />
-          ) : null}
-        </Box>
-        {showCommandPalette ? (
-          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
-            <CommandPalette
-              query={commandPaletteQuery}
-              items={commandPaletteItems}
-              selectedIndex={commandPaletteIndex}
-              width={paletteOverlayWidth}
-            />
-          </Box>
-        ) : null}
-        {!showCommandPalette && showMentionPalette ? (
-          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
-            <MentionPalette
-              suggestions={mentionSuggestions}
-              selectedIndex={mentionIndex}
-              query={activeMentionRange?.query ?? ""}
-              width={paletteOverlayWidth}
-            />
-          </Box>
-        ) : null}
-        {!showCommandPalette && !showMentionPalette && showSlashPalette ? (
-          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
-            <SlashPalette
-              query={slashComposerTrigger ? `/${slashComposerTrigger.query}` : prompt}
-              userCommands={slashCommands}
-              selectedIndex={slashIndex}
-              provider={activeCommandProvider}
-              width={paletteOverlayWidth}
-              maxRows={slashPaletteHeightBudget}
-            />
-          </Box>
-        ) : null}
+            </Box>
         {error ? (
           <Box paddingX={1} flexShrink={0} flexDirection="column">
             <Text color="red">{error}</Text>
@@ -17987,7 +18481,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             </Text>
           ) : null}
           {promptRows.map((line, index) => {
-            const last = index === promptRows.length - 1;
             const cursorColumn = promptFocused ? line.cursorColumn : null;
             const hasCursor = cursorColumn != null;
             const cursorParts = hasCursor ? splitByDisplayCells(line.text, cursorColumn, cursorColumn + 1) : null;
@@ -17998,7 +18491,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               segmentPromptLineText(text, rowStart, promptTokenRanges).map((segment, segmentIndex) => (
                 <Text
                   key={`${keyPrefix}${segmentIndex}`}
-                  color={segment.kind === "plain" ? undefined : segment.kind === "command" || segment.kind === "link" ? PURPLE : "cyan"}
+                  color={segment.kind === "plain"
+                    ? undefined
+                    : segment.kind === "image"
+                      ? theme.color.done
+                      : segment.kind === "command" || segment.kind === "link"
+                        ? PURPLE
+                        : "cyan"}
                   bold={segment.kind !== "plain"}
                 >
                   {segment.text}
@@ -18017,13 +18516,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   renderSegments(line.text, line.start, "t")
                 )}
                 {index === 0 && !prompt ? <Text color={theme.color.mutedFg} dimColor>{"  ^V paste image"}</Text> : null}
-                {last && streaming && !goalBannerText ? <Text color={theme.color.mutedFg} dimColor>{"  · streaming"}</Text> : null}
+                {index === 0 && promptCursorOnImageToken && promptRowHintFits(line.text, promptPaneWidth)
+                  ? <Text color={theme.color.mutedFg} dimColor>{"  ^B open image"}</Text>
+                  : null}
               </Box>
             );
           })}
         </Box>
         <ModelStatus
           draftChatActive={draftChatActive}
+          provider={modelState.provider}
+          modelDisplay={modelState.displayName}
+          reasoningEffort={footerReasoningLabel}
+          permissionLabel={permissionSummary(modelState)}
+          interfaceMode={modelState.interfaceMode}
+          fastMode={footerFastSupported && modelState.fastMode}
           statusLineText={statusLineText}
           vimMode={vimModeEnabled && !hideVimModeIndicator ? vimMode : null}
         />
@@ -18050,7 +18557,61 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           gridTerminalControlHint={gridFocusedTileIsTerminal}
           multiViewActive={Boolean(multiView)}
           multiViewMap={footerMultiViewMap}
+          workPaneFocused={drawerOpen && (activePane === "drawer" || activePane === "addMode")}
         />
+          </Box>
+          {rightPaneVisible ? (
+            <RightPane
+              content={rightPane}
+              formValues={formValues}
+              formConfirmArmed={formConfirmArmed}
+              activeFormField={formFieldIndex}
+              selectedIndex={rightSelectionIndex}
+              focused={activePane === "details"}
+              activeProvider={activeCommandProvider as AdeCodeProvider}
+              width={rightPaneWidth}
+              height={sessionsPaneHeight}
+              scrollOffsetRows={rightPaneScrollOffsetRows}
+              subagentPaneViewState={chatInfoRosterViewState}
+              pluginEditingValue={rightPane.kind === "plugin-panel" && rightPane.state.editing != null ? prompt : null}
+              modelPickerInputs={rightPaneModelPickerInputs}
+              modelWizardView={modelWizardView}
+              onModelPickerMeasureOrigin={handlePickerMeasureOrigin}
+            />
+          ) : null}
+        </Box>
+        {showCommandPalette ? (
+          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
+            <CommandPalette
+              query={commandPaletteQuery}
+              items={commandPaletteItems}
+              selectedIndex={commandPaletteIndex}
+              width={paletteOverlayWidth}
+            />
+          </Box>
+        ) : null}
+        {!showCommandPalette && showMentionPalette ? (
+          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
+            <MentionPalette
+              suggestions={mentionSuggestions}
+              selectedIndex={mentionIndex}
+              query={activeMentionRange?.query ?? ""}
+              width={paletteOverlayWidth}
+            />
+          </Box>
+        ) : null}
+        {!showCommandPalette && !showMentionPalette && showSlashPalette ? (
+          <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
+            <SlashPalette
+              query={slashComposerTrigger ? `/${slashComposerTrigger.query}` : prompt}
+              userCommands={slashCommands}
+              selectedIndex={slashIndex}
+              provider={activeCommandProvider}
+              width={paletteOverlayWidth}
+              maxRows={slashPaletteHeightBudget}
+            />
+          </Box>
+        ) : null}
       </Box>
       </HitTestProvider>
     </SpinTickProvider>

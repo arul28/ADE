@@ -2769,7 +2769,15 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "interrupt",
   "interruptWithQueueMode",
   "restoreCancelledQueue",
+  "setSpawnKind",
+  "dismissSubagentTakeoverPrompt",
 ]);
+
+function chatUpdateSessionMutatesSpawnKind(chatArgs: Record<string, unknown>): boolean {
+  return chatArgs.spawnKind === "subagent"
+    || chatArgs.spawnKind === "peer"
+    || chatArgs.subagentTakeoverPromptShown === true;
+}
 
 function scopeChatAdeActionArgs(
   session: SessionState,
@@ -2778,7 +2786,8 @@ function scopeChatAdeActionArgs(
   domain: "chat" | "session" = "chat",
 ): Record<string, unknown> {
   const method = `run_ade_action:${domain}.${action}`;
-  if (!SCOPED_CHAT_ACTIONS.has(action)) return chatArgs;
+  const spawnKindUpdate = action === "updateSession" && chatUpdateSessionMutatesSpawnKind(chatArgs);
+  if (!SCOPED_CHAT_ACTIONS.has(action) && !spawnKindUpdate) return chatArgs;
   if (isUnboundAdeCliCaller(session)) return chatArgs;
 
   const scopedArgs = { ...chatArgs };
@@ -4031,7 +4040,10 @@ async function runTool(args: {
     } else if (
       !callerIsCto
       && domain === "chat"
-      && SCOPED_CHAT_ACTIONS.has(action)
+      && (
+        SCOPED_CHAT_ACTIONS.has(action)
+        || (action === "updateSession" && chatUpdateSessionMutatesSpawnKind(rawObjectArgs))
+      )
     ) {
       const chatArgs = requireObjectArgsForScopedAdeAction(
         domain,
@@ -5456,13 +5468,24 @@ async function runTool(args: {
   if (name === "pr_get_review_comments") {
     const prId = assertNonEmptyString(toolArgs.prId, "prId");
     const prSvc = requirePrService(runtime);
+    // A failed thread read is reported, not flattened to `[]`. Swallowing it
+    // let "GitHub refused" render as "No actionable PR comments." — the same
+    // failure-reads-as-empty conflation this lane removed from `getChecks`, and
+    // the one an agent reads right before deciding a PR is clean.
+    let reviewThreadsUnavailable: string | null = null;
     const [comments, reviews, checks, reviewThreads] = await Promise.all([
       prSvc.getComments(prId),
       prSvc.getReviews(prId),
       prSvc.getChecks(prId),
-      prSvc.getReviewThreads(prId).catch(() => []),
+      prSvc.getReviewThreads(prId).catch((error: unknown) => {
+        reviewThreadsUnavailable = error instanceof Error ? error.message : String(error);
+        return [];
+      }),
     ]);
-    return summarizePrReviewComments(prId, comments, reviews, checks, reviewThreads);
+    return {
+      ...summarizePrReviewComments(prId, comments, reviews, checks, reviewThreads),
+      ...(reviewThreadsUnavailable ? { reviewThreadsUnavailable } : {}),
+    };
   }
 
   if (name === "pr_rerun_failed_checks") {

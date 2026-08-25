@@ -43,6 +43,7 @@ export type AdeCardVariant =
   | "pr_merge_ready"
   | "pr_conflict"
   | "plugin_install"
+  | "claude_session_quota"
   | (string & {});
 
 /**
@@ -219,6 +220,7 @@ export const KNOWN_ADE_CARD_VARIANTS: readonly AdeCardVariant[] = [
   "pr_merge_ready",
   "pr_conflict",
   "plugin_install",
+  "claude_session_quota",
 ];
 
 export function isKnownAdeCardVariant(variant: string | null | undefined): boolean {
@@ -307,6 +309,17 @@ export function readAdeCardPanel(card: AdeCardPayload): AdeCardPanel | null {
     panelId,
     ...(context && typeof context === "object" && !Array.isArray(context) ? { context } : {}),
   };
+}
+
+/**
+ * A successful Claude rebind dismisses the quota card instead of leaving a
+ * "resumed" chip. Desktop, TUI, and iOS all hide that terminal no-action row.
+ */
+export function adeCardIsHiddenAfterDismiss(card: {
+  variant?: string | null;
+  state?: string | null;
+}): boolean {
+  return card.variant === "claude_session_quota" && card.state === "terminal";
 }
 
 /**

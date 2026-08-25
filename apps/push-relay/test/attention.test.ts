@@ -6489,7 +6489,7 @@ describe("Live Activity island tallies", () => {
     }
   });
 
-  it("counts agent rows only and files idle-tier rows as the ambient tail", async () => {
+  it("counts agent rows only and files idle-tier rows under idle, not done", async () => {
     const database = new SqliteD1Database();
     try {
       seedActivityItem(database, "account-a", islandItem({
@@ -6511,9 +6511,44 @@ describe("Live Activity island tallies", () => {
       );
       const contentState = await contentStateFor(database, "account-a");
       expect(contentState.prs).toHaveLength(1);
+      // The resting row lands in `idle`, not `done`. It used to fold into
+      // `done`, which meant a week-old roster row and a run that actually
+      // finished reported as the same fact — so the island's emerald count grew
+      // with history and stopped meaning "your work completed".
       expect(contentState.groups).toEqual([
         { group: "working", count: 1 },
-        { group: "done", count: 1 },
+        { group: "idle", count: 1 },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  // `activeCount` is the island's "N agents working" headline. An idle-tier row
+  // keeps whatever phase it was last seen in, so a roster row frozen at
+  // `running` still reads as live to a phase-only filter — which is exactly how
+  // the island came to report agents as working hours after they had stopped.
+  // The tier, not the preserved phase, decides.
+  it("never counts an idle-tier row as active, even frozen at phase running", async () => {
+    const database = new SqliteD1Database();
+    try {
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "genuinely-live",
+        phase: "running",
+        activityTier: "signal",
+      }));
+      seedActivityItem(database, "account-a", islandItem({
+        sessionId: "quiet-since-tuesday",
+        phase: "running",
+        activityTier: "idle",
+      }));
+      const contentState = await contentStateFor(database, "account-a");
+      // One, not two: the frozen row is `idle` by group and must not reach the
+      // headline through its stale `running` phase.
+      expect(contentState.activeCount).toBe(1);
+      expect(contentState.groups).toEqual([
+        { group: "working", count: 1 },
+        { group: "idle", count: 1 },
       ]);
     } finally {
       database.close();

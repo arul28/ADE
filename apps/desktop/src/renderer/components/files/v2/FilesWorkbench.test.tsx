@@ -22,6 +22,9 @@ import {
   writeCachedWorkspaces,
 } from "./filesTreeCache";
 import { recordRecentFile } from "./recentFiles";
+import { requestFilesOpenInTools, resetFilesOpenRequestsForTests } from "./filesOpenRequests";
+
+const dirtyBuffers = vi.hoisted(() => ({ replace: vi.fn(), clear: vi.fn() }));
 
 const testState = vi.hoisted(() => ({
   appState: {
@@ -37,6 +40,11 @@ const testState = vi.hoisted(() => ({
 
 vi.mock("../../../state/appStore", () => ({
   useAppStore: (selector: (state: typeof testState.appState) => unknown) => selector(testState.appState),
+  // The workbench reads pinned-machine liveness from the root store, which is
+  // where the cross-machine slices live. Nothing here pins a machine, so the
+  // empty slice map is the honest fixture.
+  useRootAppStore: (selector: (state: { crossMachineLanesByMachineId: Record<string, unknown> }) => unknown) =>
+    selector({ crossMachineLanesByMachineId: {} }),
 }));
 
 vi.mock("../FilesExplorer", () => ({
@@ -78,6 +86,23 @@ vi.mock("../FilesExplorer", () => ({
       </div>
     );
   },
+}));
+
+vi.mock("../monacoModelRegistry", () => ({
+  createMonacoModelRegistry: () => ({
+    getValue: () => "unsaved text",
+    isDirty: () => true,
+    markSaved: vi.fn(),
+    dispose: vi.fn(),
+    disposeAll: vi.fn(),
+    rekey: vi.fn(),
+    size: () => 1,
+  }),
+}));
+
+vi.mock("../../../lib/dirtyWorkspaceBuffers", () => ({
+  replaceDirtyBufferValuesForWorkspace: dirtyBuffers.replace,
+  clearDirtyBuffersForWorkspace: dirtyBuffers.clear,
 }));
 
 vi.mock("./WorkspacePicker", () => ({
@@ -158,9 +183,23 @@ const workspaces: FilesWorkspace[] = [
   },
 ];
 
+
+const remotePin = {
+  kind: "remote" as const,
+  key: "remote:mac-studio",
+  targetId: "mac-studio",
+  runtimeName: "Mac Studio",
+  projectId: "project-1",
+  rootPath: "/repo",
+  displayName: "ADE",
+};
+
 describe("FilesWorkbench", () => {
   beforeEach(() => {
     resetFilesTreeCachesForTests();
+    resetFilesOpenRequestsForTests();
+    dirtyBuffers.replace.mockClear();
+    dirtyBuffers.clear.mockClear();
     testState.appState.project = { rootPath: "/repo" };
     testState.appState.selectedLaneId = "lane-a";
     useEditorGroupsStore.setState({ sessions: {} });
@@ -178,6 +217,7 @@ describe("FilesWorkbench", () => {
         files: {
           listWorkspaces: vi.fn(async () => workspaces),
           listTree: vi.fn(async () => []),
+          listTreeChildren: vi.fn(async () => ({ children: [], nextOffset: null })),
           refreshGitDecorations: vi.fn(async () => null),
           readFile: vi.fn(async () => ({
             path: "src/a.ts",
@@ -185,6 +225,11 @@ describe("FilesWorkbench", () => {
             encoding: "utf8",
             languageId: "typescript",
             isBinary: false,
+          })),
+          openExternalPath: vi.fn(async () => ({
+            workspace: workspaces[0],
+            openPath: "outside.ts",
+            pathType: "file" as const,
           })),
           watchChanges: vi.fn(async () => undefined),
           stopWatching: vi.fn(async () => undefined),
@@ -231,7 +276,7 @@ describe("FilesWorkbench", () => {
 
     fireEvent.click(await screen.findByTestId("open-file"));
     await waitFor(() => expect(screen.getByTestId("tab-count").textContent).toBe("1"));
-    expect(window.ade.files.readFile).toHaveBeenCalledWith({ workspaceId: "workspace-a", path: "src/a.ts" });
+    expect(window.ade.files.readFile).toHaveBeenCalledWith({ workspaceId: "workspace-a", path: "src/a.ts" }, null);
 
     fireEvent.click(screen.getByTestId("mark-dirty"));
     await waitFor(() => expect(screen.getByTestId("dirty-count").textContent).toBe("1"));
@@ -253,7 +298,7 @@ describe("FilesWorkbench", () => {
       expect(window.ade.files.readFile).toHaveBeenCalledWith({
         workspaceId: "workspace-b",
         path: "src/a.ts",
-      });
+      }, null);
     });
 
     // There is no longer any "Enable editing" affordance.
@@ -278,9 +323,11 @@ describe("FilesWorkbench", () => {
       expect(window.ade.files.readFile).toHaveBeenCalledWith({
         workspaceId: "workspace-b",
         path: "src/from-chat.ts",
-      });
+      }, null);
     });
-    expect(window.ade.files.openExternalPath).toBeUndefined();
+    // A chat navigation resolves through the workspace roster, never through
+    // the local-only external-path API (which cannot cross machines).
+    expect(window.ade.files.openExternalPath).not.toHaveBeenCalled();
     const openedTabs = Object.values(
       useEditorGroupsStore.getState().getSession(filesProjectSessionKey("/repo"))?.groups ?? {},
     ).flatMap((group) => group.tabs);
@@ -290,6 +337,218 @@ describe("FilesWorkbench", () => {
       path: "src/from-chat.ts",
       preview: false,
     }));
+  });
+
+  it("reads a chat file from the machine that owns it instead of rebinding the window", async () => {
+    // A chat on another machine reports paths on THAT machine's disk. Before
+    // the pin, every call resolved against whichever machine the project tab
+    // happened to be bound to, so the Files tab opened empty.
+    const pin = {
+      kind: "remote" as const,
+      key: "remote:mac-studio",
+      targetId: "mac-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/repo",
+      displayName: "ADE",
+    };
+    render(
+      <FilesWorkbench
+        active
+        navigationOpenRequest={{
+          path: "src/from-chat.ts",
+          laneId: "lane-b",
+          nonce: "router-entry-pinned",
+          pin,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(window.ade.files.readFile).toHaveBeenCalledWith(
+        { workspaceId: "workspace-b", path: "src/from-chat.ts" },
+        pin,
+      );
+    });
+    // Whose disk this is has to be visible, and there has to be a way back.
+    expect(screen.getByText(/Mac Studio/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /back to this computer/i })).toBeTruthy();
+  });
+
+  it("reveals a directory in the tree instead of trying to open it as a file", async () => {
+    // Folder names are clickable in chat prose too; opening one as a file only
+    // ever produced a read error.
+    render(
+      <FilesWorkbench
+        active
+        navigationOpenRequest={{
+          path: "docs/features",
+          laneId: "lane-b",
+          nonce: "router-entry-dir",
+          pathType: "directory",
+        }}
+      />,
+    );
+
+    // listTree runs on every mount, so it proves nothing on its own — the
+    // directory listing is what says the reveal actually happened.
+    await waitFor(() => {
+      expect(window.ade.files.listTreeChildren).toHaveBeenCalledWith(
+        expect.objectContaining({ parentPath: "docs" }),
+        null,
+      );
+    });
+    // First argument only: `expect.anything()` does not match the explicit
+    // `null` pin every unpinned call passes, so a two-argument negative here
+    // would pass even if the read really happened.
+    expect(window.ade.files.readFile).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: "docs/features" }),
+    );
+  });
+
+  it("does not replay a tools-pane request into the next panel that mounts", async () => {
+    // The channel holds the request so a panel that has not mounted yet can
+    // drain it. A panel that handled it live must clear that hold, or the next
+    // mount — a lane switch, a project switch, reopening the tools tab —
+    // re-opens a file nobody asked for.
+    const view = render(<FilesWorkbench active embedded />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+    requestFilesOpenInTools({
+      path: "src/from-chat.ts",
+      laneId: "lane-b",
+      pin: null,
+      pathType: "file",
+      nonce: "tools-live",
+    });
+    await waitFor(() => expect(window.ade.files.readFile).toHaveBeenCalled());
+    view.unmount();
+
+    (window.ade.files.readFile as ReturnType<typeof vi.fn>).mockClear();
+    render(<FilesWorkbench active embedded />);
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+    expect(window.ade.files.readFile).not.toHaveBeenCalled();
+  });
+
+  it("opens a tools-pane request queued before the panel mounted", async () => {
+    // Clicking a filename in a chat also switches the Work sidebar to Files, so
+    // the request is made before this panel exists. It has to survive that gap.
+    requestFilesOpenInTools({
+      path: "src/from-chat.ts",
+      laneId: "lane-b",
+      pin: null,
+      pathType: "file",
+      nonce: "tools-1",
+    });
+    render(<FilesWorkbench active embedded />);
+
+    await waitFor(() => {
+      expect(window.ade.files.readFile).toHaveBeenCalledWith(
+        { workspaceId: "workspace-b", path: "src/from-chat.ts" },
+        null,
+      );
+    });
+  });
+
+
+  it("stops the file watcher on the machine it started it on", async () => {
+    // The pin used to be read from a mutable ref, so the cleanup saw whatever
+    // the pin was *now* rather than what it was at subscribe time. Leaving the
+    // pinned machine is exactly when those differ: the stop then went to this
+    // computer and the remote chokidar watcher was never closed.
+    const view = render(
+      <FilesWorkbench
+        active
+        navigationOpenRequest={{
+          path: "src/from-chat.ts",
+          laneId: "lane-b",
+          nonce: "watch-pin",
+          pin: remotePin,
+        }}
+      />,
+    );
+    await waitFor(() => {
+      expect(window.ade.files.watchChanges).toHaveBeenCalledWith(expect.anything(), remotePin);
+    });
+
+    // Scope the assertion to the unpin itself: earlier workspace churn also
+    // calls stopWatching, and a whole-history match would find those instead.
+    (window.ade.files.stopWatching as ReturnType<typeof vi.fn>).mockClear();
+
+    // Back to this computer: the watcher started on the remote must be stopped
+    // there, not here.
+    fireEvent.click(screen.getByRole("button", { name: /back to this computer/i }));
+    await waitFor(() => expect(window.ade.files.stopWatching).toHaveBeenCalled());
+    for (const call of (window.ade.files.stopWatching as ReturnType<typeof vi.fn>).mock.calls) {
+      expect(call[1] ?? null).toEqual(remotePin);
+    }
+    view.unmount();
+  });
+
+  it("never publishes another machine's unsaved buffers to local agents", async () => {
+    // The dirty-buffer map is keyed by absolute path with no machine in the key,
+    // and the main process serves it to agent file reads on THIS machine. Two
+    // machines routinely check the same repo out at the same path, so a pinned
+    // buffer would be handed to a local agent as if it were local.
+    render(
+      <FilesWorkbench
+        active
+        navigationOpenRequest={{
+          path: "src/from-chat.ts",
+          laneId: "lane-b",
+          nonce: "pinned-dirty",
+          pin: remotePin,
+        }}
+      />,
+    );
+    await waitFor(() => expect(window.ade.files.readFile).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByTestId("mark-dirty"));
+    await waitFor(() => expect(screen.getByTestId("dirty-count").textContent).toBe("1"));
+    expect(dirtyBuffers.replace).not.toHaveBeenCalled();
+  });
+
+  it("keeps two open-request sources from cancelling each other's dedup key", async () => {
+    // One last-key-wins slot served three keyspaces (external / navigation /
+    // tools). An external open followed by a navigation left the slot holding
+    // the navigation key, so the external effect stopped recognising its own
+    // and re-opened a file the user had already dismissed.
+    const view = render(
+      <FilesWorkbench active externalOpenPath="/repo/outside.ts" externalOpenNonce="ext-1" />,
+    );
+    await waitFor(() => expect(window.ade.files.openExternalPath).toHaveBeenCalledTimes(1));
+
+    // A navigation lands next, writing its own key.
+    view.rerender(
+      <FilesWorkbench
+        active
+        externalOpenPath="/repo/outside.ts"
+        externalOpenNonce="ext-1"
+        navigationOpenRequest={{ path: "src/a.ts", laneId: "lane-b", nonce: "nav-1" }}
+      />,
+    );
+    await waitFor(() => expect(window.ade.files.readFile).toHaveBeenCalled());
+
+    // Tab away and back: this re-runs the external effect with an unchanged
+    // key, which is the moment a single last-key-wins slot has lost that key to
+    // the navigation above.
+    view.rerender(
+      <FilesWorkbench
+        active={false}
+        externalOpenPath="/repo/outside.ts"
+        externalOpenNonce="ext-1"
+        navigationOpenRequest={{ path: "src/a.ts", laneId: "lane-b", nonce: "nav-1" }}
+      />,
+    );
+    view.rerender(
+      <FilesWorkbench
+        active
+        externalOpenPath="/repo/outside.ts"
+        externalOpenNonce="ext-1"
+        navigationOpenRequest={{ path: "src/a.ts", laneId: "lane-b", nonce: "nav-1" }}
+      />,
+    );
+    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
+    expect(window.ade.files.openExternalPath).toHaveBeenCalledTimes(1);
   });
 
   it("remaps stale restored workspace ids by lane, then falls back to primary", async () => {
@@ -431,7 +690,7 @@ describe("FilesWorkbench", () => {
 
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
     expect(listTreeChildren).toHaveBeenCalledTimes(1);
-    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 0 }));
+    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 0 }), null);
     // Correct pagination cursor: the rest stays reachable via "Load more".
     expect(screen.getByTestId("bigdir-load-more-offset").textContent).toBe("2000");
   });
@@ -446,7 +705,7 @@ describe("FilesWorkbench", () => {
     fireEvent.click(screen.getByTestId("load-more-bigdir"));
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"));
     expect(listTreeChildren).toHaveBeenCalledTimes(2);
-    expect(listTreeChildren).toHaveBeenLastCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 2000 }));
+    expect(listTreeChildren).toHaveBeenLastCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 2000 }), null);
     expect(screen.getByTestId("bigdir-load-more-offset").textContent).toBe("4000");
   });
 
@@ -477,8 +736,8 @@ describe("FilesWorkbench", () => {
     // git decorations alone.)
     await waitFor(() => expect(listTreeChildren).toHaveBeenCalledTimes(2), { timeout: 3_000 });
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"));
-    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 }));
-    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 2000 }));
+    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 }), null);
+    expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 2000 }), null);
   });
 
   it("serializes a watcher refresh behind an in-flight load-more so the grown window is preserved", async () => {

@@ -233,17 +233,79 @@ The relaunch after an update now runs one explicit transaction with four steps �
 `runUpdateTransaction` in `apps/desktop/src/main/services/updates/updateTransaction.ts`.
 It is pure: no Electron, no timers. `main.ts` runs it once when the snapshot
 carries `recentlyInstalled`, binding the steps to the paths that already exist —
-`localRuntimePool.installServiceBestEffort()` for `service`, the shared
-`ProjectRecoveryService.restartBrain()` (i.e. `restartServiceAndWait`) for
-`restart`, and the side-effect-free `probeMachineRuntimeHealth()` for `health`.
-There is no second restart path, and `main.ts` now owns the single recovery
-service instance it shares with `registerIpc`, so repair and restart stay
-mutually exclusive.
+`localRuntimePool.installServiceBestEffort()` for `service`,
+`runVerifiedRuntimeRestart` (which drives the shared
+`ProjectRecoveryService.restartBrain()`) for `restart`, and `checkRuntimeIdentity`
+for `health`. There is no second restart path, and `main.ts` now owns the single
+recovery service instance it shares with `registerIpc`, so repair and restart
+stay mutually exclusive.
+
+### The restart step has to be told the truth
+
+Reinstalling the service does not necessarily replace the brain. The old
+process can survive the reinstall and keep the socket, the machine-wide
+sync-host lease, and everything that follows from holding it. The step used to
+ask the endpoint whether it was `ok`, and a pre-update brain answers `ok`
+perfectly well — so the transaction reported a green restart while the machine
+went on running yesterday's code, invisibly, until something else broke.
+
+`updates/runtimeRestartVerification.ts` replaces that question with an identity
+check. `verifyRuntimeIdentity` is pure and returns a named verdict:
+
+| Verdict | Meaning |
+| --- | --- |
+| `matches` | The brain answering is the one this update installed. |
+| `unreachable` | Nothing answered the endpoint. |
+| `incompatible` | Something answered but the handshake failed. |
+| `version` | The answering brain reports the wrong version. |
+| `build` | Right version, wrong build hash. |
+| `stale_runtime` | A live pre-update brain is still running under a different pid. |
+
+A skip is now something the step has to *earn*: version, build hash, and the
+absence of a live mismatched pid must all agree. A newer compatible brain
+deliberately passes — a user who is already ahead of this update does not need
+their brain restarted backwards. Anything else restarts and re-verifies, up to
+`maxRestarts` (2), and a run that still cannot prove the right brain is running
+returns a **failed** step ("… Still wrong after N restart(s)") rather than a
+green one. The `restart` and `health` steps call the same
+`checkRuntimeIdentity`, so the two cannot disagree about what is running.
+
+Recognising a stale brain requires having seen it: the transaction probes the
+machine's identity *before* reinstalling, so the pid it may later find squatting
+is one it can name. `processes/processStartTime.ts` guards that record — a pid
+alone is not identity once the OS starts recycling them.
+
+### Repair is suppressed while an update is applying
+
+The connection pool repairs a machine endpoint that is missing or incompatible
+by reinstalling and restarting the service. During an update those are exactly
+the shapes the updater itself creates, and repairing them starts the old brain
+alongside the new one — the pool racing the updater to fix a machine that is not
+broken.
+
+`main.ts` therefore brackets both update paths with
+`localRuntimePool.beginUpdateWindow(reason)` / `endUpdateWindow(reason)`: around
+`prepare_quit_and_install` (ended if the uninstall fails, and unconditionally at
+the top of the abort path) and around the post-relaunch transaction (ended in
+its `finally`). Inside the window the pool declines its opportunistic repair,
+logs `local_runtime.service_repair_suppressed`, and answers refused connects
+with "ADE is applying an update. The background service is restarting."
+
+The window is capped at `LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS` (2 minutes) and
+expires on its own, because suppression that depends on a transaction remembering
+to end it would disable recovery for the rest of the session the first time one
+does not settle. Outside the window, repair is still throttled — 0 / 5 s / 15 s /
+30 s / 60 s, then once a minute — since a mismatched runtime previously spawned
+one installer per connect attempt.
 
 The typed result rides the existing `AutoUpdateSnapshot` over
 `IPC.updateEvent` / `updateGetState` as `updateTransaction`; no new channel. A
 failure names the step in plain words and `AutoUpdateBanner` renders that one
-line beside the shared **Repair** control:
+line beside the shared **Repair** control and a **Report issue** button (the
+notice wraps rather than truncating, since the message can run long and Repair
+grows a failure line of its own). Its colours are the app shell's amber strip:
+the notice used to be written for a light surface, which on ADE's near-black
+shell rendered as brown text with an all-but-invisible dismiss.
 
 | Step | Line |
 | --- | --- |

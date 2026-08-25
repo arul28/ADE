@@ -736,15 +736,32 @@ type SteerLifecycleNotice = Extract<AgentChatEvent, { type: "system_notice" }> &
   message: string;
 };
 
-function isSteerLifecycleNotice(event: AgentChatEvent): event is SteerLifecycleNotice {
-  const message = event.type === "system_notice" ? event.message.trim().toLowerCase() : "";
-  return event.type === "system_notice"
-    && Boolean(event.steerId)
-    && (
-      message === "message queued"
-      || message === "delivering queued message"
-      || message === "queued message cancelled"
-    );
+/**
+ * What a steer-lifecycle notice says about its steer, matched on shape rather
+ * than exact copy. The host's real strings carry reasons and punctuation —
+ * "Message queued — will be sent when the current turn completes.",
+ * "Delivering your queued message...", "Queued message cancelled because ADE
+ * recycled the Cursor thread — resend it if still needed." — so equality
+ * against short literals recognized nothing that is actually emitted, and a
+ * cancelled steer kept its chip staged forever with `/run-next` pointing at a
+ * steer the host had already dropped.
+ */
+function steerLifecycleNoticeKind(
+  event: AgentChatEvent,
+): "queued" | "delivering" | "cancelled" | null {
+  if (event.type !== "system_notice") return null;
+  if (!event.steerId) return null;
+  const message = event.message.trim().toLowerCase();
+  if (/\bcancell?ed\b/u.test(message)) return "cancelled";
+  if (/\bdeliver(?:ing|ed)\b/u.test(message)) return "delivering";
+  if (/^message queued\b/u.test(message)) return "queued";
+  return null;
+}
+
+/** A notice that takes its steer off the queue — delivered, or cancelled. */
+function isSettledSteerNotice(event: AgentChatEvent): event is SteerLifecycleNotice {
+  const kind = steerLifecycleNoticeKind(event);
+  return kind === "delivering" || kind === "cancelled";
 }
 
 export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSteer[] {
@@ -763,7 +780,7 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
       }
       continue;
     }
-    if (isSteerLifecycleNotice(event) && event.message.trim().toLowerCase() !== "message queued") {
+    if (isSettledSteerNotice(event)) {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
       continue;
@@ -1188,7 +1205,12 @@ export function aggregateChatBlocks(args: {
       });
       continue;
     }
-    if (isSteerLifecycleNotice(event)) {
+    // Queue chatter ("queued", "delivering") is noise the staged chip and the
+    // delivered bubble already carry. A cancellation is not: settling the steer
+    // drops its queued bubble from the transcript, so the notice is the only
+    // thing left saying a message the user typed will never run.
+    const steerNoticeKind = steerLifecycleNoticeKind(event);
+    if (steerNoticeKind === "queued" || steerNoticeKind === "delivering") {
       continue;
     }
     const hookError = summarizePreToolUseHookError(event);

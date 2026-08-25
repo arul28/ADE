@@ -4,10 +4,9 @@ Two related but distinct flows:
 
 - **Onboarding** — the fastest path to a usable installation and a usable
   project. Covers registering the project with the runtime so every client
-  (desktop, `ade code`, iOS) sees it, detecting essentials, connecting AI
-  runtimes, GitHub, and Linear, and optionally attaching existing git
-  worktrees as lanes. The first-run project setup page is a single dashboard
-  of status cards rather than a blocking step-by-step wizard.
+  (desktop, `ade code`, iOS) sees it. Opening or creating a project lands on
+  Work immediately; AI runtimes, GitHub, and Linear live in Settings. There is
+  no blocking project setup dashboard.
 - **Settings** — long-lived configuration organized by tab. Project
   configuration persists to `.ade/ade.yaml` (shared) and `.ade/local.yaml`
   (local) through `projectConfigService`; machine-level desktop preferences
@@ -74,7 +73,24 @@ Main process:
 - `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
   crash-safe refresh-rotation journal (`account.session.rotation.v1`), kept in
   the same file-backed credential bucket as the session it describes so the
-  brain, the CLI, and the desktop all see an interrupted rotation.
+  brain, the CLI, and the desktop all see an interrupted rotation. `tryBegin`
+  compare-and-swaps that entry so a live peer's in-flight Clerk refresh is a
+  mutex, not a race.
+- `apps/desktop/src/main/services/power/keepAwakeService.ts` and
+  `systemSleepConfig.ts` — the opt-in keep-awake setting. The service holds an
+  Electron `powerSaveBlocker` only while a turn is actually running, reads and
+  writes the macOS lid-sleep switch, and reads the machine's own idle-sleep
+  timer so the UI can offer to fix a setting that would stop agents anyway.
+  Constructed in `main.ts` with `readActiveTurns` wired to the runtime pool's
+  `activitySummary()`. See [Keeping the machine awake](#keeping-the-machine-awake).
+- `apps/desktop/src/shared/types/keepAwake.ts` — `KeepAwakeLevel`,
+  `KeepAwakeSnapshot`, `normalizeKeepAwakePreferences` (anything unrecognized
+  degrades to `never` — an unreadable preference must never be read as "hold the
+  lock"), `systemSleepStopsAgents`, and the frozen `INERT_KEEP_AWAKE_SNAPSHOT`
+  shared by every surface that holds no lock.
+- `apps/desktop/src/renderer/components/settings/KeepAwakeSection.tsx` — the
+  radiogroup, the "This Mac can still sleep" recovery alert, and the
+  system-sleep fix card.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, suggested config
   application, plus passive glossary help state. The active renderer
@@ -105,15 +121,62 @@ Main process:
   user, OAuth, and PAT credentials for the same account, so an exhausted primary
   bucket pauses known credentials for that account instead of cycling tokens.
   `GitHubStatus.authFailure` distinguishes rate limiting, invalid credentials,
-  permission denial, network failures, and unknown validation errors so clients
-  do not flatten every failed probe into missing permissions.
+  permission denial, GitHub's own 5xx (`service_unavailable`), network failures,
+  and unknown validation errors so clients do not flatten every failed probe
+  into missing permissions. `service_unavailable` gets no credential cooldown,
+  because the credential is not the problem and must stay usable the instant
+  GitHub recovers.
+  `GitHubStatus.credentialStoreUnreadable` is carried on the credential
+  inventory (cached with it for 30 s) rather than re-read at status time, so the
+  readability verdict always belongs to the read that produced that inventory's
+  candidates. The service holds it sticky across reads and warns
+  `github.credential_store_unreadable` — with the store's own failure reason —
+  once per transition into unreadable rather than on every cached refresh; a
+  successful token write clears it, because a write that landed re-sealed the
+  store under a key this process holds.
+- `apps/desktop/src/main/services/github/credentialReadState.ts` — returns a
+  credential *and* whether the store was readable in one call
+  (`readCredentialWithState` / `readCredentialWithStateAsync`). An undecryptable
+  store returns an empty view instead of throwing, so "no token" and "a token
+  ADE cannot read" are the same answer, and only the store's
+  `getLastReadState()` separates them — and that method describes the store's
+  most recent read, so it has to be consulted immediately after the `getSync` it
+  is being asked about. Pairing the two in one helper is what makes that
+  ordering impossible to get wrong. A store that throws counts as unreadable
+  too: the Electron `safeStorage` store reports decrypt failures that way rather
+  than by returning `{}`.
+- `apps/desktop/src/shared/githubServiceHealth.ts` and
+  `apps/desktop/src/main/services/github/githubStatusPage.ts` — telling a GitHub
+  outage apart from a broken credential. The shared module parses
+  githubstatus.com's Statuspage `summary.json` into `GitHubServiceHealth` and
+  exposes `isGithubServiceUnavailable`; it counts only components ADE actually
+  uses (API Requests, Pull Requests, Issues, Actions, Webhooks, Git Operations),
+  so a Copilot or Codespaces outage never becomes an ADE claim. The main-process
+  module is failure-triggered and never polls: it runs only after a GitHub
+  request already failed, caches results (including negative ones) for 60 s,
+  times out at 2 s, and fails silent. `attachGitHubServiceHealth` populates
+  `GitHubStatus.serviceHealth` and is applied in both `getStatus` owners.
+  Attribution is one-directional — a corroborated incident clears the user of
+  blame, while a healthy status page never implies the opposite, because the
+  page lags real incidents by 10-20 minutes. See
+  [pull requests](../pull-requests/README.md#telling-a-github-outage-apart-from-a-broken-credential).
 - `apps/desktop/src/shared/githubOperationCredential.ts` — the capability-aware
   read/write credential order, App read-only rule, and duplicate-token removal
-  used by desktop and runtime-side GitHub services.
+  used by desktop and runtime-side GitHub services. A `service_unavailable`
+  probe stops the credential walk instead of retrying every candidate against a
+  service that is already failing.
 - `apps/ade-cli/src/headlessLinearServices.ts` — runtime-owned mirror of the
   GitHub request/status path. It applies the same candidate order, cooldowns,
-  GraphQL classification, conditional-request cache isolation, and read/write
-  status fields when a packaged or remote-bound window uses `ade serve`.
+  GraphQL classification, conditional-request cache isolation, read/write
+  status fields, and githubstatus.com corroboration when a packaged or
+  remote-bound window uses `ade serve`. It reads its stored tokens through the
+  same `credentialReadState.ts` helpers the desktop service uses and reports
+  `credentialStoreUnreadable` on its own status and inventory, because an
+  undecryptable store returns an empty view rather than throwing — without it a
+  remote runtime describes a corrupted store exactly as it describes a fresh
+  install. The renderer reaches GitHub through whichever service owns the
+  project, so anything applied to only one of the two `getStatus`
+  implementations is dead in the shipping runtime-backed build.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~3,150 lines, the largest service.
@@ -138,9 +201,18 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/git.ts` — `GitHubStatus`,
   `GitHubAuthFailure`, `GitHubRateLimitState`, and the credential source,
   capability, state, and fallback contracts. `writeAuthSource`,
-  `credentialStates`, `credentialFallback`, and
-  `backgroundRefreshPausedUntil` are optional so a newer client remains
-  compatible with an older remote runtime.
+  `credentialStates`, `credentialFallback`, `credentialStoreUnreadable`,
+  `backgroundRefreshPausedUntil`, and `serviceHealth` are optional so a newer
+  client remains compatible with an older remote runtime, which simply omits
+  them. The same module owns `GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY` — the
+  single wording for the unreadable case, shared by the Settings card, the
+  integration banner, the PR tab's main-process empty state, and the
+  Publish-to-GitHub dialog — which, in this state, drops the token field
+  entirely and offers only **Open connections**, because saving a token would
+  overwrite a sign-in that repair can still recover. It lives beside
+  the field rather than in a renderer helper because the main process needs it
+  too, and two hand-kept copies of one sentence is how the "not connected"
+  masking survived in more than one place.
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
     complete, setDismissed)
@@ -172,33 +244,10 @@ Renderer — onboarding:
   — projectless welcome and project-picker surface. It lists recent local and
   remote projects, opens or forgets entries, and launches project creation,
   clone, or folder selection before a project-bound route is available.
-- `apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`
-  — first-run and manual "re-run setup" dashboard. It renders the project
-  header, Finish / Skip actions, the AI runtimes band, essentials row,
-  GitHub / Linear cards, and existing-worktree import card.
-- `apps/desktop/src/renderer/components/onboarding/AiRuntimesBand.tsx`
-  — compact setup surface for Claude, Codex, Cursor, Factory Droid, and
-  OpenCode. Shows runtime readiness, install / sign-in commands, Cursor API-key
-  entry, helper toggles, and per-helper model pickers. Claude, Codex, and
-  OpenCode are backed by pinned tools, so the band also subscribes to the
-  agent-tools cache and renders a per-runtime downloading percent or a
-  `kind`-specific failure ("Not enough disk space to unpack", "No pinned build
-  for this platform") with a retry. Cursor and Droid are user-installed and keep
-  the plain detected / not-detected treatment. A cache `failed` never shows for
-  a runtime that resolved anyway — a user's own CLI on PATH satisfies it
-  without the cache.
-- `apps/desktop/src/renderer/components/onboarding/DevToolsRow.tsx`
-  — essential local tooling status for git and the terminal `ade` CLI.
-- `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,
-  `LinearCard.tsx` — setup cards for repository auth and Linear OAuth /
-  API-key auth. There is no worktree-import card: every git worktree in the
-  project already appears as a lane, so there is nothing to select.
-- `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
-  `RescanButton.tsx`, `onboardingTheme.ts` — shared setup-card controls and
-  brand/status styling tokens.
-- `apps/desktop/src/renderer/components/onboarding/DevToolsSection.tsx`
-  — legacy full-size dev tool detection surface retained for existing routes
-  that still mount it.
+- `apps/desktop/src/renderer/components/projects/CreateProjectForm.tsx`
+  — name plus a first-class location row (default parent, Change folder,
+  editable path). Create opens Work; it does not show a success interstitial
+  or the removed project-setup dashboard.
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
   — top-level passive help mount. It renders the one-time ADE welcome
   video gate plus `DidYouKnow`; guided per-tab tours and the old
@@ -217,24 +266,12 @@ Renderer — onboarding:
   account-directory targets and their paired credentials are owner-tagged and
   removed with that account.
 - `apps/desktop/src/renderer/components/account/AccountPage.tsx` — optional
-  account status/sign-in/out and account-machine directory. The signed-out page
-  receives an explicit in-app return route from the sidebar or Connections and
-  falls back safely to `/work` when opened directly. It routes pairing work
-  back to the beginner-facing Connections panel rather than owning a second
-  machine-connection flow. Signed-in machine menus can rename an account
-  machine or clear its custom name. The custom name is account-wide and wins
-  for display without replacing the hostname that the machine continues to
-  report; list refreshes propagate the new display name through Connections,
-  desktop pairing, ADE Code, hosted web, and iOS. When this computer is missing
-  from the signed-in machine list, the page offers **Reconnect this computer**.
-  Removing a machine is terminal — heartbeats never re-register it — so the
-  affordance calls `repairMachinePairing` on the brain, and when the account
-  directory demands proof of a fresh interactive sign-in it runs the *device*
-  login flow (the only one the directory observes, and therefore the only one
-  that can end with the single-use pairing grant a re-pair needs) before trying
-  again. The copy stays honest about the in-between outcome where the machine
-  rejoined the roster but push delivery has not resumed. "Not signed in" is not
-  one state: `AdeAccountStatus.sessionState` carries the daemon's
+  account status/sign-in/out shell. The signed-out page receives an explicit
+  in-app return route from the sidebar or Connections and falls back safely to
+  `/work` when opened directly. It routes pairing work back to the
+  beginner-facing Connections panel rather than owning a second
+  machine-connection flow. "Not signed in" is not one state:
+  `AdeAccountStatus.sessionState` carries the daemon's
   `active | signed_out | expired | unreadable` tri-state (older runtimes are
   derived from `sessionReadState`), and `accountSessionState` /
   `accountSessionNotice` in `renderer/lib/account.ts` are the single place the
@@ -244,6 +281,30 @@ Renderer — onboarding:
   with sign-in — a new session overwrites the stored one — so it leads with the
   shared `BrainRepairButton` (or a plain retry where no brain can be restarted)
   and demotes sign-in to "Sign in anyway".
+- `apps/desktop/src/renderer/components/account/YourMacsCard.tsx` — signed-in
+  **Your computers** directory card extracted from `AccountPage`. It lists
+  account machines (this computer pinned first), rename/clear custom name,
+  remove, and the missing-directory recovery row. Custom names are account-wide
+  and win for display without replacing the hostname the machine continues to
+  report; list refreshes propagate the new display name through Connections,
+  desktop pairing, ADE Code, hosted web, and iOS. Absence from the directory is
+  not proof of removal: a publish gap, a split sync listener, or an expired
+  sign-in all produce the same empty row. `describeThisComputerMissing`
+  therefore branches on `sessionState` — expired asks for Sign in then
+  Reconnect; unreadable asks to Repair the stored sign-in then Reconnect;
+  active/signed_out names both causes and offers both actions — and never
+  claims the computer was removed as fact. **Reconnect this computer** and
+  **Repair** sit side by side: Reconnect calls `repairMachinePairing` on the
+  brain (and runs the *device* login flow when the directory demands proof of a
+  fresh interactive sign-in — the only flow that ends with the single-use
+  pairing grant a re-pair needs); Repair restarts this Mac's background service
+  via the shared `BrainRepairButton` (`disabled` while Reconnect is in flight).
+  Removing a machine is terminal — heartbeats never re-register it — so
+  Reconnect is the only way back onto the roster. Outcome copy stays honest
+  about the in-between case where the machine rejoined but push delivery has
+  not resumed. `ConfirmSheet`, `describeThisComputerMissing`, and
+  `reconnectNeedsFreshSignIn` live here; `AccountPage` re-exports the pure
+  helpers for existing tests.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
   uses the website's canonical hero assets and the privacy-enhanced YouTube
@@ -324,6 +385,24 @@ Renderer — settings:
   never exposes or accepts credentials. Native iOS is independently default-on
   without an in-app preference; hosted web keeps its own affirmative browser
   choice. See [logging and product analytics](../../logging.md).
+- `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx`
+  — the second Privacy consent control (`general.diagnostics-sharing`, anchored
+  `#diagnostics-sharing`): **"Share diagnostics with ADE when something
+  breaks"**, default **on**, machine-scoped. It is the off switch for the
+  automatic redacted report ADE sends by itself when it hits a failure it has
+  already classified; the same switch appears on the toast that announces each
+  send. `web: "hidden"` in the manifest, because the consent lives in
+  `~/.ade/secrets/diagnostics-autosend.json` and a browser has no such file.
+  Analytics consent and diagnostics consent are deliberately separate flags, so
+  turning one off never silently turns off the other. The same card also carries
+  **Send a report to ADE** — the only report control that does not require
+  something to have already visibly broken, which is what makes this section's
+  own copy (*"the same report the Report issue button makes"*) true for a user
+  whose app merely feels wrong. It has its own daily cap (5 per install per 24h,
+  counted apart from the automatic 3), sends whether or not the toggle is on
+  because a deliberate click is not something ADE did by itself, and says so in
+  the card when the toggle is off. See
+  [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
   auth, credential-specific permission diagnostics, structured validation
@@ -336,17 +415,40 @@ Renderer — settings:
   environment → App → GitHub CLI → PAT read order plus the write-capable
   subset. Healthy connections do not expose quota bookkeeping. When ADE is
   compensating for a problem, Settings names the paused source and temporary
-  replacement, plus the retry time when GitHub supplied one. An exhausted shared
+  replacement, plus the retry time when GitHub supplied one. The App row in that
+  connection ladder is a special case: the App credential's own state outranks
+  the generic ladder states, because it is the only place that can tell a paused
+  renewal from a dead authorization, and only the dead one may ask the user to
+  re-authorize. The row reads the shared account status through
+  `useGithubAppUserAuth` and badges itself through
+  `describeGithubAppCredentialBadge`. Its retry time also comes from there: the
+  App's pause lives in the credential's refresh ledger rather than in the
+  request budget, so the ladder's own `retryAt` is usually absent and the
+  sentence would otherwise end open. An exhausted shared
   account bucket renders the reset time and explains that background refresh is
   paused automatically; it never asks the user to re-authenticate. When no
   fallback remains, a missing, invalid, or genuinely under-scoped credential
-  shows login/refresh instructions. The App-installation card also classifies relay
+  shows login/refresh instructions. An unreadable credential store outranks all
+  of that: the card reads **Can't read sign-in** instead of "Not connected",
+  renders the shared unreadable notice with an **Open connections** button that
+  opens the Connections panel's Machines tab, and suppresses the `gh auth login`
+  setup steps — those steps would answer a question ADE has not actually asked,
+  and following them writes a new credential over one that is probably intact.
+  The App-installation card also classifies relay
   rate-limit responses as a concise cooldown state instead of displaying
   GitHub's raw request-id / scraping-policy error. Raw network/unknown
   validation errors stay in Settings rather than the global banner. The shared
   `renderer/lib/githubIntegrationStatus.ts` presentation helper keeps banner
-  and Settings classification aligned. This section also hosts the
-  `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".
+  and Settings classification aligned. When githubstatus.com corroborates an
+  outage the whole card goes neutral instead of reading as "your setup is
+  broken": the status chip says "GitHub outage", the failure box drops its
+  warning tint and grows a link to the live incident, `READS WITH` / `WRITES
+  WITH` say "Unknown" rather than the false-negative "Not connected",
+  connection-order badges read "Waiting on GitHub" instead of "Reconnect
+  needed", and the `gh auth login` instructions are hidden so nobody replaces a
+  credential that was working. A missing token still shows its instruction —
+  that is a local fact an outage cannot explain away. This section also hosts
+  the `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".
 - `apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx`
   — install / status card for the hosted ADE GitHub App that backs
   webhook-relay PR updates. Reads per-repo installation + webhook state via
@@ -358,28 +460,78 @@ Renderer — settings:
   shared `renderer/lib/githubIntegrationStatus.ts` helper so their status pills
   reflect actual state instead of the old always-green permission chips:
   - **Account · ADE for GitHub** — the account-scoped App user token. Hosts the
-    "Authorize ADE" device-flow UI: `startAppUserDeviceAuth` surfaces the user
-    code as a copyable chip plus a waiting state and the verification URL,
+    "Authorize ADE" device-flow UI: `startAppUserDeviceAuth` shows the user
+    code as a copyable chip plus a waiting state and the verification URL, and
     `pollAppUserDeviceAuth` drives the poll loop and auto-renews an expired code
-    up to 3 times, a pre-auth status pill reflects `getAppUserAuthStatus` (stored
-    token, signed-in login, expiry). `deriveGithubAccountAuthState` classifies the
-    token as `valid` / `expired` / `missing` (expiry is computed client-side with
-    a refresh-skew mirror because the service does not surface it).
+    up to 3 times. `deriveGithubAccountAuthState` reads the service's
+    `credentialState` and classifies the account as `valid` / `blocked` /
+    `needs_reauth` / `missing`. **Never judge the account by `expiresAt`.** The
+    App access token lives 8 hours and is renewed from the refresh token on
+    every use, so a lapsed `expiresAt` is ordinary operation; reading it as
+    "authorization expired" sent working accounts back through a device flow
+    against the same OAuth endpoint the renewals were already failing on, which
+    is the one thing guaranteed to keep the account locked out. The whole row is
+    built by `describeGithubAccountAxis`, and its rule is that every state ADE
+    recovers from on its own returns `cta: null`:
+    - `valid` renders "Authorized" plus *"<login> · renews automatically"*. It
+      is deliberately silent about the 8-hour token, because showing that expiry
+      taught users to read a normal renewal cycle as a countdown to breakage.
+    - `blocked` with no recorded failure is ADE's own lease — one process on the
+      machine is renewing and the rest wait a moment — so it reads "Renewing…".
+      `blocked` with a recorded failure reads "Paused" (or "Paused until 3:40
+      PM" when the ledger carries a deadline), with copy from
+      `githubRefreshPauseCopy` naming what GitHub did, and a note that
+      re-authorizing is unavailable while GitHub has those requests paused.
+      Neither offers a button.
+    - `needs_reauth` is the **only** state that offers "Re-authorize", and
+      `missing` the only one that offers "Authorize ADE".
   - **This repo · `owner/name`** — whether the App is installed on the active
-    repo. `deriveGithubRepoConnectionState` maps the installation status to
-    `connected` / `not_installed` / `access_pending` / `no_repo` / `unknown`.
-    After device authorization succeeds, the panel force-refreshes the hosted
-    relay status with a short retry window and treats GitHub repo-access 404s as a
-    temporary "Checking access" (`access_pending`) state so App installation
-    propagation does not look like failed authorization.
+    repo. `deriveGithubRepoConnectionState` takes the account state as well as
+    the installation status and maps them to `connected` / `not_installed` /
+    `access_pending` / `waiting_on_account` / `no_repo` / `unknown`.
+    `waiting_on_account` is the axis refusing to report a reading it could not
+    take: an install check that ran without a working account credential proves
+    nothing about the installation, so saying "not installed" reports an
+    uninstall that never happened. It is chosen from the typed
+    `appUserAuthFailure` on the installation status first, then from the
+    message-matching compatibility shim for older hosts, and finally from any
+    non-`valid` account state. A rate limit or a GitHub 5xx is exempt, because
+    those are corroborated reasons that hold whichever credential the check ran
+    with. In `waiting_on_account` the panel offers only **Recheck** — Install and
+    Manage would both be guesses. After device authorization succeeds, the panel
+    force-refreshes the hosted relay status with a short retry window and treats
+    GitHub repo-access 404s as a temporary "Checking access" (`access_pending`)
+    state so App installation propagation does not look like failed
+    authorization. A GitHub server error renders as "Waiting on GitHub" rather
+    than "Couldn't verify": the install state is unknown, not broken.
 
-  `clearAppUserAuth` revokes the local token. Offers a Refresh. Rendered in
-  Settings and, in a compact `onboarding` variant, during setup. The device-flow,
-  token store, and single-flight refresh are backed by `githubAppUserAuthService`
-  in the main process (see the automations feature doc's Source file map). The
-  matching per-repo "GitHub App not connected" banner — distinct from the gh-CLI
-  banner — is rendered by the app-shell `IntegrationBannerHost` from the same
-  `githubIntegrationStatus.ts` derivation (see
+  A quiet **Disconnect** control sits next to the account row whenever there is
+  something to disconnect. It is two clicks — the confirm step explains that
+  real-time pull request updates stop until the user authorizes again — and it
+  calls `clearAppUserAuth`. It is hidden on hosts that do not implement the call
+  and on the standalone web client, which implements it but has no credential to
+  clear; both are judged by `isGithubAppUserAuthSupported` so a new stub cannot
+  pass half the check. Offers a Refresh. Rendered in Settings and, in a compact
+  `onboarding` variant, during setup.
+
+  Both this panel and the Settings connection ladder above it read one shared
+  account status through `renderer/lib/useGithubAppUserAuth.ts` — a module-level
+  value with a listener set, not context, because the two consumers are not
+  siblings under a common provider and the panel is also mounted alone during
+  onboarding. There is exactly one such credential per machine, and with a fetch
+  and a piece of state per component, disconnecting in the panel left the ladder
+  badge one card away still reporting the authorization that had just been
+  removed. `refreshGithubAppUserAuth({ force: true })` starts a read even when
+  one is in flight, which a caller reading *after* an action it just performed
+  needs: joining the running read answers with the state from before the action.
+
+  The device-flow, token store, refresh lease, and backoff ledger are backed by
+  `githubAppUserAuthService` in the main process (see the automations feature
+  doc's [Source file map](../automations/README.md#github-relay-and-app) and
+  [How ADE stops a GitHub App refresh storm](../automations/README.md#how-ade-stops-a-github-app-refresh-storm)).
+  The matching per-repo "GitHub App not connected" banner — distinct from the
+  gh-CLI banner — is rendered by the app-shell `IntegrationBannerHost` from the
+  same `githubIntegrationStatus.ts` derivation (see
   [ARCHITECTURE §7.6](../../ARCHITECTURE.md)), so the panel and the banner never
   disagree.
 - `apps/desktop/src/renderer/lib/githubIntegrationStatus.ts`
@@ -388,15 +540,67 @@ Renderer — settings:
   top-blocker picker (account problems outrank repo problems),
   `githubStatusHasWriteCredential` for capability-gating mutations, and the
   shared banner/Settings copy for the account, repo, and gh-CLI/token
-  sub-states. Imported by `GitHubAppInstallPanel`, `IntegrationBannerHost`, and
-  write surfaces such as `FeedbackReporterModal`; App-only read connectivity
-  therefore keeps PR data live while still prompting for GitHub CLI or a PAT
-  before a mutation.
+  sub-states. Imported by `GitHubAppInstallPanel`, `GitHubSection`,
+  `IntegrationBannerHost`, and write surfaces such as `FeedbackReporterModal`;
+  App-only read connectivity therefore keeps PR data live while still prompting
+  for GitHub CLI or a PAT before a mutation. This module only translates the
+  service's `credentialState` into copy — it does not re-derive the account's
+  health from token expiry. `deriveGithubRealtimeBlock` returns `null` for a
+  `blocked` account: ADE retries on its own, so a banner there would be one
+  nobody can act on. `describeGithubAccountAxis` and
+  `describeGithubAppCredentialBadge` render the same fact in the panel and in
+  the Settings ladder, and share `githubPausedLabel` so the two read
+  identically — a user who sees "Paused" in one card and "Paused until 3:40 PM"
+  in the other reads them as two different problems.
+  `isGithubAppUserAuthSupported` separates "this host has no GitHub App
+  credential" from "this machine is not authorized": the standalone web-client
+  adapter declares itself with `appUserAuthSupported: false`, and older hosts
+  are still recognised by `configured`, which no stub has ever carried. Reading
+  a stub as a real answer flashed a false "not authorized" banner on every
+  hosted-web project. `deviceAuthMessageCopy` / `deviceAuthErrorCopy` replace
+  GitHub's raw transport error (*"GitHub OAuth request failed (429)"*) with what
+  it means, because that string reads as ADE breaking rather than GitHub
+  throttling. `GITHUB_ACCOUNT_AUTH_ERROR_MATCHES` is a **compatibility shim**
+  and marked as one: the typed `appUserAuthFailure` is the real signal, and this
+  enumerated list only catches a host older than that field or a raw 401 body
+  from the relay. Do not add new ADE phrasings to it — a loose substring here is
+  worse than a missing one, because "not authorized" also appears in messages
+  about the repository, and matching those reported a real install problem as an
+  account problem the user could not act on. `describeGithubOutage(status)` is the one presentation
+  entry point for a corroborated GitHub outage — it answers "is there an
+  outage", "what do we say", and "where does the button go" together, and every
+  GitHub-blaming surface gates on it. When it returns null ADE says nothing
+  about GitHub's health and keeps its existing copy.
+  `describeGithubCliBanner` resolves three states in a fixed order, and the
+  order is the whole point:
+  1. `credentialStoreUnreadable` — first, ahead of everything. An unreadable
+     store returns an EMPTY view, so every conclusion below it would be drawn
+     from credentials ADE could not read. It is also a local, repairable fact
+     that outlives any incident, so an outage must not mask the one thing the
+     user can actually fix.
+  2. `!tokenStored` — ahead of the outage. A missing token is a purely local
+     fact and stays true regardless of GitHub's health, so the genuine "connect
+     GitHub" instruction survives an incident.
+  3. the outage — ahead of every remaining state, all of which are inferred
+     from GitHub's own answers and are therefore unreliable while GitHub is
+     failing. `describeGithubAuthFailure` consults the outage first for the same
+     reason.
+
+  Every branch also returns a `target` (`github-settings` | `connections`)
+  rather than leaving the destination implicit: an unreadable store is not a
+  GitHub problem and is not fixed on the GitHub card, whereas an outage and
+  every auth failure are — there the credential ADE holds is readable and it is
+  the account behind it, or GitHub itself, that has the objection.
 - `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` and
   `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
   app shell raises a write-access banner for an otherwise connected App-only
   status, and feedback submission requires a write-capable credential rather
-  than treating read connectivity as sufficient.
+  than treating read connectivity as sufficient. The gh-CLI/token banner routes
+  its single action by the `target` the derivation supplies — the GitHub
+  connection settings route, or the same Connections panel the relay banner
+  opens — and keys its dismissal fingerprint on the sub-state, so a store that
+  becomes unreadable re-raises a banner the user had dismissed for a different
+  reason.
 - `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.
@@ -408,7 +612,14 @@ Renderer — settings:
   CLI availability is app basics, not an integration. The
   `EnvironmentSection.tsx` wrapper that used to pair them is gone.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
-  — shared section headers (`SettingsSectionShell`) and toggle styling.
+  — shared section headers (`SettingsSectionShell`), toggle styling, and
+  `ConsentToggleSection`: the one privacy consent control — labelled switch,
+  plain-words body, live footnote, persistent error line — that both
+  `ProductAnalyticsSection` and `DiagnosticsSharingSection` render. It always
+  reads the real persisted value rather than rendering optimism, and when the
+  preload bridge predates the setting it renders disabled instead of pretending
+  to work; a consent switch showing "off" for something that is on is the one
+  failure mode this component exists to prevent.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
   — theme, chat appearance, and terminal text. Renders `ChatAppearancePreview`
   and writes local user preferences through `appStore` (font size,
@@ -433,8 +644,7 @@ Renderer — settings:
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
   `bundledAvailable`, and the resolved `installTargetPath` for the
-  bundled `ade` binary. In compact form (used by the Integrations tab and
-  the onboarding `DevToolsSection`) it shows the current install
+  bundled `ade` binary. It shows the current install
   path, an Install / Repair button that runs the platform
   install-path helper, and an "Add to PATH" hint when the install
   target isn't on the user's `$PATH`. Agents launched by ADE always
@@ -933,6 +1143,26 @@ banner):
   repair and this restart stay mutually exclusive. Step-by-step copy and the
   bound dependencies are in
   [desktop-auto-update.md](./desktop-auto-update.md#applying-an-update-is-one-transaction).
+- `apps/desktop/src/main/services/updates/runtimeRestartVerification.ts` —
+  what the transaction's `restart` and `health` steps actually bind to.
+  `verifyRuntimeIdentity` is the pure verdict (`matches`, or one of
+  `unreachable` / `incompatible` / `version` / `build` / `stale_runtime`);
+  `checkRuntimeIdentity` is the shared probe-and-judge both steps call, so they
+  cannot drift; `runVerifiedRuntimeRestart` restarts and re-verifies up to
+  `maxRestarts` (2) and returns a **failed** step when it still cannot prove the
+  installed brain is the one answering. The old step asked the endpoint whether
+  it was `ok`, which a surviving pre-update brain answers just as well as the
+  new one — so a machine could report a green update while running yesterday's
+  code and holding the sync-host lease. Its log events are
+  `autoUpdate.restart_not_needed` / `_required` / `_attempt_failed` /
+  `_verified` / `_verification_failed`. See
+  [desktop-auto-update.md](./desktop-auto-update.md#the-restart-step-has-to-be-told-the-truth).
+- `apps/desktop/src/main/services/processes/processStartTime.ts` —
+  `readProcessStartTimeMs(pid)`, one bounded `/bin/ps -o lstart=` under a pinned
+  `LC_ALL=C`, `null` on Windows. It is what makes a recorded pid an identity
+  rather than a number the OS may already have handed to somebody else; the
+  update path uses it to recognise a stale pre-update brain, and the external
+  brain watchdog uses it before killing anything.
 - `apps/desktop/src/shared/updateVersions.ts` — the one ADE version comparator,
   shared by main and renderer. Update prompts, "is this machine behind?", and
   the auto-update state machine all have to agree on what "newer" means, so
@@ -980,9 +1210,15 @@ banner):
   **Cancel** action wired to `updateCancelAutoApply()`.
 - `apps/desktop/src/renderer/components/app/BrainRecoveryNotice.tsx` — the
   app-shell notice shown once per distinct machine-brain event-loop recovery.
-  It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()`,
-  announces "ADE recovered from a background issue … a stuck task (…) was
-  restarted", and acknowledges by persisting the wedge `ts` to `localStorage`
+  It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()` and words
+  the notice from `formatRecoveryMessage`, which has two cases because the two
+  recoveries are not the same event. A wedge attributed to a running command
+  reads "ADE recovered from a background issue … a stuck task (…) was
+  restarted". A wedge whose `lastCommand` is `external-watchdog` had no stuck
+  task — the whole brain stopped answering and something outside it restarted
+  the service — so naming a command there would invent one, and it reads "ADE
+  restarted its background service at … after it stopped responding." It
+  acknowledges by persisting the wedge `ts` to `localStorage`
   so the same event never nags twice while a fresh recovery (new `ts`)
   reappears. The wedge itself is produced by the brain event-loop watchdog
   (see [ARCHITECTURE.md §2.1](../../ARCHITECTURE.md) and
@@ -998,9 +1234,8 @@ banner):
 - [configuration-schema.md](./configuration-schema.md) — shape of
   `.ade/ade.yaml` and `.ade/local.yaml` as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
-- [first-run.md](./first-run.md) — the first-run setup dashboard,
-  stack detection, existing-lane import, and the UX contract that lets
-  users skip optional integrations.
+- [first-run.md](./first-run.md) — first launch lands on Work. There is
+  no blocking project-setup dashboard; optional integrations live in Settings.
 
 ## Onboarding responsibilities
 
@@ -1047,8 +1282,7 @@ the General settings tab via `AdeCliSection`:
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
-   on macOS, equivalents on other platforms). The compact form embedded
-   in the Integrations tab and the onboarding `DevToolsSection` shows the
+   on macOS, equivalents on other platforms). Settings → General shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
 5. Register projects with the runtime. Opening a project on desktop
@@ -1117,6 +1351,19 @@ install end to end (brain running, machine linked) and prints a summary
 recapping all five steps. A step that fails names the command that fixes
 it, inline and again under "What's left"; a clean run prints neither.
 
+Between the tools step and the account step, setup waits for the brain's
+endpoint. Everything after it needs a brain that answers, and a brain that is
+still coming up is not a broken one: `awaitRuntimeService` probes the socket,
+installs the service only if nothing answers, and then keeps dialling for
+`SETUP_SERVICE_START_BUDGET_MS` (`RUNTIME_SERVICE_START_WAIT_MS`, 90 s),
+printing "Starting ADE's background service..." only if it actually has to
+wait. The wait is a courtesy, not a gate — its own failure never costs the user
+the account and desktop steps. If the brain is still starting when the account
+step fails, that step is reported as *skipped* with "ADE's background service
+is still starting" rather than as a failed sign-in, and the summary ends with
+"Give it a moment, then run `ade connect`." Reporting a slow start as a broken
+install is what used to send people hunting a fault that did not exist.
+
 The account step checks first: an already-linked machine is offered
 keep / switch / skip rather than being asked to sign in blind. The
 desktop step skips its ~1 GB download when that exact version is already
@@ -1150,7 +1397,7 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), and privacy. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
 | Appearance | `AppearanceSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, launch-prompt clipboard, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
@@ -1177,6 +1424,62 @@ filter out hides its heading too. Cmd-K entries are generated from the
 same manifest — one per tab plus one per setting — so searching "rebase"
 surfaces *Auto-rebase child lanes — Lanes* and lands on that card.
 
+### Keeping the machine awake
+
+**Keep this Mac awake while agents work** (Settings > General > Sleep, anchor
+`keep-awake`) is one radiogroup with three levels, persisted as
+`keepAwakePreferences` on `GlobalState`:
+
+| Level | What it does | Where it works |
+|---|---|---|
+| `never` (default) | ADE holds nothing. Turns pause when the machine sleeps, and the chat says so. | everywhere |
+| `while-away` | Electron `powerSaveBlocker.start("prevent-app-suspension")`, held **only while a turn is running**. Stops idle sleep. Not the lid. | macOS, Windows |
+| `lid-closed` | `pmset -a disablesleep 1` through the system authorization dialog. Machine-wide, and it outlives ADE. | macOS only |
+
+The distinction between the middle and top levels is the whole point of the
+setting, and it was measured rather than assumed: **a wake lock stops idle sleep
+only.** An `IOPMAssertion` held continuously for 35 days sat through two
+clamshell sleeps. Nothing in this feature's code or copy may imply otherwise.
+Only `pmset -a disablesleep` survives a closed lid, and it is root-only and
+machine-wide — which is why the top level asks for a password and warns that it
+stays on after you quit. Windows has no equivalent, so the third level is
+**absent** on Windows rather than disabled; a greyed row would imply one is
+coming. The renderer keys that off `snapshot.lidClosedSupported` rather than a
+client-side platform check, and only the copy ("this Mac" vs "this PC") reads
+the local platform.
+
+Two behaviors follow from the level being an arming switch, not a pin:
+
+- The blocker follows the **turn**, not the setting. A 5-second poll asks the
+  runtime pool how many agent turns are active and acquires or releases
+  accordingly; a failed read counts as zero, failing toward releasing the lock.
+  Choosing `never` releases synchronously instead of waiting for the next poll.
+  The `runtime.activitySummary` call the poll depends on carries its own 4-second
+  budget precisely because a wedged call inheriting the 10-minute RPC default
+  could hold the lock long after the user turned it off.
+- The snapshot reports what the **machine** says, not what the stored level
+  says. A `lid-closed` level whose assertion was released behind ADE's back
+  renders a "This Mac can still sleep." alert with a **Turn on again** action,
+  rather than silently claiming a lock it does not hold. `pmset -a disablesleep`
+  is deliberately left engaged at quit — reverting would either prompt for a
+  password on the way out or re-prompt on every launch to put it back.
+
+Separately, the section reads the OS's own idle-sleep timer (`pmset -g custom`
+on macOS, `powercfg /query SCHEME_CURRENT SUB_SLEEP STANDBYIDLE` on Windows,
+nothing on Linux) and, when a non-zero timer would stop agents anyway, offers a
+one-click fix. The macOS fix writes system power settings and is labelled
+**Fix — needs your password**; the Windows fix edits the signed-in user's active
+scheme and needs no elevation.
+
+The three IPC channels are `ade.keepAwake.get`, `ade.keepAwake.setLevel`, and
+`ade.keepAwake.fixSystemSleep`. Hosted web and the browser mock implement the
+same names against `INERT_KEEP_AWAKE_SNAPSHOT` and answer the fix with "Change
+this on the computer itself."
+
+For what happens when the machine sleeps anyway, see
+[chat → When the host machine sleeps](../chat/README.md#when-the-host-machine-sleeps)
+and [machine power and sleep in the account directory](../sync-and-multi-device/README.md#account-directory-and-connection-leases).
+
 ### Where durable data lives
 
 | What | Location | Notes |
@@ -1187,7 +1490,8 @@ surfaces *Auto-rebase child lanes — Lanes* and lands on that card.
 | Context doc prefs | `AdeDb` via `context:docs:preferences.v1` | provider, model, reasoning effort, event triggers |
 | Terminal preferences | `localStorage` under `ade.terminalPreferences.v1` | font size, line height, scrollback, font family |
 | Work view state | `localStorage` under `ade.workViewState.v1` | per-project and per-lane-project slices |
-| GitHub credentials | Keychain via `safeStorage` | tokens encrypted, banner on decryption failure |
+| Keep-awake level | `GlobalState` in `<userData>/ade-state.json` under `keepAwakePreferences` | machine-scoped; anything unreadable normalizes to `never` |
+| GitHub credentials | Keychain via `safeStorage` | tokens encrypted; a store ADE cannot decrypt reports `credentialStoreUnreadable` rather than "not connected" |
 | Linear credentials | Active project's `.ade/secrets` | project-local token/OAuth state, encrypted on disk |
 
 ## AI mode and provider behavior
@@ -1235,7 +1539,18 @@ not-signed-in states distinctly; the branch logic lives once in
 `accountSessionState` / `accountSessionNotice`
 (`apps/desktop/src/renderer/lib/account.ts`), and the `unreadable` copy leads
 with the shared `BrainRepairButton` (or a plain retry where there is no brain to
-restart) with sign-in demoted to "Sign in anyway". The CLI's `account-auth` text
+restart) with sign-in demoted to "Sign in anyway".
+
+Repair has to actually repair. Restarting the background service — all this
+control used to do — cannot fix any credential-store condition, which is the
+only condition this surface appears for: the replacement process reads the same
+unreadable file. `account.repairSession` therefore repairs the shared credential
+store first (converge its key binding, merge back anything a peer process had to
+set aside) and restarts the brain after, then reports which of three things
+happened: the store is readable again, the store is readable but nothing on this
+computer can open what was set aside so a fresh sign-in is required, or the
+repair itself failed. The store mechanics are in
+[ARCHITECTURE](../../ARCHITECTURE.md) under the machine credential stores. The CLI's `account-auth` text
 formatter makes the same three distinctions rather than printing one
 "Not signed in — local use does not require an account." for all of them.
 
@@ -1271,16 +1586,82 @@ and overridable with `ADE_ACCOUNT_SESSION_SOURCE`), and the
 grant can be followed across processes with no token material in any log file
 or journal entry.
 
-**Rotation is crash-safe.** `accountSessionRotationJournal.ts` records that a
-refresh exchange *started* against a specific token generation and clears it
-once the replacement is durable. A surviving entry means the stored token may
-already have been consumed by a process that died before it could persist the
-replacement, so the `invalid_grant` that follows is not definitive. The waits
-around this are ordered deliberately: the peer-rotation wait
-(`DEFAULT_REFRESH_ROTATION_WAIT_MS`) is the credential store's own
-`CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus a 5 s margin, because a wait shorter
-than the lock timeout could expire while the winning peer is still legitimately
-queued behind the lock — and the loser would then declare a live session dead.
+**Rotation is crash-safe, and a live peer's journal is a mutex.**
+`accountSessionRotationJournal.ts` records that a refresh exchange *started*
+against a specific token generation and clears it once the replacement is
+durable. A surviving entry means the stored token may already have been
+consumed by a process that died before it could persist the replacement, so
+the `invalid_grant` that follows is not definitive. `tryBegin` compare-and-swaps
+that same entry: a live peer already exchanging the grant is waited out, not
+raced at Clerk — two POSTs against a single-use refresh token is what produced
+the daily `invalid_grant` / mark_dead sign-outs. A dead peer's journal is taken
+over and treated as interrupted. The waits around this are ordered
+deliberately: the peer-rotation wait (`DEFAULT_REFRESH_ROTATION_WAIT_MS`) is
+the credential store's own `CREDENTIAL_STORE_LOCK_TIMEOUT_MS` plus a 5 s
+margin, because a wait shorter than the lock timeout could expire while the
+winning peer is still legitimately queued behind the lock — and the loser
+would then declare a live session dead.
+
+## GitHub connection status has the same third state
+
+The account session is not the only thing the credential store can hide.
+`github.token.v1` and `github.appUserToken.v1` fail the same way: an
+undecryptable store returns an **empty view** rather than an error, so a GitHub
+status built from it is indistinguishable from a fresh install. That is the
+whole hazard — "not connected" invites a reconnect, and a reconnect overwrites
+credentials that were only unreadable, turning a recoverable read failure into
+real credential loss.
+
+The two keys do not live in the same file. `github.appUserToken.v1` is
+file-backed and shared with the brain and the CLI, while `github.token.v1` stays
+in the desktop's Electron-only store, and the routed credential store sends each
+read to its own file. So a readability verdict has to belong to the key it was
+asked about: the router tracks which store served the most recent read, and
+`getWithReadState` answers per call rather than through that shared state.
+Answering from the wrong file is how a perfectly readable credential gets
+reported as "can't read your sign-in". It also means a locked OS keychain no
+longer hides the shared credentials — those need no keychain, so they stay
+reachable while only the Electron-only half refuses. See
+[ARCHITECTURE §8.1](../../ARCHITECTURE.md#81-electron-safestorage-for-secrets).
+
+`GitHubStatus` therefore separates three answers, not two:
+
+| Answer | What is actually true | What the surface offers |
+| --- | --- | --- |
+| connected | A credential validated against `GET /user` and, where required, the repo probe. | Nothing; `writeAuthSource` still gates mutations separately. |
+| not connected | ADE read the store successfully and there is no usable credential. | `gh auth login` steps, or a PAT field. |
+| `credentialStoreUnreadable` | ADE could not open the store on this read. Saved credentials may be entirely intact. | Say so, and offer **repair** — never a reconnect as the primary path. |
+
+Every surface that would otherwise conclude "not connected" resolves the third
+state *first*, ahead of `!tokenStored`, because everything downstream of an
+unreadable read is a guess:
+
+- **Settings → Integrations → GitHub** (`GitHubSection.tsx`) shows **Can't read
+  sign-in** in warning tone with the shared notice and an **Open connections**
+  button, and hides the gh-CLI setup steps.
+- **The app-shell integration banner** (`IntegrationBannerHost.tsx`) points its
+  action at the Connections panel rather than the GitHub settings route, since
+  no GitHub-side action repairs a store ADE cannot open.
+- **The PR tab's empty state** — the message is built in the main process by
+  `prService.buildGithubSnapshotAuthError`, which is why the wording is a shared
+  constant in `shared/types/git.ts` rather than renderer copy.
+- **Publish to GitHub** (`PublishToGitHubDialog.tsx`) reads the flag once when
+  the dialog opens and replaces "GitHub is not connected" with the unreadable
+  wording. The token field stays, because pasting a token there is a deliberate
+  act by a user who already came to connect — the dialog only stops asserting a
+  disconnection it cannot actually observe.
+
+The Settings button and the banner action both land on the Connections panel's
+**Machines** tab, where the account header already carries the sign-in repair
+path — the same
+`account.repairSession` the account tri-state uses, which converges the shared
+credential store's key binding before restarting the brain. One store, one
+repair: a GitHub-specific fix-it control would be a second button for the same
+file. Writing a new GitHub token also clears the flag, because a successful
+write re-seals the store under a key this process holds.
+
+Because the field is optional, an older remote runtime that omits it degrades to
+the previous two-way behaviour instead of reporting a state it cannot compute.
 
 ## Gotchas
 
@@ -1293,6 +1674,12 @@ queued behind the lock — and the loser would then declare a live session dead.
   on trust before returning a config that can spawn processes. Callers
   that skip trust (`{ skipTrust: true }`) do so only after trust has
   been confirmed in the same session.
+- **Phone-sync port 8787.** Bind order always tries 8787 first, even when
+  `lastPort` is 8788. A replacement brain that lands on 8788 keeps retrying
+  8787 at runtime so phones that saved 8787 reconnect without a restart.
+  The "ADE is already running with phone sync" dialog is the cross-channel
+  case (ADE vs ADE Beta) and is intentional. Full bind/reap/migrate contract:
+  [sync and multi-device](../sync-and-multi-device/README.md).
 - **Config reload.** On save, dependent services receive reload
   callbacks (the config service iterates listeners). A hot reload is
   best-effort — some changes only take full effect on app restart

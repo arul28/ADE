@@ -260,6 +260,28 @@ describe("renderChatLines", () => {
     expect(lines.map((line) => line.header)).toEqual([undefined, undefined]);
   });
 
+  it("shows compact image chips for user messages that only carry attachments", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "user_message",
+            text: "look at this",
+            displayText: "look at this",
+            attachments: [{ type: "image", path: "/tmp/pasted-screenshot-1.png" }],
+          },
+        },
+      ],
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.body).toBe("look at this\n⟦image:png⟧");
+  });
+
   it("orders local notices and chat events by timestamp", () => {
     const lines = renderChatLines({
       activeSession: null,
@@ -986,6 +1008,90 @@ describe("renderChatLines", () => {
     expect(lines[1]?.tone).toBe("assistant");
   });
 
+  // One sleep, one artifact — the same contract desktop's transcript holds.
+  // Both halves of the chip carry the same `sleepId`; the resumed half must
+  // replace the paused row in place rather than stack a second line under it.
+  it("folds a host sleep pause and resume onto one row", () => {
+    const sleep = (status: string, message: string, sleepId: string) => ({
+      type: "system_notice",
+      noticeKind: "info",
+      severity: "info",
+      status,
+      message,
+      detail: { hostSleep: { sleepId } },
+    });
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: sleep("host_asleep", "Paused — computer asleep", "host-sleep-1") as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "text", text: "after the pause" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: sleep("host_awake", "Resumed · paused 4m", "host-sleep-1") as never,
+        },
+      ],
+    });
+    expect(lines).toHaveLength(2);
+    // The row stays where the pause happened, carrying the resolved text.
+    expect(lines[0]).toEqual(expect.objectContaining({
+      tone: "notice",
+      body: "Resumed · paused 4m",
+    }));
+    expect(lines[1]?.tone).toBe("assistant");
+  });
+
+  it("gives a second sleep its own row", () => {
+    const sleep = (status: string, message: string, sleepId: string) => ({
+      type: "system_notice",
+      noticeKind: "info",
+      severity: "info",
+      status,
+      message,
+      detail: { hostSleep: { sleepId } },
+    });
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: sleep("host_asleep", "Paused — computer asleep", "host-sleep-1") as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: sleep("host_awake", "Resumed · paused 1m", "host-sleep-1") as never,
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: sleep("host_asleep", "Paused — computer asleep", "host-sleep-2") as never,
+        },
+      ],
+    });
+    expect(lines.map((line) => line.body)).toEqual([
+      "Resumed · paused 1m",
+      "Paused — computer asleep",
+    ]);
+  });
+
   it("suppresses low-value startup system notices and keeps auth failures concise", () => {
     const lines = renderChatLines({
       activeSession: null,
@@ -1484,6 +1590,47 @@ describe("ade_card (TUI)", () => {
     expect(body).toContain("[o] open");
     expect(body).not.toContain("[1]");
     expect(body).not.toContain("Do something");
+  });
+
+  it("prints the local-fork hint on a Claude session-quota card", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          variant: "claude_session_quota",
+          state: "live",
+          title: "Claude session limit · resets 7:00 PM",
+          fallbackText: "Claude session limit",
+          actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+        })),
+      ],
+    });
+    const body = lines.at(-1)!.body;
+    expect(body).toContain("[fork] Fork in this lane");
+  });
+
+  it("hides a dismissed Claude session-quota card even if merge left the fork action", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        env("2026-07-27T12:00:00.000Z", 1, card({
+          variant: "claude_session_quota",
+          state: "live",
+          title: "Claude session limit",
+          fallbackText: "Claude session limit",
+          actions: [{ id: "fork-local", label: "Fork in this lane", kind: "primary" }],
+        })),
+        env("2026-07-27T12:00:01.000Z", 2, card({
+          variant: "claude_session_quota",
+          state: "terminal",
+          title: "Claude session resumed",
+          fallbackText: "Claude session resumed.",
+        })),
+      ],
+    });
+    expect(lines.some((line) => line.body.includes("Claude session"))).toBe(false);
   });
 
   it("merges repeat emits of one cardId into a single row at its first position", () => {

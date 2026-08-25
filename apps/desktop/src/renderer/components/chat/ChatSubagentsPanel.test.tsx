@@ -116,6 +116,32 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByText("Background")).toBeNull();
   });
 
+  it("shows a reported subagent model chip instead of the parent session model", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{ ...baseSnapshot, background: false, model: "opus" }]}
+        events={[]}
+        variant="pane"
+        sessionModelLabel="Fable 5"
+      />,
+    );
+    expect(screen.getByText(/opus/i)).toBeTruthy();
+    expect(screen.queryByText(/inherited/i)).toBeNull();
+  });
+
+  it("shows the parent session model as inherited when the envelope has no model", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[{ ...baseSnapshot, background: false, model: null }]}
+        events={[]}
+        variant="pane"
+        sessionModelLabel="Fable 5"
+      />,
+    );
+    expect(screen.getByText(/Fable 5/)).toBeTruthy();
+    expect(screen.getByText(/inherited/i)).toBeTruthy();
+  });
+
   it("takes over the chat with the snapshot identity when the agent has a pullable transcript", async () => {
     const onSelectSubagent = vi.fn<[SubagentSelection], void>();
     const probeSubagentTranscript = vi.fn().mockResolvedValue(true);

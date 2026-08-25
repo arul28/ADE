@@ -70,6 +70,7 @@ import { useDialogFocusTrap } from "./HeaderSheet";
 import { HelpMenu } from "../onboarding/HelpMenu";
 import { PluginToolbarActions } from "../plugins/sockets";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
+import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import {
@@ -2218,6 +2219,7 @@ export function TopBar({
       if (menuLayout) {
         return (
           <div className="flex flex-col gap-0.5">
+            <CursorCloudQuickViewButton />
             <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
             <HeaderUsageControl
               variant="menu-row"
@@ -2231,6 +2233,7 @@ export function TopBar({
 
       return (
         <>
+          <CursorCloudQuickViewButton />
           <LinearQuickViewButton />
           {connectionsChip}
           <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />

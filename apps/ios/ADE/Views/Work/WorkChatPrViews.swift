@@ -79,11 +79,11 @@ struct WorkChatPrActivePopup: View {
       accessibilityLabel: accessibilityText,
       onOpen: onOpen
     ) {
+      // No text label: the chip is icon + CI glyph + state tint. Everything the
+      // label used to say (PR number, state, CI state) is in
+      // `accessibilityText`, which VoiceOver reads instead.
       Image(systemName: "arrow.triangle.pull")
-        .font(.system(size: 12, weight: .semibold))
-      Text(badge.label)
-        .font(.caption.weight(.semibold))
-        .lineLimit(1)
+        .font(.system(size: 13, weight: .semibold))
       if let stack = badge.stack {
         GitHubStackPositionBadge(stack: stack, compact: true)
       }

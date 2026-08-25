@@ -4,6 +4,7 @@ import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../.
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
+  type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "./importSessions/contract";
 import {
@@ -1735,7 +1736,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // project's refresh result. A foreign chat can stay open while the local
     // session list refreshes, so prune against the same combined index used to
     // render tabs instead of silently dropping every foreign tab.
+    // Pending optimistic rows are also live: launchPtySession opens the tab
+    // before React flushes setSessions, and a concurrent refresh can re-render
+    // with a stale sessionsById in between. Dropping those ids makes the new
+    // terminal exist in the roster but never appear as a tab.
     const validIds = new Set(sessionsById.keys());
+    for (const sessionId of pendingOptimisticSessionsRef.current.keys()) {
+      validIds.add(sessionId);
+    }
 
     setProjectViewState((prev) => {
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
@@ -2004,7 +2012,20 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    * focus path for the chat case.
    */
   const adoptImportedSession = useCallback(
-    (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => {
+    (
+      summary: ExternalSessionSummary,
+      result: ExternalSessionImportResult,
+      source?: ExternalSessionSource,
+    ) => {
+      const runtimePin = source?.binding ?? null;
+      machineRouter.rememberSessionPin(
+        result.kind === "cli"
+          ? { sessionId: result.sessionId, ptyId: result.ptyId, laneId: result.laneId }
+          : { sessionId: result.chatSessionId, laneId: result.laneId },
+        runtimePin,
+      );
+      if (!canMutatePinnedProjectUi(runtimePin)) return;
+      const belongsToActiveBinding = !runtimePin || runtimePin.key === activeBindingKey;
       invalidateSessionListCache();
       if (result.kind === "cli") {
         const startedAt = new Date().toISOString();
@@ -2035,12 +2056,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           resumeMetadata: null,
           chatSessionId: null,
         };
-        pendingOptimisticSessionsRef.current.set(result.sessionId, {
-          session: optimisticSession,
-          createdAtMs: Date.now(),
-        });
-        setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
-        selectLane(result.laneId);
+        if (belongsToActiveBinding) {
+          pendingOptimisticSessionsRef.current.set(result.sessionId, {
+            session: optimisticSession,
+            createdAtMs: Date.now(),
+          });
+          setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
+        } else if (runtimePin) {
+          seedCrossMachineOptimisticSession(optimisticSession, runtimePin);
+        }
+        if (belongsToActiveBinding) selectLane(result.laneId);
         focusSession(result.sessionId);
         openSessionTab(result.sessionId);
       } else {
@@ -2061,7 +2086,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             },
             laneName: lanes.find((lane) => lane.id === chat.laneId)?.name ?? chat.laneId,
           });
-          setSessions((prev) => upsertSessionByStartedAt(prev, {
+          const chatSession = {
             ...optimistic,
             goal: chat.goal ?? null,
             title: chat.title ?? optimistic.title,
@@ -2069,16 +2094,31 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             archivedAt: chat.archivedAt ?? null,
             lastOutputPreview: chat.lastOutputPreview,
             summary: chat.summary,
-          }));
+          };
+          if (belongsToActiveBinding) {
+            setSessions((prev) => upsertSessionByStartedAt(prev, chatSession));
+          } else if (runtimePin) {
+            seedCrossMachineOptimisticSession(chatSession, runtimePin);
+          }
         }
-        selectLane(result.laneId);
+        if (belongsToActiveBinding) selectLane(result.laneId);
         focusSession(result.chatSessionId);
         openSessionTab(result.chatSessionId);
         setSelectedSessionId(result.chatSessionId);
       }
       void refresh({ showLoading: false, force: true }).catch(() => {});
     },
-    [focusSession, lanes, openSessionTab, refresh, selectLane, setSelectedSessionId],
+    [
+      activeBindingKey,
+      canMutatePinnedProjectUi,
+      focusSession,
+      lanes,
+      machineRouter,
+      openSessionTab,
+      refresh,
+      selectLane,
+      setSelectedSessionId,
+    ],
   );
 
   /**
@@ -2089,12 +2129,19 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
    * {@link openSessionTab}.
    */
   const openExistingImportedSession = useCallback(
-    (ref: { kind: "chat" | "cli"; sessionId: string }) => {
+    (
+      ref: { kind: "chat" | "cli"; sessionId: string },
+      source?: ExternalSessionSource,
+    ) => {
+      machineRouter.rememberSessionPin(
+        { sessionId: ref.sessionId },
+        source?.binding ?? null,
+      );
       focusSession(ref.sessionId);
       openSessionTab(ref.sessionId);
       if (ref.kind === "chat") setSelectedSessionId(ref.sessionId);
     },
-    [focusSession, openSessionTab, setSelectedSessionId],
+    [focusSession, machineRouter, openSessionTab, setSelectedSessionId],
   );
 
   return {

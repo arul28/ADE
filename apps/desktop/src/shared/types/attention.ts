@@ -225,14 +225,21 @@ export type AttentionTombstone = {
 export type AttentionCounts = {
   needsYou: number;
   /**
-   * The five state groups of `ACTIVITY_STATE_GROUPS`, of which three were here
-   * from the start. `failed` and `planning` are optional only because an older
-   * publisher cannot send them — a reader that has them must floor its own
-   * groups from them rather than inventing a residual, which is what the
+   * The six state groups of `ACTIVITY_STATE_GROUPS`, of which three were here
+   * from the start. `failed`, `planning` and `idle` are optional only because
+   * an older publisher cannot send them — a reader that has them must floor its
+   * own groups from them rather than inventing a residual, which is what the
    * deleted `notchStripUnattributedCount` was doing to paper over the gap.
+   *
+   * A reader that does NOT get `idle` falls back to counting the rows it can
+   * see, and the projection is capped — so a machine with fifty resting
+   * sessions would under-report until the publisher catches up. That is the
+   * same transitional gap `failed` and `planning` had, and it resolves the
+   * moment both sides ship together.
    */
   failed?: number;
   planning?: number;
+  idle?: number;
   working: number;
   done: number;
   total: number;

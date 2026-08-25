@@ -3,11 +3,13 @@ import SwiftUI
 
 /// Account-wide Activity, in two buckets: Sessions and Inbox.
 ///
-/// Sessions is every agent across every signed-in machine, priority-flat
-/// (needs you → working → done). Inbox is the traffic that wants an
+/// Sessions is every agent across every signed-in machine, sectioned by the
+/// six canonical states in priority order, with a glyph strip above that both
+/// summarises them and filters to one. Inbox is the traffic that wants an
 /// acknowledgement — pull requests, CI, and outcomes nobody has looked at.
-/// Rows carry a swipe to dismiss or mark seen, which is the first per-item
-/// affordance this surface has ever had.
+/// Rows carry a swipe to dismiss or mark seen, and the row itself is the tap
+/// target: the per-row "Open" button this sheet used to draw was most of its
+/// height spent restating that a list row is tappable.
 struct ActivityDrawerSheet: View {
     @EnvironmentObject private var drawer: ActivityDrawerModel
     @EnvironmentObject private var accountService: AccountService
@@ -28,11 +30,28 @@ struct ActivityDrawerSheet: View {
     private var pluginEntries: [PluginContribution] {
         pluginContributions.activityEntries()
     }
+    /// The row currently waking its machine, so the wait is attached to the
+    /// thing that caused it rather than to a modal over the whole sheet.
+    @State private var connectingRowId: String?
+    @State private var connectFailureRowId: String?
 
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 bucketPicker
+                if bucket == .sessions, !drawer.stripCounts.isEmpty {
+                    ActivityStateStrip(
+                        counts: drawer.stripCounts,
+                        selection: drawer.stateFilter,
+                        onSelect: { group in
+                            withAnimation(reduceMotion ? nil : .snappy(duration: 0.18)) {
+                                drawer.stateFilter = drawer.stateFilter == group ? nil : group
+                            }
+                        }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
+                }
                 if let message = failureMessage {
                     ActivityErrorBanner(message: message)
                         .padding(.horizontal, 16)
@@ -123,6 +142,11 @@ struct ActivityDrawerSheet: View {
         case .sessions:
             if drawer.sessions.isEmpty {
                 emptyState
+            } else if drawer.sessionSections.isEmpty, let filter = drawer.stateFilter {
+                // Filtered down to nothing. Distinct from "all clear": the
+                // strip above still has a lit chip, and saying so is what
+                // stops a blank pane reading as a broken feed.
+                filteredEmptyState(filter)
             } else {
                 sessionsList
             }
@@ -147,8 +171,24 @@ struct ActivityDrawerSheet: View {
                         entryView(entry)
                     }
                 } header: {
-                    ActivitySectionHeader(band: section.band, count: section.count)
+                    // Suppressed while a filter is on: with one section on
+                    // screen and its chip lit in the strip above, a heading
+                    // that repeats the same word and the same number is the
+                    // third time the reader is told the same thing.
+                    if drawer.stateFilter == nil {
+                        ActivitySectionHeader(group: section.group, count: section.count)
+                    }
                 }
+            }
+            if let resting = drawer.restingSummary {
+                ActivityRestingSummaryRow(counts: resting) {
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) {
+                        drawer.restingExpanded = true
+                    }
+                }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
             }
             if drawer.itemsTruncated {
                 truncationNote
@@ -194,10 +234,13 @@ struct ActivityDrawerSheet: View {
                 .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 4, trailing: 16))
         case .row(let row):
             VStack(alignment: .leading, spacing: 8) {
-                ActivityRow(row: row, dimmed: !row.machineOnline) { follow(row) }
+                ActivityRow(
+                    row: row,
+                    dimmed: !row.machineOnline,
+                    connectState: connectState(for: row)
+                ) { follow(row) }
                 ActivityActionButtons(
                     row: row,
-                    open: { follow(row) },
                     markSeen: { drawer.markSeen(row.id) }
                 )
             }
@@ -247,6 +290,24 @@ struct ActivityDrawerSheet: View {
 
     /// Three genuinely different empty states: nothing to reach, nothing to do,
     /// and nothing new. They used to be one grey placeholder.
+    private func filteredEmptyState(_ filter: ActivityStateGroup) -> some View {
+        VStack(spacing: 12) {
+            Spacer()
+            Image(systemName: filter.glyph.systemImage)
+                .font(.system(.title, design: .rounded))
+                .foregroundStyle(activityToneColor(filter.tone).opacity(0.7))
+            Text("Nothing \(filter.label.lowercased())")
+                .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+            Button("Show all states") { drawer.stateFilter = nil }
+                .font(.system(.footnote, design: .rounded).weight(.medium))
+                .foregroundStyle(ADEColor.accent)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
     private var emptyState: some View {
         let copy = emptyCopy
         return VStack(spacing: 14) {
@@ -317,9 +378,47 @@ struct ActivityDrawerSheet: View {
         }
     }
 
+    /// Open the row's chat, connecting to its machine first when that machine
+    /// is not the one this phone is currently talking to.
+    ///
+    /// The connect already happened — but *after* the sheet dismissed, inside
+    /// the navigation handler, where it is invisible. On a cold remote machine
+    /// that reads as a dead tap followed some seconds later by a screen change.
+    /// Doing it here keeps the sheet up and says what is happening on the row
+    /// itself, so the wait has a cause attached to it.
     private func follow(_ row: ActivityRowPresentation) {
         guard let url = row.deepLink else { return }
         drawer.markSeen(row.id)
+        connectFailureRowId = nil
+
+        guard let machineKey = row.accountMachineKey,
+              !syncService.accountMachineIsCurrent(machineKey) else {
+            handOff(url)
+            return
+        }
+
+        connectingRowId = row.id
+        Task { @MainActor in
+            let reached = await syncService.ensureAccountMachineForNavigation(machineKey)
+            connectingRowId = nil
+            guard reached else {
+                // Leave the sheet up: the row is still the best place to try
+                // again, and a dismissed sheet would strand the reader on a
+                // screen that never changed.
+                connectFailureRowId = row.id
+                return
+            }
+            handOff(url)
+        }
+    }
+
+    private func connectState(for row: ActivityRowPresentation) -> ActivityRowConnectState {
+        if connectingRowId == row.id { return .connecting(row.machineName) }
+        if connectFailureRowId == row.id { return .unreachable(row.machineName) }
+        return .idle
+    }
+
+    private func handOff(_ url: URL) {
         dismiss()
         DispatchQueue.main.asyncAfter(deadline: .now() + (reduceMotion ? 0 : 0.18)) {
             DeepLinkRouter.shared.handle(url)
@@ -329,33 +428,175 @@ struct ActivityDrawerSheet: View {
 
 // MARK: - Section header
 
+/// A state heading. Takes the group rather than a hand-written tint, so the
+/// heading, the strip above it and the glyph on every row beneath it are all
+/// reading the same table.
 private struct ActivitySectionHeader: View {
-    let band: ActivityBand
+    let group: ActivityStateGroup
     let count: Int
-
-    private var tint: Color {
-        switch band {
-        case .needsYou: return ADESharedTheme.warningAmber
-        case .working: return ADESharedTheme.statusRunning
-        case .done: return ADESharedTheme.statusSuccess
-        }
-    }
 
     var body: some View {
         HStack(spacing: 7) {
-            Text(band.title)
+            Image(systemName: group.glyph.systemImage)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(activityToneColor(group.tone))
+            Text(group.label)
                 .font(.system(.subheadline, design: .rounded).weight(.semibold))
                 .foregroundStyle(ADEColor.textPrimary)
                 .textCase(nil)
             Text("\(count)")
                 .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
-                .foregroundStyle(tint)
+                .foregroundStyle(activityToneColor(group.tone))
                 .contentTransition(.numericText())
             Spacer(minLength: 0)
         }
         .padding(.vertical, 2)
         .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(group.label), \(count)")
+    }
+}
+
+// MARK: - State strip
+
+/// The six-state summary, which is also the filter.
+///
+/// One control doing both jobs is the point: a separate row of filter chips
+/// would repeat the same six words and counts directly beneath the same six
+/// glyphs, in a sheet whose whole problem was that it was too tall. Tapping a
+/// lit glyph clears the filter.
+///
+/// Single-select on purpose — see `ActivityDrawerModel.stateFilter`.
+struct ActivityStateStrip: View {
+    let counts: [ActivityGroupCount]
+    let selection: ActivityStateGroup?
+    let onSelect: (ActivityStateGroup) -> Void
+
+    /// At accessibility text sizes six glyph+count pairs stop fitting on one
+    /// line, and a strip that wraps to two lines reads as a list rather than a
+    /// summary. The live bands are the ones worth keeping.
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var visible: [ActivityGroupCount] {
+        guard dynamicTypeSize.isAccessibilitySize else { return counts }
+        let capped = Array(counts.prefix(3))
+        guard let selection, !capped.contains(where: { $0.group == selection }) else {
+            return capped
+        }
+        guard let selected = counts.first(where: { $0.group == selection }) else {
+            return capped
+        }
+        return Array(capped.dropLast()) + [selected]
+    }
+
+    private var summarySentence: String {
+        counts.map { "\($0.count) \($0.group.label.lowercased())" }
+            .joined(separator: ", ")
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(visible) { entry in
+                Button {
+                    onSelect(entry.group)
+                } label: {
+                    ActivityStateStripItem(
+                        entry: entry,
+                        isSelected: selection == entry.group
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(entry.count) \(entry.group.label)")
+                .accessibilityAddTraits(selection == entry.group ? [.isSelected] : [])
+                .accessibilityHint(
+                    selection == entry.group
+                        ? "Double tap to show all states"
+                        : "Double tap to show only \(entry.group.label.lowercased())"
+                )
+            }
+        }
+        // One rotor stop that says the whole state of the account, instead of
+        // six unlabelled buttons the reader has to assemble themselves.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Agent states: \(summarySentence)")
+    }
+}
+
+/// One chip in the state strip.
+///
+/// Sized and filled like a control rather than drawn as bare glyph+number on
+/// the background. The first version floated three tinted marks in dead space
+/// under the Sessions/Inbox picker with nothing tying them together, so they
+/// read as debug output rather than as the filter they are. Equal widths keep
+/// the row from reflowing as counts cross from one digit to two.
+private struct ActivityStateStripItem: View {
+    let entry: ActivityGroupCount
+    let isSelected: Bool
+
+    private var tint: Color { activityToneColor(entry.group.tone) }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: entry.group.glyph.systemImage)
+                .font(.system(size: 11, weight: .semibold))
+            Text("\(entry.count)")
+                .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                .contentTransition(.numericText())
+        }
+        .foregroundStyle(isSelected ? tint : tint.opacity(0.75))
+        .frame(maxWidth: .infinity)
+        .frame(height: 30)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(tint.opacity(isSelected ? 0.20 : 0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(tint.opacity(isSelected ? 0.55 : 0), lineWidth: 1)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+}
+
+// MARK: - Resting summary
+
+/// The collapsed stand-in for idle + done: "◷ 6 idle · ✓ 10 done".
+///
+/// These two bands are most of a real account's feed and none of its urgency.
+/// Rendering them inline is what made the sheet a wall of finished work with
+/// the live rows lost somewhere above it.
+private struct ActivityRestingSummaryRow: View {
+    let counts: [ActivityGroupCount]
+    let expand: () -> Void
+
+    private var sentence: String {
+        counts.map { "\($0.count) \($0.group.label.lowercased())" }
+            .joined(separator: ", ")
+    }
+
+    var body: some View {
+        Button(action: expand) {
+            HStack(spacing: 10) {
+                ForEach(counts) { entry in
+                    HStack(spacing: 4) {
+                        Image(systemName: entry.group.glyph.systemImage)
+                            .font(.system(size: 11, weight: .regular))
+                        Text("\(entry.count) \(entry.group.label.lowercased())")
+                            .font(.system(.footnote, design: .rounded))
+                    }
+                    .foregroundStyle(activityToneColor(entry.group.tone).opacity(0.85))
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(ADEColor.textMuted)
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Resting sessions: \(sentence)")
+        .accessibilityHint("Double tap to show them")
     }
 }
 
@@ -422,9 +663,14 @@ private struct ActivityErrorBanner: View {
 /// sheet used to hardcode. Inline App Intents run against the paired host, so
 /// they only appear when the row's machine is both this one and reachable —
 /// otherwise every action degrades to navigation.
+///
+/// `.open` is deliberately NOT rendered. It used to draw a full-width button
+/// under every single row, which on a ten-row account was most of the sheet's
+/// height spent restating that a list row is tappable. The row itself is the
+/// tap target now, so only actions that genuinely do something a tap cannot —
+/// approve, deny, restart, rerun — earn a button.
 struct ActivityActionButtons: View {
     let row: ActivityRowPresentation
-    let open: () -> Void
     let markSeen: () -> Void
 
     private var canActInline: Bool { row.inlineActionsAllowed && row.machineOnline }
@@ -432,11 +678,13 @@ struct ActivityActionButtons: View {
     private var visibleActions: [AccountAttentionAction] {
         row.actions.filter { action in
             switch action.kind {
-            case .approve, .deny, .answer, .restart, .rerunChecks:
+            case .approve, .deny, .restart, .rerunChecks:
                 return canActInline
-            case .open:
-                return row.deepLink != nil
-            case .markSeen, .dismiss, .unrecognized:
+            // `.answer` means "type a reply", which a drawer row cannot do —
+            // it only ever routed to the session. That is what tapping the row
+            // does now, so rendering a button for it would be a second control
+            // for one destination.
+            case .answer, .open, .markSeen, .dismiss, .unrecognized:
                 return false
             }
         }
@@ -501,12 +749,10 @@ struct ActivityActionButtons: View {
             .buttonStyle(.plain)
             .simultaneousGesture(TapGesture().onEnded(markSeen))
 
-        // Answering happens in the session, not in a drawer row.
+        // Unreachable: `visibleActions` admits only the four inline intents
+        // above. Everything else is navigation, and navigation is the row.
         case .answer, .open, .markSeen, .dismiss, .unrecognized:
-            Button(action: open) {
-                ActivityActionLabel(action.label, systemImage: "arrow.right", variant: .secondary)
-            }
-            .buttonStyle(.plain)
+            EmptyView()
         }
     }
 }

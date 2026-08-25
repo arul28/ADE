@@ -306,7 +306,7 @@ describe("Cursor SDK event mapper", () => {
     }]);
   });
 
-  it("classifies Cursor HTTP/2 backoff as a rate limit", () => {
+  it("classifies Cursor HTTP/2 backoff as a rate limit and keeps the raw code", () => {
     expect(mapCursorSdkMessageToChatEvents({
       type: "status",
       status: "ERROR",
@@ -314,6 +314,7 @@ describe("Cursor SDK event mapper", () => {
     }, mapperMeta())).toEqual([{
       type: "error",
       message: "Cursor rate limited this request.",
+      detail: "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
       turnId: "turn-1",
       errorInfo: { category: "rate_limit" },
     }]);
@@ -329,7 +330,7 @@ describe("Cursor SDK event mapper", () => {
       },
     }, mapperMeta())).toEqual([{
       type: "error",
-      message: "Cursor SDK stream failed.",
+      message: "Cursor's connection dropped mid-run.",
       detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
       turnId: "turn-1",
       errorInfo: { category: "network" },
@@ -343,7 +344,26 @@ describe("Cursor SDK event mapper", () => {
       adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
     }, mapperMeta())).toEqual([{
       type: "error",
-      message: "Cursor SDK stream failed.",
+      message: "Cursor's connection dropped mid-run.",
+      detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      turnId: "turn-1",
+      errorInfo: { category: "network" },
+    }]);
+  });
+
+  it("gives write ECANCELED the friendly transport message and keeps the raw detail", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      adeErrorCode: "[internal] write ECANCELED",
+      adeErrorDetail: {
+        message: "[internal] write ECANCELED",
+        requestId: "req-cursor-ecanceled",
+      },
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor's connection dropped mid-run.",
+      detail: "[internal] write ECANCELED\nCursor request ID: req-cursor-ecanceled",
       turnId: "turn-1",
       errorInfo: { category: "network" },
     }]);
@@ -535,5 +555,34 @@ describe("Cursor SDK event mapper", () => {
     );
     // The current shape may or may not include runtime — just verify status is mapped.
     expect(done.status).toBe("completed");
+  });
+
+  it("maps stream type usage to a tokens event without costUsd", () => {
+    const events = mapCursorSdkMessageToChatEvents({
+      type: "usage",
+      agent_id: "bc-agent-1",
+      run_id: "run-1",
+      usage: {
+        inputTokens: 12,
+        outputTokens: 8,
+        totalInputTokens: 12,
+        totalOutputTokens: 8,
+        cost: { rawCostCents: 4.2, chargedCents: 3.1 },
+        costUsd: 0.031,
+      },
+    }, mapperMeta({ runtime: "cloud" }));
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "tokens",
+        turnId: "turn-1",
+        itemId: "run-1",
+        runtime: "cloud",
+        inputTokens: 12,
+        outputTokens: 8,
+      }),
+    ]);
+    expect(JSON.stringify(events)).not.toContain("costUsd");
+    expect(events[0] as { costUsd?: unknown }).not.toHaveProperty("costUsd");
   });
 });

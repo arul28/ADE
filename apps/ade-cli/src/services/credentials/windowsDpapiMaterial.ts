@@ -305,6 +305,32 @@ export function readOrCreateWindowsDpapiMaterial(keyBindingDir: string): Buffer 
   return material;
 }
 
+/**
+ * Read-only counterpart for diagnostics: returns existing material or null, and
+ * never creates the protected key file.
+ *
+ * `readOrCreateWindowsDpapiMaterial` mints a key, runs a synchronous PowerShell
+ * protect, and writes `.credential-key.dpapi` when the file is absent. That is
+ * correct for a store that is about to seal something and wrong for anything
+ * that only reports state — a diagnostic must not change what it describes, and
+ * must not block a caller for the 30 s PowerShell budget to do it.
+ */
+export function readExistingWindowsDpapiMaterial(keyBindingDir: string): Buffer | null {
+  const keyPath = protectedKeyPath(keyBindingDir);
+  const cached = cachedKeyMaterial.get(keyPath);
+  if (cached) return cached;
+  const readEpoch = dpapiEpoch;
+  let material: Buffer;
+  try {
+    material = unprotectKey(keyPath);
+  } catch (error) {
+    if (isNodeErrorCode(error, "ENOENT")) return null;
+    throw error;
+  }
+  if (readEpoch === dpapiEpoch) cachedKeyMaterial.set(keyPath, material);
+  return material;
+}
+
 /** Async counterpart used by brain-facing credential reads. */
 export async function readOrCreateWindowsDpapiMaterialAsync(
   keyBindingDir: string,

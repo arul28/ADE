@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseCommandLine } from "../../../shared/shell";
 import {
   buildPtyContinuationLaunchFields,
   buildOpenCodeReplayResumeLaunchCommand,
@@ -17,7 +18,9 @@ import {
   piToolsForPermissionMode,
   piToolFlags,
   validateLaunchProfilePermissionMode,
+  withOpenCodeAdeInstructions,
   resolveTrackedCliResumeCommand,
+  withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
 } from "./cliLaunch";
 import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
@@ -272,6 +275,44 @@ describe("withCodexNoAltScreen", () => {
   it("does not match codex as a substring", () => {
     expect(withCodexNoAltScreen("mycodex")).toBe("mycodex");
     expect(withCodexNoAltScreen("codex-fork --arg")).toBe("codex-fork --arg");
+  });
+});
+
+describe("withClaudeSessionIdInCommandLine", () => {
+  const sessionId = "123e4567-e89b-12d3-a456-426614174000";
+
+  it("injects the flag for a bare claude token", () => {
+    expect(withClaudeSessionIdInCommandLine("claude --model sonnet", sessionId))
+      .toBe(`claude --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("injects the flag after env-var prefixes", () => {
+    expect(withClaudeSessionIdInCommandLine("FOO=1 claude --model sonnet", sessionId))
+      .toBe(`FOO=1 claude --session-id ${sessionId} --model sonnet`);
+  });
+
+  // resolveDirectProviderCommand hands callers an absolute executable, so the
+  // startup line and argv must both accept path-shaped invocations or they
+  // disagree about the assigned id.
+  it("injects the flag for an absolute claude path", () => {
+    expect(withClaudeSessionIdInCommandLine("/usr/local/bin/claude --model sonnet", sessionId))
+      .toBe(`/usr/local/bin/claude --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("injects the flag for a quoted path with spaces", () => {
+    expect(withClaudeSessionIdInCommandLine("'/Users/me/my tools/claude' --model sonnet", sessionId))
+      .toBe(`'/Users/me/my tools/claude' --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("injects the flag for a quoted Windows claude.exe path", () => {
+    expect(withClaudeSessionIdInCommandLine("\"C:\\Users\\me\\claude.exe\" --model sonnet", sessionId))
+      .toBe(`"C:\\Users\\me\\claude.exe" --session-id ${sessionId} --model sonnet`);
+  });
+
+  it("leaves an already-assigned id and non-claude lines alone", () => {
+    expect(withClaudeSessionIdInCommandLine(`claude --session-id ${sessionId}`, sessionId))
+      .toBe(`claude --session-id ${sessionId}`);
+    expect(withClaudeSessionIdInCommandLine("codex --model gpt", sessionId)).toBe("codex --model gpt");
   });
 });
 
@@ -914,11 +955,22 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.initialInputDelayMs).toBeUndefined();
     });
 
-    it("launches Cursor edit mode through the default edit-capable agent mode", () => {
+    it("launches Cursor edit and Ask through Cursor --mode ask", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "edit", model: "cursor-fast" });
       expect(launch.command).toBe("cursor-agent");
-      expect(launch.args).toEqual(["--model", "cursor-fast"]);
-      expect(launch.startupCommand).toBe("cursor-agent --model cursor-fast");
+      expect(launch.args).toEqual(["--mode", "ask", "--model", "cursor-fast"]);
+      expect(launch.startupCommand).toBe("cursor-agent --mode ask --model cursor-fast");
+    });
+
+    it("rejects Cursor permissionMode auto rather than passing --mode auto", () => {
+      expect(() => validateLaunchProfilePermissionMode("cursor", "auto")).toThrow(
+        /permissionMode auto is only supported for Claude/u,
+      );
+      expect(() => buildTrackedCliLaunchCommand({
+        provider: "cursor",
+        permissionMode: "auto",
+        model: "cursor-fast",
+      })).toThrow(/permissionMode auto is only supported for Claude/u);
     });
 
     it("normalizes Cursor registry model ids and forces full-auto interactive workspaces", () => {
@@ -1094,21 +1146,23 @@ describe("buildTrackedCliStartupCommand", () => {
         initialPrompt: "Use OpenCode fast mode.",
       });
       expect(launch.command).toBe("opencode");
+      // The root TUI is the only launch surface now: `run --interactive`'s
+      // bare split-footer read as "a plain terminal with no UI", and the root
+      // command has no --variant flag to branch on.
       expect(launch.args).toEqual(expect.arrayContaining([
-        "run",
-        "--interactive",
         "--model",
         "openai/gpt-5.4",
-        "--variant",
-        "fast",
       ]));
-      expect(launch.args).not.toEqual(expect.arrayContaining(["--prompt"]));
-      expect(launch.startupCommand).toContain("opencode run --interactive");
-      expect(launch.startupCommand).toContain("--variant fast");
+      expect(launch.args).not.toContain("--variant");
+      // The root command takes the kickoff through --prompt (the positional
+      // slot belongs to the project path); the prompt value carries ADE's
+      // session-guidance preamble with the user's text inside it.
+      expect(launch.args).toContain("--prompt");
+      expect(launch.startupCommand).not.toContain("run --interactive");
       expect(launch.startupCommand).toContain("Use OpenCode fast mode.");
     });
 
-    it("launches OpenCode reasoning through the interactive run variant flag when fast is off", () => {
+    it("keeps reasoning effort out of OpenCode CLI launches (root TUI has no --variant)", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "opencode",
         permissionMode: "full-auto",
@@ -1117,13 +1171,10 @@ describe("buildTrackedCliStartupCommand", () => {
         fastMode: false,
         initialPrompt: "Use OpenCode high reasoning.",
       });
-      expect(launch.args).toEqual(expect.arrayContaining([
-        "run",
-        "--interactive",
-        "--variant",
-        "high",
-      ]));
-      expect(launch.args).not.toEqual(expect.arrayContaining(["--variant", "fast"]));
+      // The root command silently drops unknown args, so passing --variant
+      // there would be a lie; reasoning effort stays a chat-runtime feature.
+      expect(launch.args).not.toContain("--variant");
+      expect(launch.startupCommand).not.toContain("run --interactive");
     });
 
     it("normalizes ADE OpenCode registry model ids before launching the CLI", () => {
@@ -1240,12 +1291,15 @@ describe("tracked CLI resume helpers", () => {
     });
     expect(replay.command).toBe("opencode");
     expect(replay.args).toEqual(expect.arrayContaining([
+      "--mini",
       "--session",
       "ses_99",
-      "--replay",
-      "--",
+      "--replay-limit",
+      "40",
+      "--prompt",
       prompt,
     ]));
+    expect(replay.args).not.toContain("--replay");
     expect(replay.env?.OPENCODE_CONFIG_CONTENT).toBeTruthy();
   });
 
@@ -1353,7 +1407,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "chat-99",
       launch: { permissionMode: "edit" },
-    })).toBe("cursor-agent --resume chat-99");
+    })).toBe("cursor-agent --mode ask --resume chat-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
@@ -1515,21 +1569,20 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "ses_99",
       launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4", fastMode: true },
-    })).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --variant fast --session ses_99");
+    })).toContain("opencode --agent plan --model \"openai/gpt-5.4\" --session ses_99");
   });
 
   it("builds OpenCode interactive replay resume commands for freeze-frame continuation", () => {
     const command = buildOpenCodeReplayResumeCommand({
       permissionMode: "plan",
       model: `opencode/openai/${encodeURIComponent("gpt-5.4")}`,
-      fastMode: true,
       resumeTarget: "ses_99",
       prompt: "continue from the snapshot",
       replayLimit: 12,
     });
 
     expect(command).toContain("OPENCODE_CONFIG_CONTENT=");
-    expect(command).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --variant fast --session ses_99 --replay --replay-limit 12 --");
+    expect(command).toContain("opencode --mini --agent plan --model \"openai/gpt-5.4\" --session ses_99 --replay-limit 12 --prompt");
     expect(command).toContain("continue from the snapshot");
     expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });
@@ -1585,5 +1638,102 @@ describe("tracked CLI resume helpers", () => {
     } satisfies Pick<TerminalSessionSummary, "resumeCommand" | "resumeMetadata">;
 
     expect(resolveTrackedCliResumeCommand(session)).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-99");
+  });
+
+  describe("OpenCode prompt boundary", () => {
+    // The reported failure: launching a tracked OpenCode CLI showed ADE's
+    // instructions to the user. `--prompt` is submitted as a real user message
+    // and rendered in the TUI, so anything ADE prepended to the user's text was
+    // displayed verbatim — and reached the model as user content rather than as
+    // system instructions.
+    it("puts only the user's text on --prompt, never ADE's instructions", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "edit",
+        initialPrompt: "Fix the failing test.",
+        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+      });
+
+      const promptIndex = launch.args.indexOf("--prompt");
+      expect(promptIndex).toBeGreaterThanOrEqual(0);
+      expect(launch.args[promptIndex + 1]).toBe("Fix the failing test.");
+
+      const everything = [launch.startupCommand, ...launch.args, launch.initialInput ?? ""].join("\n");
+      expect(everything).not.toContain("ADE session guidance");
+      expect(everything).not.toContain("User prompt:");
+      expect(everything).not.toContain("ADE is a local-first dev environment");
+      // Nor may it be smuggled in through the post-launch PTY write instead.
+      expect(launch.initialInput ?? "").not.toContain("ADE session guidance");
+    });
+
+    it("omits --prompt entirely when the user typed nothing", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "edit",
+        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+      });
+
+      expect(launch.args).not.toContain("--prompt");
+      expect(launch.startupCommand).not.toContain("ADE session guidance");
+    });
+
+    it("adds ADE's instruction file to the config env without dropping the user's", () => {
+      const applied = withOpenCodeAdeInstructions(
+        { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ instructions: ["./AGENTS.local.md"], permission: { edit: "allow" } }) } },
+        "/cache/ade/instructions.md",
+      );
+
+      const config = JSON.parse(applied?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+        instructions?: string[];
+        permission?: Record<string, string>;
+      };
+      // Verified against opencode 1.18.21: config layers union `instructions`
+      // rather than overwriting, so the user's own files must survive.
+      expect(config.instructions).toEqual(["./AGENTS.local.md", "/cache/ade/instructions.md"]);
+      expect(config.permission).toEqual({ edit: "allow" });
+    });
+
+    it("rewrites the inline config assignment on the startup command too", () => {
+      // A shell assignment on the command line overrides the process
+      // environment for that child, so patching only `env` would silently drop
+      // the instructions on every launch that goes through the typed-command
+      // fallback instead of a direct spawn.
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "edit",
+        initialPrompt: "Fix the failing test.",
+        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+      });
+      const applied = withOpenCodeAdeInstructions(launch, "/cache/ade/instructions.md");
+
+      expect(applied?.startupCommand).toBeDefined();
+      const [assignment] = parseCommandLine(applied!.startupCommand!, { platform: "linux" });
+      expect(assignment?.startsWith("OPENCODE_CONFIG_CONTENT=")).toBe(true);
+      const inline = JSON.parse(assignment!.slice("OPENCODE_CONFIG_CONTENT=".length)) as {
+        instructions?: string[];
+        permission?: unknown;
+      };
+      expect(inline.instructions).toEqual(["/cache/ade/instructions.md"]);
+      // The permission policy the launch already carried must survive.
+      expect(inline.permission).toEqual(
+        JSON.parse(applied!.env!.OPENCODE_CONFIG_CONTENT!).permission,
+      );
+      expect(applied!.startupCommand).toContain("Fix the failing test.");
+    });
+
+    it("creates the config env when a launch had none, and stays idempotent", () => {
+      const first = withOpenCodeAdeInstructions({}, "/cache/ade/instructions.md");
+      expect(JSON.parse(first?.env?.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
+        instructions: ["/cache/ade/instructions.md"],
+      });
+
+      expect(withOpenCodeAdeInstructions({ env: first!.env }, "/cache/ade/instructions.md")).toBeNull();
+    });
+
+    it("leaves a config value it cannot parse untouched", () => {
+      const env = { OPENCODE_CONFIG_CONTENT: "{not json" };
+      expect(withOpenCodeAdeInstructions({ env }, "/cache/ade/instructions.md")).toBeNull();
+      expect(withOpenCodeAdeInstructions({ env }, "   ")).toBeNull();
+    });
   });
 });

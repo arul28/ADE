@@ -8,13 +8,11 @@ import {
   FolderOpen,
   FolderPlus,
   MagnifyingGlass as Search,
-  TextAlignLeft,
   X,
 } from "@phosphor-icons/react";
 import type { FileTreeNode } from "../../../shared/types";
 import { arePathsEqual, normalizePath } from "../../lib/pathUtils";
-import { modifierKeyLabel } from "../../lib/platform";
-import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { changeStatusColor, changeStatusLabel, changeStatusTitle, getFileIcon } from "./filePresentation";
 import { PluginRowBadges, PluginToolbarActions } from "../plugins/sockets";
@@ -64,14 +62,12 @@ export type FilesExplorerProps = {
   searchQuery: string;
   inlineRenameRequest: InlineRenameRequest;
   onSearchQueryChange: (value: string) => void;
-  /** Optional — when omitted, the Quick Open button is hidden (v2 uses unified search). */
-  onOpenQuickOpen?: () => void;
-  /** Optional — when omitted, the Content Search button is hidden (v2 uses unified search). */
-  onOpenContentSearch?: () => void;
-  /** Enter in the search field; v2 routes this to the in-depth search. */
-  onSearchSubmit?: (query: string) => void;
-  /** Single-row header (search + new file/folder, no Quick Open / Content buttons). */
-  singleRowHeader?: boolean;
+  /**
+   * Search results for the current query, rendered in place of the tree in the
+   * same column. When omitted, the query falls back to filtering the loaded
+   * tree client-side.
+   */
+  searchResults?: React.ReactNode;
   onCreateFile: (basePath: string) => void;
   onCreateDirectory: (basePath: string) => void;
   onToggleDirectory: (path: string, isExpanded: boolean, hasLoadedChildren: boolean) => void;
@@ -181,10 +177,7 @@ export function FilesExplorer({
   searchQuery,
   inlineRenameRequest,
   onSearchQueryChange,
-  onOpenQuickOpen,
-  onOpenContentSearch,
-  onSearchSubmit,
-  singleRowHeader = false,
+  searchResults,
   onCreateFile,
   onCreateDirectory,
   onToggleDirectory,
@@ -206,15 +199,20 @@ export function FilesExplorer({
   const [renameError, setRenameError] = useState<string | null>(null);
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const [searchCollapsed, setSearchCollapsed] = useState<Set<string>>(new Set());
+  // With real search results wired up, the query swaps the tree out entirely —
+  // so the client-side path filter (and its flatten pass) is skipped.
+  const showSearchResults = searchResults != null && normalizedSearchQuery.length > 0;
   const rows = useMemo(
-    () => flattenVisibleRows({
-      nodes: tree,
-      expanded,
-      searchCollapsed,
-      query: searchQuery,
-      includeLoadMore: Boolean(onLoadMoreChildren),
-    }),
-    [tree, expanded, searchCollapsed, searchQuery, onLoadMoreChildren],
+    () => showSearchResults
+      ? []
+      : flattenVisibleRows({
+        nodes: tree,
+        expanded,
+        searchCollapsed,
+        query: searchQuery,
+        includeLoadMore: Boolean(onLoadMoreChildren),
+      }),
+    [showSearchResults, tree, expanded, searchCollapsed, searchQuery, onLoadMoreChildren],
   );
 
   const virtualizer = useVirtualizer({
@@ -288,143 +286,32 @@ export function FilesExplorer({
 
   return (
     <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg, borderRadius: 8 }}>
-      {compact ? (
-        <div
-          className="flex shrink-0 items-center gap-1"
-          style={{ padding: "6px 8px", borderBottom: `1px solid ${COLORS.border}` }}
-          data-tour="files.searchBar"
-        >
-          {onOpenQuickOpen ? (
-            <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: `${modifierKeyLabel}+P` }}>
-              <button
-                type="button"
-                aria-label="Quick open"
-                style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-                onClick={onOpenQuickOpen}
-                onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-                onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-              >
-                <Search size={12} weight="regular" />
-              </button>
-            </SmartTooltip>
-          ) : null}
-          <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
-            <button
-              type="button"
-              title="New file"
-              aria-label="New file"
-              style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-              onClick={() => onCreateFile(activeContextDir)}
-              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <FilePlus2 size={12} weight="regular" />
-            </button>
-          </SmartTooltip>
-          <SmartTooltip content={{ label: "New folder", description: "Create a new folder in the current directory." }}>
-            <button
-              type="button"
-              title="New folder"
-              aria-label="New folder"
-              style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
-              onClick={() => onCreateDirectory(activeContextDir)}
-              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <FolderPlus size={12} weight="regular" />
-            </button>
-          </SmartTooltip>
-        </div>
-      ) : singleRowHeader ? (
-        <div
-          className="flex shrink-0 items-center gap-1.5"
-          style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }}
-          data-tour="files.searchBar"
-        >
-          <div className="relative flex flex-1 items-center">
-            <Search size={13} weight="regular" className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
-            <input
-              value={searchQuery}
-              onChange={(event) => onSearchQueryChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && onSearchSubmit) {
-                  event.preventDefault();
-                  onSearchSubmit(searchQuery);
-                }
-              }}
-              aria-label="Search files"
-              placeholder="Search files…  ↵"
-              style={{
-                height: 28,
-                width: "100%",
-                padding: "0 26px 0 26px",
-                fontSize: 11,
-                fontFamily: MONO_FONT,
-                fontWeight: 500,
-                background: COLORS.recessedBg,
-                borderRadius: 8,
-                border: `1px solid ${COLORS.outlineBorder}`,
-                color: COLORS.textSecondary,
-                outline: "none",
-              }}
-              onFocus={(event) => { event.currentTarget.style.borderColor = COLORS.accent; }}
-              onBlur={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; }}
-            />
-            {searchQuery.trim() ? (
-              <button
-                type="button"
-                className="absolute"
-                style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 18, height: 18, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
-                onClick={() => onSearchQueryChange("")}
-                title="Clear filter"
-                aria-label="Clear path filter"
-              >
-                <X size={10} />
-              </button>
-            ) : null}
-          </div>
-          <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
-            <button
-              type="button"
-              title="New file"
-              aria-label="New file"
-              style={{ ...outlineButton({ height: 28, padding: "0 7px", fontSize: 10 }) }}
-              onClick={() => onCreateFile(activeContextDir)}
-              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <FilePlus2 size={13} weight="regular" />
-            </button>
-          </SmartTooltip>
-          <SmartTooltip content={{ label: "New folder", description: "Create a new folder in the current directory." }}>
-            <button
-              type="button"
-              title="New folder"
-              aria-label="New folder"
-              style={{ ...outlineButton({ height: 28, padding: "0 7px", fontSize: 10 }) }}
-              onClick={() => onCreateDirectory(activeContextDir)}
-              onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-            >
-              <FolderPlus size={13} weight="regular" />
-            </button>
-          </SmartTooltip>
-          <PluginToolbarActions surface="files" />
-        </div>
-      ) : (
-        <>
-      <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}` }} data-tour="files.searchBar">
-        <div className="relative flex items-center">
-          <Search size={14} weight="regular" className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
+      <div
+        className="flex shrink-0 items-center"
+        style={{
+          gap: compact ? 4 : 6,
+          padding: compact ? "6px 8px" : "8px 10px",
+          borderBottom: `1px solid ${COLORS.border}`,
+        }}
+        data-tour="files.searchBar"
+      >
+        <div className="relative flex min-w-0 flex-1 items-center">
+          <Search
+            size={compact ? 12 : 13}
+            weight="regular"
+            className="pointer-events-none absolute"
+            style={{ left: compact ? 7 : 8, color: COLORS.textDim }}
+          />
           <input
             value={searchQuery}
             onChange={(event) => onSearchQueryChange(event.target.value)}
-            aria-label="Filter paths"
-            placeholder="Filter paths"
+            aria-label="Search files"
+            placeholder="Search files"
+            data-files-search-field="1"
             style={{
-              height: 30,
+              height: compact ? 24 : 28,
               width: "100%",
-              padding: "0 28px 0 28px",
+              padding: compact ? "0 22px 0 22px" : "0 26px 0 26px",
               fontSize: 11,
               fontFamily: MONO_FONT,
               fontWeight: 500,
@@ -443,59 +330,24 @@ export function FilesExplorer({
               className="absolute"
               style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 18, height: 18, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
               onClick={() => onSearchQueryChange("")}
-              title="Clear filter"
-              aria-label="Clear path filter"
+              title="Clear search"
+              aria-label="Clear search"
             >
               <X size={10} />
             </button>
           ) : null}
         </div>
-        {onOpenContentSearch || onOpenQuickOpen ? (
-          <div className="mt-1.5 flex items-center justify-end gap-1.5">
-            {onOpenContentSearch ? (
-              <SmartTooltip content={{ label: "Content search", description: "Search file contents in this workspace.", shortcut: `${modifierKeyLabel}+Shift+F` }}>
-                <button
-                  type="button"
-                  aria-label="Content search"
-                  style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
-                  onClick={onOpenContentSearch}
-                  onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-                >
-                  <TextAlignLeft size={10} /> CONTENT
-                </button>
-              </SmartTooltip>
-            ) : null}
-            {onOpenQuickOpen ? (
-              <SmartTooltip content={{ label: "Quick open", description: "Search and open any file in the project.", shortcut: `${modifierKeyLabel}+P` }}>
-                <button
-                  type="button"
-                  aria-label="Quick open"
-                  style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 9 }) }}
-                  onClick={onOpenQuickOpen}
-                  onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
-                  onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
-                >
-                  <Search size={10} /> QUICK OPEN
-                </button>
-              </SmartTooltip>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="flex shrink-0 items-center gap-1" style={{ padding: "6px 8px", borderBottom: `1px solid ${COLORS.border}` }}>
         <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
           <button
             type="button"
             title="New file"
             aria-label="New file"
-            style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
+            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
             onClick={() => onCreateFile(activeContextDir)}
             onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
             onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
           >
-            <FilePlus2 size={12} weight="regular" />
+            <FilePlus2 size={compact ? 12 : 13} weight="regular" />
           </button>
         </SmartTooltip>
         <SmartTooltip content={{ label: "New folder", description: "Create a new folder in the current directory." }}>
@@ -503,20 +355,16 @@ export function FilesExplorer({
             type="button"
             title="New folder"
             aria-label="New folder"
-            style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
+            style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
             onClick={() => onCreateDirectory(activeContextDir)}
             onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
             onMouseLeave={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; event.currentTarget.style.color = COLORS.textSecondary; }}
           >
-            <FolderPlus size={12} weight="regular" />
+            <FolderPlus size={compact ? 12 : 13} weight="regular" />
           </button>
         </SmartTooltip>
-        <span className="ml-auto" style={{ ...LABEL_STYLE, fontSize: 9, color: COLORS.textDim }}>
-          {rows.length} rows
-        </span>
+        <PluginToolbarActions surface="files" />
       </div>
-        </>
-      )}
 
       {renameError ? (
         <div style={{ padding: "5px 10px", borderBottom: `1px solid ${COLORS.border}`, color: COLORS.danger, fontFamily: MONO_FONT, fontSize: 11 }}>
@@ -524,6 +372,9 @@ export function FilesExplorer({
         </div>
       ) : null}
 
+      {showSearchResults ? (
+        <div className="min-h-0 flex-1" data-tour="files.searchResults">{searchResults}</div>
+      ) : (
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto" style={{ paddingTop: 4, paddingBottom: 4 }} data-tour="files.fileTree">
         {rows.length === 0 ? (
           <div style={{ padding: 12, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
@@ -788,6 +639,7 @@ export function FilesExplorer({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

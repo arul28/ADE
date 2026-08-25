@@ -131,6 +131,60 @@ enum WorkComposerDraftStore {
   }
 }
 
+/// Which active-turn send mode a chat was last sent with, remembered per chat so
+/// a user who works one way ("interrupt, always") doesn't re-pick it on every
+/// turn — and doesn't lose it by backgrounding the app. Same storage shape as
+/// `WorkComposerDraftStore`: one bounded JSON dictionary under a versioned key.
+///
+/// Stored as the raw mode string rather than the enum so an unknown value from a
+/// future build decodes to "no preference" instead of failing the whole map.
+enum WorkActiveSendModeStore {
+  struct Entry: Codable, Equatable {
+    var mode: String
+    var updatedAt: Double
+  }
+
+  private static let storageKey = "ade.work.activeSendMode.v1"
+  /// A send-mode preference is worth far less than a draft, so the cap is
+  /// smaller; falling off it just restores the provider default.
+  private static let maxEntries = 40
+
+  /// Per-chat key. Blank session ids yield a blank key so a composer that
+  /// renders before its session resolves can't write every chat's preference
+  /// into one bucket.
+  static func chatKey(sessionId: String) -> String {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    return "chat:\(trimmed)"
+  }
+
+  /// The remembered mode, or nil when the key is blank, absent, or no longer a
+  /// mode this build knows — the caller then falls back to the provider default.
+  static func load(_ key: String) -> WorkActiveSendMode? {
+    guard !key.isEmpty else { return nil }
+    let map: [String: Entry] = WorkDefaultsJSONMap.load(storageKey)
+    guard let raw = map[key]?.mode else { return nil }
+    return WorkActiveSendMode(rawValue: raw)
+  }
+
+  static func save(_ mode: WorkActiveSendMode, for key: String) {
+    guard !key.isEmpty else { return }
+    var map: [String: Entry] = WorkDefaultsJSONMap.load(storageKey)
+    if map[key]?.mode == mode.rawValue { return }
+    map[key] = Entry(mode: mode.rawValue, updatedAt: Date().timeIntervalSince1970)
+    map = WorkDefaultsJSONMap.evictingOldest(map, keeping: maxEntries, updatedAt: \.updatedAt)
+    WorkDefaultsJSONMap.persist(map, under: storageKey)
+  }
+
+  /// Forgets one chat's preference, so it falls back to the provider default.
+  static func clear(_ key: String) {
+    guard !key.isEmpty else { return }
+    var map: [String: Entry] = WorkDefaultsJSONMap.load(storageKey)
+    guard map.removeValue(forKey: key) != nil else { return }
+    WorkDefaultsJSONMap.persist(map, under: storageKey)
+  }
+}
+
 /// In-progress answers for a still-open question request, persisted per request
 /// id. The card's selections and freeform text were plain `@State`, so backing
 /// out of a chat to check something in the transcript — the exact reason a user

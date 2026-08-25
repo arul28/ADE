@@ -7,6 +7,7 @@ import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { BufferedEvent } from "../../eventBuffer";
 import type { AdeCodeConnection, ProjectLaunchContext } from "../types";
 import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "../productAnalytics";
+import { RuntimeServiceStillStartingError } from "../../serviceManager/common";
 
 const mocks = vi.hoisted(() => ({
   connectToAde: vi.fn(),
@@ -219,6 +220,7 @@ describe("AdeCodeApp polling", () => {
     sessionHint: null,
     remote: false,
     remoteLabel: null,
+    skipProjectPicker: true,
   };
 
   beforeEach(() => {
@@ -346,6 +348,9 @@ describe("AdeCodeApp polling", () => {
 
     expect(mocks.listLanes.mock.calls.length).toBeGreaterThan(initialLaneCalls);
     expect(mocks.listLanes).toHaveBeenLastCalledWith(connection, { includeStatus: true });
+    // The renamed lane reaches the surface through its NAME: the sessions pane
+    // groups by lane name and the header carries it. Branch refs live in lane
+    // details, which is no longer the default right pane.
     expect(stripAnsi(instance.frames.join("\n"))).toContain("ade/automatic-lane-naming");
 
     await unmountApp(instance);
@@ -504,6 +509,28 @@ describe("AdeCodeApp polling", () => {
     await flushAsyncEffects();
 
     expect(mocks.connectToAde.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+
+    await unmountApp(instance);
+  });
+
+  it("shows a waiting state, not a failure, while the background service is starting", async () => {
+    // The desktop stopped calling a slow-starting brain a broken one; the TUI
+    // must not keep telling the same user that ADE Code failed to start.
+    mocks.connectToAde.mockImplementation(async () => {
+      throw new RuntimeServiceStillStartingError({
+        kind: "not_answered",
+        socketPath: "/tmp/ade/sock/ade.sock",
+        installMessage: "ADE brain service is registered and starting",
+      });
+    });
+
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+
+    await waitForFrame(instance, "ADE's background service is starting");
+    const frame = stripAnsi(instance.frames.join("\n"));
+    expect(frame).toContain("there is nothing to do");
+    expect(frame).toContain("r retry now");
+    expect(frame).not.toContain("ADE Code failed to start");
 
     await unmountApp(instance);
   });
@@ -677,7 +704,7 @@ describe("TUI product analytics policy", () => {
   it("derives closed screen names and binds capture to the TUI surface", async () => {
     const base: Parameters<typeof deriveTuiAnalyticsScreen>[0] = {
       activePane: "chat",
-      drawerSection: "lanes",
+      workSelectionKind: null,
       rightPaneKind: "empty",
       gridViewActive: false,
       addModeActive: false,
@@ -685,7 +712,9 @@ describe("TUI product analytics policy", () => {
     };
     const cases: Array<[string, Parameters<typeof deriveTuiAnalyticsScreen>[0]]> = [
       ["terminal_control", { ...base, activePane: "addMode", addModeActive: true, gridViewActive: true, terminalControlActive: true }],
-      ["drawer_chats", { ...base, activePane: "drawer", drawerSection: "chats", addModeActive: true, gridViewActive: true }],
+      ["work_session", { ...base, activePane: "drawer", workSelectionKind: "session", addModeActive: true, gridViewActive: true }],
+      ["work_new_chat", { ...base, activePane: "drawer", workSelectionKind: "new-chat" }],
+      ["work", { ...base, activePane: "drawer" }],
       ["details", { ...base, activePane: "details" }],
       ["details_model_picker", { ...base, activePane: "details", rightPaneKind: "model-picker", addModeActive: true }],
       ["add_chat", { ...base, activePane: "addMode", gridViewActive: true }],

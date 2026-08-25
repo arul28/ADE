@@ -17,6 +17,7 @@ import type { createLinearIssueTracker } from "../../desktop/src/main/services/c
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import { resolveSmartLinkPreview } from "../../desktop/src/main/services/chat/smartLinkPreviewService";
+import { attachGitHubServiceHealth } from "../../desktop/src/main/services/github/githubStatusPage";
 import type { SmartLinkPreview } from "../../desktop/src/shared/smartLinks";
 import {
   getModelById,
@@ -24,6 +25,10 @@ import {
   resolveModelAlias,
 } from "../../desktop/src/shared/modelRegistry";
 import { parseGitHubScopeHeaders } from "../../desktop/src/shared/githubScopes";
+import {
+  readCredentialWithState,
+  readCredentialWithStateAsync,
+} from "../../desktop/src/main/services/github/credentialReadState";
 import type {
   GitHubAuthFailure,
   GitHubAppDeviceAuthPollResult,
@@ -32,6 +37,7 @@ import type {
   GitHubCredentialVerification,
   GitHubRepoRef,
   GitHubRateLimitState,
+  GitHubRequestBudget,
   GitHubStatus,
   CtoAttentionState,
 } from "../../desktop/src/shared/types";
@@ -44,10 +50,15 @@ import type {
   GitHubPullRequestReview,
 } from "../../desktop/src/main/services/github/githubService";
 import {
-  fetchGitHubAppInstallationStatus,
+  fetchAppInstallationStatusForRepo,
   type GitHubRelaySecretReader,
 } from "../../desktop/src/main/services/github/githubRelayConfig";
 import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
+import {
+  appCredentialFailureEntry,
+  resolveStoredAppUserTokenForRelay,
+  type AppUserAuthFailure,
+} from "../../desktop/src/main/services/github/githubAppUserAuthFailure";
 import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
@@ -68,7 +79,9 @@ import { createFileService as createFileServiceImpl } from "../../desktop/src/ma
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
 import {
+  GITHUB_CREDENTIAL_CACHE_TTL_MS,
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
   githubOperationCredentialPrecedence,
@@ -88,6 +101,7 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubRequestBudget,
   githubCredentialNonRateLimitCooldown,
   githubCredentialRateLimitCooldown,
   githubCredentialInventoryKey,
@@ -354,6 +368,8 @@ type HeadlessGitHubCredentialInventory = {
   patTokenStored: boolean;
   ghCliPath: string | null;
   ghAuthError: string | null;
+  /** Whether the credential file was readable on the read that built this. */
+  credentialStoreUnreadable: boolean;
 };
 
 class HeadlessGithubCredentialAttemptError extends Error {
@@ -645,6 +661,51 @@ function parseNextGitHubLink(linkHeader: string | null): string | null {
 }
 
 const GITHUB_API_TIMEOUT_MS = 20_000;
+const GITHUB_API_BODY_TIMEOUT_MS = 30_000;
+
+function githubTimeoutError(phase: "request" | "response body"): Error {
+  return new Error(
+    `GitHub API ${phase} timed out. Check network access on this machine.`,
+  );
+}
+
+/**
+ * Bound the body read on the same controller that owns the stream.
+ *
+ * The header timer is cleared the moment headers arrive, so without this a
+ * response whose body stalls mid-stream never settles: the caller's
+ * transport-failure record never runs, and the poller tick that awaited it
+ * never completes either. The desktop owner has always bounded this phase; the
+ * two owners have to agree, because the daemon is the one that actually polls
+ * in a packaged build.
+ */
+function boundGitHubResponseBody(
+  response: Response,
+  controller: AbortController,
+  release: () => void,
+): Response {
+  const readText = response.text.bind(response);
+  let bodyTimedOut = false;
+  Object.defineProperty(response, "text", {
+    configurable: true,
+    value: async (): Promise<string> => {
+      const timer = setTimeout(() => {
+        bodyTimedOut = true;
+        controller.abort();
+      }, GITHUB_API_BODY_TIMEOUT_MS);
+      try {
+        return await readText();
+      } catch (error) {
+        if (bodyTimedOut) throw githubTimeoutError("response body");
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        release();
+      }
+    },
+  });
+  return response;
+}
 
 async function fetchGitHub(
   input: string | URL,
@@ -656,20 +717,25 @@ async function fetchGitHub(
   const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);
   if (upstreamSignal?.aborted) abortFromUpstream();
   else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
+  const release = (): void => {
+    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
+  };
   const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  let response: Response;
   try {
-    return await fetchImpl(input, { ...init, signal: controller.signal });
+    response = await fetchImpl(input, { ...init, signal: controller.signal });
   } catch (error) {
+    release();
     if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(
-        "GitHub API request timed out. Check network access on this machine.",
-      );
+      throw githubTimeoutError("request");
     }
     throw error;
   } finally {
     clearTimeout(timer);
-    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
   }
+  // `release` now runs when the body settles, not here — the upstream abort has
+  // to stay wired through the body phase for it to be cancellable at all.
+  return boundGitHubResponseBody(response, controller, release);
 }
 
 export function createHeadlessGitHubService(
@@ -703,6 +769,10 @@ export function createHeadlessGitHubService(
   let cachedStatusBinding: string | null = null;
   let tokenOverride: string | null = null;
   let tokenDecryptionFailed = false;
+  // An undecryptable store returns an EMPTY view instead of throwing, so without
+  // this a remote runtime reports a corrupted store as "GitHub was never
+  // connected" — identical to a fresh install. See GitHubStatus.credentialStoreUnreadable.
+  let credentialStoreUnreadable = false;
   let statusLookupGeneration = 0;
   let statusLookupInFlight: {
     generation: number;
@@ -714,23 +784,47 @@ export function createHeadlessGitHubService(
     promise: Promise<HeadlessGitHubStatus>;
   } | null = null;
 
+  type AppCredentialLookup = {
+    token: string | null;
+    failure: AppUserAuthFailure | null;
+    status: GitHubAppUserAuthStatus;
+  };
+  /**
+   * The App credential is resolved at most once per TTL window, matching the
+   * desktop service's inventory cache.
+   *
+   * Every status read, PR call and relay poll builds an inventory, and building
+   * one asks for a GitHub App token — which on a stale access token is a refresh
+   * POST. The headless twin had no such window, which is why the brain, not the
+   * desktop app, drove most of the refresh traffic. Only the App lookup is
+   * cached: the `gh` CLI and PAT reads keep answering live, so signing out of
+   * `gh` still demotes the write credential immediately.
+   */
+  const appCredentialCache = createExpiringPromiseCache<AppCredentialLookup>({
+    ttlMs: GITHUB_CREDENTIAL_CACHE_TTL_MS,
+    build: buildAppCredentialAsync,
+  });
+
   const invalidateStatusCache = (): void => {
     cachedStatus = null;
     cachedAt = 0;
     cachedStatusBinding = null;
     statusLookupGeneration += 1;
+    // A re-authorization or a sign-out just replaced the App credential this
+    // cache holds, so it cannot outlive the status it fed.
+    appCredentialCache.clear();
+  };
+
+  const noteCredentialStoreReadState = (unreadable: boolean): boolean => {
+    credentialStoreUnreadable = unreadable;
+    return credentialStoreUnreadable;
   };
 
   const readStoredPatToken = (): string | null => {
     if (tokenOverride != null) return tokenOverride;
-    try {
-      const stored = credentialStore.getSync(tokenKey);
-      tokenDecryptionFailed = false;
-      if (stored?.trim()) return stored.trim();
-    } catch {
-      tokenDecryptionFailed = true;
-    }
-    return null;
+    const read = readCredentialWithState(credentialStore, tokenKey);
+    tokenDecryptionFailed = noteCredentialStoreReadState(read.unreadable);
+    return read.value;
   };
 
   const readToken = (): HeadlessGitHubTokenLookup => {
@@ -764,38 +858,41 @@ export function createHeadlessGitHubService(
 
   const readStoredPatTokenAsync = async (): Promise<string | null> => {
     if (tokenOverride != null) return tokenOverride;
-    try {
-      const stored = await credentialStore.get(tokenKey);
-      tokenDecryptionFailed = false;
-      if (stored?.trim()) return stored.trim();
-    } catch {
-      tokenDecryptionFailed = true;
-    }
-    return null;
+    const read = await readCredentialWithStateAsync(credentialStore, tokenKey);
+    tokenDecryptionFailed = noteCredentialStoreReadState(read.unreadable);
+    return read.value;
   };
+
+  // A hoisted declaration, so the cache that names it can be declared next to
+  // the invalidator that owns it rather than after every function it calls.
+  async function buildAppCredentialAsync(): Promise<AppCredentialLookup> {
+    const status = appUserAuth.getAuthStatus();
+    const resolved = await resolveStoredAppUserTokenForRelay({
+      status,
+      appUserAuth,
+      logger,
+      event: "github.app_user_token_unavailable",
+    });
+    return { ...resolved, status };
+  }
+
+  const readAppCredentialAsync = async (): Promise<AppCredentialLookup> =>
+    await appCredentialCache.read();
 
   const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
     const patToken = await readStoredPatTokenAsync();
     const patTokenStored = Boolean(patToken);
+    // Snapshotted next to `patTokenStored`, because the read that just ran is
+    // the one this verdict belongs to. `credentialStoreUnreadable` is shared
+    // mutable state: another caller reading the same store during the awaits
+    // below would otherwise hand this inventory somebody else's outcome.
+    const storeUnreadableForThisRead = credentialStoreUnreadable;
     const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
-    const appStatus = appUserAuth.getAuthStatus();
     const [appResult, gh] = await Promise.all([
-      appStatus.tokenStored
-        ? appUserAuth.getValidTokenForRelay()
-            .then((token) => ({ token, failure: null }))
-            .catch((error: unknown) => {
-              const message = error instanceof Error ? error.message : String(error);
-              const failure = classifyGitHubAuthFailure({ message });
-              logger.warn("github.app_user_token_refresh_failed", {
-                error: message,
-                kind: failure.authFailure.kind,
-                retryAt: failure.authFailure.retryAt,
-              });
-              return { token: null, failure };
-            })
-        : Promise.resolve({ token: null, failure: null }),
+      readAppCredentialAsync(),
       Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync()),
     ]);
+    const appStatus = appResult.status;
     const appToken = appResult.token;
     const candidates: HeadlessGitHubTokenCandidate[] = [];
     if (environmentToken) {
@@ -842,13 +939,12 @@ export function createHeadlessGitHubService(
     return {
       candidates,
       availableSources: new Set(candidates.map((candidate) => candidate.source)),
-      failures: appResult.failure
-        ? [{ source: "app", ...appResult.failure }]
-        : [],
+      failures: appCredentialFailureEntry(appResult.failure),
       appTokenStored: appToken != null || appStatus.tokenStored,
       patTokenStored,
       ghCliPath: gh.ghCliPath,
       ghAuthError: gh.ghAuthError,
+      credentialStoreUnreadable: storeUnreadableForThisRead,
     };
   };
 
@@ -1261,6 +1357,26 @@ export function createHeadlessGitHubService(
           releaseConditionalRequest = conditional.release;
         }
       }
+      // A request that never got an answer from GitHub — a hang, a timeout, a
+      // DNS or TLS failure, a body that stalls mid-stream — used to throw
+      // straight out of here recording nothing. That is the outage shape this
+      // lane targets, and with no record the request budget reported no failure
+      // kind, so the caller's ladder could not climb past its flat unclassified
+      // rung. Recorded with a null rate limit so it cannot clobber the real
+      // quota numbers, and the kinds this produces (`network` / `unknown`)
+      // carry no cooldown, so it can never park a credential the user's next
+      // action needs.
+      const recordTransportFailure: (error: unknown) => never = (error) => {
+        recordGithubOperationFailure(
+          candidate,
+          classifyGitHubAuthFailure({
+            message: error instanceof Error ? error.message : String(error),
+          }).authFailure,
+          null,
+        );
+        throw error;
+      };
+
       let response: Response;
       try {
         response = await requestGitHub(url, {
@@ -1268,6 +1384,8 @@ export function createHeadlessGitHubService(
           headers,
           body: args.body == null ? undefined : JSON.stringify(args.body),
         });
+      } catch (error) {
+        recordTransportFailure(error);
       } finally {
         releaseConditionalRequest?.();
       }
@@ -1283,9 +1401,13 @@ export function createHeadlessGitHubService(
           method: args.method,
           headers,
           body: args.body == null ? undefined : JSON.stringify(args.body),
-        });
+        }).catch(recordTransportFailure);
       }
-      const text = await response.text();
+      // The body is read after the header timer is cleared, so a socket error
+      // mid-body surfaces here rather than above — same shape, same record.
+      // (Unlike the desktop owner, this transport arms no body timeout, so a
+      // body that stalls without erroring simply never settles.)
+      const text = await response.text().catch(recordTransportFailure);
       let data: unknown = text;
       try {
         data = text.trim().length ? JSON.parse(text) : {};
@@ -1675,6 +1797,7 @@ export function createHeadlessGitHubService(
           repo,
           hasOrigin,
           patTokenStored: inventory.patTokenStored,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           ghCliPath: inventory.ghCliPath ?? cachedStatus.ghCliPath,
           ghAuthError: inventory.ghAuthError,
           credentialStates: githubCredentialStates({
@@ -1716,6 +1839,7 @@ export function createHeadlessGitHubService(
           tokenStored: inventory.appTokenStored,
           patTokenStored: inventory.patTokenStored,
           tokenDecryptionFailed,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           storageScope: "app",
           authSource: failure?.source ?? "none",
           writeAuthSource: "none",
@@ -1806,6 +1930,7 @@ export function createHeadlessGitHubService(
           tokenStored: true,
           patTokenStored: inventory.patTokenStored,
           tokenDecryptionFailed: false,
+          credentialStoreUnreadable: inventory.credentialStoreUnreadable,
           storageScope: "app",
           authSource: candidate.source,
           writeAuthSource: activeWriteSource ?? "none",
@@ -1856,6 +1981,7 @@ export function createHeadlessGitHubService(
         tokenStored: true,
         patTokenStored: inventory.patTokenStored,
         tokenDecryptionFailed: false,
+        credentialStoreUnreadable: inventory.credentialStoreUnreadable,
         storageScope: "app",
         authSource: primaryCandidate.source,
         writeAuthSource: "none",
@@ -1903,26 +2029,46 @@ export function createHeadlessGitHubService(
     }
   };
 
+  const resolveStatus = async (opts: { forceRefresh?: boolean }): Promise<GitHubStatus> => {
+    const forceRefresh = opts.forceRefresh === true;
+    if (forcedStatusLookupInFlight?.generation === statusLookupGeneration) {
+      return await forcedStatusLookupInFlight.promise;
+    }
+    if (!forceRefresh) {
+      return await performStatusLookup(false, statusLookupGeneration);
+    }
+
+    invalidateStatusCache();
+    const generation = statusLookupGeneration;
+    const lookup = performStatusLookup(true, generation);
+    forcedStatusLookupInFlight = { generation, promise: lookup };
+    try {
+      return await lookup;
+    } finally {
+      if (forcedStatusLookupInFlight?.promise === lookup) forcedStatusLookupInFlight = null;
+    }
+  };
+
   service = {
     verifyStoredPat,
     async getStatus(opts: { forceRefresh?: boolean } = {}) {
-      const forceRefresh = opts.forceRefresh === true;
-      if (forcedStatusLookupInFlight?.generation === statusLookupGeneration) {
-        return await forcedStatusLookupInFlight.promise;
-      }
-      if (!forceRefresh) {
-        return await performStatusLookup(false, statusLookupGeneration);
-      }
-
-      invalidateStatusCache();
-      const generation = statusLookupGeneration;
-      const lookup = performStatusLookup(true, generation);
-      forcedStatusLookupInFlight = { generation, promise: lookup };
-      try {
-        return await lookup;
-      } finally {
-        if (forcedStatusLookupInFlight?.promise === lookup) forcedStatusLookupInFlight = null;
-      }
+      // Corroborate a failing status against githubstatus.com, exactly as the
+      // desktop in-process service does. The renderer reaches GitHub through
+      // whichever service owns the project, so applying this to only one of
+      // them would leave the outage attribution dead in the shipping,
+      // runtime-backed build. Wrapped at this single exit rather than inside
+      // `resolveStatus` so a cache hit still gets fresh corroboration — and so
+      // a future early return cannot skip it.
+      // `options.fetchImpl` is threaded through deliberately: it is the same
+      // seam every other GitHub call in this service uses, so a test that
+      // provokes a 5xx/unclassified failure stubs the status page instead of
+      // reaching the real githubstatus.com from the unit suite. Passed raw
+      // rather than via `requestGitHub`, which would replace the status-page
+      // lookup's own abort signal and defeat its timeout.
+      return await attachGitHubServiceHealth(await resolveStatus(opts), {
+        logger,
+        fetchImpl: options.fetchImpl,
+      });
     },
     async getBackgroundRequestPauseUntilMs() {
       const inventory = await readCredentialInventoryAsync();
@@ -1930,6 +2076,14 @@ export function createHeadlessGitHubService(
         Date.now(),
         githubOperationCredentialCandidates(inventory.candidates, "read"),
       );
+    },
+    /**
+     * Runtime-owned twin of the desktop service's budget read. The daemon owns
+     * GitHub access for runtime-bound windows, so implementing this only on the
+     * desktop side would leave the shipping build's poll governor un-gated.
+     */
+    async getRequestBudget(): Promise<GitHubRequestBudget> {
+      return githubRequestBudget();
     },
     async getRemoteStatus() {
       const origin = await readGitOriginAsync(projectRoot);
@@ -1945,17 +2099,13 @@ export function createHeadlessGitHubService(
       const owner = args.owner?.trim();
       const name = args.name?.trim();
       const repo = owner && name ? { owner, name } : await detectGitHubRepoAsync(projectRoot);
-      const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
-      const accountAccessToken = options.getAccountAccessToken
-        ? await options.getAccountAccessToken().catch(() => null)
-        : null;
-      return fetchGitHubAppInstallationStatus({
+      return await fetchAppInstallationStatusForRepo({
         repo,
+        appUserAuth,
+        logger,
         secretReader: options.githubRelaySecretReader,
-        forceRefresh: args.forceRefresh === true,
-        githubAppUserToken,
-        accountAccessToken,
-        auditLog: appUserAuth.auditLog,
+        forceRefresh: args.forceRefresh,
+        getAccountAccessToken: options.getAccountAccessToken,
       });
     },
     getAppUserAuthStatus(): GitHubAppUserAuthStatus {
@@ -2040,6 +2190,11 @@ export function createHeadlessGitHubService(
         credentialStore.deleteSync(tokenKey);
       }
       tokenDecryptionFailed = false;
+      // A write that landed re-sealed the store with a key this process holds,
+      // so whatever made the previous read unreadable no longer applies. Without
+      // this the status keeps reporting a broken store forever, because every
+      // later read short-circuits on `tokenOverride` before re-reading it.
+      credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       if (clean && clean !== previousToken) clearGithubCredentialHealth(clean);
       invalidateStatusCache();
@@ -2050,6 +2205,9 @@ export function createHeadlessGitHubService(
       tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
       tokenDecryptionFailed = false;
+      // Same reasoning as `setToken`: the delete rewrote the store with a key
+      // this process holds, so the previous unreadable verdict is stale.
+      credentialStoreUnreadable = false;
       if (previousToken) clearGithubCredentialHealth(previousToken);
       invalidateStatusCache();
       emitStatusChanged();

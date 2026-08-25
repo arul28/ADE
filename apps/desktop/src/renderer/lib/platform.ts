@@ -39,6 +39,22 @@ export function cursorProviderAvailable(): boolean {
   return isCursorProviderSupported(platform, arch);
 }
 
+/**
+ * "Is this a Mac", answered by the preload bridge rather than by
+ * `navigator.platform`.
+ *
+ * Same question as `isMacPlatform` below, different source: that one reads a
+ * user-agent string, this one reads the host's real `process.platform`. Copy
+ * that says "this Mac" versus "this PC" reads the bridge, so it stays right in
+ * the browser-mock and hosted-web paths where the two can disagree. Lives here
+ * rather than beside the one component that needs it, because a second
+ * `isMacPlatform()` in a component file shadows the export below and the two
+ * are then free to drift.
+ */
+export function isMacRuntimeTarget(): boolean {
+  return rendererRuntimeTarget().platform === "darwin";
+}
+
 export function isMacPlatform(platformValue = getPlatformValue()): boolean {
   return /mac|darwin/i.test(platformValue);
 }

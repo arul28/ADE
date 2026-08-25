@@ -36,7 +36,7 @@ final class ActivityDrawerModelTests: XCTestCase {
         XCTAssertEqual(model.inbox.map(\.id), ["pr-ci"])
     }
 
-    func testSessionsAreGroupedNeedsYouThenWorkingThenDone() {
+    func testSessionsAreGroupedByStateInPriorityOrder() {
         let model = ActivityDrawerModel(defaults: defaults)
         let now = Date()
 
@@ -46,7 +46,12 @@ final class ActivityDrawerModelTests: XCTestCase {
             item(id: "needs", phase: .needsYou, now: now),
         ]))
 
-        XCTAssertEqual(model.sessionSections.map(\.band), [.needsYou, .working, .done])
+        // `done` is a resting band, so it is behind the summary line until the
+        // reader asks for it — the sheet leads with live work.
+        XCTAssertEqual(model.sessionSections.map(\.group), [.needsYou, .working])
+        XCTAssertEqual(model.restingSummary?.map(\.group), [.done])
+        model.restingExpanded = true
+        XCTAssertEqual(model.sessionSections.map(\.group), [.needsYou, .working, .done])
         XCTAssertEqual(model.sessionSections.map { $0.rows.map(\.id) }, [["needs"], ["working"], ["done"]])
     }
 
@@ -71,7 +76,12 @@ final class ActivityDrawerModelTests: XCTestCase {
             item(id: "roster-row", phase: .needsYou, now: now, activityTier: "idle"),
         ]))
 
-        XCTAssertTrue(model.sessionSections.filter { $0.band == .needsYou }.isEmpty)
+        // Files under `idle`, not `needsYou` and not `done`: a roster row is
+        // quiet history whatever phase it froze at, and `done` is reserved for
+        // work that actually finished.
+        XCTAssertTrue(model.sessionSections.filter { $0.group == .needsYou }.isEmpty)
+        model.restingExpanded = true
+        XCTAssertEqual(model.sessionSections.map(\.group), [.idle])
         XCTAssertEqual(model.unreadCount, 0, "a roster-derived row must never badge the bell")
     }
 
@@ -214,7 +224,7 @@ final class ActivityDrawerModelTests: XCTestCase {
             item(id: "offline", phase: .running, now: now, machine: offline),
         ]))
 
-        let entries = model.sessionSections.first { $0.band == .working }?.entries ?? []
+        let entries = model.sessionSections.first { $0.group == .working }?.entries ?? []
         XCTAssertEqual(entries.map(\.id), ["online", "offline:laptop", "offline"])
         if case .offlineMachine(_, let name, let lastSeen) = entries[1] {
             XCTAssertEqual(name, "MacBook")
@@ -253,21 +263,6 @@ final class ActivityDrawerModelTests: XCTestCase {
         XCTAssertTrue(model.itemsTruncated)
     }
 
-    // MARK: - Live-now strip
-
-    func testLiveNowExcludesFinishedAndIdleTierRows() {
-        let model = ActivityDrawerModel(defaults: defaults)
-        let now = Date()
-
-        model.rebuild(from: snapshot(items: [
-            item(id: "running", phase: .running, now: now),
-            item(id: "needs", phase: .needsYou, now: now),
-            item(id: "done", phase: .completed, now: now),
-            item(id: "roster", phase: .running, now: now, activityTier: "idle"),
-        ]))
-
-        XCTAssertEqual(Set(model.liveNow.map(\.id)), ["running", "needs"])
-    }
 
     // MARK: - Machine-local fallback
 
@@ -328,6 +323,181 @@ final class ActivityDrawerModelTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    // MARK: - Live-wins-per-machine merge
+
+    /// The bug this whole surface was rebuilt around.
+    ///
+    /// The drawer used to return early on ANY account snapshot fetched within
+    /// 24 hours. `generatedAt` is the relay's clock at fetch time and the app
+    /// polls every 20 seconds, so that condition is always true while online —
+    /// which made the live paired-host snapshot unreachable whenever the user
+    /// was signed in. The observable symptom: the home dropdown showed a
+    /// working Claude session while this sheet, at the same instant, showed
+    /// only that machine's week-old idle rows.
+    func testLiveMachineRowsReplaceTheRelaysCopyForThatMachine() {
+        let model = ActivityDrawerModel(defaults: defaults)
+        let now = Date()
+        let studio = AccountAttentionMachine(
+            machineKey: "studio",
+            name: "Studio Mac",
+            online: true,
+            lastSeenAt: now
+        )
+
+        model.rebuild(
+            from: snapshot(items: [
+                item(id: "stale-roster", phase: .stale, now: now, activityTier: "idle"),
+            ]),
+            live: WorkspaceSnapshot(
+                generatedAt: now,
+                agents: [liveAgent(sessionId: "live-run", status: "running", now: now)],
+                prs: [],
+                connection: "connected",
+                machineId: "studio",
+                machineName: "Studio Mac"
+            )
+        )
+
+        let ids = model.sessions.map(\.id)
+        XCTAssertTrue(
+            ids.contains { $0.contains("live-run") },
+            "the live session must appear; it is the one the user can see working"
+        )
+        XCTAssertFalse(
+            ids.contains("stale-roster"),
+            "the relay's stale copy of the same machine must not survive alongside it"
+        )
+        _ = studio
+    }
+
+    /// The merge is scoped to the connected machine only. Replacing every
+    /// machine's rows with one machine's view would turn an account-wide feed
+    /// into a single-machine one precisely when the user is working.
+    func testOtherMachinesKeepTheirRelayRowsThroughTheMerge() {
+        let model = ActivityDrawerModel(defaults: defaults)
+        let now = Date()
+        let laptop = AccountAttentionMachine(
+            machineKey: "laptop",
+            name: "MacBook",
+            online: false,
+            lastSeenAt: now.addingTimeInterval(-3_600)
+        )
+
+        model.rebuild(
+            from: snapshot(items: [
+                item(id: "laptop-row", phase: .running, now: now, machine: laptop),
+            ]),
+            live: WorkspaceSnapshot(
+                generatedAt: now,
+                agents: [liveAgent(sessionId: "live-run", status: "running", now: now)],
+                prs: [],
+                connection: "connected",
+                machineId: "studio",
+                machineName: "Studio Mac"
+            )
+        )
+
+        XCTAssertTrue(model.sessions.map(\.id).contains("laptop-row"))
+    }
+
+    func testLivePullRequestsReplaceTheRelayCopyOfTheSamePR() {
+        let model = ActivityDrawerModel(defaults: defaults)
+        let now = Date()
+
+        model.rebuild(
+            from: snapshot(items: [
+                pullRequest(id: "pr-99", phase: .checksFailing, number: 99, now: now),
+            ]),
+            live: WorkspaceSnapshot(
+                generatedAt: now,
+                agents: [],
+                prs: [
+                    PrSnapshot(
+                        id: "pr-99",
+                        number: 99,
+                        title: "Fix the island",
+                        checks: "failing",
+                        review: "pending",
+                        state: "open",
+                        mergeReady: false,
+                        updatedAt: now
+                    ),
+                ],
+                connection: "connected",
+                machineId: "studio",
+                machineName: "Studio Mac"
+            )
+        )
+
+        let inboxIds = model.inbox.map(\.id)
+        XCTAssertEqual(inboxIds.filter { $0.contains("pr-99") }.count, 1)
+    }
+
+    /// The regression that shipped.
+    ///
+    /// This test previously asserted the OPPOSITE — that a live snapshot with
+    /// no machine identity is ignored — and that assertion was the bug, not the
+    /// guard against it. Nothing populated `machineId`, so the drawer discarded
+    /// the live rows on every refresh and rendered the relay's stale copy: the
+    /// Hub showed four agents working while this sheet showed none, on the same
+    /// phone at the same moment. An unscopeable merge must narrow, never fall
+    /// back to data known to be older.
+    func testAnUnidentifiedLiveSnapshotStillMergesBySessionIdentity() {
+        let model = ActivityDrawerModel(defaults: defaults)
+        let now = Date()
+
+        model.rebuild(
+            from: snapshot(items: [
+                // The relay's stale copy of the very session that is live.
+                item(id: "live-run", phase: .stale, now: now, activityTier: "idle"),
+                item(id: "other-machine-row", phase: .running, now: now),
+            ]),
+            live: WorkspaceSnapshot(
+                generatedAt: now,
+                agents: [liveAgent(sessionId: "live-run", status: "running", now: now)],
+                prs: [],
+                connection: "connected"
+            )
+        )
+
+        let groups = Dictionary(grouping: model.sessions, by: \.stateGroup)
+            .mapValues(\.count)
+        XCTAssertEqual(
+            groups[.idle] ?? 0,
+            0,
+            "the relay's stale copy of a live session must not survive the merge"
+        )
+        XCTAssertTrue(
+            model.sessions.contains { $0.stateGroup == .working },
+            "the live session must be rendered as working"
+        )
+        XCTAssertTrue(
+            model.sessions.contains { $0.id == "other-machine-row" },
+            "an unscopeable merge must not disturb other machines' rows"
+        )
+    }
+
+    private func liveAgent(
+        sessionId: String,
+        status: String,
+        now: Date
+    ) -> AgentSnapshot {
+        AgentSnapshot(
+            sessionId: sessionId,
+            provider: "claude",
+            laneName: "Primary",
+            title: sessionId,
+            status: status,
+            awaitingInput: false,
+            lastActivityAt: now,
+            elapsedSeconds: 12,
+            preview: "Exploring innovative features",
+            progress: nil,
+            phase: nil,
+            toolCalls: 3
+        )
+    }
 
     private func snapshot(
         items: [AccountAttentionItem],

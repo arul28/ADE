@@ -7,6 +7,212 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.64] - 2026-08-25
+
+### Codex
+
+- Pin Codex app-server 0.149.1. Unsandboxed `!` / `/shell` are app-server RPCs with a user-shell chip; follow-ups queue during compaction or review instead of steering a turn that will reject them (#1154).
+- `/memory reset` confirms first. Background terminals have an explicit stop. Interrupted or stalled compaction fail-opens instead of wedging the session.
+
+### Prompt settings
+
+- Changing model or provider no longer rewrites approval, sandbox, or fast-mode preferences (#1153).
+
+### OpenCode
+
+- One v2 SDK client. The tracked CLI no longer echoes ADE's prompt into the session (#1155).
+
+### Chats and Work
+
+- GitHub issues attach to a chat alongside Linear (#1147).
+- Cursor Cloud fleet view on desktop, iOS, and the TUI (#1146).
+- PR pane can auto-open (#1142).
+- Work model catalogs follow the prompt-box machine (#1139).
+
+### iOS
+
+- Simulator builds stay on the lane worktree; the drawer reports what it can actually do (#1150).
+- Work chat scroll and render performance; stop shipping the whole models.dev directory to the phone (#1148, #1149).
+
+### Fixes
+
+- Project picker recents (#1152).
+- Windows brain heartbeat honors `ADE_BRAIN_HEARTBEAT_STALE_MS` (#1143).
+- Storage truth chain, suspension-aware watchdogs, runtime leak and updater status (#1140).
+
+## [1.2.63] - 2026-08-20
+
+### GitHub connection
+
+- The GitHub App user credential is renewed through one coordinator per credential store: a process-wide single-flight plus a cross-process lease and backoff ledger persisted inside the credential record. Parallel renewals could previously invalidate the rotating refresh token, after which every process retried the dead token without backoff until GitHub rate-limited the OAuth host (#1137).
+- `github.appUserToken.v1` is file-backed and shared by the desktop app, the machine brain, and the CLI; a routed desktop store with a one-time freshness-aware adoption replaces the split safeStorage copy.
+- The status model is honest: `credentialState` (missing / authorized / blocked / needs_reauth) is judged by the refresh token, never by the 8-hour access token; a paused renewal shows its retry time with no re-authorize CTA; ADE's own renewal reads as "renewing", not as a failed check; and the App panel gained a Disconnect control.
+- OAuth transport errors are typed: HTTP-200 error bodies (`bad_refresh_token`) are read, `retry-after` is honored, a credential is declared dead only on a 401 or a definitive OAuth error code, and the whole refresh exchange is bounded below the lease lifetime.
+- The brain watches the shared credential file and force-polls the relay after a re-authorization instead of waiting out its five-minute cooldown.
+- A refresh whose store write fails keeps the rotated token in process memory, retries the persist, and never re-POSTs the spent refresh token; the account-session rotation journal likewise survives failed exchanges.
+
+### Updates
+
+- "Check for updates" runs when an update is already staged (#1134), and a manual check no longer discards the update that was already downloaded (#1135).
+
+### Providers
+
+- ADE no longer overrides the user's own provider configuration (#1136).
+
+### Getting help
+
+- Settings gained a Send button beside Diagnostics sharing; previously a report could only be sent from a surface that had already failed.
+- Diagnostic reports no longer require an open project: the machine-scoped main log, the most recent project's log, the background service's stdout as well as stderr, and the service definition are all collected.
+- The desktop main process now writes a machine-scoped log from process start (`~/.ade/runtime/desktop-main.jsonl`), so startup, deeplink, single-instance and CLI-install events are recorded even when no project is ever opened.
+- Linux reports now collect the service journal instead of asking for a macOS log path that never existed there.
+- A failed report save no longer claims the report is on disk.
+
+### The `ade` terminal command
+
+- The CLI install now runs once, is skipped when `ade` already resolves from any source, and never re-runs on every launch.
+
+### Fixes
+
+- Report collection no longer blocks the Electron main thread or the brain's event loop on subprocesses (Windows and Linux).
+- The Windows installed-product smoke test no longer fails a passing run on a benign cleanup `taskkill`, and its process-ownership checks re-verify identity rather than trusting a recycled PID.
+- The account-directory production deploy preflight now checks all four required secrets and both required vars, instead of one secret and one var.
+
+## [1.2.62] - 2026-08-19
+
+### Automatic diagnostic reports
+
+- Failures now send the redacted diagnostic report on their own: project recovery, renderer crash, failed update, pairing give-up, and stuck machine publish.
+- Every automatic send announces itself with a message offering View (read the exact report) and Turn off (stop future sends).
+- On by default, with a Diagnostics sharing section in Settings and a truthful row in `ade doctor`; turning it off takes effect immediately across the app and the CLI.
+- Budgets bound the volume: one report per failure kind per day and a small daily cap per machine, plus a fleet-wide server ceiling that refuses quietly rather than surfacing an error.
+- Reports carry the same redaction as the manual report, and a refused or failed send is never shown to the user as a failure.
+
+## [1.2.61] - 2026-08-19
+
+### Account and machines
+
+- Machine identity is anchored to the hardware it runs on, so reinstalling and signing back in reconnects the existing machine instead of stranding a duplicate; existing duplicates are merged.
+- Pairing refusals now recover automatically in the background while signed in, and respect a machine you removed on purpose.
+- Machine identity is written durably with a backup, and a corrupt identity file is repaired instead of lost.
+
+### GitHub connection
+
+- An unreadable saved GitHub sign-in reports itself as unreadable and routes to Repair, instead of looking identical to a fresh install.
+- GitHub outages are distinguished from broken credentials.
+- Foreground PR polling no longer consumes the hourly GitHub API quota: failures arm an exponential stand-down, a request reserve is held for user actions, and recovery is automatic.
+- Failed check, comment, and review reads are reported as failures instead of rendering as "no checks ran".
+
+### Errors and diagnostics
+
+- Storage and startup failures carry coded, plain-language errors instead of raw system errnos.
+- Projects stored in iCloud or Dropbox are detected before they fail.
+- One-click "Send to ADE" for the redacted diagnostic report, on the desktop app, `ade report-issue --send`, and `ade code` — working even when the brain is down.
+
+### Machine sleep
+
+- Hosts announce suspend and resume, with a heartbeat-gap fallback, so "Asleep" is stated rather than inferred; machine rows carry battery, charging, and wall-power state.
+- A turn interrupted by sleep pauses and resumes in place instead of failing; session deeplinks carry their owning machine and offer to wake it.
+- Opt-in keep-awake setting with three levels, default off.
+
+### Work and chat
+
+- Cursor SDK chats recover from an in-stream token expiry by resuming the same agent in a fresh worker.
+- Claude chats recover after a session-limit reject without forking, with a quota card and a local-lane fork.
+- Cursor forks replay the full fitted transcript instead of a short conversation tail.
+- Cursor chats support mid-turn steering (interrupt and continue, or send after turn).
+- Chat runtimes no longer outlive the background work that pinned them; background-work elapsed is measured from when the work started, and Settle stays available on background-promoted rows.
+- Handoff, the tools pane, Git/diff/terminal, iOS simulator, app control, and browser panels act on the chat's machine rather than the tab's binding.
+- The @ mention popover dismisses when its query stops matching.
+
+### Connections and sync
+
+- Unknown-device sync rejection storms are throttled, and a pairing is dropped once every connection hop agrees it is gone.
+- Lane PR badges are scoped to the current branch.
+- Windows uninstall teardown retries locked files.
+
+### iOS
+
+- Mobile Work session cards polished.
+- The iOS app is built and tested on every PR.
+
+## [1.2.60] - 2026-08-17
+
+### Startup and recovery
+
+- A background service that is still starting is no longer reported as a failed setup or a project that cannot be opened, and Repair no longer interrupts one that is booting.
+- The `ade` CLI no longer crashes on launch on macOS (missing JIT entitlement).
+
+### Work and chat
+
+- Project creation and opening now land directly in Work.
+- Highlighted assistant output can become context chips for the next prompt.
+- Import Sessions now reuses ADE-owned session state for more useful recovery flows.
+- The new-chat import hint moved below the activity graph so it no longer overlaps the launch shelf, and the wordmark is scaled to match.
+
+### Files
+
+- File navigation and editing work across any connected machine.
+
+### Connections and authentication
+
+- The Connections pane organizes machine states and actions more clearly.
+- Session-ticket failures fall back to Clerk sign-in tickets instead of stranding account recovery.
+
+### iOS
+
+- Composer overflow is corrected, the turn-end meter is clearer, and prompt stashes are scoped per project.
+
+### Delivery
+
+- Push relay production deploys now mint smoke credentials and verify authenticated paths.
+
+## [1.2.59] - 2026-08-14
+
+### Connections and sync
+
+- Account-aware machine connections now provide clearer pairing, rename, and recovery states across desktop and web.
+- Cursor Cloud sessions mirror into ADE, with presence- and authorization-gated inbound sync.
+- Connection errors distinguish authentication, pairing, and runtime conditions; keychain repair no longer silently loses the account session.
+
+### Work and chat
+
+- The terminal client now has a desktop-parity work list for sessions and work rows.
+- Model selection follows the machine running the chat and refreshes after Cursor authentication.
+- Chat info shows each subagent's own model, with inherited fallback only when no explicit model exists.
+- iOS rehydrates mobile CLI sessions from live screen state after reconnecting.
+
+### Activity
+
+- Desktop, iOS, and push surfaces now share canonical activity state and presentation.
+
+## [1.2.58] - 2026-08-11
+
+### Performance
+
+- Chat events are compacted before syncing; heavy PR detail loads on demand instead of pre-syncing to every device.
+- Compressed sync frames ship as binary; streamed replies fold before replay (up to 79% less transfer on thread open).
+- iOS: instant send echo (including images), stable scroll during history loads, up to 39x faster streaming renders.
+- Desktop threads prefetch older history and no longer shift while pages load.
+- Fewer git subprocesses per refresh; GitHub requests back off correctly when rate-limited; never-pushed branches skip the API.
+- Local database retention with paced deletes; renderer crash auto-recovery.
+
+### Chat
+
+- Per-turn collapsed file-change summaries with lane-relative paths and Undo; live "Editing..." indicator; no per-edit clutter.
+- File names in chat open the Files tab in the chat's lane, honoring line numbers.
+- Chat mention tags, prompt history, PR pane, usage tracking upgrade, pasted-image compression.
+
+### Agents
+
+- Pi added as a first-class agent harness.
+- Background-work liveness (working/monitoring) surfaces on the Work list, top bar, dock badge, and mobile.
+- Settle now stops the session's monitors, background shells, and subagent fleets (terminals stay open); unconfirmable stops are recorded visibly; a new turn aborts an in-flight settle.
+- Subagent completions reliably wake the parent chat, including scheduler-started turns.
+
+### iOS
+
+- Pairing distinguishes "never paired" from "saved key unreadable" and offers Repair.
+
 ## [1.2.57] - 2026-08-06
 
 ### Settings
@@ -1498,7 +1704,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.55...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.64...HEAD
+[1.2.64]: https://github.com/arul28/ADE/compare/v1.2.63...v1.2.64
+[1.2.63]: https://github.com/arul28/ADE/compare/v1.2.62...v1.2.63
+[1.2.62]: https://github.com/arul28/ADE/compare/v1.2.61...v1.2.62
+[1.2.61]: https://github.com/arul28/ADE/compare/v1.2.60...v1.2.61
+[1.2.60]: https://github.com/arul28/ADE/compare/v1.2.59...v1.2.60
+[1.2.59]: https://github.com/arul28/ADE/compare/v1.2.58...v1.2.59
+[1.2.58]: https://github.com/arul28/ADE/compare/v1.2.57...v1.2.58
 [1.2.57]: https://github.com/arul28/ADE/compare/v1.2.56...v1.2.57
 [1.2.56]: https://github.com/arul28/ADE/compare/v1.2.55...v1.2.56
 [1.2.55]: https://github.com/arul28/ADE/compare/v1.2.54...v1.2.55

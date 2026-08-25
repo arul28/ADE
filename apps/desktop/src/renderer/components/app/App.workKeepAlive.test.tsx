@@ -183,10 +183,6 @@ vi.mock("../projects/ProjectWelcomePage", () => ({
   ProjectWelcomePage: () => <div data-testid="project-page" />,
 }));
 
-vi.mock("../onboarding/ProjectSetupPage", () => ({
-  ProjectSetupPage: () => <div data-testid="onboarding-page" />,
-}));
-
 vi.mock("../onboarding/GlossaryPage", () => ({
   GlossaryPage: () => <div data-testid="glossary-page" />,
 }));

@@ -2819,6 +2819,21 @@ button:active, [role="button"]:active {
   opacity: 0.35;
 }
 
+@keyframes ade-assistant-add-to-chat-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ade-assistant-add-to-chat {
+  animation: ade-assistant-add-to-chat-in 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-assistant-add-to-chat {
+    animation: none;
+  }
+}
+
 .ade-liquid-glass-menu {
   border-radius: 16px;
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));

@@ -1254,6 +1254,7 @@ describe("Activity renderer-to-notch bridge", () => {
         failed: 0,
         planning: 0,
         working: 1,
+        idle: 0,
         done: 0,
         total: 1,
         machinesOnline: 1,
@@ -1418,13 +1419,14 @@ describe("Activity renderer-to-notch bridge", () => {
     expect(activityStore.getState().itemsById["working-000"]?.recentActivity)
       .toHaveLength(2);
     // Counts describe the whole account, not the 48 rows that travelled — and
-    // all FIVE state groups travel, so the strip can floor every wing rather
-    // than inferring a residual for the two it was never sent.
+    // all SIX state groups travel, so the strip can floor every wing rather
+    // than inferring a residual for the ones it was never sent.
     expect(snapshot.counts).toEqual({
       needsYou: 5,
       failed: 0,
       planning: 0,
       working: 60,
+      idle: 0,
       done: 0,
       total: 65,
       machinesOnline: 1,

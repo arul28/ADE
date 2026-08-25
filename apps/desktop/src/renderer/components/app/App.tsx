@@ -21,12 +21,11 @@ import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
+import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
-import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { GlossaryPage } from "../onboarding/GlossaryPage";
-import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -203,73 +202,6 @@ const StartupSplashScreen = (
 /** Used by React.lazy Suspense boundaries while route chunks load. */
 const GuardLoadingFallback = StartupSplashScreen;
 
-/* ---------- Per-route error boundary ---------- */
-
-type PageErrorBoundaryState = { hasError: boolean; message: string };
-
-class PageErrorBoundaryInner extends React.Component<
-  { children: React.ReactNode; onGoHome: () => void },
-  PageErrorBoundaryState
-> {
-  state: PageErrorBoundaryState = { hasError: false, message: "" };
-
-  static getDerivedStateFromError(error: unknown): PageErrorBoundaryState {
-    return { hasError: true, message: error instanceof Error ? error.message : String(error) };
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
-    console.error("page.crash", error, errorInfo, error?.stack);
-    logRendererDebugEvent("renderer.page_boundary_crash", {
-      message: error?.message ?? String(error),
-      route: window.location.hash || window.location.pathname,
-      componentStack: errorInfo.componentStack ?? null,
-      causeStack: error?.stack ?? null,
-    });
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-8 text-fg">
-          <div className="max-w-[560px] rounded-lg border border-red-500/30 bg-red-500/5 p-4 text-sm">
-            <div className="font-semibold text-red-300">This page crashed</div>
-            <div className="mt-1 text-xs text-muted-fg">{this.state.message || "Unknown error"}</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="rounded border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors"
-              onClick={() => this.setState({ hasError: false, message: "" })}
-            >
-              Retry
-            </button>
-            <button
-              type="button"
-              className="rounded border border-border bg-card px-3 py-1.5 text-xs hover:bg-muted/30 transition-colors"
-              onClick={() => {
-                this.setState({ hasError: false, message: "" });
-                this.props.onGoHome();
-              }}
-            >
-              Go Home
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-function PageErrorBoundary({ children }: { children: React.ReactNode }) {
-  const navigate = useNavigate();
-  return (
-    <PageErrorBoundaryInner onGoHome={() => navigate("/work")}>
-      {children}
-    </PageErrorBoundaryInner>
-  );
-}
-
 /** A compiled surface's route, refused when its owner plugin is not installed. */
 function GatedRoute({ route, children }: { route: string; children: React.ReactNode }) {
   return <BuiltinRouteGuard route={route} pending={LazyFallback}>{children}</BuiltinRouteGuard>;
@@ -358,7 +290,6 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
     "/automations",
     "/cto",
     "/settings",
-    "/onboarding",
   ];
   if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
     return null;
@@ -602,7 +533,7 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
       {active && !isWorkRoute && !isLanesRoute ? (
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
-          <Route path="/onboarding" element={<PageErrorBoundary><ProjectSetupPage /></PageErrorBoundary>} />
+          <Route path="/onboarding" element={<Navigate to="/work" replace />} />
           <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
           <Route path="/files" element={
             <PageErrorBoundary>
@@ -878,10 +809,7 @@ function ProjectTabHost() {
     }
     previousActiveSurfaceKeyRef.current = activeSurfaceKey;
     if (!activeSurfaceKey) return;
-    const shouldKeepInitialRoute =
-      currentRoute &&
-      currentRoute !== "/onboarding";
-    if (!previousSurfaceKey && shouldKeepInitialRoute) {
+    if (!previousSurfaceKey && currentRoute) {
       const persistRoute = persistableSurfaceRoute(currentRoute, routePersistGateInputRef.current);
       writeStoredProjectRoute(activeSurfaceKey, persistRoute);
       setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === persistRoute ? prev : { ...prev, [activeSurfaceKey]: persistRoute }));

@@ -1,4 +1,28 @@
 import type { GitHubAuthFailure, GitHubRateLimitState } from "../../../shared/types";
+import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+
+/**
+ * OAuth error codes that mean "this credential will never work again".
+ *
+ * Everything outside this set is treated as transient, because retrying a
+ * transient failure costs a request while giving up on a live credential costs
+ * the user their connection.
+ *
+ * Lives here, with the rest of GitHub's failure vocabulary, rather than in the
+ * OAuth transport: the transport reports what GitHub said, and this module is
+ * where ADE decides what any of it means.
+ */
+const DEFINITIVE_OAUTH_ERRORS: ReadonlySet<string> = new Set([
+  "bad_refresh_token",
+  "incorrect_client_credentials",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+]);
+
+export function isDefinitiveGitHubOAuthError(oauthError: string | null | undefined): boolean {
+  return typeof oauthError === "string" && DEFINITIVE_OAUTH_ERRORS.has(oauthError.trim());
+}
 
 export class GitHubRateLimitError extends Error {
   constructor(
@@ -58,11 +82,27 @@ export function classifyGitHubAuthFailure(args: {
   status?: number;
   message: string;
   headers?: Pick<Headers, "get">;
+  /**
+   * The OAuth `error` code, when the failure came from GitHub's OAuth endpoints.
+   * Those answer a rejected refresh token with HTTP 200, so the status alone
+   * cannot tell a dead credential from a healthy response.
+   */
+  oauthError?: string | null;
+  /**
+   * A deadline the caller already knows — the refresh backoff, typically. It
+   * wins over anything derived from headers, because it is the instant ADE will
+   * actually try again.
+   */
+  retryAt?: string | null;
 }): { authFailure: GitHubAuthFailure; rateLimit: GitHubRateLimitState | null } {
   const message = args.message.trim() || "GitHub token validation failed.";
   const rateLimit = args.headers ? readGitHubRateLimitState(args.headers) : null;
+  const retryAfterSeconds = args.headers ? parseHeaderInteger(args.headers.get("retry-after")) : null;
+  const knownRetryAt = args.retryAt?.trim() || null;
   const rateLimited =
     args.status === 429
+    || retryAfterSeconds != null
+    || args.oauthError === "too_many_requests"
     || rateLimit?.remaining === 0
     || /rate limit|too many requests|abuse detection/i.test(message);
   if (rateLimited) {
@@ -71,11 +111,16 @@ export function classifyGitHubAuthFailure(args: {
       authFailure: {
         kind: "rate_limited",
         message,
-        retryAt: args.headers ? rateLimitRetryAt(args.headers, rateLimit) : rateLimit?.resetAt ?? null,
+        retryAt: knownRetryAt
+          ?? (args.headers ? rateLimitRetryAt(args.headers, rateLimit) : rateLimit?.resetAt ?? null),
       },
     };
   }
-  if (args.status === 401 || /bad credentials|invalid token|requires authentication/i.test(message)) {
+  if (
+    args.status === 401
+    || isDefinitiveGitHubOAuthError(args.oauthError)
+    || /bad credentials|invalid token|requires authentication/i.test(message)
+  ) {
     return {
       rateLimit,
       authFailure: {
@@ -91,7 +136,20 @@ export function classifyGitHubAuthFailure(args: {
       authFailure: {
         kind: "permission_denied",
         message,
-        retryAt: null,
+        retryAt: knownRetryAt,
+      },
+    };
+  }
+  // Ordered before the transient-network check: GitHub's 503 body contains
+  // "temporarily unavailable"-adjacent wording that the transient regex also
+  // matches, and "GitHub is down" is the more precise, more actionable answer.
+  if (isGithubServiceUnavailable({ status: args.status, message })) {
+    return {
+      rateLimit,
+      authFailure: {
+        kind: "service_unavailable",
+        message,
+        retryAt: knownRetryAt,
       },
     };
   }
@@ -101,7 +159,7 @@ export function classifyGitHubAuthFailure(args: {
       authFailure: {
         kind: "network",
         message,
-        retryAt: null,
+        retryAt: knownRetryAt,
       },
     };
   }
@@ -110,7 +168,7 @@ export function classifyGitHubAuthFailure(args: {
     authFailure: {
       kind: "unknown",
       message,
-      retryAt: null,
+      retryAt: knownRetryAt,
     },
   };
 }
@@ -201,6 +259,21 @@ export function classifyGitHubGraphqlCredentialFailure(
     };
   }
   return null;
+}
+
+/**
+ * The classified failure kind carried by a thrown GitHub request error, or null
+ * when the error is not one.
+ *
+ * Duck-typed rather than `instanceof`: the error classes that carry
+ * `authFailure` are module-private to their request helpers, and there are two
+ * of them (the desktop service and the headless twin), so a nominal check would
+ * silently answer null for whichever owner it was not written against.
+ */
+export function githubAuthFailureKindOf(error: unknown): GitHubAuthFailure["kind"] | null {
+  if (error instanceof GitHubRateLimitError) return "rate_limited";
+  const kind = (error as { authFailure?: { kind?: unknown } } | null)?.authFailure?.kind;
+  return typeof kind === "string" ? kind as GitHubAuthFailure["kind"] : null;
 }
 
 export function githubRateLimitResetAtMs(rateLimit: GitHubRateLimitState | null): number | null {

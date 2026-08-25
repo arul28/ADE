@@ -68,6 +68,12 @@ export type ConnectServiceInstallResult = {
   message?: string | null;
   /** Set when the caller is running inside the very brain it tried to mutate. */
   selfMutationBlocked?: boolean;
+  /**
+   * The service is registered and its brain is alive, but it had not answered
+   * on the socket yet. Installed, not running — reporting it as "running" is a
+   * claim the install did not make.
+   */
+  starting?: boolean;
 };
 
 export type ConnectMachine = {
@@ -423,7 +429,16 @@ export async function runConnectCommand(
     const install = await deps.installService();
     if (install.ok) {
       service = await deps.getServiceStatus();
-      pushStep({ id: "service", state: "ok", detail: `${mechanism} installed and running` });
+      pushStep({
+        id: "service",
+        state: "ok",
+        // A `starting` install registered the service and left a live brain
+        // that has not answered yet. It is not running *now*, and saying so
+        // is what sends people looking for a fault that does not exist.
+        detail: install.starting
+          ? `${mechanism} installed — the background service is still starting`
+          : `${mechanism} installed and running`,
+      });
     } else if (install.selfMutationBlocked) {
       // Running inside the brain it would replace. Not a failure: the service
       // is already doing its job.

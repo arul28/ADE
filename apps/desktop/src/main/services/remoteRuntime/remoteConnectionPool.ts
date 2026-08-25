@@ -22,7 +22,11 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isRetryableRemoteAction } from "./retryableRemoteActions";
-import { USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
+import {
+  IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
+  IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
+  USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
+} from "../localRuntime/localRuntimeTimeoutPolicy";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
   PairedRuntimeCompatibilityError,
@@ -129,6 +133,16 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // worker a local one does, so the transport must outlive the worker's own
   // ceiling — and stay under the renderer's IPC budget for this action.
   ["usage.refreshHistory", USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // A remote Mac runtime builds with the same xcodebuild a local one does, so
+  // the transport has to outlive a cold build. Without these the launch and
+  // the three compiling Preview Lab actions fell back to RuntimeRpcClient's
+  // 600s default — for a launch that is under xcodebuild's own 600s allowance,
+  // so it failed with "Remote ADE service timed out" while the remote build
+  // was still running.
+  ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.ensurePreviewWorkspace", IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;

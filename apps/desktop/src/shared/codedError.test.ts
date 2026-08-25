@@ -3,7 +3,9 @@ import {
   codedError,
   encodeCodedErrorMessage,
   extractCodeFromMessage,
+  isErrnoLikeCode,
   parseCodedErrorMessage,
+  UNKNOWN_SYSTEM_ERRNO_PATTERN,
 } from "./codedError";
 
 describe("codedError wire format", () => {
@@ -18,6 +20,28 @@ describe("codedError wire format", () => {
     const parsed = parseCodedErrorMessage(new Error(`Error invoking remote method 'ade.project.openRepo': Error: ${wire}`));
     expect(parsed.code).toBe("brain_crash_looping");
     expect(parsed.message).toBe("Restart ADE, then run repair again.");
+  });
+
+  it("recognizes a code the brain attached, behind the runtime RPC wrapper", () => {
+    // The exact chain a daemon-side failure travels: Electron IPC wraps the
+    // main process's error, which wraps the runtime client's, which wraps the
+    // brain's coded reply. Without the innermost strip the code is invisible
+    // and the user gets a generic "couldn't open this project".
+    const parsed = parseCodedErrorMessage(new Error(
+      "Error invoking remote method 'ade.localRuntime.callAction': Error: "
+      + "Remote ADE service method ade/actions/call failed (code -32603): "
+      + "storage_read_failed: ADE couldn't read this project's data at /tmp/p/.ade/ade.db.",
+    ));
+    expect(parsed.code).toBe("storage_read_failed");
+    expect(parsed.message).toBe("ADE couldn't read this project's data at /tmp/p/.ade/ade.db.");
+  });
+
+  it("leaves an uncoded runtime failure without a code", () => {
+    const parsed = parseCodedErrorMessage(new Error(
+      "Remote ADE service method attention.call failed (code -32601): Method not found",
+    ));
+    expect(parsed.code).toBeUndefined();
+    expect(parsed.message).toBe("Method not found");
   });
 
   it("carries an encoded rootPath the renderer never saw, without leaking it into the message", () => {
@@ -50,5 +74,46 @@ describe("codedError wire format", () => {
     expect(extractCodeFromMessage(codedError("plain text with no prefix", "socket_stale_no_owner")))
       .toBe("socket_stale_no_owner");
     expect(parseCodedErrorMessage(new Error("just a message")).code).toBeUndefined();
+  });
+});
+
+describe("isErrnoLikeCode", () => {
+  it("claims platform codes, including the Node internal ones that quote paths", () => {
+    for (const code of [
+      "ENOENT",
+      "EDEADLK",
+      "ECONNRESET",
+      "ERR_MODULE_NOT_FOUND",
+      "ERR_FS_EISDIR",
+      "ERR_INVALID_ARG_TYPE",
+      "MODULE_NOT_FOUND",
+    ]) {
+      expect(isErrnoLikeCode(code)).toBe(true);
+    }
+  });
+
+  it("leaves ADE's own verdicts alone, so they still cross a boundary intact", () => {
+    for (const code of [
+      "storage_read_failed",
+      "disk_full",
+      "brain_not_installed",
+      "migration_incomplete",
+      "",
+      "   ",
+      null,
+      undefined,
+      42,
+    ]) {
+      expect(isErrnoLikeCode(code)).toBe(false);
+    }
+  });
+});
+
+describe("UNKNOWN_SYSTEM_ERRNO_PATTERN", () => {
+  it("matches the errno libuv could not name, in either casing", () => {
+    expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("Unknown system error -11: Unknown system error -11, read"))
+      .toBe(true);
+    expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("unknown system error 11")).toBe(true);
+    expect(UNKNOWN_SYSTEM_ERRNO_PATTERN.test("ADE couldn't read this project's data.")).toBe(false);
   });
 });

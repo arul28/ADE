@@ -31,7 +31,15 @@
     // to skip the public edge. PUSH_RELAY_URL is still required — it is what
     // builds the request URL — and DIRECTORY_AUTH_SECRET is still required,
     // because a service binding carries no provenance the relay can verify.
-    "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev"
+    "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
+    // Fleet-wide diagnostic uploads STORED per UTC day. This Worker is the only
+    // writer the diagnostics bucket has, so this number is the storage bill:
+    // 400 × 512 KB × the bucket's 30-day expiry lifecycle ≈ 6 GB steady state,
+    // inside R2's 10 GB free tier. Clients auto-send reports on failure, so
+    // raising it is a deliberate act with arithmetic attached (README,
+    // "Diagnostic report uploads"). `0` stops every upload without a code
+    // deploy; unset or unparseable falls back to the same 400.
+    "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
   },
   "d1_databases": [
     {
@@ -39,6 +47,16 @@
       "database_name": "ade-account-directory",
       "database_id": "215bebd4-6601-4705-ab6e-e6f2d1397156",
       "migrations_dir": "migrations"
+    }
+  ],
+  // Opt-in diagnostic report uploads (`POST /diagnostics/upload`). The bucket
+  // is NOT created by deploying — run `wrangler r2 bucket create` first (see
+  // README, "Diagnostic report uploads"). Missing binding is handled: the route
+  // answers 503 and the in-app button reports that sending is unavailable.
+  "r2_buckets": [
+    {
+      "binding": "DIAGNOSTICS",
+      "bucket_name": "ade-diagnostics"
     }
   ],
   "env": {
@@ -49,7 +67,11 @@
       "vars": {
         "ONLINE_WINDOW_MS": "90000",
         "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
-        "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev"
+        "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
+        // Same ceiling as the default environment, and set explicitly: wrangler
+        // environments do not inherit `vars`, so an omission here would silently
+        // fall back to the code default rather than to the value above.
+        "DIAGNOSTICS_DAILY_GLOBAL_LIMIT": "400"
       },
       "d1_databases": [
         {
@@ -57,6 +79,12 @@
           "database_name": "ade-account-directory-production",
           "database_id": "38ebe0bb-ac4d-4b39-b73e-bab2f0092971",
           "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "DIAGNOSTICS",
+          "bucket_name": "ade-diagnostics-production"
         }
       ]
     }

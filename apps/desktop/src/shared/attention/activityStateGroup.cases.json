@@ -11,6 +11,11 @@
     "it. This file is the pin that turns a documented mirror into an enforced",
     "one: every implementation runs these cases through its own mapper.",
     "",
+    "There are SIX groups, not five: `idle` was split out of `done` because a",
+    "session that went quiet mid-work is not a session that finished, and",
+    "folding the two together let week-old roster rows pile up under `done`.",
+    "Both the idle TIER and the `stale` PHASE land in `idle`.",
+    "",
     "Canonical source of truth: `activityStateGroup` in",
     "apps/desktop/src/renderer/components/activity/activityPresentation.ts.",
     "When the rule changes, change it there, update these cases, and let the",
@@ -25,21 +30,21 @@
       "phase": "needs_you",
       "tier": "idle",
       "chatActivityMode": null,
-      "expected": "done"
+      "expected": "idle"
     },
     {
       "name": "idle tier demotes a failure too, not only needs-you",
       "phase": "failed",
       "tier": "idle",
       "chatActivityMode": null,
-      "expected": "done"
+      "expected": "idle"
     },
     {
       "name": "idle tier demotes a running turn",
       "phase": "running",
       "tier": "idle",
       "chatActivityMode": "planning",
-      "expected": "done"
+      "expected": "idle"
     },
     {
       "name": "needs_you is the amber band",
@@ -105,11 +110,11 @@
       "expected": "needs-you"
     },
     {
-      "name": "stale is live-band, not done",
+      "name": "stale is its own idle band -- neither working nor done",
       "phase": "stale",
       "tier": "ambient",
       "chatActivityMode": null,
-      "expected": "working"
+      "expected": "idle"
     },
     {
       "name": "an open pull request is live-band",
@@ -166,6 +171,27 @@
       "tier": "ambient",
       "chatActivityMode": "telepathy",
       "expected": "working"
+    },
+    {
+      "name": "an idle-tier row is idle, never done -- done means finished",
+      "phase": "completed",
+      "tier": "idle",
+      "chatActivityMode": null,
+      "expected": "idle"
+    },
+    {
+      "name": "a genuinely completed run at ambient tier is still done",
+      "phase": "completed",
+      "tier": "ambient",
+      "chatActivityMode": null,
+      "expected": "done"
+    },
+    {
+      "name": "planning cannot survive going stale",
+      "phase": "stale",
+      "tier": "ambient",
+      "chatActivityMode": "planning",
+      "expected": "idle"
     }
   ]
 }

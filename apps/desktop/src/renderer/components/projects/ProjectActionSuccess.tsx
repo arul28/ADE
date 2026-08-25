@@ -1,5 +1,5 @@
 import React from "react";
-import { CheckCircle } from "@phosphor-icons/react";
+import { CheckCircle, Warning } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
@@ -12,6 +12,7 @@ export type ProjectActionSuccessProps = {
   verb: "Created" | "Cloned";
   displayName: string;
   rootPath: string;
+  error?: string;
   onStay: () => void;
   onOpen: () => void;
 };
@@ -20,6 +21,7 @@ export function ProjectActionSuccess({
   verb,
   displayName,
   rootPath,
+  error,
   onStay,
   onOpen,
 }: ProjectActionSuccessProps) {
@@ -74,6 +76,22 @@ export function ProjectActionSuccess({
         >
           {rootPath}
         </div>
+        {error ? (
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              color: COLORS.danger,
+              maxWidth: 480,
+            }}
+          >
+            <Warning size={12} weight="fill" />
+            {error}
+          </div>
+        ) : null}
       </div>
 
       <div style={{ display: "flex", gap: 10, marginTop: 6 }}>

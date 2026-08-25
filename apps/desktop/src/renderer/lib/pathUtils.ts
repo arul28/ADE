@@ -134,6 +134,15 @@ export function normalizePathForWorkspaceComparison(value: string, workspaceRoot
     : normalized;
 }
 
+export function joinParentAndName(parent: string, name: string): string {
+  const trimmedParent = parent.trim();
+  const trimmedName = name.trim();
+  if (!trimmedParent) return trimmedName;
+  if (!trimmedName) return normalizePath(trimmedParent);
+  const stripped = trimmedParent.replace(/[\\/]+$/, "");
+  return normalizePath(`${stripped}/${trimmedName}`);
+}
+
 export function arePathsEqual(left: string, right: string, workspaceRoot?: string | null): boolean {
   return normalizePathForWorkspaceComparison(left, workspaceRoot) === normalizePathForWorkspaceComparison(right, workspaceRoot);
 }

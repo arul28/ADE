@@ -46,6 +46,7 @@ func buildWorkChatTimelineSnapshot(
     artifacts: artifacts,
     localEchoMessages: localEchoMessages
   )
+  let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
 
   return WorkChatTimelineSnapshot(
     signature: signature,
@@ -61,7 +62,10 @@ func buildWorkChatTimelineSnapshot(
     transcriptLatestTurnEnded: transcriptLatestTurnEnded,
     transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
     latestTranscriptTimestamp: latestTranscriptTimestamp,
-    latestMessageAssistantId: latestWorkTimelineMessageAssistantId(timeline),
+    latestMessageAssistantId: latestAssistantTail?.id,
+    latestMessageAssistantItemId: latestAssistantTail?.itemId,
+    latestTurnEndTurnId: workLatestTurnEndTurnId(in: timeline),
+    liveTurnEntryIds: workEntryIdsAfterLatestTurnEnd(in: timeline),
     timeline: timeline
   )
 }
@@ -416,8 +420,13 @@ private func combineLongTextSignature(_ text: String, into hasher: inout Hasher)
     hasher.combine(text)
     return
   }
-  hasher.combine(text.prefix(512))
-  hasher.combine(text.suffix(512))
+  // The incremental path uses WorkChatMessage.markdownRevision, but this is
+  // the full snapshot fold. Prefix/suffix sampling can collide when a host
+  // replaces the middle of a same-length response, leaving the old timeline
+  // snapshot in place. The exact digest is linear in the text and runs off the
+  // main actor during a full rebuild, where correctness is more important than
+  // the bounded live-delta shortcut.
+  hasher.combine(workStableDigest(text))
 }
 
 private func combineAgentChatFileRefs(_ refs: [AgentChatFileRef]?, into hasher: inout Hasher) {
@@ -486,10 +495,18 @@ private func latestWorkTranscriptTimestamp(_ transcript: [WorkChatEnvelope]) -> 
   return latest
 }
 
-private func latestWorkTimelineMessageAssistantId(_ timeline: [WorkTimelineEntry]) -> String? {
+private struct WorkTimelineAssistantTail {
+  let id: String?
+  let itemId: String?
+}
+
+private func latestWorkTimelineAssistantTail(_ timeline: [WorkTimelineEntry]) -> WorkTimelineAssistantTail? {
   for entry in timeline.reversed() {
     guard case .message(let message) = entry.payload else { continue }
-    return message.role == "assistant" ? message.id : nil
+    return WorkTimelineAssistantTail(
+      id: message.role == "assistant" ? message.id : nil,
+      itemId: message.role == "assistant" ? message.itemId : nil
+    )
   }
   return nil
 }
@@ -1494,7 +1511,25 @@ func buildWorkTimeline(
     : buildWorkChatMessages(from: transcript)
 
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
-    WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
+    // Stamped here, at the end of the fold, rather than at construction: the
+    // builders above merge streaming fragments by mutating `markdown` in place,
+    // so this is the first point where a message's text is final.
+    var message = message
+    message.markdownDigest = workStableDigest(message.markdown)
+    message.markdownUTF8Count = message.markdown.utf8.count
+    let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
+    let normalizedMarkdown = hasCarriageReturn
+      ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
+      : message.markdown
+    message.markdownCharacterCount = normalizedMarkdown.count
+    message.markdownLineCount = workAssistantMessageLineCount(normalizedMarkdown)
+    message.markdownHasCarriageReturn = hasCarriageReturn
+    message.markdownContainsFence = normalizedMarkdown.contains("```")
+    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalizedMarkdown)
+    let classifier = WorkStreamingMonospacedClassifierState(text: normalizedMarkdown)
+    message.markdownMonospacedClassifier = classifier
+    message.markdownOpenFenceMarker = classifier.openFenceMarker
+    return WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
   // Counted, not set-membership: two identical echoes must not both vanish on
   // one matching row. Built from `messages` rather than the transcript so the
@@ -1590,6 +1625,7 @@ func buildWorkTimeline(
       id: echo.id,
       role: "user",
       markdown: echo.text,
+      markdownDigest: workStableDigest(echo.text),
       timestamp: echo.timestamp,
       turnId: nil,
       itemId: nil,
@@ -1677,6 +1713,24 @@ private func isInterruptStoppedSubagentResultEntry(_ entry: WorkTimelineEntry) -
     return row.kind == .result && row.snapshot.status == .stopped
   }
   return false
+}
+
+/// The rows the transcript actually draws, from the rows the timeline holds.
+///
+/// This is the seam where a presentation-only rule belongs — and for a while it
+/// held one that swallowed whole turns: every normalized `.toolGroup` row was
+/// dropped here, so a turn whose only work was one `Read` and one approved shell
+/// command rendered no trace of either. The turn-end marker's 8pt chevron was
+/// the sole way back to them.
+///
+/// That filter dated from when a cluster had no compact form and N stacked tool
+/// cards ate the phone viewport. A finished cluster is now a single 44pt row in
+/// the same one-liner grammar `WorkChangedFilesPanelView` already uses right
+/// beside it, so there is nothing left to protect the viewport from — and
+/// hiding tool calls while showing file changes made the transcript disagree
+/// with itself about what a cluster is.
+func workPresentedTimelineEntries(_ timeline: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  timeline
 }
 
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into
@@ -2394,6 +2448,24 @@ private func workResolvedInlineItemIds(from transcript: [WorkChatEnvelope]) -> S
   return ids
 }
 
+func workIncrementalEventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
+  eventCard(for: envelope)
+}
+
+func workIncrementalMergedEventCard(
+  _ existing: WorkEventCardModel,
+  with incoming: WorkEventCardModel
+) -> WorkEventCardModel? {
+  mergedWorkEventCard(existing, with: incoming)
+}
+
+func workIncrementalEventCards(from timeline: [WorkTimelineEntry]) -> [WorkEventCardModel] {
+  timeline.compactMap { entry in
+    guard case .eventCard(let card) = entry.payload else { return nil }
+    return card
+  }
+}
+
 func buildWorkEventCards(
   from transcript: [WorkChatEnvelope],
   suppressedItemIds: Set<String> = []
@@ -2556,6 +2628,47 @@ private func workContextCompactCardId(
     return ["context-compact", sessionId, "turn", turnId].joined(separator: ":")
   }
   return fallback
+}
+
+/// The sleep id both halves of a host-sleep chip carry, read out of the
+/// notice's detail JSON (`AgentChatNoticeDetail.hostSleep` in
+/// `apps/desktop/src/shared/types/chat.ts`). `detail` reaches iOS as the
+/// pretty-printed original object, so the id survives the trip intact.
+func workHostSleepId(from detail: String?) -> String? {
+  guard let detail,
+        let data = detail.data(using: .utf8),
+        let decoded = try? JSONSerialization.jsonObject(with: data),
+        let object = decoded as? [String: Any],
+        let hostSleep = object["hostSleep"] as? [String: Any],
+        let sleepId = hostSleep["sleepId"] as? String
+  else {
+    return nil
+  }
+  let trimmed = sleepId.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+/// Stable identity for ONE host sleep, shared by its paused and resumed halves
+/// so `buildWorkEventCards` folds them into a single chip that resolves in
+/// place — the host's "one sleep, one artifact" contract, and desktop parity
+/// with the `sleepId` fold in `chatTranscriptRows.ts`.
+///
+/// The id-less fallback is a single constant, matching `hostSleepNoticeMergeKey`
+/// in `shared/hostSleepNotice.ts` down to the trade it makes: with no id there
+/// is nothing to tell two sleeps apart, and a per-envelope key would stop a
+/// matched pair from merging at all, which is the worse of the two. Every
+/// notice ADE emits carries a `sleepId`, so only a foreign or pre-`sleepId`
+/// event ever reaches it.
+private func workHostSleepCardId(sessionId: String, detail: String?) -> String {
+  [workHostSleepCardIdPrefix, sessionId, workHostSleepId(from: detail) ?? "host-sleep"]
+    .joined(separator: ":")
+}
+
+private let workHostSleepCardIdPrefix = "host-sleep"
+
+/// True for either half of a host-sleep chip, which share one card id.
+private func workIsHostSleepCardId(_ id: String) -> Bool {
+  id.hasPrefix(workHostSleepCardIdPrefix + ":")
 }
 
 private func workPlanCardId(
@@ -2735,6 +2848,20 @@ private func normalizedWorkIntegrationFailures(
 
 private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: WorkEventCardModel) -> WorkEventCardModel? {
   guard existing.kind == incoming.kind else { return nil }
+  // ── Host sleep: a resolved chip never goes back to paused ──
+  // Both halves share one card id, so this fold is the only thing between a
+  // machine that woke up and a chip that still says it is asleep. The fold is
+  // otherwise last-wins, which is right only while the halves arrive in order:
+  // this builder is the one timeline builder that does NOT sort its input, and
+  // the two comparators that produce that input disagree on precedence
+  // (`workChatEnvelopeOrderedBefore` is sequence-first, `appendWorkChatTranscripts`
+  // is timestamp-first), so neither replay nor the live stream guarantees the
+  // paused half is seen first. Ordering the two states instead of trusting
+  // arrival order costs nothing and removes "Paused — computer asleep" from a
+  // Mac that is demonstrably awake.
+  if workIsHostSleepCardId(existing.id), !existing.isInProgress, incoming.isInProgress {
+    return existing
+  }
   if existing.kind == "turnDiagnostics" {
     let normalizedFailures = normalizedWorkIntegrationFailures(
       existing.diagnosticIntegrationFailures + incoming.diagnosticIntegrationFailures
@@ -2965,6 +3092,36 @@ private func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // ── Host sleep: ONE chip per sleep ──
+      // The paused half creates the row; the resumed half carries the same
+      // sleep id, so it lands on that row and replaces it rather than stacking
+      // a second card under it. The host writes both labels ("Paused —
+      // computer asleep", then "Resumed · paused 4m"), so the chip reads the
+      // same words on both platforms. `detail` is deliberately dropped: the
+      // sleep id is plumbing, not something to print at the user.
+      if let noticeKind = AgentChatNoticeKind(rawValue: kind),
+         noticeKind == .hostAsleep || noticeKind == .hostAwake {
+        let resumed = noticeKind == .hostAwake
+        return WorkEventCardModel(
+          id: workHostSleepCardId(sessionId: envelope.sessionId, detail: detail),
+          kind: "notice",
+          // The message IS the label. It lands in `title` with an empty body so
+          // the ribbon renders it once and VoiceOver reads it once. A host that
+          // sent no message still gets a chip that says something.
+          title: nonEmptyWorkTimelineText(message)
+            ?? (resumed ? "Resumed" : "Paused — computer asleep"),
+          icon: resumed ? "play.circle" : "moon.zzz",
+          tint: resumed ? .accent : .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: [],
+          // The paused half is the live state of a lifecycle chip; the resumed
+          // half is it settled. `mergedWorkEventCard` reads this so the settled
+          // chip wins no matter which half is folded in last.
+          isInProgress: !resumed
+        )
+      }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
@@ -3521,6 +3678,30 @@ private func workTurnModelMetadata(
     modelLabel: displayModel.isEmpty ? fallbackModelLabel : prettyWorkChatModelName(displayModel),
     modelId: rawModelId ?? fallbackModelId
   )
+}
+
+/// Display-only subagent model chip. A reported snapshot model is ground truth;
+/// missing model falls back to the parent session and is marked inherited.
+struct WorkSubagentModelAttribution: Equatable {
+  let label: String
+  let inherited: Bool
+}
+
+func workSubagentModelAttribution(snapshotModel: String?, sessionModel: String?) -> WorkSubagentModelAttribution? {
+  if let model = snapshotModel?.trimmingCharacters(in: .whitespacesAndNewlines), !model.isEmpty {
+    return WorkSubagentModelAttribution(label: prettyWorkChatModelName(model), inherited: false)
+  }
+  if let session = sessionModel?.trimmingCharacters(in: .whitespacesAndNewlines), !session.isEmpty {
+    return WorkSubagentModelAttribution(label: prettyWorkChatModelName(session), inherited: true)
+  }
+  return nil
+}
+
+func workSubagentModelChip(snapshotModel: String?, sessionModel: String?) -> String? {
+  guard let attribution = workSubagentModelAttribution(snapshotModel: snapshotModel, sessionModel: sessionModel) else {
+    return nil
+  }
+  return attribution.inherited ? "\(attribution.label) · inherited" : attribution.label
 }
 
 /// Beautify a host-supplied model id into the label used on chips and turn

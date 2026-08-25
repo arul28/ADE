@@ -172,9 +172,9 @@ describe("generated tools manifest", () => {
   it("keeps the codex alias version, which is not plain semver", () => {
     const pin = findToolTargetPin(manifest, "codex", "darwin-arm64");
     expect(pin.package).toBe("@openai/codex-darwin-arm64");
-    expect(pin.version).toBe("0.144.5-darwin-arm64");
+    expect(pin.version).toBe("0.149.1-darwin-arm64");
     // The alias publishes under the base package path, not the suffixed one.
-    expect(pin.tarball).toContain("/@openai/codex/-/codex-0.144.5-darwin-arm64.tgz");
+    expect(pin.tarball).toContain("/@openai/codex/-/codex-0.149.1-darwin-arm64.tgz");
   });
 
   it("uses .exe entry spellings on Windows", () => {

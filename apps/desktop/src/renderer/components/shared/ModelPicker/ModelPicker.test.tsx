@@ -167,7 +167,10 @@ import {
   resetModelPickerRuntimeCatalogForTests,
   runtimeCatalogProviderIsFresh,
 } from "./runtimeCatalogCache";
-import { resetRuntimeCatalogDescriptorCacheForTests } from "./modelCatalog";
+import {
+  getRuntimeCatalogModelDescriptor,
+  resetRuntimeCatalogDescriptorCacheForTests,
+} from "./modelCatalog";
 
 const SONNET: ModelDescriptor = {
   id: "anthropic/claude-sonnet-5",
@@ -798,7 +801,7 @@ describe("ModelPicker", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("clears a stale fast bit when a different model is picked by a plain row click", async () => {
+  it("preserves fast mode when a different model is picked by a plain row click", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     const onFastModeChange = vi.fn();
@@ -820,7 +823,7 @@ describe("ModelPicker", () => {
     await user.click(slowRow);
 
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith(SLOW_GPT.id, { fastMode: false });
+    expect(onChange).toHaveBeenCalledWith(SLOW_GPT.id);
     expect(onFastModeChange).not.toHaveBeenCalled();
   });
 
@@ -1060,6 +1063,335 @@ describe("ModelPicker", () => {
     expect(modelCatalog).not.toHaveBeenCalledWith(
       expect.objectContaining({ mode: "force" }),
     );
+  });
+
+  // A Work tab unions chats from every machine on the account, so the composer
+  // for a chat on another machine must describe THAT machine: the catalog names
+  // local ollama/LM Studio endpoints and the installed cursor-agent, none of
+  // which the bound machine can answer for.
+  it("fetches the runtime catalog from the pinned machine and caches it apart from the bound one", async () => {
+    const user = userEvent.setup();
+    const foreignPin = {
+      kind: "remote" as const,
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      projectId: "project-2",
+      rootPath: "/Users/other/Projects/ADE",
+      displayName: "Studio",
+      runtimeName: "Studio",
+    };
+    const modelCatalog = vi.fn(async () => ({
+      groups: [],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    // The bound machine already has a catalog cached; the pinned picker must
+    // not read it, and must route its own fetch to the pin.
+    // The bound bucket carries a model only THIS Mac can run. Opening the
+    // popover used to re-seed from the unscoped cache, which pulled that row
+    // into the pinned picker even though the fetch itself was routed correctly
+    // — so assert the descriptor bucket, not just the call.
+    rememberRuntimeCatalog(
+      {
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+        groups: [{
+          key: "ollama",
+          displayName: "Ollama",
+          providers: [{
+            key: "ollama",
+            displayName: "Ollama",
+            badgeColor: "#64748B",
+            modelCount: 1,
+            subsections: [{
+              key: "ollama",
+              label: "Ollama",
+              models: [{
+                id: "ollama/bound-only",
+                runtimeModelId: "ollama/bound-only",
+                provider: "ollama",
+                providerKey: "ollama",
+                groupKey: "ollama",
+                displayName: "Bound Only",
+                isDefault: false,
+                isAvailable: true,
+              }],
+            }],
+          }],
+        }],
+      } as never,
+      { mode: "cached" },
+    );
+
+    renderPicker({ runtimePin: foreignPin as never });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "cached" }, foreignPin);
+    });
+    expect(modelCatalog).not.toHaveBeenCalledWith({ mode: "cached" });
+    expect(getRuntimeCatalogModelDescriptor("ollama/bound-only", foreignPin.key)).toBeUndefined();
+    expect(document.querySelector('[data-model-id="ollama/bound-only"]')).toBeNull();
+  });
+
+  /**
+   * Regression for two ways the bound machine's catalog leaked into a pinned
+   * picker after scoping was introduced:
+   *
+   * 1. state held a bare catalog, so the render where the pin changed paired the
+   *    PREVIOUS machine's catalog with the NEW scope key — and parsing writes,
+   *    so machine A's descriptors were filed under machine B; and
+   * 2. the popover's own open handler re-seeded from the unscoped cache.
+   *
+   * Both are invisible in a fetch-level assertion: the request goes to the right
+   * machine and the wrong rows still show up. So this asserts on the descriptor
+   * buckets and the rendered rows.
+   */
+  it("never files the bound machine's catalog under a pinned machine", async () => {
+    const user = userEvent.setup();
+    const foreignPin = {
+      kind: "remote" as const,
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      projectId: "project-2",
+      rootPath: "/remote/chat-project",
+      displayName: "Studio",
+      runtimeName: "Studio",
+    };
+    const boundOnlyId = "ollama/bound-only";
+    const ollamaCatalog = (modelId: string) => ({
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      groups: [{
+        key: "ollama",
+        displayName: "Ollama",
+        providers: [{
+          key: "ollama",
+          displayName: "Ollama",
+          badgeColor: "#64748B",
+          modelCount: 1,
+          subsections: [{
+            key: "ollama",
+            label: "Ollama",
+            models: [{
+              id: modelId,
+              runtimeModelId: modelId,
+              provider: "ollama",
+              providerKey: "ollama",
+              groupKey: "ollama",
+              displayName: modelId,
+              isDefault: false,
+              isAvailable: true,
+            }],
+          }],
+        }],
+      }],
+    });
+
+    // The bound machine has a loaded catalog; the pinned machine answers with
+    // its own, and is asked only once the pin is applied.
+    rememberRuntimeCatalog(ollamaCatalog(boundOnlyId) as never, { mode: "cached" });
+    const modelCatalog = vi.fn(async () => ollamaCatalog("ollama/studio-only"));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    const { rerender } = renderPicker();
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    await waitFor(() => {
+      expect(getRuntimeCatalogModelDescriptor(boundOnlyId)).toBeDefined();
+    });
+
+    rerender(
+      <ModelPicker
+        value={SONNET.id}
+        onChange={vi.fn()}
+        surfaceKey="test-surface"
+        models={MODELS}
+        runtimePin={foreignPin as never}
+      />,
+    );
+    await waitFor(() => {
+      expect(getRuntimeCatalogModelDescriptor("ollama/studio-only", foreignPin.key)).toBeDefined();
+    });
+
+    // The bound machine's model must never have been filed under the pin, and
+    // must not be offered as one of the pinned machine's rows.
+    expect(getRuntimeCatalogModelDescriptor(boundOnlyId, foreignPin.key)).toBeUndefined();
+    expect(document.querySelector(`[data-model-id="${boundOnlyId}"]`)).toBeNull();
+  });
+
+  // Surfaces with no composer machine (Settings) keep the single-argument
+  // bound-path call. Work composers pass an explicit pin even when that
+  // machine equals the project tab — see the test below. A pin object
+  // re-created on every render must not be mistaken for a machine change.
+  it("adds no catalog traffic for the bound machine and ignores pin identity churn", async () => {
+    const user = userEvent.setup();
+    const modelCatalog = vi.fn(async () => ({
+      groups: [],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    const { rerender } = renderPicker();
+    const trigger = screen.getByRole("button", { name: /Select model/i });
+    await user.click(trigger);
+    await waitFor(() => expect(modelCatalog).toHaveBeenCalledTimes(1));
+
+    // Re-opening reuses the bucket rather than re-asking the host.
+    await user.click(trigger);
+    await user.click(trigger);
+    expect(modelCatalog).toHaveBeenCalledTimes(1);
+    // One argument only: no pin on the bound path.
+    expect(modelCatalog.mock.calls[0]).toHaveLength(1);
+
+    // A fresh pin object with an unchanged key is the same machine.
+    const pinOf = () => ({
+      kind: "remote" as const,
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      projectId: "project-2",
+      rootPath: "/remote/chat-project",
+      displayName: "Studio",
+      runtimeName: "Studio",
+    });
+    rerender(
+      <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test-surface" models={MODELS} runtimePin={pinOf() as never} />,
+    );
+    await waitFor(() => expect(modelCatalog).toHaveBeenCalledTimes(2));
+    for (let i = 0; i < 3; i += 1) {
+      rerender(
+        <ModelPicker value={SONNET.id} onChange={vi.fn()} surfaceKey="test-surface" models={MODELS} runtimePin={pinOf() as never} />,
+      );
+    }
+    await Promise.resolve();
+    expect(modelCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it("pins catalog fetches even when the composer machine is this window's project tab", async () => {
+    const user = userEvent.setup();
+    const boundPin = {
+      kind: "local" as const,
+      key: "local:/Users/me/ADE",
+      rootPath: "/Users/me/ADE",
+      displayName: "ADE",
+    };
+    const modelCatalog = vi.fn(async () => ({
+      groups: [],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    }));
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    renderPicker({ runtimePin: boundPin as never });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "cached" }, boundPin);
+    });
+    expect(modelCatalog).not.toHaveBeenCalledWith({ mode: "cached" });
+  });
+
+  it("still live-probes OpenCode after a cached catalog that already has OpenCode rows", async () => {
+    const user = userEvent.setup();
+    rememberRuntimeCatalog(
+      {
+        fetchedAt: "2026-05-18T00:00:00.000Z",
+        stale: false,
+        groups: [{
+          key: "opencode",
+          displayName: "OpenCode",
+          providers: [{
+            key: "anthropic",
+            displayName: "Anthropic",
+            badgeColor: "#D97706",
+            modelCount: 1,
+            subsections: [{
+              key: "anthropic",
+              label: "Anthropic",
+              models: [{
+                id: OPENCODE_MODEL.id,
+                runtimeModelId: "claude-sonnet-5",
+                provider: "opencode",
+                providerKey: "opencode",
+                groupKey: "opencode",
+                displayName: OPENCODE_MODEL.displayName,
+                isDefault: false,
+                isAvailable: true,
+              }],
+            }],
+          }],
+        }],
+      } as never,
+      { mode: "cached" },
+    );
+    const modelCatalog = vi.fn(async (args: { mode?: string }) => {
+      if (args.mode === "refresh-stale") {
+        return { groups: [], fetchedAt: "2026-05-18T00:00:00.000Z", stale: true };
+      }
+      return {
+        groups: [{
+          key: "opencode",
+          displayName: "OpenCode",
+          providers: [{
+            key: "zen",
+            displayName: "Zen",
+            badgeColor: "#64748B",
+            modelCount: 1,
+            subsections: [{
+              key: "zen",
+              label: "Zen",
+              models: [{
+                id: "opencode/zen/ox-alpha-free",
+                runtimeModelId: "zen/ox-alpha-free",
+                provider: "opencode",
+                providerKey: "zen",
+                groupKey: "opencode",
+                displayName: "ox alpha free",
+                isDefault: false,
+                isAvailable: true,
+              }],
+            }],
+          }],
+        }],
+        fetchedAt: "2026-05-18T00:00:01.000Z",
+        stale: false,
+      };
+    });
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    renderPicker();
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+    const opencodeRail = document.querySelector(
+      '[data-rail-selection="provider:opencode"]',
+    ) as HTMLButtonElement;
+    await user.click(opencodeRail);
+
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "opencode" });
+    });
+    await waitFor(() => {
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "force", refreshProvider: "opencode" });
+    });
   });
 
   it("renders the Set up banner when the active rail is unauthed and onOpenSignIn is wired", async () => {

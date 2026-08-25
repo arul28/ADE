@@ -13,6 +13,12 @@ import {
   recordLastFailure,
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
+import { codedError } from "../../desktop/src/shared/codedError";
+import {
+  detectCloudPlaceholderFile,
+  detectCloudStorageProvider,
+  storageUnreadableMessage,
+} from "../../desktop/src/main/services/storage/cloudPlaceholder";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
 import { cleanupLegacyAdeSkills } from "../../desktop/src/main/services/skills/legacySkillCleanupService";
 import {
@@ -26,6 +32,12 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
 } from "../../desktop/src/main/services/sessions/sessionService";
+import { createSettleTeardownWiring } from "../../desktop/src/main/services/sessions/settleTeardownWiring";
+import type {
+  SettleResidueItem,
+  SettleTeardownContext,
+  SettleTeardownOutcome,
+} from "../../desktop/src/main/services/sessions/sessionSettleTeardown";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
@@ -56,6 +68,8 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createChatRuntimeBudget } from "../../desktop/src/main/services/chat/chatRuntimeBudget";
+import { borrowSharedMachinePowerSource } from "./services/power/sharedMachinePowerMonitor";
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import {
@@ -85,6 +99,10 @@ import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
+import { createCursorCloudIngressService } from "../../desktop/src/main/services/automations/cursorCloudIngressService";
+import { createCursorCloudFleetService } from "../../desktop/src/main/services/chat/cursorCloudFleetService";
+import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/services/automations/cursorCloudAutomationDispatch";
+import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
@@ -193,6 +211,7 @@ import {
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { watchCredentialsForRelayRepair } from "./services/credentials/credentialChangeRelayRepair";
 import {
   getSignedInAccountAccessToken,
   type AccountAuthService,
@@ -201,9 +220,13 @@ import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
+import { createTeardownStack } from "./services/runtime/startupTeardown";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { createPrEventFanout } from "./prEventFanout";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
+
+/** One warm-runtime budget for every project scope this brain opens. */
+const chatRuntimeBudget = createChatRuntimeBudget();
 
 declare const __ADE_VERSION__: string | undefined;
 
@@ -320,6 +343,7 @@ export type AdeRuntime = {
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
@@ -343,6 +367,7 @@ export type AdeRuntime = {
   pushPublisherService?: PushPublisherService | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
+  cursorCloudIngressService?: ReturnType<typeof createCursorCloudIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   productAnalyticsService?: ProductAnalyticsService | null;
@@ -760,6 +785,40 @@ export function createHeadlessAdeCliAgentEnv(
   return next;
 }
 
+type ChatSessionEndedListenerHost = {
+  registerChatSessionEndedListener?: (listener: (sessionId: string) => void) => void;
+};
+
+type ChatOwnedSimulator = {
+  releaseIfOwnedBy: (sessionId: string) => Promise<unknown>;
+};
+
+/**
+ * Headless chat (omitted / headless-stub runtime) has no session-end listener.
+ * Calling the desktop method unguarded threw during brain startup and left CLI
+ * tests hanging on a runtime that never came up.
+ */
+export function bindIosSimulatorReleaseOnChatEnd(args: {
+  agentChatService: ChatSessionEndedListenerHost | null;
+  iosSimulatorService: ChatOwnedSimulator | null;
+  logger: Pick<Logger, "debug">;
+}): boolean {
+  const registerChatSessionEndedListener = args.agentChatService?.registerChatSessionEndedListener;
+  if (typeof registerChatSessionEndedListener !== "function" || !args.iosSimulatorService) {
+    return false;
+  }
+  const iosSimulatorService = args.iosSimulatorService;
+  registerChatSessionEndedListener.call(args.agentChatService, (sessionId) => {
+    void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
+      args.logger.debug("ios_simulator.release_on_chat_end_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+  return true;
+}
+
 export async function createAdeRuntime(args: {
   projectRoot: string;
   workspaceRoot?: string;
@@ -803,216 +862,296 @@ export async function createAdeRuntime(args: {
   });
   let db: AdeDb;
   try {
+    // Preflight before the open, so a cloud-evicted database fails with the
+    // sentence that names the fix instead of the platform's uninterpretable
+    // errno ("Unknown system error -11, read" on macOS).
+    const placeholder = detectCloudPlaceholderFile(paths.dbPath);
+    if (placeholder) {
+      throw codedError(
+        storageUnreadableMessage(placeholder.path, placeholder.provider),
+        "storage_read_failed",
+      );
+    }
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
     });
   } catch (error) {
-    const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
+    // The path corroborates a bare errno: SQLite failures often carry no
+    // `syscall`, and without a path the classifier refuses to call them
+    // storage faults (a socket errno must not read as an unreadable file).
+    const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error, { path: paths.dbPath }));
     const detail = error instanceof Error ? error.message : String(error);
     const failure = {
       code,
-      message: "ADE could not open the project data store.",
+      message: code === "storage_read_failed"
+        ? storageUnreadableMessage(paths.dbPath, detectCloudStorageProvider(paths.dbPath))
+        : "ADE could not open the project data store.",
       detail,
       projectRoot,
       component: "project_db_open" as const,
     };
     recordLastFailure({ kind: "project", projectRoot }, failure);
     recordLastFailure({ kind: "machine" }, failure);
-    throw error;
+    // Rethrowing the raw error discarded the classification computed one line
+    // above and handed the renderer a bare libuv message. Carry the code, the
+    // offending path and the raw errno instead — the code picks the recovery
+    // copy, and `detail` stays for logs and `ade report-issue`.
+    throw Object.assign(
+      codedError(failure.message, code),
+      { dbPath: paths.dbPath, projectRoot, detail },
+    );
   }
   clearLastFailure({ kind: "project", projectRoot });
 
-  const project = toProjectInfo(projectRoot, baseRef);
-  const { projectId } = upsertProjectRow({
-    db,
-    repoRoot: projectRoot,
-    displayName: project.displayName,
-    baseRef
-  });
-
-  // Product analytics is machine-scoped and lazy: constructing the service
-  // performs no network work, and a missing build token makes it a no-op. The
-  // shared instance enforces one bounded daily budget across every project
-  // scope in this process.
-  const productAnalyticsStateFile = defaultProductAnalyticsStateFile(resolveMachineAdeLayout().adeDir);
-  const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
-    createProductAnalyticsService({
-      stateFilePath: productAnalyticsStateFile,
-      logger,
-      appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
-      runtimeMode: resolvedArgs.syncRuntime?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
-    }));
-  const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
-    db,
-    analytics: productAnalyticsService,
-    logger,
-  });
-  usageProductAnalyticsExporter.start();
-
-  // Machine-scoped, like product analytics: plugin children belong to the
-  // machine, not to whichever project happens to be open. This scope's binding
-  // is attached once `runtime` exists and detached in `dispose()`.
-  const pluginHostService = getSharedPluginHostService({
-    logger,
-    adeVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
-  });
-  let detachPluginHostBinding: (() => void) | null = null;
-  // ONE meter per project scope: the sync host records frames into it and
-  // `plugin.usageSummary` reads its rollup, so a second instance would split
-  // the counters between a writer and a reader that never see each other.
-  const pluginSyncMeter = createPluginSyncMeter({ db, logger });
-
-  /**
-   * Plugin ids installed on this machine, for the storage doctor's plugin prune.
-   *
-   * CRITICAL: `[]` and `null` are NOT interchangeable. `[]` is the real answer
-   * "this machine has no plugins" and DELETES every plugin row in this project;
-   * `null` means "could not read the registry" and makes the pruner SKIP.
-   * Getting them backwards silently destroys a user's plugin data. The install
-   * registry's own reader cannot tell the two apart — it returns an empty
-   * registry for a missing file AND for an unreadable one — so the state file
-   * (`state.json`, written by pluginInstallService) is probed here first.
-   */
-  const listInstalledPluginIds = (): readonly string[] | null => {
-    // The registry file's own reader makes the distinction, so this no longer
-    // re-parses it by hand or hardcodes the file name.
-    const registry = readPluginRegistryFile(resolvePluginsRoot());
-    if (registry.kind === "unreadable") return null;
-    if (registry.kind === "absent") return [];
-    try {
-      return pluginHostService.listPresenceRows().map((row) => row.pluginId);
-    } catch {
-      return null;
-    }
-  };
-
-  const operationService = createOperationService({ db, projectId });
-  const keybindingsService = createKeybindingsService({ db });
-  const eventBuffer = createEventBuffer();
-
-  function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
-    eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
-  }
-
-  let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
-  let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
-  let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
-  const searchServiceHolder: { current: SearchService | null } = { current: null };
-  let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
-  let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
-  let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
-  let prServiceRef: ReturnType<typeof createPrService> | null = null;
-  const publishLinearChatLink = createLinearChatLinkPublisher({
-    getIssueTracker: () => linearIssueTrackerRef,
-    resolveEnvelope: async ({ laneId }) => {
-      const repo = await githubServiceRef?.getRepoOrThrow().catch(() => null);
-      if (!repo) return null;
-      const lanes = await laneServiceRef?.list({ includeArchived: false, includeStatus: false }).catch(() => []);
-      const lane = lanes?.find((candidate) => candidate.id === laneId) ?? null;
-      const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") ?? null;
-      const pr = prServiceRef?.getForLane(laneId) ?? null;
-      return {
-        repoOwner: repo.owner,
-        repoName: repo.name,
-        branch,
-        prNumber: pr?.githubPrNumber ?? null,
-      };
-    },
-    log: (event, fields) => logger.warn(event, fields),
-  });
-  const laneTeardownDeps: LaneDeleteTeardownDeps = {};
-  let autoRebaseActivityReady = false;
-
-  const laneService = createLaneService({
-    db,
-    projectRoot,
-    primaryWorktreePath,
-    projectId,
-    defaultBaseRef: baseRef,
-    worktreesDir: paths.worktreesDir,
-    operationService,
-    onHeadChanged: (event) => {
-      pushEvent("runtime", { type: "lane_head_changed", ...event });
-      void rebaseSuggestionServiceRef?.onParentHeadChanged(event).catch(() => {});
-      void autoRebaseServiceRef?.onHeadChanged(event).catch(() => {});
-    },
-    onRebaseEvent: (event) => {
-      pushEvent("runtime", { type: "lane_rebase_event", event });
-      if (event.type === "rebase-run-updated" && event.run.state !== "running") {
-        void conflictServiceRef?.scanRebaseNeeds().catch(() => {});
-      }
-    },
-    onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
-    onLifecycleEvent: (event) => {
-      pushEvent("runtime", { type: "lane_lifecycle_event", event });
-      if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
-    },
-    onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
-      const tracker = linearIssueTrackerRef;
-      if (!tracker) return;
-      void githubServiceRef?.getRepoOrThrow()
-        .catch(() => null)
-        .then((repo) => publishLinearLaneCard({
-          issueTracker: tracker,
-          lane,
-          issue,
-          projectRoot,
-          linkedAt,
-          repoOwner: repo?.owner ?? null,
-          repoName: repo?.name ?? null,
-          prNumber: prServiceRef?.getForLane(lane.id)?.githubPrNumber ?? null,
-          postInitialComment: true,
-          log: (event, fields) => logger.warn(event, fields),
-        }))
-        .catch((error) => {
-          logger.warn("linear.lane_card_publish_failed", {
-            laneId: lane.id,
-            issueId: issue.id,
-            issueIdentifier: issue.identifier,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-    },
-    onLinearIssueSessionLinked: publishLinearChatLink,
-    teardownDeps: laneTeardownDeps,
-    logger,
-  });
-  laneServiceRef = laneService;
-  await laneService.ensurePrimaryLane();
-
-  // Late-bound because the publisher is constructed after the session/PTY
-  // services. Session changes still use it once publishing is attached.
-  let pushPublisherForPtySignals: PushPublisherService | null = null;
-  let ptyServiceForSessionChanges: ReturnType<typeof createPtyService> | null = null;
-  const sessionService = createSessionService({ db });
-  sessionService.onChanged((event) => {
-    pushEvent("runtime", { type: "terminal_session_changed", event });
-    const session = sessionService.get(event.sessionId);
-    const runtimeState = session
-      ? ptyServiceForSessionChanges?.getRuntimeState(event.sessionId, session.status)
-        ?? session.runtimeState
-      : null;
-    if (
-      session
-      && (session.status !== "running" || runtimeState === "idle")
-      && (
-        session.settleOverride === "settled"
-        || (session.settleOverride !== "active" && Boolean(session.settledAt))
-      )
-    ) {
-      pushPublisherForPtySignals?.handleSessionSettled(projectId, event.sessionId);
-    }
-  });
-  const processRegistry = createProcessRegistryService({
-    db,
-    logger,
-    role: chatOnlyRuntime ? "tui-runtime" : "ade-serve-daemon",
-    projectRoot,
-  });
-  processRegistry.start();
   let runtimeCreated = false;
   let staleSessionReconcileTimer: ReturnType<typeof setTimeout> | null = null;
+  // Declared out here so the failure path below can release it: the watcher is
+  // installed long before `runtime` exists, and only `runtime.dispose` stops it.
+  let stopCredentialWatch: (() => void) | null = null;
+  // Every resource acquired from here on registers its release here, at the
+  // point of acquisition. A throw during construction drains the stack in the
+  // `finally`; a successful boot hands the same stack to `runtime.dispose`.
+  // Without this, a failed boot leaked the native database handle and every
+  // started service, and the sync-host retry loop leaked one runtime per
+  // attempt.
+  const teardown = createTeardownStack((error) => {
+    logger.warn("runtime.teardown_step_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+  // Pushed first so it pops last: writers must stop before the store closes.
+  teardown.push(() => {
+    try {
+      db.flushNow();
+    } catch {
+      // Close the handle even when the final flush fails.
+    }
+    db.close();
+  });
+  // Reads the `let` at drain time, so it clears whatever timer the reconcile
+  // scheduler last armed. Both shutdown paths drain this stack, so the timer
+  // cannot be forgotten on one of them.
+  teardown.push(() => {
+    if (staleSessionReconcileTimer) clearTimeout(staleSessionReconcileTimer);
+  });
+
+  // Guards every acquisition from the database open onward.
   try {
+    const project = toProjectInfo(projectRoot, baseRef);
+    const { projectId } = upsertProjectRow({
+      db,
+      repoRoot: projectRoot,
+      displayName: project.displayName,
+      baseRef
+    });
+
+    // Product analytics is machine-scoped and lazy: constructing the service
+    // performs no network work, and a missing build token makes it a no-op. The
+    // shared instance enforces one bounded daily budget across every project
+    // scope in this process.
+    const productAnalyticsStateFile = defaultProductAnalyticsStateFile(resolveMachineAdeLayout().adeDir);
+    const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
+      createProductAnalyticsService({
+        stateFilePath: productAnalyticsStateFile,
+        logger,
+        appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+        runtimeMode: resolvedArgs.syncRuntime?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
+      }));
+    const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
+      db,
+      analytics: productAnalyticsService,
+      logger,
+    });
+    teardown.push(() => usageProductAnalyticsExporter.stop());
+    usageProductAnalyticsExporter.start();
+
+    // Machine-scoped, like product analytics: plugin children belong to the
+    // machine, not to whichever project happens to be open. This scope's binding
+    // is attached once `runtime` exists and detached in `dispose()`.
+    const pluginHostService = getSharedPluginHostService({
+      logger,
+      adeVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
+    });
+    let detachPluginHostBinding: (() => void) | null = null;
+    // ONE meter per project scope: the sync host records frames into it and
+    // `plugin.usageSummary` reads its rollup, so a second instance would split
+    // the counters between a writer and a reader that never see each other.
+    const pluginSyncMeter = createPluginSyncMeter({ db, logger });
+    // Flushes the last window of wire counters on the way out.
+    teardown.push(() => pluginSyncMeter.dispose());
+
+    /**
+     * Plugin ids installed on this machine, for the storage doctor's plugin prune.
+     *
+     * CRITICAL: `[]` and `null` are NOT interchangeable. `[]` is the real answer
+     * "this machine has no plugins" and DELETES every plugin row in this project;
+     * `null` means "could not read the registry" and makes the pruner SKIP.
+     * Getting them backwards silently destroys a user's plugin data. The install
+     * registry's own reader cannot tell the two apart — it returns an empty
+     * registry for a missing file AND for an unreadable one — so the state file
+     * (`state.json`, written by pluginInstallService) is probed here first.
+     */
+    const listInstalledPluginIds = (): readonly string[] | null => {
+      // The registry file's own reader makes the distinction, so this no longer
+      // re-parses it by hand or hardcodes the file name.
+      const registry = readPluginRegistryFile(resolvePluginsRoot());
+      if (registry.kind === "unreadable") return null;
+      if (registry.kind === "absent") return [];
+      try {
+        return pluginHostService.listPresenceRows().map((row) => row.pluginId);
+      } catch {
+        return null;
+      }
+    };
+
+    const operationService = createOperationService({ db, projectId });
+    const keybindingsService = createKeybindingsService({ db });
+    const eventBuffer = createEventBuffer();
+
+    function pushEvent(category: BufferedEvent["category"], payload: Record<string, unknown>): void {
+      eventBuffer.push({ timestamp: new Date().toISOString(), category, payload });
+    }
+
+    let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
+    let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
+    let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
+    const searchServiceHolder: { current: SearchService | null } = { current: null };
+    let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
+    let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
+    let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
+    let prServiceRef: ReturnType<typeof createPrService> | null = null;
+    const publishLinearChatLink = createLinearChatLinkPublisher({
+      getIssueTracker: () => linearIssueTrackerRef,
+      resolveEnvelope: async ({ laneId }) => {
+        const repo = await githubServiceRef?.getRepoOrThrow().catch(() => null);
+        if (!repo) return null;
+        const lanes = await laneServiceRef?.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+        const lane = lanes?.find((candidate) => candidate.id === laneId) ?? null;
+        const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") ?? null;
+        const pr = prServiceRef?.getForLane(laneId) ?? null;
+        return {
+          repoOwner: repo.owner,
+          repoName: repo.name,
+          branch,
+          prNumber: pr?.githubPrNumber ?? null,
+        };
+      },
+      log: (event, fields) => logger.warn(event, fields),
+    });
+    const laneTeardownDeps: LaneDeleteTeardownDeps = {};
+    let autoRebaseActivityReady = false;
+
+    const laneService = createLaneService({
+      db,
+      projectRoot,
+      primaryWorktreePath,
+      projectId,
+      defaultBaseRef: baseRef,
+      worktreesDir: paths.worktreesDir,
+      operationService,
+      onHeadChanged: (event) => {
+        pushEvent("runtime", { type: "lane_head_changed", ...event });
+        void rebaseSuggestionServiceRef?.onParentHeadChanged(event).catch(() => {});
+        void autoRebaseServiceRef?.onHeadChanged(event).catch(() => {});
+      },
+      onRebaseEvent: (event) => {
+        pushEvent("runtime", { type: "lane_rebase_event", event });
+        if (event.type === "rebase-run-updated" && event.run.state !== "running") {
+          void conflictServiceRef?.scanRebaseNeeds().catch(() => {});
+        }
+      },
+      onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
+      onLifecycleEvent: (event) => {
+        pushEvent("runtime", { type: "lane_lifecycle_event", event });
+        if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
+      },
+      onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
+        const tracker = linearIssueTrackerRef;
+        if (!tracker) return;
+        void githubServiceRef?.getRepoOrThrow()
+          .catch(() => null)
+          .then((repo) => publishLinearLaneCard({
+            issueTracker: tracker,
+            lane,
+            issue,
+            projectRoot,
+            linkedAt,
+            repoOwner: repo?.owner ?? null,
+            repoName: repo?.name ?? null,
+            prNumber: prServiceRef?.getForLane(lane.id)?.githubPrNumber ?? null,
+            postInitialComment: true,
+            log: (event, fields) => logger.warn(event, fields),
+          }))
+          .catch((error) => {
+            logger.warn("linear.lane_card_publish_failed", {
+              laneId: lane.id,
+              issueId: issue.id,
+              issueIdentifier: issue.identifier,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      },
+      onLinearIssueSessionLinked: publishLinearChatLink,
+      teardownDeps: laneTeardownDeps,
+      logger,
+    });
+    laneServiceRef = laneService;
+    await laneService.ensurePrimaryLane();
+
+    // Late-bound because the publisher is constructed after the session/PTY
+    // services. Session changes still use it once publishing is attached.
+    let pushPublisherForPtySignals: PushPublisherService | null = null;
+    let ptyServiceForSessionChanges: ReturnType<typeof createPtyService> | null = null;
+    // Late-bound: the chat service that owns the work is constructed further
+    // down. Without this the brain — which owns phone sync, remote commands and
+    // the PR-merge poller in a normal install — would settle sessions while
+    // stopping nothing.
+    const settleTeardownRef: {
+      run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
+      report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
+      residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
+    } = { run: null, report: null, residue: null };
+    const sessionService = createSessionService({
+      db,
+      runSettleTeardown: async (sessionId, ctx) =>
+        settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
+      onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
+      onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+    });
+    // Inbound settle-tuple writes get this host's lifecycle revision, so an
+    // in-flight settle can see a peer's decision and abandon rather than
+    // overwrite it. Registered here because the DB layer must not know what a
+    // settle means — and because the brain, not the desktop, is where changesets
+    // are actually applied in a normal install.
+    db.sync.setRemoteSettleTupleHandler((changes) => {
+      sessionService.reconcileRemoteSettleTuple(changes);
+    });
+    sessionService.onChanged((event) => {
+      pushEvent("runtime", { type: "terminal_session_changed", event });
+      const session = sessionService.get(event.sessionId);
+      const runtimeState = session
+        ? ptyServiceForSessionChanges?.getRuntimeState(event.sessionId, session.status)
+        ?? session.runtimeState
+        : null;
+      if (
+        session
+        && (session.status !== "running" || runtimeState === "idle")
+        && (
+          session.settleOverride === "settled"
+          || (session.settleOverride !== "active" && Boolean(session.settledAt))
+        )
+      ) {
+        pushPublisherForPtySignals?.handleSessionSettled(projectId, event.sessionId);
+      }
+    });
+    const processRegistry = createProcessRegistryService({
+      db,
+      logger,
+      role: chatOnlyRuntime ? "tui-runtime" : "ade-serve-daemon",
+      projectRoot,
+    });
+    teardown.push(() => processRegistry.stop());
+    processRegistry.start();
     const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
@@ -1068,256 +1207,274 @@ export async function createAdeRuntime(args: {
       projectConfigService,
     });
 
-  const laneEnvironmentService = createLaneEnvironmentService({
-    projectRoot,
-    adeDir: paths.adeDir,
-    logger,
-    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
-  });
-
-  const laneTemplateService = createLaneTemplateService({
-    projectConfigService,
-    logger,
-  });
-
-  const portAllocationService = createPortAllocationService({
-    logger,
-    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_port_event", event }),
-    persistLeases: (leases) => db.setJson("port_leases", leases),
-    loadLeases: () => db.getJson<PortLease[]>("port_leases") ?? [],
-  });
-  portAllocationService.restore();
-
-  const recoverPortAllocations = async () => {
-    const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-    const validIds = new Set(lanes.map((lane) => lane.id));
-    portAllocationService.recoverOrphans(validIds);
-    for (const lane of lanes) {
-      const lease = portAllocationService.getLease(lane.id);
-      if (lease?.status === "active") continue;
-      try {
-        portAllocationService.acquire(lane.id);
-      } catch (error) {
-        logger.warn("port_allocation.headless_startup_acquire_failed", {
-          laneId: lane.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    portAllocationService.detectConflicts();
-  };
-  await recoverPortAllocations().catch((error) => {
-    logger.warn("port_allocation.headless_startup_recovery_failed", {
-      error: error instanceof Error ? error.message : String(error),
+    const laneEnvironmentService = createLaneEnvironmentService({
+      projectRoot,
+      adeDir: paths.adeDir,
+      logger,
+      broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
     });
-  });
 
-  const laneProxyService = createLaneProxyService({
-    logger,
-    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_proxy_event", event }),
-  });
+    const laneTemplateService = createLaneTemplateService({
+      projectConfigService,
+      logger,
+    });
 
-  const oauthRedirectService = createOAuthRedirectService({
-    logger,
-    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_oauth_event", event }),
-    getRoutes: () => laneProxyService.listRoutes(),
-    getProxyPort: () => laneProxyService.getConfig().proxyPort,
-    getHostnameSuffix: () => laneProxyService.getConfig().hostnameSuffix,
-    forwardToPort: (req, res, port) => laneProxyService.forwardToPort(req, res, port),
-  });
-  laneProxyService.registerInterceptor((req, res) => oauthRedirectService.handleRequest(req, res));
+    const portAllocationService = createPortAllocationService({
+      logger,
+      broadcastEvent: (event) => pushEvent("runtime", { type: "lane_port_event", event }),
+      persistLeases: (leases) => db.setJson("port_leases", leases),
+      loadLeases: () => db.getJson<PortLease[]>("port_leases") ?? [],
+    });
+    portAllocationService.restore();
+    teardown.push(() => portAllocationService.dispose());
 
-  const runtimeDiagnosticsService = createRuntimeDiagnosticsService({
-    logger,
-    broadcastEvent: (event) => pushEvent("runtime", { type: "lane_diagnostics_event", event }),
-    getPortLease: (laneId) => portAllocationService.getLease(laneId),
-    getPortConflicts: () => portAllocationService.listConflicts(),
-    detectPortConflicts: () => portAllocationService.detectConflicts(),
-    getProxyStatus: () => laneProxyService.getStatus(),
-    getProxyRoute: (laneId) => laneProxyService.getRoute(laneId),
-  });
-
-  const aiIntegrationService = createAiIntegrationService({
-    db,
-    logger,
-    projectConfigService,
-    projectRoot,
-    enableDynamicModelMetadata: false,
-  });
-
-  const conflictService = createConflictService({
-    db,
-    logger,
-    projectId,
-    projectRoot,
-    laneService,
-    projectConfigService,
-    operationService,
-    conflictPacksDir: path.join(paths.packsDir, "conflicts"),
-    onEvent: (event) => pushEvent("runtime", { type: "conflict_event", event })
-  });
-  conflictServiceRef = conflictService;
-
-  const rebaseSuggestionService = createRebaseSuggestionService({
-    db,
-    logger,
-    projectId,
-    projectRoot,
-    laneService,
-    onEvent: (event) => pushEvent("runtime", { type: "lane_rebase_suggestions_event", event }),
-  });
-  rebaseSuggestionServiceRef = rebaseSuggestionService;
-
-  const autoRebaseService = createAutoRebaseService({
-    db,
-    logger,
-    laneService,
-    conflictService,
-    projectConfigService,
-    getLaneActivity: (laneId) => {
-      if (!autoRebaseActivityReady) {
-        throw new Error("Session activity services are not ready.");
+    const recoverPortAllocations = async () => {
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+      const validIds = new Set(lanes.map((lane) => lane.id));
+      portAllocationService.recoverOrphans(validIds);
+      for (const lane of lanes) {
+        const lease = portAllocationService.getLease(lane.id);
+        if (lease?.status === "active") continue;
+        try {
+          portAllocationService.acquire(lane.id);
+        } catch (error) {
+          logger.warn("port_allocation.headless_startup_acquire_failed", {
+            laneId: lane.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
-      return {
-        activeChatCount:
-          laneTeardownDeps.agentChatService?.countActiveForLane(laneId) ?? 0,
-        activePtyCount:
-          laneTeardownDeps.ptyService?.countActiveForLane(laneId) ?? 0,
-      };
-    },
-    onEvent: (event) => pushEvent("runtime", { type: "lane_auto_rebase_event", event }),
-  });
-  autoRebaseServiceRef = autoRebaseService;
-  void autoRebaseService.emit().catch(() => {});
-
-  const gitService = createGitOperationsService({
-    laneService,
-    operationService,
-    projectConfigService,
-    aiIntegrationService,
-    logger
-  });
-
-  const diffService = createDiffService({ laneService });
-
-  const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
-    ? null
-    : createSupervisedPtyLoader({ logger });
-  // The sync runtime is created after ptyService (it takes ptyService as a
-  // dependency), so live PTY forwarding binds late through this ref — same
-  // pattern as desktop main. Without this bridge, paired phones only ever
-  // receive terminal snapshots, never live terminal_data push.
-  let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
-  // The late-bound push publisher feeds tracked CLI runtime states into the
-  // phone's Live Activity.
-  const ptyService = createPtyService({
-    projectRoot,
-    transcriptsDir: paths.transcriptsDir,
-    laneService,
-    sessionService,
-    processRegistry,
-    aiIntegrationService,
-    projectConfigService,
-    logger,
-    broadcastData: (event) => {
-      pushEvent("pty", { type: "pty_data", event });
-      searchServiceHolder.current?.notifyTerminalData(event.sessionId);
-      const { projectRoot: _projectRoot, ...syncEvent } = event;
-      syncServiceForPtyEvents?.handlePtyData(syncEvent);
-    },
-    broadcastExit: (event) => {
-      pushEvent("pty", { type: "pty_exit", event });
-      const { projectRoot: _projectRoot, ...syncEvent } = event;
-      syncServiceForPtyEvents?.handlePtyExit(syncEvent);
-    },
-    onSessionRuntimeSignal: (signal) => {
-      pushPublisherForPtySignals?.handleCliRuntimeSignal(projectId, {
-        laneId: signal.laneId,
-        sessionId: signal.sessionId,
-        runtimeState: signal.runtimeState,
+      portAllocationService.detectConflicts();
+    };
+    await recoverPortAllocations().catch((error) => {
+      logger.warn("port_allocation.headless_startup_recovery_failed", {
+        error: error instanceof Error ? error.message : String(error),
       });
-    },
-    onSessionUserInput: ({ sessionId }) => {
-      pushPublisherForPtySignals?.handleSessionAttentionResolved(projectId, sessionId);
-    },
-    diskPressureMonitor,
-    onSessionEnded: (event) => {
-      void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
-        logger.warn("runtime.session_delta_compute_failed", {
-          laneId: event.laneId,
-          sessionId: event.sessionId,
-          error: error instanceof Error ? error.message : String(error),
+    });
+
+    const laneProxyService = createLaneProxyService({
+      logger,
+      broadcastEvent: (event) => pushEvent("runtime", { type: "lane_proxy_event", event }),
+    });
+
+    teardown.push(() => {
+      void laneProxyService.dispose().catch(() => {});
+    });
+    const oauthRedirectService = createOAuthRedirectService({
+      logger,
+      broadcastEvent: (event) => pushEvent("runtime", { type: "lane_oauth_event", event }),
+      getRoutes: () => laneProxyService.listRoutes(),
+      getProxyPort: () => laneProxyService.getConfig().proxyPort,
+      getHostnameSuffix: () => laneProxyService.getConfig().hostnameSuffix,
+      forwardToPort: (req, res, port) => laneProxyService.forwardToPort(req, res, port),
+    });
+    laneProxyService.registerInterceptor((req, res) => oauthRedirectService.handleRequest(req, res));
+    teardown.push(() => oauthRedirectService.dispose());
+
+    const runtimeDiagnosticsService = createRuntimeDiagnosticsService({
+      logger,
+      broadcastEvent: (event) => pushEvent("runtime", { type: "lane_diagnostics_event", event }),
+      getPortLease: (laneId) => portAllocationService.getLease(laneId),
+      getPortConflicts: () => portAllocationService.listConflicts(),
+      detectPortConflicts: () => portAllocationService.detectConflicts(),
+      getProxyStatus: () => laneProxyService.getStatus(),
+      getProxyRoute: (laneId) => laneProxyService.getRoute(laneId),
+    });
+    teardown.push(() => runtimeDiagnosticsService.dispose());
+
+    const aiIntegrationService = createAiIntegrationService({
+      db,
+      logger,
+      projectConfigService,
+      projectRoot,
+      enableDynamicModelMetadata: false,
+    });
+
+    const conflictService = createConflictService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      projectConfigService,
+      operationService,
+      conflictPacksDir: path.join(paths.packsDir, "conflicts"),
+      onEvent: (event) => pushEvent("runtime", { type: "conflict_event", event })
+    });
+    conflictServiceRef = conflictService;
+
+    const rebaseSuggestionService = createRebaseSuggestionService({
+      db,
+      logger,
+      projectId,
+      projectRoot,
+      laneService,
+      onEvent: (event) => pushEvent("runtime", { type: "lane_rebase_suggestions_event", event }),
+    });
+    rebaseSuggestionServiceRef = rebaseSuggestionService;
+
+    const autoRebaseService = createAutoRebaseService({
+      db,
+      logger,
+      laneService,
+      conflictService,
+      projectConfigService,
+      getLaneActivity: (laneId) => {
+        if (!autoRebaseActivityReady) {
+          throw new Error("Session activity services are not ready.");
+        }
+        return {
+          activeChatCount:
+            laneTeardownDeps.agentChatService?.countActiveForLane(laneId) ?? 0,
+          activePtyCount:
+            laneTeardownDeps.ptyService?.countActiveForLane(laneId) ?? 0,
+        };
+      },
+      onEvent: (event) => pushEvent("runtime", { type: "lane_auto_rebase_event", event }),
+    });
+    autoRebaseServiceRef = autoRebaseService;
+    void autoRebaseService.emit().catch(() => {});
+
+    const gitService = createGitOperationsService({
+      laneService,
+      operationService,
+      projectConfigService,
+      aiIntegrationService,
+      logger
+    });
+
+    const diffService = createDiffService({ laneService });
+
+    const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
+      ? null
+      : createSupervisedPtyLoader({ logger });
+    // The sync runtime is created after ptyService (it takes ptyService as a
+    // dependency), so live PTY forwarding binds late through this ref — same
+    // pattern as desktop main. Without this bridge, paired phones only ever
+    // receive terminal snapshots, never live terminal_data push.
+    let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
+    // The late-bound push publisher feeds tracked CLI runtime states into the
+    // phone's Live Activity.
+    const ptyService = createPtyService({
+      projectRoot,
+      transcriptsDir: paths.transcriptsDir,
+      laneService,
+      sessionService,
+      processRegistry,
+      aiIntegrationService,
+      projectConfigService,
+      logger,
+      broadcastData: (event) => {
+        pushEvent("pty", { type: "pty_data", event });
+        searchServiceHolder.current?.notifyTerminalData(event.sessionId);
+        const { projectRoot: _projectRoot, ...syncEvent } = event;
+        syncServiceForPtyEvents?.handlePtyData(syncEvent);
+      },
+      broadcastExit: (event) => {
+        pushEvent("pty", { type: "pty_exit", event });
+        const { projectRoot: _projectRoot, ...syncEvent } = event;
+        syncServiceForPtyEvents?.handlePtyExit(syncEvent);
+      },
+      onSessionRuntimeSignal: (signal) => {
+        pushPublisherForPtySignals?.handleCliRuntimeSignal(projectId, {
+          laneId: signal.laneId,
+          sessionId: signal.sessionId,
+          runtimeState: signal.runtimeState,
         });
-      });
-    },
-    getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
-    loadPty: ptyBackend ?? (() => nodePty),
-    disposePtyBackend: ptyBackend?.dispose
-  });
-  ptyServiceForSessionChanges = ptyService;
+      },
+      onSessionUserInput: ({ sessionId }) => {
+        pushPublisherForPtySignals?.handleSessionAttentionResolved(projectId, sessionId);
+      },
+      diskPressureMonitor,
+      onSessionEnded: (event) => {
+        void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
+          logger.warn("runtime.session_delta_compute_failed", {
+            laneId: event.laneId,
+            sessionId: event.sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
+      getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+      loadPty: ptyBackend ?? (() => nodePty),
+      disposePtyBackend: ptyBackend?.dispose
+    });
+    ptyServiceForSessionChanges = ptyService;
+    teardown.push(() => ptyService.disposeAll());
 
-  const testService = createTestService({
-    db,
-    projectId,
-    testLogsDir: paths.testLogsDir,
-    logger,
-    laneService,
-    projectConfigService,
-    broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>)
-  });
-  const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
+    const testService = createTestService({
+      db,
+      projectId,
+      testLogsDir: paths.testLogsDir,
+      logger,
+      laneService,
+      projectConfigService,
+      broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>)
+    });
+    teardown.push(() => testService.disposeAll());
+    const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
 
-  laneTeardownDeps.ptyService = {
-    countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
-    disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
-  };
-  laneTeardownDeps.autoRebaseService = {
-    cancelForLane: (laneId) => autoRebaseService.cancelForLane(laneId),
-  };
-  laneTeardownDeps.rebaseSuggestionService = {
-    dismiss: (args) => rebaseSuggestionService.dismiss(args),
-  };
+    laneTeardownDeps.ptyService = {
+      countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
+      disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
+    };
+    laneTeardownDeps.autoRebaseService = {
+      cancelForLane: (laneId) => autoRebaseService.cancelForLane(laneId),
+    };
+    laneTeardownDeps.rebaseSuggestionService = {
+      dismiss: (args) => rebaseSuggestionService.dismiss(args),
+    };
 
-  const ctoMemoryService = createCtoMemoryService({
-    adeDir: paths.adeDir,
-    logger,
-  });
-  const ctoStateService = createCtoStateService({
-    db,
-    projectId,
-    adeDir: paths.adeDir,
-    ctoMemoryService,
-  });
-  const adeProjectService = createAdeProjectService({
-    projectRoot,
-    db,
-    projectId,
-    logger,
-    projectConfigService,
-    ctoStateService,
-  });
-  const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
-    db,
-    projectId,
-    projectRoot,
-    logger,
-    onEvent: (event) => pushEvent("runtime", { type: "computer_use_event", event }),
-  });
-  const iosSimulatorService = chatOnlyRuntime
-    ? null
-    : createIosSimulatorService({
+    const ctoMemoryService = createCtoMemoryService({
+      adeDir: paths.adeDir,
+      logger,
+    });
+    const ctoStateService = createCtoStateService({
+      db,
+      projectId,
+      adeDir: paths.adeDir,
+      ctoMemoryService,
+    });
+    const adeProjectService = createAdeProjectService({
+      projectRoot,
+      db,
+      projectId,
+      logger,
+      projectConfigService,
+      ctoStateService,
+    });
+    const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
+      db,
+      projectId,
+      projectRoot,
+      logger,
+      onEvent: (event) => pushEvent("runtime", { type: "computer_use_event", event }),
+    });
+    const iosSimulatorService = chatOnlyRuntime
+      ? null
+      : createIosSimulatorService({
         projectRoot,
         logger,
+        // Agent launches arrive at the brain, so this is the instance that most
+        // needs lane-correct build roots.
+        resolveLaneWorktreePath: (laneId: string): string | null => {
+          try {
+            return laneService.getLaneWorktreePath(laneId);
+          } catch {
+            return null;
+          }
+        },
         onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
       });
-  // Late-bound chat session lookup. agentChatService is created after
-  // appControlService below, so we capture a holder that the resolveLaneId
-  // closure reads at call time. The chat session store lives in agentChatService
-  // (getSessionSummary), not in sessionService (which holds terminal sessions).
-  const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
-  const appControlService = chatOnlyRuntime
-    ? null
-    : createAppControlService({
+    teardown.push(() => iosSimulatorService?.dispose());
+    // Late-bound chat session lookup. agentChatService is created after
+    // appControlService below, so we capture a holder that the resolveLaneId
+    // closure reads at call time. The chat session store lives in agentChatService
+    // (getSessionSummary), not in sessionService (which holds terminal sessions).
+    const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
+    const appControlService = chatOnlyRuntime
+      ? null
+      : createAppControlService({
         projectRoot,
         logger,
         ptyService,
@@ -1346,174 +1503,204 @@ export async function createAdeRuntime(args: {
           return matchingLane?.id ?? lanes[0]?.id ?? null;
         },
       });
-  // `built_in_browser` is hosted by the desktop's Electron main process (the
-  // browser pane owns a WebContentsView). The runtime daemon proxies calls
-  // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
-  // individual calls fail clearly. Override the socket path with
-  // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
-  // ADE home.
-  let builtInBrowserBridgeAuthToken: string | null = null;
-  const builtInBrowserBridgeSocketPath =
-    process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-    || resolveMachineAdeLayout().desktopBridgeSocketPath;
-  const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = chatOnlyRuntime
-    ? null
-    : createBuiltInBrowserDesktopBridgeClient({
+    teardown.push(() => appControlService?.dispose());
+    // `built_in_browser` is hosted by the desktop's Electron main process (the
+    // browser pane owns a WebContentsView). The runtime daemon proxies calls
+    // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
+    // individual calls fail clearly. Override the socket path with
+    // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
+    // ADE home.
+    let builtInBrowserBridgeAuthToken: string | null = null;
+    const builtInBrowserBridgeSocketPath =
+      process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+      || resolveMachineAdeLayout().desktopBridgeSocketPath;
+    const builtInBrowserBridge: BuiltInBrowserDesktopBridgeClient | null = chatOnlyRuntime
+      ? null
+      : createBuiltInBrowserDesktopBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         projectRoot,
         logger,
       });
-  // The same socket, the same credential, one more capability: plugin children
-  // run HERE, and `ade.audio.captureClip` needs a microphone only a desktop
-  // renderer has. A chat-only runtime never gets one, so it is left without the
-  // dependency entirely and the SDK's own "no microphone here" refusal stands.
-  const desktopAudioCaptureBridge = chatOnlyRuntime
-    ? null
-    : createDesktopAudioCaptureBridge({
+    teardown.push(() => builtInBrowserBridge?.dispose());
+    // The same socket, the same credential, one more capability: plugin children
+    // run HERE, and `ade.audio.captureClip` needs a microphone only a desktop
+    // renderer has. A chat-only runtime never gets one, so it is left without the
+    // dependency entirely and the SDK's own "no microphone here" refusal stands.
+    const desktopAudioCaptureBridge = chatOnlyRuntime
+      ? null
+      : createDesktopAudioCaptureBridge({
         socketPath: builtInBrowserBridgeSocketPath,
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
-  // And the rest of the SDK's Electron-only verbs — the clipboard, the native
-  // file picker, the notification centre — over the same socket and the same
-  // credential, for the same reason: this process is plain Node, and all three
-  // are Electron main-process APIs.
-  const desktopHostBridge = chatOnlyRuntime
-    ? null
-    : createDesktopHostBridge({
+    // And the rest of the SDK's Electron-only verbs — the clipboard, the native
+    // file picker, the notification centre — over the same socket and the same
+    // credential, for the same reason: this process is plain Node, and all three
+    // are Electron main-process APIs.
+    const desktopHostBridge = chatOnlyRuntime
+      ? null
+      : createDesktopHostBridge({
         socketPath: builtInBrowserBridgeSocketPath,
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
 
-  const headlessLinearServices = createHeadlessLinearServices({
-    projectRoot,
-    adeDir: paths.adeDir,
-    paths,
-    projectId,
-    db,
-    logger,
-    projectConfigService,
-    laneService,
-    operationService,
-    conflictService,
-    openExternal: async () => {},
-    onGitHubStatusChanged: (status) =>
-      pushEvent("runtime", { type: "github_status_changed", event: status }),
-    getAccountAccessToken,
-  });
-  linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
-  githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
-  prServiceRef = headlessLinearServices.prService;
-  laneTeardownDeps.fileWatcherService = {
-    countActiveForWorkspace: (id) => headlessLinearServices.fileService.countActiveWatchersForWorkspace(id),
-    stopAllForWorkspace: (id) => headlessLinearServices.fileService.stopAllWatchersForWorkspace(id),
-  };
-  const linearOAuthService = createLinearOAuthService({
-    credentials: headlessLinearServices.linearCredentialService,
-    logger,
-  });
-
-  const feedbackReporterService = createFeedbackReporterService({
-    db,
-    logger,
-    projectRoot,
-    aiIntegrationService,
-    githubService: headlessLinearServices.githubService,
-    onSubmissionUpdated: (event) => pushEvent("runtime", { type: "feedback_submission_event", event }),
-  });
-
-  let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
-
-  const orchestrationService = createOrchestrationService({
-    resolveLaneWorktree: (laneId: string): string | undefined => {
-      try {
-        return laneService.getLaneWorktreePath(laneId);
-      } catch {
-        return undefined;
-      }
-    },
-  });
-  orchestrationService.on("event", (payload) => {
-    pushEvent("orchestrator", payload as unknown as Record<string, unknown>);
-  });
-
-  let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
-  if (resolvedArgs.chatRuntime === "agent") {
-    agentChatService = createAgentChatService({
-      getOrchestrationService: () => orchestrationService,
+    const headlessLinearServices = createHeadlessLinearServices({
       projectRoot,
       adeDir: paths.adeDir,
-      transcriptsDir: paths.transcriptsDir,
-      fileService: headlessLinearServices.fileService,
-      linearIssueTracker: headlessLinearServices.linearIssueTracker,
-      githubService: headlessLinearServices.githubService,
-      linearClient: headlessLinearServices.linearClient,
-      linearCredentials: headlessLinearServices.linearCredentialService,
-      prService: headlessLinearServices.prService,
-      diskPressureMonitor,
-      getTestService: () => testService,
-      ptyService,
-      getAutomationService: () => automationServiceRef,
-      getGitService: () => gitService,
-      conflictService,
-      computerUseArtifactBrokerService,
-      laneService,
-      sessionService,
-      processRegistry,
-      projectConfigService,
+      paths,
+      projectId,
       db,
-      aiIntegrationService,
-      ctoStateService,
-      ctoMemoryService,
       logger,
-      appVersion: "ade-cli",
-      getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
-      getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
-      onLinearIssueChatLinked: publishLinearChatLink,
-      onEvent: (event) => {
-        pushEvent("runtime", event as unknown as Record<string, unknown>);
-      },
-      onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
-        analytics: productAnalyticsService,
-        projectId,
-        event,
-      }),
-      onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
-        analytics: productAnalyticsService,
-        projectId,
-        sessionId: event.sessionId,
-      }),
-      onSessionEnded: (event) => {
-        pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
-      },
-      getDirtyFileTextForPath: () => undefined,
+      projectConfigService,
+      laneService,
+      operationService,
+      conflictService,
+      openExternal: async () => {},
+      onGitHubStatusChanged: (status) =>
+        pushEvent("runtime", { type: "github_status_changed", event: status }),
+      getAccountAccessToken,
     });
-    if (typeof (headlessLinearServices.prService as { setAgentChatService?: (svc: unknown) => void }).setAgentChatService === "function") {
-      (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService);
-    }
-  }
-  agentChatServiceHolder.current = agentChatService;
-  if (agentChatService) {
-    laneTeardownDeps.agentChatService = {
-      countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
-      disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+    teardown.push(() => headlessLinearServices.dispose());
+    linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
+    githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
+    prServiceRef = headlessLinearServices.prService;
+    laneTeardownDeps.fileWatcherService = {
+      countActiveForWorkspace: (id) => headlessLinearServices.fileService.countActiveWatchersForWorkspace(id),
+      stopAllForWorkspace: (id) => headlessLinearServices.fileService.stopAllWatchersForWorkspace(id),
     };
-  }
-  autoRebaseActivityReady = true;
-  void autoRebaseService
-    .refreshActiveRebaseNeeds("activity_services_ready")
-    .catch((error) => {
-      logger.warn("autoRebase.activity_ready_refresh_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+    const linearOAuthService = createLinearOAuthService({
+      credentials: headlessLinearServices.linearCredentialService,
+      logger,
     });
-  if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
-    throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
-  }
-  const reviewService = agentChatService
-    ? createReviewService({
+    teardown.push(() => {
+      void linearOAuthService.dispose().catch(() => {});
+    });
+
+    const feedbackReporterService = createFeedbackReporterService({
+      db,
+      logger,
+      projectRoot,
+      aiIntegrationService,
+      githubService: headlessLinearServices.githubService,
+      onSubmissionUpdated: (event) => pushEvent("runtime", { type: "feedback_submission_event", event }),
+    });
+
+    let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+
+    const orchestrationService = createOrchestrationService({
+      resolveLaneWorktree: (laneId: string): string | undefined => {
+        try {
+          return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return undefined;
+        }
+      },
+    });
+    orchestrationService.on("event", (payload) => {
+      pushEvent("orchestrator", payload as unknown as Record<string, unknown>);
+    });
+    teardown.push(() => {
+      void orchestrationService?.dispose().catch(() => {});
+    });
+
+    let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
+    if (resolvedArgs.chatRuntime === "agent") {
+      agentChatService = createAgentChatService({
+        runtimeBudget: chatRuntimeBudget,
+        getOrchestrationService: () => orchestrationService,
+        projectRoot,
+        adeDir: paths.adeDir,
+        transcriptsDir: paths.transcriptsDir,
+        fileService: headlessLinearServices.fileService,
+        linearIssueTracker: headlessLinearServices.linearIssueTracker,
+        githubService: headlessLinearServices.githubService,
+        linearClient: headlessLinearServices.linearClient,
+        linearCredentials: headlessLinearServices.linearCredentialService,
+        prService: headlessLinearServices.prService,
+        diskPressureMonitor,
+        // Sleep is a machine fact, so every chat in this brain reads the one
+        // monitor. Borrowed: the chat service must not be able to dispose it out
+        // from under the account publisher, or vice versa.
+        hostPowerSource: borrowSharedMachinePowerSource(),
+        getTestService: () => testService,
+        ptyService,
+        getAutomationService: () => automationServiceRef,
+        getGitService: () => gitService,
+        conflictService,
+        computerUseArtifactBrokerService,
+        laneService,
+        sessionService,
+        processRegistry,
+        projectConfigService,
+        db,
+        aiIntegrationService,
+        ctoStateService,
+        ctoMemoryService,
+        logger,
+        appVersion: "ade-cli",
+        getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
+        getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
+        onLinearIssueChatLinked: publishLinearChatLink,
+        onEvent: (event) => {
+          pushEvent("runtime", event as unknown as Record<string, unknown>);
+        },
+        onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
+        }),
+        onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          sessionId: event.sessionId,
+        }),
+        onSessionEnded: (event) => {
+          pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
+        },
+        getDirtyFileTextForPath: () => undefined,
+      });
+      if (typeof (headlessLinearServices.prService as { setAgentChatService?: (svc: unknown) => void }).setAgentChatService === "function") {
+        (headlessLinearServices.prService as { setAgentChatService: (svc: unknown) => void }).setAgentChatService(agentChatService);
+      }
+    }
+    agentChatServiceHolder.current = agentChatService;
+    teardown.push(() => agentChatService?.forceDisposeAll?.());
+    bindIosSimulatorReleaseOnChatEnd({
+      agentChatService,
+      iosSimulatorService,
+      logger,
+    });
+    if (agentChatService) {
+      laneTeardownDeps.agentChatService = {
+        countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
+        disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+      };
+      const settleWiring = createSettleTeardownWiring({
+        agentChatService,
+        logger,
+        analytics: productAnalyticsService ?? null,
+        // The brain is the non-GUI runtime surface, matching its other analytics.
+        surface: "api",
+      });
+      settleTeardownRef.run = settleWiring.runSettleTeardown;
+      settleTeardownRef.report = settleWiring.onRemoteSettleWrite;
+      settleTeardownRef.residue = settleWiring.onSettleResidue;
+    }
+    autoRebaseActivityReady = true;
+    void autoRebaseService
+      .refreshActiveRebaseNeeds("activity_services_ready")
+      .catch((error) => {
+        logger.warn("autoRebase.activity_ready_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
+      throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
+    }
+    const reviewService = agentChatService
+      ? createReviewService({
         db,
         logger,
         projectId,
@@ -1528,10 +1715,10 @@ export async function createAdeRuntime(args: {
         prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
       })
-    : null;
-  const automationFeatureEnabled = automationsEnabledForHeadlessRuntime();
-  const automationService = automationFeatureEnabled
-    ? createAutomationService({
+      : null;
+    const automationFeatureEnabled = automationsEnabledForHeadlessRuntime();
+    const automationService = automationFeatureEnabled
+      ? createAutomationService({
         db,
         logger,
         projectId,
@@ -1548,35 +1735,37 @@ export async function createAdeRuntime(args: {
         pluginAvailability: { unavailableReason: (pluginId) => pluginStepUnavailableReason(pluginId) },
         onEvent: (event) => pushEvent("runtime", { ...event, source: "automations" }),
       })
-    : null;
-  automationServiceRef = automationService;
-  const automationSecretService = createAutomationSecretService({
-    adeDir: paths.adeDir,
-    logger,
-  });
-  // The ingress runs even when the automations feature is unavailable: its
-  // GitHub relay poll feeds prService.ingestGithubWebhook, which is how
-  // webhook-driven PR state updates reach installed (non-source) runtimes.
-  // Automation rule dispatch stays gated on automationService being present.
-  // The PR poller is constructed below; bind it before starting ingress so
-  // webhook deliveries can schedule targeted PR reconciliation immediately.
-  let prPollingServiceForIngress: { reconcilePrs: (prIds: string[]) => void } | null = null;
-  const automationIngressService = createAutomationIngressService({
-    logger,
-    automationService,
-    prService: headlessLinearServices.prService,
-    onPrStateIngested: (prIds) => prPollingServiceForIngress?.reconcilePrs(prIds),
-    secretService: automationSecretService,
-    githubService: headlessLinearServices.githubService,
-    getAccountAccessToken,
-    listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
-    ingressCursorStore: createKvIngressCursorStore(db),
-    // 30s halves worst-case webhook latency. Each poll is one request to our
-    // own relay worker (no GitHub data cost); the service floors at 30s.
-    pollIntervalMs: 30_000,
-  });
-  const linearIngressService = automationService
-    ? createLinearIngressService({
+      : null;
+    automationServiceRef = automationService;
+    teardown.push(() => automationService?.dispose());
+    const automationSecretService = createAutomationSecretService({
+      adeDir: paths.adeDir,
+      logger,
+    });
+    // The ingress runs even when the automations feature is unavailable: its
+    // GitHub relay poll feeds prService.ingestGithubWebhook, which is how
+    // webhook-driven PR state updates reach installed (non-source) runtimes.
+    // Automation rule dispatch stays gated on automationService being present.
+    // The PR poller is constructed below; bind it before starting ingress so
+    // webhook deliveries can schedule targeted PR reconciliation immediately.
+    let prPollingServiceForIngress: { reconcilePrs: (prIds: string[]) => void } | null = null;
+    const automationIngressService = createAutomationIngressService({
+      logger,
+      automationService,
+      prService: headlessLinearServices.prService,
+      onPrStateIngested: (prIds) => prPollingServiceForIngress?.reconcilePrs(prIds),
+      secretService: automationSecretService,
+      githubService: headlessLinearServices.githubService,
+      getAccountAccessToken,
+      listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
+      ingressCursorStore: createKvIngressCursorStore(db),
+      // 30s halves worst-case webhook latency. Each poll is one request to our
+      // own relay worker (no GitHub data cost); the service floors at 30s.
+      pollIntervalMs: 30_000,
+    });
+    teardown.push(() => automationIngressService?.dispose());
+    const linearIngressService = automationService
+      ? createLinearIngressService({
         db,
         projectId,
         credentialStore: new EncryptedFileCredentialStore({
@@ -1608,337 +1797,450 @@ export async function createAdeRuntime(args: {
         },
         logger,
       })
-    : null;
-  if (linearIngressService) {
-    // Availability keys off configuration, not the enabled-rule-dependent
-    // status.state ("disabled" while no Linear rule is enabled would make
-    // enabling the first Linear rule impossible).
-    automationService?.setLinearIngressAvailable(() => {
-      const status = linearIngressService.getStatus();
-      // App-connected workspaces are available before first setup: events
+      : null;
+    teardown.push(() => linearIngressService?.stop());
+    if (linearIngressService) {
+      // Availability keys off configuration, not the enabled-rule-dependent
+      // status.state ("disabled" while no Linear rule is enabled would make
+      // enabling the first Linear rule impossible).
+      automationService?.setLinearIngressAvailable(() => {
+        const status = linearIngressService.getStatus();
+        // App-connected workspaces are available before first setup: events
         // already reach the relay, and enabling the first linear.* rule is
         // what triggers the self-configuring poll.
         return Boolean(status.appManaged || (status.webhookId && status.organizationId && !status.lastError));
+      });
+      linearIngressService.start();
+    }
+    const cursorCloudIngressService = createCursorCloudIngressService({
+      db,
+      projectId,
+      credentialStore: openCursorCloudCredentialStore(projectRoot),
+      getAccountAccessToken,
+      cursorStore: createKvIngressCursorStore(db),
+      dispatch: async (record) => {
+        await agentChatService?.handleCursorCloudStatusChange(record).catch((error: unknown) => {
+          logger.warn("agent_chat.cursor_cloud_status_change_failed", {
+            eventId: record.eventId,
+            agentId: record.agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        if (!automationService) return;
+        await Promise.all(buildCursorCloudAutomationDispatches(record).map((dispatch) =>
+          automationService.dispatchIngressTrigger(dispatch).catch((error) => {
+            logger.warn("automations.cursor_cloud_relay_dispatch_failed", {
+              eventId: record.eventId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }),
+        ));
+      },
+      logger,
     });
-    linearIngressService.start();
-  }
-  const configReloadService = createConfigReloadService({
-    paths: {
-      sharedPath: adeProjectService.paths.sharedConfigPath,
-      localPath: adeProjectService.paths.localConfigPath,
-      secretPath: adeProjectService.paths.secretConfigPath,
-    },
-    projectConfigService,
-    adeProjectService,
-    automationService,
-    logger,
-    onEvent: (event) => pushEvent("runtime", { type: "project_state_event", event }),
-  });
-  void configReloadService.start().catch((error) => {
-    logger.warn("project.config_reload_start_failed", {
-      error: error instanceof Error ? error.message : String(error),
+    automationService?.setCursorCloudIngressAvailable(() => {
+      const status = cursorCloudIngressService.getStatus();
+      return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
     });
-  });
-  const automationPlannerService = automationFeatureEnabled && automationService
-    ? createAutomationPlannerService({
+    teardown.push(() => cursorCloudIngressService.stop());
+    cursorCloudIngressService.start();
+    const cursorCloudFleetService = createCursorCloudFleetService({
+      projectRoot,
+      logger,
+      listCursorCloudAgents: (args) => aiIntegrationService.listCursorCloudAgents(args),
+      listCursorCloudRuns: async (args) => {
+        const result = await aiIntegrationService.listCursorCloudRuns(args);
+        return { items: result.items as Array<Record<string, unknown>> };
+      },
+      laneService: {
+        list: (args) => laneService.list(args),
+        importBranch: (args) => laneService.importBranch(args),
+      },
+      listCursorCloudSessionLinks: async () => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        const sessions = await agentChatService.listSessions(undefined, { includeArchived: true });
+        return sessions
+          .filter((session) => Boolean(session.cursorCloudAgentId))
+          .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
+          .map((session) => ({
+            sessionId: session.sessionId,
+            agentId: session.cursorCloudAgentId ?? "",
+            laneId: session.laneId,
+            title: session.title ?? null,
+          }))
+          .filter((link) => link.agentId.length > 0);
+      },
+      openCursorCloudChat: (args) => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        return agentChatService.openCursorCloudChat(args);
+      },
+      cancelCursorCloudRun: (args) => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        return agentChatService.cancelCursorCloudRun(args);
+      },
+      getCursorCloudAgent: (agentId) => aiIntegrationService.getCursorCloudAgent(agentId),
+      getIngressStatus: () => {
+        const status = cursorCloudIngressService.getStatus();
+        return { state: status.state, lastEventAt: status.lastEventAt };
+      },
+    });
+    const configReloadService = createConfigReloadService({
+      paths: {
+        sharedPath: adeProjectService.paths.sharedConfigPath,
+        localPath: adeProjectService.paths.localConfigPath,
+        secretPath: adeProjectService.paths.secretConfigPath,
+      },
+      projectConfigService,
+      adeProjectService,
+      automationService,
+      logger,
+      onEvent: (event) => pushEvent("runtime", { type: "project_state_event", event }),
+    });
+    // Registered before the start: the start is detached, so a failure elsewhere
+    // must still be able to stop a reload that is only now settling.
+    teardown.push(() => {
+      void configReloadService.dispose().catch(() => {});
+    });
+    void configReloadService.start().catch((error) => {
+      logger.warn("project.config_reload_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    const automationPlannerService = automationFeatureEnabled && automationService
+      ? createAutomationPlannerService({
         logger,
         projectRoot,
         projectConfigService,
         laneService,
         automationService,
       })
-    : null;
+      : null;
 
-  // PR event fan-out and AI-summary services.
-  // Fan-out for the push publisher: PR lifecycle/status notifications are
-  // bridged here so the publisher never has to poll GitHub itself. Populated
-  // by pushPublisherService.start() (declared below), so it stays empty and inert
-  // when push publishing is not running.
-  const pushPrNotificationSubscribers = new Set<(notification: PushPrNotification) => void>();
-  let syncService: ReturnType<typeof createSyncService> | null = null;
-  const emitPrEvent = (event: PrEventPayload): void => {
-    pushEvent("runtime", { type: "pr_event", event });
-    if (event.type === "prs-updated") {
-      syncService?.notifyPrsUpdated();
-    }
-    if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
-      const notification: PushPrNotification = {
-        kind: event.kind,
-        prId: event.prId,
-        prNumber: event.prNumber,
-        prTitle: event.prTitle ?? null,
-        laneId: event.laneId ?? null,
-        repoOwner: event.repoOwner ?? null,
-        repoName: event.repoName ?? null,
-      };
-      for (const subscriber of pushPrNotificationSubscribers) {
-        try {
-          subscriber(notification);
-        } catch {
-          // ignore subscriber failures
+    // PR event fan-out and AI-summary services.
+    // Fan-out for the push publisher: PR lifecycle/status notifications are
+    // bridged here so the publisher never has to poll GitHub itself. Populated
+    // by pushPublisherService.start() (declared below), so it stays empty and inert
+    // when push publishing is not running.
+    const pushPrNotificationSubscribers = new Set<(notification: PushPrNotification) => void>();
+    // `syncService` is the outer declaration next to `hasSyncPeers`: a second
+    // `let` here once shadowed it, so the compaction gate's closure read a
+    // variable nothing ever assigned and reported "peers exist" forever — CRR
+    // history was never compacted, even with no paired device.
+    const emitPrEvent = (event: PrEventPayload): void => {
+      pushEvent("runtime", { type: "pr_event", event });
+      if (event.type === "prs-updated") {
+        syncService?.notifyPrsUpdated();
+      }
+      if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
+        const notification: PushPrNotification = {
+          kind: event.kind,
+          prId: event.prId,
+          prNumber: event.prNumber,
+          prTitle: event.prTitle ?? null,
+          laneId: event.laneId ?? null,
+          repoOwner: event.repoOwner ?? null,
+          repoName: event.repoName ?? null,
+        };
+        for (const subscriber of pushPrNotificationSubscribers) {
+          try {
+            subscriber(notification);
+          } catch {
+            // ignore subscriber failures
+          }
         }
       }
-    }
-  };
-  const prSummaryService = createPrSummaryService({
-    db,
-    logger,
-    projectRoot,
-    prService: headlessLinearServices.prService,
-    aiIntegrationService,
-  });
-  const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
-    db,
-    sessionService,
-    emitEvent: emitPrEvent,
-  });
-
-  // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
-  // this daemon instead of the desktop main process, so the daemon must own
-  // the background polling loop that emits `prs-updated` — otherwise PR state
-  // only refreshes when a surface happens to issue a direct read.
-  const prPollingService = createPrPollingService({
-    logger,
-    prService: headlessLinearServices.prService,
-    projectConfigService,
-    db,
-    isGithubRelayHealthy: () => automationIngressService.isGithubRelayHealthy(),
-    getGithubBackgroundPauseUntilMs: () =>
-      headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
-    onEvent: emitPrEvent,
-    onPullRequestsSnapshot: (snapshot) =>
-      prMergeAutoSettlementService.processSnapshot(snapshot),
-    onPullRequestsChanged: async ({ changedPrs, changes }) => {
-      if (changedPrs.length > 0) {
-        // Poll results must not start another hot-refresh window; doing so
-        // turns active CI into an unbounded high-frequency GitHub API loop.
-        for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
-      }
-      for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {
-        automationService?.onPullRequestChanged?.({
-          pr,
-          previousState,
-          previousChecksStatus,
-          previousReviewStatus,
-        });
-      }
-      await emitRuntimePrCardsForChanges({
-        changes,
-        dataSource: headlessLinearServices.prService,
-        chat: agentChatService,
-        logger,
-      });
-    },
-  });
-  prPollingService.start();
-  prPollingServiceForIngress = prPollingService;
-  void automationIngressService.start().catch((error) => {
-    logger.warn("automations.ingress_start_failed", {
-      error: error instanceof Error ? error.message : String(error),
+    };
+    const prSummaryService = createPrSummaryService({
+      db,
+      logger,
+      projectRoot,
+      prService: headlessLinearServices.prService,
+      aiIntegrationService,
     });
-  });
+    const prMergeAutoSettlementService = createPrMergeAutoSettlementService({
+      db,
+      sessionService,
+      emitEvent: emitPrEvent,
+    });
 
-  // Brain → Cloudflare push relay publisher. Owns push registration (from the
-  // paired phone via `push.*` sync commands) and fans agent/PR state transitions
-  // out as APNs alerts + the aggregate "agent-runs" Live Activity. Machine-level
-  // identity lives next to the sync pairing secrets under ~/.ade/secrets.
-  // One machine-level publisher shared by every project scope (keyed by the
-  // push-identity file), so a run in one project doesn't clobber the phone's
-  // single "agent-runs" Live Activity for another. Each scope wires its own
-  // chat/pty/PR signals via attachSources; the aggregate merges runs across all.
-  // This is also the canonical account-directory identity used to route an
-  // Attention click back to this exact machine, even when another machine has
-  // a project at the same path.
-  const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
-  const cloudRelayFilePath = path.join(
-    resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-    "sync-cloud-relay.json",
-  );
-  const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
-  // The plugin host was built before this identity existed. Presence rows stamp
-  // `isThisMachine` from the key, and the install ping signs with the push
-  // registration — both live here, so the host learns them here.
-  pluginHostService.setMachineContext({
-    localMachineKey: () => {
-      try {
-        return cloudRelayStore.getMachineIdentity().machineKey || null;
-      } catch {
-        // An unpaired machine has no key. Null reads as "none of these rows are
-        // mine", which is true, and far better than a wrong key marking another
-        // computer's installs as this one's.
-        return null;
-      }
-    },
-    reportInstall: async (install) => {
-      await reportPluginInstall(
-        { store: createPushRegistrationStore({ filePath: resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir), logger }), logger },
-        install,
-      );
-    },
-    // Removing the plugin removes the connection it was for. The owner id comes
-    // from the shared surface table rather than a literal, so this stays correct
-    // if the Linear package is ever renamed.
-    disconnectAccountsForPlugin: (pluginId) => {
-      if (pluginId !== builtinSurfaceOwner("linear").ownerPluginId) return;
-      headlessLinearServices.linearCredentialService.clearToken();
-      logger.info("plugin.linear_disconnected_on_uninstall", { pluginId });
-    },
-    // The microphone is the desktop's, and the label is the plugin's own
-    // display name as the SDK server resolved it — the pill has to say who is
-    // recording, and a plugin that could choose that string could name someone
-    // else. The bridge answers a typed refusal when no desktop is attached, so
-    // a capture asked for on a headless machine fails rather than hangs.
-    ...(desktopAudioCaptureBridge
-      ? {
+    // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
+    // this daemon instead of the desktop main process, so the daemon must own
+    // the background polling loop that emits `prs-updated` — otherwise PR state
+    // only refreshes when a surface happens to issue a direct read.
+    const prPollingService = createPrPollingService({
+      logger,
+      prService: headlessLinearServices.prService,
+      projectConfigService,
+      db,
+      isGithubRelayHealthy: () => automationIngressService.isGithubRelayHealthy(),
+      getGithubBackgroundPauseUntilMs: () =>
+        headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
+      onEvent: emitPrEvent,
+      onPullRequestsSnapshot: (snapshot) =>
+        prMergeAutoSettlementService.processSnapshot(snapshot),
+      onPullRequestsChanged: async ({ changedPrs, changes }) => {
+        if (changedPrs.length > 0) {
+          // Poll results must not start another hot-refresh window; doing so
+          // turns active CI into an unbounded high-frequency GitHub API loop.
+          for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
+        }
+        for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {
+          automationService?.onPullRequestChanged?.({
+            pr,
+            previousState,
+            previousChecksStatus,
+            previousReviewStatus,
+          });
+        }
+        await emitRuntimePrCardsForChanges({
+          changes,
+          dataSource: headlessLinearServices.prService,
+          chat: agentChatService,
+          logger,
+        });
+      },
+    });
+    teardown.push(() => prPollingService.dispose());
+    prPollingService.start();
+    prPollingServiceForIngress = prPollingService;
+    void automationIngressService.start().catch((error) => {
+      logger.warn("automations.ingress_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    // A repaired or removed GitHub App credential ends the relay's auth-pending
+    // cooldown at once, the way the desktop app's `onAppUserAuthChanged` does.
+    // The brain has no such callback — the credential is written by whichever
+    // process ran the device flow — so it watches the shared machine file
+    // instead. Best-effort: a store with no watcher leaves the behaviour as it
+    // was, and the cooldown expires on its own after five minutes.
+    //
+    // Installed AFTER `start()`, which marks the service started synchronously: a
+    // credential change during startup would otherwise poll the relay through a
+    // service that has not started, and the poll `start()` runs supersedes it.
+    stopCredentialWatch = watchCredentialsForRelayRepair({
+      logger,
+      pollNow: () => automationIngressService.pollNow(),
+    });
+    teardown.push(() => stopCredentialWatch?.());
+
+    // Brain → Cloudflare push relay publisher. Owns push registration (from the
+    // paired phone via `push.*` sync commands) and fans agent/PR state transitions
+    // out as APNs alerts + the aggregate "agent-runs" Live Activity. Machine-level
+    // identity lives next to the sync pairing secrets under ~/.ade/secrets.
+    // One machine-level publisher shared by every project scope (keyed by the
+    // push-identity file), so a run in one project doesn't clobber the phone's
+    // single "agent-runs" Live Activity for another. Each scope wires its own
+    // chat/pty/PR signals via attachSources; the aggregate merges runs across all.
+    // This is also the canonical account-directory identity used to route an
+    // Attention click back to this exact machine, even when another machine has
+    // a project at the same path.
+    const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
+    const { resolveDeviceDisplayName } = await import("./services/sync/deviceRegistryService");
+    const cloudRelayFilePath = path.join(
+      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      "sync-cloud-relay.json",
+    );
+    const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
+    // The plugin host was built before this identity existed. Presence rows stamp
+    // `isThisMachine` from the key, and the install ping signs with the push
+    // registration — both live here, so the host learns them here.
+    pluginHostService.setMachineContext({
+      localMachineKey: () => {
+        try {
+          return cloudRelayStore.getMachineIdentity().machineKey || null;
+        } catch {
+          // An unpaired machine has no key. Null reads as "none of these rows are
+          // mine", which is true, and far better than a wrong key marking another
+          // computer's installs as this one's.
+          return null;
+        }
+      },
+      reportInstall: async (install) => {
+        await reportPluginInstall(
+          { store: createPushRegistrationStore({ filePath: resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir), logger }), logger },
+          install,
+        );
+      },
+      // Removing the plugin removes the connection it was for. The owner id comes
+      // from the shared surface table rather than a literal, so this stays correct
+      // if the Linear package is ever renamed.
+      disconnectAccountsForPlugin: (pluginId) => {
+        if (pluginId !== builtinSurfaceOwner("linear").ownerPluginId) return;
+        headlessLinearServices.linearCredentialService.clearToken();
+        logger.info("plugin.linear_disconnected_on_uninstall", { pluginId });
+      },
+      // The microphone is the desktop's, and the label is the plugin's own
+      // display name as the SDK server resolved it — the pill has to say who is
+      // recording, and a plugin that could choose that string could name someone
+      // else. The bridge answers a typed refusal when no desktop is attached, so
+      // a capture asked for on a headless machine fails rather than hangs.
+      ...(desktopAudioCaptureBridge
+        ? {
           captureAudioClip: (capture: { pluginId: string; label: string; maxDurationMs?: number }) =>
             desktopAudioCaptureBridge.captureClip({
               label: capture.label,
               ...(capture.maxDurationMs != null ? { maxDurationMs: capture.maxDurationMs } : {}),
             }),
         }
-      : {}),
-    // The Electron-only SDK verbs, same socket and same "no desktop means a
-    // typed refusal" contract as the microphone above.
-    ...(desktopHostBridge
-      ? {
+        : {}),
+      // The Electron-only SDK verbs, same socket and same "no desktop means a
+      // typed refusal" contract as the microphone above.
+      ...(desktopHostBridge
+        ? {
           desktopHost: {
             readClipboard: () => desktopHostBridge.readClipboard(),
             writeClipboard: (text: string) => desktopHostBridge.writeClipboard(text),
             pickFile: (options: PluginFilePickerOptions) => desktopHostBridge.pickFile(options),
           },
         }
-      : {}),
-    /**
-     * `ade.notifications.post`, fanned out to whatever this machine has.
-     *
-     * This is the sanctioned replacement for a plugin borrowing
-     * `session.requestSessionAttention` (refused below). The difference is not
-     * the transport — it is that the plugin's name rides on the payload, the
-     * post is counted against a per-plugin ceiling before it reaches here, and
-     * a post that reached nobody says so instead of quietly succeeding.
-     *
-     * Partial delivery is a success. A user with no phone paired should not see
-     * their plugins reporting errors for a notification that appeared on their
-     * desktop exactly as intended, so `delivered` carries what landed and only
-     * an empty result is a refusal.
-     */
-    postNotification: async ({ pluginId, label, title, body, target }) => {
-      const delivered: PluginNotificationTarget[] = [];
-      if (target !== "mobile") {
-        try {
-          const shown = await desktopHostBridge?.notify({
-            title,
-            ...(body ? { body } : {}),
-            requesterLabel: label,
-          });
-          if (shown) delivered.push("desktop");
-        } catch (error) {
-          // A missing desktop is the ordinary case on a headless machine, and
-          // it must not sink a post the phone can still take.
-          logger.debug("plugin.notification_desktop_failed", {
-            pluginId,
-            error: error instanceof Error ? error.message : String(error),
-          });
+        : {}),
+      /**
+       * `ade.notifications.post`, fanned out to whatever this machine has.
+       *
+       * This is the sanctioned replacement for a plugin borrowing
+       * `session.requestSessionAttention` (refused below). The difference is not
+       * the transport — it is that the plugin's name rides on the payload, the
+       * post is counted against a per-plugin ceiling before it reaches here, and
+       * a post that reached nobody says so instead of quietly succeeding.
+       *
+       * Partial delivery is a success. A user with no phone paired should not see
+       * their plugins reporting errors for a notification that appeared on their
+       * desktop exactly as intended, so `delivered` carries what landed and only
+       * an empty result is a refusal.
+       */
+      postNotification: async ({ pluginId, label, title, body, target }) => {
+        const delivered: PluginNotificationTarget[] = [];
+        if (target !== "mobile") {
+          try {
+            const shown = await desktopHostBridge?.notify({
+              title,
+              ...(body ? { body } : {}),
+              requesterLabel: label,
+            });
+            if (shown) delivered.push("desktop");
+          } catch (error) {
+            // A missing desktop is the ordinary case on a headless machine, and
+            // it must not sink a post the phone can still take.
+            logger.debug("plugin.notification_desktop_failed", {
+              pluginId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
-      }
-      if (target !== "desktop") {
-        try {
-          const queued = pushPublisherService?.publishPluginNotification({
-            pluginId,
-            pluginLabel: label,
-            title,
-            ...(body ? { body } : {}),
-          });
-          if (queued) delivered.push("mobile");
-        } catch (error) {
-          logger.debug("plugin.notification_mobile_failed", {
-            pluginId,
-            error: error instanceof Error ? error.message : String(error),
-          });
+        if (target !== "desktop") {
+          try {
+            const queued = pushPublisherService?.publishPluginNotification({
+              pluginId,
+              pluginLabel: label,
+              title,
+              ...(body ? { body } : {}),
+            });
+            if (queued) delivered.push("mobile");
+          } catch (error) {
+            logger.debug("plugin.notification_mobile_failed", {
+              pluginId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
-      }
-      if (delivered.length === 0) throw pluginNotificationUnavailable();
-      return { delivered };
-    },
-  });
-  const syncDeviceIdPath = path.join(
-    resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-    "sync-device-id",
-  );
-
-  /**
-   * Which plugins each machine on the account has installed.
-   *
-   * Bound even though this process cannot run the directory fan-out: the
-   * `plugins.presenceList` remote command answers `{plugins: []}` when nothing
-   * is bound, and a caller files that under this machine's key — "this computer
-   * has no plugins" — which DELETES its stored rows on every peer. Publishing
-   * this machine's own rows and answering that pull honestly is the whole job
-   * here.
-   *
-   * The pull half is deliberately inert: `resolveTargetIdForMachineKey` and
-   * `callMachineMethod` need the paired-target registry and the machine-to-
-   * machine call path, both of which live in the desktop main process
-   * (`remoteConnectionService`). The brain has neither, so the directory is
-   * reported as unavailable — the contract's own "don't know" — rather than
-   * faked. Peers still converge: each one pulls FROM this machine.
-   */
-  const pluginPresenceService = createPluginPresenceService({
-    db,
-    localMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
-    listLocalPlugins: () => pluginHostService.listPresenceRows(),
-    listMachines: async () => null,
-    resolveTargetIdForMachineKey: () => null,
-    callMachineMethod: () =>
-      Promise.reject(new Error("This computer cannot call other machines directly.")),
-    logger,
-  });
-  setPluginPresenceService(pluginPresenceService);
-  // Seed this machine's rows so presence has a floor before the first install.
-  void pluginPresenceService.publishLocalPresence().catch((error: unknown) => {
-    logger.debug("plugin.presence_seed_failed", {
-      error: error instanceof Error ? error.message : String(error),
+        if (delivered.length === 0) throw pluginNotificationUnavailable();
+        return { delivered };
+      },
     });
-  });
+    const syncDeviceIdPath = path.join(
+      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      "sync-device-id",
+    );
 
-  const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
-  const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
-    const store = createPushRegistrationStore({ filePath: pushRelayFilePath, logger });
-    return {
+    /**
+     * Which plugins each machine on the account has installed.
+     *
+     * Bound even though this process cannot run the directory fan-out: the
+     * `plugins.presenceList` remote command answers `{plugins: []}` when nothing
+     * is bound, and a caller files that under this machine's key — "this computer
+     * has no plugins" — which DELETES its stored rows on every peer. Publishing
+     * this machine's own rows and answering that pull honestly is the whole job
+     * here.
+     *
+     * The pull half is deliberately inert: `resolveTargetIdForMachineKey` and
+     * `callMachineMethod` need the paired-target registry and the machine-to-
+     * machine call path, both of which live in the desktop main process
+     * (`remoteConnectionService`). The brain has neither, so the directory is
+     * reported as unavailable — the contract's own "don't know" — rather than
+     * faked. Peers still converge: each one pulls FROM this machine.
+     */
+    const pluginPresenceService = createPluginPresenceService({
+      db,
+      localMachineKey: () => cloudRelayStore.getMachineIdentity().machineKey,
+      listLocalPlugins: () => pluginHostService.listPresenceRows(),
+      listMachines: async () => null,
+      resolveTargetIdForMachineKey: () => null,
+      callMachineMethod: () =>
+        Promise.reject(new Error("This computer cannot call other machines directly.")),
       logger,
-      store,
-      relayClient: createPushRelayClient({
-        store,
+    });
+    setPluginPresenceService(pluginPresenceService);
+    // Only unbind the presence ref if it is still OURS: another project scope in
+    // this process may have bound its own after this one did.
+    teardown.push(() => {
+      if (getPluginPresenceService() === pluginPresenceService) setPluginPresenceService(null);
+      pluginPresenceService.dispose();
+    });
+    // Seed this machine's rows so presence has a floor before the first install.
+    void pluginPresenceService.publishLocalPresence().catch((error: unknown) => {
+      logger.debug("plugin.presence_seed_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
+    const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
+    const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
+      const store = createPushRegistrationStore({ filePath: pushRelayFilePath, logger });
+      return {
         logger,
-        getAccountAccessToken,
-        getAccountUserId: () => {
+        store,
+        relayClient: createPushRelayClient({
+          store,
+          logger,
+          getAccountAccessToken,
+          getAccountUserId: () => {
+            const status = accountAuthService.getStatus();
+            return status.signedIn ? status.userId?.trim() || null : null;
+          },
+        }),
+        // The name the user actually recognizes — the macOS ComputerName ("Arul's
+        // Mac Studio"), same as the sync device registry publishes. `os.hostname()`
+        // is the network hostname ("Mac.lan"), and Activity showing that made the
+        // machine look like a different one from the one in the sync UI. Passed as
+        // a getter, not a value: `resolveDeviceDisplayName` answers with the
+        // hostname fallback synchronously and swaps in the ComputerName when its
+        // async probe lands, so a value captured here would latch the fallback for
+        // the life of the brain. Off darwin it resolves to `os.hostname()` anyway,
+        // so Windows/Linux keep exactly the name they publish today.
+        machineName: () => resolveDeviceDisplayName(),
+        getAccountOwnerId: () => {
           const status = accountAuthService.getStatus();
           return status.signedIn ? status.userId?.trim() || null : null;
         },
-      }),
-      machineName: os.hostname(),
-      getAccountOwnerId: () => {
-        const status = accountAuthService.getStatus();
-        return status.signedIn ? status.userId?.trim() || null : null;
-      },
-      getAccountMachineIdentity: () => {
-        const { machineKey } = cloudRelayStore.getMachineIdentity();
-        let deviceId: string | null = null;
-        try {
-          deviceId = fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
-        } catch {
-          deviceId = null;
-        }
-        return { machineKey, deviceId };
-      },
-      activityRosterProvider: resolvedArgs.syncRuntime?.activityRosterProvider,
-    };
-  });
-  pushPublisherService.setActivityRosterProvider(
-    resolvedArgs.syncRuntime?.activityRosterProvider ?? null,
-  );
-  const detachPushSources = publishPushEvents
-    ? pushPublisherService.attachSources(projectId, {
+        getAccountMachineIdentity: () => {
+          const { machineKey } = cloudRelayStore.getMachineIdentity();
+          let deviceId: string | null = null;
+          try {
+            deviceId = fs.readFileSync(syncDeviceIdPath, "utf8").trim() || null;
+          } catch {
+            deviceId = null;
+          }
+          return { machineKey, deviceId };
+        },
+        activityRosterProvider: resolvedArgs.syncRuntime?.activityRosterProvider,
+      };
+    });
+    pushPublisherService.setActivityRosterProvider(
+      resolvedArgs.syncRuntime?.activityRosterProvider ?? null,
+    );
+    const detachPushSources = publishPushEvents
+      ? pushPublisherService.attachSources(projectId, {
         // The lightweight no-agent headless chat stub intentionally exposes
         // only its request/response surface. Do not treat it as an event
         // source unless it implements the full subscription contract.
@@ -1988,231 +2290,246 @@ export async function createAdeRuntime(args: {
           }
         },
       })
-    : () => {};
-  if (publishPushEvents) {
-    pushPublisherForPtySignals = pushPublisherService;
-    void pushPublisherService.start().catch((error) => {
-      logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
-    });
-  }
+      : () => {};
+    // Detach only this scope's signals; the shared publisher outlives the scope.
+    teardown.push(() => detachPushSources());
+    if (publishPushEvents) {
+      pushPublisherForPtySignals = pushPublisherService;
+      void pushPublisherService.start().catch((error) => {
+        logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    }
 
-  let lastDailyAnalyticsDay: string | null = null;
-  let dailyAnalyticsInFlight: Promise<void> | null = null;
-  let usageTrackingService: ReturnType<typeof createUsageTrackingService>;
-  usageTrackingService = createUsageTrackingService({
-    logger,
-    db,
-    pollIntervalMs: 120_000,
-    onUpdate: (snapshot) => {
-      pushEvent("runtime", { type: "usage", snapshot });
-      if (!productAnalyticsService.getStatus().effective || dailyAnalyticsInFlight) return;
-      const target = completedDailyUsageAnalyticsTarget();
-      if (!target || lastDailyAnalyticsDay === target.day) return;
-      const current = Promise.resolve()
-        .then(async () => {
-          // Report the last completed local day. Capturing the in-progress
-          // "today" bucket on the first poll systematically missed providers,
-          // models, and actions used later in the day.
-          const stats = await usageTrackingService.getAdeUsageStats({
-            preset: "today",
-            until: target.occurredAt,
-            scope: "project",
-          });
-          captureDailyUsageAnalytics({
-            analytics: productAnalyticsService,
-            stats,
-            projectId,
-            reportDay: target.day,
-            occurredAt: target.occurredAt,
-          });
-          lastDailyAnalyticsDay = target.day;
-        })
-        .catch((error) => {
-          logger.debug("product_analytics.daily_summary_failed", {
-            errorKind: error instanceof Error ? error.name : "unknown",
-          });
-        })
-        .finally(() => {
-          if (dailyAnalyticsInFlight === current) dailyAnalyticsInFlight = null;
-        });
-      dailyAnalyticsInFlight = current;
-    },
-    projectRoot,
-  });
-  const storageInsightsService = createStorageInsightsService({
-    projectRoot,
-    adeHome: resolveMachineAdeLayout().adeDir,
-    db,
-    logger,
-    diskPressure: diskPressureMonitor,
-    isPathActive: (filePath) =>
-      Boolean(agentChatService?.isTranscriptPathActive(filePath))
-      || ptyService.isTranscriptPathActive(filePath)
-      || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
-    projectId,
-    laneService,
-    projectConfigService,
-    releaseLaneRuntimeResources: (laneId) => {
-      releaseLaneRuntimeResources({ portAllocationService, laneProxyService }, laneId);
-    },
-    // One bounded `ade_feature_used` per completed maintenance run at the daemon
-    // boundary (deduped to 20 h by the service).
-    captureAnalytics: (input) => {
-      productAnalyticsService.capture(input);
-    },
-  // Removing proof files from Settings must drop their records too,
-  // otherwise the drawer keeps listing items whose bytes are gone.
-  purgeProofRecordsUnder: (removedPath) => {
-    computerUseArtifactBrokerService.purgeArtifactRecordsUnder(removedPath);
-  },
-    listInstalledPluginIds,
-  });
-  const budgetCapService = createBudgetCapService({
-    db,
-    logger,
-    projectConfigService,
-    usageTrackingService,
-  });
-  // Cloud tunnel relay (phone → Cloudflare DO → this brain). The store
-  // instance is shared with the sync service so the relay candidate in
-  // pairingConnectInfo and the tunnel client use one machine identity.
-  const { createMachineRelayTunnel } = await import("./services/sync/machineRelayTunnel");
-  const { tunnel: syncTunnelClientService, gate: relayTunnelGate } = await createMachineRelayTunnel({
-    logger,
-    configStore: cloudRelayStore,
-    configPath: cloudRelayFilePath,
-    accountAuthService,
-    hostListener: resolvedArgs.syncRuntime?.sharedSyncListener ?? null,
-    onPublicationStateChanged: () => {
-      // Relay state changes are machine-level; without this nudge an idle
-      // machine emits no sync-status snapshot and the desktop relay banner
-      // never appears (or never clears).
-      syncService?.notifyRouteStateChanged();
-      resolvedArgs.syncRuntime?.requestAccountMachinePublish?.();
-    },
-    captureAnalytics: (input) => {
-      productAnalyticsService.captureInternal(input);
-    },
-  });
-
-  let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
-  if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
-    const { createSyncService } = await import("./services/sync/syncService");
-    syncService = createSyncService({
-      db,
-      usageTrackingService,
-      productAnalyticsService,
+    let lastDailyAnalyticsDay: string | null = null;
+    let dailyAnalyticsInFlight: Promise<void> | null = null;
+    let usageTrackingService: ReturnType<typeof createUsageTrackingService>;
+    usageTrackingService = createUsageTrackingService({
       logger,
-      getAccountDirectoryHealth: resolvedArgs.syncRuntime.getAccountDirectoryHealth,
-      requestAccountMachinePublish: resolvedArgs.syncRuntime.requestAccountMachinePublish,
-      accountAuthService,
-      projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
-      runtimeProjectId: projectId,
+      db,
+      pollIntervalMs: 120_000,
+      onUpdate: (snapshot) => {
+        pushEvent("runtime", { type: "usage", snapshot });
+        if (!productAnalyticsService.getStatus().effective || dailyAnalyticsInFlight) return;
+        const target = completedDailyUsageAnalyticsTarget();
+        if (!target || lastDailyAnalyticsDay === target.day) return;
+        const current = Promise.resolve()
+          .then(async () => {
+            // Report the last completed local day. Capturing the in-progress
+            // "today" bucket on the first poll systematically missed providers,
+            // models, and actions used later in the day.
+            const stats = await usageTrackingService.getAdeUsageStats({
+              preset: "today",
+              until: target.occurredAt,
+              scope: "project",
+            });
+            captureDailyUsageAnalytics({
+              analytics: productAnalyticsService,
+              stats,
+              projectId,
+              reportDay: target.day,
+              occurredAt: target.occurredAt,
+            });
+            lastDailyAnalyticsDay = target.day;
+          })
+          .catch((error) => {
+            logger.debug("product_analytics.daily_summary_failed", {
+              errorKind: error instanceof Error ? error.name : "unknown",
+            });
+          })
+          .finally(() => {
+            if (dailyAnalyticsInFlight === current) dailyAnalyticsInFlight = null;
+          });
+        dailyAnalyticsInFlight = current;
+      },
       projectRoot,
-      appVersion: resolvedArgs.syncRuntime.appVersion ?? "ade-cli",
-      runtimeKind: resolvedArgs.syncRuntime.runtimeKind ?? "headless",
-      localDeviceIdPath: resolvedArgs.syncRuntime.localDeviceIdPath,
-      phonePairingStateDir: resolvedArgs.syncRuntime.phonePairingStateDir,
-      fileService: headlessLinearServices.fileService,
+    });
+    teardown.push(() => usageTrackingService.dispose());
+    const storageInsightsService = createStorageInsightsService({
+      projectRoot,
+      adeHome: resolveMachineAdeLayout().adeDir,
+      db,
+      logger,
+      diskPressure: diskPressureMonitor,
+      isPathActive: (filePath) =>
+        Boolean(agentChatService?.isTranscriptPathActive(filePath))
+        || ptyService.isTranscriptPathActive(filePath)
+        || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
+      projectId,
       laneService,
-      gitService,
-      githubService: headlessLinearServices.githubService,
-      diffService,
-      conflictService,
-      operationService,
-      prService: headlessLinearServices.prService,
-      prSummaryService,
-      sessionService,
-      sessionDeltaService,
-      ptyService,
-      aiIntegrationService,
-      orchestrationService,
       projectConfigService,
-      portAllocationService,
-      laneEnvironmentService,
-      laneTemplateService,
-      rebaseSuggestionService,
-      autoRebaseService,
-      computerUseArtifactBrokerService,
-      agentChatService,
-      pushPublisherService,
-      ctoStateService,
-      ctoMemoryService,
-      linearCredentialService: headlessLinearServices.linearCredentialService,
-      linearOAuthService,
-      getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
-      getExternalSessionsService: () => externalSessionsService,
-      sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
-      hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
-      hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
-      forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? false,
-      projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
-      rosterProvider: resolvedArgs.syncRuntime.rosterProvider,
-      foreignChatProvider: resolvedArgs.syncRuntime.foreignChatProvider,
-      personalChatScope: resolvedArgs.syncRuntime.personalChatScope,
-      remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
-      getModelPickerStore: () => getSharedModelPickerStore(db),
-      // The same instance `plugin.usageSummary` reads: the host writes frame
-      // counts into it, and a host restart must not swap it for another.
-      pluginSyncMeter,
-      cloudRelayStore,
-      syncTunnelClientService,
-      onStatusChanged: (snapshot) => {
-        pushEvent("runtime", { type: "sync-status", snapshot });
+      releaseLaneRuntimeResources: (laneId) => {
+        releaseLaneRuntimeResources({ portAllocationService, laneProxyService }, laneId);
+      },
+      // One bounded `ade_feature_used` per completed maintenance run at the daemon
+      // boundary (deduped to 20 h by the service).
+      captureAnalytics: (input) => {
+        productAnalyticsService.capture(input);
+      },
+      // Removing proof files from Settings must drop their records too,
+      // otherwise the drawer keeps listing items whose bytes are gone.
+      purgeProofRecordsUnder: (removedPath) => {
+        computerUseArtifactBrokerService.purgeArtifactRecordsUnder(removedPath);
+      },
+      listInstalledPluginIds,
+    });
+    teardown.push(() => storageInsightsService.dispose());
+    const budgetCapService = createBudgetCapService({
+      db,
+      logger,
+      projectConfigService,
+      usageTrackingService,
+    });
+    // Cloud tunnel relay (phone → Cloudflare DO → this brain). The store
+    // instance is shared with the sync service so the relay candidate in
+    // pairingConnectInfo and the tunnel client use one machine identity.
+    const { createMachineRelayTunnel } = await import("./services/sync/machineRelayTunnel");
+    const { tunnel: syncTunnelClientService, gate: relayTunnelGate } = await createMachineRelayTunnel({
+      logger,
+      configStore: cloudRelayStore,
+      configPath: cloudRelayFilePath,
+      accountAuthService,
+      hostListener: resolvedArgs.syncRuntime?.sharedSyncListener ?? null,
+      onPublicationStateChanged: () => {
+        // Relay state changes are machine-level; without this nudge an idle
+        // machine emits no sync-status snapshot and the desktop relay banner
+        // never appears (or never clears).
+        syncService?.notifyRouteStateChanged();
+        resolvedArgs.syncRuntime?.requestAccountMachinePublish?.();
+      },
+      captureAnalytics: (input) => {
+        productAnalyticsService.captureInternal(input);
       },
     });
-    syncServiceForPtyEvents = syncService;
-  }
+    // The tunnel client is machine-level and shared across scopes — closing one
+    // project must not sever the relay for the others. The daemon's shutdown path
+    // (disposeServeResources) stops it. Drop only THIS scope's lease
+    // subscription, or a disposed scope could later stop the shared tunnel on a
+    // lease transition it no longer has any business observing.
+    teardown.push(() => relayTunnelGate.dispose());
+    // Registered before the sync service exists: the closure reads the variable
+    // at drain time, so a throw inside the initialization below still stops it.
+    teardown.push(() => syncService?.dispose());
 
-  if (syncService) {
-    const currentSyncService = syncService;
-    const initializeSyncService = async () => {
-      try {
-        await currentSyncService.initialize();
-      } catch (error) {
-        logger.warn("sync.runtime_initialize_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
-    if (resolvedArgs.syncRuntime?.initializeInBackground === true) {
-      void initializeSyncService();
-    } else {
-      await initializeSyncService();
+    let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
+    if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
+      const { createSyncService } = await import("./services/sync/syncService");
+      syncService = createSyncService({
+        db,
+        usageTrackingService,
+        productAnalyticsService,
+        logger,
+        getAccountDirectoryHealth: resolvedArgs.syncRuntime.getAccountDirectoryHealth,
+        requestAccountMachinePublish: resolvedArgs.syncRuntime.requestAccountMachinePublish,
+        accountAuthService,
+        projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
+        runtimeProjectId: projectId,
+        projectRoot,
+        appVersion: resolvedArgs.syncRuntime.appVersion ?? "ade-cli",
+        runtimeKind: resolvedArgs.syncRuntime.runtimeKind ?? "headless",
+        localDeviceIdPath: resolvedArgs.syncRuntime.localDeviceIdPath,
+        phonePairingStateDir: resolvedArgs.syncRuntime.phonePairingStateDir,
+        fileService: headlessLinearServices.fileService,
+        laneService,
+        gitService,
+        githubService: headlessLinearServices.githubService,
+        diffService,
+        conflictService,
+        operationService,
+        prService: headlessLinearServices.prService,
+        prSummaryService,
+        sessionService,
+        sessionDeltaService,
+        ptyService,
+        aiIntegrationService,
+        orchestrationService,
+        projectConfigService,
+        portAllocationService,
+        laneEnvironmentService,
+        laneTemplateService,
+        rebaseSuggestionService,
+        autoRebaseService,
+        computerUseArtifactBrokerService,
+        agentChatService,
+        cursorCloudFleetService,
+        pushPublisherService,
+        ctoStateService,
+        ctoMemoryService,
+        linearCredentialService: headlessLinearServices.linearCredentialService,
+        linearOAuthService,
+        getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
+        getExternalSessionsService: () => externalSessionsService,
+        sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
+        hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
+        hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
+        forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? false,
+        projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
+        rosterProvider: resolvedArgs.syncRuntime.rosterProvider,
+        foreignChatProvider: resolvedArgs.syncRuntime.foreignChatProvider,
+        personalChatScope: resolvedArgs.syncRuntime.personalChatScope,
+        remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
+        getModelPickerStore: () => getSharedModelPickerStore(db),
+        // The same instance `plugin.usageSummary` reads: the host writes frame
+        // counts into it, and a host restart must not swap it for another.
+        pluginSyncMeter,
+        cloudRelayStore,
+        syncTunnelClientService,
+        onStatusChanged: (snapshot) => {
+          pushEvent("runtime", { type: "sync-status", snapshot });
+        },
+      });
+      syncServiceForPtyEvents = syncService;
     }
-  }
 
-  const searchService = createProjectSearchService({
-    cacheDir: paths.cacheDir,
-    transcriptsDir: paths.transcriptsDir,
-    chatTranscriptsDir: paths.chatTranscriptsDir,
-    logger,
-    sessionService,
-    laneService,
-    agentChatService,
-    prService: headlessLinearServices.prService ?? null,
-    gitService,
-    repoSlug: async () => {
-      const status = await headlessLinearServices.githubService.getRemoteStatus().catch(() => ({ repo: null }));
-      return status.repo ?? null;
-    },
-    fileService: headlessLinearServices.fileService ?? null,
-    artifactBroker: computerUseArtifactBrokerService,
-    linearIssueTracker: headlessLinearServices.linearIssueTracker ?? null,
-    backfillDelayMs: 5_000,
-  });
-  searchServiceHolder.current = searchService;
-  headlessLinearServices.prService?.setEventEmitter(createPrEventFanout(
-    emitPrEvent,
-    (event) => {
-      if (event.type === "prs-updated") {
-        for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
+    if (syncService) {
+      const currentSyncService = syncService;
+      const initializeSyncService = async () => {
+        try {
+          await currentSyncService.initialize();
+        } catch (error) {
+          logger.warn("sync.runtime_initialize_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      };
+      if (resolvedArgs.syncRuntime?.initializeInBackground === true) {
+        void initializeSyncService();
+      } else {
+        await initializeSyncService();
       }
-    },
-  ));
-  const agentChatImportedRefsSource = agentChatService;
-  const chatImportedRefsProvider = agentChatImportedRefsSource
-    ? async () => {
+    }
+
+    const searchService = createProjectSearchService({
+      cacheDir: paths.cacheDir,
+      transcriptsDir: paths.transcriptsDir,
+      chatTranscriptsDir: paths.chatTranscriptsDir,
+      logger,
+      sessionService,
+      laneService,
+      agentChatService,
+      prService: headlessLinearServices.prService ?? null,
+      gitService,
+      repoSlug: async () => {
+        const status = await headlessLinearServices.githubService.getRemoteStatus().catch(() => ({ repo: null }));
+        return status.repo ?? null;
+      },
+      fileService: headlessLinearServices.fileService ?? null,
+      artifactBroker: computerUseArtifactBrokerService,
+      linearIssueTracker: headlessLinearServices.linearIssueTracker ?? null,
+      backfillDelayMs: 5_000,
+    });
+    searchServiceHolder.current = searchService;
+    teardown.push(() => searchService.dispose());
+    headlessLinearServices.prService?.setEventEmitter(createPrEventFanout(
+      emitPrEvent,
+      (event) => {
+        if (event.type === "prs-updated") {
+          for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
+        }
+      },
+    ));
+    const agentChatImportedRefsSource = agentChatService;
+    const chatImportedRefsProvider = agentChatImportedRefsSource
+      ? async () => {
         const sessions = await agentChatImportedRefsSource.listSessions(undefined, {
           includeIdentity: true,
           includeAutomation: true,
@@ -2228,176 +2545,134 @@ export async function createAdeRuntime(args: {
           }];
         });
       }
-    : undefined;
-  externalSessionsService = createExternalSessionsService({
-    projectRoot,
-    laneService,
-    sessionService,
-    ptyService,
-    logger,
-    chatImporter: agentChatService,
-    ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
-  });
-
-  const runtime: AdeRuntime = {
-    projectRoot,
-    workspaceRoot,
-    projectId,
-    project,
-    paths,
-    logger,
-    db,
-    keybindingsService,
-    laneService,
-    laneEnvironmentService,
-    laneTemplateService,
-    portAllocationService,
-    laneProxyService,
-    oauthRedirectService,
-    runtimeDiagnosticsService,
-    rebaseSuggestionService,
-    autoRebaseService,
-    sessionService,
-    sessionDeltaService,
-    onboardingService,
-    operationService,
-    projectConfigService,
-    projectSecretService,
-    conflictService,
-    gitService,
-    diffService,
-    syncService,
-    pushPublisherService,
-    syncHostService: syncService?.getHostService() ?? null,
-    laneWorktreeLockService,
-    ptyService,
-    testService,
-    reviewService,
-    searchService,
-    externalSessionsService,
-    aiIntegrationService,
-    agentChatService,
-    orchestrationService,
-    ctoStateService,
-    ctoMemoryService,
-    adeProjectService,
-    githubService: headlessLinearServices.githubService,
-    accountAuthService,
-    linearCredentialService: headlessLinearServices.linearCredentialService,
-    linearOAuthService,
-    prService: headlessLinearServices.prService,
-    prSummaryService,
-    fileService: headlessLinearServices.fileService,
-    linearIssueTracker: headlessLinearServices.linearIssueTracker,
-    feedbackReporterService,
-    usageTrackingService,
-    productAnalyticsService,
-    usageProductAnalyticsExporter,
-    storageInsightsService,
-    budgetCapService,
-    automationService,
-    automationIngressService,
-    linearIngressService,
-    automationPlannerService,
-    computerUseArtifactBrokerService,
-    iosSimulatorService,
-    appControlService,
-    builtInBrowserService: builtInBrowserBridge,
-    configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
-      if (!builtInBrowserBridge) return false;
-      const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
-        socketPath: builtInBrowserBridgeSocketPath,
-        authToken,
-      });
-      if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
-      return verified;
-    },
-    eventBuffer,
-    isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
-    pluginHostService,
-    dispose: () => {
-      const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
-      if (staleSessionReconcileTimer) {
-        clearTimeout(staleSessionReconcileTimer);
-      }
-      // Drops only THIS scope's plugin binding. The host itself is machine-
-      // scoped and outlives the project; the daemon disposes it at shutdown.
-      swallow(() => detachPluginHostBinding?.());
-      // Only unbind the presence ref if it is still OURS: another project scope
-      // in this process may have bound its own after this one did.
-      swallow(() => {
-        if (getPluginPresenceService() === pluginPresenceService) setPluginPresenceService(null);
-        pluginPresenceService.dispose();
-      });
-      // Flushes the last window of wire counters on the way out.
-      swallow(() => pluginSyncMeter.dispose());
-      void configReloadService.dispose().catch(() => {});
-      swallow(() => prPollingService.dispose());
-      // Detach only this scope's signals; the shared publisher outlives the scope.
-      swallow(() => detachPushSources());
-      // The tunnel client is machine-level and shared across scopes — closing
-      // one project must not sever the relay for the others. The daemon's
-      // shutdown path (disposeServeResources) stops it. Drop only THIS scope's
-      // lease subscription, or a disposed scope could later stop the shared
-      // tunnel on a lease transition it no longer has any business observing.
-      swallow(() => relayTunnelGate.dispose());
-      swallow(() => automationIngressService?.dispose());
-      swallow(() => linearIngressService?.stop());
-      swallow(() => automationService?.dispose());
-      swallow(() => usageTrackingService.dispose());
-      swallow(() => usageProductAnalyticsExporter.stop());
-      swallow(() => storageInsightsService.dispose());
-      swallow(() => syncService?.dispose());
-      swallow(() => runtimeDiagnosticsService.dispose());
-      swallow(() => oauthRedirectService.dispose());
-      void laneProxyService.dispose().catch(() => {});
-      void orchestrationService?.dispose().catch(() => {});
-      swallow(() => portAllocationService.dispose());
-      swallow(() => iosSimulatorService?.dispose());
-      swallow(() => appControlService?.dispose());
-      swallow(() => builtInBrowserBridge?.dispose());
-      void linearOAuthService.dispose().catch(() => {});
-      swallow(() => headlessLinearServices.dispose());
-      swallow(() => agentChatService?.forceDisposeAll?.());
-      swallow(() => testService.disposeAll());
-      swallow(() => ptyService.disposeAll());
-      swallow(() => searchService.dispose());
-      swallow(() => processRegistry.stop());
-      swallow(() => db.flushNow());
-      swallow(() => db.close());
-    }
-  };
-
-  // Plugin code authenticates at agent role: it may reach every allowlisted
-  // action that is not operator-only, and nothing else. Reusing the automation
-  // predicate keeps that ceiling defined in exactly one place.
-  // Plugin changes are machine-wide, so every open project republishes them
-  // into its own event buffer. See pluginEvents.ts for the wire contract.
-  const unsubscribePluginChanges = subscribeToPluginChanges((event) => {
-    pushEvent("runtime", { type: PLUGIN_CHANGED_EVENT_TYPE, ...event });
-  });
-
-  detachPluginHostBinding = (() => {
-    const attachment = pluginHostService.attachProject({
-      projectId,
+      : undefined;
+    externalSessionsService = createExternalSessionsService({
       projectRoot,
+      laneService,
+      sessionService,
+      ptyService,
+      logger,
+      chatImporter: agentChatService,
+      ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
+    });
+
+    const runtime: AdeRuntime = {
+      projectRoot,
+      workspaceRoot,
+      projectId,
+      project,
+      paths,
+      logger,
       db,
-      syncMeter: pluginSyncMeter,
-      // Panels on a phone or another computer otherwise wait out the host's
-      // poll; this is a no-op when nobody has one open.
-      onPluginDataChanged: () => {
-        syncService?.getHostService()?.notifyPluginDataChanged();
+      keybindingsService,
+      laneService,
+      laneEnvironmentService,
+      laneTemplateService,
+      portAllocationService,
+      laneProxyService,
+      oauthRedirectService,
+      runtimeDiagnosticsService,
+      rebaseSuggestionService,
+      autoRebaseService,
+      sessionService,
+      sessionDeltaService,
+      onboardingService,
+      operationService,
+      projectConfigService,
+      projectSecretService,
+      conflictService,
+      gitService,
+      diffService,
+      syncService,
+      pushPublisherService,
+      syncHostService: syncService?.getHostService() ?? null,
+      laneWorktreeLockService,
+      ptyService,
+      testService,
+      reviewService,
+      searchService,
+      externalSessionsService,
+      aiIntegrationService,
+      agentChatService,
+      cursorCloudFleetService,
+      orchestrationService,
+      ctoStateService,
+      ctoMemoryService,
+      adeProjectService,
+      githubService: headlessLinearServices.githubService,
+      accountAuthService,
+      linearCredentialService: headlessLinearServices.linearCredentialService,
+      linearOAuthService,
+      prService: headlessLinearServices.prService,
+      prSummaryService,
+      fileService: headlessLinearServices.fileService,
+      linearIssueTracker: headlessLinearServices.linearIssueTracker,
+      feedbackReporterService,
+      usageTrackingService,
+      productAnalyticsService,
+      usageProductAnalyticsExporter,
+      storageInsightsService,
+      budgetCapService,
+      automationService,
+      automationIngressService,
+      linearIngressService,
+      cursorCloudIngressService,
+      automationPlannerService,
+      computerUseArtifactBrokerService,
+      iosSimulatorService,
+      appControlService,
+      builtInBrowserService: builtInBrowserBridge,
+      configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
+        if (!builtInBrowserBridge) return false;
+        const verified = await verifyBuiltInBrowserDesktopBridgeAuth({
+          socketPath: builtInBrowserBridgeSocketPath,
+          authToken,
+        });
+        if (verified) builtInBrowserBridgeAuthToken = authToken.trim();
+        return verified;
       },
-      // `ade.automations.emitTrigger` lands here. Not routed through
-      // `invokeAdeAction` above and so not subject to its allowlist: this is an
-      // SDK verb, not an ADE action, and the ceiling it needs is a different
-      // one — the manifest must have DECLARED the trigger, which the SDK server
-      // checks before this is ever called.
-      //
-      // Absent when the automations feature is off, which the SDK server turns
-      // into `unsupported_method` rather than a silent success.
-      ...(automationService
-        ? {
+      eventBuffer,
+      isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
+      pluginHostService,
+      // Shutdown drains the same stack the construction path filled, in reverse
+      // acquisition order: a service is always stopped before the services it was
+      // built from, and the database closes last. Keeping one list means the
+      // failure path and the shutdown path cannot drift apart.
+      dispose: () => {
+        teardown.drain();
+      }
+    };
+
+    // Plugin code authenticates at agent role: it may reach every allowlisted
+    // action that is not operator-only, and nothing else. Reusing the automation
+    // predicate keeps that ceiling defined in exactly one place.
+    // Plugin changes are machine-wide, so every open project republishes them
+    // into its own event buffer. See pluginEvents.ts for the wire contract.
+    const unsubscribePluginChanges = subscribeToPluginChanges((event) => {
+      pushEvent("runtime", { type: PLUGIN_CHANGED_EVENT_TYPE, ...event });
+    });
+
+    detachPluginHostBinding = (() => {
+      const attachment = pluginHostService.attachProject({
+        projectId,
+        projectRoot,
+        db,
+        syncMeter: pluginSyncMeter,
+        // Panels on a phone or another computer otherwise wait out the host's
+        // poll; this is a no-op when nobody has one open.
+        onPluginDataChanged: () => {
+          syncService?.getHostService()?.notifyPluginDataChanged();
+        },
+        // `ade.automations.emitTrigger` lands here. Not routed through
+        // `invokeAdeAction` above and so not subject to its allowlist: this is an
+        // SDK verb, not an ADE action, and the ceiling it needs is a different
+        // one — the manifest must have DECLARED the trigger, which the SDK server
+        // checks before this is ever called.
+        //
+        // Absent when the automations feature is off, which the SDK server turns
+        // into `unsupported_method` rather than a silent success.
+        ...(automationService
+          ? {
             emitAutomationTrigger: async (emitArgs: {
               pluginId: string;
               triggerId: string;
@@ -2406,102 +2681,102 @@ export async function createAdeRuntime(args: {
               await automationService.dispatchPluginTrigger(emitArgs);
             },
           }
-        : {}),
-      invokeAdeAction: async (domain, action, args, caller) => {
-        const actionDomain = domain as AdeActionDomain;
-        if (!isAutomationAllowedAdeAction(actionDomain, action)) {
-          throw new PluginSdkError(
-            "not_permitted",
-            `Action '${domain}.${action}' is not available to plugins.`,
+          : {}),
+        invokeAdeAction: async (domain, action, args, caller) => {
+          const actionDomain = domain as AdeActionDomain;
+          if (!isAutomationAllowedAdeAction(actionDomain, action)) {
+            throw new PluginSdkError(
+              "not_permitted",
+              `Action '${domain}.${action}' is not available to plugins.`,
+            );
+          }
+          // Per-verb refusals that need no runtime state, kept in one testable
+          // place (`pluginActionRefusalMessage`): the account domain, the two
+          // schedulers, and the automations rule writers.
+          const staticRefusal = pluginActionRefusalMessage(actionDomain, action);
+          if (staticRefusal) {
+            throw new PluginSdkError("not_permitted", staticRefusal);
+          }
+          // A plugin asking for another plugin's domain gets the same refusal a
+          // user's agent gets. Named, so a plugin author reading its own error log
+          // learns which package it actually depends on.
+          //
+          // The GATE is `allGatedActionDomains`, not the message builder.
+          // `buildGatedDomainDenial` returns null for two different reasons — the
+          // domain is not gated, or it is gated but no catalog can name its owner
+          // — and every gated domain here (`linear_credentials`, `ios_simulator`,
+          // `app_control`, …) is also in `ADE_ACTION_ALLOWLIST`, so there is no
+          // generic unknown-domain error below to land in. Treating the second
+          // null as a pass would mean a machine with an unreadable bundled root
+          // or a cold registry cache hands those domains straight to any plugin.
+          // The catalog decides how much advice the sentence carries, never
+          // whether the call is allowed.
+          if (allGatedActionDomains().has(actionDomain)) {
+            const gated = buildGatedDomainDenial(actionDomain);
+            throw new PluginSdkError(
+              "not_permitted",
+              gated?.message ?? `Action domain '${domain}' belongs to another plugin.`,
+            );
+          }
+          const service = getAdeActionDomainServices(runtime)[actionDomain];
+          const callable = service?.[action];
+          if (typeof callable !== "function") {
+            throw new PluginSdkError(
+              "internal_error",
+              `Action '${domain}.${action}' is unavailable in this runtime.`,
+            );
+          }
+          return await (callable as (input?: Record<string, unknown>) => Promise<unknown>).call(
+            service,
+            withPluginCallerProvenance(
+              actionDomain,
+              action,
+              withoutPluginAuthoredProvenance(actionDomain, args),
+              caller,
+            ),
           );
-        }
-        // Per-verb refusals that need no runtime state, kept in one testable
-        // place (`pluginActionRefusalMessage`): the account domain, the two
-        // schedulers, and the automations rule writers.
-        const staticRefusal = pluginActionRefusalMessage(actionDomain, action);
-        if (staticRefusal) {
-          throw new PluginSdkError("not_permitted", staticRefusal);
-        }
-        // A plugin asking for another plugin's domain gets the same refusal a
-        // user's agent gets. Named, so a plugin author reading its own error log
-        // learns which package it actually depends on.
-        //
-        // The GATE is `allGatedActionDomains`, not the message builder.
-        // `buildGatedDomainDenial` returns null for two different reasons — the
-        // domain is not gated, or it is gated but no catalog can name its owner
-        // — and every gated domain here (`linear_credentials`, `ios_simulator`,
-        // `app_control`, …) is also in `ADE_ACTION_ALLOWLIST`, so there is no
-        // generic unknown-domain error below to land in. Treating the second
-        // null as a pass would mean a machine with an unreadable bundled root
-        // or a cold registry cache hands those domains straight to any plugin.
-        // The catalog decides how much advice the sentence carries, never
-        // whether the call is allowed.
-        if (allGatedActionDomains().has(actionDomain)) {
-          const gated = buildGatedDomainDenial(actionDomain);
-          throw new PluginSdkError(
-            "not_permitted",
-            gated?.message ?? `Action domain '${domain}' belongs to another plugin.`,
-          );
-        }
-        const service = getAdeActionDomainServices(runtime)[actionDomain];
-        const callable = service?.[action];
-        if (typeof callable !== "function") {
-          throw new PluginSdkError(
-            "internal_error",
-            `Action '${domain}.${action}' is unavailable in this runtime.`,
-          );
-        }
-        return await (callable as (input?: Record<string, unknown>) => Promise<unknown>).call(
-          service,
-          withPluginCallerProvenance(
-            actionDomain,
-            action,
-            withoutPluginAuthoredProvenance(actionDomain, args),
-            caller,
-          ),
-        );
+        },
+      });
+      return () => {
+        unsubscribePluginChanges();
+        attachment.detach();
+      };
+    })();
+    // Drops only THIS scope's plugin binding. The host itself is machine-scoped
+    // and outlives the project; the daemon disposes it at shutdown.
+    teardown.push(() => detachPluginHostBinding?.());
+
+    const adeActionLookup: AutomationAdeActionRegistry = {
+      isAllowed(domain: string, action: string): boolean {
+        return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
       },
-    });
-    return () => {
-      unsubscribePluginChanges();
-      attachment.detach();
+      getService(domain: string): Record<string, unknown> | null {
+        const services = getAdeActionDomainServices(runtime);
+        return (services[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
+      },
+      listDomains(): string[] {
+        return Object.keys(ADE_ACTION_ALLOWLIST);
+      },
+      listActions(domain: string): string[] {
+        return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
+          .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
+      },
+      unavailableReason(domain: string): string | null {
+        return buildGatedDomainDenial(domain)?.message ?? null;
+      },
     };
-  })();
+    automationService?.bindAdeActionRegistry(adeActionLookup);
 
-  const adeActionLookup: AutomationAdeActionRegistry = {
-    isAllowed(domain: string, action: string): boolean {
-      return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
-    },
-    getService(domain: string): Record<string, unknown> | null {
-      const services = getAdeActionDomainServices(runtime);
-      return (services[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
-    },
-    listDomains(): string[] {
-      return Object.keys(ADE_ACTION_ALLOWLIST);
-    },
-    listActions(domain: string): string[] {
-      return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-        .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
-    },
-    unavailableReason(domain: string): string | null {
-      return buildGatedDomainDenial(domain)?.message ?? null;
-    },
-  };
-  automationService?.bindAdeActionRegistry(adeActionLookup);
-
-  usageTrackingService.start();
-  runtimeCreated = true;
-  return runtime;
+    usageTrackingService.start();
+    runtimeCreated = true;
+    return runtime;
   } finally {
     if (!runtimeCreated) {
-      if (staleSessionReconcileTimer) {
-        clearTimeout(staleSessionReconcileTimer);
-      }
-      try {
-        processRegistry.stop();
-      } catch {
-        // Preserve the original startup failure.
-      }
+      // There is no runtime, so nothing else will ever call `dispose`. Release
+      // every resource the failed construction acquired — the database handle
+      // included. Each release runs in its own try/catch inside `drain`, so a
+      // failing release neither stops the drain nor masks the startup failure.
+      teardown.drain();
     }
   }
 }

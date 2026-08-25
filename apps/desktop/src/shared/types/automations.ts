@@ -88,6 +88,14 @@ export type AutomationLinearIngressStatus = {
   appManaged?: boolean;
 };
 
+export type AutomationCursorCloudIngressStatus = {
+  state: "unconfigured" | "ready" | "error";
+  webhookId: string | null;
+  lastEventAt: string | null;
+  lastError: string | null;
+  relayBaseUrl: string;
+};
+
 export type AutomationScheduledCleanup = {
   id: string;
   ruleId: string;
@@ -153,6 +161,7 @@ export type AutomationIngressSource =
   | "github-relay"
   | "github-polling"
   | "linear-relay"
+  | "cursor-relay"
   | "local-webhook"
   /**
    * A plugin fired one of its declared triggers. One source for every plugin —
@@ -182,7 +191,8 @@ export type AutomationTriggerDeliveryVia =
   | "github-polling"
   | "local-webhook"
   | "public-gateway"
-  | "linear-relay";
+  | "linear-relay"
+  | "cursor-relay";
 
 export type AutomationTriggerDeliveryStatus = {
   ready: boolean;
@@ -197,12 +207,14 @@ export type AutomationIngressDelivery = {
   githubWebhook: AutomationTriggerDeliveryStatus;
   webhook: AutomationTriggerDeliveryStatus;
   linear: AutomationTriggerDeliveryStatus;
+  cursor: AutomationTriggerDeliveryStatus;
 };
 
 export function triggerDeliveryKeyForType(type: string): keyof AutomationIngressDelivery | null {
   // Legacy git.pr_* trigger types alias to github.pr_* (LEGACY_GITHUB_PR_TRIGGER_ALIASES).
   if (type.startsWith("github.") || type.startsWith("git.pr_")) return "github";
   if (type.startsWith("linear.")) return "linear";
+  if (type.startsWith("cursor.")) return "cursor";
   if (type === "github-webhook") return "githubWebhook";
   if (type === "webhook") return "webhook";
   return null;

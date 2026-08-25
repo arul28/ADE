@@ -24,6 +24,12 @@ import {
   normalizeContextCompactEvent,
   toContextCompactChatEvent,
 } from "../../../shared/contextCompaction";
+import {
+  hostSleepNoticeMergeKey,
+  isHostResumedNoticeEvent,
+  isHostSleepNoticeEvent,
+  type HostSleepNoticeShape,
+} from "../../../shared/hostSleepNotice";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
@@ -817,7 +823,7 @@ function buildCommandWorkLogEvent(
     entry: withLocalhostUrls({
       id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
-      label: "Shell",
+      label: event.source === "userShell" ? "User shell" : "Shell",
       command: event.command,
       output: event.output,
       cwd: event.cwd,
@@ -2316,7 +2322,7 @@ export function appendCollapsedChatTranscriptEvent(
         const existing = normalizeContextCompactEvent(candidateEvent as AgentChatEvent);
         if (!existing) return false;
         if (contextCompactMergeKey(existing) !== mergeKey) return false;
-        return existing.state === "started" || incoming.state === "completed";
+        return existing.state === "started" || incoming.state === "completed" || incoming.state === "failed";
       });
     if (matchIndex >= 0) {
       const actualIndex = rows.length - 1 - matchIndex;
@@ -2334,6 +2340,41 @@ export function appendCollapsedChatTranscriptEvent(
       key: `context-compact:${mergeKey}:${sequence}`,
       timestamp: envelope.timestamp,
       event: toContextCompactChatEvent(incoming),
+    });
+    return;
+  }
+
+  // ── Host sleep: ONE chip per sleep ──
+  // The paused half pushes a row; the resumed half replaces that same row
+  // instead of appending under it, so a machine that slept mid-turn never
+  // leaves two artifacts behind and never pushes the transcript around. The
+  // sleep id is the identity, so a second sleep in the same turn still gets its
+  // own chip rather than overwriting the first sleep's resolved one.
+  if (isHostSleepNoticeEvent(event)) {
+    const mergeKey = hostSleepNoticeMergeKey(event);
+    const rowKey = `host-sleep:${mergeKey}`;
+    const existingIndex = rows.findIndex((candidate) => candidate.key === rowKey);
+    if (existingIndex >= 0) {
+      // Resolved wins, whatever the arrival order. Last-wins alone would let a
+      // paused half delivered after its resume — a sequence inversion, or a host
+      // clock corrected across the wake — settle the row on "Paused" for a
+      // machine that is demonstrably awake, which is the exact class of lie this
+      // branch exists to remove. iOS applies the same guard.
+      const existingEvent = rows[existingIndex]!.event as HostSleepNoticeShape;
+      if (isHostResumedNoticeEvent(existingEvent) && !isHostResumedNoticeEvent(event)) {
+        return;
+      }
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event: event as ChatTranscriptVisibleEvent,
+      };
+      return;
+    }
+    rows.push({
+      key: rowKey,
+      timestamp: envelope.timestamp,
+      event: event as ChatTranscriptVisibleEvent,
     });
     return;
   }
@@ -3056,7 +3097,41 @@ export function deriveTurnDividerData(events: AgentChatEventEnvelope[]): Map<str
       }
       if (event.costUsd != null) entry.costUsd = event.costUsd;
     }
+
+    if (event.type === "tokens") {
+      if (event.inputTokens != null) entry.inputTokens = event.inputTokens;
+      if (event.outputTokens != null) entry.outputTokens = event.outputTokens;
+      if (event.cacheReadTokens != null) entry.cacheReadTokens = event.cacheReadTokens;
+    }
   }
 
   return turns;
+}
+
+export function formatDoneTurnTokenLine(usage: {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  reasoningTokens?: number | null;
+} | null | undefined): string | null {
+  if (!usage) return null;
+  const format = (value: number | null | undefined): string | null => {
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+    if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+    return String(Math.round(value));
+  };
+  const segments: string[] = [];
+  const inLabel = format(usage.inputTokens);
+  const outLabel = format(usage.outputTokens);
+  const cacheLabel = format(usage.cacheReadTokens);
+  const cacheWriteLabel = format(usage.cacheCreationTokens);
+  const reasoningLabel = format(usage.reasoningTokens);
+  if (inLabel) segments.push(`in ${inLabel}`);
+  if (outLabel) segments.push(`out ${outLabel}`);
+  if (cacheLabel) segments.push(`cached ${cacheLabel} ✶`);
+  if (cacheWriteLabel) segments.push(`cache write ${cacheWriteLabel}`);
+  if (reasoningLabel) segments.push(`reasoning ${reasoningLabel}`);
+  return segments.length > 0 ? segments.join(" · ") : null;
 }

@@ -178,6 +178,8 @@ export type WorkSurfaceHeaderProps = {
   laneChipColor?: string;
   /** When true, the lane chip is rendered (requires laneId + laneChipName). */
   showLaneChip?: boolean;
+  /** Optional control rendered immediately after the title (e.g. Cursor Cloud link). */
+  titleAccessory?: ReactNode;
   /** Optional click handler for the lane chip (e.g. navigate to Lanes tab). */
   onLaneChipClick?: () => void;
   /**
@@ -265,6 +267,7 @@ export function WorkSurfaceHeader({
   laneChipName,
   laneChipColor,
   showLaneChip = false,
+  titleAccessory,
   onLaneChipClick,
   showCacheBadge = false,
   cacheIdleSinceAt,
@@ -307,6 +310,7 @@ export function WorkSurfaceHeader({
           title={tileDragProps ? "Drag to rearrange or out of the grid" : undefined}
         >
           <WorkSurfaceTitle title={title} />
+          {titleAccessory}
           {showLaneChip && laneId && laneChipName ? (
             <LaneChip
               laneName={laneChipName}

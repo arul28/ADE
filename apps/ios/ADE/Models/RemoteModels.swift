@@ -860,6 +860,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorModeId: String?
   var cursorConfigValues: [String: RemoteJSONValue]?
+  /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
+  var cursorCloudAgentId: String? = nil
   var identityKey: String?
   var surface: String?
   var automationId: String?
@@ -893,6 +895,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var orchestrationRole: String? = nil
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  /// When the takeover banner was dismissed or Take over was chosen. Absent means not shown yet.
+  var subagentTakeoverPromptShownAt: String? = nil
   var orchestrationTag: String? = nil
   var orchestrationStepId: String? = nil
   var orchestrationBundlePath: String? = nil
@@ -924,6 +928,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorModeId == rhs.cursorModeId
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
+      && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal
@@ -951,6 +956,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
       && lhs.spawnKind == rhs.spawnKind
+      && lhs.subagentTakeoverPromptShownAt == rhs.subagentTakeoverPromptShownAt
       && lhs.orchestrationTag == rhs.orchestrationTag
       && lhs.orchestrationStepId == rhs.orchestrationStepId
       && lhs.orchestrationBundlePath == rhs.orchestrationBundlePath
@@ -986,6 +992,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   /// key. Symmetric with `cursorModeIdWasCleared`: absent-key still means "no
   /// change"; only an explicit null sets this so `applyModeUpdate` assigns nil.
   var cursorConfigValuesWasCleared: Bool = false
+  var spawnKind: AgentChatSpawnKind?
+  var subagentTakeoverPromptShownAt: String?
+  var subagentTakeoverPromptShownAtWasCleared: Bool = false
 
   private enum CodingKeys: String, CodingKey {
     case permissionMode
@@ -1000,6 +1009,8 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case cursorModeId
     case cursorModeSnapshot
     case cursorConfigValues
+    case spawnKind
+    case subagentTakeoverPromptShownAt
   }
 
   init(from decoder: Decoder) throws {
@@ -1040,6 +1051,14 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       cursorConfigValues = nil
       cursorConfigValuesWasCleared = false
     }
+    spawnKind = try c.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+    if c.contains(.subagentTakeoverPromptShownAt) {
+      subagentTakeoverPromptShownAt = try c.decodeIfPresent(String.self, forKey: .subagentTakeoverPromptShownAt)
+      subagentTakeoverPromptShownAtWasCleared = subagentTakeoverPromptShownAt == nil
+    } else {
+      subagentTakeoverPromptShownAt = nil
+      subagentTakeoverPromptShownAtWasCleared = false
+    }
   }
 
   /// True when the event carries at least one mode field. A bare
@@ -1058,6 +1077,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || cursorModeSnapshot != nil
       || cursorConfigValues != nil
       || cursorConfigValuesWasCleared
+      || spawnKind != nil
+      || subagentTakeoverPromptShownAt != nil
+      || subagentTakeoverPromptShownAtWasCleared
   }
 }
 
@@ -1089,6 +1111,12 @@ extension AgentChatSessionSummary {
       // rather than leaving the stale values in place.
       cursorConfigValues = nil
     }
+    if let v = update.spawnKind { spawnKind = v }
+    if let v = update.subagentTakeoverPromptShownAt {
+      subagentTakeoverPromptShownAt = v
+    } else if update.subagentTakeoverPromptShownAtWasCleared {
+      subagentTakeoverPromptShownAt = nil
+    }
   }
 
   /// Overlay the mode fields from another summary (used to fold a cache-side
@@ -1119,6 +1147,8 @@ extension AgentChatSessionSummary {
     cursorModeId = other.cursorModeId
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
     cursorConfigValues = other.cursorConfigValues
+    if let v = other.spawnKind { spawnKind = v }
+    if let v = other.subagentTakeoverPromptShownAt { subagentTakeoverPromptShownAt = v }
   }
 }
 
@@ -1591,6 +1621,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var orchestrationRole: String? = nil
   var orchestrationParentSessionId: String? = nil
   var spawnKind: AgentChatSpawnKind? = nil
+  var subagentTakeoverPromptShownAt: String? = nil
   var orchestrationTag: String? = nil
   var orchestrationStepId: String? = nil
   var orchestrationBundlePath: String? = nil
@@ -1637,6 +1668,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case orchestrationRole
     case orchestrationParentSessionId
     case spawnKind
+    case subagentTakeoverPromptShownAt
     case orchestrationTag
     case orchestrationStepId
     case orchestrationBundlePath
@@ -1685,6 +1717,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
     spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
+    subagentTakeoverPromptShownAt = try container.decodeIfPresent(String.self, forKey: .subagentTakeoverPromptShownAt)
     orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
     orchestrationStepId = try container.decodeIfPresent(String.self, forKey: .orchestrationStepId)
     orchestrationBundlePath = try container.decodeIfPresent(String.self, forKey: .orchestrationBundlePath)
@@ -1731,6 +1764,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(orchestrationRole, forKey: .orchestrationRole)
     try container.encodeIfPresent(orchestrationParentSessionId, forKey: .orchestrationParentSessionId)
     try container.encodeIfPresent(spawnKind, forKey: .spawnKind)
+    try container.encodeIfPresent(subagentTakeoverPromptShownAt, forKey: .subagentTakeoverPromptShownAt)
     try container.encodeIfPresent(orchestrationTag, forKey: .orchestrationTag)
     try container.encodeIfPresent(orchestrationStepId, forKey: .orchestrationStepId)
     try container.encodeIfPresent(orchestrationBundlePath, forKey: .orchestrationBundlePath)
@@ -1800,6 +1834,11 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   case warning
   case error
   case config
+  /// Paused half of the host-sleep chip. Synthesized locally — see
+  /// `hostSleepNoticeKind(from:)`.
+  case hostAsleep = "host_asleep"
+  /// Resumed half of the same chip.
+  case hostAwake = "host_awake"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -1811,6 +1850,35 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   init(from decoder: Decoder) throws {
     let raw = try decoder.singleValueContainer().decode(String.self)
     self = AgentChatNoticeKind(rawValue: raw) ?? .info
+  }
+}
+
+/// Which half of the host-sleep chip a `system_notice` is, if it is one.
+///
+/// A Mac that suspends mid-turn emits two notices — `status: "host_asleep"`
+/// then `"host_awake"` — both with `noticeKind: "info"` and a shared
+/// `detail.hostSleep.sleepId` (`apps/desktop/src/shared/hostSleepNotice.ts`).
+/// The host's contract is "one sleep, one artifact": desktop folds the pair
+/// onto a single transcript row.
+///
+/// iOS never carried `status` on a notice, so both halves arrived as plain
+/// info notices and rendered as two cards, contradicting that contract.
+/// Promoting the status into the notice KIND is what fixes it without growing
+/// every `.systemNotice` pattern match in the app: `kind` is the field iOS
+/// already carries end to end, from wire decode through `WorkEventMapping` to
+/// the timeline. The same normalization is applied on the replay path
+/// (`WorkTranscriptParser`), so a chat opened from history folds identically.
+///
+/// Any other status — `subagent_spawned`, whatever the host adds next — is
+/// left alone and keeps its declared kind.
+func hostSleepNoticeKind(from status: String?) -> AgentChatNoticeKind? {
+  guard let trimmed = status?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+    return nil
+  }
+  switch trimmed {
+  case AgentChatNoticeKind.hostAsleep.rawValue: return .hostAsleep
+  case AgentChatNoticeKind.hostAwake.rawValue: return .hostAwake
+  default: return nil
   }
 }
 
@@ -2212,6 +2280,29 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
   var path: String
   var type: String
   var url: String? = nil
+}
+
+struct PromptStashEntry: Codable, Equatable, Identifiable {
+  var id: String
+  var text: String
+  var attachments: [AgentChatFileRef]?
+  var attachmentCount: Int?
+  var attachmentsAvailable: Bool?
+  var provider: String?
+  var modelId: String?
+  var createdAt: String
+
+  var resolvedAttachments: [AgentChatFileRef] {
+    attachments ?? []
+  }
+
+  var resolvedAttachmentCount: Int {
+    attachmentCount ?? resolvedAttachments.count
+  }
+
+  var imagesUnavailable: Bool {
+    attachmentsAvailable == false && resolvedAttachmentCount > 0
+  }
 }
 
 private struct AgentChatSpawnCompletionPayload: Decodable {
@@ -3137,8 +3228,10 @@ extension AgentChatEvent {
          completion.spawnKind == .subagent {
         self = completion.event(fallbackTurnId: eventTurnId)
       } else {
+        let declaredKind = try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind)
+        let noticeStatus = try container.decodeIfPresent(String.self, forKey: .status)
         self = .systemNotice(
-          noticeKind: try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind),
+          noticeKind: hostSleepNoticeKind(from: noticeStatus) ?? declaredKind,
           message: try container.decode(String.self, forKey: .message),
           detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
           turnId: eventTurnId,
@@ -3308,6 +3401,12 @@ struct AgentChatSteerRequest: Codable, Equatable {
   var sessionId: String
   var text: String
   var attachments: [AgentChatFileRef]? = nil
+  /// `"inline"` or `"interrupt"` — the desktop's `dispatchMode` spelling, kept
+  /// character-identical because the host validates the string. Present only
+  /// when the user picked an active-turn mode: the host then dispatches in this
+  /// same round-trip instead of staging the message, so nothing reaches the
+  /// staged strip. Omitted (nil) for a plain staged steer.
+  var dispatchMode: String? = nil
 }
 
 struct AgentChatCancelSteerRequest: Codable, Equatable {
@@ -3340,6 +3439,13 @@ enum AgentChatStopMode: String, Codable, Equatable {
 struct AgentChatInterruptRequest: Codable, Equatable {
   var sessionId: String
   var mode: AgentChatStopMode? = nil
+}
+
+struct AgentChatHandoffRequest: Codable, Equatable {
+  var sourceSessionId: String
+  var targetModelId: String
+  var mode: String
+  var handoffNote: String?
 }
 
 struct AgentChatRestoreCancelledQueueRequest: Codable, Equatable {
@@ -3427,6 +3533,8 @@ struct AgentChatUpdateSessionRequest: Codable, Equatable {
   var unifiedPermissionMode: String?
   var computerUse: RemoteJSONValue?
   var manuallyNamed: Bool?
+  var spawnKind: String?
+  var subagentTakeoverPromptShown: Bool?
 }
 
 struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {
@@ -3742,6 +3850,13 @@ struct SyncFileBlob: Codable, Equatable {
   var dataUrl: String? = nil
   var contentOmitted: Bool? = nil
   var omittedReason: String? = nil
+  /// The machine sent only the first chunk of an oversized text file; `content`
+  /// stops there. Desktop streams the rest — iPhone does not, so the viewer has
+  /// to say so instead of presenting a prefix as the whole file.
+  var isPartial: Bool? = nil
+  /// Full size of the file on disk when only part of it was sent. `size` already
+  /// carries this today, but the host sends both and older hosts send neither.
+  var totalSize: Int? = nil
 }
 
 struct ComputerUseArtifactSummary: Codable, Identifiable, Equatable {
@@ -4717,6 +4832,13 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var resolutionState: IntegrationResolutionState?
 }
 
+struct TerminalScreenSnapshot: Codable, Equatable {
+  var cols: Int
+  var rows: Int
+  var bufferType: String?
+  var serialized: String
+}
+
 struct TerminalSnapshot: Codable, Equatable {
   var sessionId: String
   var transcript: String
@@ -4735,6 +4857,20 @@ struct TerminalSnapshot: Codable, Equatable {
   /// restart orphaned a "running" session — typing would go nowhere. Absent
   /// on older hosts.
   var live: Bool?
+  /// Current-screen CSI for replacing hydrates. Alt-screen TUIs cannot be
+  /// reconstructed from a transcript tail. Absent on older hosts and on
+  /// delta resumes.
+  var screen: TerminalScreenSnapshot?
+
+  var hasScreenPaint: Bool {
+    guard let serialized = screen?.serialized else { return false }
+    return !serialized.isEmpty
+  }
+
+  var replacingHydrateText: String {
+    if delta == true { return transcript }
+    return hasScreenPaint ? (screen?.serialized ?? transcript) : transcript
+  }
 }
 
 /// Response payload for `terminal_history`: transcript bytes

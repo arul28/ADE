@@ -941,10 +941,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setLanePrTags(prs);
       if (options?.refreshMapped !== true) return;
 
-      // Lane history is intentionally retained for rendering, but refreshing
-      // every historical row makes a growing lane fan out into an unbounded
-      // coalescer request. `selectLanePrs` puts the active PR first, so this
-      // keeps the current row plus a small, useful history window per lane.
+      // Refresh only rows that can render in the current-branch lane tag. PR
+      // history remains available in the PR workspace, but it should not cause
+      // background refreshes or badge state after a lane switches branches.
       const matchedPrIds = [...new Set(sortedLanesRef.current.flatMap((lane) => (
         selectLanePrs(lane, prs)
           .slice(0, VISIBLE_LANE_PR_REFRESH_LIMIT)

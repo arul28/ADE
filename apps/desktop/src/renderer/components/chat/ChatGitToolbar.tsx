@@ -19,13 +19,14 @@ import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { useAppStore } from "../../state/appStore";
+import { useChatRuntimeScopeForPin } from "./ChatRuntimeScope";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
 import {
   lanePrAggregateAttention,
   lanePrAttentionColor,
+  lanePrsForLane,
   openLanePr,
   selectPrimaryLanePr,
 } from "../../lib/lanePrBadge";
@@ -139,14 +140,17 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
-  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
+  // This toolbar also renders from the CLI session header, which has no chat
+  // scope above it, so the scope is derived from the pin it is handed.
+  const scope = useChatRuntimeScopeForPin(runtimePin, laneId);
+  const isRemote = scope.isRemote;
+  const projectRoot = scope.rootPath;
   // Keep PR refresh identity stable across unrelated lane-list updates. The
   // array is replaced by status refreshes, which otherwise re-subscribes the
   // PR event pump even when this lane's identity is unchanged.
-  const laneType = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.laneType ?? "worktree");
-  const laneBranchRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.branchRef ?? "");
-  const laneBaseRef = useAppStore((s) => s.lanes.find((candidate) => candidate.id === laneId)?.baseRef ?? "");
+  const laneType = scope.lane?.laneType ?? "worktree";
+  const laneBranchRef = scope.lane?.branchRef ?? "";
+  const laneBaseRef = scope.lane?.baseRef ?? "";
   const laneForPr = useMemo(() => ({
     id: laneId,
     laneType,
@@ -188,12 +192,15 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   const refreshStatus = useCallback(async () => {
     try {
-      const changes = await window.ade.diff.getChanges({ laneId });
+      const changes = await window.ade.diff.getChanges({ laneId }, runtimePinRef.current);
       setDirtyCount(dirtyFileCount(changes));
     } catch {
       // best-effort
     }
-  }, [laneId]);
+    // Read through the ref for the same reason `refreshPr` does; the key below
+    // is what gives this callback a per-machine identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, runtimePinKey]);
 
   const refreshPr = useCallback(async (options: { live?: boolean } = {}) => {
     const requestId = refreshPrRequestRef.current + 1;
@@ -212,9 +219,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
         lanePrs = legacy ? [legacy] : [];
       }
-      const pr = selectPrimaryLanePr(laneForPr, lanePrs) ?? lanePrs[0] ?? null;
+      const visibleLanePrs = lanePrsForLane(laneForPr, lanePrs);
+      const pr = selectPrimaryLanePr(laneForPr, lanePrs);
       if (!requestIsCurrent()) return null;
-      setLinkedPrs(lanePrs);
+      // Keep the aggregate badge attention scoped to the same current-branch
+      // rows as the primary badge. A compact legacy row may have no branch
+      // fields, so retain the single selected row for that compatibility path.
+      setLinkedPrs(visibleLanePrs.length > 0 ? visibleLanePrs : (pr ? [pr] : []));
       setLinkedPr(pr);
       setPrLoaded(true);
       if (options.live && pr && !pr.unmapped) {
@@ -254,21 +265,22 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     setPrLoaded(false);
     setPrMenuOpen(false);
     setPrChecks(null);
-    // `diff.getChanges` is not pinned, so for a lane on another machine it can
-    // only ask the bound machine about a lane it does not have. Skip it.
-    if (!isRemoteProject && !runtimePinKey) void refreshStatus();
+    // `diff.getChanges` follows the chat's machine now, so a foreign LOCAL lane
+    // gets its dirty count too. Only a remote machine is skipped, to keep the
+    // header off the bridge for a decoration.
+    if (!isRemote) void refreshStatus();
     void refreshPr();
-  }, [isRemoteProject, refreshStatus, refreshPr, runtimePinKey]);
+  }, [isRemote, refreshStatus, refreshPr]);
 
   // Re-poll after the runtime finishes an action (from either pane or toolbar)
   const prevBusy = React.useRef(runtime.busyAction);
   useEffect(() => {
     if (prevBusy.current && !runtime.busyAction) {
-      if (!isRemoteProject && !runtimePinKey) void refreshStatus();
+      if (!isRemote) void refreshStatus();
       void refreshPr();
     }
     prevBusy.current = runtime.busyAction;
-  }, [isRemoteProject, runtime.busyAction, refreshStatus, refreshPr, runtimePinKey]);
+  }, [isRemote, runtime.busyAction, refreshStatus, refreshPr]);
 
   // Backend reconcile-on-focus, in its OWN subscription keyed only on stable
   // deps (laneId/projectRoot via refreshPr) — NOT linkedPr, so the idle branch's

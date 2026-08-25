@@ -19,6 +19,18 @@ import {
 import { buildProjectlessSyncSnapshot } from "../sync/projectlessSyncSnapshot";
 import { createSyncAccountDirectoryHealth } from "../../../../desktop/src/shared/types";
 import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
+import type {
+  MachinePower,
+  MachineSleepState,
+} from "../../../../desktop/src/shared/types/power";
+import type {
+  MachinePowerEvent,
+  MachinePowerSource,
+} from "../power/machinePowerMonitor";
+import {
+  getSharedMachinePowerMonitor,
+  resetSharedMachinePowerMonitorForTests,
+} from "../power/sharedMachinePowerMonitor";
 import { removeTestTree } from "../../test/filesystem";
 import {
   createEpisodeAnalytics,
@@ -188,6 +200,159 @@ describe("account machine publisher health", () => {
       },
       failingSinceMs: null,
     });
+  });
+
+  it("sends the account-salted hardware anchor on the heartbeat, and omits it when there is none", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, { status: 204 });
+    });
+    const readAccountHardwareId = vi.fn((userId: string) => `anchor-for-${userId}`);
+    const options = {
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "account-user",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    };
+
+    await createAccountMachinePublisherService({ ...options, readAccountHardwareId }).publishNow();
+    // Salted with the account id, and sent on the plain heartbeat: a row can
+    // only be matched on a later reinstall if it stored an anchor first.
+    expect(readAccountHardwareId).toHaveBeenCalledWith("account-user");
+    expect(bodies[0]).toMatchObject({
+      machineKey: "machine-studio",
+      deviceId: "device-studio",
+      hardwareId: "anchor-for-account-user",
+    });
+    expect(bodies[0]).not.toHaveProperty("pairing");
+
+    // No reader wired, no anchor to read, and a reader that throws are all the
+    // same ordinary outcome: the field is absent and the publish succeeds.
+    await createAccountMachinePublisherService(options).publishNow();
+    await createAccountMachinePublisherService({
+      ...options,
+      readAccountHardwareId: () => null,
+    }).publishNow();
+    const thrower = createAccountMachinePublisherService({
+      ...options,
+      readAccountHardwareId: () => {
+        throw new Error("ioreg unavailable");
+      },
+    });
+    await thrower.publishNow();
+
+    expect(bodies.slice(1).every((body) => !("hardwareId" in body))).toBe(true);
+    expect(thrower.getPublisherHealth().state).toBe("published");
+  });
+
+  it("sends no anchor when the publisher has no account id to salt with", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const readAccountHardwareId = vi.fn(() => "anchor");
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      // The env-token publisher: authenticated, but with no account identity.
+      // Hashing without the salt would produce a value shared across accounts.
+      getAccountStatus: () => ({
+        signedIn: false,
+        source: "env-token" as const,
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      readAccountHardwareId,
+      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.publishNow();
+
+    expect(readAccountHardwareId).not.toHaveBeenCalled();
+    expect(bodies[0]).not.toHaveProperty("hardwareId");
+    expect(service.getPublisherHealth().state).toBe("published");
+  });
+
+  it("keeps the anchor alongside a deliberate pairing publish and its grant", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "account-user",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      consumePairingGrant: () => "grant-token",
+      readAccountHardwareId: () => "anchor-for-account-user",
+      fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }) as unknown as typeof fetch,
+    });
+
+    await service.publishPairing();
+
+    // The anchor is the identifier a proven re-pair supersedes on; a payload
+    // that carried the proof but not the anchor would prove nothing about it.
+    expect(bodies[0]).toMatchObject({
+      pairing: true,
+      pairingGrant: "grant-token",
+      hardwareId: "anchor-for-account-user",
+    });
+  });
+
+  it("confirms only its own superseded machine keys, and tolerates a directory that sends none", async () => {
+    const confirmSupersededMachineKeys = vi.fn((keys: readonly unknown[]) =>
+      (keys as string[]).filter((key) => key === "machine-old"));
+    const info = vi.fn();
+    const warn = vi.fn();
+    let body: BodyInit | null = JSON.stringify({
+      ok: true,
+      supersededMachineKeys: ["machine-old", "somebody-elses-machine"],
+    });
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      confirmSupersededMachineKeys,
+      fetchImpl: vi.fn(async () => new Response(body, {
+        status: 200,
+        headers: body ? { "content-type": "application/json" } : undefined,
+      })),
+      logger: { info, warn },
+    });
+
+    await service.publishNow();
+
+    expect(confirmSupersededMachineKeys).toHaveBeenCalledWith([
+      "machine-old",
+      "somebody-elses-machine",
+    ]);
+    expect(info).toHaveBeenCalledWith("account.machine_identity_superseded_confirmed", {
+      machineKey: "machine-studio",
+      previousMachineKeys: ["machine-old"],
+    });
+
+    // An older directory answers 204 with no body at all; the publish still
+    // succeeds and nothing is claimed.
+    confirmSupersededMachineKeys.mockClear();
+    body = null;
+    await service.publishNow();
+    expect(confirmSupersededMachineKeys).not.toHaveBeenCalled();
+    expect(service.getPublisherHealth().state).toBe("published");
   });
 
   it("samples successful leg durations and escalates slow legs to warn", async () => {
@@ -439,6 +604,51 @@ describe("account machine publisher health", () => {
     await service.publishNow();
 
     expect(captureAnalytics).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a sustained publish failure once per episode, five minutes in", async () => {
+    let clock = 0;
+    let succeeds = false;
+    const onSustainedFailure = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async () => succeeds
+        ? new Response(null, { status: 204 })
+        : new Response(null, { status: 503 })),
+      now: () => clock,
+      onSustainedFailure,
+    });
+
+    await service.publishNow();
+    // Four minutes of failing is a bad afternoon, not yet a broken machine.
+    clock = 240_000;
+    await service.publishNow();
+    expect(onSustainedFailure).not.toHaveBeenCalled();
+
+    clock = 301_000;
+    await service.publishNow();
+    expect(onSustainedFailure).toHaveBeenCalledTimes(1);
+    expect(onSustainedFailure).toHaveBeenCalledWith({ code: "http_error" });
+
+    // Still failing: one report per episode, never one per attempt.
+    clock = 600_000;
+    await service.publishNow();
+    expect(onSustainedFailure).toHaveBeenCalledTimes(1);
+
+    // Recovered and broken again: a genuinely new episode may report again.
+    succeeds = true;
+    clock = 700_000;
+    await service.publishNow();
+    succeeds = false;
+    clock = 800_000;
+    await service.publishNow();
+    clock = 1_101_000;
+    await service.publishNow();
+    expect(onSustainedFailure).toHaveBeenCalledTimes(2);
   });
 
   it("captures one account-session-unreadable event per unreadable episode", async () => {
@@ -1205,8 +1415,12 @@ describe("brain account machine publisher directory policy", () => {
       isSyncEnabled: () => true,
       getSnapshot: async () => snapshot(),
       getMachineKey: () => "machine-studio",
+      confirmSupersededMachineKeys: () => [],
       directoryBaseUrl: () => DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
       logger: { info: vi.fn(), warn: vi.fn() },
+      // This test is about directory routing; no power monitor, so no real
+      // `pmset` spawn and no timers leak into the suite.
+      powerSource: null,
     });
 
     await service.publishNow();
@@ -1221,6 +1435,41 @@ describe("brain account machine publisher directory policy", () => {
       state: "published",
       directoryOrigin: DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
     });
+  });
+
+  // A second monitor would mean a second poll loop and a second gap detector,
+  // so the brain's publisher and its chat service would answer "is this machine
+  // awake" differently. Production passes the shared source explicitly; this
+  // pins the DEFAULT, which is what a caller that forgets the option gets.
+  it("borrows the brain's shared power monitor when no source is passed", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, { status: 204 });
+    }));
+    const shared = getSharedMachinePowerMonitor();
+    try {
+      const service = createBrainAccountMachinePublisherService({
+        secretsDir: "/tmp/ade-account-publisher-shared-power",
+        projectRoots: () => [],
+        isSyncEnabled: () => true,
+        getSnapshot: async () => snapshot(),
+        getMachineKey: () => "machine-studio",
+        confirmSupersededMachineKeys: () => [],
+        logger: { info: vi.fn(), warn: vi.fn() },
+      });
+
+      // Announced on the SHARED monitor, never on anything this publisher owns.
+      shared.noteAnnouncedSuspend();
+      await service.publishNow();
+      service.dispose();
+
+      expect(bodies[0]).toMatchObject({ sleepState: "asleep" });
+      // Disposing the publisher must not take the shared monitor down with it.
+      expect(shared.getSleepState()).toBe("asleep");
+    } finally {
+      resetSharedMachinePowerMonitorForTests();
+    }
   });
 });
 
@@ -1927,5 +2176,215 @@ describe("createEpisodeAnalytics", () => {
     episode.report({ dedupeValue: "boom", properties: {} });
 
     expect(capture).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("machine power publishing", () => {
+  /** A power source the test drives by hand, standing in for a real monitor. */
+  function powerSourceStub(overrides: Partial<MachinePowerSource> = {}) {
+    let sleepState: MachineSleepState = "awake";
+    let sleepStateAt = 1_700_000_000_000;
+    let power: MachinePower | null = { battery: { percent: 55, charging: false }, onExternalPower: false };
+    const listeners = new Set<(event: MachinePowerEvent) => void>();
+    return {
+      source: {
+        getPower: () => power,
+        getSleepState: () => sleepState,
+        getSleepStateAt: () => sleepStateAt,
+        getSuspendGapMs: () => null,
+        subscribe: (listener: (event: MachinePowerEvent) => void) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+        ...overrides,
+      } satisfies MachinePowerSource,
+      listenerCount(): number {
+        return listeners.size;
+      },
+      setPower(next: MachinePower | null): void {
+        power = next;
+      },
+      announceSuspend(at = 1_700_000_060_000): void {
+        sleepState = "asleep";
+        sleepStateAt = at;
+        for (const listener of listeners) listener({ kind: "suspend", at, announced: true });
+      },
+      announceResume(at = 1_700_000_300_000): void {
+        sleepState = "awake";
+        sleepStateAt = at;
+        for (const listener of listeners) {
+          listener({ kind: "resume", at, gapMs: 240_000, announced: true });
+        }
+      },
+    };
+  }
+
+  function publisherWithPower(stub: { source: MachinePowerSource }) {
+    const bodies: Array<Record<string, unknown>> = [];
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      powerSource: stub.source,
+      fetchImpl: vi.fn(async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }),
+    });
+    return { service, bodies };
+  }
+
+  it("carries battery and sleep state on the ordinary heartbeat", async () => {
+    const stub = powerSourceStub();
+    const { service, bodies } = publisherWithPower(stub);
+
+    await service.publishNow();
+
+    expect(bodies[0]).toEqual(expect.objectContaining({
+      power: { batteryPercent: 55, charging: false, onExternalPower: false },
+      sleepState: "awake",
+      sleepStateAt: 1_700_000_000_000,
+    }));
+  });
+
+  it("publishes a battery-less machine with a null percent, never a zero", async () => {
+    const stub = powerSourceStub();
+    stub.setPower({ onExternalPower: true });
+    const { service, bodies } = publisherWithPower(stub);
+
+    await service.publishNow();
+
+    expect(bodies[0]?.power).toEqual({
+      batteryPercent: null,
+      charging: null,
+      onExternalPower: true,
+    });
+  });
+
+  it("omits power entirely when the machine cannot read it", async () => {
+    const stub = powerSourceStub();
+    stub.setPower(null);
+    const { service, bodies } = publisherWithPower(stub);
+
+    await service.publishNow();
+
+    // Omitted, not nulled: the directory coalesces, so a failed read cannot
+    // erase a good reading it already stored.
+    expect(bodies[0]).not.toHaveProperty("power");
+    expect(bodies[0]).toHaveProperty("sleepState", "awake");
+  });
+
+  it("publishes nothing about power when the publisher has no source", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async (_input, init) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(null, { status: 204 });
+      }),
+    });
+
+    await service.publishNow();
+
+    expect(bodies[0]).not.toHaveProperty("power");
+    expect(bodies[0]).not.toHaveProperty("sleepState");
+  });
+
+  it("announces the suspend in a beat sent before the machine goes dark", async () => {
+    const stub = powerSourceStub();
+    const { service, bodies } = publisherWithPower(stub);
+    service.start();
+    await service.publishNow();
+    const beatsBefore = bodies.length;
+
+    stub.announceSuspend();
+    await service.publishPowerStateNow(2_000);
+    service.dispose();
+
+    // This extra write is the entire feature: without it a sleeping machine and
+    // a crashed one are the same event — silence — to every client.
+    expect(bodies.length).toBeGreaterThan(beatsBefore);
+    expect(bodies.at(-1)).toEqual(expect.objectContaining({
+      sleepState: "asleep",
+      sleepStateAt: 1_700_000_060_000,
+    }));
+  });
+
+  it("sends exactly one pre-suspend write no matter how many callers ask", async () => {
+    const stub = powerSourceStub();
+    const { service, bodies } = publisherWithPower(stub);
+    service.start();
+    await service.publishNow();
+    const beatsBefore = bodies.length;
+
+    // A suspend reaches the publisher twice by design: through its own
+    // subscription, and through the host that announced it and wants a bounded
+    // write to hold the machine open for. Two HTTPS round trips do not fit in
+    // the window that barely fits one.
+    stub.announceSuspend();
+    await Promise.all([
+      service.publishPowerStateNow(2_000),
+      service.publishPowerStateNow(2_000),
+    ]);
+    service.dispose();
+
+    expect(bodies.length).toBe(beatsBefore + 1);
+    expect(bodies.at(-1)).toEqual(expect.objectContaining({ sleepState: "asleep" }));
+  });
+
+  it("says awake again as soon as the machine resumes", async () => {
+    const stub = powerSourceStub();
+    const { service, bodies } = publisherWithPower(stub);
+    service.start();
+    stub.announceSuspend();
+    await service.publishPowerStateNow(2_000);
+
+    stub.announceResume();
+    await service.publishNow();
+    service.dispose();
+
+    expect(bodies.at(-1)).toEqual(expect.objectContaining({
+      sleepState: "awake",
+      sleepStateAt: 1_700_000_300_000,
+    }));
+  });
+
+  it("keeps heartbeating when the power source throws", async () => {
+    const stub = powerSourceStub({
+      getPower: () => {
+        throw new Error("pmset exploded");
+      },
+    });
+    const { service, bodies } = publisherWithPower(stub);
+
+    await service.publishNow();
+
+    // Reachability is the record's real job; a broken battery read must not
+    // take the machine off the roster.
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).not.toHaveProperty("power");
+  });
+
+  // The publisher BORROWS the machine's power source; it does not own it. One
+  // monitor is shared with the chat service and with the desktop's forwarded
+  // suspend beat, and the publisher is rebuilt on every sync-host handoff — so
+  // disposal must drop its subscription and nothing else. `MachinePowerSource`
+  // carries no `start`/`dispose` precisely so this cannot regress.
+  it("drops only its own subscription when disposed, never the shared source", () => {
+    const stub = powerSourceStub();
+    const { service } = publisherWithPower(stub);
+
+    service.start();
+    expect(stub.listenerCount()).toBe(1);
+    service.dispose();
+    expect(stub.listenerCount()).toBe(0);
+    expect(stub.source).not.toHaveProperty("dispose");
+    expect(stub.source).not.toHaveProperty("start");
   });
 });

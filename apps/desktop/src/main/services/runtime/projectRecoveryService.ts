@@ -1,15 +1,22 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import type {
-  AdeLastFailureReport,
-  AdeRecoveryErrorCode,
-  ProjectRecoveryDiagnosis,
-  ProjectRepairReport,
-  RepairStepId,
-  RepairStepResult,
+import {
+  REPAIR_STEP_LABELS,
+  REPAIR_STEP_ORDER,
+  stateForCode,
+  type AdeLastFailureReport,
+  type AdeRecoveryErrorCode,
+  type ProjectRecoveryDiagnosis,
+  type ProjectRepairReport,
+  type RepairStepId,
+  type RepairStepResult,
 } from "../../../shared/types/recovery";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import {
+  RUNTIME_SERVICE_START_WAIT_MS,
+  RUNTIME_SERVICE_YOUNG_BRAIN_MS,
+} from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import type { Logger } from "../logging/logger";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
@@ -28,30 +35,19 @@ const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const FRESH_FAILURE_MS = 5 * 60 * 1_000;
 // How long a restarted brain gets to rebind the machine endpoint, shared by
-// `repair()`'s restart_service step and `restartBrain()`.
-const BRAIN_RESTART_TIMEOUT_MS = 20_000;
+// `repair()`'s restart_service step and `restartBrain()`. Generous on purpose:
+// the installer reports a live-but-slow brain as `starting`, and this wait is
+// where such a brain gets the rest of its time. It used to be 20s, which on a
+// cold or slow machine expired against a healthy brain and turned into
+// "didn't restart — try again".
+const BRAIN_RESTART_TIMEOUT_MS = RUNTIME_SERVICE_START_WAIT_MS;
+// A brain whose install/restart began less than this long ago and that is not
+// answering yet is presumed to still be starting, not stuck.
+const BRAIN_STARTING_WINDOW_MS = RUNTIME_SERVICE_YOUNG_BRAIN_MS;
 
-const STEP_LABELS: Record<RepairStepId, string> = {
-  check_space: "Checking storage space",
-  stop_service: "Stopping ADE's background service",
-  validate_database: "Checking project data",
-  resolve_migrations: "Finishing interrupted saves",
-  restart_service: "Restarting ADE's background service",
-  verify_endpoint: "Checking the background service",
-  verify_project_rpc: "Checking this project",
-  reconcile_chats: "Checking chats",
-};
+const STEP_LABELS = REPAIR_STEP_LABELS;
 
-const STEP_ORDER: readonly RepairStepId[] = [
-  "check_space",
-  "stop_service",
-  "validate_database",
-  "resolve_migrations",
-  "restart_service",
-  "verify_endpoint",
-  "verify_project_rpc",
-  "reconcile_chats",
-];
+const STEP_ORDER = REPAIR_STEP_ORDER;
 
 const REPAIR_MIN_FREE_BYTES = (dbSize: number): number => Math.max(GIB, dbSize + 512 * MIB);
 // Advice = repair gate + margin, so following the advice always satisfies repair.
@@ -108,6 +104,20 @@ export type ProjectRecoveryServiceDeps = {
   clearFailureReports?: (projectRoot: string) => Promise<void>;
   readChatCounts?: (projectRoot: string) => Promise<ChatCounts>;
   socketExists?: (socketPath: string) => boolean;
+  /**
+   * Fires when a diagnosis settles on a state the user cannot work through —
+   * everything except `healthy` and the transient `brain_starting`. Automatic
+   * diagnostics listens here; the callback owns its own budget, so a screen
+   * that re-diagnoses on every poll costs nothing.
+   *
+   * Carries only what the one listener uses. `state` is derivable from `code`
+   * and was passed unused, which is how a notification callback turns into a
+   * second, informal copy of the diagnosis type.
+   */
+  onTerminalDiagnosis?: (input: {
+    code: AdeRecoveryErrorCode;
+    projectRoot: string;
+  }) => void;
   now?: () => number;
 };
 
@@ -165,6 +175,12 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
         body: "Something interrupted ADE while it was saving. Your files and chats are still here.",
         canAutoRepair: true,
       };
+    case "storage_unreadable":
+      return {
+        headline: "ADE couldn't read this project's data.",
+        body: "The project's files couldn't be read from this computer. If the folder is in iCloud Drive, Dropbox or OneDrive, move it to a folder on this computer and open it again.",
+        canAutoRepair: false,
+      };
     case "brain_crash_looping":
       return {
         headline: "ADE's background service keeps stopping.",
@@ -189,27 +205,18 @@ function diagnosisCopy(state: ProjectRecoveryDiagnosis["state"]): Pick<
         body: "Close other copies of ADE, then try again.",
         canAutoRepair: false,
       };
+    case "brain_starting":
+      return {
+        headline: "ADE's background service is starting.",
+        body: "This can take a minute the first time or right after an update. ADE will open the project as soon as it's ready — nothing to do.",
+        canAutoRepair: false,
+      };
     default:
       return {
         headline: "ADE couldn't open this project.",
-        body: "You can try a repair, or send the technical details to support.",
+        body: "Something stopped ADE's background service from answering. A repair restarts it and checks the project's data — your files and chats aren't touched.",
         canAutoRepair: true,
       };
-  }
-}
-
-function stateForCode(code: AdeRecoveryErrorCode): ProjectRecoveryDiagnosis["state"] {
-  switch (code) {
-    case "disk_full": return "disk_full";
-    case "insufficient_headroom": return "insufficient_headroom";
-    case "db_integrity":
-    case "migration_incomplete":
-    case "migration_unknown_state": return "db_repair_needed";
-    case "brain_crash_looping": return "brain_crash_looping";
-    case "brain_not_installed": return "brain_not_installed";
-    case "socket_stale_no_owner": return "socket_stale_no_owner";
-    case "socket_owned_by_other": return "socket_owned_by_other";
-    default: return "unknown_failure";
   }
 }
 
@@ -504,16 +511,43 @@ export class ProjectRecoveryService {
     const socketReachable = await this.probeSocket(this.socketPath, 750);
     const endpointHealthy = socketReachable && await this.pingEndpoint(this.socketPath, 1_500);
     const serviceStatus = this.deps.connectionPool.getStatus();
+    const installStartedAt = Date.parse(serviceStatus.serviceInstall.attemptStartedAt ?? "");
+    // Time-bounded on purpose: the installer's `starting` flag alone would keep
+    // a brain that wedged during boot reading as "starting" forever.
+    //
+    // Deliberately not gated on `!socketReachable`: the brain binds its RPC
+    // socket before it can answer `ade/initialize`, so there is a real window
+    // where the socket accepts connections and the ping still fails. Requiring
+    // an unreachable socket made that window impossible to classify as
+    // starting, and it fell through to "another program owns this" instead.
+    // A negative age means the recorded attempt is in the future -- a clock
+    // that moved backwards after it was written. Only the upper bound was
+    // checked, so such a stamp read as "always inside the window" and
+    // suppressed repair until the clock caught up with it.
+    const startupAgeMs = this.now() - installStartedAt;
+    const brainStarting =
+      serviceStatus.serviceHealth.running === true
+      && Number.isFinite(installStartedAt)
+      && startupAgeMs >= 0
+      && startupAgeMs < BRAIN_STARTING_WINDOW_MS;
     const dbCheck = endpointHealthy
       ? { healthy: null, detail: "Project data check skipped because the background service is using it." }
       : await this.quickCheck(dbPath);
+    // A recorded sync-host failure says phone sync could not start. It says
+    // nothing about whether the desktop can reach this brain, and the brain
+    // deliberately keeps that record until sync really comes up — so a brain
+    // that is bound, answering, and healthy routinely carries a fresh
+    // `sync_host` failure. Repairing on it would kill a brain doing its job.
+    // It stays in `lastFailure` and the technical detail either way.
+    const actionableFailure =
+      freshFailure && endpointHealthy && freshFailure.component === "sync_host" ? null : freshFailure;
     const technicalParts = [
       `freeBytes=${free}`,
       `dbSize=${dbSize}`,
       `socketPath=${this.socketPath}`,
       `socketReachable=${socketReachable}`,
       `endpointHealthy=${endpointHealthy}`,
-      `serviceInstall=${serviceStatus.serviceInstall.state}`,
+      `serviceInstall=${serviceStatus.serviceInstall.state}${serviceStatus.serviceInstall.starting ? " (starting)" : ""}`,
       `serviceHealth=${serviceStatus.serviceHealth.state}`,
       `database=${dbCheck.detail}`,
       ...(latestFailure ? [`lastFailure=${latestFailure.code}: ${latestFailure.message}${latestFailure.detail ? ` (${latestFailure.detail})` : ""}`] : []),
@@ -524,14 +558,22 @@ export class ProjectRecoveryService {
     if (free < GIB) {
       state = "disk_full";
       code = "disk_full";
-    } else if (freshFailure) {
-      state = stateForCode(freshFailure.code);
-      code = freshFailure.code;
+    } else if (actionableFailure) {
+      state = stateForCode(actionableFailure.code);
+      code = actionableFailure.code;
     } else if (dbCheck.healthy === false) {
       state = "db_repair_needed";
       code = "db_integrity";
     } else if (endpointHealthy) {
       state = "healthy";
+      code = "unknown";
+    } else if (brainStarting) {
+      // Ahead of the owner, crash-loop and stale-socket branches: a brain that
+      // the installer just started (or reported as still starting) and that
+      // launchd/the supervisor shows running is booting, not broken. Repair
+      // here would only kill it and start its clock over, and a socket it has
+      // bound but cannot answer on yet is this brain's, not a stranger's.
+      state = "brain_starting";
       code = "unknown";
     } else if (socketReachable) {
       state = "socket_owned_by_other";
@@ -551,6 +593,14 @@ export class ProjectRecoveryService {
     } else {
       state = "unknown_failure";
       code = "unknown";
+    }
+
+    if (state !== "healthy" && state !== "brain_starting") {
+      try {
+        this.deps.onTerminalDiagnosis?.({ code, projectRoot: normalizedRoot });
+      } catch {
+        // A listener must never cost the user their diagnosis.
+      }
     }
 
     const required = RECOMMENDED_FREE_BYTES(dbSize);
@@ -711,7 +761,7 @@ export class ProjectRecoveryService {
       dbHealthy = true;
       addStep("resolve_migrations", "ok", "Interrupted saves were finished safely.");
     } catch (error) {
-      const classified = this.classifyOpenError(error);
+      const classified = this.classifyOpenError(error, { path: dbPath });
       const failureCode = classified === "unknown" ? "unknown" : classified;
       const nextAction = classified === "migration_unknown_state"
         ? "ADE found data it doesn't recognize from an interrupted save. Contact support — nothing has been deleted."

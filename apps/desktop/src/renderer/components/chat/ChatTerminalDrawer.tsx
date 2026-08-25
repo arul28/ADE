@@ -1,7 +1,7 @@
 import React, { memo, useCallback, useEffect, useRef, useState } from "react";
 import { Terminal as TerminalIcon, Plus, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import type { AppControlSession, ChatTerminalSession, PtyExitEvent } from "../../../shared/types";
+import type { AppControlSession, ChatTerminalSession, OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
 import { TerminalView } from "../terminals/TerminalView";
 
 type AppControlTabState = {
@@ -55,6 +55,12 @@ type ChatTerminalDrawerProps = {
    */
   chatSessionId?: string | null;
   variant?: "drawer" | "panel";
+  /**
+   * Machine the owning chat/CLI session lives on. Null (the default, and every
+   * pre-existing call site) means the tab's bound machine. When set, terminal
+   * creation, restore, disposal, and the xterm runtime are all addressed there.
+   */
+  runtimePin?: OpenProjectBinding | null;
   autoCreateOnOpen?: boolean;
   createRequestNonce?: number;
   disposeTabsOnUnmount?: boolean;
@@ -84,8 +90,13 @@ type DrawerUiState = {
 let nextTabIndex = 1;
 const drawerUiStateByKey = new Map<string, DrawerUiState>();
 
-function drawerStateKey(chatSessionId: string | null | undefined, laneId: string): string {
-  return chatSessionId ? `chat:${chatSessionId}` : `lane:${laneId}`;
+function drawerStateKey(
+  chatSessionId: string | null | undefined,
+  laneId: string,
+  pin?: OpenProjectBinding | null,
+): string {
+  const scope = chatSessionId ? `chat:${chatSessionId}` : `lane:${laneId}`;
+  return pin ? `machine:${pin.kind}:${pin.key}::${scope}` : scope;
 }
 
 function readDrawerUiState(key: string): DrawerUiState {
@@ -135,6 +146,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   onToggle,
   laneId,
   chatSessionId,
+  runtimePin = null,
   variant = "drawer",
   autoCreateOnOpen = true,
   createRequestNonce = 0,
@@ -143,7 +155,10 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   onCreateError,
   revealRequest,
 }: ChatTerminalDrawerProps) {
-  const uiStateKey = drawerStateKey(chatSessionId, laneId);
+  const pin = runtimePin ?? null;
+  // Lane and chat ids are only unique per machine, so the persisted drawer
+  // state (height, active tab) is namespaced by machine too.
+  const uiStateKey = drawerStateKey(chatSessionId, laneId, pin);
   const [tabs, setTabs] = useState<TabEntry[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [drawerHeight, setDrawerHeight] = useState(() => readDrawerUiState(uiStateKey).height);
@@ -237,7 +252,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         title: label,
         tracked: true,
         toolType: "shell",
-      });
+      }, pin);
 
       const tabId = `chat-term-${created.sessionId}`;
       const nextEntry: TabEntry = {
@@ -273,14 +288,14 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       if (createTabFlightRef.current === flight) createTabFlightRef.current = null;
       setCreatingTab(false);
     }
-  }, [chatSessionId, laneId, reportCreateError]);
+  }, [chatSessionId, laneId, pin, reportCreateError]);
 
   useEffect(() => {
     if (!chatSessionId) return;
     if (!open && !revealRequest) return;
     let cancelled = false;
     setRestoringTabs(true);
-    window.ade.terminal.list({ chatSessionId, limit: 20 })
+    window.ade.terminal.list({ chatSessionId, limit: 20 }, pin)
       .then((sessions) => {
         if (cancelled) return;
         const restored = sessions
@@ -319,7 +334,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     return () => {
       cancelled = true;
     };
-  }, [chatSessionId, open, revealRequest, uiStateKey]);
+  }, [chatSessionId, open, pin, revealRequest, uiStateKey]);
 
   useEffect(() => {
     if (!revealRequest) return;
@@ -420,16 +435,16 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
           ? { ...tab, exited: true }
           : tab
       )));
-    });
+    }, pin);
     return unsubscribe;
-  }, []);
+  }, [pin]);
 
   useEffect(() => () => {
     if (!disposeTabsOnUnmount) return;
     for (const tab of tabsRef.current) {
-      window.ade.pty.dispose({ ptyId: tab.ptyId, sessionId: tab.sessionId }).catch(() => {});
+      window.ade.pty.dispose({ ptyId: tab.ptyId, sessionId: tab.sessionId }, pin).catch(() => {});
     }
-  }, [disposeTabsOnUnmount]);
+  }, [disposeTabsOnUnmount, pin]);
 
   // Drop drawer tabs when their session is deleted from the sidebar so the user
   // can't keep working in a shell whose backing session no longer exists.
@@ -443,7 +458,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         if (!removed) return prev;
         if (removed.ptyId) {
           window.ade.pty
-            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId })
+            .dispose({ ptyId: removed.ptyId, sessionId: removed.sessionId }, pin)
             .catch(() => {});
         }
         const next = prev.filter((tab) => tab.sessionId !== event.sessionId);
@@ -454,14 +469,14 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         return next;
       });
     });
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     if (!open) return undefined;
     const appControlBridge = window.ade?.appControl;
     if (!appControlBridge) return undefined;
     let cancelled = false;
-    void appControlBridge.getStatus()
+    void appControlBridge.getStatus(pin)
       .then((status) => {
         if (cancelled) return;
         setAppControlTabState(deriveAppControlTabState(status?.activeSession ?? null));
@@ -478,12 +493,12 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       cancelled = true;
       unsubscribe();
     };
-  }, [open]);
+  }, [open, pin]);
 
   const closeTab = useCallback((tabId: string) => {
     const entry = tabsRef.current.find((tab) => tab.id === tabId);
     if (entry) {
-      window.ade.pty.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId }).catch(() => {});
+      window.ade.pty.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId }, pin).catch(() => {});
     }
 
     setTabs((prev) => {
@@ -494,7 +509,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       });
       return next;
     });
-  }, []);
+  }, [pin]);
 
   if (!open) return null;
 
@@ -620,6 +635,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
           <TerminalView
             ptyId={activeTab.ptyId}
             sessionId={activeTab.sessionId}
+            runtimePin={pin}
             isActive
             isVisible
             className="h-full w-full"

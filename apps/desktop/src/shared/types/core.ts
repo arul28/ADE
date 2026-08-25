@@ -64,6 +64,20 @@ export type LocalRuntimeStatus = {
     message: string | null;
     exitCode: number | null;
     updatedAt: string | null;
+    /**
+     * The install finished with the service registered and its brain alive but
+     * not yet answering on the socket — a brain still coming up. Consumers
+     * keep waiting for the endpoint; nothing here needs repairing.
+     */
+    starting?: boolean;
+    /** The install actually (re)started the service child (see `ServiceManagerResult.restarted`). */
+    restarted?: boolean;
+    /**
+     * When the current streak of install attempts began — the first attempt
+     * since the desktop last connected successfully. Recovery ages a quiet
+     * brain from here, so recurring installs cannot keep it "starting" forever.
+     */
+    attemptStartedAt?: string | null;
   };
   serviceHealth: {
     state: LocalRuntimeServiceHealthState;

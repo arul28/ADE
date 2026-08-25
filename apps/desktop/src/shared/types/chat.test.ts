@@ -1,12 +1,52 @@
 import { describe, expect, it } from "vitest";
 import {
+  activeTurnDispatchModes,
+  activeTurnInterruptContinues,
+  defaultActiveTurnDispatchMode,
   inferAttachmentType,
   mergeAttachments,
   providerSupportsCrossMachineHandoffFork,
   providerSupportsHandoffFork,
+  supportsActiveTurnDispatchMode,
+  unsupportedActiveTurnDispatchModeMessage,
   type AgentChatFileRef,
   type AgentChatModelsArgs,
 } from "./chat";
+
+describe("active-turn dispatch modes", () => {
+  it("is the one table every surface reads: Claude all three, Cursor no inline, others queue-only", () => {
+    expect(activeTurnDispatchModes("claude")).toEqual(["inline", "queue", "interrupt"]);
+    expect(activeTurnDispatchModes("cursor")).toEqual(["interrupt", "queue"]);
+    for (const provider of ["codex", "opencode", "droid", "pi", "unknown-provider", undefined]) {
+      expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
+    }
+  });
+
+  it("defaults to the first mode in menu order", () => {
+    expect(defaultActiveTurnDispatchMode("claude")).toBe("inline");
+    expect(defaultActiveTurnDispatchMode("cursor")).toBe("interrupt");
+    expect(defaultActiveTurnDispatchMode("droid")).toBe("queue");
+  });
+
+  it("says which providers' interrupt continues the same thread, so all three surfaces label it alike", () => {
+    // Cursor's interrupt is cancel + resend on the same agent thread, so the
+    // affordance reads "continue"; Claude's redirects a live query.
+    expect(activeTurnInterruptContinues("cursor")).toBe(true);
+    expect(activeTurnInterruptContinues("claude")).toBe(false);
+    expect(activeTurnInterruptContinues(undefined)).toBe(false);
+  });
+
+  it("rejects an inline dispatch on Cursor rather than downgrading it", () => {
+    expect(supportsActiveTurnDispatchMode("cursor", "interrupt")).toBe(true);
+    expect(supportsActiveTurnDispatchMode("cursor", "inline")).toBe(false);
+    expect(supportsActiveTurnDispatchMode("codex", "interrupt")).toBe(false);
+    // The host rejection the renderer and TUI both surface verbatim.
+    expect(unsupportedActiveTurnDispatchModeMessage("cursor", "inline"))
+      .toBe("Cursor sessions support only the \"interrupt\" active-turn dispatch mode.");
+    expect(unsupportedActiveTurnDispatchModeMessage("codex", "interrupt"))
+      .toContain("don't support");
+  });
+});
 
 describe("AgentChatModelsArgs", () => {
   it("allows typed callers to request the aggregated model catalog", () => {
@@ -16,8 +56,9 @@ describe("AgentChatModelsArgs", () => {
 });
 
 describe("handoff fork provider support", () => {
-  it("keeps local Droid forks enabled while refusing cross-machine Droid forks", () => {
+  it("keeps local Droid and Cursor forks enabled while refusing them across machines", () => {
     expect(providerSupportsHandoffFork("droid")).toBe(true);
+    expect(providerSupportsHandoffFork("cursor")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("droid")).toBe(false);
     expect(providerSupportsCrossMachineHandoffFork("claude")).toBe(true);
     expect(providerSupportsCrossMachineHandoffFork("codex")).toBe(true);

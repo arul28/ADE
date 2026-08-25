@@ -515,8 +515,11 @@ export function PrDetailPane({
     setTimelineFilters,
     setAiSummaryDismissed,
     regeneratePrAiSummary,
-    isGithubRateLimited,
-    noteGithubRateLimit,
+    isGithubPollStoodDown,
+    noteGithubReadFailure,
+    noteGithubReadSuccess,
+    githubPollPeriodFor,
+    githubPollGeneration,
   } = usePrs();
   const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
   const initialPaneWarmCache = readDetailPaneWarmCache(pr.id);
@@ -1073,13 +1076,6 @@ export function PrDetailPane({
     };
   }, [activeTab, deepLinkState.eventId, fetchActivity, pr.id, updateDetailPaneWarmCache]);
 
-  // Adaptive refresh for the PR detail readiness signals.
-  //
-  // Cadence: ~5s while the CI tab is open AND something is still queued or
-  // running, 60s otherwise. It stops entirely when the window is hidden, and on
-  // the CI tab once everything is terminal — there is nothing left to observe.
-  // `getChecks` is included: it used to be missing, so third-party checks
-  // (CodeRabbit, Vercel, …) never refreshed while the tab was open.
   const [windowVisible, setWindowVisible] = React.useState(
     () => (typeof document === "undefined" ? true : document.visibilityState !== "hidden"),
   );
@@ -1090,17 +1086,35 @@ export function PrDetailPane({
     return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
+  // Adaptive refresh for the PR detail readiness signals.
+  //
+  // Cadence: ~5s while the CI tab is open AND something is still queued or
+  // running, 60s otherwise. It stops entirely when the window is hidden, and on
+  // the CI tab once everything is terminal — there is nothing left to observe.
+  // `getChecks` is included: it used to be missing, so third-party checks
+  // (CodeRabbit, Vercel, …) never refreshed while the tab was open.
+  //
+  // The 5s rung is the most expensive loop in the app — roughly seven to ten
+  // GitHub REST requests per tick, i.e. a whole hourly quota if it runs for an
+  // hour, which is exactly what happened on 2026-08-17. It is now braked from
+  // two sides: `getChecks` rejects instead of returning an empty list a failure
+  // is indistinguishable from, and the shared governor turns any rejection or
+  // the quota reserve into a longer period for this timer.
   React.useEffect(() => {
     if (!windowVisible) return undefined;
     const checksTabOpen = activeTab === "checks";
     if (checksTabOpen && checksTerminal) return undefined;
-    const periodMs = checksTabOpen && !checksTerminal ? checksPollPeriodMs() : 60_000;
+    const basePeriodMs = checksTabOpen && !checksTerminal ? checksPollPeriodMs() : 60_000;
+    // Stretch the timer itself rather than waking every 5s to return early: a
+    // guard that has to be re-checked on every tick is one refactor away from
+    // being missed, and a slower interval cannot be.
+    const periodMs = githubPollPeriodFor(basePeriodMs);
 
     let cancelled = false;
     const id = window.setInterval(() => {
-      // Honour PrsContext's shared GitHub rate-limit backoff rather than
-      // hammering the API alongside it.
-      if (isGithubRateLimited()) return;
+      // Second line of defence — the period above already reflects the
+      // stand-down, but a pause armed between ticks lands here.
+      if (isGithubPollStoodDown()) return;
       const activityPromise = activeTab === "overview"
         ? fetchActivity()
         : Promise.resolve(null);
@@ -1111,14 +1125,17 @@ export function PrDetailPane({
         fetchChecks(),
       ]).then(([arResult, thrResult, actResult, checksResult]) => {
         if (cancelled) return;
-        for (const result of [arResult, thrResult, actResult, checksResult]) {
-          if (result.status !== "rejected") continue;
-          const message = String((result.reason as Error | undefined)?.message ?? result.reason);
-          if (message.includes("rate limit") || message.includes("API rate")) {
-            noteGithubRateLimit();
-            return;
-          }
+        const results = [arResult, thrResult, actResult, checksResult];
+        // ANY rejection stands the loop down. The previous message-substring
+        // test matched neither the 5xx responses of a GitHub outage nor a 403
+        // rate-limit body, so the brake never armed while the quota drained.
+        if (results.some((result) => result.status === "rejected")) {
+          noteGithubReadFailure();
+        } else {
+          noteGithubReadSuccess();
         }
+        // Whatever DID resolve is still applied: a partial answer keeps the
+        // pane current instead of freezing it on the last complete one.
         if (arResult.status === "fulfilled") {
           setActionRuns(arResult.value);
           updateDetailPaneWarmCache({ actionRuns: arResult.value });
@@ -1143,7 +1160,8 @@ export function PrDetailPane({
     };
   }, [
     activeTab, checksTerminal, fetchActionRuns, fetchActivity, fetchChecks, fetchReviewThreadsApi,
-    isGithubRateLimited, noteGithubRateLimit, pr.id, updateDetailPaneWarmCache, windowVisible,
+    githubPollGeneration, githubPollPeriodFor, isGithubPollStoodDown, noteGithubReadFailure,
+    noteGithubReadSuccess, pr.id, updateDetailPaneWarmCache, windowVisible,
   ]);
 
   // While GitHub is still computing mergeability for the selected PR, re-poll
@@ -1156,28 +1174,51 @@ export function PrDetailPane({
   React.useEffect(() => {
     if (!mergeabilityComputing) return undefined;
     // Unmapped PRs have a synthetic `gh:` id that getStatus(prId) can't resolve,
-    // so re-poll them by coords instead.
-    const pollStatus = (): Promise<PrStatus | null> => {
-      if (isUnmapped && coordsRef.current && typeof window.ade.prs.getStatusByGithub === "function") {
-        return window.ade.prs.getStatusByGithub(coordsRef.current);
+    // so re-poll them by coords instead. With neither reader available there is
+    // nothing to ask, so the loop never starts — it used to resolve `null`
+    // without making a request, which then recorded a governor *success* and
+    // cleared the stand-down for every other loop on the surface.
+    const readByCoords = isUnmapped && typeof window.ade.prs.getStatusByGithub === "function"
+      ? window.ade.prs.getStatusByGithub
+      : null;
+    const readById = typeof window.ade.prs.getStatus === "function"
+      ? window.ade.prs.getStatus
+      : null;
+    if (!(isUnmapped ? readByCoords : readById)) return undefined;
+    const pollStatus = (): Promise<PrStatus | null> | null => {
+      // Re-read the ref at tick time: it is reassigned every render, and a tick
+      // landing between the render that nulled it and the effect cleanup would
+      // otherwise pass null straight to the host.
+      // An unmapped PR asks by coords or asks nothing: its `pr.id` is the
+      // synthetic `gh:owner/repo#n`, which `getStatus` rejects locally. That
+      // local rejection would arm the shared stand-down for every other loop on
+      // the surface — a GitHub brake tripped by something GitHub never saw.
+      if (isUnmapped) {
+        const coords = coordsRef.current;
+        return readByCoords && coords ? readByCoords(coords) : null;
       }
-      if (typeof window.ade.prs.getStatus === "function") return window.ade.prs.getStatus(pr.id);
-      return Promise.resolve(null);
+      return readById ? readById(pr.id) : null;
     };
     let cancelled = false;
-    let attempts = 0;
-    // ~1 minute ceiling either way, then defer to the background poll.
-    const pollPeriodMs = mergeabilityPollPeriodMs();
-    const MAX_ATTEMPTS = Math.round(60_000 / pollPeriodMs);
+    // Stands down with the governor like every other automatic loop, by
+    // lengthening its period rather than skipping ticks. The ceiling is
+    // wall-clock rather than an attempt count: skipped attempts against a
+    // counter would have turned "~1 minute, then defer to the background poll"
+    // into hours of a live 2.5s timer during an outage.
+    const pollPeriodMs = githubPollPeriodFor(mergeabilityPollPeriodMs());
+    const deadlineAtMs = Date.now() + 60_000;
     const seqAtStart = detailLoadSeqRef.current;
     const id = window.setInterval(() => {
-      if (attempts >= MAX_ATTEMPTS) {
+      if (Date.now() >= deadlineAtMs) {
         window.clearInterval(id);
         return;
       }
-      attempts += 1;
-      pollStatus()
+      if (isGithubPollStoodDown()) return;
+      const request = pollStatus();
+      if (!request) return;
+      request
         .then((next) => {
+          noteGithubReadSuccess();
           // Drop if cancelled, empty, or a newer detail load superseded us.
           if (cancelled || !next || seqAtStart !== detailLoadSeqRef.current) return;
           setPolledStatus(next);
@@ -1186,13 +1227,19 @@ export function PrDetailPane({
             window.clearInterval(id);
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          noteGithubReadFailure();
+        });
     }, pollPeriodMs);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [mergeabilityComputing, isUnmapped, pr.id, updateDetailPaneWarmCache]);
+  }, [
+    mergeabilityComputing, isUnmapped, githubPollGeneration, githubPollPeriodFor,
+    isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, pr.id,
+    updateDetailPaneWarmCache,
+  ]);
 
   // ---- Action helper to reduce repetitive try/catch/finally ----
   const runAction = async (fn: () => Promise<void>) => {

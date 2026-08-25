@@ -1,29 +1,23 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, Copy, FilePlus, FolderPlus, PencilSimple, Trash } from "@phosphor-icons/react";
-import type { FileChangeEvent, FileContent, FileTreeNode, FilesWorkspace } from "../../../../shared/types";
-import { useAppStore } from "../../../state/appStore";
+import type { FileChangeEvent, FileContent, FilesWorkspace } from "../../../../shared/types";
+import type { OpenProjectBinding } from "../../../../shared/types/core";
+import { useAppStore, useRootAppStore } from "../../../state/appStore";
+import type { CrossMachineLaneMarker } from "../../../state/crossMachineLanes";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
 import { resolveLanguageId } from "../filePresentation";
 import { FilesExplorer, type FilesExplorerContextMenuEvent } from "../FilesExplorer";
 import { clearDirtyBuffersForWorkspace, replaceDirtyBufferValuesForWorkspace } from "../../../lib/dirtyWorkspaceBuffers";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
-  applyGitStatusToTree,
-  appendTreeNodeChildren,
   defaultFilesWorkspaceId,
-  directoryLoadMoreOffset,
   filesProjectSessionKey,
   filesSessionKey,
   formatFilesError,
   hasAncestorDirectoryPath,
   hasLoadedDirectoryChildren,
-  isMissingWorkspaceRootError,
-  isUnavailableGitDecorationsError,
-  loadedDirectoryChildrenCount,
-  mergeTreePreservingLoadedChildren,
   nearestLoadedAncestorDirectoryPath,
   parentPathForFileChange,
-  replaceTreeNodeChildren,
 } from "../treeHelpers";
 import {
   type EditorTab,
@@ -47,12 +41,8 @@ import {
 import { getFilesTabScope, toggleFilesTabScope, type FilesTabScope } from "./filesTabScope";
 import {
   filesProjectCacheKey,
-  filesTreeCacheKey,
-  pinCachedTree,
-  readCachedTree,
   readCachedWorkspaces,
-  unpinCachedTree,
-  writeCachedTree,
+  releaseFilesProjectCaches,
   writeCachedWorkspaces,
 } from "./filesTreeCache";
 import { resolveViewerKind } from "./viewerRegistry";
@@ -69,22 +59,27 @@ import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
 import { WorkspacePicker } from "./WorkspacePicker";
-import { CreatePromptModal, SearchOverlay } from "./overlays";
+import { CreatePromptModal } from "./overlays";
+import { FilesSearchPanel } from "./FilesSearchPanel";
 import { setPendingReveal } from "./pendingReveals";
+import { pathAncestors, useFilesTree } from "./useFilesTree";
+import { createPinnedFilesApi } from "./pinnedFilesApi";
+import {
+  clearPendingFilesOpenRequest,
+  subscribeFilesOpenInTools,
+  takePendingFilesOpenRequest,
+  type FilesOpenRequest,
+} from "./filesOpenRequests";
+import { LaneMachineMarker } from "../../terminals/LaneMachineMarker";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { modifierKeyLabel, revealLabel } from "../../../lib/platform";
 import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 
-const TREE_PAGE_SIZE = 2_000;
-// The root listing is the first thing every visit needs. Fetching two levels
-// costs one host walk but saves a `listTreeChildren` round trip on the first
-// folder the user expands (the host clamps depth to 1..8).
-const ROOT_TREE_DEPTH = 2;
-// Path reveals (external opens) may need entries beyond the first page; they
-// page up to this bound instead of the single visible page expansion uses.
-const REVEAL_MAX_CHILDREN = 10_000;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
+// Open-request keys remembered for dedup. Far above any real burst; exists so a
+// long-lived session cannot grow the set without bound.
+const MAX_REMEMBERED_OPEN_REQUEST_KEYS = 64;
 const WORKSPACE_LIST_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
 const FILES_REFRESH_DEBOUNCE_MS = 200;
 // Ceiling for unscoped ("something changed") refreshes: they cost a workspace
@@ -99,11 +94,23 @@ const FULL_REFRESH_MIN_INTERVAL_MS = 5_000;
 const EMPTY_GROUPS_STATE = createInitialGroupsState();
 
 export type FilesNavigationOpenRequest = {
-  path: string;
+  /** Null when the request carries a `searchQuery` instead of a file. */
+  path: string | null;
   laneId: string | null;
   nonce: string;
   line?: number;
   column?: number;
+  /** Directories reveal in the tree; files open in an editor tab. */
+  pathType?: "file" | "directory";
+  /**
+   * Machine that owns the file. Null means the machine this project tab is
+   * bound to. Set when a chat on another machine reported the path: the file
+   * only exists over there, so every files call this workbench makes has to be
+   * addressed to that machine rather than rebinding the whole window.
+   */
+  pin?: OpenProjectBinding | null;
+  /** Open the search panel with this query instead of a file (ambiguous name). */
+  searchQuery?: string;
 };
 
 // Cross-mount caches survive remounts (the route unmounts FilesWorkbench when
@@ -124,14 +131,6 @@ function mergeExternalWorkspaces(next: FilesWorkspace[], previous: FilesWorkspac
   return [...next, ...preserved];
 }
 
-function pathAncestors(path: string): string[] {
-  const segments = path.replace(/\\/g, "/").split("/").filter(Boolean);
-  const out: string[] = [];
-  for (let i = 1; i <= segments.length; i++) {
-    out.push(segments.slice(0, i).join("/"));
-  }
-  return out;
-}
 
 function pathIsAtOrUnder(path: string, target: string): boolean {
   return path === target || path.startsWith(`${target}/`) || path.startsWith(`${target}\\`);
@@ -150,6 +149,7 @@ export function FilesWorkbench({
   externalOpenNonce,
   externalOpenLine,
   navigationOpenRequest,
+  pin: seedPin = null,
 }: {
   preferredLaneId?: string | null;
   embedded?: boolean;
@@ -158,10 +158,35 @@ export function FilesWorkbench({
   externalOpenNonce?: string | null;
   externalOpenLine?: string | null;
   navigationOpenRequest?: FilesNavigationOpenRequest | null;
+  /**
+   * Machine this workbench should start on, for hosts that already know it —
+   * the Work tools pane, whose chat may live on another machine. Navigation
+   * requests still repin as before; this only supplies the starting machine.
+   */
+  pin?: OpenProjectBinding | null;
 }) {
   const project = useAppStore((s) => s.project);
-  const projectRootPath = project?.rootPath ?? "";
-  const projectBinding = useAppStore((s) => s.projectBinding);
+  const boundProjectRootPath = project?.rootPath ?? "";
+  const boundProjectBinding = useAppStore((s) => s.projectBinding);
+  /**
+   * The machine this workbench is currently reading from, when that is NOT the
+   * machine the project tab is bound to. Set by a navigation request that came
+   * from a chat on another machine. The banner's "Back to this computer" is the
+   * only exit: `selectWorkspace` does not clear it, and could not usefully —
+   * while pinned, the picker is listing the pinned machine's workspaces.
+   *
+   * Everything downstream keys off `projectBinding`/`projectRootPath` below
+   * rather than the bound pair, so the workspace roster, the tree caches, and
+   * every file read/write follow the pin without the window rebinding — the
+   * same per-call routing chats and PR reads already use.
+   */
+  const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(seedPin);
+  // The Files API with this machine already bound to it. Identity changes only
+  // when the machine does, so every callback and effect below can depend on it
+  // honestly — see `pinnedFilesApi.ts` for why a ref could not.
+  const files = useMemo(() => createPinnedFilesApi(machinePin), [machinePin]);
+  const projectBinding = machinePin ?? boundProjectBinding;
+  const projectRootPath = machinePin?.rootPath ?? boundProjectRootPath;
   const isRemoteProject = projectBinding?.kind === "remote";
   const projectCacheKey = filesProjectCacheKey(projectBinding, projectRootPath);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
@@ -191,11 +216,6 @@ export function FilesWorkbench({
   );
   const [tabScope, setTabScope] = useState<FilesTabScope>(() => getFilesTabScope(projectRootPath));
 
-  const [tree, setTree] = useState<FileTreeNode[]>(
-    () => readCachedTree(filesTreeCacheKey(projectCacheKey, initialWorkspaceId)) ?? [],
-  );
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [dirtyTabIds, setDirtyTabIds] = useState<Set<string>>(new Set());
@@ -204,16 +224,16 @@ export function FilesWorkbench({
   const [error, setError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<
     | null
-    | { kind: "search"; query: string }
+    | { kind: "search" }
     | { kind: "create"; create: "file" | "directory"; baseDir: string }
   >(null);
 
+  // Held between the chat click and the panel being able to serve it: the
+  // workspace roster may still be loading when the request arrives.
+  const [pendingToolsOpen, setPendingToolsOpen] = useState<FilesOpenRequest | null>(null);
+  const searchOverlayOpen = overlay?.kind === "search";
   const [draggingTab, setDraggingTab] = useState(false);
   const [treeMenu, setTreeMenu] = useState<FilesExplorerContextMenuEvent | null>(null);
-  // The host caps the git-status entry lists on a very large dirty tree, so deep
-  // files come back undecorated. Without saying so, an undecorated file is
-  // indistinguishable from a clean one.
-  const [decorationsTruncated, setDecorationsTruncated] = useState(false);
   const [inlineRename, setInlineRename] = useState<{ path: string; nonce: number } | null>(null);
   const [pendingWorkspaceOpen, setPendingWorkspaceOpen] = useState<{
     workspaceId: string;
@@ -223,7 +243,29 @@ export function FilesWorkbench({
     line?: number;
     column?: number;
   } | null>(null);
-  const handledExternalOpenRef = useRef<string | null>(null);
+  /**
+   * Open-requests already served, by key.
+   *
+   * Two producers share this — the external-path query param and a router
+   * navigation (which has both a file and a search form) — each namespacing its
+   * own keys. The tools-pane channel dedups differently, by clearing its own
+   * pending state.
+   * A single last-key-wins slot could not hold them: an external open followed
+   * by a navigation left the slot holding the navigation key, so the external
+   * effect's next run no longer recognised its own key and re-opened the file.
+   * Bounded so a long session cannot grow it without limit; requests are
+   * consumed in order, so dropping the oldest can only ever forget something
+   * already resolved.
+   */
+  const handledOpenKeysRef = useRef<Set<string>>(new Set());
+  const markOpenRequestHandled = useCallback((key: string) => {
+    const handled = handledOpenKeysRef.current;
+    handled.add(key);
+    if (handled.size > MAX_REMEMBERED_OPEN_REQUEST_KEYS) {
+      const oldest = handled.values().next().value;
+      if (typeof oldest === "string") handled.delete(oldest);
+    }
+  }, []);
   // The consuming effect below clears `pendingWorkspaceOpen`, but that clear is
   // a React state update while `openFile` can commit the editor-groups store
   // synchronously (cache hit). The store re-render is a higher-priority
@@ -239,8 +281,29 @@ export function FilesWorkbench({
   const dragRef = useRef<{ groupId: string; tabId: string } | null>(null);
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId;
-  const treeRef = useRef(tree);
-  treeRef.current = tree;
+
+  const {
+    tree,
+    treeRef,
+    expanded,
+    setExpanded,
+    loadingDirs,
+    decorationsTruncated,
+    refreshRoot,
+    refreshLoadedDirectory,
+    refreshTreeGitDecorations,
+    loadDirectoryPath,
+    loadMoreChildren,
+    toggleDirectory,
+  } = useFilesTree({
+    active,
+    files,
+    workspaceId,
+    workspaceIdRef,
+    projectCacheKey,
+    initialWorkspaceId,
+    onError: setError,
+  });
   const rootPathRef = useRef(rootPath);
   rootPathRef.current = rootPath;
   const dirtyTabIdsRef = useRef(dirtyTabIds);
@@ -451,6 +514,59 @@ export function FilesWorkbench({
     [workspaceId],
   );
 
+  /**
+   * Leave the pinned machine and go back to the one this tab is bound to.
+   * Offered wherever the machine chip is, because a pin is entered by clicking
+   * a file in a chat — the user never asked to be on another machine's disk and
+   * needs one obvious way back.
+   */
+  const clearMachinePin = useCallback(() => {
+    setMachinePin(null);
+    setError(null);
+  }, []);
+
+  /**
+   * Release the roster/tree caches this workbench wrote under a pinned key.
+   *
+   * `App.tsx` releases Files caches for a project surface using the key derived
+   * from that surface's OWN binding, so it cannot see a key produced by a pin
+   * chosen in here. Without this, every distinct machine ever pinned leaves an
+   * entry behind for the life of the process.
+   */
+  useEffect(() => {
+    if (!machinePin) return undefined;
+    const pinnedCacheKey = filesProjectCacheKey(machinePin, machinePin.rootPath);
+    return () => {
+      // Deferred as ordering insurance. `useFilesTree` is called above this
+      // effect, so its `unpinCachedTree` cleanup already runs first and a
+      // synchronous release would work today — but that is a fact about where
+      // one hook call sits, and releasing a still-pinned key silently skips it
+      // (`filesTreeCache` refuses pinned entries). A microtask lands after
+      // every cleanup in the commit and cannot be broken by a reorder.
+      queueMicrotask(() => releaseFilesProjectCaches(pinnedCacheKey));
+    };
+  }, [machinePin]);
+
+  // Liveness for the pinned machine, read from the same cross-machine slices
+  // the Work sidebar uses. A machine that has gone away keeps its chip and says
+  // so; nothing else in here can explain why the tree stopped answering.
+  const pinnedMachineOnline = useRootAppStore((state) => {
+    if (!machinePin || machinePin.kind !== "remote") return true;
+    return state.crossMachineLanesByMachineId[machinePin.targetId]?.online ?? true;
+  });
+  const pinnedMachineMarker = useMemo<CrossMachineLaneMarker | null>(() => {
+    if (!machinePin) return null;
+    const machineName = machinePin.kind === "remote" ? machinePin.runtimeName : machinePin.displayName;
+    return {
+      machineId: machinePin.kind === "remote" ? machinePin.targetId : "local",
+      machineName,
+      online: pinnedMachineOnline,
+      mode: "name",
+      title: machineName,
+      sameBranchElsewhere: false,
+    };
+  }, [machinePin, pinnedMachineOnline]);
+
   useEffect(() => {
     if (!active || dirtyTabIds.size === 0) return;
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -462,6 +578,21 @@ export function FilesWorkbench({
   }, [active, dirtyTabIds.size]);
 
   useEffect(() => {
+    // The dirty-buffer map is keyed by ABSOLUTE PATH with no machine in the key,
+    // and the main process reads it to serve agent file reads on THIS machine.
+    // While pinned, these buffers belong to another machine's disk — and one
+    // user's laptop and desktop routinely check the same repo out at the same
+    // absolute path, so publishing them would hand a local agent the remote
+    // machine's unsaved text and let it write that back. Nothing is published
+    // while a pin is active; the tabs stay editable and save over the wire as
+    // normal.
+    if (machinePin) return;
+    // Clearing the pin does not clear the roster in the same commit: `workspaces`
+    // still describes the machine we just left, so `resolveTabContext` would
+    // resolve a remote root — and when both machines check the repo out at the
+    // same absolute path, that root IS the local one. Wait until the roster has
+    // been re-listed for the machine this tab is actually bound to.
+    if (workspacesListedCacheKey !== projectCacheKey) return;
     const dirtyByWorkspace = new Map<string, Array<{ path: string; content: string }>>();
     for (const tabId of dirtyTabIds) {
       const tab = allOpenTabs.find((candidate) => candidate.id === tabId);
@@ -481,11 +612,14 @@ export function FilesWorkbench({
         clearDirtyBuffersForWorkspace(wsRoot);
       }
     };
-  }, [allOpenTabs, dirtyBufferRevision, dirtyTabIds, resolveTabContext]);
+  }, [allOpenTabs, dirtyBufferRevision, dirtyTabIds, machinePin, projectCacheKey, resolveTabContext, workspacesListedCacheKey]);
 
   /* ---- Workspace resolution ---- */
   useEffect(() => {
     if (!active) return;
+    // An offline pinned machine cannot answer, and retrying only replaces the
+    // honest "it's offline" chip with a generic timeout error. Stop there.
+    if (machinePin && !pinnedMachineOnline) return;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let retryIndex = 0;
@@ -504,7 +638,7 @@ export function FilesWorkbench({
 
     const listWorkspaces = async (): Promise<void> => {
       try {
-        const ws = await window.ade.files.listWorkspaces();
+        const ws = await files.listWorkspaces();
         if (cancelled) return;
         setWorkspaces((prev) => {
           const merged = projectChanged ? ws : mergeExternalWorkspaces(ws, prev);
@@ -529,7 +663,7 @@ export function FilesWorkbench({
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, projectCacheKey, projectRootPath, workspacesRefreshToken]);
+  }, [active, files, machinePin, pinnedMachineOnline, projectCacheKey, projectRootPath, workspacesRefreshToken]);
 
   // Resolve the explorer workspace from the global lane on mount + lane changes.
   useEffect(() => {
@@ -544,87 +678,10 @@ export function FilesWorkbench({
     }
   }, [workspaces, globalLaneId]);
 
-  /* ---- Tree loading ---- */
-  const fetchGitDecorations = useCallback(async (reqId: string, forceFresh: boolean) => {
-    try {
-      const decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh });
-      // Both decoration paths come through here, so recording the cap in one
-      // place keeps the hint in step with whatever was last applied to the tree.
-      if (workspaceIdRef.current === reqId) {
-        setDecorationsTruncated(decorations?.truncated === true);
-      }
-      return decorations;
-    } catch (decorationError) {
-      if (!isUnavailableGitDecorationsError(decorationError)) throw decorationError;
-      if (workspaceIdRef.current === reqId) setDecorationsTruncated(false);
-      return null;
-    }
-  }, []);
+  /* ---- Editor model lifetime ---- */
 
-  const refreshTreeGitDecorations = useCallback(
-    async (reqId = workspaceId) => {
-      if (!reqId) return;
-      const decorations = await fetchGitDecorations(reqId, true);
-      if (!decorations) return;
-      if (workspaceIdRef.current !== reqId) return;
-      setTree((prev) => {
-        const decorated = applyGitStatusToTree(prev, decorations);
-        writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), decorated);
-        return decorated;
-      });
-    },
-    [fetchGitDecorations, projectCacheKey, workspaceId],
-  );
-
-  const refreshRoot = useCallback(async (options: { preserveLoadedChildren?: boolean } = {}) => {
-    if (!workspaceId) return;
-    const reqId = workspaceId;
-    const preserveLoadedChildren = options.preserveLoadedChildren !== false;
-    try {
-      // Listing and decorations are independent host reads: issuing them
-      // together turns the tree refresh into one round trip instead of two,
-      // which is the whole mount cost on the relay transport. Decorations skip
-      // `forceFresh` so they can be served by the host's short git-status SWR
-      // cache — a structure refresh does not need a fresh `git status` sweep.
-      const [nodes, decorations] = await Promise.all([
-        window.ade.files.listTree({ workspaceId: reqId, depth: ROOT_TREE_DEPTH, includeIgnored: true }),
-        fetchGitDecorations(reqId, false),
-      ]);
-      if (workspaceIdRef.current !== reqId) return;
-      setTree((prev) => {
-        const merged = preserveLoadedChildren ? mergeTreePreservingLoadedChildren(nodes, prev) : nodes;
-        const decorated = decorations ? applyGitStatusToTree(merged, decorations) : merged;
-        writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), decorated);
-        return decorated;
-      });
-      setError(null);
-    } catch (err) {
-      if (workspaceIdRef.current === reqId) setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [workspaceId, fetchGitDecorations, projectCacheKey]);
-
-  // Pin the rendered tree while this workbench is mounted: the React state
-  // below holds the same nodes, so evicting the cache copy would only create
-  // a stale-cache/live-tree split without freeing memory.
-  useEffect(() => {
-    if (!workspaceId) return;
-    const treeKey = filesTreeCacheKey(projectCacheKey, workspaceId);
-    pinCachedTree(treeKey);
-    return () => unpinCachedTree(treeKey);
-  }, [projectCacheKey, workspaceId]);
-
-  // Reload explorer tree when the selected workspace changes (tabs stay open).
-  useEffect(() => {
-    if (!active || !workspaceId) return;
-    setTree(readCachedTree(filesTreeCacheKey(projectCacheKey, workspaceId)) ?? []);
-    setExpanded(new Set());
-    setLoadingDirs(new Set());
-    setDecorationsTruncated(false);
-    setError(null);
-    void refreshRoot();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, workspaceId, refreshRoot, projectCacheKey]);
-
+  // Monaco models outlive individual tabs; drop them all when this workbench
+  // goes away. Editor lifetime, deliberately not part of the tree hook.
   useEffect(() => {
     if (!active) return;
     const registry = registryRef.current;
@@ -632,161 +689,6 @@ export function FilesWorkbench({
       registry.disposeAll();
     };
   }, [active]);
-
-  // Fetch a directory's children starting from the first page. Expansion asks
-  // for one page (a single IPC round trip renders immediately with a
-  // "Load more…" row); refresh passes the already-loaded count so a
-  // user-grown window stays fully populated across watcher refreshes.
-  const fetchDirectoryChildren = useCallback(async (reqId: string, parentPath: string, minChildren = TREE_PAGE_SIZE) => {
-    const children: FileTreeNode[] = [];
-    let offset = 0;
-    let loadMoreOffset: number | null = null;
-    const targetChildren = Math.max(TREE_PAGE_SIZE, minChildren);
-    for (;;) {
-      const page = await window.ade.files.listTreeChildren({
-        workspaceId: reqId,
-        parentPath,
-        offset,
-        limit: TREE_PAGE_SIZE,
-        includeIgnored: true,
-      });
-      if (workspaceIdRef.current !== reqId) return null;
-      children.push(...page.children);
-      if (page.nextOffset == null) break;
-      if (children.length >= targetChildren) {
-        loadMoreOffset = page.nextOffset;
-        break;
-      }
-      offset = page.nextOffset;
-    }
-    return { children, loadMoreOffset };
-  }, []);
-
-  // Directory operations (watcher refresh, load-more) are serialized per path:
-  // a refresh that snapshots the loaded count while a load-more is in flight
-  // would otherwise resolve last and shrink the freshly grown window (or a late
-  // load-more would append at a stale offset). Each op reads the tree only
-  // after every earlier op on the same path has settled. Distinct paths still
-  // run concurrently.
-  const treeOpQueueRef = useRef(new Map<string, Promise<void>>());
-  const runSerializedTreeOp = useCallback(async (parentPath: string, op: () => Promise<void>) => {
-    const queue = treeOpQueueRef.current;
-    const prev = queue.get(parentPath) ?? Promise.resolve();
-    const next = prev.then(op, op);
-    queue.set(parentPath, next);
-    try {
-      await next;
-    } finally {
-      if (queue.get(parentPath) === next) queue.delete(parentPath);
-    }
-  }, []);
-
-  const refreshLoadedDirectory = useCallback(
-    (
-      parentPath: string,
-      reqId = workspaceId,
-      options: { suppressMissingError?: boolean; minChildren?: number } = {},
-    ) => {
-      if (!reqId) return Promise.resolve();
-      return runSerializedTreeOp(parentPath, async () => {
-        setLoadingDirs((prev) => new Set(prev).add(parentPath));
-        try {
-          const loadedCount = loadedDirectoryChildrenCount(treeRef.current, parentPath);
-          const result = await fetchDirectoryChildren(
-            reqId,
-            parentPath,
-            Math.max(loadedCount, options.minChildren ?? 0),
-          );
-          if (!result || workspaceIdRef.current !== reqId) return;
-          setTree((prev) => {
-            const nextTree = replaceTreeNodeChildren(prev, parentPath, result.children, result.loadMoreOffset);
-            writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
-            return nextTree;
-          });
-        } catch (err) {
-          const message = formatFilesError(err);
-          if (options.suppressMissingError && isMissingWorkspaceRootError(message)) return;
-          if (workspaceIdRef.current === reqId) setError(message);
-        } finally {
-          setLoadingDirs((prev) => {
-            const next = new Set(prev);
-            next.delete(parentPath);
-            return next;
-          });
-        }
-      });
-    },
-    [fetchDirectoryChildren, projectCacheKey, runSerializedTreeOp, workspaceId],
-  );
-
-  const loadDirectory = useCallback(
-    async (parentPath: string) => {
-      await refreshLoadedDirectory(parentPath);
-    },
-    [refreshLoadedDirectory],
-  );
-
-  const loadDirectoryPath = useCallback(
-    async (directoryPath: string) => {
-      // Reveals must materialize the revealed entries even when they sit past
-      // the first page, so page deeper than a plain expansion.
-      for (const ancestor of pathAncestors(directoryPath)) {
-        await refreshLoadedDirectory(ancestor, workspaceIdRef.current, { minChildren: REVEAL_MAX_CHILDREN });
-      }
-    },
-    [refreshLoadedDirectory],
-  );
-
-  const loadMoreChildren = useCallback(
-    (parentPath: string, startOffset: number) => {
-      if (!workspaceId) return Promise.resolve();
-      const reqId = workspaceId;
-      return runSerializedTreeOp(parentPath, async () => {
-        setLoadingDirs((prev) => new Set(prev).add(parentPath));
-        try {
-          // One page per click: a single IPC round trip appends immediately and
-          // the "Load more…" row persists while nextOffset remains. Re-read the
-          // cursor from the tree in case an earlier serialized op moved it.
-          const offset = directoryLoadMoreOffset(treeRef.current, parentPath) ?? startOffset;
-          const page = await window.ade.files.listTreeChildren({
-            workspaceId: reqId,
-            parentPath,
-            offset,
-            limit: TREE_PAGE_SIZE,
-            includeIgnored: true,
-          });
-          if (workspaceIdRef.current !== reqId) return;
-          setTree((prev) => {
-            const nextTree = appendTreeNodeChildren(prev, parentPath, page.children, page.nextOffset);
-            writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), nextTree);
-            return nextTree;
-          });
-        } catch (err) {
-          if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
-        } finally {
-          setLoadingDirs((prev) => {
-            const next = new Set(prev);
-            next.delete(parentPath);
-            return next;
-          });
-        }
-      });
-    },
-    [projectCacheKey, runSerializedTreeOp, workspaceId],
-  );
-
-  const toggleDirectory = useCallback(
-    (nodePath: string, isExpanded: boolean, hasLoadedChildren: boolean) => {
-      setExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(nodePath)) next.delete(nodePath);
-        else next.add(nodePath);
-        return next;
-      });
-      if (!isExpanded && !hasLoadedChildren) void loadDirectory(nodePath);
-    },
-    [loadDirectory],
-  );
 
   /* ---- File watching: refresh the tree on disk changes (debounced) ---- */
   useEffect(() => {
@@ -930,17 +832,17 @@ export function FilesWorkbench({
     });
     const watchedIds = new Set([workspaceId, ...openWorkspaceIds]);
     for (const watchedId of watchedIds) {
-      void window.ade.files.watchChanges({ workspaceId: watchedId, includeIgnored: true }).catch(() => {});
+      void files.watchChanges({ workspaceId: watchedId, includeIgnored: true }).catch(() => {});
     }
     return () => {
       if (timer) clearTimeout(timer);
       if (fullRefreshTimer) clearTimeout(fullRefreshTimer);
       unsub();
       for (const watchedId of watchedIds) {
-        void window.ade.files.stopWatching({ workspaceId: watchedId, includeIgnored: true }).catch(() => {});
+        void files.stopWatching({ workspaceId: watchedId, includeIgnored: true }).catch(() => {});
       }
     };
-  }, [active, openWorkspaceIds, refreshLoadedDirectory, refreshRoot, refreshTreeGitDecorations, workspaceId]);
+  }, [active, files, openWorkspaceIds, refreshLoadedDirectory, refreshRoot, refreshTreeGitDecorations, setExpanded, treeRef, workspaceId]);
 
   /* ---- Open file ---- */
   const revalidateOpenedFile = useCallback(
@@ -951,7 +853,7 @@ export function FilesWorkbench({
       if (dirtyTabIdsRef.current.has(tabId)) return;
       let fresh: FileContent;
       try {
-        fresh = await window.ade.files.readFile({ workspaceId: revalidateWorkspaceId, path });
+        fresh = await files.readFile({ workspaceId: revalidateWorkspaceId, path });
       } catch {
         // No answer is not an answer: keep the cached bytes rather than priming
         // the cache with a failure. The next explicit read surfaces the error.
@@ -962,7 +864,7 @@ export function FilesWorkbench({
       if (dirtyTabIdsRef.current.has(tabId)) return; // Dirtied while we waited.
       setReloadTokensByTabId((prev) => ({ ...prev, [tabId]: (prev[tabId] ?? 0) + 1 }));
     },
-    [],
+    [files],
   );
 
   const openFile = useCallback(
@@ -977,7 +879,7 @@ export function FilesWorkbench({
         // payload makes opening a recently visited file a zero round-trip
         // action instead of re-reading bytes we already hold.
         const cached = getCachedFileContent(workspaceId, path);
-        const content = cached ?? await window.ade.files.readFile({ workspaceId, path });
+        const content = cached ?? await files.readFile({ workspaceId, path });
         if (workspaceIdRef.current !== workspaceId) return;
         primeFileContent(workspaceId, path, content);
         // Painting from the LRU costs zero round trips, but nothing invalidates
@@ -1010,7 +912,7 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspace, workspaceId, applyGroups, recentSessionKey, revalidateOpenedFile],
+    [files, workspace, workspaceId, applyGroups, recentSessionKey, revalidateOpenedFile],
   );
 
   const handleActivateTab = useCallback(
@@ -1050,30 +952,91 @@ export function FilesWorkbench({
   useEffect(() => {
     if (!active || !externalOpenPath) return;
     const key = `external:${externalOpenNonce ?? ""}:${externalOpenPath}:${externalOpenLine ?? ""}`;
-    if (handledExternalOpenRef.current === key) return;
-    handledExternalOpenRef.current = key;
+    if (handledOpenKeysRef.current.has(key)) return;
+    markOpenRequestHandled(key);
     const line = externalOpenLine && /^\d+$/.test(externalOpenLine)
       ? Number(externalOpenLine)
       : undefined;
     void openExternalPathRequest(externalOpenPath, key, line);
-  }, [active, externalOpenPath, externalOpenLine, externalOpenNonce, openExternalPathRequest]);
+  }, [active, externalOpenPath, externalOpenLine, externalOpenNonce, markOpenRequestHandled, openExternalPathRequest]);
 
-  useEffect(() => {
-    if (!active || !navigationOpenRequest || !workspacesLoaded) return;
-    const key = `navigation:${navigationOpenRequest.nonce}:${navigationOpenRequest.laneId ?? ""}:${navigationOpenRequest.path}:${navigationOpenRequest.line ?? ""}:${navigationOpenRequest.column ?? ""}`;
-    if (handledExternalOpenRef.current === key) return;
-
-    const fallbackWorkspace = workspace
+  /**
+   * Which workspace serves an open request, or why it cannot be answered yet.
+   *
+   * The router path, the tools-pane channel and the ambiguous-search path all
+   * asked this same question with their own copy of the logic — including their
+   * own copy of the "the cached roster may predate a just-created lane, wait for
+   * the authoritative list" rule. Three copies of a rule is three chances for
+   * them to disagree about what a missing lane means.
+   */
+  const resolveOpenTargetWorkspace = useCallback((
+    laneId: string | null,
+    options?: { allowFallback?: boolean },
+  ): { kind: "ready"; workspace: FilesWorkspace } | { kind: "wait" } | { kind: "unknown" } => {
+    if (laneId) {
+      const owned = workspaces.find((candidate) => candidate.laneId === laneId);
+      if (owned) return { kind: "ready", workspace: owned };
+      return workspacesListedCacheKey === projectCacheKey ? { kind: "unknown" } : { kind: "wait" };
+    }
+    if (options?.allowFallback === false) return { kind: "unknown" };
+    const fallback = workspace
       ?? workspaces.find((candidate) => candidate.id === defaultFilesWorkspaceId(workspaces, globalLaneId))
       ?? workspaces[0];
-    const targetWorkspace = navigationOpenRequest.laneId
-      ? workspaces.find((candidate) => candidate.laneId === navigationOpenRequest.laneId)
-      : fallbackWorkspace;
-    if (!targetWorkspace) {
-      // A warm cached roster may predate a just-created lane. Wait for the
-      // authoritative runtime list before declaring the target unavailable.
-      if (workspacesListedCacheKey !== projectCacheKey) return;
-      handledExternalOpenRef.current = key;
+    if (fallback) return { kind: "ready", workspace: fallback };
+    return workspacesListedCacheKey === projectCacheKey ? { kind: "unknown" } : { kind: "wait" };
+  }, [globalLaneId, projectCacheKey, workspace, workspaces, workspacesListedCacheKey]);
+
+  // A request that names another machine has to switch this workbench over
+  // BEFORE the workspace lookup below runs — the roster it is searching for the
+  // lane in is that machine's, not this one's. Kept as its own effect so the
+  // pin lands in one render and the open resolves against the right roster on
+  // the next, rather than racing inside a single pass.
+  // A host-supplied pin (the Work tools pane following its chat's machine)
+  // wins whenever it changes. Identity is compared by key so an equal binding
+  // rebuilt each render does not thrash the roster.
+  const seedPinKey = seedPin?.key ?? null;
+  useEffect(() => {
+    setMachinePin((current) => (current?.key === seedPinKey ? current : seedPin ?? null));
+    // Only the machine identity should retrigger this, not a new object.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedPinKey]);
+
+  useEffect(() => {
+    if (!active || !navigationOpenRequest) return;
+    const requestedPin = navigationOpenRequest.pin ?? null;
+    setMachinePin((current) => (current?.key === requestedPin?.key ? current : requestedPin));
+  }, [active, navigationOpenRequest]);
+
+  useEffect(() => {
+    if (!active || !navigationOpenRequest?.searchQuery || !workspacesLoaded) return;
+    const key = `navigation-search:${navigationOpenRequest.nonce}:${navigationOpenRequest.searchQuery}`;
+    if (handledOpenKeysRef.current.has(key)) return;
+    // The search runs against ONE workspace, so it has to be the lane the click
+    // came from. Without this the query ran against whichever lane the Files tab
+    // happened to be showing and found nothing.
+    const resolved = resolveOpenTargetWorkspace(navigationOpenRequest.laneId, { allowFallback: false });
+    if (resolved.kind === "wait") return;
+    markOpenRequestHandled(key);
+    if (resolved.kind === "ready") setWorkspaceId(resolved.workspace.id);
+    // Several files share the clicked name. Opening one at random would be
+    // worse than asking: the user picks from the same search they would have
+    // typed themselves.
+    setSearchQuery(navigationOpenRequest.searchQuery);
+    setOverlay({ kind: "search" });
+  }, [active, markOpenRequestHandled, navigationOpenRequest, resolveOpenTargetWorkspace, workspacesLoaded]);
+
+  useEffect(() => {
+    if (!active || !navigationOpenRequest?.path || navigationOpenRequest.searchQuery || !workspacesLoaded) return;
+    // Still on the previous machine's roster; the pin effect above re-runs this
+    // once the switch has landed.
+    if ((navigationOpenRequest.pin?.key ?? null) !== (machinePin?.key ?? null)) return;
+    const key = `navigation:${navigationOpenRequest.nonce}:${navigationOpenRequest.laneId ?? ""}:${navigationOpenRequest.path}:${navigationOpenRequest.line ?? ""}:${navigationOpenRequest.column ?? ""}`;
+    if (handledOpenKeysRef.current.has(key)) return;
+
+    const resolved = resolveOpenTargetWorkspace(navigationOpenRequest.laneId);
+    if (resolved.kind === "wait") return;
+    if (resolved.kind === "unknown") {
+      markOpenRequestHandled(key);
       setError(
         navigationOpenRequest.laneId
           ? "The file's lane workspace is no longer available."
@@ -1081,26 +1044,76 @@ export function FilesWorkbench({
       );
       return;
     }
+    const targetWorkspace = resolved.workspace;
 
-    handledExternalOpenRef.current = key;
+    markOpenRequestHandled(key);
     setWorkspaceId(targetWorkspace.id);
     setPendingWorkspaceOpen({
       workspaceId: targetWorkspace.id,
       path: navigationOpenRequest.path,
-      pathType: "file",
+      // A folder reveals in the tree. Opening one as a file only ever produced
+      // a read error, which is what clicking a directory name in chat did.
+      pathType: navigationOpenRequest.pathType ?? "file",
       nonce: key,
       line: navigationOpenRequest.line,
       column: navigationOpenRequest.column,
     });
   }, [
     active,
-    globalLaneId,
+    machinePin,
+    markOpenRequestHandled,
     navigationOpenRequest,
-    projectCacheKey,
-    workspace,
-    workspaces,
+    resolveOpenTargetWorkspace,
     workspacesLoaded,
-    workspacesListedCacheKey,
+  ]);
+
+  // The tools-pane panel is the destination for a filename clicked in a chat on
+  // this machine, in this chat's own lane — the common case, and the one where
+  // being thrown into the Files tab loses the conversation. Only the embedded
+  // mount listens; the routed Files tab is reached by navigation instead.
+  useEffect(() => {
+    if (!embedded) return undefined;
+    const apply = (request: FilesOpenRequest) => {
+      // This mount owns the request now; drop the channel's hold so a later
+      // mount cannot drain it again and re-open the file unprompted.
+      clearPendingFilesOpenRequest();
+      setPendingToolsOpen(request);
+    };
+    const queued = takePendingFilesOpenRequest();
+    if (queued) apply(queued);
+    return subscribeFilesOpenInTools(apply);
+  }, [embedded]);
+
+  useEffect(() => {
+    if (!embedded || !pendingToolsOpen || !workspacesLoaded) return;
+    const request = pendingToolsOpen;
+    const resolved = resolveOpenTargetWorkspace(request.laneId);
+    if (resolved.kind === "wait") return;
+    if (resolved.kind === "unknown") {
+      // Every mounted project surface hears this channel, and only one of them
+      // owns the lane. Planting an error banner in the others turned one click
+      // into a complaint on every other open project. The chat opener has
+      // already resolved the lane against the live roster before asking, so a
+      // miss here means "not my project", not "gone".
+      setPendingToolsOpen(null);
+      return;
+    }
+    const targetWorkspace = resolved.workspace;
+    setPendingToolsOpen(null);
+    setWorkspaceId(targetWorkspace.id);
+    setPendingWorkspaceOpen({
+      workspaceId: targetWorkspace.id,
+      path: request.path,
+      pathType: request.pathType,
+      nonce: `tools:${request.nonce}`,
+      line: request.line,
+      column: request.column,
+    });
+  }, [
+    embedded,
+    pendingToolsOpen,
+    resolveOpenTargetWorkspace,
+    workspacesLoaded,
   ]);
 
   useEffect(() => {
@@ -1131,7 +1144,7 @@ export function FilesWorkbench({
     } else {
       void refreshRoot({ preserveLoadedChildren: false });
     }
-  }, [active, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
+  }, [active, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, setExpanded, workspaceId]);
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(
@@ -1260,7 +1273,7 @@ export function FilesWorkbench({
       if (!workspaceId) return;
       if (!confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, sourcePath), "Rename it")) return;
       try {
-        await window.ade.files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
+        await files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         return;
@@ -1269,7 +1282,7 @@ export function FilesWorkbench({
       closeOpenTabsUnder(workspaceId, sourcePath);
       await refreshRoot();
     },
-    [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, recentSessionKey, refreshRoot, workspaceId],
+    [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, files, recentSessionKey, refreshRoot, workspaceId],
   );
 
   const deletePath = useCallback(
@@ -1279,7 +1292,7 @@ export function FilesWorkbench({
       if (!ok) return;
       if (!confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, path), "Delete it")) return;
       try {
-        await window.ade.files.delete({ workspaceId, path });
+        await files.delete({ workspaceId, path });
         forgetRecentFilesUnder(recentSessionKey, path);
         closeOpenTabsUnder(workspaceId, path);
         await refreshRoot();
@@ -1287,7 +1300,7 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, recentSessionKey, refreshRoot, workspaceId],
+    [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, files, recentSessionKey, refreshRoot, workspaceId],
   );
 
   const dirForNode = (menu: FilesExplorerContextMenuEvent): string =>
@@ -1353,15 +1366,15 @@ export function FilesWorkbench({
       if (!workspaceId) return;
       const rel = baseDir ? `${baseDir}/${name}` : name;
       try {
-        if (kind === "file") await window.ade.files.createFile({ workspaceId, path: rel });
-        else await window.ade.files.createDirectory({ workspaceId, path: rel });
+        if (kind === "file") await files.createFile({ workspaceId, path: rel });
+        else await files.createDirectory({ workspaceId, path: rel });
         await refreshRoot();
         if (kind === "file") void openFile(rel, { preview: false });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, refreshRoot, openFile],
+    [files, workspaceId, refreshRoot, openFile],
   );
 
   // Files-scoped keybindings: ⌘P / ⌘⇧F both open the unified in-depth search.
@@ -1373,7 +1386,7 @@ export function FilesWorkbench({
       const isShiftF = mod && e.shiftKey && (e.key === "f" || e.key === "F");
       if (isP || isShiftF) {
         e.preventDefault();
-        setOverlay({ kind: "search", query: "" });
+        setOverlay({ kind: "search" });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1423,6 +1436,32 @@ export function FilesWorkbench({
       onDragOver={handleNativeDragOver}
       onDrop={handleNativeDrop}
     >
+      {pinnedMachineMarker ? (
+        /* Whose disk am I looking at. Amber is machine identity everywhere else
+           in ADE, so the same marker is reused rather than inventing a second
+           visual language for the same fact. Files here are fully editable —
+           the machine is connected and saves go straight to it — so this says
+           where you are, not that you are limited. */
+        <div
+          className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5"
+          style={{ borderColor: COLORS.border, background: "rgba(251, 191, 36, 0.04)" }}
+        >
+          <LaneMachineMarker marker={pinnedMachineMarker} />
+          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: COLORS.textSecondary }}>
+            {pinnedMachineMarker.online
+              ? "Files on this machine. Edits save there."
+              : "This machine is offline, so its files can't be opened."}
+          </span>
+          <button
+            type="button"
+            onClick={clearMachinePin}
+            className="shrink-0 text-[11px] underline-offset-2 hover:underline"
+            style={{ color: COLORS.textMuted }}
+          >
+            Back to this computer
+          </button>
+        </div>
+      ) : null}
       {error ? (
         <div className="shrink-0 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
           {error}
@@ -1450,9 +1489,26 @@ export function FilesWorkbench({
               workspaceComparisonRoot={null}
               searchQuery={searchQuery}
               inlineRenameRequest={inlineRename}
-              singleRowHeader
               onSearchQueryChange={setSearchQuery}
-              onSearchSubmit={(query) => setOverlay({ kind: "search", query })}
+              /* Same search as the centre overlay, in the sidebar column: names
+                 from the index plus content hits, rather than the old filter
+                 over whatever slice of the tree happened to be loaded. */
+              searchResults={searchOverlayOpen ? (
+                /* The modal owns the search while it is open. Mounting the
+                   sidebar copy too would fire every name+content request twice
+                   against the same workspace, and it is behind a backdrop. */
+                <div className="min-h-0 flex-1" />
+              ) : (
+                <FilesSearchPanel
+                  workspaceId={workspaceId}
+                  pin={machinePin}
+                  query={searchQuery}
+                  onQueryChange={setSearchQuery}
+                  onOpen={(path, line) => void openFile(path, { preview: false, line })}
+                  onDismiss={() => setSearchQuery("")}
+                  variant="sidebar"
+                />
+              )}
               onCreateFile={(basePath) => setOverlay({ kind: "create", create: "file", baseDir: basePath })}
               onCreateDirectory={(basePath) => setOverlay({ kind: "create", create: "directory", baseDir: basePath })}
               onToggleDirectory={toggleDirectory}
@@ -1487,7 +1543,7 @@ export function FilesWorkbench({
                   dirtyCount={dirtyTabIds.size}
                   recents={visibleRecentFiles}
                   onOpen={(path) => void openFile(path, { preview: false })}
-                  onSearch={() => setOverlay({ kind: "search", query: "" })}
+                  onSearch={() => setOverlay({ kind: "search" })}
                   modifierKey={modifierKeyLabel}
                 />
               </div>
@@ -1495,6 +1551,7 @@ export function FilesWorkbench({
             </div>
           ) : (
           <EditorGroups
+            files={files}
             sessionKey={sessionKey}
             state={groupsState}
             explorerWorkspaceId={workspaceId}
@@ -1544,11 +1601,22 @@ export function FilesWorkbench({
         <ContextMenu x={treeMenu.x} y={treeMenu.y} items={treeMenuItems} onClose={() => setTreeMenu(null)} />
       ) : null}
       {overlay?.kind === "search" ? (
-        <SearchOverlay
+        <FilesSearchPanel
           workspaceId={workspaceId}
-          initialQuery={overlay.query}
-          onClose={() => setOverlay(null)}
+          /* Searching a pinned machine's workspace has to run on that machine —
+             otherwise the overlay searches this computer and reports nothing. */
+          pin={machinePin}
+          query={searchQuery}
+          onQueryChange={setSearchQuery}
           onOpen={(path, line) => void openFile(path, { preview: false, line })}
+          onDismiss={() => {
+            // The query is shared with the sidebar panel now, so leaving it set
+            // would drop the tree and re-run the same search behind the closed
+            // modal. Every exit from the modal ends the search.
+            setSearchQuery("");
+            setOverlay(null);
+          }}
+          variant="overlay"
         />
       ) : null}
       {overlay?.kind === "create" ? (

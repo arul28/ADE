@@ -39,7 +39,11 @@ import {
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
-import { USAGE_REFRESH_HISTORY_TIMEOUT_MS } from "../localRuntime/localRuntimeTimeoutPolicy";
+import {
+  IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
+  IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
+  USAGE_REFRESH_HISTORY_TIMEOUT_MS,
+} from "../localRuntime/localRuntimeTimeoutPolicy";
 import { ipcInvokeTimeoutMs } from "../ipc/ipcTimeouts";
 import { IPC } from "../../../shared/ipc";
 
@@ -1385,6 +1389,54 @@ describe("RemoteConnectionPool", () => {
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       request: { domain: "usage", action: "refreshHistory" },
     }])).toBeGreaterThan(callOptions?.timeoutMs ?? 0);
+  });
+
+  // A remote Mac runtime runs the same xcodebuild a local one does, and
+  // xcodebuild alone is allowed 600s. Without a transport budget these actions
+  // fell back to RuntimeRpcClient's 600s default and reported "Remote ADE
+  // service timed out" while the remote build was still compiling.
+  it("gives remote iOS builds a transport budget that outlives xcodebuild", async () => {
+    const client = createClient();
+    client.call.mockResolvedValue({
+      ok: true,
+      domain: "ios_simulator",
+      action: "launch",
+      result: null,
+      statusHints: {},
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValue({
+      client,
+      ssh: createSsh(),
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    // `serviceCeilingMs` is what the remote daemon's own action can legitimately
+    // consume: for a launch, boot + xcodebuild + install + launch (930s); for a
+    // preview, the Xcode MCP approval wait plus the render call (~360s).
+    const budgets = [
+      { action: "launch", ipcBudgetMs: IOS_SIMULATOR_LAUNCH_TIMEOUT_MS, serviceCeilingMs: 930_000 },
+      { action: "renderPreview", ipcBudgetMs: IOS_SIMULATOR_PREVIEW_TIMEOUT_MS, serviceCeilingMs: 360_000 },
+      { action: "renderCurrentPreview", ipcBudgetMs: IOS_SIMULATOR_PREVIEW_TIMEOUT_MS, serviceCeilingMs: 360_000 },
+      { action: "ensurePreviewWorkspace", ipcBudgetMs: IOS_SIMULATOR_PREVIEW_TIMEOUT_MS, serviceCeilingMs: 360_000 },
+    ];
+    for (const { action, ipcBudgetMs, serviceCeilingMs } of budgets) {
+      client.call.mockClear();
+      await pool.callActionForTarget(target, "project-1", {
+        domain: "ios_simulator",
+        action,
+        args: {},
+      });
+      const callOptions = client.call.mock.calls[0]?.[2] as { timeoutMs?: number } | undefined;
+      // Above what the remote daemon's own action can spend, below the
+      // renderer's IPC budget: the chain has to expire monotonically outward
+      // rather than race and surface an opaque IPC timeout.
+      expect(callOptions?.timeoutMs).toBeGreaterThan(serviceCeilingMs);
+      expect(callOptions?.timeoutMs).toBeLessThan(ipcBudgetMs);
+      expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+        request: { domain: "ios_simulator", action },
+      }])).toBeGreaterThan(callOptions?.timeoutMs ?? 0);
+    }
   });
 
   it("retries read-only project actions once after ECONNRESET", async () => {

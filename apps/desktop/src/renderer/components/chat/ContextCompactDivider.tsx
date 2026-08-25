@@ -1,7 +1,8 @@
-import { CircleNotch, Check } from "@phosphor-icons/react";
+import { CircleNotch, Check, WarningCircle } from "@phosphor-icons/react";
 import { motion } from "motion/react";
 import type { AgentChatEvent } from "../../../shared/types";
 import {
+  compactionFailLabel,
   normalizeContextCompactEvent,
   resolveProviderTint,
 } from "../../../shared/contextCompaction";
@@ -15,16 +16,25 @@ function completedTitle(_sessionCompactionCount?: number, fallback?: boolean): s
   return fallback ? "Context compacted (fallback)" : "Context compacted";
 }
 
+function compactTitle(compact: NonNullable<ReturnType<typeof normalizeContextCompactEvent>>): string {
+  const isFallback = compact.trigger === "ade_fallback";
+  if (compact.state === "started") {
+    return isFallback ? "Compacting context (fallback)…" : "Compacting context…";
+  }
+  if (compact.state === "failed") {
+    return compactionFailLabel(compact.failReason);
+  }
+  return completedTitle(compact.sessionCompactionCount, isFallback);
+}
+
 export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
   const compact = normalizeContextCompactEvent(event);
   if (!compact) return null;
 
   const isInProgress = compact.state === "started";
-  // ADE only steps in when the SDK's own >90% auto-compaction demonstrably did
-  // not run; label it distinctly so the accompanying notice doesn't read as a
-  // duplicate of a normal compaction.
-  const isFallback = compact.trigger === "ade_fallback";
+  const isFailed = compact.state === "failed";
   const tint = resolveProviderTint(compact.provider);
+  const title = compactTitle(compact);
 
   return (
     <motion.div
@@ -33,7 +43,7 @@ export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
       initial={false}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.28, ease: "easeOut" }}
-      aria-label={isInProgress ? "Compacting context" : completedTitle(compact.sessionCompactionCount, isFallback)}
+      aria-label={title}
     >
       <span
         className="h-px min-w-8 flex-1 bg-gradient-to-r from-transparent via-amber-400/20 to-transparent"
@@ -44,7 +54,7 @@ export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
         className={cn(
           // One transcript width for every row — see `--chat-content-width`.
           "inline-flex max-w-[var(--chat-content-width,52rem)] items-center rounded-full px-3 py-1.5 ring-1 ring-inset",
-          "bg-amber-500/[0.08] text-amber-100/85",
+          isFailed ? "bg-rose-500/[0.08] text-rose-100/85" : "bg-amber-500/[0.08] text-amber-100/85",
           tint.ring,
           tint.border,
         )}
@@ -52,13 +62,13 @@ export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
       >
         {isInProgress ? (
           <CircleNotch size={12} weight="bold" className="animate-spin text-amber-200/80" aria-hidden />
+        ) : isFailed ? (
+          <WarningCircle size={12} weight="bold" className="text-rose-200/90" aria-hidden />
         ) : (
           <Check size={12} weight="bold" className="text-amber-200/90" aria-hidden />
         )}
         <span className="ml-2 whitespace-nowrap text-[length:calc(var(--chat-font-size)*10/14)] font-semibold tracking-[0.02em]">
-          {isInProgress
-            ? (isFallback ? "Compacting context (fallback)…" : "Compacting context…")
-            : completedTitle(compact.sessionCompactionCount, isFallback)}
+          {title}
         </span>
       </motion.div>
       <span

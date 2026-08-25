@@ -392,7 +392,12 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         ),
         summary: makeChatSummary(status: "active", awaitingInput: false),
         kind: .stale,
-        label: "Stale",
+        // The wire phase is still called `stale`; the word the user reads is
+        // "Idle", owned by `ActivityStateGroup.idle.label` and identical on the
+        // Activity sheet, the notch, the widget and the publisher. One state,
+        // one word — this row used to say "Stale" while the same session's
+        // Activity row said "is idle".
+        label: "Idle",
         tone: .neutral
       ),
     ]

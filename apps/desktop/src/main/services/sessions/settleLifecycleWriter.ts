@@ -26,7 +26,14 @@ export type SettleLifecycleIntent =
   | { kind: "clearOnActivity"; cause: SettleClearCause }
   /** Declared unsettle: drops a `'settled'` pin but preserves `'active'`. */
   | { kind: "unsettleDeclared" }
-  | { kind: "override"; value: SessionSettleOverride | null; source: SessionSettleSource };
+  | { kind: "override"; value: SessionSettleOverride | null; source: SessionSettleSource }
+  /**
+   * A peer already changed the tuple; CRR merged it. Values are untouched —
+   * re-deciding them here would fight the merge and desynchronise the
+   * per-column clocks. This exists only to move the revision, which is what
+   * makes an in-flight settle see that the world moved and abandon itself.
+   */
+  | { kind: "observeRemote" };
 
 /**
  * Columns a caller may set alongside the settle tuple. A closed union, so
@@ -111,6 +118,14 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
             "settle_override = ?, "
             + "settle_source = case when ? = 'settled' then ? when settled_at is null then null else settle_source end",
           params: [intent.value, intent.value, intent.source],
+        };
+      case "observeRemote":
+        // Self-assignment: it MATCHES the row (so `sqlite3_changes` is 1 and the
+        // revision bumps) while changing nothing (so cr-sqlite records no new
+        // column version and this does not echo back to the peer).
+        return {
+          sql: "settled_at = settled_at, settle_override = settle_override, settle_source = settle_source",
+          params: [],
         };
     }
   };

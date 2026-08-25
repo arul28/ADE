@@ -72,6 +72,7 @@ function makePayload(
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
   aiIntegrationService?: Record<string, unknown>;
+  cursorCloudFleetService?: Record<string, unknown>;
   conflictService?: Record<string, unknown>;
   diffService?: Record<string, unknown>;
   externalSessionsService?: Record<string, unknown>;
@@ -143,6 +144,7 @@ function createService(options?: {
     ...(options?.projectConfigService ? { projectConfigService: options.projectConfigService } : {}),
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
+    ...(options?.cursorCloudFleetService ? { cursorCloudFleetService: options.cursorCloudFleetService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
@@ -292,6 +294,10 @@ describe("createSyncRemoteCommandService", () => {
       "agentChat.getEventHistoryPage",
       "github.getStatus",
       "github.getRemoteStatus",
+      "github.getRequestBudget",
+      "github.detectRepo",
+      "github.listRepoIssues",
+      "github.getIssue",
       "ai.getStatus",
       "prs.list",
       "prs.listOpenForRepo",
@@ -1888,6 +1894,24 @@ describe("createSyncRemoteCommandService", () => {
     ]);
   });
 
+  it("forwards identity-aware chat roster reads to the chat service", async () => {
+    const listSessions = vi.fn().mockResolvedValue([{ id: "chat-1", identityKey: "project-cto" }]);
+    const { service } = createService({ agentChatService: { listSessions } });
+
+    await expect(service.execute(makePayload("chat.listSessions", {
+      laneId: " lane-1 ",
+      includeAutomation: true,
+      includeArchived: false,
+      includeIdentity: true,
+    }))).resolves.toEqual([{ id: "chat-1", identityKey: "project-cto" }]);
+
+    expect(listSessions).toHaveBeenCalledWith("lane-1", {
+      includeAutomation: true,
+      includeArchived: false,
+      includeIdentity: true,
+    });
+  });
+
   it("routes work.getSession through session enrichment and chat state projection", async () => {
     const session = { id: "session-1", status: "running", toolType: "codex-chat", ptyId: "pty-1" };
     const enrichedSession = { ...session, runtimeState: "running" };
@@ -2093,6 +2117,9 @@ describe("createSyncRemoteCommandService", () => {
       "chat.rewindFiles",
       "chat.getTurnFileDiff",
       "chat.saveTempAttachment",
+      "chat.listPromptStashes",
+      "chat.createPromptStash",
+      "chat.deletePromptStash",
       "chat.warmupModel",
       "chat.launch",
       "chat.getImageDataUrl",
@@ -2121,13 +2148,24 @@ describe("createSyncRemoteCommandService", () => {
       "history.listOperations",
       "github.getStatus",
       "github.getRemoteStatus",
+      "github.getRequestBudget",
+      "github.detectRepo",
+      "github.listRepoIssues",
+      "github.getIssue",
       "github.publishCurrentProject",
+      "lanes.attachGitHubIssueToSession",
+      "lanes.detachGitHubIssueFromSession",
+      "lanes.listGitHubIssuesForSession",
+      "lanes.listGitHubIssuesForLaneSessions",
       "projectConfig.get",
       "projectConfig.save",
       "ai.getStatus",
       "orchestration.runCreate",
     ]));
     expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
+    expect(service.getDescriptor("chat.listPromptStashes")?.scope).toBe("project");
+    expect(service.getDescriptor("chat.createPromptStash")?.scope).toBe("project");
+    expect(service.getDescriptor("chat.deletePromptStash")?.scope).toBe("project");
     expect(service.getDescriptor("chat.resolveSmartLinkPreview")).toEqual({
       action: "chat.resolveSmartLinkPreview",
       scope: "project",
@@ -2136,6 +2174,50 @@ describe("createSyncRemoteCommandService", () => {
     expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
     expect(service.getDescriptor("prs.delete")?.policy).toEqual({ viewerAllowed: false, queueable: true });
     expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });
+  });
+
+  it("routes per-project prompt stash create/list/delete through the project DB", async () => {
+    const created = {
+      id: "stash-1",
+      text: "retry the composer",
+      attachments: [{ path: "/tmp/shot.png", type: "image" }],
+      attachmentCount: 1,
+      attachmentsAvailable: true,
+      provider: "codex",
+      modelId: "gpt-5.6",
+      createdAt: "2026-08-14T00:00:00.000Z",
+    };
+    const db = {
+      get: vi.fn().mockReturnValue({ id: "stash-1" }),
+      all: vi.fn().mockReturnValue([{
+        id: created.id,
+        text: created.text,
+        attachments_json: JSON.stringify(created.attachments),
+        attachment_origin_site_id: "abc",
+        provider: created.provider,
+        model_id: created.modelId,
+        created_at: created.createdAt,
+      }]),
+      run: vi.fn(),
+      sync: { getSiteId: () => "abc" },
+    };
+    const { service } = createService({ db });
+
+    await expect(service.execute(makePayload("chat.createPromptStash", {
+      text: created.text,
+      attachments: created.attachments,
+      provider: created.provider,
+      modelId: created.modelId,
+    }))).resolves.toMatchObject({
+      text: created.text,
+      attachments: created.attachments,
+      provider: created.provider,
+      modelId: created.modelId,
+    });
+    await expect(service.execute(makePayload("chat.listPromptStashes"))).resolves.toEqual([
+      expect.objectContaining({ id: "stash-1", text: created.text, attachmentsAvailable: true }),
+    ]);
+    await expect(service.execute(makePayload("chat.deletePromptStash", { id: "stash-1" }))).resolves.toBe(true);
   });
 
   it("routes chat.handoff with a trimmed handoff note", async () => {
@@ -2387,6 +2469,104 @@ describe("createSyncRemoteCommandService", () => {
       description: "Local-first agent desk",
       isPrivate: true,
     });
+  });
+
+  it("routes GitHub issue picker reads through the GitHub service", async () => {
+    const detectRepo = vi.fn().mockResolvedValue({ owner: "acme", name: "ade" });
+    const listRepoIssues = vi.fn().mockResolvedValue([{ number: 42, title: "Wire attach" }]);
+    const getIssue = vi.fn().mockResolvedValue({ number: 42, title: "Wire attach" });
+    const { service } = createService({
+      githubService: { detectRepo, listRepoIssues, getIssue },
+    });
+
+    expect(service.getSupportedActions()).toEqual(expect.arrayContaining([
+      "github.detectRepo",
+      "github.listRepoIssues",
+      "github.getIssue",
+    ]));
+
+    await expect(service.execute(makePayload("github.detectRepo"))).resolves.toEqual({
+      owner: "acme",
+      name: "ade",
+    });
+    expect(detectRepo).toHaveBeenCalledTimes(1);
+
+    await expect(service.execute(makePayload("github.listRepoIssues", {
+      owner: "acme",
+    }))).rejects.toThrow("github.listRepoIssues requires name.");
+    expect(listRepoIssues).not.toHaveBeenCalled();
+
+    await expect(service.execute(makePayload("github.listRepoIssues", {
+      owner: " acme ",
+      name: " ade ",
+      state: "closed",
+    }))).resolves.toEqual([{ number: 42, title: "Wire attach" }]);
+    expect(listRepoIssues).toHaveBeenCalledWith("acme", "ade", { state: "closed" });
+
+    await expect(service.execute(makePayload("github.getIssue", {
+      owner: "acme",
+      name: "ade",
+      number: 0,
+    }))).rejects.toThrow("github.getIssue requires a positive integer number.");
+
+    await expect(service.execute(makePayload("github.getIssue", {
+      owner: "acme",
+      name: "ade",
+      number: 42,
+    }))).resolves.toEqual({ number: 42, title: "Wire attach" });
+    expect(getIssue).toHaveBeenCalledWith("acme", "ade", 42);
+  });
+
+  it("routes GitHub session attach through the lane service", async () => {
+    const issue = {
+      id: "acme/ade#42",
+      owner: "acme",
+      repo: "ade",
+      number: 42,
+      title: "Wire attach",
+    };
+    const attachGitHubIssueToSession = vi.fn().mockReturnValue([{ issue }]);
+    const detachGitHubIssueFromSession = vi.fn().mockReturnValue(true);
+    const listGitHubIssuesForSession = vi.fn().mockReturnValue([{ issue }]);
+    const listGitHubIssuesForLaneSessions = vi.fn().mockReturnValue([{ issue }]);
+    const { service } = createService({
+      laneService: {
+        attachGitHubIssueToSession,
+        detachGitHubIssueFromSession,
+        listGitHubIssuesForSession,
+        listGitHubIssuesForLaneSessions,
+      },
+    });
+
+    await expect(service.execute(makePayload("lanes.attachGitHubIssueToSession", {
+      issues: [issue],
+    }))).rejects.toThrow("lanes.attachGitHubIssueToSession requires chatSessionId.");
+    expect(attachGitHubIssueToSession).not.toHaveBeenCalled();
+
+    await expect(service.execute(makePayload("lanes.attachGitHubIssueToSession", {
+      chatSessionId: " chat-1 ",
+      issues: [issue],
+    }))).resolves.toEqual([{ issue }]);
+    expect(attachGitHubIssueToSession).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      issues: [issue],
+    });
+
+    await expect(service.execute(makePayload("lanes.detachGitHubIssueFromSession", {
+      chatSessionId: "chat-1",
+      issueId: " acme/ade#42 ",
+    }))).resolves.toBe(true);
+    expect(detachGitHubIssueFromSession).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      issueId: "acme/ade#42",
+    });
+
+    await expect(service.execute(makePayload("lanes.listGitHubIssuesForSession", {
+      chatSessionId: "chat-1",
+    }))).resolves.toEqual([{ issue }]);
+    await expect(service.execute(makePayload("lanes.listGitHubIssuesForLaneSessions", {
+      laneId: "lane-1",
+    }))).resolves.toEqual([{ issue }]);
   });
 });
 
@@ -3230,6 +3410,30 @@ describe("web-reachable settings and lane-risk commands", () => {
       .rejects.toThrow(/laneId/);
     await expect(service.execute(makePayload("chat.launchCli", { laneId: "lane-1", provider: "claude" })))
       .rejects.toThrow(/kickoffPrompt/);
+  });
+
+  it("routes Cursor Cloud fleet reads and actions to the fleet service", async () => {
+    const getFleet = vi.fn().mockResolvedValue({ items: [], relayState: "ready", lastEventAt: null, fetchedAt: "t" });
+    const resolveLaneForAgent = vi.fn().mockResolvedValue({ laneId: "lane-1", laneName: "L", created: false });
+    const pullIntoLane = vi.fn().mockResolvedValue({ status: "pulled", laneId: "lane-1", laneName: "L", sessionId: null, mergedBranch: "b" });
+    const stopAgentRun = vi.fn().mockResolvedValue({ stopped: true });
+    const { service } = createService({
+      cursorCloudFleetService: { getFleet, resolveLaneForAgent, pullIntoLane, stopAgentRun },
+    });
+
+    const fleet = await service.execute(makePayload("ai.cursorCloudFleet", { includeArchived: false }));
+    expect(getFleet).toHaveBeenCalledWith(expect.objectContaining({ includeArchived: false }));
+    expect(fleet).toEqual(expect.objectContaining({ relayState: "ready" }));
+
+    await expect(service.execute(makePayload("ai.cursorCloudResolveLane", { agentId: "bc-1" })))
+      .resolves.toEqual({ laneId: "lane-1", laneName: "L", created: false });
+    expect(resolveLaneForAgent).toHaveBeenCalledWith("bc-1");
+
+    await service.execute(makePayload("ai.cursorCloudPullIntoLane", { agentId: "bc-2" }));
+    expect(pullIntoLane).toHaveBeenCalledWith("bc-2");
+
+    await service.execute(makePayload("ai.cursorCloudStopRun", { agentId: "bc-3" }));
+    expect(stopAgentRun).toHaveBeenCalledWith("bc-3");
   });
 });
 describe("plugin remote commands", () => {

@@ -236,6 +236,8 @@ export const PUBLISH_FAILING_ALARM_MS = 2 * 60_000;
  */
 const PUBLISH_INACTIVE_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
   "sync_disabled",
+  // The publisher has not run yet. Nothing has failed, so this must not alarm.
+  "sync_not_started",
   "no_active_sync_scope",
   "not_host",
   "account_signed_out",
@@ -271,7 +273,32 @@ export function formatLastSeen(value: number | null): string {
   if (!value) return "Never connected";
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "Last connection unknown";
-  return `Last connected ${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  const phrase = relativeLastSeenPhrase(value);
+  return phrase ? `Last connected ${phrase}` : "Last connection unknown";
+}
+
+/** Quiet version-skew note. Yellow warnings are reserved for real breakage. */
+export function formatVersionSkewNote(args: {
+  localVersion: string | null | undefined;
+  remoteVersion: string | null | undefined;
+  remoteName: string;
+}): string | null {
+  const local = args.localVersion?.trim();
+  const remote = args.remoteVersion?.trim();
+  if (!local || !remote || local === remote) return null;
+  let advice = "nothing to do";
+  if (isMachineVersionOutdated(remote, local)) {
+    advice = `update ${args.remoteName} when you can`;
+  } else if (isMachineVersionOutdated(local, remote)) {
+    advice = "update this machine when you can";
+  }
+  return `This machine is on ADE ${local}. ${args.remoteName} is on ${remote}. They can still connect — ${advice}.`;
+}
+
+export function isVersionSkewWarning(warning: string): boolean {
+  return /Remote ADE service reported|RPC capabilities (?:are compatible|match)|versions differ but their RPC|They can still connect — update the other machine/i.test(
+    warning,
+  );
 }
 
 /**
@@ -316,13 +343,21 @@ export function isSshOnlyDiscovered(
 }
 
 export function formatRemoteTargetError(error: unknown): string {
-  const message = extractError(error)
+  // Keep the raw IPC wrapper text for SSH detection. Stripping
+  // `ade.remoteRuntime.getSshHostKeyTrust` first would leave a bare
+  // `ECONNRESET` and incorrectly blame a paired ADE port.
+  const raw = extractError(error).trim();
+  const message = raw
     .replace(/^Error invoking remote method '[^']+':\s*/i, "")
     .replace(/^Error:\s*/i, "")
     .trim();
+  // No word-boundary: camelCase IPC names embed `Ssh` without `\b` edges.
+  const sshHint = /ssh|sshd|remote login/i.test(raw);
 
-  if (/^(?:read\s+)?ECONNRESET$/i.test(message)) {
-    return "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again.";
+  if (/ECONNRESET/i.test(message)) {
+    return sshHint
+      ? "SSH server closed the connection before ADE could finish the SSH handshake. Check that Remote Login/sshd is enabled on the remote machine and try again."
+      : "The connection was reset before ADE could finish connecting. Check that the machine is awake and reachable, then try again.";
   }
 
   if (
@@ -342,11 +377,15 @@ export function formatRemoteTargetError(error: unknown): string {
       message,
     )
   ) {
-    return "SSH did not finish connecting. Check that the machine is awake, reachable on Tailscale or LAN, and Remote Login is enabled.";
+    return sshHint
+      ? "SSH did not finish connecting. Check that the machine is awake, reachable on Tailscale or LAN, and Remote Login is enabled."
+      : "ADE did not finish connecting. Check that the machine is awake and reachable on Tailscale or LAN.";
   }
 
   if (/ECONNREFUSED/i.test(message)) {
-    return "The machine refused the SSH connection. Check the port and make sure Remote Login/sshd is running.";
+    return sshHint
+      ? "The machine refused the SSH connection. Check the port and make sure Remote Login/sshd is running."
+      : "The machine refused the connection. Check that ADE is running on that computer and reachable on the saved port.";
   }
 
   if (

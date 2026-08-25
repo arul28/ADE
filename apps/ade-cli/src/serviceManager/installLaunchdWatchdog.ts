@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  MATERIALIZE_DATALESS_FILES_KEY,
   type ServiceManagerSpawnSync,
 } from "./common";
 
@@ -85,6 +86,28 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
+/**
+ * `MaterializeDatalessFiles` matters more here than anywhere else in ADE, and
+ * for a reason that is not obvious.
+ *
+ * The check reads the brain's heartbeat file under the ADE home. If that home
+ * sits in a folder a cloud provider evicts, the read fails with EDEADLK the
+ * moment the file is a dataless placeholder. That does not cause a wrong kill:
+ * an unreadable heartbeat degrades to the `absent` verdict, which kills
+ * nothing. It causes the opposite, and the quieter failure -- the agent can
+ * never reach a verdict at all, so it is permanently blind and a genuinely
+ * wedged brain is never caught. Blindness that presents as silence is worse
+ * than blindness that presents as noise, because nothing reports it.
+ *
+ * Grant the same materialization policy the brain gets, so `absent` keeps
+ * meaning "the brain wrote nothing" instead of also meaning "this agent was not
+ * allowed to look".
+ *
+ * No `ProcessType`: unlike the brain, this is a one-shot check that nothing
+ * waits on, so launchd's default resource limits are the honest classification
+ * for it. Materialization and process type are independent keys, and only the
+ * first one describes a correctness requirement.
+ */
 export function renderWatchdogLaunchdPlist(args: {
   command: AdeServiceCommand;
   homeDir?: string;
@@ -132,6 +155,8 @@ ${programArguments}
   <key>StartInterval</key>
   <integer>${startInterval}</integer>
   <key>RunAtLoad</key>
+  <true/>
+  <key>${MATERIALIZE_DATALESS_FILES_KEY}</key>
   <true/>
   <key>StandardOutPath</key>
   <string>${escapeXml(path.join(runtimeLogDir, "watchdog.out.log"))}</string>

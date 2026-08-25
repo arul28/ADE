@@ -2,12 +2,17 @@ import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
 import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
-import { adeCardProgressTotal, type AdeCardPayload } from "../../../desktop/src/shared/adeCard";
+import { adeCardIsHiddenAfterDismiss, adeCardProgressTotal, type AdeCardPayload } from "../../../desktop/src/shared/adeCard";
+import {
+  hostSleepNoticeMergeKey,
+  isHostSleepNoticeEvent,
+} from "../../../desktop/src/shared/hostSleepNotice";
 import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
 import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
+import { formatUserMessageTranscriptBody } from "./composerDrafts";
 import { terminalReasonLabel } from "./terminalReason";
 
 export type { HighlightedToken } from "./highlightCache";
@@ -611,9 +616,24 @@ export function renderChatLines(args: {
   // position of the FIRST emit and carries the MERGED payload, so a card that
   // ticks through states does not walk down the transcript.
   const adeCardsById = new Map<string, { firstIndex: number; card: AdeCardPayload }>();
+  // One sleep, one artifact. A host that suspends mid-turn emits a paused
+  // notice and later a resumed one, both carrying the same `sleepId`; desktop
+  // folds them onto a single transcript row, and so does this. The row keeps
+  // the position of the paused half and renders whichever half arrived LAST,
+  // so a sleep resolves in place instead of leaving two lines behind.
+  const hostSleepNoticesByKey = new Map<string, { firstIndex: number; message: string }>();
   for (const entry of timeline) {
     if (entry.kind !== "event") continue;
     const event = entry.envelope.event;
+    if (isHostSleepNoticeEvent(event)) {
+      const key = hostSleepNoticeMergeKey(event);
+      const existing = hostSleepNoticesByKey.get(key);
+      hostSleepNoticesByKey.set(key, {
+        firstIndex: existing?.firstIndex ?? entry.index,
+        message: singleLine((event as { message?: unknown }).message, 160),
+      });
+      continue;
+    }
     if (event.type === "ade_card") {
       const cardId = event.cardId?.trim();
       if (!cardId) continue;
@@ -700,7 +720,11 @@ export function renderChatLines(args: {
         id,
         tone: "user",
         header: deliveryHeader,
-        body: event.displayText ?? event.text,
+        body: formatUserMessageTranscriptBody({
+          text: event.text,
+          displayText: event.displayText,
+          attachments: event.attachments,
+        }),
       });
       continue;
     }
@@ -1086,6 +1110,7 @@ export function renderChatLines(args: {
       // Only the first emit renders; it renders the merged payload.
       const merged = adeCardsById.get(cardId);
       if (!merged || merged.firstIndex !== index) continue;
+      if (adeCardIsHiddenAfterDismiss(merged.card)) continue;
       lines.push({ id, tone: "notice", body: renderAdeCardBody(merged.card) });
       continue;
     }
@@ -1175,7 +1200,13 @@ export function renderChatLines(args: {
     if (event.type === "system_notice") {
       const noticeKind = (event as { noticeKind?: string }).noticeKind;
       const severity = (event as { severity?: string }).severity;
-      const message = singleLine((event as { message?: unknown }).message, 160);
+      let message = singleLine((event as { message?: unknown }).message, 160);
+      if (isHostSleepNoticeEvent(event)) {
+        // Only the paused half owns a row; it renders the merged (latest) text.
+        const merged = hostSleepNoticesByKey.get(hostSleepNoticeMergeKey(event));
+        if (!merged || merged.firstIndex !== index) continue;
+        message = merged.message;
+      }
       const normalizedMessage = message.trim().toLowerCase();
       if (!normalizedMessage) continue;
       if (noticeKind === "info" && normalizedMessage === "session ready") continue;

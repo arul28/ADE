@@ -362,4 +362,67 @@ describe("chatUserMinimap.logic", () => {
     const offsets = computeRowStartOffsets(4, (i) => 10 + i, 0);
     expect(computeScrollTopForRow(2, offsets)).toBe(offsets[2]);
   });
+
+  it("adds Codex queued and compact ticks without a tick per done event", () => {
+    const rows: ChatTranscriptGroupedEnvelope[] = [
+      userRow("ask", "u1"),
+      {
+        key: "queued",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        event: {
+          type: "user_message",
+          text: "still there?",
+          steerId: "s1",
+          deliveryState: "queued",
+        },
+      },
+      {
+        key: "compact",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        event: {
+          type: "codex_context_compaction",
+          state: "failed",
+          trigger: "auto",
+          turnId: "t1",
+          failReason: "timed_out",
+        },
+      },
+      doneRow("completed", "d1"),
+    ];
+    const entries = collectUserMessageMinimapSourceEntries(rows, { includeCodexExtras: true });
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "queued", "compact"]);
+    expect(entries.find((entry) => entry.kind === "queued")?.preview).toBe("still there?");
+    expect(entries.find((entry) => entry.kind === "compact")?.turnOutcome).toBe("failed");
+  });
+
+  it("keeps a single compact tick for started then completed compaction", () => {
+    const rows: ChatTranscriptGroupedEnvelope[] = [
+      userRow("ask", "u1"),
+      {
+        key: "compact-start",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        event: {
+          type: "context_compact",
+          state: "started",
+          trigger: "auto",
+          turnId: "t1",
+          compactionId: "c1",
+        },
+      },
+      {
+        key: "compact-done",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        event: {
+          type: "context_compact",
+          state: "completed",
+          trigger: "auto",
+          turnId: "t1",
+          compactionId: "c1",
+        },
+      },
+    ];
+    const entries = collectUserMessageMinimapSourceEntries(rows, { includeCodexExtras: true });
+    expect(entries.filter((entry) => entry.kind === "compact")).toHaveLength(1);
+    expect(entries.find((entry) => entry.kind === "compact")?.preview).toBe("Context compacted");
+  });
 });

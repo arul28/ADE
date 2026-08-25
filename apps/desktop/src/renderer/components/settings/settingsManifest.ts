@@ -140,6 +140,18 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Updates",
   },
   {
+    id: "general.keep-awake",
+    label: "Keep this computer awake",
+    keywords: ["sleep", "awake", "lid", "idle", "power", "battery", "caffeinate", "pmset"],
+    tab: "general",
+    anchor: "keep-awake",
+    scope: "machine",
+    // A browser holds no power lock and cannot read the machine's sleep
+    // settings, so the write would resolve against nothing.
+    web: "hidden",
+    group: "Sleep",
+  },
+  {
     id: "general.analytics",
     label: "Product analytics",
     keywords: ["telemetry", "posthog", "tracking", "privacy", "opt out"],
@@ -147,6 +159,21 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "product-analytics",
     scope: "machine",
     web: "browser",
+    group: "Privacy",
+  },
+  {
+    id: "general.diagnostics-sharing",
+    // Not plain "Diagnostics": `storage.diagnostics` already owns that label,
+    // and two identically named search hits pointing at different tabs is a
+    // coin flip for whoever is looking for the off switch.
+    label: "Diagnostics sharing",
+    keywords: ["diagnostics", "crash", "report", "report issue", "privacy", "error", "send", "opt out"],
+    tab: "general",
+    anchor: "diagnostics-sharing",
+    scope: "machine",
+    // Machine-local consent written into `~/.ade/secrets` by the main process;
+    // a browser has no such file, so the toggle is not offered there.
+    web: "hidden",
     group: "Privacy",
   },
   {

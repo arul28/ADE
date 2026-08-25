@@ -356,7 +356,7 @@ describe("settle-lifecycle writer", () => {
     expect(service.get("session-1")?.lastOutputPreview).toBe("tick one");
   });
 
-  it("keeps the revision table out of CRR replication", async () => {
+  it("keeps the host-local settle tables out of CRR replication", async () => {
     const projectRoot = makeProjectRoot();
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
@@ -381,15 +381,22 @@ describe("settle-lifecycle writer", () => {
       // meaningless there, and on the CRR `terminal_sessions` row it would add a
       // per-column clock entry to the throttled preview write path.
       expect(clockTable("session_lifecycle_revisions")).toBeNull();
-      // Positive control: proves the assertion above can fail.
+      // Residue describes processes on THIS host. Replicated, it would show a
+      // peer "1 job could not be stopped" for a machine it cannot see.
+      expect(clockTable("session_settle_residue")).toBeNull();
+      // Positive control: proves the assertions above can fail.
       expect(clockTable("terminal_sessions")).not.toBeNull();
     }
 
-    expect(
-      db.get<{ name: string }>(
-        "select name from sqlite_master where type = 'table' and name = 'session_lifecycle_revisions'",
-      )?.name,
-    ).toBe("session_lifecycle_revisions");
+    for (const table of ["session_lifecycle_revisions", "session_settle_residue"]) {
+      expect(
+        db.get<{ name: string }>(
+          "select name from sqlite_master where type = 'table' and name = ?",
+          [table],
+        )?.name,
+        `${table} must exist locally even though it never replicates`,
+      ).toBe(table);
+    }
   });
 
 });

@@ -48,12 +48,41 @@ enum SessionBadgeKind: Equatable {
   case done
 }
 
+extension SessionBadgeKind {
+  /// The canonical counting bucket this capsule identity IS. One-to-one in both
+  /// directions — the two enums are the same six states, reached from different
+  /// ends (a session's lifecycle here, an account item's phase there).
+  ///
+  /// `stale` ⇔ `idle` is the only pair spelled differently, and the case name
+  /// stays because `stale` is what the PHASE is called everywhere it is derived:
+  /// `CanonicalSessionPhase.stale`, `AccountAttentionPhase.stale`,
+  /// `sessionStaleAfterSeconds`. The WORD a reader sees is a separate question
+  /// and it is answered by `label` on the group below, which says "Idle" — the
+  /// same word the publisher, the notch and the Activity sheet use. Renaming the
+  /// case would put a third spelling into the derivation chain; mapping it puts
+  /// none.
+  ///
+  /// This is what lets the row stop carrying its own label/tone/glyph table:
+  /// everything a badge renders comes from here (see `workCanonicalVocabulary`).
+  var stateGroup: ActivityStateGroup {
+    switch self {
+    case .needsYou: return .needsYou
+    case .failed: return .failed
+    case .stale: return .idle
+    case .working: return .working
+    case .planning: return .planning
+    case .done: return .done
+    }
+  }
+}
+
 struct SessionBadge: Equatable {
   let kind: SessionBadgeKind
   /// Short capsule copy; resting states get no badge at all.
   let label: String
-  /// Hue token from the shared `ActivityPhaseVocabulary`, so a Work row and an
-  /// Activity row describing the same session cannot pick different colours.
+  /// Hue token from `kind.stateGroup`, so a Work row and an Activity row
+  /// describing the same session cannot pick different colours — or, since the
+  /// word and the glyph come from the same place, different vocabularies.
   let tone: ActivityTone
   let glyph: ActivityGlyph?
 
@@ -304,11 +333,54 @@ private func workSessionPhasePresentation(
   isPlanning: Bool
 ) -> (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation) {
   if phase == .running && isPlanning {
-    return (.planning, ActivityPhaseVocabulary.presentation(for: .unrecognized("planning")))
+    return (
+      .planning,
+      workCanonicalVocabulary(
+        ActivityPhaseVocabulary.presentation(for: .unrecognized("planning")),
+        kind: .planning,
+        phase: phase
+      )
+    )
   }
-  return (
-    workSessionBadgeKind(for: phase),
-    ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: phase))
+  let presentation = ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: phase))
+  // `stopped`/`ended` have no badge identity, so there is no state group to read
+  // a word out of and the phase table's own quiet neutral entry stands.
+  guard let kind = workSessionBadgeKind(for: phase) else { return (nil, presentation) }
+  return (kind, workCanonicalVocabulary(presentation, kind: kind, phase: phase))
+}
+
+/// Re-states a phase presentation in the canonical six-state vocabulary.
+///
+/// The phase table (`ActivityPhaseVocabulary`) answers RAW WIRE PHASES and is
+/// shared with the widget extension, so it still calls the gone-quiet phase
+/// "Stale" — correct for a publisher that literally sends that word. A Work row
+/// is not answering a wire phase: it is one of the six states the notch, the
+/// Activity sheet and the widget header all count by, where that state is
+/// `idle` and reads "Idle". Rendering the phase word here is what left a row
+/// saying "Stale" beside a sheet counting the same session under "Idle".
+///
+/// Only the three canonical fields move. `showsElapsed` and `prominent` are
+/// phase facts, not state-group facts — whether the word carries a ticking
+/// duration and whether the row pulls the eye differ between two phases in one
+/// group (a `starting` turn does not tick, a `running` one does).
+private func workCanonicalVocabulary(
+  _ presentation: ActivityPhasePresentation,
+  kind: SessionBadgeKind,
+  phase: CanonicalSessionPhase
+) -> ActivityPhasePresentation {
+  // `starting` is the one phase MORE specific than its group: it counts as work
+  // in flight, but "Starting" tells a reader something "Working" does not —
+  // nothing has been produced yet. Widening it to the group word would lose that
+  // and gain nothing, since the hue and glyph already match.
+  if phase == .starting { return presentation }
+  let group = kind.stateGroup
+  return ActivityPhasePresentation(
+    label: group.label,
+    tone: group.tone,
+    glyph: group.glyph,
+    showsElapsed: presentation.showsElapsed,
+    prominent: presentation.prominent,
+    active: presentation.active
   )
 }
 
@@ -884,12 +956,18 @@ func workSnoozeWakeLabel(
 /// Neutral badges render outlined rather than filled, which keeps a calm row
 /// calm. Resting states have no badge at all, so callers gate on a non-nil
 /// badge and the row never shifts layout.
+///
+/// The glyph is drawn for every state, not just the two whose word is ambiguous.
+/// Shape carries as much of the meaning as hue does, and the six marks are the
+/// notch/dropdown/Activity-sheet language verbatim — a capsule that showed the
+/// mark for only `stale` and `planning` meant a reader who had learnt the six
+/// glyphs elsewhere met a different vocabulary here.
 struct WorkSessionStatusCapsule: View {
   let badge: SessionBadge
 
   var body: some View {
     HStack(spacing: 3) {
-      if let glyph = badge.glyph, showsGlyph {
+      if let glyph = badge.glyph {
         Image(systemName: glyph.systemImage)
           .font(.system(size: 8, weight: .semibold))
       }
@@ -906,13 +984,6 @@ struct WorkSessionStatusCapsule: View {
     .accessibilityLabel(accessibilityLabel)
   }
 
-  /// Only where the word alone is ambiguous: "Stale" wants the clock that asks
-  /// how long, "Planning" wants the list that says what kind of work. The rest
-  /// read fine as plain words and stay uncluttered.
-  private var showsGlyph: Bool {
-    badge.kind == .stale || badge.kind == .planning
-  }
-
   private var isOutlined: Bool { badge.tone == .neutral }
 
   private var tint: Color {
@@ -927,14 +998,11 @@ struct WorkSessionStatusCapsule: View {
     isOutlined ? tint.opacity(0.4) : tint.opacity(0.3)
   }
 
+  /// The canonical word, not a second phrasing of it. This used to be a
+  /// hand-written switch that said "Needs your input" where every other surface
+  /// says "Needs you" and "Stale, no recent activity" where they say "Idle" —
+  /// three vocabularies for six states, two of them audible only to VoiceOver.
   private var accessibilityLabel: String {
-    switch badge.kind {
-    case .needsYou: return "Needs your input"
-    case .failed: return "Failed"
-    case .stale: return "Stale, no recent activity"
-    case .working: return "Working"
-    case .planning: return "Planning"
-    case .done: return "Done"
-    }
+    badge.kind.stateGroup.label
   }
 }

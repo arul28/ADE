@@ -16,35 +16,13 @@
  * would be a lie on every other device the moment this host died.
  */
 
-declare const settleTeardownCompletedBrand: unique symbol;
-
-/**
- * Proof that a teardown finished synchronously.
- *
- * The settle path is synchronous in step 2, and a teardown that defers is not
- * merely unsupported — it is actively harmful: the settling window would close
- * while the unowned continuation kept stopping processes, so C4/C5 output from
- * those stops would no longer be swallowed and would clear the settle that just
- * landed. Losing the work AND the settle is the R2 shape.
- *
- * A runtime check cannot prevent this. `async (id) => {}` is caught by its
- * constructor, but the common adapter `id => asyncStop(id)` is an ordinary
- * `Function` and has already started the work by the time any check runs. So the
- * seam demands a value only a synchronous body can produce: an `async` function
- * or a promise-returning adapter returns `Promise<...>`, which is not assignable
- * to this brand, and fails to COMPILE.
- *
- * Step 3 replaces this with an awaited seam once the settle path itself is async.
- */
-export type SettleTeardownCompleted = { readonly [settleTeardownCompletedBrand]: true };
-
-/** The only way to produce a `SettleTeardownCompleted`. */
-export function settleTeardownCompleted(): SettleTeardownCompleted {
-  return {} as SettleTeardownCompleted;
-}
-
 /** Why a settle was abandoned. Only ever set by a human-decision clearer. */
-export type SettleAbortReason = "turn_start" | "turn_failed" | "attention_requested";
+export type SettleAbortReason =
+  | "turn_start"
+  | "turn_failed"
+  | "attention_requested"
+  /** A peer changed the settle tuple; its decision outranks a settle in flight. */
+  | "remote_lifecycle_changed";
 
 /** Why a settle was abandoned, as reported to callers. */
 export type SettleAbortedReason =
@@ -69,11 +47,18 @@ export type SettlingEntry = {
   /** The revision the settle decision was taken against. */
   startedAtRevision: number;
   abortedBy: SettleAbortReason | null;
+  /**
+   * Identifies THIS window. `end` refuses to close a window it did not open, so
+   * an owner whose window was already torn down out from under it (a session
+   * deleted mid-teardown) cannot close the one a newer settle has since opened
+   * for the same id — which would leave two teardowns believing they own it.
+   */
+  token: number;
 };
 
 export type BeginSettlingResult =
-  /** This caller owns the window and must end it. */
-  | { kind: "started" }
+  /** This caller owns the window and must end it, passing back its token. */
+  | { kind: "started"; token: number }
   /**
    * Another settle for this session is already in flight. The caller JOINS it
    * rather than starting a second teardown — closing R4, where two teardowns
@@ -83,11 +68,13 @@ export type BeginSettlingResult =
 
 export class SettlingStateRegistry {
   private readonly entries = new Map<string, SettlingEntry>();
+  private nextToken = 1;
 
   begin(sessionId: string, startedAtRevision: number): BeginSettlingResult {
     if (this.entries.has(sessionId)) return { kind: "joined" };
-    this.entries.set(sessionId, { startedAtRevision, abortedBy: null });
-    return { kind: "started" };
+    const token = this.nextToken++;
+    this.entries.set(sessionId, { startedAtRevision, abortedBy: null, token });
+    return { kind: "started", token };
   }
 
   isSettling(sessionId: string): boolean {
@@ -113,11 +100,27 @@ export class SettlingStateRegistry {
     return this.entries.get(sessionId)?.abortedBy ?? null;
   }
 
+  /**
+   * Has THIS window been abandoned — either aborted, or replaced?
+   *
+   * A settle that no longer owns the id must stop as surely as an aborted one.
+   * `forget` (a deleted session) force-closes the entry, and if the id is then
+   * recreated a new settle opens a fresh window; a stale teardown consulting
+   * `abortedBy` alone would read the replacement, see "not aborted", and keep
+   * issuing provider stops against the new session's work.
+   */
+  abandoned(sessionId: string, token: number): boolean {
+    const entry = this.entries.get(sessionId);
+    return !entry || entry.token !== token || entry.abortedBy !== null;
+  }
+
   startedAtRevision(sessionId: string): number | null {
     return this.entries.get(sessionId)?.startedAtRevision ?? null;
   }
 
-  end(sessionId: string): void {
+  /** Closes the window only if `token` still owns it. Omit to force-close. */
+  end(sessionId: string, token?: number): void {
+    if (token !== undefined && this.entries.get(sessionId)?.token !== token) return;
     this.entries.delete(sessionId);
   }
 

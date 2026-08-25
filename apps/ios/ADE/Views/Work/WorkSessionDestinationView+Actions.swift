@@ -39,7 +39,17 @@ extension WorkSessionDestinationView {
     let pendingUploadRefs = WorkPendingUploadPreviewStore.shared.register(
       workChatInputReadyAttachments(inputAttachments)
     )
-    let initialDeliveryState = (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
+    // Desktop parity: the chosen active-turn mode rides the steer itself, so a
+    // host that can honor it dispatches in one round-trip and the message never
+    // enters the staged queue. Resolved before the send, not after it, so the
+    // "turn is already active" resend below carries the same mode — that is
+    // where a Send-now tap used to be silently downgraded to a staged message.
+    let atomicDispatchMode = workChatAtomicSteerDispatchMode(
+      deliveryMode: deliveryMode,
+      dispatchModes: manualSteerDispatchModes
+    )
+    let willStage = sendWillQueueChatMessage || (useSteer && atomicDispatchMode == nil)
+    let initialDeliveryState = willStage ? "queued" : "sending"
     let echo = WorkLocalEchoMessage(
       text: text,
       timestamp: workDateFormatter.string(from: Date()),
@@ -81,7 +91,8 @@ extension WorkSessionDestinationView {
         delivery = try await syncService.steerChatSession(
           sessionId: sessionId,
           text: text,
-          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+          dispatchMode: atomicDispatchMode
         )
       } else {
         do {
@@ -91,22 +102,33 @@ extension WorkSessionDestinationView {
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
           )
         } catch where workChatErrorIndicatesActiveTurn(error) {
-          updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+          // The row said idle but the runtime is busy. Resend as a steer — with
+          // the mode attached, so an atomic send stays an atomic send and the
+          // echo keeps its "sending" state instead of flashing "queued".
+          if atomicDispatchMode == nil {
+            updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
+          }
           delivery = try await syncService.steerChatSession(
             sessionId: sessionId,
             text: text,
-            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
+            dispatchMode: atomicDispatchMode
           )
         }
       }
       switch delivery {
       case .queued(let steerId):
-        if useSteer, let steerId, deliveryMode == .inline || deliveryMode == .interrupt {
+        // We asked for an atomic dispatch and got a staged row back, so this
+        // host predates `dispatchMode` on `chat.steer` (it shipped later than
+        // `chat.dispatchSteer`, which is what the capability gate checks).
+        // Promote with the older two-step call rather than dropping the mode
+        // the user picked. Current hosts answer `.sent` and never land here.
+        if let steerId, let atomicDispatchMode {
           do {
             try await syncService.dispatchChatSteer(
               sessionId: sessionId,
               steerId: steerId,
-              mode: deliveryMode.rawValue
+              mode: atomicDispatchMode
             )
           } catch {
             // Staging already succeeded on the host. Keep the single queued
@@ -390,19 +412,15 @@ extension WorkSessionDestinationView {
       // Codex model), so re-derive the provider from the picked model rather
       // than persisting the chat's old provider — otherwise restore would seed a
       // mismatched provider/model pair the New Chat init does not reconcile.
-      // When the provider actually changes, the chat's access mode and
-      // sub-settings no longer apply, so reset them to the new provider default.
+      // Keep the independent composer settings when the model changes provider.
       if let summary = chatSummary {
         let resolvedProvider = workComposerRuntimeProvider(forModelId: modelId, currentProvider: summary.provider)
-        let providerChanged = resolvedProvider != summary.provider
         WorkComposerPreferences.save(
           provider: resolvedProvider,
           modelId: modelId,
-          runtimeMode: providerChanged
-            ? workDefaultRuntimeMode(provider: resolvedProvider)
-            : workInitialRuntimeMode(summary),
-          reasoningEffort: providerChanged ? "" : (summary.reasoningEffort ?? ""),
-          codexFastMode: providerChanged ? false : summary.effectiveFastMode
+          runtimeMode: workInitialRuntimeMode(summary),
+          reasoningEffort: summary.reasoningEffort ?? "",
+          codexFastMode: summary.effectiveFastMode
         )
       }
       ADEHaptics.light()
@@ -410,6 +428,52 @@ extension WorkSessionDestinationView {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
+  }
+
+  @MainActor
+  func takeOverSubagent() async {
+    do {
+      let updated = try await syncService.updateChatSession(sessionId: sessionId, spawnKind: "peer")
+      applySpawnKindSessionUpdate(updated, spawnKind: updated.spawnKind ?? .peer)
+      errorMessage = nil
+      ADEHaptics.light()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func keepReportingSubagent() async {
+    do {
+      let updated = try await syncService.updateChatSession(
+        sessionId: sessionId,
+        subagentTakeoverPromptShown: true
+      )
+      applySpawnKindSessionUpdate(updated)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func applySpawnKindSessionUpdate(
+    _ updated: AgentChatSession,
+    spawnKind: AgentChatSpawnKind? = nil
+  ) {
+    let shownAtFallback = ISO8601DateFormatter().string(from: Date())
+    guard let summary = workApplyingSpawnKindUpdate(
+      current: chatSummary,
+      fallback: lastKnownChatSummary ?? initialChatSummary,
+      spawnKind: spawnKind ?? updated.spawnKind,
+      subagentTakeoverPromptShownAt: updated.subagentTakeoverPromptShownAt,
+      shownAtFallback: shownAtFallback
+    ) else { return }
+    chatSummary = summary
+    lastKnownChatSummary = summary
+    syncService.cacheChatSummary(summary)
   }
 
   @MainActor
@@ -693,13 +757,75 @@ extension WorkSessionDestinationView {
         return
       }
 
-      syncService.requestedFilesNavigation = FilesNavigationRequest(
-        workspaceId: workspace.id,
-        laneId: session.laneId,
-        relativePath: relativePath
-      )
+      // Agents write a bare filename far more often than a full path, and the
+      // purely textual normalisation above assumes any such name sits at the
+      // workspace root. Ask the file index what it really is first.
+      //
+      // Only for a bare name. A reference that already carries a directory is
+      // either found (same path back) or missing (opened anyway, just below),
+      // so probing it would buy nothing and cost a sync round trip on the most
+      // common tap of all — the full paths on tool-result file chips.
+      let probe = workIndexNormalizedPath(relativePath).contains("/")
+        ? WorkFileReferenceProbe.file(relativePath)
+        : await probeWorkFileReference(workspaceId: workspace.id, path: relativePath)
+      switch probe {
+      case .file(let resolvedPath):
+        syncService.requestedFilesNavigation = FilesNavigationRequest(
+          workspaceId: workspace.id,
+          laneId: session.laneId,
+          relativePath: resolvedPath
+        )
+      case .directory(let resolvedPath):
+        syncService.requestedFilesNavigation = FilesNavigationRequest(
+          workspaceId: workspace.id,
+          laneId: session.laneId,
+          relativePath: resolvedPath,
+          pathKind: .directory
+        )
+      case .ambiguous(let name):
+        syncService.requestedFilesNavigation = FilesNavigationRequest(
+          workspaceId: workspace.id,
+          laneId: session.laneId,
+          relativePath: nil,
+          searchQuery: name
+        )
+      case .missing:
+        // The index is stale by design — it skips ignored files and is only
+        // refreshed by a watcher — so a reference that already carries a
+        // directory is still worth opening; a real read error says more than a
+        // guess. Only a bare name is a miss the index can speak to.
+        if relativePath.contains("/") {
+          syncService.requestedFilesNavigation = FilesNavigationRequest(
+            workspaceId: workspace.id,
+            laneId: session.laneId,
+            relativePath: relativePath
+          )
+        } else {
+          errorMessage = "There's no file named \(relativePath) in \(workspace.name)."
+        }
+      }
     } catch {
       errorMessage = error.localizedDescription
+    }
+  }
+
+  /// Asks the workspace file index what a chat-written reference points at.
+  /// A failed probe must not swallow the tap, so it falls back to the path the
+  /// agent reported and lets the file read report whatever it hits.
+  private func probeWorkFileReference(
+    workspaceId: String,
+    path: String
+  ) async -> WorkFileReferenceProbe {
+    do {
+      let items = try await syncService.quickOpen(
+        workspaceId: workspaceId,
+        query: path,
+        limit: 60,
+        includeIgnored: false
+      )
+      return resolveWorkFileReferenceProbe(path: path, indexedPaths: items.map(\.path))
+    } catch {
+      return .file(path)
     }
   }
 
@@ -729,6 +855,19 @@ extension WorkSessionDestinationView {
     guard let currentSession = session ?? initialSession else { return }
     let laneId = resolvedWorkNavigationLaneId(for: currentSession, lanes: lanes)
     syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
+  }
+
+  /// Routes a standalone spawned chat back to its parent through the same
+  /// Work navigation request used by deeplinks and cross-surface opens.
+  func openParentSession() {
+    guard let parentId = composerChatSummary?.orchestrationParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !parentId.isEmpty
+    else { return }
+    syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+      sessionId: parentId,
+      laneId: (session ?? initialSession)?.laneId
+    )
   }
 
   @MainActor

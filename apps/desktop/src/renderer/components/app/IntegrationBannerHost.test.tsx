@@ -4,11 +4,42 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   GitHubAppInstallationStatus,
-  GitHubAppUserAuthStatus,
   GitHubStatus,
   SyncRouteHealth,
 } from "../../../shared/types";
 import { IntegrationBannerHost, type IntegrationBannerHostProps } from "./IntegrationBannerHost";
+import { deriveGitHubServiceHealth } from "../../../shared/githubServiceHealth";
+import { makeAppAuth } from "../../lib/githubIntegrationStatus.testFixtures";
+
+// Built through the real parser rather than hand-written, so the fixture stays
+// honest against deriveGitHubServiceHealth's own rules.
+const OUTAGE_HEALTH = deriveGitHubServiceHealth({
+  status: { indicator: "major", description: "Partial System Outage" },
+  components: [
+    { id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" },
+    { id: "hhtssxt0f5v2", name: "Pull Requests", status: "major_outage" },
+  ],
+  incidents: [{ name: "Incident with GitHub.com", shortlink: "https://stspg.io/live", resolved_at: null }],
+})!;
+
+/**
+ * The real broken state from the reported bug: a stored gh credential that
+ * GitHub refused to validate because GitHub itself was returning 503.
+ */
+function makeOutageStatus(overrides: Partial<GitHubStatus> = {}): GitHubStatus {
+  return makeGithubStatus({
+    tokenStored: true,
+    authSource: "gh",
+    tokenType: "oauth",
+    writeAuthSource: "none",
+    authFailure: {
+      kind: "service_unavailable",
+      message: "No server is currently available to service your request.",
+      retryAt: null,
+    },
+    ...overrides,
+  });
+}
 
 function makeInstall(overrides: Partial<GitHubAppInstallationStatus> = {}): GitHubAppInstallationStatus {
   return {
@@ -29,19 +60,7 @@ function makeInstall(overrides: Partial<GitHubAppInstallationStatus> = {}): GitH
     webhookLastSeenAt: null,
     checkedAt: "2026-07-01T00:00:00.000Z",
     error: null,
-    ...overrides,
-  };
-}
-
-function makeAuth(overrides: Partial<GitHubAppUserAuthStatus> = {}): GitHubAppUserAuthStatus {
-  return {
-    configured: true,
-    tokenStored: true,
-    userLogin: "octocat",
-    expiresAt: null,
-    refreshTokenExpiresAt: null,
-    checkedAt: "2026-07-01T00:00:00.000Z",
-    error: null,
+    appUserAuthFailure: null,
     ...overrides,
   };
 }
@@ -124,7 +143,7 @@ describe("IntegrationBannerHost", () => {
   it("caps at two banners and collapses the rest behind an expandable row", async () => {
     setAdeMock({
       getAppInstallationStatus: vi.fn(async () => makeInstall()),
-      getAppUserAuthStatus: vi.fn(async () => makeAuth()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth()),
       onStatusChanged: vi.fn(() => () => {}),
     });
 
@@ -200,6 +219,47 @@ describe("IntegrationBannerHost", () => {
     });
 
     expect(screen.getByText("GitHub write access isn't connected")).toBeTruthy();
+  });
+
+  /**
+   * `loadAppStatus` sets `appStatusLoaded` even when the auth read throws or the
+   * host does not implement the call, so "loaded" alone does not mean an auth
+   * DTO arrived. A null one is a failed read, not a report of "not authorized" —
+   * and acting on it painted a banner the user could do nothing about.
+   */
+  it("stays quiet when the account read fails but the install check succeeds", async () => {
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => {
+        throw new Error("the host refused the account read");
+      }),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(<IntegrationBannerHost {...baseProps()} />);
+    });
+    await act(async () => {});
+
+    expect(screen.queryByText("GitHub App not authorized")).toBeNull();
+    expect(screen.queryAllByRole("status")).toHaveLength(0);
+  });
+
+  // The same install DTO WITH an account read that landed still raises it, so
+  // the check above is about the missing read and not about the install state.
+  it("still raises the account banner when the read lands and says missing", async () => {
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false, credentialState: "missing" })),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(<IntegrationBannerHost {...baseProps()} />);
+    });
+    await act(async () => {});
+
+    expect(screen.getByText("GitHub App not authorized")).toBeTruthy();
   });
 });
 
@@ -324,5 +384,180 @@ describe("IntegrationBannerHost relay-offline banner", () => {
     });
 
     expect(screen.getByText("Another ADE process owns this machine's relay connection")).toBeTruthy();
+  });
+
+  // The bug this feature exists for: GitHub's own 503 rendered as "GitHub
+  // authentication check failed", blaming the user's credential and offering a
+  // reconnect that risks replacing a token that was never broken.
+  it("replaces every GitHub credential complaint with one neutral outage notice", async () => {
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false })),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(
+        <IntegrationBannerHost
+          {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }) })}
+        />,
+      );
+    });
+    await act(async () => {});
+
+    expect(screen.getByText("GitHub is down")).toBeTruthy();
+    expect(screen.getByText(/GitHub reports problems with API Requests and Pull Requests/)).toBeTruthy();
+    expect(screen.getByText(/isn't your setup/)).toBeTruthy();
+
+    // The accusations, and the App-not-authorized sibling, are all gone.
+    expect(screen.queryByText(/authentication check failed/i)).toBeNull();
+    expect(screen.queryByText("GitHub CLI or token not connected")).toBeNull();
+    expect(screen.queryByText("GitHub App not authorized")).toBeNull();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+
+    // No CTA that would push the user to replace a working credential. Scoped
+    // to buttons: the body copy legitimately says ADE will "reconnect on its
+    // own", which is the opposite of asking them to act.
+    const labels = [...document.querySelectorAll("button")].map((node) => node.textContent ?? "");
+    expect(labels.some((label) => /reconnect|connect github|fix github|set up/i.test(label))).toBe(false);
+  });
+
+  it("lets an unreadable credential store pierce the outage suppression", async () => {
+    // The unreadable store is a local, repairable fact that outlives any GitHub
+    // incident, and this banner is the discovery surface for the Repair path —
+    // an outage must not hide the one thing the user can actually fix.
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth({ tokenStored: false })),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(
+        <IntegrationBannerHost
+          {...baseProps({
+            githubStatus: makeOutageStatus({
+              serviceHealth: OUTAGE_HEALTH,
+              credentialStoreUnreadable: true,
+            }),
+          })}
+        />,
+      );
+    });
+    await act(async () => {});
+
+    // Both facts are on screen: the incident notice AND the repairable one.
+    expect(screen.getByText("GitHub is down")).toBeTruthy();
+    expect(screen.getByText(/can't read your saved sign-in/i)).toBeTruthy();
+  });
+
+  it("sends the outage action to the live incident, not ADE settings", async () => {
+    const openExternal = vi.fn(async () => {});
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        github: { onStatusChanged: vi.fn(() => () => {}) },
+        prs: { onEvent: vi.fn(() => () => {}) },
+        app: { openExternal },
+      },
+    });
+    const navigate = vi.fn();
+
+    await act(async () => {
+      render(
+        <IntegrationBannerHost
+          {...baseProps({
+            githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }),
+            navigate: navigate as unknown as IntegrationBannerHostProps["navigate"],
+          })}
+        />,
+      );
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: /github status/i }).click();
+    });
+
+    expect(openExternal).toHaveBeenCalledWith("https://stspg.io/live");
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  // The notice is `info`, which severity-sorts LAST. With enough competing
+  // banners the two-slot cap would push it into overflow while it is still
+  // suppressing the GitHub banners — the complaints would vanish with their
+  // explanation hidden behind a toggle.
+  it("keeps the outage notice visible when higher-severity banners compete", async () => {
+    setAdeMock({
+      getAppInstallationStatus: vi.fn(async () => makeInstall()),
+      getAppUserAuthStatus: vi.fn(async () => makeAppAuth()),
+      onStatusChanged: vi.fn(() => () => {}),
+    });
+
+    await act(async () => {
+      render(
+        <IntegrationBannerHost
+          {...baseProps({
+            githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }),
+            hasAnyAiProvider: false,
+            providerMode: "subscription",
+            aiMockProvider: true,
+          })}
+        />,
+      );
+    });
+    await act(async () => {});
+
+    // Something must overflow — but not this.
+    expect(screen.getByText(/more integration issue/)).toBeTruthy();
+    expect(screen.getAllByRole("status")[0]?.textContent).toContain("GitHub is down");
+    // Unrelated banners are NOT suppressed by a GitHub outage.
+    expect(screen.getByText("No AI provider configured")).toBeTruthy();
+  });
+
+  // Without corroboration ADE keeps its existing copy: the status page lags
+  // real incidents, so silence is not evidence the user is at fault.
+  it("falls back to the credential banner when no outage is corroborated", async () => {
+    setAdeMock({ onStatusChanged: vi.fn(() => () => {}) });
+
+    await act(async () => {
+      render(<IntegrationBannerHost {...baseProps({ githubStatus: makeOutageStatus() })} />);
+    });
+    await act(async () => {});
+
+    expect(screen.getByText("GitHub isn't responding")).toBeTruthy();
+    expect(screen.queryByText("GitHub is down")).toBeNull();
+  });
+
+  // Fingerprint carries incident identity, so a NEW incident on the same
+  // surfaces is not inheriting the previous incident's dismissal.
+  it("resurfaces a dismissed outage when GitHub changes the incident for the same surfaces", async () => {
+    setAdeMock({ onStatusChanged: vi.fn(() => () => {}) });
+    const secondIncident = deriveGitHubServiceHealth({
+      status: { indicator: "major", description: "Partial System Outage" },
+      components: [
+        { id: "brv1bkgrwx7q", name: "API Requests", status: "major_outage" },
+        { id: "hhtssxt0f5v2", name: "Pull Requests", status: "major_outage" },
+      ],
+      incidents: [{ name: "A different incident", shortlink: "https://stspg.io/second", resolved_at: null }],
+    })!;
+
+    const { rerender } = render(
+      <IntegrationBannerHost
+        {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: OUTAGE_HEALTH }) })}
+      />,
+    );
+    await act(async () => {});
+    await act(async () => {
+      screen.getByRole("button", { name: /^Dismiss/ }).click();
+    });
+    expect(screen.queryByText("GitHub is down")).toBeNull();
+
+    await act(async () => {
+      rerender(
+        <IntegrationBannerHost
+          {...baseProps({ githubStatus: makeOutageStatus({ serviceHealth: secondIncident }) })}
+        />,
+      );
+    });
+    expect(screen.getByText("GitHub is down")).toBeTruthy();
   });
 });

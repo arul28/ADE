@@ -31,6 +31,7 @@ all and the surface does not exist.
 | Claude Code background-job reattach | Degraded | Each follow-up prompt respawns the CLI instead of replying into the live background job. Turns are slower and in-flight context is lost. | Claude Code ships no `control.sock` on Windows, and `os.userInfo().uid` is `-1`, so there is nothing to attach to. |
 | Graceful brain shutdown | Degraded | ADE asks the brain to shut down over its own RPC channel and force-terminates only after the grace window. | Windows has no deliverable `SIGTERM`; `process.kill` is `TerminateProcess`, which no handler can intercept. |
 | Orphan agent recovery | Degraded | Recovery uses the on-disk PID registry and a listening-port scan. | Windows cannot read another process's environment, so the macOS `ps -wwE` environment-tag pass has no equivalent. The port half is implemented. |
+| Open files of another process (import-list liveness / CLI session capture) | Degraded | When Sysinternals `handle.exe` is on PATH, ADE lists files a provider CLI has open and treats that as live. Without it, ADE cannot enumerate handles: it does not guess from mtime except as an explicit last-resort fallback, and Claude `--session-id` assignment plus transcript capture still identify ADE-owned sessions. | Windows has no `lsof`. `openfiles /query` requires a global audit flag. |
 | Claude Code sandbox permission modes | Blocked | Permission modes themselves work; the sandbox does not. | Vendor limitation — Claude Code sandboxing is WSL-2 only. Not an ADE gap. |
 | Credential storage at rest | Degraded | DPAPI through Electron `safeStorage`. | No Keychain. DPAPI is user-scoped rather than per-item ACL'd, so it is a weaker boundary than a Keychain item. |
 | Remote runtime bootstrap from a locally built channel | Blocked | A local `package:beta` build sets `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` and ships no Darwin/Linux sidecars, so it cannot drive a remote macOS or Linux runtime. CI-built installers are unaffected. | Darwin binaries cannot be produced on a Windows host. |
@@ -76,12 +77,43 @@ Release proof records these as separate bounded signals, not one inferred
 - a bounded startup/recovery log extract correlated by a proof-local alias.
 
 The launcher's wait is sliced, not unbounded. Every 15 s it reads the brain's
-heartbeat file (`<ADE home>\runtime\heartbeat.json`) and, if the beat is older
-than 90 s **and** belongs to the child it started, stops that child and lets its
-own restart path take over. This is the Windows half of the cross-platform wedge
-watchdog — macOS uses a separate `com.ade.watchdog` launch agent because launchd
-has no loop to fold the check into. An absent, unreadable, or foreign heartbeat
-is never read as a wedge, so the guard cannot fire on a brain it does not own.
+heartbeat file (`<ADE home>\runtime\heartbeat.json`). This is the Windows half
+of the cross-platform wedge watchdog — macOS uses a separate `com.ade.watchdog`
+launch agent because launchd has no loop to fold the check into. An absent,
+unreadable, or foreign heartbeat is never read as a wedge, so the guard cannot
+fire on a brain it does not own.
+
+A stale beat is not enough to stop the child. A kill needs three facts, and the
+last two exist because modern standby suspends the supervisor and the brain
+together — on wake, a beat 40 minutes old describes the suspension, not a wedge:
+
+1. the beat is older than 90 s and belongs to the child the launcher started;
+2. **the supervisor was awake to watch it go stale.** It measures its own
+   lateness, the one thing a suspended process can still report. When the gap
+   since its previous poll is at least `max(90 s, 3 × 15 s)` and the beat's age
+   fits inside that gap plus the staleness window, the launcher logs
+   `machine slept` and clears any strike. A brain that went quiet days before a
+   ten-minute nap is not explained by the nap, and still dies;
+3. **a previous poll already saw this same beat**, matched on the beat's own
+   timestamp rather than its age. A brain the OS merely stopped scheduling beats
+   again before the next poll and never reaches the kill; a wedged one is still
+   sitting on the same timestamp one cadence later. A beat that comes back fresh
+   clears the strike, so the two stale polls have to be consecutive.
+
+macOS applies the identical two rules in `evaluateBrainHeartbeat`. The suspend
+floor is the same formula on both platforms — `max(staleMs, 3 × the checker's
+own interval)` — not the same number: 90 s on Windows (15 s poll) and 180 s on
+macOS (60 s StartInterval), with `brainWatcherSuspendFloorMs` computing it
+there and the rendered PowerShell computing it inline.
+
+`ADE_BRAIN_HEARTBEAT_STALE_MS` overrides the 90 s staleness threshold on both
+platforms, with the same rules: a positive integer wins, anything else keeps the
+default, and the result never drops below 30 s. The suspend floor is computed
+after the override, so it rescales with it. Only the pickup differs. The macOS
+checker is a fresh process every 60 s, so it reads the variable at the next
+check. The Windows supervisor reads the variable once when it starts, so a
+changed machine variable applies after the brain service restarts. Neither
+platform has an override for the poll interval.
 
 The PID JSON is advisory ownership evidence. It is not a readiness file, and an
 ONLOGON Scheduled Task is not a current supervisor or readiness mechanism.
@@ -112,12 +144,33 @@ ade doctor --json
 ade runtime service-status --text
 ```
 
-Before sharing output, remove user paths, repository names, machine/device ids,
-account details, IPs, URLs with query strings, and any credential-shaped value.
-Prefer reporting the status/error code and ADE version. Do not attach the whole
-ADE home or a raw database.
+`ade report-issue` produces the same redacted Markdown report the desktop's
+**Report issue** button does, and it reads local files only — it never starts or
+contacts the brain, so it works on a machine where ADE will not come up and on a
+headless host with no error screen to press. `--open` opens a prefilled GitHub
+issue. Prefer it over hand-assembled output: paths, the account name, hostnames,
+tailnet and `.local` names, addresses and credential-shaped values are stripped
+by `redactDiagnosticText` over the whole document, and secrets, environment
+blocks and pairing PINs are never collected at all. See
+[storage and recovery](../features/storage-and-recovery/README.md#diagnostic-reports-report-issue).
+
+Before sharing anything you assembled by hand, remove user paths, repository
+names, machine/device ids, account details, IPs, URLs with query strings, and
+any credential-shaped value. Prefer reporting the status/error code and ADE
+version. Do not attach the whole ADE home or a raw database.
 
 ## Brain is installed but not running
+
+First rule out a brain that is simply still starting. An install that reports
+`starting` has registered the service and left a live child that had not
+answered on the pipe inside `WINDOWS_HANDOVER_TIMEOUT_MS` (15 s — shorter than
+the POSIX budget because the supervisor is a process the installer starts and
+watches directly). That is not a failed install: the supervisor owns that child,
+and restarting it only resets its clock. `ade connect` says "installed — the
+background service is still starting", and the desktop shows `brain_starting`
+with no Repair offered and reopens the project itself once the pipe answers.
+Give it up to `RUNTIME_SERVICE_YOUNG_BRAIN_MS` (120 s) before treating it as
+stuck. If it is genuinely not coming up:
 
 1. Confirm the channel-qualified value exists under the current user's Run key.
    Do not paste its command because it contains local installation paths.
@@ -183,6 +236,17 @@ the named pipe is healthy.
   account identifiers, and paths independently for every provider.
 - Provider credentials are machine-local. Never copy a credential store into an
   evidence bundle or across a cross-machine handoff.
+- The shared credential store (`credentials.json.enc`) is sealed with the bare
+  machine key on every platform, never with DPAPI- or keychain-derived material.
+  It is co-owned by the desktop app, the brain and the CLI, and any binding one
+  of them can derive but another cannot locks that other one out permanently.
+  Windows DPAPI (`CurrentUser`) is symmetric between the desktop app and the
+  scheduled-task brain because both run as the signed-in user — but the DPAPI
+  helper is a PowerShell spawn that can time out, and a timeout used to throw
+  out of a plain credential read. Verify that a DPAPI failure degrades to an
+  "unreadable, may be recoverable" report and never terminates the brain.
+- Single-writer secrets that want OS-level protection belong in the Electron
+  safeStorage store (`credentials.safe.enc`), which only the desktop app reads.
 
 ## Standalone brain or installation is damaged
 
@@ -197,6 +261,19 @@ the named pipe is healthy.
   `install.ps1`, and `SHA256SUMS` from the immutable proof run. Missing or
   mismatched evidence is a public-release blocker; do not relabel it as a pass
   or substitute a manual binary copy.
+- `install.ps1` stages everything under the ADE home, never `%TEMP%`:
+  `<runtime dir>.new` / `.previous` beside the runtime, `ade.new.exe` /
+  `ade.bak.exe` beside `ade.exe`. `%TEMP%` holds the downloads and nothing else,
+  because it is routinely on a different volume from the user profile
+  (redirected TEMP, a RAM disk, a roaming profile) where `Move-Item` degrades to
+  copy-then-delete, and because AppLocker and most EDR agents block execution
+  out of `%TEMP%` outright — which would fail the preflight on every managed
+  corporate machine. Every promotion is a same-directory rename, and the
+  preflight runs the new binary against the staged runtime it will actually
+  load. A failed install prints a stage-aware note: before promotion, the
+  existing install was not touched; after a rollback, the previous one was put
+  back. If the rollback itself failed, the recovery copies are named in the
+  error and are the machine's only copy — do not delete them.
 - Repair a partial launcher/runtime installation with the product's bounded
   repair path before testing reinstall or uninstall. Repair must preserve
   projects and user state; reinstall and uninstall remain separate scenarios

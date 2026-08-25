@@ -99,6 +99,7 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
     case failed
     case planning
     case working
+    case idle
     case done
 
     public var rank: Int {
@@ -107,9 +108,15 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
         case .failed: return 1
         case .planning: return 2
         case .working: return 3
-        case .done: return 4
+        case .idle: return 4
+        case .done: return 5
         }
     }
+
+    /// The two resting bands. Surfaces with room for a glance and nothing more
+    /// — the island's compact pill, the notch popover — lead with the live
+    /// bands and let these two be reached by opening the full list.
+    public var isResting: Bool { self == .idle || self == .done }
 
     public var tone: ActivityTone {
         switch self {
@@ -117,6 +124,10 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
         case .failed: return .red
         case .planning: return .violet
         case .working: return .blue
+        // Neutral, and never a live hue: painting the gone-quiet band blue is
+        // how the island came to claim agents were working hours after they
+        // had stopped.
+        case .idle: return .neutral
         case .done: return .emerald
         }
     }
@@ -127,6 +138,7 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
         case .failed: return .failed
         case .planning: return .planning
         case .working: return .working
+        case .idle: return .stale
         case .done: return .done
         }
     }
@@ -139,6 +151,7 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
         case .failed: return "Failed"
         case .planning: return "Planning"
         case .working: return "Working"
+        case .idle: return "Idle"
         case .done: return "Done"
         }
     }
@@ -152,6 +165,7 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
         case .failed: return "failed"
         case .planning: return "planning"
         case .working: return "working"
+        case .idle: return "idle"
         case .done: return "done"
         }
     }
@@ -162,6 +176,7 @@ public enum ActivityStateGroup: String, Codable, Hashable, Sendable, CaseIterabl
         case "failed": self = .failed
         case "planning", "plan": self = .planning
         case "working", "running": self = .working
+        case "idle", "stale": self = .idle
         case "done", "completed": self = .done
         default: return nil
         }
@@ -318,9 +333,14 @@ public enum ActivityPhaseVocabulary {
         switch phase {
         case .needsYou, .failed, .checksFailing, .changesRequested:
             return .needsYou
-        case .starting, .running, .blocked, .stale, .open, .reviewRequested:
+        case .starting, .running, .blocked, .open, .reviewRequested:
             return .working
-        case .completed, .merged, .closed, .mergeReady:
+        // `stale` sits with the resting tail, not with work in flight. The
+        // band is only three coarse steps, and the state group it now maps to
+        // (`idle`) is a resting one — leaving it under `working` here would
+        // sort gone-quiet rows above live ones in every list that sorts by
+        // band.
+        case .stale, .completed, .merged, .closed, .mergeReady:
             return .done
         case .unrecognized:
             return .done
@@ -332,14 +352,18 @@ public enum ActivityPhaseVocabulary {
     /// `renderer/components/activity/activityPresentation.ts`, and the only
     /// entry point a surface holding a real item should use.
     ///
-    /// The idle-tier check runs FIRST and sends every idle row to `done`,
+    /// The idle-tier check runs FIRST and sends every idle row to `idle`,
     /// exactly as the canonical function does. Idle-tier rows are quiet roster
     /// history no matter what phase they preserved: an idle `failed` is not a
     /// live failure any more than an idle `needs_you` is a live question, so
     /// demoting only the raised hand (which this file used to do) left an idle
     /// failure counting as red on iOS and as done on every other surface.
+    ///
+    /// They land in `idle`, NOT `done` — `done` means work that finished. The
+    /// two were one bucket until week-old roster rows filled it, which is the
+    /// state the Activity sheet was in when this split was made.
     public static func stateGroup(for item: AccountAttentionItem) -> ActivityStateGroup {
-        if item.tier == .idle { return .done }
+        if item.tier == .idle { return .idle }
         return stateGroup(for: item.phase, chatActivityMode: item.chatActivityMode)
     }
 
@@ -368,10 +392,16 @@ public enum ActivityPhaseVocabulary {
         // wire phase vocabulary is frozen and was deliberately not widened.
         case .starting, .running:
             return chatActivityMode?.isPlanning == true ? .planning : .working
+        // Went quiet mid-work: neither live nor finished, which is the gap
+        // `idle` exists to name. It used to file with `working`, and that is
+        // what let a session that stopped hours ago keep counting as work in
+        // flight on the lock screen.
+        case .stale:
+            return .idle
         // `mergeReady` files here, not under `done`. It is someone else's move,
         // not finished work, and filing it with the live band is what stops it
         // borrowing either the amber needs-you heading or the done tail.
-        case .blocked, .stale, .open, .reviewRequested, .mergeReady:
+        case .blocked, .open, .reviewRequested, .mergeReady:
             return .working
         case .completed, .merged, .closed:
             return .done
@@ -383,6 +413,10 @@ public enum ActivityPhaseVocabulary {
             // reach a state is how this table drifted in the first place.
             switch raw.lowercased() {
             case "waiting": return .working
+            // The two resting states a session sits in between turns. They
+            // reach this branch because neither is in the frozen wire phase
+            // vocabulary, and both mean the same thing `idle` names.
+            case "idle", "ready": return .idle
             default: return .done
             }
         }
@@ -426,6 +460,10 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     public let modelLabel: String?
     public let providerSlug: String?
     public let machineKey: String
+    /// The account-directory key, which is the one machine navigation resolves
+    /// against — `machineKey` is the push-registration identity and the two are
+    /// separately minted. Nil on rows from a publisher that predates it.
+    public let accountMachineKey: String?
     public let machineName: String
     public let machineOnline: Bool
     public let machineLastSeenAt: Date?
@@ -476,6 +514,7 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
         modelLabel = Self.nonEmpty(item.model)
         providerSlug = Self.nonEmpty(item.provider)
         machineKey = item.machine.machineKey
+        accountMachineKey = Self.nonEmpty(item.machine.accountMachineKey)
         machineName = Self.nonEmpty(item.machine.name) ?? "Mac"
         machineOnline = item.machine.online
         machineLastSeenAt = item.machine.lastSeenAt
@@ -503,6 +542,36 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
             pendingItemId = nil
             prNumber = nil
         }
+    }
+
+    /// What the row leads with.
+    ///
+    /// The wire `title` is a state sentence the publisher composes — "Claude is
+    /// done". Rendered as the headline it says nothing the coloured glyph one
+    /// inch to its left has not already said, and it pushed the only
+    /// identifying text in the row down to third place. The preview is the most
+    /// specific line the publisher has (it already falls back through the
+    /// attention message, the status note, the chat title and finally the lane
+    /// name, so it is never empty), which makes it the thing a reader scanning
+    /// for one session actually recognises.
+    ///
+    /// Falls back to `title` when privacy mode has replaced the preview with a
+    /// generic string.
+    public var headline: String { statusNote ?? title }
+
+    /// The card's last line: who is running this and in which project. The
+    /// machine is deliberately absent — it already sits on line one, next to the
+    /// lane, and printing it twice on a three-line card is the same redundancy
+    /// that made this list unreadable.
+    public var scopeLine: String {
+        var parts: [String] = []
+        if let provider = ADESharedTheme.providerDisplayName(for: providerSlug) {
+            parts.append(provider)
+        }
+        let project = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !project.isEmpty { parts.append(project) }
+        if let model = Self.nonEmpty(modelLabel) { parts.append(model) }
+        return parts.joined(separator: " · ")
     }
 
     /// "Studio Mac · ADE" — the row's scope in one line.

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
+import { parseCommandLine } from "../../../shared/shell";
 import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
 
@@ -39,8 +41,8 @@ const mocks = vi.hoisted(() => {
       return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false };
     }),
     realpathSync: Object.assign(
-      vi.fn((p: string) => p),
-      { native: vi.fn((p: string) => p) },
+      vi.fn((p: string) => realpathOverrides.get(p as string) ?? p),
+      { native: vi.fn((p: string) => realpathOverrides.get(p as string) ?? p) },
     ),
     statSync: vi.fn((p: string) => {
       if ((existsSyncResults.get(p) ?? true) === false) {
@@ -354,6 +356,7 @@ import {
   selectPiStorageSessionCandidate,
 } from "./ptyService";
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
+import { claudeConfigHome } from "../shared/providerConfigHomes";
 
 const originalPlatform = process.platform;
 const originalHome = process.env.HOME;
@@ -1311,6 +1314,130 @@ describe("ptyService", () => {
       expect(mockPty.write).not.toHaveBeenCalled();
     });
 
+    it("hands the ADE instruction file to every tracked OpenCode terminal", async () => {
+      // OpenCode gives a CLI launch no per-request system channel, so ADE's
+      // instructions reach it as a config `instructions` entry. This is the one
+      // place that happens, which is what makes a resumed session carry the same
+      // contract as a fresh one.
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        command: "opencode",
+        args: ["--prompt", "fix the test"],
+        startupCommand: "opencode --prompt 'fix the test'",
+        env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { edit: "allow" } }) },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const config = JSON.parse(opts?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+        instructions?: string[];
+        permission?: Record<string, string>;
+      };
+
+      expect(config.instructions).toHaveLength(1);
+      expect(config.instructions?.[0]).toMatch(/ade-[0-9a-f]{16}\.md$/);
+      expect(fs.existsSync(config.instructions![0]!)).toBe(true);
+      expect(fs.readFileSync(config.instructions![0]!, "utf8"))
+        .toContain("ADE's software engineering agent");
+      // The permission block ADE already sent must survive the merge.
+      expect(config.permission).toEqual({ edit: "allow" });
+    });
+
+    it("resumes an OpenCode session with the permission mode it was launched under", async () => {
+      const { service, loadPty, sessionService } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode plan session",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        command: "opencode",
+        args: ["--agent", "plan"],
+        startupCommand: "opencode --agent plan",
+      });
+      // ptyService derives the session's resume metadata from the launch it
+      // recorded, so the plan mode below comes from the same place a real
+      // resume reads it, not from a hand-planted fixture.
+      const sessionId = sessionService.list()[0]!.id;
+
+      await service.create({
+        sessionId,
+        laneId: "lane-1",
+        title: "OpenCode plan session",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        startupCommand: "opencode --agent plan --session ses_1",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const config = JSON.parse(opts?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as { instructions?: string[] };
+      const instructions = fs.readFileSync(config.instructions![0]!, "utf8");
+
+      // A resume carried no ADE instructions at all before; now it carries the
+      // same contract, and with the session's real mode rather than the default.
+      expect(instructions).toContain("Plan mode. Stay read-only");
+      expect(instructions).not.toContain("Autonomous mode.");
+    });
+
+    it("keeps ADE instructions after resume-target backfill rewrites the command", async () => {
+      // The backfill replaces startupCommand wholesale with the session's
+      // persisted resumeCommand, which carries its own inline
+      // OPENCODE_CONFIG_CONTENT assignment and no instructions. A command-line
+      // assignment overrides the process environment, so merging before that
+      // point dropped the ADE contract on exactly the resume path this exists
+      // to cover — and the persisted command's own permission policy must
+      // survive the rewrite too.
+      const { service, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode resume",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        startupCommand: `OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"ask"}}' opencode --continue`,
+      });
+
+      const written = String(vi.mocked(mockPty.write).mock.calls.at(-1)?.[0] ?? "");
+      const [assignment] = parseCommandLine(written.replace(/\r$/, ""), { platform: "linux" });
+      const config = JSON.parse(assignment!.slice("OPENCODE_CONFIG_CONTENT=".length)) as {
+        instructions?: string[];
+        permission?: Record<string, string>;
+      };
+
+      expect(config.instructions?.[0]).toMatch(/opencode-instructions[\\/]ade-[0-9a-f]{16}\.md$/);
+      expect(config.permission).toEqual({ edit: "ask" });
+    });
+
+    it("does not add OpenCode instructions to other providers' terminals", async () => {
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex session",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    });
+
     it("uses ADE's bundled OpenCode runtime when typing OpenCode startup commands", async () => {
       mocks.resolveOpenCodeBinaryPath.mockReturnValue("/tmp/ADE Runtime/opencode");
       const { service, mockPty } = createHarness();
@@ -1324,7 +1451,18 @@ describe("ptyService", () => {
         startupCommand: "OPENCODE_CONFIG_CONTENT='{}' opencode --continue",
       });
 
-      expect(mockPty.write).toHaveBeenCalledWith("OPENCODE_CONFIG_CONTENT='{}' '/tmp/ADE Runtime/opencode' --continue\r");
+      // The inline assignment is rebuilt to carry ADE's instruction file: a
+      // shell assignment on the command line overrides the process environment,
+      // so leaving the original `{}` here would drop the instructions on this
+      // path. Only the value is quoted, or the shell would read the whole
+      // NAME=value word as the command to run.
+      const written = String(vi.mocked(mockPty.write).mock.calls.at(-1)?.[0] ?? "");
+      const [assignment, ...rest] = parseCommandLine(written.replace(/\r$/, ""), { platform: "linux" });
+      const value = assignment?.slice("OPENCODE_CONFIG_CONTENT=".length) ?? "";
+      expect(assignment?.startsWith("OPENCODE_CONFIG_CONTENT=")).toBe(true);
+      expect((JSON.parse(value) as { instructions?: string[] }).instructions?.[0])
+        .toMatch(/opencode-instructions[\\/]ade-[0-9a-f]{16}\.md$/);
+      expect(rest).toEqual(["/tmp/ADE Runtime/opencode", "--continue"]);
     });
 
     it("exports ADE chat terminal context to spawned shells", async () => {
@@ -1745,8 +1883,11 @@ describe("ptyService", () => {
         startupCommand: "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir=/tmp/custom-plugin --permission-mode default",
       });
 
+      // The env prefix does not hide the claude token from either injection, so
+      // the fallback line carries the bundled plugin AND the same deterministic
+      // session id the direct-spawn argv got.
       expect(mockPty.write).toHaveBeenCalledWith(
-        "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir \"/Applications/ADE Preview.app/Contents/Resources/agent-skills\" --plugin-dir=/tmp/custom-plugin --permission-mode default\r",
+        "ADE_RUN_ID='run 1' ADE_DEFAULT_ROLE=agent claude --plugin-dir \"/Applications/ADE Preview.app/Contents/Resources/agent-skills\" --session-id uuid-3 --plugin-dir=/tmp/custom-plugin --permission-mode default\r",
       );
     });
 
@@ -1771,7 +1912,71 @@ describe("ptyService", () => {
         startupCommand,
       });
 
-      expect(mockPty.write).toHaveBeenCalledWith(`${startupCommand}\r`);
+      // Only the deterministic session id is added; the plugin flag already
+      // present in the startup command is not duplicated.
+      expect(mockPty.write).toHaveBeenCalledWith(
+        `ADE_RUN_ID=run-1 claude --session-id uuid-3 --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin\r`,
+      );
+    });
+
+    it("keeps argv and the startup command in agreement when Claude is an absolute path", async () => {
+      // Regression: the assigned --session-id only reached `startupCommand`
+      // when it started with a bare `claude` token, so a resolved absolute
+      // executable put the flag in argv alone. The direct spawn and the shell
+      // fallback would then start two different provider sessions.
+      const claudePath = "/usr/local/bin/claude";
+      // The recorded resume target only accepts UUID-shaped ids, so the id
+      // generator has to look like the real one for this launch.
+      let uuidCounter = 0;
+      mocks.randomUUID.mockImplementation(() => {
+        uuidCounter += 1;
+        return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, "0")}`;
+      });
+      const { service, sessionService, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: claudePath,
+        args: ["--model", "sonnet"],
+        startupCommand: `${claudePath} --model sonnet`,
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnedArgs = ptyLib.spawn.mock.calls.at(-1)?.[1] as string[];
+      const flagIndex = spawnedArgs.indexOf("--session-id");
+      expect(flagIndex).toBeGreaterThanOrEqual(0);
+      const assignedId = spawnedArgs[flagIndex + 1];
+      expect(assignedId).toBeTruthy();
+
+      // The startup line is the shell fallback for the same launch, so the id
+      // it records has to be the one argv carries.
+      const createArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(createArgs?.resumeMetadata?.targetId).toBe(assignedId);
+    });
+
+    it("leaves an empty Claude startup command empty instead of fabricating one", async () => {
+      // Regression: the helper synthesized `claude --session-id <id>` when both
+      // the command and the startup line were empty, which then defeated
+      // create()'s `startupCommand ||= shellFallbackCmd` recovery.
+      const { service, sessionService, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+
+      const createArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(createArgs?.resumeMetadata?.targetId ?? null).toBeNull();
+      const written = (mockPty.write as ReturnType<typeof vi.fn>).mock.calls
+        .map((call) => String(call[0]));
+      expect(written.some((data) => data.includes("--session-id"))).toBe(false);
     });
 
     it("routes the bundled Claude plugin into the -lc command line of shell-wrapped resume launches", async () => {
@@ -5537,12 +5742,75 @@ describe("ptyService", () => {
         expect(spawnArgs).toContain(buildCanonicalOpenCodeReplayResumeCommand({
           permissionMode: "plan",
           model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
-          fastMode: true,
           resumeTarget: "ses_abc",
           prompt: "continue from the freeze frame",
           replayLimit: 40,
         }));
         expect(mockPty.write).not.toHaveBeenCalledWith("continue from the freeze frame\r");
+      } finally {
+        if (previous === undefined) {
+          delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+        } else {
+          process.env.ADE_OPENCODE_REPLAY_RESUME = previous;
+        }
+      }
+    });
+
+    it("detects mini replay support from realistic root help output without overrides", async () => {
+      // Regression: \b can never match before "--" (both sides are non-word
+      // characters), so the old probe never recognized help output and replay
+      // resume stayed permanently dormant.
+      const previous = process.env.ADE_OPENCODE_REPLAY_RESUME;
+      delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+      try {
+        const { service, sessionService, loadPty } = createHarness();
+        mocks.spawnSync.mockImplementationOnce(() => ({
+          status: 0,
+          stdout: [
+            "Options:",
+            "  -m, --model         model to use in the format of provider/model",
+            "      --mini          start the minimal interactive interface   [boolean] [default: false]",
+            "      --no-replay     disable mini session history replay on resume and after resize",
+            "      --replay-limit  cap visible mini replay to the newest N messages",
+          ].join("\n"),
+          stderr: "",
+        }));
+        sessionService.create({
+          sessionId: "session-opencode-probe",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "OpenCode CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "/tmp/transcripts/session-opencode-probe.log",
+          toolType: "opencode",
+          resumeCommand: "opencode --session ses_probe",
+          resumeMetadata: {
+            provider: "opencode",
+            targetKind: "session",
+            targetId: "ses_probe",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-opencode-probe",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const result = await service.sendToSession({
+          sessionId: "session-opencode-probe",
+          text: "continue from the freeze frame",
+          permissionMode: "plan",
+        });
+
+        expect(result.resumed).toBe(true);
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const commandLine = String(spawn.mock.calls[0]?.[1]?.at(-1) ?? "");
+        expect(commandLine).toContain("opencode --mini ");
+        expect(commandLine).toContain("--replay-limit 40");
+        expect(commandLine).toContain("--session ses_probe");
       } finally {
         if (previous === undefined) {
           delete process.env.ADE_OPENCODE_REPLAY_RESUME;
@@ -5934,8 +6202,7 @@ describe("ptyService", () => {
       try {
         const claudeSessionId = "123e4567-e89b-12d3-a456-426614174000";
         const claudeFilePath = path.join(
-          os.homedir(),
-          ".claude",
+          claudeConfigHome({ homeDir: os.homedir() }),
           "projects",
           "-tmp-test-worktree",
           `${claudeSessionId}.jsonl`,
@@ -7700,6 +7967,108 @@ describe("ptyService", () => {
       expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
       expect(mockPty.resize).toHaveBeenLastCalledWith(80, 24);
     });
+
+    it("ignores desktop fit-resizes while a mobile viewport owns the PTY", async () => {
+      const { service, mockPty } = createHarness();
+      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      expect(service.resizeBySessionId(sessionId, 60, 20, { source: "mobile" })).toBe(true);
+      vi.mocked(mockPty.resize).mockClear();
+
+      service.resize({ ptyId, cols: 375, rows: 53 });
+      expect(mockPty.resize).not.toHaveBeenCalled();
+
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(375, 53);
+    });
+
+    it("ignores resizeTerminal while a mobile viewport owns the PTY", async () => {
+      const { service, mockPty } = createHarness();
+      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      expect(service.resizeBySessionId(sessionId, 60, 20, { source: "mobile" })).toBe(true);
+      vi.mocked(mockPty.resize).mockClear();
+
+      expect(service.resizeTerminal({ ptyId, cols: 200, rows: 40 })).toEqual({
+        ok: true,
+        cols: 200,
+        rows: 40,
+      });
+      expect(mockPty.resize).not.toHaveBeenCalled();
+
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(200, 40);
+    });
+
+    it("returns null from readScreenSnapshot for an unknown session", async () => {
+      const { service } = createHarness();
+      expect(service.readScreenSnapshot("missing")).toBeNull();
+      expect(service.readScreenSnapshot("")).toBeNull();
+    });
+
+    it("hydrates stored screens from scrollback-0 CSI instead of the full snapshot serialize", async () => {
+      const { service } = createHarness();
+      const snapshotPath = path.join(
+        "/tmp/test-project",
+        ".ade",
+        "cache",
+        "terminal-snapshots",
+        "ended-session.json",
+      );
+      mocks.fileContents.set(snapshotPath, JSON.stringify({
+        version: 1,
+        terminalId: "ended-session",
+        cols: 80,
+        rows: 24,
+        capturedAt: "2026-08-14T00:00:00.000Z",
+        status: "exited",
+        runtimeState: "exited",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "SCROLLBACK-CSI".repeat(20_000),
+        screenSerialized: "\x1b[?1049hCURRENT",
+        visibleRows: [],
+      }));
+
+      expect(service.readScreenSnapshot("ended-session")).toEqual({
+        cols: 80,
+        rows: 24,
+        bufferType: "alternate",
+        serialized: "\x1b[?1049hCURRENT",
+      });
+    });
+
+    it("omits stored screen when the snapshot has no scrollback-0 serialize", async () => {
+      const { service } = createHarness();
+      const snapshotPath = path.join(
+        "/tmp/test-project",
+        ".ade",
+        "cache",
+        "terminal-snapshots",
+        "legacy-session.json",
+      );
+      mocks.fileContents.set(snapshotPath, JSON.stringify({
+        version: 1,
+        terminalId: "legacy-session",
+        cols: 80,
+        rows: 24,
+        capturedAt: "2026-08-14T00:00:00.000Z",
+        status: "exited",
+        runtimeState: "exited",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "SCROLLBACK-CSI",
+        visibleRows: [],
+      }));
+
+      expect(service.readScreenSnapshot("legacy-session")).toBeNull();
+    });
   });
 
   describe("ensureResumeTargets", () => {
@@ -7918,7 +8287,7 @@ describe("ptyService", () => {
 
         const matchedId = "11111111-1111-1111-1111-111111111111";
         const newerDifferentId = "22222222-2222-2222-2222-222222222222";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const matchedPath = path.join(claudeProjectDir, `${matchedId}.jsonl`);
         const newerDifferentPath = path.join(claudeProjectDir, `${newerDifferentId}.jsonl`);
         const matchedFirstLine = JSON.stringify({
@@ -7980,7 +8349,7 @@ describe("ptyService", () => {
         vi.setSystemTime(fakeNow);
 
         const otherId = "33333333-3333-3333-3333-333333333333";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const otherPath = path.join(claudeProjectDir, `${otherId}.jsonl`);
         const otherFirstLine = JSON.stringify({
           timestamp: "2026-04-15T21:31:00.000Z",
@@ -8033,7 +8402,7 @@ describe("ptyService", () => {
 
         const firstId = "44444444-4444-4444-4444-444444444444";
         const secondId = "55555555-5555-5555-5555-555555555555";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
+        const claudeProjectDir = path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", "-tmp-test-worktree");
         const firstPath = path.join(claudeProjectDir, `${firstId}.jsonl`);
         const secondPath = path.join(claudeProjectDir, `${secondId}.jsonl`);
         const firstLine = JSON.stringify({
@@ -8168,6 +8537,46 @@ describe("ptyService", () => {
       expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode", "opencode --session ses_abc");
     });
 
+    it("matches OpenCode resume rows through symlink-resolved directories", async () => {
+      // macOS hands PTY cwds out as /tmp/... while OpenCode records the
+      // resolved /private/tmp/... spelling; the backfill must compare
+      // realpath-resolved keys or lane sessions under symlinked roots lose
+      // their own resume target.
+      const startedAt = "2026-04-15T21:30:00.000Z";
+      const bundledOpenCode = "/Applications/ADE.app/Contents/Resources/app.asar.unpacked/node_modules/opencode-darwin-arm64/bin/opencode";
+      mocks.resolveOpenCodeBinaryPath.mockReturnValue(bundledOpenCode);
+      mocks.spawnSync.mockReturnValueOnce({
+        status: 0,
+        stdout: JSON.stringify([
+          {
+            id: "ses_symlink",
+            directory: "/private/tmp/test-worktree",
+            created: Date.parse(startedAt),
+            updated: Date.parse(startedAt) + 1000,
+          },
+        ]),
+        stderr: "",
+      });
+
+      const { service, sessionService } = createHarness();
+      sessionService.readTranscriptTail.mockResolvedValueOnce("opencode\n");
+      sessionService.create({
+        sessionId: "session-opencode-symlink",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "OpenCode CLI",
+        startedAt,
+        transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-opencode-symlink.log",
+        toolType: "opencode",
+      });
+      mocks.realpathOverrides.set("/tmp/test-worktree", "/private/tmp/test-worktree");
+
+      await service.ensureResumeTargets(["session-opencode-symlink"]);
+
+      expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-opencode-symlink", "opencode --session ses_symlink");
+    });
+
     it("does not backfill OpenCode from session list without OpenCode transcript evidence", async () => {
       const startedAt = "2026-04-15T21:30:00.000Z";
       mocks.spawnSync.mockReturnValueOnce({
@@ -8253,8 +8662,7 @@ describe("ptyService", () => {
       try {
         const claudeSessionId = "5647da1e-10de-4089-bce2-00b9c2552bfc";
         const filePath = path.join(
-          os.homedir(),
-          ".claude",
+          claudeConfigHome({ homeDir: os.homedir() }),
           "projects",
           "-tmp-test-worktree",
           `${claudeSessionId}.jsonl`,

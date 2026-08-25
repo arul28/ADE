@@ -11,6 +11,8 @@ struct LinearPaneSheet: View {
   /// Brief "Connected to <org>" confirmation shown on the empty state before the
   /// store reload flips the pane into the issue list.
   @State private var justConnectedOrg: String?
+  @State private var attachError: String?
+  @State private var attachingIssue = false
 
   init(syncService: SyncService) {
     _store = StateObject(wrappedValue: LinearPaneStore(sync: syncService))
@@ -26,7 +28,13 @@ struct LinearPaneSheet: View {
         if isDisconnected {
           connectPrompt
         } else {
-          LinearIssueListScreen(store: store, onClose: close)
+          LinearIssueListScreen(
+            store: store,
+            onClose: close,
+            onAttachIssue: syncService.linearPaneAttachSessionId == nil ? nil : { issue in
+              Task { await attachIssue(issue) }
+            }
+          )
         }
       }
       .navigationDestination(for: LinearRoute.self) { route in
@@ -41,6 +49,14 @@ struct LinearPaneSheet: View {
       }
     }
     .tint(LinearBrand.primaryBright)
+    .alert("Couldn't attach issue", isPresented: Binding(
+      get: { attachError != nil },
+      set: { if !$0 { attachError = nil } }
+    )) {
+      Button("OK", role: .cancel) { attachError = nil }
+    } message: {
+      Text(attachError ?? "")
+    }
     .task {
       guard !started else { return }
       started = true
@@ -114,6 +130,21 @@ struct LinearPaneSheet: View {
 
   private func close() {
     syncService.linearPanePresented = false
+    syncService.linearPaneAttachSessionId = nil
+  }
+
+  private func attachIssue(_ issue: NormalizedLinearIssue) async {
+    guard let sessionId = syncService.linearPaneAttachSessionId else { return }
+    guard !attachingIssue else { return }
+    attachingIssue = true
+    defer { attachingIssue = false }
+    do {
+      try await syncService.attachLinearIssueToChat(chatSessionId: sessionId, issue: issue)
+      ADEHaptics.success()
+      close()
+    } catch {
+      attachError = error.localizedDescription
+    }
   }
 
   /// Resolves and pushes the issue named by a pending `linear-issue` deep link.

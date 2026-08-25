@@ -16,16 +16,18 @@ export type CursorSdkErrorDetail = {
 
 export type CursorSdkErrorKind = "auth" | "rate_limit" | "network" | "busy" | "not_found" | "unknown";
 
-export type CursorSdkErrorClassification = {
-  kind: CursorSdkErrorKind;
-  retryable: boolean;
-};
-
 export type CursorSdkPermissionPolicy = {
   chatMode: CursorSdkChatMode;
   approvalPolicy: CursorSdkApprovalPolicy;
   sandbox: CursorSdkSandboxMode;
-  force: boolean;
+  /**
+   * The session runs under ADE's `full-auto` permission mode. This is a
+   * permission-mode marker only: it separates full-auto sessions into their own
+   * worker pool and labels logs. It deliberately does NOT map onto the Cursor
+   * SDK's `local.force` — that option expires an active run, which is a
+   * recovery action, not a permission level. See `forceExpireActiveRun`.
+   */
+  fullAuto: boolean;
   hardGuards: boolean;
   /**
    * Orchestrator-lead sessions may only ever run read-risk tools. Carried on
@@ -33,6 +35,25 @@ export type CursorSdkPermissionPolicy = {
    * hook server in `cursorSdkWorker` through the existing policy plumbing.
    */
   orchestrationLead: boolean;
+  /**
+   * Cursor Auto-review for local tool calls (`local.autoReview`). Backs ADE's
+   * middle-trust `agent` mode. This is a boolean on `local`, not an SDK `mode`
+   * value — never pass `"auto"` as `AgentOptions.mode` (only `"agent"` | `"plan"`).
+   */
+  autoReview: boolean;
+  /**
+   * Local-only built-in tool allowlist (`AgentOptions.tools`). Omitted means
+   * the SDK default toolset. The SDK does not persist this: pass it again on
+   * every `resumeAgent`. Combining `tools` with `cloud` throws
+   * `ConfigurationError` — never set this on cloud create.
+   */
+  tools?: readonly string[];
+  /**
+   * Local-only built-in tool denylist (`AgentOptions.disallowedTools`). Deny
+   * wins when combined with `tools`. Same local-only / resume / no-cloud rules
+   * as `tools`.
+   */
+  disallowedTools?: readonly string[];
 };
 
 export type CursorSdkModelParameterValue = {
@@ -87,7 +108,14 @@ export type CursorSdkSendPrompt = {
   images?: CursorSdkUserImage[];
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
-  force?: boolean;
+  /**
+   * Maps to the SDK's `local.force` ("expire the currently active persisted
+   * run before starting this message as a new follow-up run"). Set only on
+   * ADE's automatic recovery re-send, where the previous run may still be
+   * registered as active on a thread that stopped answering. Normal sends must
+   * never set it — expiring a genuinely running turn would drop its output.
+   */
+  forceExpireActiveRun?: boolean;
   idempotencyKey?: string | null;
   mode?: CursorSdkAgentMode;
 };
@@ -114,6 +142,11 @@ export type CursorSdkCloudSendStreamPayload = {
   skipReviewerRequest?: boolean;
   envType?: "cloud" | "pool" | "machine" | null;
   envName?: string | null;
+  sessionId?: string | null;
+  laneId?: string | null;
+  projectId?: string | null;
+  linearIssueId?: string | null;
+  envVars?: Record<string, string> | null;
 };
 
 export type CursorSdkCloudFollowupPayload = {
@@ -231,6 +264,11 @@ export type CursorSdkWorkerRequest =
       requestId: string;
       payload: { apiKey?: string | null; agentId: string; path: string };
     }
+  | {
+      type: "agent.getUsage";
+      requestId: string;
+      payload: { apiKey?: string | null; agentId: string; runId?: string | null };
+    }
   | { type: "hook_response"; requestId: string; payload: CursorSdkHookDecision };
 
 export type CursorSdkRuntime = "local" | "cloud";
@@ -298,7 +336,7 @@ export type CursorSdkWorkerResponse =
  * True when an error string looks like a transport/network failure (HTTP/2
  * stream resets, dropped sockets, connection refused/timeouts) rather than a
  * model- or policy-level error. Callers use this to mark an error as
- * potentially retryable. Matches on substrings so it works against both thrown
+ * a transport failure. Matches on substrings so it works against both thrown
  * Error messages and the SDK run store's `errorCode` text (e.g.
  * "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR").
  */
@@ -310,6 +348,14 @@ export function isCursorSdkTransportErrorText(text: string | null | undefined): 
     || lower.includes("econnreset")
     || lower.includes("econnrefused")
     || lower.includes("etimedout")
+    // `[internal] write ECANCELED` / `EPIPE` / `write after end` are the
+    // socket-side cousins of an NGHTTP2 reset: the SDK's write to the agent
+    // stream was cancelled or the pipe was torn down under it. They poison the
+    // server-side agent thread the same way, so they must classify as
+    // transport failures rather than leaking raw internals into chat.
+    || lower.includes("ecanceled")
+    || lower.includes("epipe")
+    || lower.includes("write after end")
     || lower.includes("socket hang up")
     || lower.includes("stream closed with error");
 }
@@ -332,11 +378,93 @@ export function isCursorSdkBackoffErrorText(text: string | null | undefined): bo
     || lower.includes("429");
 }
 
+/**
+ * The exact text the Cursor SDK surfaces for an expired short-lived access
+ * token. Kept here so the matcher, the bridge's fallback and the terminal
+ * copy all read one greppable literal.
+ */
+export const CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT =
+  "Authentication error If you are logged in, try logging out and back in.";
+
+/**
+ * The two halves of that sentence, split around the clause the SDK sometimes
+ * reflows and stripped of the trailing period — matching both independently is
+ * what keeps the check robust to the request-id suffix and to casing, without
+ * widening it to "authentication error" alone.
+ */
+const STALE_ACCESS_TOKEN_FRAGMENTS = CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT
+  .toLowerCase()
+  .replace(/\.$/, "")
+  .split(" if you are ");
+
+/**
+ * True for the one auth failure ADE can fix on its own: the SDK's short-lived
+ * access token (exchanged once per executor from the user API key) expired
+ * mid-session, and the SDK only re-exchanges on a Connect `Unauthenticated`
+ * fault — never on this in-stream shape. Every later send on the same worker
+ * then fails instantly with the identical text until the worker is replaced.
+ *
+ * Deliberately narrow: it must not match a genuinely bad API key ("Invalid API
+ * key", 401/403), where retrying on a fresh worker would fail the same way.
+ * The SDK spells this one exactly, as the error message and often again as the
+ * structured `code`:
+ *   "Authentication error If you are logged in, try logging out and back in."
+ */
+export function isCursorSdkStaleAccessTokenText(
+  ...texts: Array<string | null | undefined>
+): boolean {
+  const joined = texts.filter(Boolean).join("\n").toLowerCase();
+  if (!joined) return false;
+  return STALE_ACCESS_TOKEN_FRAGMENTS.every((fragment) => joined.includes(fragment));
+}
+
+/** One turn's suppressed stale-token failure, kept so it can be re-thrown. */
+export type CursorSdkStaleTokenFailure = {
+  turnId: string;
+  message: string;
+  code?: string;
+  requestId?: string;
+};
+
+/**
+ * Reads the worker's synthetic terminal `status: ERROR` event as a stale-token
+ * failure, or returns null when it is any other error. One pass over
+ * `adeErrorCode` / `adeErrorDetail` yields both the decision and the payload,
+ * so the caller never re-reads the same four fields to build one.
+ */
+export function readCursorSdkStaleTokenFailure(
+  event: unknown,
+  turnId: string,
+): CursorSdkStaleTokenFailure | null {
+  const record = (event && typeof event === "object" ? event : null) as Record<string, unknown> | null;
+  if (!record) return null;
+  const detail = (record.adeErrorDetail && typeof record.adeErrorDetail === "object"
+    ? record.adeErrorDetail
+    : null) as Record<string, unknown> | null;
+  const readString = (value: unknown): string | null => (
+    typeof value === "string" && value.trim().length ? value.trim() : null
+  );
+  const errorCode = readString(record.adeErrorCode);
+  const eventMessage = readString(record.message);
+  const detailMessage = readString(detail?.message);
+  const detailCode = readString(detail?.code);
+  const requestId = readString(detail?.requestId);
+  if (!isCursorSdkStaleAccessTokenText(errorCode, eventMessage, detailMessage, detailCode)) {
+    return null;
+  }
+  return {
+    turnId,
+    message: detailMessage ?? errorCode ?? CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
+    ...(detailCode ? { code: detailCode } : {}),
+    ...(requestId ? { requestId } : {}),
+  };
+}
+
 export function classifyCursorSdkErrorText(
   ...texts: Array<string | null | undefined>
-): CursorSdkErrorClassification {
+): CursorSdkErrorKind {
   const joined = texts.filter(Boolean).join("\n").toLowerCase();
-  if (!joined) return { kind: "unknown", retryable: false };
+  if (!joined) return "unknown";
   if (
     joined.includes("agent_busy")
     || joined.includes("agent busy")
@@ -344,16 +472,16 @@ export function classifyCursorSdkErrorText(
     || joined.includes("active run in progress")
     || joined.includes("already running another task")
   ) {
-    return { kind: "busy", retryable: false };
+    return "busy";
   }
-  if (isCursorSdkBackoffErrorText(joined)) return { kind: "rate_limit", retryable: true };
-  if (isCursorSdkTransportErrorText(joined)) return { kind: "network", retryable: true };
+  if (isCursorSdkBackoffErrorText(joined)) return "rate_limit";
+  if (isCursorSdkTransportErrorText(joined)) return "network";
   if (
     joined.includes("agent_not_found")
     || joined.includes("agent not found")
     || joined.includes("not found (operation=agent.resume")
   ) {
-    return { kind: "not_found", retryable: false };
+    return "not_found";
   }
   if (
     joined.includes("unauthorized")
@@ -361,7 +489,7 @@ export function classifyCursorSdkErrorText(
     || joined.includes("authentication")
     || joined.includes("invalid api key")
   ) {
-    return { kind: "auth", retryable: false };
+    return "auth";
   }
-  return { kind: "unknown", retryable: false };
+  return "unknown";
 }

@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   parseRuntimeLastWedge,
@@ -16,7 +17,23 @@ import type {
 } from "../services/runtime/brainLoopWatchdog";
 import { readBrainLoopWatchdogLastWedge } from "../services/runtime/brainLoopWatchdog";
 import { BRAIN_WATCHDOG_KILL_COMMAND } from "../services/runtime/brainWatchdogCheck";
-import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import {
+  inspectCredentialStoreHealth,
+  type CredentialStoreHealth,
+} from "../services/credentials/credentialStore";
+import {
+  readAutoDiagnosticsState,
+  resolveAutoDiagnosticsStateFile,
+} from "../../../desktop/src/main/services/diagnostics/autoDiagnosticsStore";
+import {
+  isCloudStorageLocation,
+  type StorageEnvironment,
+} from "../services/diagnostics/storageEnvironmentProbe";
+import {
+  resolveMachineAdeLayout,
+  type MachineAdeLayout,
+} from "../services/projects/machineLayout";
+import { readBrainStartupState } from "../services/runtime/brainStartupState";
 import { DEFAULT_SYNC_HOST_PORT } from "../services/sync/syncProtocol";
 import type {
   SyncListenerPortDiagnosis,
@@ -32,7 +49,10 @@ export type DoctorRow = {
     | "sync_port"
     | "publish"
     | "relay"
-    | "account";
+    | "account"
+    | "credentials"
+    | "storage"
+    | "diagnostics";
   label: string;
   status: DoctorRowStatus;
   detail: string;
@@ -40,6 +60,16 @@ export type DoctorRow = {
 
 export type DoctorBrainInput = {
   running: boolean;
+  /**
+   * The brain is not answering, but its service is registered and the brain
+   * process behind it is alive and young — it is still coming up. Reported as
+   * a warning, not a failure: this is the CLI's read of the desktop's
+   * `brain_starting` recovery state, and repairing here would only restart a
+   * booting brain. See `services/runtime/brainStartupState`.
+   */
+  starting?: boolean;
+  /** Age of the starting brain in ms when known, for the row's wording. */
+  startingAgeMs?: number | null;
   version: string | null;
   buildHash: string | null;
   pid: number | null;
@@ -75,7 +105,46 @@ export type DoctorInput = {
     source: string | null;
     error: string | null;
   };
+  /**
+   * Read straight off disk rather than through the brain. The failure this row
+   * exists for is a brain that cannot start, so a credential check that needs a
+   * running brain to answer would be silent in exactly the case it is for.
+   */
+  credentials: CredentialStoreHealth | null;
+  /**
+   * Where this machine's ADE data lives, and whether its bytes are on the disk.
+   *
+   * Read from disk for the same reason the credential row is: the failure it
+   * exists for stops the brain from starting, so a check that asked the brain
+   * would be silent exactly when it is needed. It is the same section `ade
+   * report-issue` prints, reduced to the one row a person can act on.
+   *
+   * OPTIONAL, like {@link DoctorInput.diagnostics}: a caller that does not
+   * supply it gets a truthful "not checked" row rather than a fabricated one.
+   */
+  storage?: StorageEnvironment | null;
+  /**
+   * Automatic diagnostics sharing: the consent flag and today's spend, read off
+   * the same ledger both senders account against.
+   *
+   * OPTIONAL on purpose. This is an additive input, and a caller that does not
+   * supply it gets a truthful "not checked" row rather than a fabricated one.
+   */
+  diagnostics?: DoctorDiagnosticsSharing | null;
 };
+
+/**
+ * What the shared auto-diagnostics ledger says about AUTOMATIC sharing.
+ *
+ * Narrowed to the three fields this row reads rather than the ledger's whole
+ * view: the ledger also reports the separate manual-send budget, and `ade
+ * doctor` is a health check for what the machine does on its own — a report a
+ * person deliberately asked for is not a diagnostic about the machine.
+ */
+export type DoctorDiagnosticsSharing = Pick<
+  ReturnType<typeof readAutoDiagnosticsState>,
+  "enabled" | "sendsInWindow" | "limit"
+>;
 
 export type DoctorCommandOptions = {
   role: "cto" | "orchestrator" | "agent" | "external" | "evaluator";
@@ -135,6 +204,9 @@ export type DoctorCommandResult = {
   publishHealth: DoctorInput["publishHealth"];
   relayHealth: DoctorInput["relayHealth"];
   account: DoctorInput["account"];
+  credentials: DoctorInput["credentials"];
+  storage: DoctorInput["storage"];
+  diagnostics: DoctorInput["diagnostics"];
 };
 
 type DoctorBrainProbe = {
@@ -150,6 +222,19 @@ const DOCTOR_BRAIN_DEADLINE_MS = 2_000;
 const DOCTOR_ONLINE_DEADLINE_MS = 1_200;
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const RECENT_PUBLISH_MS = 2 * 60 * 1_000;
+/**
+ * Tighter bounds than the diagnostic report's, because the two commands are
+ * asked for different things. A report is read once by a person who is already
+ * stuck, so it may spend a second per root. `ade doctor` runs in scripts and in
+ * agent sessions, and one row is not worth a visible pause: a sample this size
+ * still finds an evicted project, and a project with no evicted file in its
+ * first hundred is not the machine this row is for.
+ */
+const DOCTOR_STORAGE_MAX_FILES = 120;
+const DOCTOR_STORAGE_MAX_DIRECTORIES = 24;
+const DOCTOR_STORAGE_TIME_BUDGET_MS = 250;
+/** Rewrites the launch agent, which is how the missing policy key is granted. */
+const INSTALL_SERVICE_COMMAND = "ade runtime install-service";
 const PUBLISH_FAILURE_RED_MS = 2 * 60 * 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -544,6 +629,18 @@ function appRow(input: DoctorInput["app"]): DoctorRow {
 
 function brainRow(input: DoctorBrainInput): DoctorRow {
   if (!input.running) {
+    // A registered, alive, young brain that has not bound its socket yet is
+    // starting, not broken. Calling that a failure is what sent people into a
+    // Repair that killed the booting brain and started the race over.
+    if (input.starting) {
+      const age = input.startingAgeMs != null ? ` (${compactDuration(input.startingAgeMs)} so far)` : "";
+      return {
+        key: "brain",
+        label: "Brain",
+        status: "warn",
+        detail: `starting · the background service is up and its brain is coming up${age}; nothing to repair`,
+      };
+    }
     return {
       key: "brain",
       label: "Brain",
@@ -621,22 +718,22 @@ function syncPortRow(input: DoctorInput): DoctorRow {
     key: "sync_port",
     label: "Sync port",
     status: "warn",
-    detail: `bound on ${input.syncPort} instead of 8787${
+    // Sticky lastPort used to keep a replacement brain on 8788 forever.
+    // Bind order now retries 8787 first, and a live listener migrates back
+    // when 8787 frees. `ade brain restart` is still the explicit hammer.
+    detail: [
+      `bound on ${input.syncPort} instead of 8787`,
       holders.length
-        ? ` · base holders: ${holders.join("; ")}`
+        ? `base holders: ${holders.join("; ")}`
         // "No visible holders" reads as "the ports are free", which is exactly
         // the wrong conclusion: the holder is usually tailscaled, and it runs
         // as root so this probe cannot see it. Point at the check that can.
-        : " · no holders visible to this user (a root-owned holder such as"
+        : "no holders visible to this user (a root-owned holder such as"
           + " tailscaled is invisible here — check `tailscale serve status`"
-          + " and `netstat -an -p tcp`)"
-    }${
-      // The usual cause is ADE's own stranded `tailscale serve` entries from
-      // earlier runs. The host now reclaims those on its next publish, so the
-      // fix is a brain restart, not 60-odd manual `serve --tcp=N off` calls.
-      holders.length ? "" : " · ADE reclaims its own stale serve entries on the"
-        + " next publish; `ade brain restart` should return it to 8787"
-    }`,
+          + " and `netstat -an -p tcp`)",
+      "ADE retries 8787 first and migrates back when it is free;"
+        + " `ade brain restart` also returns it to 8787",
+    ].join(" · "),
   };
 }
 
@@ -663,12 +760,20 @@ function publishRow(
   const remedy = isBrainAccountSessionFailure(health.state)
     ? " · run `ade brain restart` so the brain re-reads the account session"
     : "";
+  // The refusals the directory answers with — a removed machine, a pairing that
+  // needs a fresh sign-in — all arrive as `state: "http_error"`, and the
+  // sentence the user can act on lives ONLY in `skipReason`. It used to be
+  // dropped from exactly the branch a refusal ends up in (a refusal is terminal,
+  // so `failingSince` is always set by the time anyone runs this), leaving the
+  // row saying "failing for 6m · http_error" about a machine whose repair is one
+  // sign-in away.
+  const reasonDetail = health.skipReason ? ` · ${health.skipReason}` : "";
   if (failingForMs != null && failingForMs >= PUBLISH_FAILURE_RED_MS) {
     return {
       key: "publish",
       label: "Publish health",
       status: "fail",
-      detail: `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}${remedy}`,
+      detail: `failing for ${compactDuration(failingForMs)} · ${health.state}${reasonDetail}${publishLegDetail(health)}${remedy}`,
     };
   }
   if (health.state === "published") {
@@ -689,8 +794,8 @@ function publishRow(
     label: "Publish health",
     status: "warn",
     detail: failingForMs == null
-      ? `${health.state}${health.skipReason ? ` · ${health.skipReason}` : ""}${remedy}`
-      : `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}${remedy}`,
+      ? `${health.state}${reasonDetail}${remedy}`
+      : `failing for ${compactDuration(failingForMs)} · ${health.state}${reasonDetail}${publishLegDetail(health)}${remedy}`,
   };
 }
 
@@ -711,14 +816,25 @@ function relayRow(relay: DoctorInput["relayHealth"]): DoctorRow {
       detail: relay.skipReason ?? "disabled",
     };
   }
+  // While relay control is DOWN the route reason outranks the self-probe, and
+  // while it is up the probe outranks it. `relayEndToEndFailure` is deliberately
+  // carried across control generations, so a disconnected machine still reports
+  // the last probe it managed to run — and the brain ranks a spent identity
+  // rotation budget ("this computer needs to be reconnected to your ADE
+  // account") into `skipReason` precisely because nothing else names that fix.
+  // Printing the stale probe line instead is how this row would answer a
+  // needs-reconnect machine with "self-probe skipped". `ade sync status` shows
+  // both; a one-line row has to choose the proximate one.
+  const routeFailure = relay.relayControlConnected === true
+    ? relay.relayEndToEndFailure ?? relay.skipReason
+    : relay.skipReason ?? relay.relayEndToEndFailure;
   // Suppression outranks every other failure: while another ADE process owns
   // this machine's relay slot, nothing downstream can succeed and no other
   // reason tells the user what to do about it.
   const failure = (relay.relayControlSuppressed === true
     ? relay.relayControlSuppressedReason ?? "Relay control is suppressed."
     : null)
-    ?? relay.relayEndToEndFailure
-    ?? relay.skipReason
+    ?? routeFailure
     ?? relay.lastControlError
     ?? null;
   const healthy = relay.relayControlConnected === true
@@ -752,6 +868,242 @@ function accountRow(account: DoctorInput["account"]): DoctorRow {
   };
 }
 
+/**
+ * The credential file the desktop app, the brain and the CLI all share.
+ *
+ * Its two bad states have different next steps, and saying the wrong one costs
+ * the user their session: a store a peer process can still open is repaired by
+ * opening the app, while one nothing can open needs a fresh sign-in.
+ */
+function readCredentialStoreHealthForDoctor(secretsDir: string): CredentialStoreHealth | null {
+  try {
+    return inspectCredentialStoreHealth({
+      credentialsPath: path.join(secretsDir, "credentials.json.enc"),
+      machineKeyPath: path.join(secretsDir, ".machine-key"),
+    });
+  } catch {
+    return null;
+  }
+}
+
+function credentialsRow(health: CredentialStoreHealth | null): DoctorRow {
+  const label = "Credentials";
+  if (!health) {
+    return { key: "credentials", label, status: "warn", detail: "credential store not checked" };
+  }
+  if (health.state === "unreadable") {
+    return {
+      key: "credentials",
+      label,
+      status: "fail",
+      detail: health.reason === "no_os_key_material"
+        // Platform-neutral on purpose: the same state is a macOS keychain item
+        // the brain cannot reach and a Windows DPAPI blob it cannot unprotect.
+        ? "sealed with a key this process cannot read"
+          + " · open the ADE app on this computer to unlock it"
+        : `cannot be read (${health.reason}) · sign in again in the ADE app`,
+    };
+  }
+  if (health.quarantine) {
+    const setAside = health.quarantine.at;
+    return {
+      key: "credentials",
+      label,
+      status: "warn",
+      detail: health.quarantine.recoverable
+        ? `an earlier credential file was set aside ${setAside} · open the ADE app on this computer to restore it`
+        : `an unreadable credential file was set aside ${setAside} · sign in again in the ADE app`,
+    };
+  }
+  if (health.state === "missing") {
+    return { key: "credentials", label, status: "ok", detail: "no stored credentials" };
+  }
+  return {
+    key: "credentials",
+    label,
+    status: "ok",
+    detail: `readable · ${health.sealedBinding === "os" ? "keychain-sealed (converging)" : "machine-sealed"}`,
+  };
+}
+
+/**
+ * Where the ADE home and the last project this machine opened actually live,
+ * and whether their bytes are on this disk.
+ *
+ * The same two roots the diagnostic report samples, in the same order, through
+ * the same probe — one report and one health check must not disagree about the
+ * machine they both read. The heavy modules load on demand because `doctor` is
+ * imported by the CLI at startup and most commands never need them.
+ *
+ * Never throws: a health check that fell over while measuring the disk would
+ * take the other eight rows with it.
+ */
+export async function readStorageEnvironmentForDoctor(
+  layout: MachineAdeLayout,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<StorageEnvironment | null> {
+  try {
+    const [{ collectStorageEnvironment }, { resolveMostRecentProjectRoot }] =
+      await Promise.all([
+        import("../services/diagnostics/storageEnvironmentProbe"),
+        import("../services/diagnostics/diagnosticSources"),
+      ]);
+    const projectRoot = resolveMostRecentProjectRoot(layout.projectsPath);
+    // The channel is resolved from the environment this process was handed
+    // rather than from the module constant, so a doctor run against a temp home
+    // does not read the stable channel's plist. See `launchAgentPath`.
+    let installedLaunchAgentPath: string | null = null;
+    if (platform === "darwin") {
+      const [{ launchAgentPath }, { resolveRuntimeServiceName }] = await Promise.all([
+        import("../serviceManager/installLaunchd"),
+        import("../serviceManager/common"),
+      ]);
+      installedLaunchAgentPath = launchAgentPath(
+        os.homedir(),
+        resolveRuntimeServiceName(env),
+      );
+    }
+    return collectStorageEnvironment(
+      [
+        { label: "ADE home", path: layout.adeDir },
+        ...(projectRoot ? [{ label: "Project", path: projectRoot }] : []),
+      ],
+      {
+        platform,
+        env,
+        launchAgentPath: installedLaunchAgentPath,
+        maxFiles: DOCTOR_STORAGE_MAX_FILES,
+        maxDirectories: DOCTOR_STORAGE_MAX_DIRECTORIES,
+        timeBudgetMs: DOCTOR_STORAGE_TIME_BUDGET_MS,
+      },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function storageRootNames(roots: readonly { label: string }[]): string {
+  return roots.map((root) => root.label).join(" and ");
+}
+
+/**
+ * One line about the bytes under this machine's two ADE roots.
+ *
+ * The row exists because of a specific outage: a project in iCloud Drive whose
+ * files had been evicted, read by a background service that macOS would not let
+ * hydrate them. Every other row was green, the brain row said "not responding",
+ * and nothing on the machine said why. The two facts that separate the two
+ * variants of that failure — are any bytes missing, and is the background
+ * service allowed to fetch them — are both cheap file reads, so they are here.
+ *
+ * A denied policy is reported only when this machine has something to lose by
+ * it. A launch agent that predates the key is on every machine that has not
+ * reinstalled the service since, and painting all of them yellow over a file
+ * that is not in the cloud teaches people to ignore the colour.
+ */
+function storageRow(environment: DoctorInput["storage"]): DoctorRow {
+  const label = "Storage";
+  if (!environment) {
+    return { key: "storage", label, status: "ok", detail: "not checked" };
+  }
+  const unreadable = environment.roots.filter((root) => root.error);
+  if (unreadable.length > 0) {
+    return {
+      key: "storage",
+      label,
+      status: "fail",
+      detail: `${storageRootNames(unreadable)} could not be read`,
+    };
+  }
+  const denied = environment.process.materializeDatalessFiles === false;
+  const remedy = denied
+    ? ` · the background service on this computer may not download evicted files;`
+      + ` run \`${INSTALL_SERVICE_COMMAND}\` to grant it permission`
+    : "";
+  const evicted = environment.roots.filter((root) => root.datalessFiles > 0);
+  if (evicted.length > 0) {
+    const counts = evicted
+      .map((root) =>
+        `${root.label}: ${root.datalessFiles} of ${root.sampledFiles} sampled files`
+        + ` are not downloaded (${root.location})`,
+      )
+      .join(" · ");
+    return {
+      key: "storage",
+      label,
+      // A missing byte the brain is forbidden to fetch is the outage itself.
+      // The same missing byte with permission granted is the provider taking
+      // its time, which is slow rather than broken.
+      status: denied ? "fail" : "warn",
+      detail: `${counts}${remedy}`,
+    };
+  }
+  const cloud = environment.roots.filter((root) => isCloudStorageLocation(root.location));
+  if (denied && cloud.length > 0) {
+    return {
+      key: "storage",
+      label,
+      status: "warn",
+      detail: `${storageRootNames(cloud)} on cloud storage${remedy}`,
+    };
+  }
+  return {
+    key: "storage",
+    label,
+    status: "ok",
+    detail: environment.roots.length
+      ? environment.roots.map((root) => `${root.label}: ${root.location}`).join(" · ")
+      : "no roots checked",
+  };
+}
+
+/**
+ * The consent flag and today's spend, read off disk through the store itself.
+ *
+ * Deliberately NOT a second parser: `readAutoDiagnosticsState` is the same
+ * reader the desktop settings pane and both senders use, and its documented
+ * degradation — an absent or unparseable ledger reads as the default (on, no
+ * sends spent) — is the honest answer here too, because that is exactly what
+ * the next auto-send would act on.
+ */
+export function readAutoDiagnosticsSharingForDoctor(
+  adeDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): DoctorDiagnosticsSharing | null {
+  try {
+    // Projected down to the automatic budget rather than handed over whole:
+    // the ledger also tracks the separate manual-send budget, and this row is
+    // about what the machine does on its own.
+    const { enabled, sendsInWindow, limit } =
+      readAutoDiagnosticsState(resolveAutoDiagnosticsStateFile(adeDir, env));
+    return { enabled, sendsInWindow, limit };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A preference, not a health check, so it is never `warn` or `fail`.
+ *
+ * "Off" is a state the user chose, and a diagnostic that paints a respected
+ * choice yellow teaches people to ignore the colour.
+ */
+function diagnosticsRow(sharing: DoctorInput["diagnostics"]): DoctorRow {
+  const label = "Diagnostics sharing";
+  if (!sharing) {
+    return { key: "diagnostics", label, status: "ok", detail: "not checked" };
+  }
+  return {
+    key: "diagnostics",
+    label,
+    status: "ok",
+    detail: sharing.enabled
+      ? `on · ${sharing.sendsInWindow} of ${sharing.limit} automatic reports sent today`
+      : "off · no automatic reports are sent",
+  };
+}
+
 export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
   return [
     appRow(input.app),
@@ -761,6 +1113,9 @@ export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
     publishRow(input.publishHealth, input.nowMs),
     relayRow(input.relayHealth),
     accountRow(input.account),
+    credentialsRow(input.credentials),
+    storageRow(input.storage),
+    diagnosticsRow(input.diagnostics),
   ];
 }
 
@@ -808,6 +1163,12 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
   }
   const wedge = readBrainLoopWatchdogLastWedge(layout.runtimeDir)
     ?? brainProbe.runtimeLastWedge;
+  const storage = await readStorageEnvironmentForDoctor(layout);
+  // Asked only of a brain that did not answer: a responding brain is running,
+  // never starting.
+  const startupState = brainProbe.brain.running
+    ? null
+    : await readBrainStartupState();
   const input: DoctorInput = {
     nowMs,
     app: {
@@ -816,13 +1177,22 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
       path: installedApp.path,
       online,
     },
-    brain: brainProbe.brain,
+    brain: startupState
+      ? {
+        ...brainProbe.brain,
+        starting: startupState.starting,
+        startingAgeMs: startupState.ageMs,
+      }
+      : brainProbe.brain,
     wedge,
     syncPort,
     portDiagnoses,
     publishHealth,
     relayHealth,
     account: brainProbe.account,
+    credentials: readCredentialStoreHealthForDoctor(layout.secretsDir),
+    storage,
+    diagnostics: readAutoDiagnosticsSharingForDoctor(layout.adeDir),
   };
   const rows = evaluateDoctorRows(input);
   return {
@@ -838,5 +1208,8 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     publishHealth,
     relayHealth,
     account: input.account,
+    credentials: input.credentials,
+    storage,
+    diagnostics: input.diagnostics,
   };
 }

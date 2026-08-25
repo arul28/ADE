@@ -33,6 +33,9 @@ import {
   SCHEDULE_ACTIVE_CAP,
   capPaneSectionItems,
   groupPaneSectionItems,
+  chatInfoHeaderModelAttribution,
+  SUBAGENT_MODEL_INHERITED_SUFFIX,
+  subagentModelAttribution,
 } from "../../../../desktop/src/shared/chatSubagents";
 import {
   buildSubagentPaneRows,
@@ -42,6 +45,8 @@ import {
   windowSubagentPaneRows,
 } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
+import { ModelWizardPane } from "./ModelPicker/ModelWizardPane";
+import type { ModelWizardView } from "../modelWizard";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
 import { TokenBar } from "./FooterControls";
 import { UsagePane } from "./UsagePane";
@@ -759,57 +764,82 @@ function ChatInfoSectionHead({
   );
 }
 
-function ChatInfoHeader({ info, width }: { info: ChatInfoSnapshot; width: number }) {
-  const brand = theme.provider(info.provider);
+function ChatInfoIdentity({ info, width }: { info: ChatInfoSnapshot; width: number }) {
   const inner = Math.max(10, width - 4);
+  const title = info.title?.trim() || "untitled";
+  const laneName = info.laneLabel?.trim() || null;
+  const mark = `${theme.laneIconGlyph(info.laneIcon)} `;
+  const laneColor = info.laneColor ?? theme.color.t4;
+  const inspecting = Boolean(info.inspectedSubagentId);
+  const inspected = inspecting
+    ? info.snapshots.find((snapshot) => snapshot.id === info.inspectedSubagentId)
+    : undefined;
+  const attribution = chatInfoHeaderModelAttribution({
+    inspectedSnapshotModel: inspected?.model,
+    sessionModelLabel: info.modelLabel,
+    inspecting,
+  });
+  const inheritedSuffix = attribution.inherited ? " · inherited" : "";
   return (
     <Box flexDirection="column">
-      <Box flexDirection="row">
-        <Text color={brand.color} bold>{brand.glyph}</Text>
-        <Text color={theme.color.t1}>{` ${endTruncate(info.modelLabel, inner - 2)}`}</Text>
-      </Box>
-      {info.laneLabel || info.claudeTag ? (
-        <Box flexDirection="row">
-          {info.laneLabel ? (
-            <>
-              <Text color={theme.color.t4}>lane </Text>
-              <Text color={theme.color.t4} dimColor>· </Text>
-              <Text color={theme.color.t2}>{endTruncate(info.laneLabel, Math.max(6, inner - 7))}</Text>
-            </>
-          ) : null}
-          {info.claudeTag ? <Text color={theme.color.t4}>{`${info.laneLabel ? "  " : ""}tag:${endTruncate(info.claudeTag, 24)}`}</Text> : null}
-        </Box>
-      ) : null}
-      <Box flexDirection="row" marginTop={1}>
-        <Text color={info.streaming ? theme.color.running : theme.color.t4} bold={info.streaming}>
-          {info.streaming ? "● live" : "○ idle"}
+      <Text color={theme.color.t1} bold wrap="truncate-end">{endTruncate(title, inner)}</Text>
+      {laneName ? (
+        <Text color={laneColor} dimColor wrap="truncate-end">
+          {endTruncate(`${mark}${laneName}`, inner)}
         </Text>
-        {info.contextPercent != null ? (
-          <>
-            <Text>{"   "}</Text>
-            <TokenBar percent={info.contextPercent} />
-            <Text color={theme.color.t4} dimColor>{` ${info.contextPercent}%`}</Text>
-          </>
-        ) : null}
-      </Box>
-      {info.tokenSummary ? (
-        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.tokenSummary, inner)}</Text>
+      ) : null}
+      {inspecting && attribution.label ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">
+          {endTruncate(`${attribution.label}${inheritedSuffix}`, inner)}
+        </Text>
       ) : null}
     </Box>
   );
 }
 
+function chatInfoIdentityLines(info: ChatInfoSnapshot): number {
+  return (info.laneLabel?.trim() ? 2 : 1) + (info.inspectedSubagentId ? 1 : 0);
+}
+
+function chatInfoPlanLines(info: ChatInfoSnapshot): number {
+  const plan = info.plan;
+  if (!plan || !plan.steps.length) return 0;
+  return 2
+    + Math.min(6, plan.steps.length)
+    + (info.planExplanation ? 1 : 0)
+    + (info.planStreamingText ? 1 : 0);
+}
+
+function chatInfoGoalLines(info: ChatInfoSnapshot): number {
+  if (info.provider !== "codex" || !info.goal) return 0;
+  return 2 + (info.goal.objective ? 1 : 0);
+}
+
+/** Lines ChatInfoPane paints above the subagent roster (resume + identity + plan + goal). */
+export function chatInfoPreambleLines(info: ChatInfoSnapshot): number {
+  return (info.resumableTerminal ? CHAT_INFO_RESUME_ROW_LINES : 0)
+    + chatInfoIdentityLines(info)
+    + chatInfoPlanLines(info)
+    + chatInfoGoalLines(info);
+}
+
+export function resolveChatInfoRosterViewState(viewState: SubagentPaneViewState = {}): SubagentPaneViewState {
+  return {
+    ...viewState,
+    hideMain: true,
+    earlierExpanded: {
+      subagents: viewState.earlierExpanded?.subagents ?? true,
+      teammates: viewState.earlierExpanded?.teammates ?? true,
+      background: viewState.earlierExpanded?.background ?? true,
+      schedule: viewState.earlierExpanded?.schedule ?? true,
+    },
+  };
+}
+
 function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
   const plan = info.plan;
   const inner = Math.max(10, width - 4);
-  if (!plan || !plan.steps.length) {
-    return (
-      <Box flexDirection="column">
-        <ChatInfoSectionHead title="PLAN" color={brandColor} width={width} />
-        <Text color={theme.color.t4} dimColor>No plan yet.</Text>
-      </Box>
-    );
-  }
+  if (!plan || !plan.steps.length) return null;
   return (
     <Box flexDirection="column">
       <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} width={width} />
@@ -850,11 +880,6 @@ function ChatInfoGoalBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
 // — the same mechanism the variable goal-banner / add-mode header lines use.
 export const CHAT_INFO_RESUME_ROW_LINES = 2;
 
-/**
- * Selection-index offset the resume row introduces into the chat-info
- * selection model: with the row visible, index 0 = resume, 1 = main,
- * 2..N+1 = subagents (otherwise 0 = main, 1..N = subagents).
- */
 export function chatInfoSelectionOffset(info: ChatInfoSnapshot): 0 | 1 {
   return info.resumableTerminal ? 1 : 0;
 }
@@ -884,33 +909,15 @@ function ChatInfoRoster({
   width: number;
   viewState: SubagentPaneViewState;
 }) {
+  const rosterState = resolveChatInfoRosterViewState(viewState);
   const inner = Math.max(10, width - 4);
-  const paneRows = buildSubagentPaneRows(info, viewState);
+  const paneRows = buildSubagentPaneRows(info, rosterState);
   const snapshotRows = paneRows
     .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
-  const clearedIds = new Set(Object.values(viewState.cleared ?? {}).flatMap((ids) => [...(ids ?? [])]));
-  const countedSnapshots = info.snapshots.filter((snapshot) => !clearedIds.has(snapshot.id));
-  const runCount = countedSnapshots.filter((snapshot) => snapshot.status === "running").length;
-  const doneCount = countedSnapshots.filter((snapshot) => snapshot.status === "completed").length;
-  const failedCount = countedSnapshots.filter((snapshot) => snapshot.status === "failed").length;
-  const bgCount = countedSnapshots.filter((snapshot) => snapshot.background === true).length;
-  // Selection convention: 0 = main row; 1..N = subagent rows (1-indexed).
-  // A negative index means the selection sits ABOVE the roster (the resume
-  // row) — nothing in the roster highlights.
+  if (snapshotRows.length === 0 && !info.mission) return null;
   const totalSelectable = snapshotRows.length + 1;
   const selected = Math.max(-1, Math.min(selectedIndex, totalSelectable - 1));
   const mainSelected = selected === 0;
-  const showingMain = !info.inspectedSubagentId;
-  // Gate on the full uncleared snapshot list, not the visible rows — a
-  // collapsed section empties snapshotRows while agents are still running.
-  const hint = countedSnapshots.length === 0
-    ? "0 live"
-    : [
-        `${runCount} live`,
-        `${doneCount} done`,
-        failedCount ? `${failedCount} failed` : null,
-        bgCount ? `${bgCount} bg` : null,
-      ].filter((value): value is string => value !== null).join(" · ");
 
   const subagentSelectedIndex = mainSelected ? -1 : selected - 1;
   const selectedSnapshot = !mainSelected ? (snapshotRows[subagentSelectedIndex]?.snapshot ?? null) : null;
@@ -919,10 +926,8 @@ function ChatInfoRoster({
     ? paneRows.find((row): row is Extract<SubagentPaneRow, { kind: "section-header" }> => row.kind === "section-header" && row.section === selectedSection)
     : null;
   const disclosureHints = selectedHeader ? [
-    ...(selectedHeader.collapsible ? ["c section"] : []),
-    ...(selectedHeader.earlierCount > 0 || selectedHeader.clearedCount > 0 ? ["e completed"] : []),
-    ...(selectedHeader.hasClear && viewState.earlierExpanded?.[selectedHeader.section] === true ? ["x clear"] : []),
-    ...(paneRows.some((row) => row.kind === "show-all" && row.section === selectedSection) ? ["a all"] : []),
+    ...(selectedHeader.collapsible ? ["c"] : []),
+    ...(selectedHeader.earlierCount > 0 || selectedHeader.clearedCount > 0 ? ["e"] : []),
   ] : [];
   const { visibleRows: visibleSlice, hiddenBefore, hiddenAfter } = windowSubagentPaneRows(
     paneRows,
@@ -933,23 +938,10 @@ function ChatInfoRoster({
 
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="CHATS" hint={hint} color={brandColor} width={width} />
-      {/* Main row — always present, tagged with the current middle-pane state */}
-      <Box flexDirection="row" justifyContent="space-between">
-        <Box flexDirection="row">
-          <Text color={mainSelected ? theme.color.violet : theme.color.t5}>{mainSelected ? theme.rail : " "}</Text>
-          <Text color={mainSelected ? theme.color.violet : showingMain ? theme.color.t1 : theme.color.t3} bold={mainSelected || showingMain}>
-            {" main"}
-          </Text>
-        </Box>
-        <Text color={theme.color.t4} dimColor>{showingMain ? "viewing" : "return ↵"}</Text>
-      </Box>
-      {info.snapshots.length === 0 ? (
-        <Text color={theme.color.t4} dimColor>{" "}no subagents yet</Text>
-      ) : (
+      {snapshotRows.length === 0 ? null : (
         <>
           {hiddenBefore > 0 ? (
-            <Text color={theme.color.t4} dimColor>{`  ↑ ${hiddenBefore} completed`}</Text>
+            <Text color={theme.color.t4} dimColor>{`  ↑ ${hiddenBefore}`}</Text>
           ) : null}
           {visibleSlice.map((row) => {
             if (row.kind === "section-header") {
@@ -958,29 +950,40 @@ function ChatInfoRoster({
             if (row.kind === "earlier-toggle") {
               return (
                 <Text key={row.key} color={theme.color.t4} dimColor>
-                  {`  ${row.expanded ? "▾" : "▸"} completed (${row.count})${row.clearedCount ? ` · ${row.clearedCount} hidden` : ""}`}
+                  {`  ${row.expanded ? "▾" : "▸"} ${row.count}`}
                 </Text>
               );
             }
             if (row.kind === "show-all") {
-              return <Text key={row.key} color={theme.color.t4} dimColor>{`  + show all (${row.hiddenCount})`}</Text>;
+              return <Text key={row.key} color={theme.color.t4} dimColor>{`  +${row.hiddenCount}`}</Text>;
             }
             if (row.kind === "restore-cleared") {
-              return <Text key={row.key} color={theme.color.t4} dimColor>{`  restore (${row.count})`}</Text>;
+              return <Text key={row.key} color={theme.color.t4} dimColor>{`  restore ${row.count}`}</Text>;
             }
             const rosterIndex = rosterIndexByKey.get(row.key) ?? -1;
             const isSelected = !mainSelected && subagentSelectedIndex === rosterIndex;
             const kind = subagentAgentKind(row.snapshot.status);
-            // Background rows get a cyan glyph tint so the eye can sort them out
-            // from foreground subagents at a glance. Falls back to the
-            // status-driven color for other rows.
             const statusColor = row.section === "background"
               ? theme.color.tool
               : theme.agentStatusColor(kind);
             const inspected = info.inspectedSubagentId === row.snapshot.id;
-            // Only the selected row shows the (single) detail line, now enriched
-            // with the runtime's capability stat chips. Keeping it to one line
-            // preserves the click line-math.
+            const modelAttribution = subagentModelAttribution({
+              snapshotModel: row.snapshot.model,
+              sessionModelLabel: info.modelLabel,
+            });
+            const inheritedSuffix = modelAttribution?.inherited
+              ? ` · ${SUBAGENT_MODEL_INHERITED_SUFFIX}`
+              : "";
+            // Reserve the inherited suffix so a long pretty name cannot clip it
+            // off — that would make a missing child model look reported.
+            const modelLabelBudget = Math.max(6, 22 - inheritedSuffix.length);
+            const modelLabelWidth = modelAttribution
+              ? Math.min(modelAttribution.label.length, modelLabelBudget)
+              : 0;
+            const nameWidth = Math.max(
+              6,
+              inner - 18 - (modelAttribution ? modelLabelWidth + inheritedSuffix.length + 1 : 0),
+            );
             const detail = isSelected ? selectedRosterDetail(row.snapshot, info.capability) : null;
             return (
               <Box key={row.key} flexDirection="column">
@@ -988,26 +991,34 @@ function ChatInfoRoster({
                   <Text color={isSelected ? theme.color.violet : theme.color.t5}>{isSelected ? theme.rail : " "}</Text>
                   <Text color={statusColor}>{` ${theme.agentStatusGlyph(kind)}`}</Text>
                   <Text color={isSelected ? theme.color.violet : inspected ? theme.color.t1 : theme.color.t2} bold={isSelected || inspected}>
-                    {` ${endTruncate(row.snapshot.name, Math.max(6, inner - 18))}`}
+                    {` ${endTruncate(row.snapshot.name, nameWidth)}`}
                   </Text>
+                  {modelAttribution ? (
+                    <>
+                      <Text color={theme.color.t4} dimColor>
+                        {` ${endTruncate(modelAttribution.label, modelLabelBudget)}`}
+                      </Text>
+                      {inheritedSuffix ? <Text color={theme.color.t4} dimColor>{inheritedSuffix}</Text> : null}
+                    </>
+                  ) : null}
                   <Text color={theme.color.t4} dimColor>{`  ${formatElapsed(row.snapshot.durationMs ?? null)}`}</Text>
                 </Box>
                 {detail ? (
                   <Text color={theme.color.t4} dimColor wrap="truncate-end">
-                    {`     › ${endTruncate(detail, Math.max(8, inner - 8))}`}
+                    {`     ${endTruncate(detail, Math.max(8, inner - 6))}`}
                   </Text>
                 ) : null}
               </Box>
             );
           })}
           {hiddenAfter > 0 ? (
-            <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text>
+            <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter}`}</Text>
           ) : null}
         </>
       )}
-      <Box marginTop={1}>
+      {snapshotRows.length > 0 ? (
         <Text color={theme.color.t4} dimColor>{rosterFooterHint(info, mainSelected, selectedSnapshot, disclosureHints)}</Text>
-      </Box>
+      ) : null}
       {info.mission ? <ChatInfoMissionBlock mission={info.mission} width={width} brandColor={brandColor} /> : null}
     </Box>
   );
@@ -1023,11 +1034,9 @@ function rosterFooterHint(
   selectedSnapshot: SubagentSnapshot | null,
   disclosureHints: string[],
 ): string {
-  const parts = ["↑↓ focus"];
-  if (mainSelected) {
-    parts.push("↵ stay");
-  } else if (info.capability.canViewFullTranscript) {
-    parts.push("↵ open thread");
+  const parts = ["↑↓"];
+  if (!mainSelected && info.capability.canViewFullTranscript) {
+    parts.push("↵");
   }
   if (
     info.provider === "droid"
@@ -1035,10 +1044,9 @@ function rosterFooterHint(
     && selectedSnapshot.kind === "subagent"
     && selectedSnapshot.status === "running"
   ) {
-    parts.push("^k kill");
+    parts.push("^k");
   }
   parts.push(...disclosureHints);
-  parts.push("esc → main");
   return parts.join(" · ");
 }
 
@@ -1279,29 +1287,29 @@ function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; 
     : pr.state === "merged"
       ? theme.color.violet
       : theme.color.t4;
-  // ADE-135: `passed === total` is not proof of a pass — on a PR whose only
-  // checks are preview/review bots the counts are producer-blind. The rollup
-  // decides whether green is earned.
-  const checksColor = pr.checksTotal === 0 || pr.checksStatus === "not_run"
-    ? theme.color.t4
-    : pr.checksPassed === pr.checksTotal
-      ? theme.color.running
-      : theme.color.attention;
   return (
     <Box flexDirection="column">
       <ChatInfoSectionHead title="PR" hint={`#${pr.number}`} color={brandColor} width={width} />
-      <Box flexDirection="row">
-        <Text color={stateColor} bold>{` ${pr.state}`}</Text>
-        {pr.checksTotal > 0 ? (
-          <>
-            <Text color={theme.color.t4}>{" · checks "}</Text>
-            <Text color={checksColor}>
-              {pr.checksStatus === "not_run" ? "not run" : `${pr.checksPassed}/${pr.checksTotal}`}
-            </Text>
-          </>
-        ) : null}
-      </Box>
-      <Text color={theme.color.t4} dimColor>{" /pr for details · /pr checks · /pr review"}</Text>
+      <Text color={stateColor} bold>{pr.state}</Text>
+      <Text color={theme.color.t4} dimColor>{"/pr for details"}</Text>
+    </Box>
+  );
+}
+
+function ChatInfoUsage({ info, width }: { info: ChatInfoSnapshot; width: number }) {
+  if (info.contextPercent == null && !info.tokenSummary) return null;
+  const inner = Math.max(10, width - 4);
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      {info.contextPercent != null ? (
+        <Box flexDirection="row">
+          <TokenBar percent={info.contextPercent} />
+          <Text color={theme.color.t4} dimColor>{` ${info.contextPercent}%`}</Text>
+        </Box>
+      ) : null}
+      {info.tokenSummary ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.tokenSummary, inner)}</Text>
+      ) : null}
     </Box>
   );
 }
@@ -1310,29 +1318,31 @@ function ChatInfoPane({
   info,
   selectedIndex,
   width,
+  height,
   subagentPaneViewState,
 }: {
   info: ChatInfoSnapshot;
   selectedIndex: number;
   width: number;
+  height?: number;
   subagentPaneViewState: SubagentPaneViewState;
 }) {
   const brand = theme.provider(info.provider);
-  // With the resume row visible the selection space shifts by one (0 = resume,
-  // 1 = main, …); the roster receives the un-shifted index (-1 ⇒ resume row
-  // holds the selection, nothing in the roster highlights).
   const resumeOffset = chatInfoSelectionOffset(info);
+  const rosterState = resolveChatInfoRosterViewState(subagentPaneViewState);
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={height} flexGrow={height ? 1 : undefined}>
       {info.resumableTerminal ? <ChatInfoResumeRow selected={selectedIndex === 0} /> : null}
-      <ChatInfoHeader info={info} width={width} />
+      <ChatInfoIdentity info={info} width={width} />
       <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
-      <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} viewState={subagentPaneViewState} />
+      <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} viewState={rosterState} />
       <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
-      <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} viewState={subagentPaneViewState} />
-      <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} viewState={subagentPaneViewState} />
+      <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} viewState={rosterState} />
+      <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} viewState={rosterState} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
+      {height ? <Box flexGrow={1} /> : null}
+      <ChatInfoUsage info={info} width={width} />
     </Box>
   );
 }
@@ -1780,6 +1790,7 @@ export function rightPaneScrollableRowCount(content: RightPaneContent): number {
     case "form":
     case "chat-info":
     case "model-picker":
+    case "model-wizard":
     case "external-session-browser":
     case "help":
     case "lane-details":
@@ -1935,15 +1946,46 @@ function FeedbackFormPane({
   );
 }
 
+function twoStepConfirmHint(armed: boolean, idle: string): string {
+  return armed ? "enter again to confirm" : idle;
+}
+
+function ChatDeleteConfirmPane({
+  content,
+  confirmArmed,
+  width,
+}: {
+  content: FormPaneContent & { command: "chat-delete" };
+  confirmArmed: boolean;
+  width: number;
+}) {
+  const inner = Math.max(10, width - 4);
+  const title = content.chatDelete?.title?.trim() || "this chat";
+  const detail = content.description?.trim() || "Removes this chat and its transcript.";
+  return (
+    <Box flexDirection="column">
+      <Text color={theme.color.t1} bold wrap="truncate-end">{endTruncate(title, inner)}</Text>
+      <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(detail, inner)}</Text>
+      <Box marginTop={1}>
+        <Text color={confirmArmed ? theme.color.error : theme.color.t4} dimColor={!confirmArmed} wrap="truncate-end">
+          {endTruncate(twoStepConfirmHint(confirmArmed, "enter deletes · esc cancels"), inner)}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
 function LaneDeleteFormPane({
   content,
   formValues,
   activeFormField,
+  confirmArmed,
   width,
 }: {
   content: LaneDeleteFormContent;
   formValues: Record<string, string>;
   activeFormField: number;
+  confirmArmed: boolean;
   width: number;
 }) {
   const hoveredId = useHoveredHitId();
@@ -1953,13 +1995,11 @@ function LaneDeleteFormPane({
     ? formValues.scope
     : "worktree";
   const force = formValues.force === "yes";
-  const confirm = formValues.confirm ?? "";
   const remoteName = formValues.remoteName?.trim() || "origin";
-  const confirmMatch = Boolean(meta?.laneName) && confirm === meta?.laneName;
   const fields = content.fields;
-  let scopeHint = "remove worktree only; keep branches";
-  if (scope === "local_branch") scopeHint = "also delete the local branch";
-  else if (scope === "remote_branch") scopeHint = `also delete ${remoteName}/${meta?.branchRef ?? "branch"}`;
+  let scopeHint = "worktree only";
+  if (scope === "local_branch") scopeHint = "also the local branch";
+  else if (scope === "remote_branch") scopeHint = `also ${remoteName}/${meta?.branchRef ?? "branch"}`;
   const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "scope";
   const active = (name: string) => activeName === name || hoveredId === `right:form:${name}`;
   const scopeOption = (value: string, label: string) => (
@@ -1970,17 +2010,17 @@ function LaneDeleteFormPane({
 
   return (
     <Box flexDirection="column">
-      <Text color={theme.color.error} bold>Destructive action</Text>
-      <Text color={theme.color.t2} wrap="truncate-end">
+      <Text color={theme.color.t1} bold wrap="truncate-end">
         {meta ? endTruncate(meta.laneName, inner) : "No active lane"}
       </Text>
       {meta?.branchRef ? (
         <Text color={theme.color.t4} wrap="truncate-end">⎇ {tailTruncate(meta.branchRef, Math.max(8, inner - 2))}</Text>
       ) : null}
+      {content.description ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(content.description, inner)}</Text>
+      ) : null}
       {meta?.dirty ? (
-        <Box marginTop={1}>
-          <Text color={theme.color.attention}>● uncommitted changes detected</Text>
-        </Box>
+        <Text color={theme.color.attention} wrap="truncate-end">{endTruncate("uncommitted changes", inner)}</Text>
       ) : null}
 
       <Box flexDirection="column" marginTop={1}>
@@ -1995,8 +2035,8 @@ function LaneDeleteFormPane({
           <Text> </Text>
           {scopeOption("remote_branch", "remote")}
         </Text>
-        <Text color={theme.color.t4} dimColor>
-          {"  "}{scopeHint}
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">
+          {"  "}{endTruncate(scopeHint, inner - 2)}
         </Text>
       </Box>
 
@@ -2006,34 +2046,25 @@ function LaneDeleteFormPane({
           bold={active("remoteName")}
           dimColor={scope !== "remote_branch" && !active("remoteName")}
         >
-          {active("remoteName") ? theme.rail : " "} Remote name
+          {active("remoteName") ? theme.rail : " "} Remote
         </Text>
-        <Text color={scope === "remote_branch" ? theme.color.t1 : theme.color.t4} dimColor={scope !== "remote_branch"}>
-          {"  "}{scope === "remote_branch" ? endTruncate(remoteName, inner - 2) : "used only for remote branch"}
+        <Text color={scope === "remote_branch" ? theme.color.t1 : theme.color.t4} dimColor={scope !== "remote_branch"} wrap="truncate-end">
+          {"  "}{scope === "remote_branch" ? endTruncate(remoteName, inner - 2) : "local only"}
         </Text>
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
         <Text color={active("force") ? theme.color.violet : theme.color.t3} bold={active("force")}>
-          {active("force") ? theme.rail : " "} Force delete
+          {active("force") ? theme.rail : " "} Force
         </Text>
-        <Text color={force ? theme.color.error : theme.color.t4}>
-          {"  "}{force ? "[x]" : "[ ]"} skip safety checks
-        </Text>
-      </Box>
-
-      <Box flexDirection="column" marginTop={1}>
-        <Text color={active("confirm") ? theme.color.violet : theme.color.t3} bold={active("confirm")}>
-          {active("confirm") ? theme.rail : " "} Type lane name
-        </Text>
-        <Text color={confirmMatch ? theme.color.error : theme.color.t1} wrap="truncate-end">
-          {"  "}{endTruncate(confirm || "required before delete", inner - 2)}
+        <Text color={force ? theme.color.error : theme.color.t4} wrap="truncate-end">
+          {"  "}{force ? "[x] skip checks" : "[ ] skip checks"}
         </Text>
       </Box>
 
       <Box marginTop={1}>
-        <Text color={confirmMatch ? theme.color.error : theme.color.t4} dimColor={!confirmMatch}>
-          {confirmMatch ? "enter deletes this lane" : "↑↓ rows · ←→ scope · space force · esc cancel"}
+        <Text color={confirmArmed ? theme.color.error : theme.color.t4} dimColor={!confirmArmed} wrap="truncate-end">
+          {endTruncate(twoStepConfirmHint(confirmArmed, "enter deletes · ←→ scope · esc"), inner)}
         </Text>
       </Box>
     </Box>
@@ -2266,8 +2297,10 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
         branch: content.lane.branchRef,
       };
     case "chat-info":
-      return { title: `CHAT INFO · ${theme.provider(content.info.provider).label.toUpperCase()}` };
+      return { title: "CHAT INFO" };
     case "model-picker":
+      return { title: content.surface === "new-chat" ? "MODEL · NEW CHAT" : "MODEL" };
+    case "model-wizard":
       return { title: content.surface === "new-chat" ? "MODEL · NEW CHAT" : "MODEL" };
     case "external-session-browser":
       return { title: "IMPORT SESSION", hint: "r refresh · p provider" };
@@ -2306,11 +2339,14 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
 function RightPaneComponent({
   content,
   formValues = {},
+  formConfirmArmed = false,
   activeFormField = 0,
   selectedIndex = 0,
   focused = false,
   width = DEFAULT_PANE_WIDTH,
+  height,
   modelPickerInputs,
+  modelWizardView,
   onModelPickerMeasureOrigin,
   scrollOffsetRows = 0,
   subagentPaneViewState = {},
@@ -2318,6 +2354,7 @@ function RightPaneComponent({
 }: {
   content: RightPaneContent;
   formValues?: Record<string, string>;
+  formConfirmArmed?: boolean;
   activeFormField?: number;
   selectedIndex?: number;
   focused?: boolean;
@@ -2329,10 +2366,13 @@ function RightPaneComponent({
   pluginEditingValue?: string | null;
   activeProvider?: AdeCodeProvider | null;
   width?: number;
+  height?: number;
   scrollOffsetRows?: number;
   subagentPaneViewState?: SubagentPaneViewState;
-  /** Reports the model-picker's measured content origin for click hit-testing. */
+  /** Reports the model-picker/wizard's measured content origin for click hit-testing. */
   onModelPickerMeasureOrigin?: (origin: { x: number; y: number; width: number }) => void;
+  /** Resolved wizard view for the "model-wizard" content kind (built in app.tsx). */
+  modelWizardView?: ModelWizardView | null;
   /** Data passed in by app.tsx for the model-picker content kind. */
   modelPickerInputs?: {
     models: AgentChatModelInfo[];
@@ -2353,6 +2393,7 @@ function RightPaneComponent({
   return (
     <Box
       width={paneWidth}
+      height={height}
       flexDirection="column"
       borderStyle="single"
       borderColor={focused ? theme.color.borderFocused : theme.color.border}
@@ -2369,8 +2410,8 @@ function RightPaneComponent({
         </Box>
       ) : (
         <Box flexDirection="row" justifyContent="space-between">
-          <Text bold color={focused ? theme.color.violet : theme.color.t2}>
-            {title}
+          <Text bold color={focused ? theme.color.violet : theme.color.t2} wrap="truncate-end">
+            {endTruncate(title, Math.max(8, paneWidth - 4))}
           </Text>
           {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
         </Box>
@@ -2448,6 +2489,13 @@ function RightPaneComponent({
                     : "arrows move · enter opens"}
             </Text>
           ) : null}
+          {content.footnote ? (
+            <Box marginTop={content.rows.length ? 0 : 1}>
+              <Text color={theme.color.t4} dimColor wrap="truncate-end">
+                {endTruncate(content.footnote, Math.max(8, paneWidth - 4))}
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       ) : null}
 
@@ -2512,7 +2560,7 @@ function RightPaneComponent({
       ) : null}
 
       {content.kind === "chat-info" ? (
-        <ChatInfoPane info={content.info} selectedIndex={selectedIndex} width={paneWidth} subagentPaneViewState={subagentPaneViewState} />
+        <ChatInfoPane info={content.info} selectedIndex={selectedIndex} width={paneWidth} height={height != null ? Math.max(4, height - 3) : undefined} subagentPaneViewState={subagentPaneViewState} />
       ) : null}
 
       {content.kind === "model-picker" && modelPickerInputs ? (
@@ -2542,11 +2590,28 @@ function RightPaneComponent({
         />
       ) : null}
 
+      {content.kind === "model-wizard" && modelWizardView ? (
+        <ModelWizardPane
+          view={modelWizardView}
+          width={paneWidth}
+          onMeasureOrigin={onModelPickerMeasureOrigin}
+        />
+      ) : null}
+
       {content.kind === "form" && content.command === "lane-delete" ? (
         <LaneDeleteFormPane
           content={content as LaneDeleteFormContent}
           formValues={formValues}
           activeFormField={activeFormField}
+          confirmArmed={formConfirmArmed}
+          width={paneWidth}
+        />
+      ) : null}
+
+      {content.kind === "form" && content.command === "chat-delete" ? (
+        <ChatDeleteConfirmPane
+          content={content as FormPaneContent & { command: "chat-delete" }}
+          confirmArmed={formConfirmArmed}
           width={paneWidth}
         />
       ) : null}
@@ -2568,7 +2633,7 @@ function RightPaneComponent({
         />
       ) : null}
 
-      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "feedback" && content.command !== "new-lane" ? (
+      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "chat-delete" && content.command !== "feedback" && content.command !== "new-lane" ? (
         <Box flexDirection="column">
           {content.description ? (
             <Box marginBottom={1}>
@@ -2579,21 +2644,22 @@ function RightPaneComponent({
           ) : null}
           {content.fields.map((field, index) => {
             const value = formValues[field.name]?.trim();
+            const label = `${field.label}${field.required ? " *" : ""}`;
             const displayValue = endTruncate(
               (value || field.placeholder || "").replace(/\s+/g, " "),
-              Math.max(8, paneWidth - field.label.length - 8),
+              Math.max(8, paneWidth - label.length - 6),
             );
             return (
               <Text
                 key={field.name}
                 color={index === activeFormField || hoveredId === `right:form:${field.name}` ? theme.color.violet : undefined}
+                wrap="truncate-end"
               >
-                {index === activeFormField ? theme.rail : " "} {field.label}
-                {field.required ? " *" : ""}: {displayValue}
+                {endTruncate(`${index === activeFormField ? theme.rail : " "} ${label}: ${displayValue}`, Math.max(8, paneWidth - 4))}
               </Text>
             );
           })}
-          <Text color={theme.color.t4} dimColor>arrows move · enter submits · esc cancels</Text>
+          <Text color={theme.color.t4} dimColor wrap="truncate-end">enter · esc</Text>
         </Box>
       ) : null}
     </Box>

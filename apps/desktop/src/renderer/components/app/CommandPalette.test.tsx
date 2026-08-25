@@ -1195,4 +1195,80 @@ describe("CommandPalette", () => {
 
     expect(await screen.findByText("Product analytics")).toBeTruthy();
   });
+
+  it("creates a project and opens Work without a success interstitial", async () => {
+    const onOpenChange = vi.fn();
+    const switchProjectToPath = vi.fn(async () => {});
+    seedStore({ switchProjectToPath });
+    const createLocal = vi.fn(async () => ({ rootPath: "/tmp/spark" }));
+    globalThis.window.ade.project.getDefaultParentDir = vi.fn(async () => "/tmp");
+    globalThis.window.ade.project.createLocal = createLocal;
+    browseDirectories.mockResolvedValue({
+      inputPath: "",
+      resolvedPath: "",
+      directoryPath: "",
+      parentPath: null,
+      exactDirectoryPath: null,
+      openableProjectRoot: null,
+      entries: [],
+    });
+
+    render(
+      <MemoryRouter>
+        <LocationProbe />
+        <CommandPalette open intent="project-create" onOpenChange={onOpenChange} />
+      </MemoryRouter>,
+    );
+
+    await screen.findByPlaceholderText("my-new-project");
+    fireEvent.change(screen.getByPlaceholderText("my-new-project"), {
+      target: { value: "spark" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create and open/i }));
+
+    await waitFor(() => {
+      expect(createLocal).toHaveBeenCalledWith({ name: "spark", parentDir: "/tmp" });
+      expect(switchProjectToPath).toHaveBeenCalledWith("/tmp/spark");
+      expect(screen.getByTestId("location").textContent).toBe("/work");
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    });
+    expect(screen.queryByText(/^Created/)).toBeNull();
+  });
+
+  it("keeps the create form open when switching the new project fails", async () => {
+    const onOpenChange = vi.fn();
+    const switchProjectToPath = vi.fn(async () => {
+      throw new Error("bind failed");
+    });
+    seedStore({ switchProjectToPath });
+    globalThis.window.ade.project.getDefaultParentDir = vi.fn(async () => "/tmp");
+    globalThis.window.ade.project.createLocal = vi.fn(async () => ({
+      rootPath: "/tmp/spark",
+    }));
+    browseDirectories.mockResolvedValue({
+      inputPath: "",
+      resolvedPath: "",
+      directoryPath: "",
+      parentPath: null,
+      exactDirectoryPath: null,
+      openableProjectRoot: null,
+      entries: [],
+    });
+
+    render(
+      <MemoryRouter>
+        <CommandPalette open intent="project-create" onOpenChange={onOpenChange} />
+      </MemoryRouter>,
+    );
+
+    await screen.findByPlaceholderText("my-new-project");
+    fireEvent.change(screen.getByPlaceholderText("my-new-project"), {
+      target: { value: "spark" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /create and open/i }));
+
+    expect(await screen.findByText("bind failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /create and open/i })).toBeTruthy();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
 });

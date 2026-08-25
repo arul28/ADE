@@ -67,6 +67,7 @@ import type {
   PrStatus,
   PrSummary,
   PrSnapshotHydration,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   PrWithConflicts,
   PrActionCapabilities,
@@ -139,6 +140,7 @@ import type {
   ReviewPublicationDestination,
   ReviewPublicationInlineComment,
 } from "../../../shared/types";
+import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
@@ -165,6 +167,8 @@ import {
   isGithubRequestError,
   markGithubRequestError,
 } from "./githubReadBackoff";
+import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import {
@@ -192,6 +196,12 @@ import {
   ensureLinearPrReferences,
   type LinearPrIssueReference,
 } from "../../../shared/linearMagicWords";
+import {
+  dedupeGitHubPrIssueReferences,
+  ensureGitHubPrIssueLinkSection,
+  ensureGitHubPrReferences,
+  type GitHubPrIssueReference,
+} from "../../../shared/githubMagicWords";
 import { ensureAdeDeeplinkFooter } from "../../../shared/adeDeeplinkFooter";
 import { ensureAdePrTranscriptGistLinks, hasAdePrTranscriptGistLinks, type AdePrTranscriptGistLink } from "../../../shared/adePrTranscriptGists";
 import { normalizeEscapedMarkdownNewlines } from "../../../shared/prMarkdownText";
@@ -810,6 +820,12 @@ function applyLinearPrLinkage(
   return ensureLinearPrIssueLinkSection(withMagicWords, refs);
 }
 
+function applyGitHubPrLinkage(body: string, refs: GitHubPrIssueReference[]): string {
+  if (!refs.length) return body;
+  const withMagicWords = ensureGitHubPrReferences(body, refs, { preserveExisting: false });
+  return ensureGitHubPrIssueLinkSection(withMagicWords, refs);
+}
+
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
   return {
     integrationLaneId,
@@ -1223,6 +1239,25 @@ function parseIsoMs(value: string | null | undefined): number {
   if (!value) return 0;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * Whether an error means GitHub is unusable right now, as opposed to one row
+ * being unreachable. A 404/403 on a single PR is a fact about that PR.
+ *
+ * The transport check is not optional: a common outage shape is requests that
+ * *hang* rather than answer, and those reject with a bare `fetch failed`,
+ * `ENOTFOUND`, or ADE's own timeout — carrying no classified `authFailure` and
+ * matching none of GitHub's 5xx bodies — while each one has already been
+ * counted against the quota. `isTransientGithubProbeFailure` is the same
+ * predicate `classifyGitHubAuthFailure` uses to produce the `network` kind
+ * accepted above, so the two cannot disagree.
+ */
+function isGithubWideFailure(error: unknown): boolean {
+  const kind = githubAuthFailureKindOf(error);
+  if (kind === "rate_limited" || kind === "service_unavailable" || kind === "network") return true;
+  const message = getErrorMessage(error);
+  return isGithubServiceUnavailable({ message }) || isTransientGithubProbeFailure(message);
 }
 
 function isBackgroundRefreshCandidate(row: PullRequestRow, nowMs: number): boolean {
@@ -1698,6 +1733,33 @@ export function createPrService({
     return links
       .filter((link) => link.includeInPr)
       .map((link) => ({ issue: link.issue, closeOnMerge: link.closeOnMerge, role: link.role }));
+  };
+
+  const collectGitHubPrIssueReferencesForLaneSessions = (laneId: string): GitHubPrIssueReference[] => {
+    let links: SessionGitHubIssueLink[] = [];
+    try {
+      links = laneService.listGitHubIssuesForLaneSessions?.({ laneId }) ?? [];
+    } catch (error) {
+      logger.warn("prs.github_session_links_read_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    return dedupeGitHubPrIssueReferences(
+      links
+        .filter((link) => link.includeInPr)
+        .map((link) => ({ issue: link.issue, closeOnMerge: link.closeOnMerge })),
+    );
+  };
+
+  const applyIssuePrLinkage = (
+    body: string,
+    lane: LaneSummary,
+    closePrimaryOnMerge: boolean,
+  ): string => {
+    const withLinear = applyLinearPrLinkage(body, lane, closePrimaryOnMerge);
+    return applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
   };
 
   const publishLinearPrCardsForLane = async (args: {
@@ -5410,27 +5472,13 @@ export function createPrService({
       });
     }
     if (failures[0] && refreshed.length === 0) {
-      throw failures[0].reason;
+      // Prefer a reason that says GitHub itself is down. The background sweep's
+      // caller decides whether to back off from this one error, and a mixed
+      // batch whose first row happens to be a permanent 404 would otherwise
+      // hide the outage behind it.
+      throw (failures.find((failure) => isGithubWideFailure(failure.reason)) ?? failures[0]).reason;
     }
     return refreshed;
-  };
-
-  const refreshRowsBestEffort = async (rows: PullRequestRow[]): Promise<void> => {
-    const seen = new Set<string>();
-    const uniqueRows = rows.filter((row) => {
-      if (seen.has(row.id)) return false;
-      seen.add(row.id);
-      return true;
-    });
-    for (let i = 0; i < uniqueRows.length; i += REFRESH_CONCURRENCY) {
-      await Promise.all(uniqueRows.slice(i, i + REFRESH_CONCURRENCY).map(async (row) => {
-        try {
-          await refreshOne(row.id);
-        } catch (error) {
-          logger.warn("prs.refresh_failed", { prId: row.id, error: getErrorMessage(error) });
-        }
-      }));
-    }
   };
 
   /**
@@ -5704,16 +5752,44 @@ export function createPrService({
     return status;
   };
 
+  /**
+   * A commit's checks, as GitHub reports them right now.
+   *
+   * A total failure rejects, never returns `[]`. The two are indistinguishable
+   * to every caller — an empty array is also the honest answer for "no checks
+   * yet" — and the renderer's CI poll uses exactly that distinction to decide
+   * whether the pipeline has settled, so a swallowed failure reads as CI that
+   * has not started and holds the poll open indefinitely. Callers that would
+   * rather show stale checks than nothing catch this, which is now an explicit
+   * choice at each call site instead of a silent default here.
+   *
+   * A *partial* failure still returns: one working source beats nothing, and
+   * `computeStatus` — not this — owns the rollup verdict that must not be
+   * recomputed from an incomplete picture.
+   */
   const getChecksByCoords = async (coords: PrGithubCoords): Promise<PrCheck[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prNumber = Number(coords.githubPrNumber);
     const pr = await fetchPr(repo, prNumber);
     const headSha = asString(pr?.head?.sha);
     if (!headSha) return rememberActivityInput("checks", repo, prNumber, [] as PrCheck[]);
+    let combinedStatusError: unknown = null;
+    let checkRunsError: unknown = null;
     const [combinedStatus, checkRuns] = await Promise.all([
-      bestEffort("getChecks.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }),
-      bestEffort("getChecks.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]),
+      bestEffort(
+        "getChecks.fetchCombinedStatus",
+        fetchCombinedStatus(repo, headSha),
+        { state: "", statuses: [] },
+        (error) => { combinedStatusError = error; },
+      ),
+      bestEffort(
+        "getChecks.fetchCheckRuns",
+        fetchCheckRuns(repo, headSha),
+        [] as any[],
+        (error) => { checkRunsError = error; },
+      ),
     ]);
+    if (combinedStatusError && checkRunsError) throw checkRunsError;
 
     const out: PrCheck[] = [];
     const seen = new Set<string>();
@@ -6670,8 +6746,9 @@ export function createPrService({
     const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
     const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
       const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
-      if (!linearRefs.length) return draft;
-      const body = applyLinearPrLinkage(draft.body, lane, closeLinearIssueOnMerge);
+      const githubRefs = collectGitHubPrIssueReferencesForLaneSessions(lane.id);
+      if (!linearRefs.length && !githubRefs.length) return draft;
+      const body = applyIssuePrLinkage(draft.body, lane, closeLinearIssueOnMerge);
       if (!lane.linearIssue) return { title: draft.title, body };
       const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const hasExactIdentifier = new RegExp(`(^|[^A-Za-z0-9])${escapedIdentifier}([^A-Za-z0-9]|$)`, "i").test(draft.title);
@@ -6803,7 +6880,7 @@ export function createPrService({
 
     const repo = await githubService.getRepoOrThrow();
     const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
-    const linearAdjustedBody = applyLinearPrLinkage(args.body ?? "", lane, closeLinearIssueOnMerge);
+    const linearAdjustedBody = applyIssuePrLinkage(args.body ?? "", lane, closeLinearIssueOnMerge);
     // Append the branded "Open in ADE" footer (branch link only at this point;
     // we'll PATCH the PR body with the PR-number-aware variant once we know it).
     const prBody = ensureAdeDeeplinkFooter(linearAdjustedBody, {
@@ -6850,7 +6927,7 @@ export function createPrService({
         const existingPrNumber = Number(existingPr?.number);
         if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
           const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
-          let patchedBody = applyLinearPrLinkage(existingBody, lane, closeLinearIssueOnMerge);
+          let patchedBody = applyIssuePrLinkage(existingBody, lane, closeLinearIssueOnMerge);
           patchedBody = ensureAdeDeeplinkFooter(patchedBody, {
             repoOwner: repo.owner,
             repoName: repo.name,
@@ -6891,7 +6968,7 @@ export function createPrService({
     // link is present. The footer is idempotent: if the rendered output is
     // unchanged (rare — happens when prBody was rebuilt elsewhere), we skip.
     const currentBody = typeof pr?.body === "string" ? pr.body : prBody;
-    const enrichedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, closeLinearIssueOnMerge), {
+    const enrichedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, closeLinearIssueOnMerge), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,
@@ -7052,7 +7129,7 @@ export function createPrService({
         )
       : null;
     const closePrimaryOnMerge = primaryLink?.closeOnMerge === true;
-    const patchedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, closePrimaryOnMerge), {
+    const patchedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, closePrimaryOnMerge), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,
@@ -9196,6 +9273,12 @@ export function createPrService({
   };
 
   const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): string => {
+    // Ahead of `!tokenStored`: an unreadable credential store reports no token,
+    // so this would otherwise tell someone whose credentials are intact to run
+    // `gh auth login` and overwrite them.
+    if (githubStatus.credentialStoreUnreadable === true) {
+      return `${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title}. ${GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail}`;
+    }
     if (!githubStatus.tokenStored) {
       return "GitHub auth missing. Run gh auth login or add a PAT in Settings to sync pull requests.";
     }
@@ -9207,6 +9290,29 @@ export function createPrService({
         ? ` Try again after ${githubStatus.authFailure.retryAt}.`
         : " Try again after GitHub resets the API limit.";
       return `GitHub API rate limit reached.${retry}`;
+    }
+    // ADE is renewing its own GitHub App authorization. Nothing about the
+    // credential is in question, so this must not fall through to the
+    // "auth is invalid — update it in Settings" default.
+    if (githubStatus.authFailure?.kind === "renewing") {
+      return "ADE is renewing its GitHub authorization — pull requests will sync again in a moment.";
+    }
+    // GitHub itself failed, so nothing about the credential is in question.
+    // Without this arm a 503 falls through to the "auth is invalid — update it
+    // in Settings" default, which is the exact accusation the outage work
+    // exists to remove, on the surface a user is most likely to act from.
+    //
+    // `serviceHealth` counts on its own: corroboration is also attached to an
+    // `unknown` failure (GitHub answered with something we could not classify),
+    // and a confirmed incident is positive evidence regardless of how the
+    // response itself was classified.
+    if (
+      githubStatus.authFailure?.kind === "service_unavailable"
+      || githubStatus.serviceHealth != null
+    ) {
+      return githubStatus.serviceHealth
+        ? "GitHub is having problems, so pull requests can't sync right now. Nothing to change here — ADE will catch up when GitHub recovers."
+        : "GitHub returned an error, so pull requests can't sync right now. This isn't a problem with your GitHub connection — ADE will keep retrying.";
     }
     if (githubStatus.repo && githubStatus.repoAccessError) {
       return `GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
@@ -11171,7 +11277,23 @@ export function createPrService({
         .filter((row) => hotPrIds.has(row.id))
         .sort(compareBackgroundRefreshPriority);
       const candidates = [...hotCandidates, ...staleCandidates];
-      await refreshRowsBestEffort(candidates);
+      // Tolerate a row that fails, but let a GitHub-wide failure surface: the
+      // sweep used to run through a best-effort helper that swallowed
+      // everything, so an outage in which every row failed still read as a
+      // clean tick and `prPollingService` never engaged its backoff.
+      //
+      // "Every row failed" alone is NOT that evidence. Candidates are the rows
+      // whose `last_synced_at` is stale, and a row that permanently 404s (repo
+      // renamed, fork access lost, PR hard-deleted) never refreshes it — so it
+      // becomes the only candidate on every later sweep, and an unconditional
+      // rethrow would pin a perfectly healthy poller at max backoff forever.
+      // Only a failure that says GitHub itself is unusable counts.
+      try {
+        await refreshPrIds(candidates.map((row) => row.id));
+      } catch (error) {
+        if (isGithubWideFailure(error)) throw error;
+        logger.warn("prs.background_refresh_rows_failed", { error: getErrorMessage(error) });
+      }
 
       return withGithubStackMemberships(listRows().map(rowToSummary));
     },

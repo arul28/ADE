@@ -262,6 +262,32 @@ describe("WebConnectionsChip", () => {
     expect(popover.parentElement).toBe(document.body);
   });
 
+  it("labels a leftover pairing as remembered in this browser", () => {
+    const environment = pairing("alpha", "windows alpha");
+    renderChip(
+      [machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true })],
+      {},
+      {
+        environments: [environment],
+        sessions: [{
+          targetId: environment.envId,
+          environment,
+          status: { state: "reconnecting" },
+          state: "reconnecting",
+          projects: [],
+          lastUsedAt: Date.now(),
+          activeProjectId: null,
+          error: null,
+        }],
+      },
+    );
+
+    openPopover();
+    expect(screen.getByText("Remembered in this browser · Reconnecting…")).toBeTruthy();
+    expect(screen.getByText("1 on this account · 1 remembered in this browser")).toBeTruthy();
+    expect(screen.queryByText("All four browser machine sessions")).toBeNull();
+  });
+
   it("reports the focused project tab's machine, not whichever one is live", () => {
     renderChip(
       [

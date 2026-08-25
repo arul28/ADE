@@ -33,6 +33,25 @@ extension WorkRootScreen {
       && loadedProjectionProjectId == activeProjectId
     let localSessions = localProjectionIsCurrent ? sessions : []
     let localLanes = localProjectionIsCurrent ? lanes : []
+    let chatSummariesSnapshot = localProjectionIsCurrent ? chatSummaries : [:]
+    let knownChatSummaries = syncService.chatSummaryCache.merging(chatSummariesSnapshot) { _, current in current }
+    var identitySessionIds = Set<String>(knownChatSummaries.compactMap { sessionId, summary in
+      guard let identityKey = summary.identityKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !identityKey.isEmpty else { return nil }
+      return sessionId
+    })
+    var identityDescendantAdded = true
+    while identityDescendantAdded {
+      identityDescendantAdded = false
+      for session in localSessions {
+        guard let parentId = session.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !parentId.isEmpty,
+              identitySessionIds.contains(parentId) else { continue }
+        if identitySessionIds.insert(session.id).inserted {
+          identityDescendantAdded = true
+        }
+      }
+    }
     // The all-project roster usually learns about a newly-created chat before
     // the active project's CRDT replica does. Overlay only the active roster
     // here, at the detached presentation boundary: local hydrated rows win,
@@ -42,10 +61,10 @@ extension WorkRootScreen {
     let rosterProjection = overlayActiveProjectRoster(
       localSessions: localSessions,
       localLanes: localLanes,
-      roster: activeRoster
+      roster: activeRoster,
+      identitySessionIds: identitySessionIds
     )
     let sessionsSnapshot = rosterProjection.sessions
-    let chatSummariesSnapshot = localProjectionIsCurrent ? chatSummaries : [:]
     let deletingLaneIds = syncService.pendingLaneDeletionIds
     let lanesSnapshot = rosterProjection.lanes.filter { !deletingLaneIds.contains($0.id) }
     let pullRequestsSnapshot = localProjectionIsCurrent ? pullRequests : []
@@ -493,6 +512,18 @@ extension WorkRootScreen {
     }
   }
 
+  func demoteSessionToPeer(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      _ = try await syncService.updateChatSession(sessionId: session.id, spawnKind: "peer")
+    }
+  }
+
+  func promoteSessionToSubagent(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      _ = try await syncService.updateChatSession(sessionId: session.id, spawnKind: "subagent")
+    }
+  }
+
   /// The woke marker exists to explain why a snoozed row came back. Visiting
   /// the row is the explanation being read, so drop it then — quietly, since a
   /// failure here must never block navigation.
@@ -628,9 +659,12 @@ extension WorkRootScreen {
   @MainActor
   func handleRequestedWorkSessionNavigation() async {
     guard let request = syncService.requestedWorkSessionNavigation else { return }
-    guard await syncService.ensureAccountMachineForNavigation(
-      request.accountMachineKey
-    ),
+    // Same recovery ContentView does: an EXTERNAL link with no machine key
+    // still has a session id, and the session id knows which machine owns it.
+    // The request decides whether its session id may be used that way — this
+    // handler also runs for the cold-launch restore, where resolving an owner
+    // would turn a plain relaunch into a machine transition.
+    guard await syncService.ensureAccountMachineForNavigation(for: request),
     syncService.requestedWorkSessionNavigation?.id == request.id else { return }
     // Scoped links are machine-wide identities, not requests against whichever
     // project happens to own this mounted Work view. Leave the request intact

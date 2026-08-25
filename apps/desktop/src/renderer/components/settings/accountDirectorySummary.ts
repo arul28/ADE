@@ -1,8 +1,11 @@
 import {
   describeUnpublishedAccountDirectory,
+  isSyncAccountDirectoryState,
+  type AdeAccountSessionState,
   type SyncAccountDirectoryState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import { accountSessionConnectionsSubtitle } from "../../lib/account";
 
 export type AccountDirectorySummary = {
   label: string;
@@ -18,6 +21,15 @@ export type AccountDirectorySummary = {
  * one line of the Connections pane.
  */
 function unpublishedMachineLabel(state: SyncAccountDirectoryState): string {
+  // The state arrives from the brain over RPC. A brain newer than this window
+  // can name a state this build's union does not carry, and the shared table's
+  // switch is exhaustive over the union only — it returns undefined for
+  // anything else, which the destructure below would turn into a TypeError that
+  // blanks the whole Connections pane. So an unrecognised state gets a truthful
+  // generic line instead of a crash.
+  if (!isSyncAccountDirectoryState(state)) {
+    return "Signed in — sync state isn't available on this computer yet";
+  }
   // Only the summary. The shared table's `nextAction` is deliberately dropped
   // here: `token_unreadable` already renders a Repair button beside this line,
   // and the other actions are CLI commands, which mean nothing to someone
@@ -28,13 +40,17 @@ function unpublishedMachineLabel(state: SyncAccountDirectoryState): string {
 
 export function accountDirectorySummary(
   status: SyncRoleSnapshot,
-  accountSignedIn: boolean,
+  sessionState: AdeAccountSessionState,
 ): AccountDirectorySummary {
-  if (!accountSignedIn) {
+  if (sessionState === "unreadable") {
     return {
-      label: status.pairingPinConfigured
-        ? "Not signed in — nearby devices can still connect with the pairing code"
-        : "Not signed in — set a pairing code so nearby devices can connect",
+      label: accountSessionConnectionsSubtitle("unreadable"),
+      healthy: false,
+    };
+  }
+  if (sessionState !== "active") {
+    return {
+      label: "Not signed in — you can still connect to other machines manually",
       healthy: false,
     };
   }

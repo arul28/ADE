@@ -106,6 +106,8 @@ const ACCOUNT_SESSION_LABELS: Record<
     title: string;
     shortLabel: string;
     connectionsSubtitle: string;
+    connectionsAction: string;
+    connectionsActionAria: string;
   }
 > = {
   active: {
@@ -113,25 +115,33 @@ const ACCOUNT_SESSION_LABELS: Record<
     title: "Signed in to ADE",
     shortLabel: "Account",
     connectionsSubtitle: "Manage your account",
+    connectionsAction: "Manage account",
+    connectionsActionAria: "Manage account",
   },
   signed_out: {
     notice: null,
-    title: "Not signed in",
+    title: "Signed out",
     shortLabel: "Signed out",
-    connectionsSubtitle: "Sign in to connect your devices",
+    connectionsSubtitle: "Sign in to easily connect your machines",
+    connectionsAction: "Sign in",
+    connectionsActionAria: "Sign in to ADE",
   },
   expired: {
     notice: "Your ADE sign-in expired — sign in again.",
-    title: "Sign-in expired",
-    shortLabel: "Sign-in expired",
-    connectionsSubtitle: "Sign in again to connect your devices",
+    title: "Signed out",
+    shortLabel: "Signed out",
+    connectionsSubtitle: "Sign in to easily connect your machines",
+    connectionsAction: "Sign in",
+    connectionsActionAria: "Sign in to ADE",
   },
   unreadable: {
     notice:
-      "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+      "Can't read your sign-in right now — your session is still there. Try Repair before signing in again.",
     title: "Can't read your sign-in",
     shortLabel: "Sign-in unavailable",
     connectionsSubtitle: "Your session is still there — open your account to fix it",
+    connectionsAction: "Fix sign-in",
+    connectionsActionAria: "Fix your sign-in",
   },
 };
 
@@ -149,6 +159,14 @@ export function accountSessionShortLabel(state: AdeAccountSessionState): string 
 
 export function accountSessionConnectionsSubtitle(state: AdeAccountSessionState): string {
   return ACCOUNT_SESSION_LABELS[state].connectionsSubtitle;
+}
+
+export function accountSessionConnectionsAction(state: AdeAccountSessionState): string {
+  return ACCOUNT_SESSION_LABELS[state].connectionsAction;
+}
+
+export function accountSessionConnectionsActionAria(state: AdeAccountSessionState): string {
+  return ACCOUNT_SESSION_LABELS[state].connectionsActionAria;
 }
 
 export async function fetchAccountStatus(options?: { force?: boolean }): Promise<AdeAccountStatus> {

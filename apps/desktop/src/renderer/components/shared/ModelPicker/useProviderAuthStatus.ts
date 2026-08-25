@@ -1,6 +1,6 @@
-import { useShallow } from "zustand/react/shallow";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import type { OpenProjectBinding } from "../../../../shared/types";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
   AI_STATUS_CACHE_UPDATED_EVENT,
@@ -9,6 +9,7 @@ import {
   type AiStatusCacheInvalidatedEventDetail,
   type AiStatusCacheUpdatedEventDetail,
 } from "../../../lib/aiDiscoveryCache";
+import { arePathsEqual } from "../../../lib/pathUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import type { AuthStatus } from "./ModelPickerRail";
 
@@ -104,13 +105,13 @@ export function opencodeBinaryInstalledFromStatus(status: { opencodeBinaryInstal
  * no probe. Used to flip the OpenCode-gated empty state without waiting on
  * the slow getStatus() roundtrip.
  */
-function probeBinary(scopeKey: string): Promise<boolean | null> {
+function probeBinary(scopeKey: string, pin?: OpenProjectBinding | null): Promise<boolean | null> {
   const existing = binaryProbeRequests.get(scopeKey);
   if (existing) return existing;
   const check = window.ade?.ai?.isOpenCodeInstalled;
   if (typeof check !== "function") return Promise.resolve(null);
   let request: Promise<boolean | null>;
-  request = check()
+  request = (pin ? check(pin) : check())
     .then((result) => result.installed === true)
     .catch(() => null)
     .finally(() => {
@@ -122,23 +123,33 @@ function probeBinary(scopeKey: string): Promise<boolean | null> {
   return request;
 }
 
-export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCliOnlyModels?: boolean }): {
+export function useProviderAuthStatus(options?: {
+  loadStatus?: boolean;
+  allowCliOnlyModels?: boolean;
+  runtimePin?: OpenProjectBinding | null;
+}): {
   status: AuthStatusMap;
   opencodeBinaryInstalled: boolean;
   /** True once we have a definitive answer for opencodeBinaryInstalled (cheap probe done). */
   binaryProbed: boolean;
   loaded: boolean;
 } {
-  const { projectRoot, binaryScopeKey } = useAppStore(
-    useShallow((state) => {
-      const activeProjectRoot = selectActiveProjectRoot(state);
-      return {
-        projectRoot: activeProjectRoot,
-        binaryScopeKey: `${state.projectBinding?.key ?? "local"}::${activeProjectRoot ?? "<no-project>"}`,
-      };
-    }),
-  );
-  const cachedStatus = peekAiStatusCached(projectRoot);
+  const runtimePin = options?.runtimePin ?? null;
+  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  // Catalogs always key off the composer machine, even when it equals the
+  // project tab. Auth does not: Settings writes the unpinned `projectRoot`
+  // bucket, and a same-as-tab pin used to isolate every Work composer into
+  // `root::pin:<key>` so a Cursor unlock never reached the prompt box.
+  const authPin = runtimePin && runtimePin.key !== projectBindingKey ? runtimePin : null;
+  const runtimePinKey = authPin?.key ?? null;
+  const runtimePinRef = useRef<OpenProjectBinding | null>(authPin);
+  runtimePinRef.current = authPin;
+  const previousUnpinnedBindingKeyRef = useRef<string | null | undefined>(undefined);
+  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const tabBindingKey = projectBindingKey ?? "local";
+  const projectRoot = authPin?.rootPath ?? activeProjectRoot;
+  const binaryScopeKey = `${authPin?.key ?? tabBindingKey}::${projectRoot ?? "<no-project>"}`;
+  const cachedStatus = peekAiStatusCached(projectRoot, authPin);
   const [status, setStatus] = useState<AuthStatusMap>(() => (
     cachedStatus ? familiesFromStatus(cachedStatus, options) : EMPTY_AUTH_STATUS
   ));
@@ -154,7 +165,8 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCli
 
   useEffect(() => {
     let active = true;
-    const cached = peekAiStatusCached(projectRoot);
+    const pin = runtimePinRef.current;
+    const cached = peekAiStatusCached(projectRoot, pin);
     setBinary(
       typeof cached?.opencodeBinaryInstalled === "boolean"
         ? {
@@ -163,14 +175,14 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCli
           }
         : UNKNOWN_BINARY,
     );
-    void probeBinary(binaryScopeKey).then((installed) => {
+    void probeBinary(binaryScopeKey, pin).then((installed) => {
       if (!active || installed == null) return;
       setBinary({ opencodeBinaryInstalled: installed, binaryProbed: true });
     });
     return () => {
       active = false;
     };
-  }, [binaryScopeKey, projectRoot]);
+  }, [binaryScopeKey, projectRoot, runtimePinKey]);
 
   useEffect(() => {
     if (options?.loadStatus === false) return;
@@ -189,7 +201,20 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCli
       }
     };
 
-    const cached = peekAiStatusCached(projectRoot);
+    const pin = runtimePinRef.current;
+    const previousBindingKey = previousUnpinnedBindingKeyRef.current;
+    // Same-as-tab composers share Settings' unpinned cache. That bucket is
+    // keyed only by project root, so a tab switch onto another runtime with
+    // the same path must bypass TTL instead of showing the previous machine.
+    // Only record the key while unpinned — a foreign pin must not pretend
+    // the unpinned bucket already belongs to the new tab.
+    const forceUnpinnedRefresh = !pin
+      && previousBindingKey !== undefined
+      && previousBindingKey !== projectBindingKey;
+    if (!pin) {
+      previousUnpinnedBindingKeyRef.current = projectBindingKey;
+    }
+    const cached = forceUnpinnedRefresh ? null : peekAiStatusCached(projectRoot, pin);
     if (cached) {
       applyStatus(cached);
     } else {
@@ -199,13 +224,22 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCli
 
     const onUpdated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheUpdatedEventDetail>).detail;
-      if ((detail?.projectRoot ?? null) !== projectRoot) return;
-      const updated = peekAiStatusCached(projectRoot);
+      const updatedRoot = detail?.projectRoot ?? null;
+      if (
+        updatedRoot !== (projectRoot ?? null)
+        && !(updatedRoot && projectRoot && arePathsEqual(updatedRoot, projectRoot))
+      ) {
+        return;
+      }
+      const updated = peekAiStatusCached(projectRoot, runtimePinRef.current);
       if (updated) applyStatus(updated);
     };
     const onInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
-      if (detail && !detail.allProjects && detail.projectRoot !== projectRoot) return;
+      if (detail && !detail.allProjects && detail.projectRoot !== projectRoot
+        && !(detail.projectRoot && projectRoot && arePathsEqual(detail.projectRoot, projectRoot))) {
+        return;
+      }
       setStatus(EMPTY_AUTH_STATUS);
       setLoaded(false);
     };
@@ -214,7 +248,11 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCli
 
     const bridge = window.ade?.ai?.getStatus;
     if (typeof bridge === "function") {
-      void getAiStatusCached({ projectRoot }).then(applyStatus).catch(() => undefined);
+      void getAiStatusCached({
+        projectRoot,
+        pin,
+        force: forceUnpinnedRefresh,
+      }).then(applyStatus).catch(() => undefined);
     }
 
     return () => {
@@ -222,7 +260,7 @@ export function useProviderAuthStatus(options?: { loadStatus?: boolean; allowCli
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onUpdated);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onInvalidated);
     };
-  }, [options?.allowCliOnlyModels, options?.loadStatus, projectRoot]);
+  }, [options?.allowCliOnlyModels, options?.loadStatus, projectBindingKey, projectRoot, runtimePinKey]);
 
   return {
     status,

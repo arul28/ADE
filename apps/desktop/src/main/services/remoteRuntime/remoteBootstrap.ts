@@ -151,18 +151,9 @@ export function validateRemoteRuntimeInitializeResult(args: {
     ? runtimeInfo.version.trim()
     : null;
   const compatibilityWarnings: string[] = [];
-  if (args.expectedVersion && version !== args.expectedVersion) {
-    const expected = args.expectedVersion;
-    const actual = version ?? "unknown";
-    // A version difference alone is not a fault in either direction — the
-    // capability checks below are what decide whether anything is actually
-    // missing. Say so plainly instead of raising an alarm the user cannot act
-    // on; "remote is newer" in particular is the normal state for a machine on
-    // the release channel seen from an alpha desktop.
-    compatibilityWarnings.push(
-      `Remote ADE service reported ${actual}; local ADE is ${expected}. The versions differ but their RPC capabilities match, so ADE connected normally — nothing to do.`,
-    );
-  }
+  // Version-only skew is not a fault. The Connections row already has both
+  // versions and formats a quiet note there. Do not push a string the UI then
+  // has to sniff back out of the yellow warning list.
   const missing = MACHINE_PROJECT_CAPABILITIES.filter((capability) => machineProjects[capability] !== true);
   if (missing.length) {
     compatibilityWarnings.push(

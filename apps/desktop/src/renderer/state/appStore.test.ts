@@ -1513,7 +1513,10 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().projectTransition).toBeNull();
       expect(useAppStore.getState().projectTransitionError).toEqual({
-        message: "Switching projects took longer than 30 seconds, so ADE kept the current project active.",
+        message:
+          "Switching projects took longer than 30 seconds, so ADE kept the current project open. It's still working on it in the background — you can try again now.",
+        // The banner offers "Try again" for uncoded switch failures.
+        retryRootPath: "/tmp/slow-project",
       });
     });
 
@@ -1530,6 +1533,7 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().projectTransitionError).toEqual({
         message: "ADE needs Git to open this project.",
+        retryRootPath: "/tmp/project",
       });
     });
 
@@ -1552,25 +1556,54 @@ describe("appStore", () => {
       });
     });
 
+    it("keeps the brain's own words for a code this screen has nothing better to say about", async () => {
+      // `storage_read_failed` names the unreadable file and the cloud provider
+      // holding it. Replacing that with a generic line — and demoting the real
+      // sentence into the collapsed `detail` fold — was the regression.
+      const brainMessage =
+        "ADE couldn't read this project's data at /tmp/project/.ade/ade.db. "
+        + "Move the project out of iCloud Drive, Dropbox, or OneDrive, then try again.";
+      (window.ade.project.switchToPath as any).mockRejectedValueOnce(
+        new Error(
+          `Error invoking remote method 'ade.project.switchToPath': Error: storage_read_failed: ${brainMessage}`,
+        ),
+      );
+
+      await expect(
+        useAppStore.getState().switchProjectToPath("/tmp/project"),
+      ).rejects.toThrow("storage_read_failed");
+
+      const transitionError = useAppStore.getState().projectTransitionError;
+      expect(transitionError).toEqual({
+        code: "storage_read_failed",
+        message: brainMessage,
+        rootPath: "/tmp/project",
+      });
+      // The brain's sentence is now the headline, so it must hold the same
+      // no-jargon bar the generic copy did.
+      expectNoJargon(transitionError?.message ?? "");
+    });
+
     it.each([
       "provider_thread_missing",
       "provider_resume_failed",
       "continuity_reconstruction_required",
       "optional_mcp_failed",
-    ] as const)("uses calm copy for the recognized %s recovery code", async (code) => {
+    ] as const)("falls back to calm copy when %s arrives with nothing to say", async (code) => {
+      // A bare code and an empty message is the only case a generic line is an
+      // improvement on — the alternative is a blank recovery screen.
       (window.ade.project.switchToPath as any).mockRejectedValueOnce(
-        new Error(`Error invoking remote method 'ade.project.switchToPath': Error: ${code}: raw socket detail`),
+        Object.assign(new Error(""), { code }),
       );
 
       await expect(
         useAppStore.getState().switchProjectToPath("/tmp/project"),
-      ).rejects.toThrow(code);
+      ).rejects.toThrow();
 
       const transitionError = useAppStore.getState().projectTransitionError;
       expect(transitionError).toEqual({
         code,
         message: "ADE ran into a problem with this project.",
-        detail: "raw socket detail",
         rootPath: "/tmp/project",
       });
       expectNoJargon(transitionError?.message ?? "");

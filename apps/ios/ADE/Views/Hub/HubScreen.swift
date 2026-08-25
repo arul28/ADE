@@ -206,10 +206,6 @@ struct HubScreen: View {
       )
       ScrollView {
         LazyVStack(spacing: 12) {
-          // Everything running right now, across every machine on the account —
-          // not just the paired one. Hidden entirely when nothing is live.
-          HubLiveStrip()
-
           // Keep the project catalog mounted while a switch is in flight: only
           // fall back to the connecting card when there's nothing to show yet.
           // The switching row carries its own spinner and the others disable,
@@ -583,10 +579,10 @@ struct HubScreen: View {
     }
 
     merged.booted = remote.booted || local.booted
-    merged.runningCount = merged.chats.filter(\.isRunning).count
+    merged.runningCount = merged.chats.filter(\.countsTowardRunning).count
     merged.attentionCount = merged.chats.filter(\.needsAttention).count
     merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
-    return merged
+    return merged.excludingIdentityChats()
   }
 
   private func mergedHubChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
@@ -607,6 +603,8 @@ struct HubScreen: View {
     merged.model = nonEmpty(remote.model) ?? local.model
     merged.toolType = nonEmpty(remote.toolType) ?? local.toolType
     merged.chatSessionId = nonEmpty(remote.chatSessionId) ?? local.chatSessionId
+    merged.identityKey = nonEmpty(remote.identityKey) ?? local.identityKey
+    merged.applyLocalSnoozeOverlay(local)
     return merged
   }
 

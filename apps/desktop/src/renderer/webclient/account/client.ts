@@ -37,6 +37,20 @@ const OAUTH_PENDING_TTL_MS = 10 * 60_000;
 const REFRESH_SKEW_MS = 2 * 60_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 3_000;
 const DIRECTORY_MUTATION_TIMEOUT_MS = 8_000;
+const REMOVAL_TIMEOUT_MESSAGE =
+  "Removal timed out. Refresh Your computers — if it's still listed, try again.";
+const ACTIVITY_PURGE_FAILED_MESSAGE =
+  "Removed from your account, but its Activity could not be cleared. Try removing it again to finish.";
+
+function isAbortError(cause: unknown): boolean {
+  return cause instanceof Error && (cause.name === "AbortError" || cause.name === "TimeoutError");
+}
+
+function isConfirmedActivityPurgeFailure(value: unknown): boolean {
+  return isRecord(value)
+    && value.code === "activity_purge_failed"
+    && value.machineRemoved === true;
+}
 
 /**
  * `key`/`length` are optional: they are only needed to sweep abandoned stashes,
@@ -792,13 +806,36 @@ export class BrowserAccountClient {
         await this.expireSession();
         throw new Error("ADE account session expired.");
       }
-      if (!response.ok) throw new Error(`Couldn't remove that machine (${response.status}).`);
+      if (!response.ok) {
+        let payload: unknown = null;
+        try {
+          payload = await readBoundedAccountDirectoryJson(response);
+        } catch {
+          // Preserve the local row when the directory does not prove that the
+          // account-side removal completed.
+        }
+        if (isConfirmedActivityPurgeFailure(payload)) {
+          // The directory row is gone, but Activity still needs a retry. This
+          // is the only non-2xx response that authorizes local cleanup.
+          this.snapshot = {
+            ...this.snapshot,
+            machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
+          };
+          throw new Error(ACTIVITY_PURGE_FAILED_MESSAGE);
+        }
+        throw new Error(`Couldn't remove that machine (${response.status}).`);
+      }
       await response.body?.cancel().catch(() => undefined);
       this.snapshot = {
         ...this.snapshot,
         machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
       };
       return { ok: true, machineKey };
+    } catch (cause) {
+      if (isAbortError(cause) || controller.signal.aborted) {
+        throw new Error(REMOVAL_TIMEOUT_MESSAGE);
+      }
+      throw cause;
     } finally {
       clearTimeout(timer);
     }

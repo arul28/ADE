@@ -6,7 +6,22 @@
  * place. This file only adds renderer glue (bridge accessor, provenance
  * reader, display helpers).
  */
-import type { TerminalToolType } from "../../../../shared/types";
+import type { OpenProjectBinding, TerminalToolType } from "../../../../shared/types";
+import type { ProviderFamily } from "../../../../shared/modelRegistry";
+import type { LaneComboboxLane } from "../LaneCombobox";
+import type {
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
+  ExternalSessionDetailUpdatedEvent,
+  ExternalSessionDetailWatchArgs,
+} from "../../../../shared/types/externalSessionDetail";
+import type {
+  ExternalSessionProvider,
+  ExternalSessionImportArgs,
+  ExternalSessionImportResult,
+  ExternalSessionListArgs,
+  ExternalSessionSummary,
+} from "../../../../shared/types/externalSessions";
 
 export type {
   ExternalSessionProvider,
@@ -18,13 +33,23 @@ export type {
   ExternalSessionImportResult,
 } from "../../../../shared/types/externalSessions";
 
-import type {
-  ExternalSessionProvider,
-  ExternalSessionImportArgs,
-  ExternalSessionImportResult,
-  ExternalSessionListArgs,
-  ExternalSessionSummary,
-} from "../../../../shared/types/externalSessions";
+export type {
+  ExternalSessionDetail,
+  ExternalSessionDetailArgs,
+  ExternalSessionDetailMessage,
+  ExternalSessionDetailUpdatedEvent,
+  ExternalSessionDetailWatchArgs,
+} from "../../../../shared/types/externalSessionDetail";
+
+/** Every provider we scan when no specific filter is applied. */
+export const ALL_IMPORT_PROVIDERS: ExternalSessionProvider[] = [
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+  "pi",
+];
 
 /**
  * Provenance marker stamped by the backend onto imported terminal/chat
@@ -38,8 +63,33 @@ export type ImportedFrom = {
 };
 
 export type ExternalSessionsApi = {
-  list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
-  import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
+  list: (
+    args?: ExternalSessionListArgs,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<ExternalSessionSummary[]>;
+  import: (
+    args: ExternalSessionImportArgs,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<ExternalSessionImportResult>;
+  getDetail?: (
+    args: ExternalSessionDetailArgs,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<ExternalSessionDetail>;
+  watchDetail?: (args: ExternalSessionDetailWatchArgs) => Promise<ExternalSessionDetail>;
+  unwatchDetail?: (args: { watchId: string }) => Promise<{ ok: true }>;
+  onDetailUpdated?: (cb: (ev: ExternalSessionDetailUpdatedEvent) => void) => () => void;
+};
+
+/** A connected computer that can own the external sessions being browsed. */
+export type ExternalSessionSource = {
+  machineId: string;
+  machineName: string;
+  lanes: Array<LaneComboboxLane & { laneType?: string | null }>;
+  /** Binding used for imported-session ownership and cross-machine adoption. */
+  binding: OpenProjectBinding | null;
+  /** Explicit runtime route; null means the active project-tab runtime. */
+  runtimePin: OpenProjectBinding | null;
+  online: boolean;
 };
 
 /** Typed accessor for the runtime-routed bridge; null when unavailable. */
@@ -93,6 +143,15 @@ export const PROVIDER_TOOL_TYPE: Record<ExternalSessionProvider, TerminalToolTyp
   codex: "codex",
   cursor: "cursor-cli",
   droid: "droid",
+  opencode: "opencode",
+  pi: "pi",
+};
+
+export const PROVIDER_FAMILY: Record<ExternalSessionProvider, ProviderFamily> = {
+  claude: "anthropic",
+  codex: "openai",
+  cursor: "cursor",
+  droid: "factory",
   opencode: "opencode",
   pi: "pi",
 };

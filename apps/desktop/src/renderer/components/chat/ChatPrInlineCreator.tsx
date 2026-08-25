@@ -71,6 +71,11 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   onCreated: (pr: PrSummary) => void;
 }) {
   const navigate = useNavigate();
+  // The tab's lanes are the right ones here: `ChatPrPane` only renders this
+  // creator for an unpinned chat, because `createFromLane` is not pinnable and
+  // the derivation below (branch, base, Linear link, primary lane) needs the
+  // whole lane list of the machine that would run it.
+  // eslint-disable-next-line no-restricted-syntax
   const lanes = useAppStore((s) => s.lanes);
 
   const lane = useMemo(() => lanes.find((l) => l.id === laneId) ?? null, [lanes, laneId]);

@@ -12,7 +12,9 @@ a fresh simctl screenshot to produce `IosScreenSnapshot` and
 Snapshot reads happen inside whichever ADE runtime owns the active
 simulator session. Because the simulator is macOS-only, that runtime
 is always a Mac (local or remote-Mac); the renderer is purely a viewer
-over the resulting elements.
+over the resulting elements. Inspect, select, screenshot, and input all
+work against a remote-Mac runtime. The drawer's live view does not — it
+is a local desktop-window capture and cannot render for a remote runtime.
 
 The kit is **DEBUG-only**: under `#if DEBUG` the modifiers attach
 preference values and the snapshot host emits JSON; under release

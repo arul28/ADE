@@ -1,0 +1,43 @@
+---
+title: "v1.2.64"
+description: "Release notes for ADE v1.2.64 - August 25, 2026"
+---
+
+Codex in ADE now speaks the 0.149 app-server: unsandboxed `!` / `/shell`, a queued follow-up when compaction or review is in the way, and a quiet stop for background terminals. Prompt settings stay independent of the model you pick. OpenCode no longer echoes ADE's prompt into the tracked CLI, and you can attach a GitHub issue to a chat the same way you already attach Linear.
+
+---
+
+## Codex
+
+- **`!` and `/shell` run as your shell, not the model's.** An unsandboxed user-shell chip marks the turn; the command is an app-server RPC, not model text.
+- **Follow-ups wait when Codex cannot take them.** During compaction or a pending review, ADE queues the next message instead of trying to steer a turn that will reject it.
+- **Memory reset asks first.** `/memory reset` confirms before wiping the thread's memory.
+- **Background terminals have a stop.** The stop control is small and explicit; it does not look like a failed turn.
+- **Compaction fail-opens.** An interrupted or stalled compaction does not leave the session stuck; ADE surfaces the failure and continues.
+
+## Prompt settings
+
+- **The model you pick does not rewrite access settings.** Approval, sandbox, and fast-mode preferences stay as you set them when you change models or providers.
+
+## OpenCode
+
+- **One v2 SDK client.** OpenCode sessions share a single runtime client instead of mixing SDK shapes.
+- **The tracked CLI no longer reprints ADE's prompt.** Your prompt stays in ADE; the CLI session does not echo it back as if you typed it there.
+
+## Chats and Work
+
+- **GitHub issues attach to a chat, alongside Linear.** You can bind a GitHub issue the same way you already bind a Linear issue.
+- **Cursor Cloud has a fleet view.** Project-scoped cloud agents show up on desktop, iOS, and the TUI instead of only as one-off chats.
+- **The PR pane can open itself** when a review or check needs you.
+- **Work model catalogs follow the prompt-box machine.** The picker lists what that machine can actually run.
+
+## iOS simulator and Work on the phone
+
+- **Simulator builds stay on the lane's worktree**, and the simulator drawer reports what it can actually do.
+- **Work chat on iOS scrolls and renders without shipping the whole models.dev catalog to the phone.**
+
+## Fixes
+
+- Project picker recents are less noisy.
+- Windows brain heartbeat honors `ADE_BRAIN_HEARTBEAT_STALE_MS`.
+- Storage, suspension-aware watchdogs, runtime leak, and updater status tell the truth instead of looking healthy while they are not.

@@ -2,6 +2,8 @@
 // Mirrors the daemon `account` action domain (#815) but only exposes the
 // token-free surface — the raw bearer never crosses into the renderer.
 
+import type { MachinePower, MachineSleepState } from "./power";
+
 /** Which identity provider signed this account in, when known. */
 export type AdeAccountProvider = "github" | "google" | "apple" | "email";
 
@@ -113,6 +115,20 @@ export type AdeAccountMachine = {
   reachableEndpoints: AdeAccountMachineEndpoint[];
   lastSeenAt: number | null;
   online: boolean;
+  /**
+   * Battery and wall power as the machine last reported them. Absent on hosts
+   * too old to publish power at all — which is why it is optional rather than
+   * nullable-required: "no reading" and "no battery" are different facts, and
+   * `MachinePower.battery` already carries the second one.
+   */
+  power?: MachinePower | null;
+  /**
+   * The machine's own last announcement about being awake. `resolveMachinePresence`
+   * is the only thing that should read this — never re-derive presence from it.
+   */
+  sleepState?: MachineSleepState | null;
+  /** Epoch ms at which `sleepState` last changed. */
+  sleepStateAt?: number | null;
 };
 
 /**
@@ -193,6 +209,27 @@ export type AdeAccountMachinePairingRepairResult = {
    * older than this field sends — as "unknown", never as "not that code".
    */
   reasonCode?: string | null;
+};
+
+/**
+ * What the "Can't read your sign-in" Repair control actually did.
+ *
+ * The control used to restart the background service and nothing else, which
+ * could not fix any credential-store condition — the one class of failure the
+ * surface offering it exists for. Now it runs the store's own repair first
+ * (converge the file's key binding, merge back anything a peer process set
+ * aside) and restarts the brain after, so `outcome` can say which of the three
+ * real endings happened rather than "we restarted something".
+ */
+export type AdeAccountSessionRepairResult = {
+  /** `repaired` — readable again. `sign_in_required` — nothing on this computer can open it. */
+  outcome: "repaired" | "sign_in_required" | "no_problem_found";
+  /** Did the credential file end up readable? */
+  readable: boolean;
+  /** Credentials put back from a file a peer process had set aside. */
+  recoveredKeys: number;
+  /** Did the brain restart succeed? Null when this window cannot restart it. */
+  brainRestarted: boolean | null;
 };
 
 /** Token-free result of adopting an account-directory machine for paired use. */

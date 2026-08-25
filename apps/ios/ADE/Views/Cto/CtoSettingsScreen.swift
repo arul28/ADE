@@ -101,12 +101,14 @@ struct CtoSettingsScreen: View {
           lanes: [],
           commandScope: .project,
           isBusy: modelUpdateInFlight,
-          onSelect: { option, reasoningEffort, _, fastMode in
+          onSelect: { option, pickedReasoning, _, pickedFastMode in
             Task { @MainActor in
+              let currentReasoning = currentReasoningEffort
+              let nextReasoning = pickedReasoning ?? ""
               await updateModel(
                 modelId: option.id,
-                reasoningEffort: reasoningEffort ?? "",
-                fastMode: option.supportsCodexFastMode ? fastMode : false
+                reasoningEffort: nextReasoning == currentReasoning ? nil : nextReasoning,
+                fastMode: pickedFastMode == currentFastMode ? nil : pickedFastMode
               )
             }
           }
@@ -215,7 +217,7 @@ struct CtoSettingsScreen: View {
   }
 
   @MainActor
-  private func updateModel(modelId: String, reasoningEffort: String, fastMode: Bool) async {
+  private func updateModel(modelId: String, reasoningEffort: String?, fastMode: Bool?) async {
     guard !modelUpdateInFlight else { return }
     modelUpdateInFlight = true
     errorMessage = nil

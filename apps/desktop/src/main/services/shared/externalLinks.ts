@@ -1,50 +1,8 @@
-import { execFile } from "node:child_process";
-import { shell } from "electron";
-
-const ALLOWED_EXTERNAL_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
-
-export function normalizeExternalUrl(url: string | undefined | null): string | null {
-  const raw = typeof url === "string" ? url.trim() : "";
-  if (!raw) return null;
-
-  let parsed: URL;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error("Invalid URL");
-  }
-
-  if (!ALLOWED_EXTERNAL_URL_SCHEMES.has(parsed.protocol)) {
-    throw new Error("Only http(s) and mailto: URLs are allowed.");
-  }
-
-  return parsed.toString();
-}
-
-function openWithMacOpen(url: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    execFile("/usr/bin/open", [url], { timeout: 5_000, windowsHide: true }, (error) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    });
-  });
-}
-
-export async function openExternalUrl(url: string | undefined | null): Promise<void> {
-  const normalized = normalizeExternalUrl(url);
-  if (!normalized) return;
-
-  if (process.platform === "darwin") {
-    try {
-      await openWithMacOpen(normalized);
-      return;
-    } catch {
-      // Fall back to Electron's opener if Launch Services' `open` command is unavailable.
-    }
-  }
-
-  await shell.openExternal(normalized);
-}
+/**
+ * Re-export only. `openExternalUrl` has no Electron dependency of its own — it
+ * shells out to the OS opener and reaches for `electron.shell` lazily, exactly
+ * so the CLI can bundle it — so it lives in `apps/ade-cli/src/lib` with the
+ * rest of the dual-runtime helpers. This file keeps the desktop's existing
+ * import path working.
+ */
+export { normalizeExternalUrl, openExternalUrl } from "../../../../../ade-cli/src/lib/externalLinks";

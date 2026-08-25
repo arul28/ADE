@@ -25,6 +25,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "session.snoozeSession",
   "session.wakeSession",
   "session.clearWokeMarker",
+  // Subagent takeover. The phone hides Take over / Keep reporting / Demote /
+  // Promote unless `chat.setSpawnKind` is advertised. Optional so an older
+  // phone against a newer host does not go limited, and an older host simply
+  // omits the actions.
+  "chat.setSpawnKind",
+  "chat.dismissSubagentTakeoverPrompt",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",
@@ -32,6 +38,23 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "prs.createGithubStack",
   "prs.addGithubStackPullRequests",
   "prs.unstackGithubStack",
+  // Cursor Cloud watch/open. iOS and the web client presence-gate inbound
+  // sync on these; optional so an older phone against a newer host does not
+  // go limited, and an older host simply omits the actions.
+  "ai.openCursorCloudChat",
+  "ai.watchCursorCloudMirror",
+  // Cursor Cloud fleet view. The phone gates its Cloud pane affordances on
+  // these; optional so an older brain simply omits the pane instead of going
+  // limited.
+  "ai.cursorCloudFleet",
+  "ai.cursorCloudResolveLane",
+  "ai.cursorCloudPullIntoLane",
+  "ai.cursorCloudStopRun",
+  // Per-project prompt stash. iOS gates the overflow-menu items on these
+  // descriptors so an older brain simply omits stash instead of going limited.
+  "chat.listPromptStashes",
+  "chat.createPromptStash",
+  "chat.deletePromptStash",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [

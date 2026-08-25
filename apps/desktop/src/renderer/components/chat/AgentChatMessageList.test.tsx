@@ -769,6 +769,24 @@ describe("AgentChatMessageList transcript rendering", () => {
     });
   });
 
+  it("hides routine cloud running/finished chips", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "cloud_status", turnId: "turn-1", runId: "run-1", status: "running" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:08.000Z",
+        event: { type: "cloud_status", turnId: "turn-1", runId: "run-1", status: "finished" },
+      },
+    ]);
+
+    expect(screen.queryByText("Running in cloud")).toBeNull();
+    expect(screen.queryByText("Cloud run finished")).toBeNull();
+  });
+
   it("drafts an agent request to reopen localhost servers in the chat terminal", async () => {
     const onInsertDraft = vi.fn();
     renderMessageList([
@@ -915,6 +933,48 @@ describe("AgentChatMessageList transcript rendering", () => {
     const turnButton = screen.getByRole("button", { name: "Copy whole turn" });
     fireEvent.click(turnButton);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("First block.\n\nSecond block."));
+  });
+
+  it("adds selected assistant text to the composer as chat context", async () => {
+    const onInsertDraft = vi.fn();
+    renderMessageList(
+      [{
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "text", text: "Retry the lane checkout.", itemId: "text-1", turnId: "turn-1" },
+      }],
+      { onInsertDraft },
+    );
+
+    const output = document.querySelector("[data-assistant-output]");
+    expect(output).toBeTruthy();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(output!);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.mouseUp(document);
+
+    const add = await screen.findByTestId("assistant-output-add-to-chat");
+    fireEvent.click(add);
+    expect(onInsertDraft).toHaveBeenCalledTimes(1);
+    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("Retry the lane checkout.");
+    expect(String(onInsertDraft.mock.calls[0]?.[0])).toContain("added it as context");
+  });
+
+  it("renders sent chat-context tags as Chat context chips", () => {
+    renderMessageList([{
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: {
+        type: "user_message",
+        text: `please <ade-chat-context>\nThe user highlighted the following text from your previous output and added it as context:\n\nRetry the lane checkout.\n</ade-chat-context> thanks`,
+        deliveryState: "delivered",
+      },
+    }]);
+    expect(screen.getByTestId("user-message-chat-context-chip").textContent).toBe("Chat context");
+    expect(screen.getByText(/please/)).toBeTruthy();
+    expect(screen.getByText(/thanks/)).toBeTruthy();
   });
 
   it("does not add turn-copy chrome for single-block or legacy null-turn text", () => {
@@ -1330,6 +1390,71 @@ describe("AgentChatMessageList transcript rendering", () => {
     // The turn rule reads `10:04 · ran 3m 32s` — mono, tabular, lower case.
     expect(screen.getByText("ran 2m")).toBeTruthy();
     expect(screen.queryByText(/Worked for/)).toBeNull();
+  });
+
+  it("measures ran duration from the last user prompt, not the first cloud turn", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "first", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:05.000Z",
+        event: { type: "done", turnId: "turn-1", status: "completed" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:18:49.000Z",
+        event: { type: "user_message", text: "follow up", turnId: "turn-2" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:18:59.000Z",
+        event: { type: "done", turnId: "turn-2", status: "completed" },
+      },
+    ]);
+
+    expect(screen.getByText("ran 10s")).toBeTruthy();
+    expect(screen.queryByText(/ran 18m/)).toBeNull();
+  });
+
+  it("renders the host-sleep chip once and swaps it for the resumed state in place", () => {
+    const paused: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "host_asleep",
+        message: "Paused — computer asleep",
+        detail: { hostSleep: { sleepId: "host-sleep-1" } },
+        turnId: "turn-1",
+      },
+    };
+    const resumed: AgentChatEventEnvelope = {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:04:00.000Z",
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "host_awake",
+        message: "Resumed · paused 4m",
+        detail: { hostSleep: { sleepId: "host-sleep-1", pausedMs: 240_000 } },
+        turnId: "turn-1",
+      },
+    };
+
+    renderMessageList([paused]);
+    expect(screen.getByText("Paused — computer asleep")).toBeTruthy();
+
+    cleanup();
+    renderMessageList([paused, resumed]);
+    // The resumed half replaces the paused one — the transcript keeps exactly
+    // one artifact for the sleep rather than stacking a second banner.
+    expect(screen.queryByText("Paused — computer asleep")).toBeNull();
+    expect(screen.getByText("Resumed · paused 4m")).toBeTruthy();
   });
 
   it("renders provider health and thread error notices distinctly", () => {

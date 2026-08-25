@@ -27,6 +27,42 @@ export const SYNC_PROTOCOL_MIN_SUPPORTED = 1;
 export const SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE = 4406;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
 export const SYNC_HOST_MAX_PORT = 8999;
+
+/**
+ * Bind order for the shared sync listener.
+ *
+ * 8787 is always first. A sticky `lastPort` of 8788 used to win, so a
+ * replacement brain never even attempted 8787 — and never reaped the wedged
+ * predecessor still holding it. Phones and other computers keep the saved 8787
+ * draft, so staying on 8788 is a silent split.
+ */
+export function buildSyncHostPortCandidates(preferredPort?: number | null): number[] {
+  const parsedPreferred = Number.isFinite(preferredPort)
+    ? Math.max(1, Math.min(65_535, Math.floor(Number(preferredPort))))
+    : DEFAULT_SYNC_HOST_PORT;
+  const preferred = parsedPreferred || DEFAULT_SYNC_HOST_PORT;
+  const candidates: number[] = [];
+  const seen = new Set<number>();
+  const add = (port: number) => {
+    const normalized = Math.max(0, Math.min(65_535, Math.floor(port)));
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    candidates.push(normalized);
+  };
+  add(DEFAULT_SYNC_HOST_PORT);
+  if (
+    preferred !== DEFAULT_SYNC_HOST_PORT
+    && preferred >= DEFAULT_SYNC_HOST_PORT
+    && preferred <= SYNC_HOST_MAX_PORT
+  ) {
+    add(preferred);
+  }
+  for (let port = DEFAULT_SYNC_HOST_PORT; port <= SYNC_HOST_MAX_PORT; port += 1) {
+    add(port);
+  }
+  return candidates;
+}
+
 export const DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024;
 export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
 export const RPC_DATA_CHUNK_BYTES = 256 * 1024;

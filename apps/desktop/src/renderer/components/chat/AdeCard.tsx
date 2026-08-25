@@ -32,6 +32,7 @@ import {
   adeCardAuthorLabel,
   adeCardDeeplink,
   adeCardFallbackText,
+  adeCardIsHiddenAfterDismiss,
   adeCardProgressTotal,
   isKnownAdeCardVariant,
   normalizeAdeCardTone,
@@ -99,6 +100,7 @@ function variantIcon(variant: string): PhosphorIcon | undefined {
   if (variant === "pr_merged" || variant === "pr_merge_ready") return GitMerge;
   if (variant === "pr_conflict") return Warning;
   if (variant === "proof_artifact") return Cube;
+  if (variant === "claude_session_quota") return Warning;
   return undefined;
 }
 
@@ -202,11 +204,17 @@ export function AdeCard({
   }, [isLive]);
 
   const known = isKnownAdeCardVariant(card.variant);
+  const isSessionQuota = card.variant === "claude_session_quota";
   const deeplink = adeCardDeeplink(card.navTarget);
   const navigable = Boolean(card.navTarget);
   const openCard = () => {
     if (card.navTarget) navigateToAppTarget(card.navTarget);
   };
+
+  // A successful rebind dismisses this card instead of leaving a "resumed" chip.
+  if (adeCardIsHiddenAfterDismiss(card)) {
+    return null;
+  }
 
   // Unknown variant → fallbackText + deeplink. Never an empty row.
   //
@@ -275,7 +283,9 @@ export function AdeCard({
   const elapsed = isLive ? liveElapsedText(card.createdAt, nowMs) : null;
   const tracked = !isLive && !realDuration ? trackedSpanText(card) : null;
 
-  const headTone: ChatCardTone = isLive ? "running" : hasWarning ? "warn" : degradedReason ? "neutral" : "ok";
+  const headTone: ChatCardTone = isSessionQuota
+    ? "warn"
+    : isLive ? "running" : hasWarning ? "warn" : degradedReason ? "neutral" : "ok";
   const diff = diffStatFromMetrics(card);
 
   // A card only earns a box when it has something to put in one. A passing
@@ -284,10 +294,12 @@ export function AdeCard({
   const showDetail = detailRows.length > 0 && (hasWarning || isLive || card.variant === "proof_artifact");
   // A hosted panel always earns a box: a hairline row with a rendered panel
   // hanging off it has no frame to say where the plugin's content ends.
-  const skin = hasWarning ? "rail" : showDetail || isLive || degradedReason || panel ? "inset" : "line";
+  const skin = isSessionQuota || hasWarning
+    ? "rail"
+    : showDetail || isLive || degradedReason || panel ? "inset" : "line";
 
   const metaParts = [
-    hasWarning && progress ? `${progress.passed} passed` : null,
+    hasWarning && progress && !isSessionQuota ? `${progress.passed} passed` : null,
     !hasWarning && !isLive && progressTotal > 0 ? `${progressTotal} job${progressTotal === 1 ? "" : "s"}` : null,
     realDuration ? `ran ${realDuration}` : null,
     elapsed,
@@ -335,13 +347,14 @@ export function AdeCard({
         {degradedReason ? <ChatCardSub className="mt-0.5 text-amber-100/60">{degradedReason}</ChatCardSub> : null}
       </ChatCardRow>
 
-      {/* A meter only says something while work is still in flight. */}
-      {isLive && progress && progressTotal > 0 ? (
+      {/* A meter only says something while work is still in flight. Quota cards
+          keep the usage bar after the reject so the reset window stays visible. */}
+      {(isLive || isSessionQuota) && progress && progressTotal > 0 ? (
         <ChatCardMeter progress={progress} className="ml-[26px] mt-2" />
       ) : null}
 
       {/* Chips are for counts the head line cannot carry (a diff already did). */}
-      {!diff && metrics.length && (hasWarning || isLive || card.variant === "proof_artifact") ? (
+      {!diff && metrics.length && (hasWarning || isLive || isSessionQuota || card.variant === "proof_artifact") ? (
         <div className="ml-[26px] mt-2 flex flex-wrap items-center gap-1.5">
           {metrics.map((metric) => (
             <ChatCardChip key={`${metric.label}:${metric.value}`} tone={toneOf(metric.tone)}>

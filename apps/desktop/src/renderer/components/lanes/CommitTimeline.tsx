@@ -1,5 +1,5 @@
 import React from "react";
-import type { GitCommitSummary } from "../../../shared/types";
+import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
 
@@ -47,7 +47,8 @@ export function CommitTimeline({
   onSelectCommit,
   refreshTrigger,
   hasUpstream,
-  remoteMissing
+  remoteMissing,
+  runtimePin = null
 }: {
   laneId: string | null;
   active?: boolean;
@@ -56,7 +57,10 @@ export function CommitTimeline({
   refreshTrigger?: number;
   hasUpstream?: boolean | null;
   remoteMissing?: boolean;
+  /** Machine this lane lives on; `null` means the tab's bound machine. */
+  runtimePin?: OpenProjectBinding | null;
 }) {
+  const pin = runtimePin ?? null;
   const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -74,7 +78,7 @@ export function CommitTimeline({
     setLoading(true);
     setError(null);
     try {
-      const rows = await window.ade.git.listRecentCommits({ laneId, limit });
+      const rows = await window.ade.git.listRecentCommits({ laneId, limit }, pin);
       setCommits([...rows].reverse());
     } catch (err) {
       setError(formatTimelineError(err));
@@ -82,7 +86,7 @@ export function CommitTimeline({
     } finally {
       setLoading(false);
     }
-  }, [active, laneId, limit]);
+  }, [active, laneId, limit, pin]);
 
   React.useEffect(() => {
     metaByShaRef.current = new Map();
@@ -91,7 +95,7 @@ export function CommitTimeline({
     setTooltipPos(null);
     setLimit(40);
     didInitialScrollRef.current = false;
-  }, [laneId]);
+  }, [laneId, pin]);
 
   React.useEffect(() => {
     void load();
@@ -119,7 +123,7 @@ export function CommitTimeline({
       if (metaByShaRef.current.has(sha) || inFlightMetaRef.current.has(sha)) return;
       inFlightMetaRef.current.add(sha);
       try {
-        const messageRaw = await window.ade.git.getCommitMessage({ laneId, commitSha: sha }).catch(() => "");
+        const messageRaw = await window.ade.git.getCommitMessage({ laneId, commitSha: sha }, pin).catch(() => "");
         const message = messageRaw.trim().length ? messageRaw.trim() : null;
         metaByShaRef.current.set(sha, { fileCount: null, message, loadedAt: new Date().toISOString() });
         setHoveredSha((prev) => (prev === sha ? sha : prev));
@@ -129,7 +133,7 @@ export function CommitTimeline({
         inFlightMetaRef.current.delete(sha);
       }
     },
-    [laneId]
+    [laneId, pin]
   );
 
   const onScroll = (event: React.UIEvent<HTMLDivElement>) => {

@@ -3,6 +3,7 @@ import { COLORS } from "../../lanes/laneDesignTokens";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorTab } from "./editorGroupsStore";
 import { useFileContent } from "./useFileContent";
+import type { PinnedFilesApi } from "./pinnedFilesApi";
 import { tabIsTextEditable } from "./viewerRegistry";
 import { CodeViewer } from "./viewers/CodeViewer";
 import { ImageViewer } from "./viewers/ImageViewer";
@@ -19,6 +20,7 @@ import type { EditorApi, EditorThemeMode, ViewerProps } from "./viewers/types";
 
 export type ViewerHostProps = {
   workspaceId: string;
+  files: PinnedFilesApi;
   rootPath: string;
   tab: EditorTab;
   theme: EditorThemeMode;
@@ -35,8 +37,8 @@ export type ViewerHostProps = {
  * file content for the active workbench tab.
  */
 export function ViewerHost(props: ViewerHostProps) {
-  const { workspaceId, tab, reloadToken = 0 } = props;
-  const contentState = useFileContent(workspaceId, tab.path, reloadToken);
+  const { workspaceId, files, tab, reloadToken = 0 } = props;
+  const contentState = useFileContent(files, workspaceId, tab.path, reloadToken);
 
   if (contentState.status === "loading") {
     return <Centered>Loading {tab.title}…</Centered>;
@@ -47,6 +49,7 @@ export function ViewerHost(props: ViewerHostProps) {
 
   const viewerProps: ViewerProps = {
     workspaceId,
+    files,
     rootPath: props.rootPath,
     tab,
     content: contentState.content,

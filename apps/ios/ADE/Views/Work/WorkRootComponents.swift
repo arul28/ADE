@@ -585,6 +585,13 @@ struct WorkSessionListRow: View {
   var onKeepActive: (TerminalSessionSummary) -> Void = { _ in }
   var onSnooze: (TerminalSessionSummary, WorkSnoozeDuration) -> Void = { _, _ in }
   var onWake: (TerminalSessionSummary) -> Void = { _ in }
+  /// Demote a subagent chat to a peer so it stops reporting to its parent.
+  var onDemoteToPeer: (TerminalSessionSummary) -> Void = { _ in }
+  /// Promote a peer chat back to a subagent so it reports to its parent again.
+  var onPromoteToSubagent: (TerminalSessionSummary) -> Void = { _ in }
+  /// The host advertises `chat.setSpawnKind`. Older hosts have
+  /// `chat.updateSession` but cannot apply spawn-kind writes.
+  var spawnKindUpdateAvailable: Bool = false
   /// The host advertises `work.deleteSession` — the stop-then-delete path for a
   /// non-chat row. Older hosts never had it, so a phone talking to one hides the
   /// two destructive items rather than offering a control that always fails.
@@ -619,11 +626,21 @@ struct WorkSessionListRow: View {
 
   private var isChat: Bool { isChatSession(session) }
 
-  /// Mid-flight. Desktop hides Settle for all three of these
-  /// (`SessionContextMenu.tsx:196-199`): filing away a row the machine is still
-  /// working in claims an outcome that has not happened yet, and the row is
-  /// about to change state on its own anyway. iOS used to allow it, which let a
-  /// user settle a session mid-turn.
+  /// Mid-flight. Desktop hides Settle for these (`sessionIsMidFlight` in
+  /// `renderer/lib/terminalAttention.ts`): filing away a row the machine is
+  /// still working in claims an outcome that has not happened yet, and the row
+  /// is about to change state on its own anyway. iOS used to allow it, which
+  /// let a user settle a session mid-turn.
+  ///
+  /// Desktop's version carries one extra clause this deliberately does not:
+  /// there, live background work promotes a resting session back to `running`,
+  /// and such a row must still be settleable because settle teardown is what
+  /// stops that work. iOS has no background-work promotion — `liveness` is not
+  /// part of this file's `CanonicalSessionState` and no session-level
+  /// background count reaches the phone — so a background-only session already
+  /// reads `ready`/`idle` here and Settle is already offered. The two agree on
+  /// behaviour by different routes; if iOS ever gains the promotion, it must
+  /// gain the `liveness == .turn` clause with it.
   private var isActivelyRunning: Bool {
     canonicalPhase == .starting || canonicalPhase == .running || canonicalPhase == .stale
   }
@@ -687,6 +704,24 @@ struct WorkSessionListRow: View {
       && session.settledAt != nil
       && session.resolvedSettleOverride != .active
       && canonicalPhase == .settled
+  }
+
+  private var canDemoteToPeer: Bool {
+    workCanDemoteChatToPeer(
+      isChat: isChat,
+      spawnKind: chatSummary?.spawnKind,
+      parentSessionId: chatSummary?.orchestrationParentSessionId,
+      hostSupportsSpawnKindUpdate: spawnKindUpdateAvailable
+    )
+  }
+
+  private var canPromoteToSubagent: Bool {
+    workCanPromoteChatToSubagent(
+      isChat: isChat,
+      spawnKind: chatSummary?.spawnKind,
+      parentSessionId: chatSummary?.orchestrationParentSessionId,
+      hostSupportsSpawnKindUpdate: spawnKindUpdateAvailable
+    )
   }
 
   private var snoozeOptions: [WorkSnoozeOption] {
@@ -894,7 +929,7 @@ struct WorkSessionListRow: View {
   @ViewBuilder
   private func lifecycleMenuSection(status: String) -> some View {
     let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
-    if canStopRuntime || lifecycleAvailable || snoozeAvailable {
+    if canStopRuntime || lifecycleAvailable || snoozeAvailable || canDemoteToPeer || canPromoteToSubagent {
       Divider()
       // Stop runtime moved here from the identity block: it is a lifecycle
       // change, and it is NOT destructive — the session and its transcript
@@ -953,6 +988,20 @@ struct WorkSessionListRow: View {
           onKeepActive(session)
         } label: {
           Label("Keep active", systemImage: "pin.circle")
+        }
+      }
+      if canDemoteToPeer {
+        Button {
+          onDemoteToPeer(session)
+        } label: {
+          Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+        }
+      }
+      if canPromoteToSubagent {
+        Button {
+          onPromoteToSubagent(session)
+        } label: {
+          Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
         }
       }
     }

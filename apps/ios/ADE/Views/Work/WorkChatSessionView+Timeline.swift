@@ -6,7 +6,7 @@ extension WorkChatSessionView {
   /// Id of the assistant message still receiving streaming deltas, or nil
   /// when no turn is active. Only the LAST message qualifies, and only while
   /// the session is actively streaming — that message's bubble parses its
-  /// markdown through the tail-only streaming parser; every completed message
+  /// markdown through the bounded streaming parser; every completed message
   /// keeps the whole-text block cache path.
   var streamingAssistantMessageId: String? {
     guard shouldShowInterruptControl else { return nil }
@@ -45,15 +45,59 @@ extension WorkChatSessionView {
         controls: model,
         onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
         onShowMore: {
-          assistantLineBudgets[model.messageId] = model.nextLineBudget
-          refreshTimelinePresentation()
-          if isNearBottom {
-            pinToLatestAfterLayout(proxy, reason: "assistant-show-more")
-          }
-        }
+          expandAssistantMessage(
+            messageId: model.messageId,
+            nextLineBudget: model.nextLineBudget,
+            proxy: proxy,
+            restoreRowId: model.willRemainTruncatedAfterNextStep
+              ? entry.id
+              : entry.sourceEntryId,
+          )
+        },
+        onOpenFullOutput: { openAssistantMessageFullOutput(messageId: model.messageId) }
       )
       .equatable()
     }
+  }
+
+  /// One "Show more" step, for both render paths.
+  ///
+  /// Expansion grows the message DOWNWARD from a head anchor, so the reader's
+  /// current view is unchanged and the right thing to do with the scroll offset
+  /// is to leave the row they tapped where it is. It used to re-pin the
+  /// transcript to its bottom, which threw the reader to the end of the chat
+  /// for asking to see more of a message in the middle of it.
+  @MainActor
+  func expandAssistantMessage(
+    messageId: String,
+    nextLineBudget: Int,
+    proxy: ScrollViewProxy,
+    restoreRowId: String
+  ) {
+    assistantLineBudgets[messageId] = nextLineBudget
+    assistantHeadAnchorOverrides.insert(messageId)
+    refreshTimelinePresentation()
+
+    // The expansion changes a tail slice into a head slice. Keep the row the
+    // reader acted on at the same viewport edge instead of allowing SwiftUI to
+    // choose the newly-created first block and teleport to the beginning.
+    DispatchQueue.main.async {
+      var transaction = Transaction()
+      transaction.disablesAnimations = true
+      withTransaction(transaction) {
+        proxy.scrollTo(restoreRowId, anchor: .bottom)
+      }
+    }
+  }
+
+  /// Second rung of the message-level ladder: the whole answer, on its own
+  /// screen, instead of another bounded step through it.
+  @MainActor
+  func openAssistantMessageFullOutput(messageId: String) {
+    guard let markdown = assistantMarkdown(messageId: messageId) else { return }
+    outputViewer.present(
+      WorkOutputViewerRequest(title: "Response", text: markdown, kind: .text)
+    )
   }
 
   func copyAssistantMarkdown(messageId: String) {
@@ -92,12 +136,28 @@ extension WorkChatSessionView {
         maxUserBubbleWidth: maxUserBubbleWidth,
         onRunUnprocessed: onRunUnprocessedMessage,
         onEditUnprocessed: onEditUnprocessedMessage,
-        onDismissUnprocessed: onDismissUnprocessedMessage
+        onDismissUnprocessed: onDismissUnprocessedMessage,
+        onShowMore: message.role == "assistant"
+          ? {
+            expandAssistantMessage(
+              messageId: message.id,
+              nextLineBudget: workAssistantMessageShowMoreLineBudget(
+                current: assistantLineBudgets[message.id] ?? assistantBudgetFloors[message.id]
+              ),
+              proxy: proxy,
+              restoreRowId: entry.id
+            )
+          }
+          : nil,
+        // Only an explicit tap writes this map, so its presence *is* "already
+        // expanded once".
+        hasExpandedInPlace: assistantLineBudgets[message.id] != nil
       )
+      .equatable()
     case .toolCard(let toolCard):
-      timelineToolCard(toolCard)
+      timelineToolCard(toolCard, entryId: entry.id)
     case .eventCard(let card):
-      timelineEventCard(card)
+      timelineEventCard(card, entryId: entry.id)
     case .adeCard(let card):
       // `WorkAdeCardView` handles the reserved `open` action through navTarget;
       // host-specific action ids stay hidden until iOS has a dispatcher.
@@ -106,12 +166,27 @@ extension WorkChatSessionView {
       // card a plugin emitted may host that plugin's panel, but only when the
       // plugin also DECLARED a card naming it. Passed by value per row — the
       // index is rebuilt once per plugin-row change, never per card.
-      WorkAdeCardView(
-        card: card,
-        sessionId: session.id,
-        pluginContributions: pluginContributions,
-        pluginSyncService: pluginSyncService
-      )
+      if card.isHiddenAfterDismiss {
+        EmptyView()
+      } else {
+        WorkAdeCardView(
+          card: card,
+          // Live for its own turn, one line ("CI · PR #490  18✓ 3✕") after.
+          isExpanded: cardIsExpanded(card.id, entryId: entry.id, keepsOpenWhileLive: true),
+          onToggle: { toggleCard(card.id, entryId: entry.id, keepsOpenWhileLive: true) },
+          onAction: card.variant == "claude_session_quota"
+            ? { action in
+              if action.id == "fork-local" {
+                Task { await onForkChatInLane?() }
+              }
+            }
+            : nil,
+          sessionId: session.id,
+          pluginContributions: pluginContributions,
+          pluginSyncService: pluginSyncService
+        )
+        .equatable()
+      }
     case .usageSummary(let summary):
       WorkTurnUsageSummaryBanner(
         summary: summary,
@@ -119,29 +194,55 @@ extension WorkChatSessionView {
         modelLabel: chatSummaryContext.modelLabel
       )
     case .commandCard(let commandCard):
-      WorkCommandCardView(card: commandCard)
+      WorkCommandCardView(
+        card: commandCard,
+        isExpanded: cardIsExpanded(commandCard.id, entryId: entry.id),
+        onToggle: { toggleCard(commandCard.id, entryId: entry.id) }
+      )
+      .equatable()
     case .fileChangeCard(let fileChangeCard):
-      WorkFileChangeCardView(card: fileChangeCard)
+      WorkFileChangeCardView(
+        card: fileChangeCard,
+        isExpanded: cardIsExpanded(fileChangeCard.id, entryId: entry.id),
+        onToggle: { toggleCard(fileChangeCard.id, entryId: entry.id) }
+      )
+      .equatable()
     case .subagent(let row):
       WorkSubagentTimelineRowView(row: row, onOpen: onSelectSubagentRow)
     case .subagentStoppedGroup(let model):
-      WorkSubagentStoppedGroupCardView(model: model, onOpen: onSelectSubagentRow)
+      WorkSubagentStoppedGroupCardView(
+        model: model,
+        isExpanded: cardIsExpanded(model.id, entryId: entry.id),
+        onToggle: { toggleCard(model.id, entryId: entry.id) },
+        onOpen: onSelectSubagentRow
+      )
     case .toolGroup(let group):
-      timelineToolGroup(group)
+      timelineToolGroup(group, entryId: entry.id)
     case .changedFiles(let group):
-      timelineChangedFiles(group)
+      timelineChangedFiles(group, entryId: entry.id)
     case .artifact(let artifact):
-      timelineArtifact(artifact)
+      timelineArtifact(artifact, entryId: entry.id)
     case .turnSeparator(let separator):
       WorkTurnSeparatorView(separator: separator)
     case .turnEndMarker(let marker):
       let activity = turnToolActivity.completedByTurnId[marker.turnId]
+      let isLatestTurnEnd = marker.turnId == timelineSnapshot.latestTurnEndTurnId
       WorkTurnEndMarkerView(
         marker: marker,
         toolCount: activity?.count ?? 0,
         onOpenActivity: activity.map { _ in
           { toolActivitySheet = .completed(marker.turnId) }
-        }
+        },
+        usageViewModel: isLatestTurnEnd
+          ? contextUsageViewModelCache.value(
+            sessionId: session.id,
+            transcript: transcript,
+            transcriptRenderSignature: transcriptRenderSignature,
+            provider: chatSummaryContext.provider,
+            fallbackContextWindow: chatSummaryContext.contextWindowFallback
+          )
+          : nil,
+        modelLabel: chatSummaryContext.modelLabel
       )
     case .pendingQuestion(let question):
       // When offline, still render the card in a disabled (busy) state so the
@@ -227,31 +328,34 @@ extension WorkChatSessionView {
   }
 
   @ViewBuilder
-  func timelineToolGroup(_ group: WorkToolGroupModel) -> some View {
+  func timelineToolGroup(_ group: WorkToolGroupModel, entryId: String) -> some View {
     WorkToolCallsPanelView(
       group: group,
-      isExpanded: expandedToolCardIds.contains(group.id),
-      onToggle: { toggleToolCard(group.id) }
+      isExpanded: cardIsExpanded(group.id, entryId: entryId),
+      onToggle: { toggleCard(group.id, entryId: entryId) },
+      expandedMemberIds: cardExpansion.expandedIds,
+      onToggleMember: { memberId in toggleNestedCard(memberId) }
     )
   }
 
   @ViewBuilder
-  func timelineChangedFiles(_ group: WorkChangedFilesGroupModel) -> some View {
+  func timelineChangedFiles(_ group: WorkChangedFilesGroupModel, entryId: String) -> some View {
     WorkChangedFilesPanelView(
       group: group,
-      isExpanded: expandedToolCardIds.contains(group.id),
-      onToggle: { toggleToolCard(group.id) },
+      isExpanded: cardIsExpanded(group.id, entryId: entryId),
+      onToggle: { toggleCard(group.id, entryId: entryId) },
+      expandedFileIds: cardExpansion.expandedIds,
+      onToggleFile: { fileId in toggleNestedCard(fileId) },
       onUndo: nil
     )
   }
 
   @ViewBuilder
-  func timelineToolCard(_ toolCard: WorkToolCardModel) -> some View {
+  func timelineToolCard(_ toolCard: WorkToolCardModel, entryId: String) -> some View {
     WorkToolCardView(
       toolCard: toolCard,
-      references: extractWorkNavigationTargets(from: [toolCard.argsText, toolCard.resultText].compactMap { $0 }.joined(separator: "\n")),
-      isExpanded: expandedToolCardIds.contains(toolCard.id),
-      onToggle: { toggleToolCard(toolCard.id) },
+      isExpanded: cardIsExpanded(toolCard.id, entryId: entryId),
+      onToggle: { toggleCard(toolCard.id, entryId: entryId) },
       onOpenFile: { path in
         Task { await onOpenFile(path) }
       },
@@ -259,17 +363,26 @@ extension WorkChatSessionView {
         Task { await onOpenPr(prNumber) }
       }
     )
+    .equatable()
   }
 
   @ViewBuilder
-  func timelineEventCard(_ card: WorkEventCardModel) -> some View {
+  func timelineEventCard(_ card: WorkEventCardModel, entryId: String) -> some View {
     if card.kind == "reasoning" {
       WorkReasoningCard(
         card: card,
-        isLive: isReasoningLive(card)
+        isLive: isReasoningLive(card),
+        isExpanded: cardIsExpanded(card.id, entryId: entryId),
+        onToggle: { toggleCard(card.id, entryId: entryId) }
       )
     } else if card.kind == "plan" {
-      WorkProposedPlanCard(card: card)
+      WorkProposedPlanCard(
+        card: card,
+        // A plan being written is the one thing the reader is watching, so it
+        // stays open for its own turn and folds to `Plan · 4/7` after.
+        isExpanded: cardIsExpanded(card.id, entryId: entryId, keepsOpenWhileLive: true),
+        onToggle: { toggleCard(card.id, entryId: entryId, keepsOpenWhileLive: true) }
+      )
     } else if card.kind == "question" {
       WorkResolvedQuestionCard(card: card, fallbackProvider: chatSummaryContext.provider)
     } else if card.kind == "planApproval" {
@@ -284,13 +397,18 @@ extension WorkChatSessionView {
         onRecover: onRecoverCodexTurn
       )
     } else if card.kind == "turnDiagnostics" {
-      WorkTurnDiagnosticsDisclosureView(card: card)
+      WorkTurnDiagnosticsDisclosureView(
+        card: card,
+        isExpanded: cardIsExpanded(card.id, entryId: entryId),
+        onToggle: { toggleCard(card.id, entryId: entryId) }
+      )
     } else {
       WorkEventCardView(
         card: card,
         onOpenFile: { path in Task { await onOpenFile(path) } },
         onOpenPr: { number in Task { await onOpenPr(number) } }
       )
+      .equatable()
     }
   }
 
@@ -303,10 +421,12 @@ extension WorkChatSessionView {
   }
 
   @ViewBuilder
-  func timelineArtifact(_ artifact: ComputerUseArtifactSummary) -> some View {
+  func timelineArtifact(_ artifact: ComputerUseArtifactSummary, entryId: String) -> some View {
     WorkArtifactView(
       artifact: artifact,
       content: artifactContent[artifact.id],
+      isExpanded: cardIsExpanded(artifact.id, entryId: entryId),
+      onToggle: { toggleCard(artifact.id, entryId: entryId) },
       onAppear: { Task { await onLoadArtifact(artifact) } },
       onOpenImage: { image in
         fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
@@ -391,7 +511,11 @@ struct WorkAssistantMarkdownBlockRow: View, Equatable {
   }
 
   var body: some View {
-    WorkMarkdownBlockView(block: model.block, isStreamingTail: model.isStreamingTail)
+    WorkMarkdownBlockView(
+      block: model.block,
+      isStreamingTail: model.isStreamingTail,
+      codeSource: model.codeSource
+    )
       .frame(maxWidth: .infinity, alignment: .leading)
       .contextMenu {
         Button(action: onCopyMessage) {
@@ -442,9 +566,18 @@ struct WorkAssistantMessageControlsView: View, Equatable {
   let controls: WorkAssistantMessageControlsModel
   let onCopyMessage: () -> Void
   let onShowMore: () -> Void
+  let onOpenFullOutput: () -> Void
 
   static func == (lhs: WorkAssistantMessageControlsView, rhs: WorkAssistantMessageControlsView) -> Bool {
     lhs.controls == rhs.controls
+  }
+
+  private var affordance: WorkTruncatedOutputAffordance {
+    workTruncatedOutputAffordance(
+      isTruncated: controls.canShowMore,
+      hasExpandedInPlace: controls.hasExpandedInPlace,
+      isClipped: false
+    )
   }
 
   var body: some View {
@@ -459,15 +592,32 @@ struct WorkAssistantMessageControlsView: View, Equatable {
         Label("Copy full", systemImage: "doc.on.doc")
           .labelStyle(.titleAndIcon)
           .font(.caption2.weight(.semibold))
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .foregroundStyle(ADEColor.textSecondary)
 
-      if controls.canShowMore {
+      switch affordance {
+      case .none:
+        EmptyView()
+      case .showMore:
         Button(action: onShowMore) {
           Label("Show more", systemImage: "chevron.down")
             .labelStyle(.titleAndIcon)
             .font(.caption2.weight(.semibold))
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(ADEColor.accent)
+      case .openFullOutput:
+        Button(action: onOpenFullOutput) {
+          Label("Open full output", systemImage: "arrow.up.left.and.arrow.down.right")
+            .labelStyle(.titleAndIcon)
+            .font(.caption2.weight(.semibold))
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(ADEColor.accent)

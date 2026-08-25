@@ -9,7 +9,11 @@ import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
-import type { ExternalSessionImportResult, ExternalSessionSummary } from "./importSessions/contract";
+import type {
+  ExternalSessionImportResult,
+  ExternalSessionSource,
+  ExternalSessionSummary,
+} from "./importSessions/contract";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -20,8 +24,15 @@ type WorkStartSurfaceProps = {
   lanes: LaneSummary[];
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
-  onImportedSession?: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
-  onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
+  onImportedSession?: (
+    summary: ExternalSessionSummary,
+    result: ExternalSessionImportResult,
+    source?: ExternalSessionSource,
+  ) => void;
+  onOpenExistingImportedSession?: (
+    ref: { kind: "chat" | "cli"; sessionId: string },
+    source?: ExternalSessionSource,
+  ) => void;
   onDraftLaneChange?: (laneId: string) => void;
   onDraftMachineChange?: (machineId: string | null) => void;
   initialLinearIssueContext?: LaneLinearIssue | null;
@@ -60,11 +71,6 @@ export function WorkStartSurface({
   const boundMachineId = projectBinding?.kind === "remote"
     ? projectBinding.targetId
     : "this-mac";
-  const draftMachinePending = Boolean(
-    draftMachineId
-    && draftMachineId !== boundMachineId
-    && !crossMachineLanesByMachineId[draftMachineId],
-  );
   const laneForMachine = useCallback((machineId: string | null, laneId: string) => {
     const resolvedMachineId = machineId ?? boundMachineId;
     if (resolvedMachineId === boundMachineId) {
@@ -80,10 +86,7 @@ export function WorkStartSurface({
     [draftMachineId, laneForMachine],
   );
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
-    if (isKnownLaneId(draftLaneId)) {
-      return draftLaneId;
-    }
-    if (draftMachinePending && draftLaneId) {
+    if (draftLaneId) {
       return draftLaneId;
     }
     if (isKnownLaneId(globallySelectedLaneId)) {
@@ -94,9 +97,9 @@ export function WorkStartSurface({
   const [launchBusy, setLaunchBusy] = useState(false);
   const selectedLane = useMemo(
     () => laneForMachine(draftMachineId, selectedLaneId)
-      ?? (draftMachinePending ? null : lanes[0])
+      ?? (selectedLaneId ? null : lanes[0])
       ?? null,
-    [draftMachineId, draftMachinePending, laneForMachine, lanes, selectedLaneId],
+    [draftMachineId, laneForMachine, lanes, selectedLaneId],
   );
 
   const setLaneAndSync = useCallback((laneId: string) => {
@@ -112,18 +115,14 @@ export function WorkStartSurface({
       setSelectedLaneId("");
       return;
     }
-    if (draftLaneId && draftLaneId !== selectedLaneId && isKnownLaneId(draftLaneId)) {
+    if (draftLaneId && draftLaneId !== selectedLaneId) {
       setSelectedLaneId(draftLaneId);
       if (!draftMachineId || draftMachineId === boundMachineId) {
         selectLaneGlobal(draftLaneId);
       }
       return;
     }
-    if (draftMachinePending && draftLaneId) {
-      if (selectedLaneId !== draftLaneId) setSelectedLaneId(draftLaneId);
-      return;
-    }
-    if (!selectedLaneId || !isKnownLaneId(selectedLaneId)) {
+    if (!selectedLaneId) {
       const fallbackLaneId =
         draftLaneId && isKnownLaneId(draftLaneId)
           ? draftLaneId
@@ -139,7 +138,6 @@ export function WorkStartSurface({
   }, [
     draftLaneId,
     draftMachineId,
-    draftMachinePending,
     boundMachineId,
     globallySelectedLaneId,
     isKnownLaneId,

@@ -15,6 +15,7 @@ import {
   resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
+import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createFileLogger, type Logger } from "../logging/logger";
@@ -35,6 +36,7 @@ import type {
   AdeAccountMachinesResult,
   AdeAccountPairMachineProgress,
   AdeAccountLoginPoll,
+  AdeAccountSessionRepairResult,
   AdeAccountSessionReadState,
   AdeAccountSessionState,
   AdeAccountStatus,
@@ -70,6 +72,22 @@ type AccountBridgeOptions = {
     action: string,
     args?: Record<string, unknown>,
   ) => Promise<unknown>;
+  /**
+   * One coarse membership fact per machine removal: did the account directory
+   * accept it, or not.
+   *
+   * Reported from here rather than from the IPC handler because only this
+   * function knows WHICH half failed. The directory delete is the authoritative
+   * membership change; the Activity purge that follows it is a local cleanup
+   * that rethrows so the user can retry. From outside, that rethrow looks like a
+   * failed removal — the machine is off the account either way — and telemetry
+   * that said so would be wrong about the only thing it reports.
+   *
+   * Nothing about the machine travels: no key, no name, no account id. The
+   * caller owns the event vocabulary, so this bridge keeps no analytics
+   * dependency.
+   */
+  recordMachineRemoved?: (outcome: "completed" | "failed") => void;
   logger?: {
     info(message: string, meta?: Record<string, unknown>): void;
     warn(message: string, meta?: Record<string, unknown>): void;
@@ -402,6 +420,13 @@ export type AccountBridge = {
   ): () => void;
   removeMachine(machineKey: string): Promise<AdeAccountMachineRemovalResult>;
   repairMachinePairing(): Promise<AdeAccountMachinePairingRepairResult>;
+  /**
+   * Repairs the credential FILE, not the account: converge its key binding and
+   * merge back anything a peer process had to set aside. Synchronous work on a
+   * locked file, so it is deliberately not routed through the brain — the brain
+   * is usually the process that could not read it.
+   */
+  repairCredentialStore(): Omit<AdeAccountSessionRepairResult, "brainRestarted">;
 };
 
 export type AccountBridgePairMachineOptions = {
@@ -684,7 +709,22 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       // Directory removal first: it is the authoritative membership change, and
       // a purge that landed against a machine still on the roster would just be
       // refilled by its next publish.
-      const result = await directoryService().deleteMachine(machineKey);
+      let result: AdeAccountMachineRemovalResult;
+      try {
+        result = await directoryService().deleteMachine(machineKey);
+      } catch (error) {
+        try {
+          options.recordMachineRemoved?.("failed");
+        } catch {
+          // Never let a telemetry sink mask the directory's own failure.
+        }
+        throw error;
+      }
+      try {
+        options.recordMachineRemoved?.("completed");
+      } catch {
+        // Same: the removal already happened and the caller must still see it.
+      }
       try {
         await options.purgeMachineActivity?.(machineKey);
       } catch (error) {
@@ -709,6 +749,31 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
      * leaves both latches set, because heartbeats always publish
      * `pairing: false` and sign-in reuses the same stable device id.
      */
+    repairCredentialStore: (): Omit<AdeAccountSessionRepairResult, "brainRestarted"> => {
+      const report = new EncryptedFileCredentialStore({ secretsDir }).repairSync();
+      // Machine sink, same as the other machine-level credential mutations in
+      // this file: on a remote-bound project the project logger ships records to
+      // the OTHER machine, and a credential repair is a fact about this one.
+      getMachineLogger()?.info("account.credential_store_repair", {
+        state: report.state,
+        reason: report.reason,
+        recoveredKeys: report.recoveredKeys,
+        quarantineRecoverable: report.quarantine?.recoverable ?? null,
+      });
+      const readable = report.state !== "unreadable";
+      // Only an unreadable LIVE store means the user has to sign in again. An
+      // unrecoverable quarantine marker is a fact about a file that was set
+      // aside earlier, and it is never cleared while the ciphertext is kept for
+      // diagnostics — so treating it as "sign in again" would make every future
+      // Repair demand a sign-in on a machine that is signed in and fine.
+      const outcome: AdeAccountSessionRepairResult["outcome"] = !readable
+        ? "sign_in_required"
+        : report.recoveredKeys > 0
+          ? "repaired"
+          : "no_problem_found";
+      return { outcome, readable, recoveredKeys: report.recoveredKeys };
+    },
+
     repairMachinePairing: async (): Promise<AdeAccountMachinePairingRepairResult> => {
       if (!options.callBrainAccountAction) {
         throw new Error(

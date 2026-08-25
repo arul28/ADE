@@ -22,6 +22,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -66,14 +67,14 @@ import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
 import {
-  buildSyncCloudRelayStatus,
   createSyncCloudRelayStore,
   type SyncCloudRelayStore,
 } from "./syncCloudRelayStore";
+import { buildSyncCloudRelayStatus } from "./syncCloudRelayStatus";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
-import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
+import { DEFAULT_SYNC_HOST_PORT, buildSyncHostPortCandidates } from "./syncProtocol";
 import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import {
   buildAddressCandidates,
@@ -142,6 +143,7 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
   pushPublisherService?: PushPublisherService | null;
@@ -378,9 +380,9 @@ function isChatToolType(toolType: string | null | undefined): boolean {
   if (!normalized) return false;
   return normalized === "cursor" || normalized.endsWith("-chat");
 }
-const LEGACY_SYNC_HOST_PORT_RETRY_WINDOW = 13;
-const LEGACY_SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + LEGACY_SYNC_HOST_PORT_RETRY_WINDOW;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
+const CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS = 2_000;
+const CANONICAL_SYNC_PORT_MIGRATE_MS = 15_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
 const VIEWER_DRAFT_TRANSPORT_ERROR_CODES = [
@@ -504,32 +506,6 @@ function createInactiveTailnetDiscoveryStatus(
   };
 }
 
-function buildHostPortCandidates(preferredPort: number | null | undefined): number[] {
-  const parsedPreferred = Number.isFinite(preferredPort)
-    ? Math.max(1, Math.min(65_535, Math.floor(Number(preferredPort))))
-    : DEFAULT_SYNC_HOST_PORT;
-  const preferred = parsedPreferred || DEFAULT_SYNC_HOST_PORT;
-  const preferredIsLegacyReachable = preferred >= DEFAULT_SYNC_HOST_PORT
-    && preferred <= LEGACY_SYNC_HOST_MAX_PORT;
-  const candidates: number[] = [];
-  const seen = new Set<number>();
-  const add = (port: number) => {
-    const normalized = Math.max(0, Math.min(65_535, Math.floor(port)));
-    if (seen.has(normalized)) return;
-    seen.add(normalized);
-    candidates.push(normalized);
-  };
-  if (preferredIsLegacyReachable) {
-    add(preferred);
-  } else {
-    add(DEFAULT_SYNC_HOST_PORT);
-  }
-  for (let port = DEFAULT_SYNC_HOST_PORT; port <= SYNC_HOST_MAX_PORT; port += 1) {
-    add(port);
-  }
-  return candidates;
-}
-
 export function createSyncService(args: SyncServiceArgs) {
   const layout = resolveAdeLayout(args.projectRoot);
   const pairingStateDir = args.phonePairingStateDir ?? layout.secretsDir;
@@ -575,6 +551,10 @@ export function createSyncService(args: SyncServiceArgs) {
   });
   const cloudRelayStore = args.cloudRelayStore ?? createSyncCloudRelayStore({
     filePath: path.join(pairingStateDir, CLOUD_RELAY_FILE),
+    // Identity mints, rotations, and backup recoveries are logged wherever the
+    // store is built: a machine key that changes with no record is how a live
+    // computer turned into a phantom row its owner deleted.
+    logger: args.logger,
   });
   const accountAuthService = args.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => [args.projectRoot],
@@ -756,6 +736,7 @@ export function createSyncService(args: SyncServiceArgs) {
     operationService: args.operationService,
     aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
@@ -793,6 +774,56 @@ export function createSyncService(args: SyncServiceArgs) {
     lease?.dispose();
   };
 
+  let canonicalPortMigrateTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const stopCanonicalPortMigrateTimer = (): void => {
+    if (!canonicalPortMigrateTimer) return;
+    clearTimeout(canonicalPortMigrateTimer);
+    canonicalPortMigrateTimer = null;
+  };
+
+  const scheduleCanonicalPortMigrate = (delayMs: number): void => {
+    if (!args.sharedSyncListener || disposed) return;
+    stopCanonicalPortMigrateTimer();
+    canonicalPortMigrateTimer = setTimeout(() => {
+      canonicalPortMigrateTimer = null;
+      void attemptCanonicalPortMigrate();
+    }, delayMs);
+    canonicalPortMigrateTimer.unref?.();
+  };
+
+  const attemptCanonicalPortMigrate = async (): Promise<void> => {
+    const listener = args.sharedSyncListener;
+    if (disposed || !listener) return;
+    const currentPort = listener.getPort();
+    if (currentPort == null || currentPort === DEFAULT_SYNC_HOST_PORT) return;
+    try {
+      const migrated = await listener.tryMigrateToPort(DEFAULT_SYNC_HOST_PORT);
+      // Migration awaits a bind + close; dispose can land during that window.
+      if (disposed) return;
+      if (migrated !== DEFAULT_SYNC_HOST_PORT) {
+        scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
+        return;
+      }
+      hostSingletonLease?.updatePort(migrated);
+      deviceRegistryService.touchLocalDevice({
+        lastSeenAt: nowIso(),
+        lastPort: migrated,
+      });
+      args.logger.warn("sync_listener.port_drifted", {
+        from: currentPort,
+        to: migrated,
+      });
+      hostService?.refreshLanDiscovery({ forceLan: true, forceTailnet: true });
+      void args.requestAccountMachinePublish?.();
+    } catch (error) {
+      args.logger.debug("sync_listener.canonical_port_migrate_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (!disposed) scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_MS);
+    }
+  };
+
   const startHostIfNeeded = async (): Promise<void> => {
     if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
@@ -809,12 +840,18 @@ export function createSyncService(args: SyncServiceArgs) {
     }
     if (hostService) {
       const currentLocalDevice = deviceRegistryService.ensureLocalDevice();
+      const activePort = hostService.getPort();
       deviceRegistryService.touchLocalDevice({
         lastSeenAt: nowIso(),
         lastHost: currentLocalDevice.ipAddresses[0] ?? currentLocalDevice.tailscaleIp ?? currentLocalDevice.lastHost,
-        lastPort: hostService.getPort(),
+        lastPort: activePort,
       });
       hostService.refreshLanDiscovery?.();
+      if (activePort != null && activePort !== DEFAULT_SYNC_HOST_PORT) {
+        scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS);
+      } else {
+        stopCanonicalPortMigrateTimer();
+      }
       return;
     }
     const localDevice = deviceRegistryService.ensureLocalDevice();
@@ -842,6 +879,7 @@ export function createSyncService(args: SyncServiceArgs) {
       sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
       agentChatService: args.agentChatService,
+      cursorCloudFleetService: args.cursorCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,
       orchestrationService: args.orchestrationService,
       pushPublisherService: args.pushPublisherService,
@@ -906,9 +944,14 @@ export function createSyncService(args: SyncServiceArgs) {
         });
         void args.requestAccountMachinePublish?.();
       }
+      if (resolvedPort === DEFAULT_SYNC_HOST_PORT) {
+        stopCanonicalPortMigrateTimer();
+      } else {
+        scheduleCanonicalPortMigrate(CANONICAL_SYNC_PORT_MIGRATE_FIRST_MS);
+      }
     };
     try {
-      const portCandidates = buildHostPortCandidates(preferredPort);
+      const portCandidates = buildSyncHostPortCandidates(preferredPort);
       if (args.sharedSyncListener) {
         // The brain-level shared listener binds once and is handed between
         // host services on project switches, so connected phones never see a
@@ -1372,7 +1415,7 @@ export function createSyncService(args: SyncServiceArgs) {
       let accountDirectory: SyncAccountDirectoryHealth;
       try {
         accountDirectory = args.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
-          "sync_disabled",
+          "sync_not_started",
           "Account-directory publishing is not enabled in this runtime.",
         );
       } catch {
@@ -1761,6 +1804,7 @@ export function createSyncService(args: SyncServiceArgs) {
       disposed = true;
       syncPeerService.disconnect();
       clearInterval(localLanePresenceHeartbeatTimer);
+      stopCanonicalPortMigrateTimer();
       await stopHostIfRunning();
       await syncPeerService.dispose();
     },

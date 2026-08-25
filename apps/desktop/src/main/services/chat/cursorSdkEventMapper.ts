@@ -1,6 +1,6 @@
 import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
 import { detectCompactionSignalText } from "../../../shared/contextCompaction";
-import { classifyCursorSdkErrorText } from "./cursorSdkProtocol";
+import { classifyCursorSdkErrorText, type CursorSdkErrorKind } from "./cursorSdkProtocol";
 
 const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
 
@@ -50,7 +50,7 @@ function readStatusDetail(record: SdkMessageRecord): string | null {
   return null;
 }
 
-function errorEventInfo(kind: ReturnType<typeof classifyCursorSdkErrorText>["kind"]):
+function errorEventInfo(kind: CursorSdkErrorKind):
   | { category: "rate_limit" | "network" | "busy" | "auth" | "unknown" }
   | undefined {
   if (kind === "rate_limit") return { category: "rate_limit" };
@@ -72,12 +72,15 @@ function uniqueLines(lines: Array<string | null | undefined>, limit = 4): string
 }
 
 function cursorSdkErrorMessage(
-  kind: ReturnType<typeof classifyCursorSdkErrorText>["kind"],
+  kind: CursorSdkErrorKind,
   errorCode: string | null,
   detail: string | null,
 ): string {
   if (kind === "rate_limit") return "Cursor rate limited this request.";
-  if (kind === "network") return "Cursor SDK stream failed.";
+  // Transport failures (NGHTTP2 resets, ECANCELED/EPIPE writes, dropped
+  // sockets) are not the user's problem to parse — the raw code and request ID
+  // are preserved in the event detail instead.
+  if (kind === "network") return "Cursor's connection dropped mid-run.";
   if (errorCode) return `Cursor run failed: ${errorCode}`;
   return detail ?? "Cursor SDK run failed.";
 }
@@ -463,15 +466,23 @@ export function mapCursorSdkMessageToChatEvents(
         const detailCode = readString(errorDetail?.code);
         const detailName = readString(errorDetail?.name);
         const requestId = readString(errorDetail?.requestId);
-        const classification = classifyCursorSdkErrorText(errorCode, detail, detailMessage, detailCode, detailName);
-        const message = cursorSdkErrorMessage(classification.kind, errorCode, detail);
+        const kind = classifyCursorSdkErrorText(errorCode, detail, detailMessage, detailCode, detailName);
+        const message = cursorSdkErrorMessage(kind, errorCode, detail);
         const eventDetail = uniqueLines([
+          // When the friendly message replaces the raw code (rate limit,
+          // transport), keep the code itself as the first detail line so the
+          // underlying failure is still recoverable from the transcript.
+          errorCode
+            && !message.includes(errorCode)
+            && !(detailMessage?.includes(errorCode) ?? false)
+            ? errorCode
+            : null,
           detailMessage && detailMessage !== message ? detailMessage : null,
           detail && detail !== message && detail !== detailMessage ? detail : null,
           detailCode && detailCode !== errorCode ? `Code: ${detailCode}` : null,
           requestId ? `Cursor request ID: ${requestId}` : null,
         ]);
-        const errorInfo = errorEventInfo(classification.kind);
+        const errorInfo = errorEventInfo(kind);
         return [
           ...compactionEvents,
           {
@@ -495,6 +506,14 @@ export function mapCursorSdkMessageToChatEvents(
         turnId,
         detail: record,
       }];
+    }
+    case "usage": {
+      const tokens = mapTurnEndedTokensToEvent(record, {
+        turnId,
+        runtime,
+        ...(readString(record.run_id) ? { itemId: readString(record.run_id) ?? undefined } : {}),
+      });
+      return tokens ? [tokens] : [];
     }
     default:
       return [];
@@ -560,8 +579,18 @@ export function mapTurnEndedTokensToEvent(
   const record = asRecord(update);
   const usage = asRecord(record?.usage) ?? record;
   if (!usage) return null;
-  const inputTokens = readNumber(usage.inputTokens ?? usage.input_tokens);
-  const outputTokens = readNumber(usage.outputTokens ?? usage.output_tokens);
+  const inputTokens = readNumber(
+    usage.inputTokens
+      ?? usage.input_tokens
+      ?? usage.totalInputTokens
+      ?? usage.total_input_tokens,
+  );
+  const outputTokens = readNumber(
+    usage.outputTokens
+      ?? usage.output_tokens
+      ?? usage.totalOutputTokens
+      ?? usage.total_output_tokens,
+  );
   const cacheReadTokens = readNumber(usage.cacheReadTokens ?? usage.cache_read_tokens);
   const cacheWriteTokens = readNumber(
     usage.cacheWriteTokens

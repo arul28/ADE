@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { isChatToolType } from "../../lib/sessions";
-import { sessionCanonicalUiState } from "../../lib/terminalAttention";
+import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
 import {
   isSessionSnoozed,
   resolveSnoozePresets,
@@ -14,6 +14,7 @@ import { LaneActionsSubmenu } from "./LaneActionsSubmenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 import {
   setSessionSettleOverride,
+  setChatSpawnKind,
   snoozeSessionForDuration,
   unsettleSession,
   wakeSessionNow,
@@ -195,9 +196,7 @@ function SessionContextMenuPanel({
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
   const canonicalPhase = sessionCanonicalUiState(session).phase;
-  const isActivelyRunning = canonicalPhase === "starting"
-    || canonicalPhase === "running"
-    || canonicalPhase === "stale";
+  const isActivelyRunning = sessionIsMidFlight(session);
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"
     || isChat
@@ -448,6 +447,25 @@ function SessionContextMenuPanel({
         )}
 
         {settleRow}
+
+        {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { void setChatSpawnKind(session, "peer", binding); onClose(); }}
+          >
+            Demote to peer
+          </button>
+        ) : null}
+        {isChat && session.orchestrationParentSessionId && session.spawnKind === "peer" ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { void setChatSpawnKind(session, "subagent", binding); onClose(); }}
+          >
+            Promote to subagent
+          </button>
+        ) : null}
 
         {/* ── Go to: the surfaces outside this menu that show the same session. ── */}
         <MenuSeparator />

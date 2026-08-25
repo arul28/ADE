@@ -9,6 +9,9 @@ struct FilesSearchKey: Hashable {
   let workspaceId: String?
   let query: String
   let isLive: Bool
+  /// Part of the key so flipping "Include ignored files" re-runs the query
+  /// instead of leaving the previous result set on screen.
+  let includeIgnored: Bool
 }
 
 struct FilesBreadcrumbItem: Equatable {
@@ -173,6 +176,24 @@ func filesTextPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
     byteLimit: filesTextPreviewByteLimit,
     title: "Preview paused",
     action: "Use ADE on your machine or narrow the file before previewing it on iPhone."
+  )
+}
+
+/// The machine sent only the first chunk of a big text file. iPhone has no
+/// streaming reader, so say what actually arrived rather than presenting the
+/// prefix as the file — and if search sent the user to a line past it, say that
+/// line never loaded instead of quietly landing at the top.
+func filesPartialPreviewLimit(blob: SyncFileBlob, focusLine: Int? = nil) -> FilesPreviewLimit? {
+  guard blob.isPartial == true else { return nil }
+  if let focusLine, focusLine > filesEstimatedLineCount(blob.content) {
+    return FilesPreviewLimit(
+      title: "Line \(focusLine) didn't load",
+      message: "This file is over 1 MB, so your machine sent only the start of it. Open it in ADE on your machine to see that line."
+    )
+  }
+  return FilesPreviewLimit(
+    title: "Only the start of this file loaded",
+    message: "This file is over 1 MB, so your machine sent only the start of it. Open it in ADE on your machine to read the rest."
   )
 }
 

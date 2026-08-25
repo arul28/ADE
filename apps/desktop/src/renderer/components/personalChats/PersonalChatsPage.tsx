@@ -17,7 +17,6 @@ import type {
 import {
   getModelById,
   getRuntimeModelRefForDescriptor,
-  modelSupportsFastMode,
   resolveProviderGroupForModel,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
@@ -518,7 +517,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   }, [selectedSession?.sessionId]);
 
   useEffect(() => {
-    if (availableModelIds.includes(modelId)) return;
+    if (modelId.trim().length > 0) return;
     const fallback = availableModelIds[0];
     if (fallback) setModelId(fallback);
   }, [availableModelIds, modelId]);
@@ -553,7 +552,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       modelId: descriptor.id,
       reasoningEffort,
       permissionMode,
-      fastMode: modelSupportsFastMode(descriptor) ? fastMode : false,
+      fastMode,
       title: null,
     });
     await refreshSessions();

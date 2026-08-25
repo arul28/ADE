@@ -18,6 +18,7 @@ import {
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractError } from "../../lib/format";
+import { joinParentAndName } from "../../lib/pathUtils";
 import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
 import type {
   CloneProjectInput,
@@ -118,17 +119,6 @@ function deriveSlug(url: string): string {
   if (!trimmed) return "";
   const match = trimmed.match(SLUG_PATTERN);
   return match?.[1]?.replace(/\.git$/i, "") ?? "";
-}
-
-function joinPath(parent: string, name: string): string {
-  if (!parent) return name;
-  const sep = parent.includes("\\") ? "\\" : "/";
-  const trimmed =
-    parent.endsWith("/") || parent.endsWith("\\")
-      ? parent.slice(0, -1)
-      : parent;
-  if (!name) return trimmed;
-  return `${trimmed}${sep}${name}`;
 }
 
 function relativeFromNow(iso: string | null | undefined): string {
@@ -354,7 +344,7 @@ function UrlTab({
   const trimmedName = name.trim();
   const urlValid = isGitHubRepoUrl(trimmedUrl);
   const previewPath = useMemo(
-    () => (parentDir && trimmedName ? joinPath(parentDir, trimmedName) : ""),
+    () => (parentDir && trimmedName ? joinParentAndName(parentDir, trimmedName) : ""),
     [parentDir, trimmedName],
   );
 
@@ -1028,7 +1018,7 @@ function RepoRow({
   const checkRequestRef = useRef(0);
   const trimmedName = name.trim();
   const previewPath =
-    parentDir && trimmedName ? joinPath(parentDir, trimmedName) : "";
+    parentDir && trimmedName ? joinParentAndName(parentDir, trimmedName) : "";
 
   useEffect(() => {
     if (!expanded || !previewPath) {

@@ -382,6 +382,9 @@ describe("preload OAuth bridge", () => {
       }
       if (channel === IPC.externalSessionsList) return [];
       if (channel === IPC.externalSessionsImport) return imported;
+      if (channel === IPC.externalSessionsGetDetail) {
+        return { provider: "codex", id: "native-session-1", messages: [], watchable: false };
+      }
       return undefined;
     });
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
@@ -416,9 +419,17 @@ describe("preload OAuth bridge", () => {
 
     await expect(bridge.externalSessions.list(listArgs)).resolves.toEqual([]);
     await expect(bridge.externalSessions.import(importArgs)).resolves.toEqual(imported);
+    await expect(bridge.externalSessions.getDetail({
+      provider: "codex",
+      sessionId: "native-session-1",
+    })).resolves.toMatchObject({ id: "native-session-1" });
 
     expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsList, listArgs);
     expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsImport, importArgs);
+    expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsGetDetail, {
+      provider: "codex",
+      sessionId: "native-session-1",
+    });
   });
 
   it("exposes review IPC methods and cleans up listeners", async () => {
@@ -687,7 +698,11 @@ describe("preload OAuth bridge", () => {
       rootPath: "/repo",
       displayName: "Project",
     };
-    const sources = [{ id: "window:1", name: "Simulator", thumbnailDataUrl: null }];
+    const sources = {
+      sources: [{ id: "window:1", name: "Simulator", thumbnailDataUrl: null }],
+      windowState: null,
+      message: null,
+    };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
@@ -722,6 +737,178 @@ describe("preload OAuth bridge", () => {
 
     expect(invoke).toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, { projectRoot: "/repo" });
+  });
+
+  it("forwards the caller's simulator session so window parking is not blind to brain-owned launches", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const result = { sources: [], windowState: null, message: null };
+    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (channel === IPC.iosSimulatorListWindowSources) return result;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    const session = { deviceUdid: "UDID-1", deviceName: "iPhone 17" };
+    await expect(
+      bridge.iosSimulator.listSimulatorWindowSources({ session }),
+    ).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorListWindowSources, {
+      projectRoot: "/repo",
+      session,
+    });
+  });
+
+  // The other half of the wiring the parking refcount depends on. Window
+  // parking lives in Electron main, which only ever sees a plain invoke: every
+  // iOS Simulator call that goes through `callProjectRuntimeActionOr` is
+  // answered by the brain daemon instead, and the brain has no BrowserWindow to
+  // hold a claim against. Retain has to sit on the same local-only transport as
+  // its release or the count never leaves zero in production.
+  it("keeps iOS Simulator window parking on the local transport in both directions", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Project" }, binding };
+      }
+      if (
+        channel === IPC.iosSimulatorRetainWindowParking
+        || channel === IPC.iosSimulatorReleaseWindowParking
+      ) {
+        return { ok: true };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    // Retain reports whether the host counted the holder, so the renderer only
+    // pairs a release with a retain that really happened.
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(true);
+    await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorRetainWindowParking);
+    expect(invoke).toHaveBeenCalledWith(IPC.iosSimulatorReleaseWindowParking);
+    expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+  });
+
+  // Both directions are teardown-adjacent and must never surface an error to a
+  // drawer that is closing or a live view that is starting.
+  it("swallows iOS Simulator window parking failures in both directions", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      throw new Error(`no handler for ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    // A retain that never reached the host counted nothing, so it has to read
+    // as "not held" — a caller that paired a release with it would decrement
+    // another drawer's holder.
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(false);
+    await expect(bridge.iosSimulator.releaseWindowParking()).resolves.toBeUndefined();
+  });
+
+  // The host refuses a holder from a window that does not own the parking
+  // claim. That refusal has to survive the bridge: the renderer records a hold
+  // only when one was really taken.
+  it("reports a refused iOS Simulator parking holder as not held", async () => {
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding: null };
+      }
+      if (channel === IPC.iosSimulatorRetainWindowParking) return { ok: false };
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.iosSimulator.retainWindowParking()).resolves.toBe(false);
   });
 
   it("routes local lane creation through the local runtime when a local project runtime is bound", async () => {
@@ -1021,6 +1208,141 @@ describe("preload OAuth bridge", () => {
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());
+  });
+
+  // The model catalog enumerates the SERVING machine's ollama/LM Studio
+  // endpoints, its installed cursor-agent and its opencode inventory. A Work
+  // tab unions chats from every machine, so a composer for a chat on another
+  // machine has to read that machine's catalog — reading the bound machine's
+  // is how the prompt box came to offer models the target could not run.
+  it("routes the model catalog through the bound runtime, or an explicit chat pin", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const chatRuntimePin = {
+      kind: "remote",
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      runtimeName: "Studio",
+      projectId: "project-2",
+      rootPath: "/remote/chat-project",
+      displayName: "Chat project",
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const id = (payload as { id?: string } | undefined)?.id;
+        return {
+          ok: true,
+          result: {
+            groups: [{ key: id === "target-2" ? "ollama" : "lmstudio", label: id, providers: [] }],
+            fetchedAt: "2026-05-18T00:00:00.000Z",
+          },
+          statusHints: {},
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: { getZoomLevel: vi.fn(() => 0), setZoomLevel: vi.fn(), getZoomFactor: vi.fn(() => 1) },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    // No pin: unchanged behaviour — the window's bound runtime answers.
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" }))
+      .resolves.toMatchObject({ groups: [{ key: "lmstudio" }] });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
+    });
+    invoke.mockClear();
+
+    // Pinned: the chat's own machine answers, and the bound one is not asked.
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" }, chatRuntimePin))
+      .resolves.toMatchObject({ groups: [{ key: "ollama" }] });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-2",
+      projectId: "project-2",
+      request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.objectContaining({ id: "target-1" }),
+    );
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatModelCatalog, expect.anything());
+  });
+
+  it("pins an OpenCode-installed probe to the composer machine", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const studioPin = {
+      kind: "remote",
+      key: "remote:target-2:project-2",
+      targetId: "target-2",
+      runtimeName: "Studio",
+      projectId: "project-2",
+      rootPath: "/remote/chat-project",
+      displayName: "Chat project",
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const id = (payload as { id?: string } | undefined)?.id;
+        return {
+          ok: true,
+          result: { installed: id === "target-2", source: id === "target-2" ? "user-installed" : "missing" },
+          statusHints: {},
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: { getZoomLevel: vi.fn(() => 0), setZoomLevel: vi.fn(), getZoomFactor: vi.fn(() => 1) },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    await expect(bridge.ai.isOpenCodeInstalled(studioPin)).resolves.toEqual({
+      installed: true,
+      source: "user-installed",
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-2",
+      projectId: "project-2",
+      request: { domain: "ai", action: "isOpenCodeInstalled" },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.aiIsOpenCodeInstalled, expect.anything());
   });
 
   it("reads env files locally while importing and exporting secrets on the bound remote machine", async () => {
@@ -6065,6 +6387,76 @@ describe("preload OAuth bridge", () => {
     await pendingSwitch;
   });
 
+  it("keeps model catalogs on the runtime during a project switch", async () => {
+    const runtimeCatalog = {
+      groups: [{ key: "opencode", displayName: "OpenCode", providers: [] }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    };
+    const staticCatalog = {
+      groups: [{ key: "static", displayName: "Static", providers: [] }],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    };
+    let resolveSwitch!: (project: unknown) => void;
+    const switchPromise = new Promise((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const invoke = vi.fn(async (channel: string, arg?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return {
+          windowId: 1,
+          project: { rootPath: "/repo", displayName: "Repo" },
+          binding: {
+            kind: "local",
+            key: "local:/repo",
+            rootPath: "/repo",
+            displayName: "Repo",
+          },
+        };
+      }
+      if (channel === IPC.projectSwitchToPath) return switchPromise;
+      if (channel === IPC.localRuntimeCallAction) {
+        const request = (arg as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        if (request?.domain === "chat" && request.action === "modelCatalog") {
+          return { result: runtimeCatalog };
+        }
+      }
+      if (channel === IPC.agentChatModelCatalog) return staticCatalog;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    const pendingSwitch = bridge.project.switchToPath("/next");
+
+    await expect(bridge.agentChat.modelCatalog({ mode: "cached" }))
+      .resolves.toMatchObject({ groups: [{ key: "opencode" }] });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo",
+      request: { domain: "chat", action: "modelCatalog", args: { mode: "cached" } },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatModelCatalog, expect.anything());
+
+    resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
+    await pendingSwitch;
+  });
+
   it("blocks mutating local file actions while a project switch is in flight", async () => {
     let resolveSwitch!: (project: unknown) => void;
     const switchPromise = new Promise((resolve) => {
@@ -6793,6 +7185,8 @@ describe("per-chat runtime routing", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllTimers();
     vi.resetModules();
     vi.doUnmock("electron");
     delete (globalThis as any).__adeBridge;
@@ -6823,8 +7217,37 @@ describe("per-chat runtime routing", () => {
           binding: activeBinding,
         };
       }
-      if (channel === IPC.localRuntimeCallAction) return { result: undefined };
-      if (channel === IPC.remoteRuntimeCallAction) return { result: undefined };
+      if (channel === IPC.localRuntimeCallAction || channel === IPC.remoteRuntimeCallAction) {
+        const request = (arg as {
+          request?: { domain?: string; action?: string; args?: unknown };
+        } | undefined)?.request;
+        if (request?.domain === "external-sessions" && request.action === "list") {
+          return { result: [] };
+        }
+        if (request?.domain === "external-sessions" && request.action === "import") {
+          return { result: { kind: "cli", sessionId: "imported", ptyId: "pty-1", laneId: "lane-1" } };
+        }
+        if (request?.domain === "external-sessions" && request.action === "getDetail") {
+          return { result: { provider: "codex", id: "session-1", messages: [], watchable: false } };
+        }
+        return { result: undefined };
+      }
+      if (channel === IPC.externalSessionsList) return [];
+      if (channel === IPC.externalSessionsImport) {
+        return { kind: "cli", sessionId: "imported", ptyId: "pty-1", laneId: "lane-1" };
+      }
+      if (channel === IPC.externalSessionsGetDetail) {
+        return { provider: "codex", id: "session-1", messages: [], watchable: false };
+      }
+      if (channel === IPC.agentChatPromptStashesList) return [];
+      if (channel === IPC.agentChatPromptStashesCreate) {
+        return {
+          id: "stash-1",
+          text: (arg as { text?: string } | undefined)?.text ?? "",
+          createdAt: "2026-08-17T12:00:00.000Z",
+        };
+      }
+      if (channel === IPC.agentChatPromptStashesDelete) return true;
       throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
     });
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
@@ -6902,6 +7325,86 @@ describe("per-chat runtime routing", () => {
     });
   });
 
+  it("keeps external-session imports on the selected local runtime and pins remote scans", async () => {
+    const localArgs = {
+      providers: ["codex"],
+      scope: "project" as const,
+      laneId: "lane-1",
+      limit: 20,
+    };
+    const importArgs = {
+      provider: "codex" as const,
+      sessionId: "session-1",
+      laneId: "lane-1",
+      target: "cli" as const,
+      mode: "resume" as const,
+    };
+    const detailArgs = { provider: "codex" as const, sessionId: "session-1" };
+    const localWindow = await mountBridge(machineA);
+    await localWindow.bridge.app.getWindowSession();
+    await localWindow.bridge.externalSessions.list(localArgs);
+    await localWindow.bridge.externalSessions.import(importArgs);
+    await localWindow.bridge.externalSessions.getDetail(detailArgs);
+
+    expect(localWindow.invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: machineA.rootPath,
+      request: { domain: "external-sessions", action: "list", args: localArgs },
+    });
+    expect(localWindow.invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: machineA.rootPath,
+      request: { domain: "external-sessions", action: "import", args: importArgs },
+    });
+    expect(localWindow.invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: machineA.rootPath,
+      request: { domain: "external-sessions", action: "getDetail", args: detailArgs },
+    });
+
+  });
+
+  it("pins local and remote external-session scans to their runtimes", async () => {
+    const localArgs = {
+      providers: ["codex"],
+      scope: "project" as const,
+      laneId: "lane-1",
+      limit: 20,
+    };
+    const remoteWindow = await mountBridge(machineB);
+    await remoteWindow.bridge.app.getWindowSession();
+    await remoteWindow.bridge.externalSessions.list(localArgs, machineA);
+    await remoteWindow.bridge.externalSessions.list(localArgs, machineB);
+
+    expect(remoteWindow.invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: machineA.rootPath,
+      request: { domain: "external-sessions", action: "list", args: localArgs },
+    });
+    expect(remoteWindow.invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: machineB.targetId,
+      projectId: machineB.projectId,
+      request: { domain: "external-sessions", action: "list", args: localArgs },
+    });
+  });
+
+  it("routes prompt-stash operations through the selected project runtime", async () => {
+    const { bridge, invoke } = await mountBridge(machineB);
+    await bridge.agentChat.promptStashes.list(machineA);
+    await bridge.agentChat.promptStashes.create({ text: "Keep this local" }, machineA);
+    await bridge.agentChat.promptStashes.delete({ id: "stash-1" }, machineA);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: machineA.rootPath,
+      request: { domain: "chat", action: "listPromptStashes" },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: machineA.rootPath,
+      request: { domain: "chat", action: "createPromptStash", args: { text: "Keep this local" } },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: machineA.rootPath,
+      request: { domain: "chat", action: "deletePromptStash", args: { id: "stash-1" } },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatPromptStashesList);
+  });
+
   it("routes pinned session-card mutations to the owning machine", async () => {
     const { bridge, invoke } = await mountBridge(machineA);
 
@@ -6976,6 +7479,212 @@ describe("per-chat runtime routing", () => {
       "lane.archive",
       "lane.getDeleteRisk",
     ]);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("leaves unpinned file calls on the machine the tab is bound to", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.files.listWorkspaces();
+    await bridge.files.listTree({ workspaceId: "workspace-a" });
+    await bridge.files.readFile({ workspaceId: "workspace-a", path: "src/app.ts" });
+    await bridge.files.writeText({
+      workspaceId: "workspace-a",
+      path: "src/app.ts",
+      text: "next",
+    });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: { domain: "file", action: "listWorkspaces", args: {} },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "file",
+        action: "writeWorkspaceText",
+        args: { workspaceId: "workspace-a", path: "src/app.ts", text: "next" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes pinned file reads to the pinned machine without rebinding the window", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.files.listWorkspaces({}, machineB);
+    await bridge.files.listTree({ workspaceId: "workspace-b" }, machineB);
+    await bridge.files.listTreeChildren(
+      { workspaceId: "workspace-b", parentPath: "src" },
+      machineB,
+    );
+    await bridge.files.refreshGitDecorations({ workspaceId: "workspace-b" }, machineB);
+    await bridge.files.readFile({ workspaceId: "workspace-b", path: "src/app.ts" }, machineB);
+    await bridge.files.readFileRange(
+      { workspaceId: "workspace-b", path: "src/app.ts", offset: 0 },
+      machineB,
+    );
+    await bridge.files.gitBlame({ workspaceId: "workspace-b", path: "src/app.ts" }, machineB);
+    await bridge.files.quickOpen({ workspaceId: "workspace-b", query: "src" }, machineB);
+    await bridge.files.searchText({ workspaceId: "workspace-b", query: "todo" }, machineB);
+    await bridge.files.watchChanges({ workspaceId: "workspace-b" }, machineB);
+    await bridge.files.stopWatching({ workspaceId: "workspace-b" }, machineB);
+
+    const remoteRequests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => payload as {
+        id: string;
+        projectId: string;
+        request: { domain: string; action: string };
+      });
+    expect(remoteRequests.map(({ request }) => `${request.domain}.${request.action}`)).toEqual([
+      "file.listWorkspaces",
+      "file.listTree",
+      "file.listTreeChildren",
+      "file.refreshGitDecorations",
+      "file.readFile",
+      "file.readFileRange",
+      "file.blame",
+      "file.quickOpen",
+      "file.searchText",
+      "file.watchWorkspace",
+      "file.stopWatching",
+    ]);
+    for (const call of remoteRequests) {
+      expect(call.id).toBe("target-b");
+      expect(call.projectId).toBe("project-b");
+    }
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes pinned file writes to the machine that owns the bytes", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.files.writeText(
+      { workspaceId: "workspace-b", path: "src/app.ts", text: "edited on B" },
+      machineB,
+    );
+    await bridge.files.writeTextAtomic(
+      { laneId: "lane-b", path: "src/app.ts", text: "atomic on B" },
+      machineB,
+    );
+    await bridge.files.createFile({ workspaceId: "workspace-b", path: "src/new.ts" }, machineB);
+    await bridge.files.createDirectory({ workspaceId: "workspace-b", path: "src/new" }, machineB);
+    await bridge.files.rename(
+      { workspaceId: "workspace-b", oldPath: "src/a.ts", newPath: "src/b.ts" },
+      machineB,
+    );
+    await bridge.files.delete({ workspaceId: "workspace-b", path: "src/b.ts" }, machineB);
+
+    const remoteRequests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, payload]) => payload as {
+        id: string;
+        projectId: string;
+        request: { domain: string; action: string; args: unknown };
+      });
+    expect(remoteRequests.map(({ request }) => `${request.domain}.${request.action}`)).toEqual([
+      "file.writeWorkspaceText",
+      "file.writeTextAtomic",
+      "file.createFile",
+      "file.createDirectory",
+      "file.rename",
+      "file.deletePath",
+    ]);
+    expect(remoteRequests[0]).toEqual({
+      id: "target-b",
+      projectId: "project-b",
+      request: {
+        domain: "file",
+        action: "writeWorkspaceText",
+        args: { workspaceId: "workspace-b", path: "src/app.ts", text: "edited on B" },
+      },
+    });
+    // The write never leaks to the machine the tab happens to be bound to.
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("routes a pinned This computer file call to the local runtime while the tab is remote-bound", async () => {
+    const { bridge, invoke } = await mountBridge(machineB);
+
+    await bridge.files.readFile({ workspaceId: "workspace-a", path: "src/app.ts" }, machineA);
+    await bridge.files.writeText(
+      { workspaceId: "workspace-a", path: "src/app.ts", text: "edited on A" },
+      machineA,
+    );
+
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "file",
+        action: "readFile",
+        args: { workspaceId: "workspace-a", path: "src/app.ts" },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, {
+      rootPath: "/repo-a",
+      request: {
+        domain: "file",
+        action: "writeWorkspaceText",
+        args: { workspaceId: "workspace-a", path: "src/app.ts", text: "edited on A" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("keeps external-local workspaces on this machine even when a pin is supplied", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+    invoke.mockImplementation(async (channel: string): Promise<unknown> => {
+      if (channel === IPC.filesReadFile) {
+        return {
+          content: "local bytes",
+          encoding: "utf-8",
+          size: 11,
+          languageId: "plaintext",
+          isBinary: false,
+        };
+      }
+      if (channel === IPC.filesWriteText) return undefined;
+      if (channel === IPC.filesQuickOpen) return [];
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+
+    const readArgs = { workspaceId: "external-local:abc123", path: "notes.md" };
+    await expect(bridge.files.readFile(readArgs, machineB)).resolves.toMatchObject({
+      content: "local bytes",
+    });
+    const writeArgs = {
+      workspaceId: "external-local:abc123",
+      path: "notes.md",
+      text: "still local",
+    };
+    await bridge.files.writeText(writeArgs, machineB);
+    await bridge.files.quickOpen(
+      { workspaceId: "external-local:abc123", query: "notes" },
+      machineB,
+    );
+
+    expect(invoke).toHaveBeenCalledWith(IPC.filesReadFile, readArgs);
+    expect(invoke).toHaveBeenCalledWith(IPC.filesWriteText, writeArgs);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.remoteRuntimeCallAction,
+      expect.anything(),
+    );
     expect(invoke).not.toHaveBeenCalledWith(
       IPC.localRuntimeCallAction,
       expect.anything(),

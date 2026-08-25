@@ -1,4 +1,8 @@
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type {
+  SessionStatusGlyph,
+  SessionStatusTone,
+} from "../../../desktop/src/shared/sessionStatusPresentation";
 import type { AdeCodeProvider } from "./types";
 import type { RenderedChatLine } from "./format";
 
@@ -154,7 +158,7 @@ export function agentStatusGlyph(kind: AgentStatusKind): string {
   return AGENT_STATUS_GLYPH[kind] ?? "○";
 }
 
-// Status rail glyph (left vertical bar) used in drawer rows + agents pane selected row.
+// Status rail glyph (left vertical bar) used in session rows + agents pane selected row.
 const RAIL_GLYPH = "▎";
 
 /**
@@ -164,7 +168,7 @@ const RAIL_GLYPH = "▎";
  * names a tone and this table picks the token, so a plugin cannot paint the
  * terminal green — which stays reserved for running and success. It lives here
  * rather than beside one renderer because a plugin's badge appears in two
- * places now (a panel row and a drawer row) and they have to agree; the same
+ * places now (a panel row and a work-list row) and they have to agree; the same
  * warning that is amber inside a panel must not be grey two lines above it.
  */
 const VOCAB_TONE_COLOR = {
@@ -178,6 +182,78 @@ export type VocabToneName = keyof typeof VOCAB_TONE_COLOR;
 
 export function vocabToneColor(tone: VocabToneName): string {
   return VOCAB_TONE_COLOR[tone] ?? T2;
+}
+
+/**
+ * The ONE place `SessionStatusTone` becomes a terminal colour.
+ *
+ * The desktop maps the same six tones to Tailwind classes in
+ * `sessionStatusPresentation.ts`; this is the ANSI twin, and it preserves the
+ * one-hue-one-meaning rule stated there verbatim:
+ *
+ *   blue     work is happening, nothing is asked of you
+ *   amber    YOUR MOVE — and nothing else, ever
+ *   emerald  finished cleanly, you have not looked yet
+ *   red      it broke
+ *   violet   selection / brand (and "Planning", which shares it on purpose)
+ *   neutral  true, but not actionable (stale, stopped, ended, snoozed)
+ *
+ * Nothing else in the TUI may pick a colour for a session state. Every state
+ * below also carries a text marker (`z` / `*` / `done`, plus the status word
+ * itself), so the pane still says what it means with colour switched off.
+ */
+const SESSION_TONE_COLOR: Record<SessionStatusTone, string> = {
+  blue: INFO,
+  violet: VIOLET,
+  amber: ATTENTION,
+  emerald: DONE,
+  red: ERROR,
+  neutral: T4,
+};
+
+export function sessionToneColor(tone: SessionStatusTone | null | undefined): string {
+  if (!tone) return T4;
+  return SESSION_TONE_COLOR[tone] ?? T4;
+}
+
+/**
+ * One-cell text glyph per status glyph identity. ASCII/box-drawing only: the
+ * desktop maps these identities to Phosphor icons and iOS to SF Symbols, and
+ * the terminal's equivalent has to survive a font with no emoji at all.
+ */
+const SESSION_GLYPH_MARK: Record<Exclude<SessionStatusGlyph, null>, string> = {
+  working: "◐",
+  monitoring: "◇",
+  planning: "◈",
+  waiting: "⏳",
+  "needs-you": "●",
+  done: "✓",
+  stale: "◌",
+  failed: "✕",
+  woke: "*",
+  snoozed: "z",
+};
+
+export function sessionGlyphMark(glyph: SessionStatusGlyph): string {
+  if (!glyph) return "·";
+  return SESSION_GLYPH_MARK[glyph] ?? "·";
+}
+
+/**
+ * One-cell lane mark matching desktop `LaneIcon` / `iconGlyph`. Default is the
+ * same git-branch glyph the Work sidebar uses when a lane has no custom icon.
+ */
+const LANE_ICON_GLYPH: Record<string, string> = {
+  star: "★",
+  flag: "⚑",
+  bolt: "↯",
+  shield: "⬡",
+  tag: "#",
+};
+
+export function laneIconGlyph(icon: string | null | undefined): string {
+  if (!icon) return "⎇";
+  return LANE_ICON_GLYPH[icon] ?? "⎇";
 }
 
 export const theme = {
@@ -273,5 +349,8 @@ export const theme = {
   agentStatusColor,
   agentStatusGlyph,
   vocabToneColor,
+  sessionToneColor,
+  sessionGlyphMark,
+  laneIconGlyph,
   rail: RAIL_GLYPH,
 } as const;

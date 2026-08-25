@@ -195,7 +195,11 @@ apps/ios/
 │   │   │                            # branch/event/offset scope; the app-root task
 │   │   │                            # routes the request to Hub or Work, including
 │   │   │                            # when it is already present at cold launch.
-│   │   │                            # Linear issue links route in-app when a
+│   │   │                            # `ade://activity[?state=<group>]` opens the
+│   │   │                            # Activity drawer, optionally pre-filtered to
+│   │   │                            # that state band; an unrecognised `state` is
+│   │   │                            # ignored so a newer widget still opens the
+│   │   │                            # drawer. Linear issue links route in-app when a
 │   │   │                            # project is open; lane/file/commit/artifact/
 │   │   │                            # repo-branch, full PR, and projectless
 │   │   │                            # Linear issue links post
@@ -264,6 +268,12 @@ apps/ios/
 │   │   │                            # per-network route memory, endpoint
 │   │   │                            # failure memory, relay dial single-flight
 │   │   │                            # registry, and route truth
+│   │   ├── SyncMachineWake.swift    # sleep vocabulary shared with the desktop:
+│   │   │                            # syncMachinePresence, staleness window,
+│   │   │                            # wake need, wake-prompt request/stage
+│   │   ├── SyncService+MachineWake.swift # the confirm/waking/failed prompt
+│   │   │                            # state machine and its 90 s decision
+│   │   │                            # deadline
 │   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
 │   │   │                                # ACK timeout/retry, stable input ids
 │   │   ├── Dictation/               # SpeechDictationService,
@@ -305,7 +315,9 @@ apps/ios/
 │   │   ├── ActivityWidgetPresentation.swift # tone → colour binding and the
 │   │   │                            # lock-screen ranking, shared by the app and
 │   │   │                            #   the widget so the two cannot describe the
-│   │   │                            #   same session differently. iOS 17 only.
+│   │   │                            #   same session differently. Owns
+│   │   │                            #   `activityURL(for:)` (`ade://activity?state=`).
+│   │   │                            #   iOS 17 only.
 │   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
 │   │   ├── Activity/                # ActivityDrawerSheet (global account-wide
@@ -330,6 +342,9 @@ apps/ios/
 │   │   │                            # — `ADEStreamingShimmer.swift` was retired
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Hub/                     # HubScreen (all-projects roster home),
+│   │   │                            # HubActivityState (canonical six-group
+│   │   │                            #   glyphs/tallies for the project→lane→chat
+│   │   │                            #   tree; snoozed running chats file as idle),
 │   │   │                            # HubComponents (project/lane/chat cards,
 │   │   │                            #   HubNoMachineState), HubQuickConnect
 │   │   │                            #   (HubQuickConnectSection — one-tap connect
@@ -338,10 +353,7 @@ apps/ios/
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look),
-│   │   │                            # HubLiveStrip ("Live now" — agents working
-│   │   │                            #   across every account machine, read from
-│   │   │                            #   ActivityDrawerModel; hidden when empty)
+│   │   │                            #   cross-project quick look)
 │   │   ├── PersonalChats/           # Hub-only projectless chat list,
 │   │   │                            # new-chat model composer, and reused
 │   │   │                            # Work transcript destination adapter
@@ -415,8 +427,11 @@ apps/ios/
 │   │   │                            #   WorkMentionsPickerSheet /
 │   │   │                            #   WorkSlashCommandsSheet modals),
 │   │   │                            # WorkChatAttachmentTray,
-│   │   │                            # WorkChatComposerAndInputViews (compacted
-│   │   │                            #   icon-only staged-steer strip + the
+│   │   │                            # WorkPromptStash (composer overflow +
+│   │   │                            #   per-project stash host),
+│   │   │                            # WorkContextUsageViews (turn-end meter),
+│   │   │                            # WorkChatComposerAndInputViews (always-open
+│   │   │                            #   icon-only queued-steer strip + the
 │   │   │                            #   structured-question card: pinned provider
 │   │   │                            #   row / tab strip above and freeform +
 │   │   │                            #   Send/Decline footer below a
@@ -462,6 +477,29 @@ apps/ios/
 │   │   │                            # LinearOAuthRunner (worker-bounce OAuth via
 │   │   │                            #   ASWebAuthenticationSession, ade:// capture),
 │   │   │                            #   all gated on supportsRemoteAction.
+│   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
+│   │   │                            #   (full-screen sheet mirroring the Linear
+│   │   │                            #   pane's presentation) +
+│   │   │                            # CursorCloudPaneToolbarButton (Work top-bar
+│   │   │                            #   button beside the Linear one; shown while a
+│   │   │                            #   project is open — the pane itself resolves
+│   │   │                            #   connection state so a missing key renders an
+│   │   │                            #   honest connect prompt instead of hiding the
+│   │   │                            #   surface) + CursorCloudPaneStore (fleet load /
+│   │   │                            #   status-lane-archived filters / active,
+│   │   │                            #   per-lane, and unlinked repo·branch grouping
+│   │   │                            #   over ai.cursorCloudFleet),
+│   │   │                            # CursorCloudAgentListScreen (pull-to-refresh,
+│   │   │                            #   skeleton/failure/connect/empty states) +
+│   │   │                            # CursorCloudAgentDetailScreen (facts, summary,
+│   │   │                            #   Open in ADE / Stop / Pull into lane /
+│   │   │                            #   cursor.com actions) +
+│   │   │                            # CursorCloudModels (Swift mirrors of the fleet
+│   │   │                            #   DTOs). Every action executes host-side like
+│   │   │                            #   Linear; no Cursor credentials live on device.
+│   │   │                            #   Gated on an active project plus the host
+│   │   │                            #   advertising the optional ai.cursorCloud*
+│   │   │                            #   commands, so an older brain omits the pane.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),
@@ -513,11 +551,19 @@ apps/ios/
 │   ├── LockScreenPriorityStatus.swift # machine-local single-focus derivation,
 │   │                                # used when there is no account feed
 │   └── ADEAgentActivityWidget.swift # ActivityKit Live Activity + Dynamic Island
-│                                    # presentation for active agent runs
+│                                    # presentation for active agent runs;
+│                                    # expanded island insets corner glyphs and
+│                                    # budgets two agent rows (banner still three)
 └── ADETests/
     ├── ADETests.swift
     ├── AccountEmailAuthFlowTests.swift # returning email sign-in, new-email
     │                                   # sign-up fallback, exact error codes
+    ├── ActivityDrawerModelTests.swift # live-host merge, six-group sections,
+    │                                   # glyph-strip filter, resting collapse
+    ├── ActivityRowPresentationTests.swift # six-group table pinned to
+    │                                   # activityStateGroup.cases.json
+    ├── HubProjectPresentationTests.swift # Hub state glyphs, snooze→idle,
+    │                                   # runningCount excludes snoozed
     ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
     ├── PrMergeMergeStateTests.swift # PR merge state, history/count decoding,
     │                                # reconciliation, partial-detail retention
@@ -556,7 +602,26 @@ The Work model/activity parity path is concentrated in these files:
   host model rows including `defaultReasoningEffort`.
 - `ADE/Views/Work/WorkModelCatalog.swift` and `WorkModelPickerSheet.swift` —
   host-first model catalog merge, GPT-5.6 ordering/defaults/visible tiers, Fast,
-  and the Ultra usage warning.
+  and the Ultra usage warning. `workModelCatalogGroups` runs every group's
+  providers through `workMergedProvidersByKey` — `WorkModelProvider.id` is its
+  key and SwiftUI traps on duplicate `ForEach` ids, and *both* branches can
+  collide (the plain branch passes host provider keys straight through; the Pi
+  branch derives its key from subsection/model metadata rather than
+  `provider.key`), so the merge belongs to the group, not to one branch. Same-key
+  providers merge in first-seen order, keeping the first non-blank label.
+  `WorkModelIdMatcher` is the prebuilt form of `workModelIdsEquivalent`: it
+  hoists a needle id list into one lookup-key set so filtering a catalog is
+  O(models) instead of O(models × ids). `WorkModelPickerSheet` caches the scoped
+  catalog (`rawCatalogGroups` + `scopedCatalogGroups`, written only through
+  `setHostGroups`) because `catalog` is read many times per body pass and the
+  body re-runs on every search keystroke; `.onChange` on `availableModelIds` and
+  `cursorAvailabilityMode` re-scopes from the raw copy, since those are `let`s
+  the parent can replace while the sheet's `@State` survives. `ModelPickerListRow`
+  is deliberately **not** `Equatable` / `.equatable()`: rows live in a
+  `LazyVStack` so only visible rows diff, and `EquatableView` keeping the
+  installed view value would also keep its captured closures (`currentModelId`,
+  `lanes`, `onSelect`), making a sync update that arrives while the sheet is open
+  invisible to a tapped row.
 - `ADE/Views/Work/WorkEventMapping.swift`, `WorkTranscriptParser.swift`,
   `WorkModels.swift`, `WorkTimelineHelpers.swift`, and
   `WorkStatusAndFormattingHelpers.swift` — compact web/MCP/image mapping for
@@ -608,8 +673,63 @@ and is applied through `ScrollPosition` in a non-animated transaction.
 Deliberately not total content height: a reply streaming into the tail grows the
 content at the same time, and a reader scrolled back through history is exactly
 when that happens, so a total-height correction would add the tail's growth and
-overshoot. Bottom-follow, the jump-to-latest pill, and the initial force-pin are
-untouched.
+overshoot. Bottom-follow and the jump-to-latest pill are untouched.
+
+Three rules keep that correction from becoming a teleport. A probe sample that
+describes a *different* row than the armed anchor is no measurement at all, so
+it waits rather than falling through with a zero row shift — that would reduce
+the correction to the reader's own scroll delta and apply it twice. Overlapping
+prepends keep the *first* anchor rather than re-arming on the new leading row:
+its row was pushed down by both insertions, so the displacement measured on it
+already accumulates them. And a correction is a scroll write, so like every
+other one it defers to the reader for the whole interaction — finger-down
+through the end of the fling (`workChatMayWriteScrollOffset`, fed by
+`onScrollPhaseChange`, not by the drag gesture, which ends at finger-up).
+
+**A chat opens where it was left, not at a random offset.** The transcript opens
+at the tail through `defaultScrollAnchor(.bottom, for: .initialOffset)` —
+scoped to the initial offset because the `.sizeChanges` anchor is the
+total-height correction the paragraph above exists to avoid. The force-pin
+remains as belt-and-braces, but it now stays armed until the content size has
+been quiet for 600ms rather than firing on a fixed retry ladder, because
+hydration routinely lands after that ladder ends. It stands down early only for
+a deliberate drag (16pt — the 2pt stickiness deadband is finger jitter on a
+freshly-opened chat). A transcript shorter than the viewport renders from the
+top, desktop-style; a one-entry chat skips the pin entirely.
+
+**A message's truncation budget only ever grows.** The newest assistant message
+renders tail-anchored under a generous budget so a finishing turn is readable in
+place. When a newer message arrives it becomes head-anchored — and the budget it
+already rendered under becomes its floor, so "Show more" can never appear on a
+message the reader has already read in full. Both show-more paths (the split
+controls row and the message bubble) write one shared budget map on the
+transcript, so an expansion survives `LazyVStack` recycling. Expanding grows the
+message downward and holds the tapped row in place; it never re-pins the
+transcript to its bottom.
+
+**Expanding is a two-rung ladder, not an infinite one.** The first "Show more"
+expands in place as above. Anything still bounded after that step offers "Open
+full output" instead of another step (`workTruncatedOutputAffordance`), which
+presents `WorkOutputViewerScreen` — a monospaced, line-numbered, lazily laid out
+reader with a wrap toggle, occurrence-counting search, Copy all and the share
+sheet. The boxed renderers (`WorkStructuredOutputBlock`, `WorkDiffOutputBlock`,
+`WorkInlineDiffPreview`) clip at a fixed height with no inner scroller, so for
+them the second rung is not a preference: another in-place step would add text
+the box cuts away. `workOutputBoxOverflows` decides whether a box is clipping
+without scanning a long result to find out, and a clipping box opens the viewer
+from its header *or* by tapping the clipped region. The viewer is presented once
+per surface through `\.workOutputViewer` rather than by a `fullScreenCover` on
+every transcript row.
+
+**Copy is always the full content, never what is on screen.** The transcript
+renders bounded slices, so a Copy control that echoed its own view silently
+handed over a preview. Fenced code blocks resolve against the message they were
+sliced from by ordinal — counted from the front for a head-anchored preview and
+from the back for a tail-anchored one, which is also the case that carries a
+synthetic opening fence and so is the one most likely to hold a fragment
+(`WorkCodeBlockSource`). Resolution runs at tap time, never per render pass. The
+tool-result box displays its 500-character truncation while `copyText` carries
+the whole result.
 
 **Long replies cost O(tail), not O(message).** `parseMarkdownBlocksForStreaming`
 already split prose at a stable boundary; syntax highlighting now does the same,
@@ -622,6 +742,16 @@ their own small cache instead of the shared 256-entry inline-markdown cache, so
 one long turn cannot evict every completed message and force a main-thread
 re-parse on scrollback; the final revision is promoted. All derived render
 caches drop on `applicationDidReceiveMemoryWarning`.
+
+Two properties make that O(tail) real rather than nominal. Markdown block ids
+are position-stable (`markdown-block-<index>`), not content-derived, so a
+delta does not hand the `LazyVStack` a new identity for a row that is still the
+same row; content changes travel in a separate `digest` field that change
+detection reads. And no derived text is recomputed per refresh: each message
+carries a digest stamped by the (off-main) snapshot fold, previews are cached
+per line budget, and the presentation signature hashes those digests plus each
+preview's shape instead of re-hashing the visible transcript's full text
+several times a second.
 
 Deployment target: iOS 26+. iPhone and iPad (adaptive layouts planned for
 Phase 7).
@@ -725,6 +855,9 @@ header, and Hub pill refresh without reconnecting.
 
 Primary machine rows state only facts they can prove:
 
+- a machine that **announced** it was going to sleep, recently enough to still
+  be believed, is **Asleep** — and that outranks a held socket, because a
+  channel to a sleeping Mac does not report itself closed;
 - the active authenticated socket is **Connected**;
 - a current directory/discovery lease is **Online**;
 - otherwise the row says **Last seen just now**, **Last seen Nm/Nh/Nd ago**, or
@@ -734,6 +867,66 @@ The `online` heartbeat never earns connected styling, and an expired heartbeat
 never becomes a claim that the Mac is powered off. Route names stay out of these
 reachability lines; observed transport belongs in the connected badge and
 Connection details.
+
+Rows also carry the machine's own power reading when the directory heartbeat
+that delivered it is fresh — attachment is not evidence of freshness, since
+power rides the heartbeat rather than the socket. `accountMachinePowerClause`
+produces one phrase, battery always winning over wall power: `"82% battery"`,
+else `"plugged in"`, else `"on battery"`, else nothing at all. A Mac Studio gets
+no clause rather than `"0%"` — it has no battery to report. The full line is
+`"Asleep · 82% battery"`; a state word with no clause never emits an orphaned
+separator. The wording must match `machinePowerPhrase` in
+`apps/desktop/src/shared/machinePresence.ts` word for word, and the staleness
+rule in `SyncMachineWake.swift` must match `resolveMachinePresence` down to the
+inclusive boundary.
+
+### Waking a sleeping Mac
+
+`SyncMachineWake.swift` holds the whole vocabulary: `SyncMachineWakeNeed`
+(`.asleep` / `.unreachable`), `syncMachinePresence`, the 10-minute
+`syncMachineSleepInferenceWindow` that mirrors the desktop's, and the 24-hour
+`syncMachineRecentlySeenWindow` that decides whether a confirm prompt is allowed
+to say "asleep" at all.
+
+**Wake sends nothing.** There is no wake packet, push, or Wake-on-LAN frame —
+dialling *is* the wake. The Wake action runs the ordinary
+`pairWithAccountMachine` connect race (direct LAN/tailnet candidates plus the
+relay `/connect` WebSocket), and the traffic arriving at the Mac is what brings
+it back. Only the budget and the copy differ:
+
+- `SyncConnectionRaceTiming.wakeOverallBudgetNanoseconds` is **25 seconds**
+  against the standard 10, sized from a measured 16-second clamshell wake plus
+  headroom for a slower machine and a cold Durable Object.
+  `wakeRelayReadyAfterAcceptedNanoseconds` is 22 s (standard 7 s), kept strictly
+  under the overall budget so a failing candidate still records its endpoint
+  failure inside the race. Both live on `SyncConnectionRaceBudget`
+  (`.standard` / `.wakingMachine`), and a `restorePreviousConnection` resets to
+  `.standard` — a restore must not inherit the wake budget.
+- The stage label reads *"Waking <machine>…"* rather than *"Connecting to
+  <machine>…"*, and a wake that runs out of budget with no pairing-failure code
+  fails with *"It didn't wake up in time."* rather than a transport message.
+
+`MachineWakeCard` is presented from `ContentView` on `pendingMachineWake`, with
+a `confirm → waking → failed` stage machine driven by
+`SyncService+MachineWake.swift`. It is bound with `sheet(isPresented:)` rather
+than `sheet(item:)` so the stage can change under a stable id, is
+dismiss-disabled while waking, and arms a 90-second decision deadline that
+resolves to "don't wake". A failure keeps the card up with **Try again** rather
+than dropping the user back where they started. In Settings, a sleeping machine
+paints the status dot `ADEColor.warning` and offers a **Wake it** button — a
+sleeping machine is a tap, not a fault. `MachineRowView.Affordance` gains
+`.wake`, which is the `.connect` shape with a different word, because the tap is
+the same tap.
+
+Session and PR deeplinks are machine-scoped: `AccountAttentionDestination`
+appends `accountMachineKey=<key>` to `ade://session/<id>` and `ade://pr/...`
+(and to the `https://ade-app.dev/open` mirror), so opening a notification, a
+widget link, or a shared URL knows which Mac the work lives on and can wake that
+one. Widget links carry the key too. A link minted without one recovers the
+owner from the attention snapshot's items, then from the workspace snapshot's
+agent list. Only an **externally** minted link may have its owner resolved that
+way (`WorkSessionNavigationRequest.Origin.external`); the cold-launch restore
+must not, or a plain relaunch turns into a machine transition.
 
 ### Tailscale-off route hint
 
@@ -985,13 +1178,23 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    when the rejecting machine attributed itself (`hello_error.host`)
    and its identity matches the paired machine; unattributed or
    mismatched rejections are marked ambiguous, keep the pairing, and
-   let the reconnect loop try other routes. "Pairing rejection" is
+   let the reconnect loop try other routes. After a connection race
+   *finishes* (every candidate that actually started produced an outcome)
+   and every hop was a pairing rejection from the same responding host,
+   iOS also drops the pairing — that is the saved machine rejecting this
+   phone, even when the profile never stored `hostIdentity` or it went
+   stale. Queued addresses that never got a race slot do not keep a dead
+   pairing alive. A timeout or mixed failure among hops still keeps the pairing.
+   "Pairing rejection" is
    `syncCodeIsPairingRejection` — `repair_required` (what current hosts send)
    or the generic `auth_failed` (what older hosts send for the same cause).
    Both mean the saved pairing is no longer usable, so every pairing decision
    asks that one function instead of comparing against a single code string.
-   The newer `host_update_required` and `account_session_changed` codes are
-   deliberately *not* in that set: neither is a reason to destroy a pairing.
+   The newer `account_not_signed_in`, `account_verification_failed`,
+   `host_update_required`, and `account_session_changed` codes are deliberately
+   *not* in that set: none is a reason to destroy a pairing. iOS keeps the
+   host's target-specific message so the user is told which computer needs
+   attention.
 3. Send local `db_version` plus the per-host-DB cursor map
    (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
    `serverDbSiteId` and the runtime's current project catalog when the
@@ -1573,9 +1776,9 @@ still resolve it — do not "clean it up" to match the enum.
 
 Agent rows mirror desktop's shared status vocabulary: blue `Working`, amber
 `Needs you`, emerald `Done`, red `Failed`, violet `Planning`, and neutral
-`Stale`. Amber is reserved for the one state asking the user to act. Syncing,
-offline hosts, blocked work, and a live-but-silent stale run remain neutral;
-stale uses a clock rather than a network-offline glyph.
+`Idle` / `Stale`. Amber is reserved for the one state asking the user to act.
+Syncing, offline hosts, blocked work, and a live-but-silent stale run remain
+neutral; idle and stale use a clock rather than a network-offline glyph.
 
 Control Center widgets are intentionally not registered. Home Screen widgets,
 ActivityKit, and Dynamic Island all are — see the Live Activity section below.
@@ -1634,10 +1837,18 @@ contract) is documented in
   on every foreground transition (`PushNotificationService.clearAppBadge`,
   called from `ADEApp`'s scene-phase handler) so a lingering count never
   reads as stale.
-- **Live Activity** mirrors up to three active agent runs plus up to two
-  recent PR lifecycle/status rows on the Lock Screen and Dynamic Island.
-  `LiveActivityService` owns one account-wide `agent-runs` activity per phone,
-  applies relay-pushed content-state updates, and ends it when the account
+- **Live Activity** mirrors active agent runs plus up to two recent PR
+  lifecycle/status rows on the Lock Screen and Dynamic Island. The lock-screen
+  banner budgets three agent rows (two when a lead row carries Approve/Deny);
+  the expanded island budgets two, because a third row plus the footer silently
+  clips. The expanded island's leading/trailing regions inset 10pt horizontally
+  and 2pt vertically so the corner glyphs keep their edges inside the rounder
+  capsule; compact leading/trailing have no extra inset. Glyph counts link to
+  `ade://activity?state=<group>`. `LiveActivityService` owns one account-wide
+  `agent-runs` activity per phone, applies relay-pushed content-state updates,
+  and also writes a local `Activity.update` from the merged drawer feed whenever
+  the app is alive (`refreshLocalContent`, hash-deduped, 1 s floor) so a working
+  count can tick without spending APNs. It ends the activity when the account
   activity settles, Live Activities are disabled, or the user signs out. Each
   `Run` / `PullRequest` row carries an optional `accountMachineKey`; exact
   element-level links preserve it so tapping a secondary row never opens the
@@ -1697,11 +1908,22 @@ the same source-revision, account-cursor, tombstone, and expiry rules as
 desktop. The existing per-project drawer is a project lens over that model; it
 is not a separate inbox.
 
-The sheet has two buckets: **Sessions**, ordered as Needs you → Working → Done,
-and **Inbox** for PR/CI work and unseen outcomes. It includes project filtering
-and machine/project context on every item, and remains useful when the phone is
+The sheet sections **Sessions** by the six canonical groups (Needs you → Failed
+→ Planning → Working → Idle → Done) and keeps **Inbox** for PR/CI work and
+unseen outcomes. Resting bands (idle, done) collapse into a summary line unless
+the reader expands them or a state filter is on. A glyph strip at the top is
+the status display and the single-select filter; tapping a count opens that
+band. It includes project filtering and machine/project context on every item,
+and remains useful when the phone is
 account-signed-in but not directly paired to a machine. Rows can be dismissed
 with a swipe; account fallback and offline states remain explicit.
+
+`rebuild(from:live:)` merges the paired host's live `WorkspaceSnapshot` over
+that host's relay rows (session identity always, machine identity when the live
+snapshot names one). The account poll lags and goes quiet when a brain is
+signed out; without the merge the Hub could show working agents while the
+drawer showed only week-old idle rows. The merged list is what
+`LiveActivityService.refreshLocalContent` writes into the island.
 
 Each row uses the shared item destination and actions:
 
@@ -1719,8 +1941,9 @@ extension as well as the app, which is what keeps the lock screen from
 describing a session in words and colours the app does not use; it also means
 both files are pinned to the extension's iOS 17 deployment target.
 
-`ActivityRowPresentation.swift` also holds iOS's copy of the five-group state
-table (`ActivityStateGroup`: needs-you, failed, planning, working, done), pinned
+`ActivityRowPresentation.swift` also holds iOS's copy of the six-group state
+table (`ActivityStateGroup`: needs-you, failed, planning, working, idle, done),
+pinned
 to `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the same
 fixture the renderer, the native notch, and the relay run, because this copy
 drifted on `merge_ready`, on idle-tier demotion, and on how planning is derived
@@ -1732,10 +1955,11 @@ compact brand chip. `chatActivityMode` decodes losslessly into `planning` or an
 unrecognized value; no `planning` member was added to the phase enum, which
 stays frozen wire.
 
-The Hub's
-"Live now" strip (`Views/Hub/HubLiveStrip.swift`) is a third reader of the same
-model, showing agents working on any account machine and hiding itself entirely
-when none are.
+The Hub's project → lane → chat tree (`Views/Hub/HubActivityState.swift`) is
+another reader of the same table: each row carries `HubStateGlyph`, and headers
+tally every nonzero group including resting bands. A snoozed running chat files
+as `idle` so the project card's blue working count cannot disagree with the
+Activity sheet the user just hid. There is no separate "Live now" strip.
 
 The drawer uses the same one-hue-one-meaning contract as the widget and desktop
 Activity pane. `blocked` is a neutral Working item with an Open action, distinct from the
@@ -1862,8 +2086,12 @@ ordering). Attention bubbles are driven by the roster's `attentionCount`
 chat rows and shells attached to a chat: a standalone CLI session that exited
 non-zero never contributes, because attention feeds the attention-first
 project sort and CLI rows have no mobile archive/clear affordance to make a
-stale failure go away. The Hub replaces the old
-the legacy project picker's connected-state layout while preserving its
+stale failure go away. Roster `runningCount` (and the Hub overlay of it) counts
+only chats that are live running and **not snoozed** —
+`RemoteRosterChat.countsTowardRunning`. A snoozed running chat is idle on every
+other Activity surface, so including it would paint the project card blue while
+the Activity sheet hid the row. The Hub replaces the
+legacy project picker's connected-state layout while preserving its
 no-machine / connecting blank states. It still merges the runtime-provided
 catalog with projects already present in the local replicated DB, marks
 cached/unavailable rows, and requests a fresh bootstrap connection for the
@@ -1933,14 +2161,18 @@ multi-line prompt the available space instead of lifting the activity panel
 with it.
 
 Mobile image attachments use the same host-side temp attachment contract as
-desktop. Hub, Work new-session, compact/in-session, Chat, and CLI composers open
-the scoped `PhotosPicker` directly from the plus control rather than through a
-one-item menu. Their `UITextView` inputs also advertise Paste for image-only
-clipboards and stage pasted images through the same path. Up to ten images are
-normalized to JPEG and retained locally; overflow and load failures stay visible
-as blocking tray errors instead of being silently dropped. Staging works while
-offline, while upload/send waits for reconnection. Hosts that do not advertise
-`chat.saveTempAttachment` do not offer attachment entry.
+desktop. Hub, Work new-session, and in-session composers open attach, dictate,
+and per-project prompt stash from `WorkComposerOverflowButton` (a three-dot
+menu) rather than a plus control or idle mic. Their `UITextView` inputs also
+advertise Paste for image-only clipboards and stage pasted images through the
+same path. Up to ten images are normalized to JPEG and retained locally;
+overflow and load failures stay visible as blocking tray errors instead of
+being silently dropped. Staging works while offline, while upload/send waits
+for reconnection. Hosts that do not advertise `chat.saveTempAttachment` disable
+Attach only; Dictate stays available. Hosts that omit the optional
+`chat.listPromptStashes` / `chat.createPromptStash` / `chat.deletePromptStash`
+actions hide stash instead of going limited. Context usage lives on the latest
+turn-end marker, not in the composer.
 
 `WorkChatInputAttachmentTray` is a separate fixed-height shelf above the input
 region, so adding previews grows the composer upward without reducing the text
@@ -2041,7 +2273,14 @@ The iOS pieces:
 - `apps/ios/ADE/Models/RemoteModels.swift` and `RemoteRosterModels.swift` decode
   `settleOverride`, `snoozedUntil`, `snoozedAt`, `wokeAt`, and `wokeReason` as
   optional `String` fields through `decodeIfPresent`, and include them in
-  equality so a lifecycle-only change still redraws the row.
+  equality so a lifecycle-only change still redraws the row. Roster chats expose
+  `countsTowardRunning` (live running, not snoozed) and
+  `applyLocalSnoozeOverlay`, because snooze does not bump `lastActivityAt` and a
+  fresher remote row would otherwise wipe the overlay the phone just wrote.
+- `apps/ios/ADE/Views/Hub/HubActivityState.swift` maps a roster chat onto
+  `ActivityStateGroup`: a raised hand outranks a failure, a snoozed running chat
+  is `idle`, and both `idle` and `ended` strings land on `idle` rather than
+  `done` so week-old roster history does not paint emerald.
 - `apps/ios/ADE/Services/SyncService.swift` holds the `session.*` remote-command
   callers. The phone never decides a lifecycle value, so these commands are the
   mechanism, and the connect-time descriptor list gates the affordances.
@@ -2075,7 +2314,7 @@ The iOS pieces:
   slot from another. `workSessionStatusBadge` / `workSessionRowTone` /
   `workSessionStatusPresentation` are thin reads of it. Labels and hues come
   from the shared `ActivityPhaseVocabulary` mirror, so a Work row, the Activity
-  drawer, the hub strip, and the widget all read the same table.
+  drawer, the Hub tree, and the widget all read the same table.
 - `WorkSessionGrouping.swift`'s `workSessionGroups` builds the by-lane (default)
   / by-status / by-time groups, and `WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, `WorkRootComponents.swift`, and
@@ -2201,7 +2440,7 @@ Known limits, all deliberate:
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
 | **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/manage, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) is organized into collapsible sections (`LaneDetailSectionChrome`): each section auto-opens when it has content and auto-collapses when empty (`LaneSectionDisclosure`), and stays where the user last put it once they toggle it manually. Header chips and the git action buttons flow through `LaneChipFlowLayout`, a wrapping flow layout that wraps onto new lines instead of horizontally scrolling. Lane rows in the list carry a cheap render-relevant signature (mirroring the Hub row-signature pattern) so `.equatable()` re-renders only rows whose visible state changed. It embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle and an AI "Suggest message" button (gated by runtime capability, with a setup-hint when the runtime reports "AI commit messages are off"), pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase + descendants, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and a rescue sheet creates a new lane from uncommitted changes. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, a tabbed manage dialog (delete / appearance / stack / archive) mirroring desktop's `ManageLaneDialog`. Every lane is managed the same way regardless of where its worktree lives, so there is no adopt or "move into `.ade/worktrees`" action. The previous `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneStashesScreen`, and `LaneCommitHistoryScreen` destinations were deleted in favor of this single pane. |
-| **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown that replaced the horizontal workspace chip row), live file tree/read. Search is a single full-screen page (`FilesSearchScreen`) opened from the magnifying-glass button in the Files top bar (desktop `SearchOverlay` parity): one query searches file *names* (quick open) and file *contents* (text search) together — name matches surface first under "Files", content hits are grouped per file with collapsible line previews, and tapping a line opens the file at that line. The inline `FilesQueryCard` quick-open / text-search cards (and their 40-row caps) were removed. Files are freely editable — the mobile read-only file-mutation gate (`mobileReadOnly` / edit-protection) was removed on both the host and the phone, matching the desktop change. |
+| **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown that replaced the horizontal workspace chip row), live file tree/read. Search is a single full-screen page (`FilesSearchScreen`) opened from the magnifying-glass button in the Files top bar (desktop `FilesSearchPanel` parity): one query searches file *names* (quick open) and file *contents* (text search) together — name matches surface first under "Files", content hits are grouped per file with collapsible line previews, and tapping a line opens the file at that line. The inline `FilesQueryCard` quick-open / text-search cards (and their 40-row caps) were removed. Files are freely editable — the mobile read-only file-mutation gate (`mobileReadOnly` / edit-protection) was removed on both the host and the phone, matching the desktop change. |
 | **Work** | `terminal` | `/work` | Terminal + chat session list (standalone CLI sessions stay listed after they end, matching desktop — `workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift` hides orphaned chat-owned child shells that are no longer live), cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that collapses to a single tone-dot dropdown when space is tight and expands to segmented chips when wide, a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer), replacing the earlier paperplane capsule. The session list itself is described in [Work session list rows](#work-session-list-rows). Each row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside its title. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). When a row resolves a `LanePrTag` (mapped or GitHub-by-branch), its long-press context menu (`WorkSessionListRow`) also offers **"Open in PRs tab"**; `WorkRootScreen+Actions.openPullRequest` waits out the menu-dismiss animation, then publishes `syncService.requestedPrNavigation` (a `PrNavigationRequest` carrying the PR id + number + lane id, or just the GitHub PR number for an unmapped tag), and `ContentView`'s `onChange(of: requestedPrNavigation?.id)` flips the app to the PRs tab and opens that PR — the same cross-tab handoff the deep-link router and the in-chat PR menu use. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. Only real user drags can un-pin the viewport: layout-driven geometry changes (keyboard show/hide, key bar, pinch font changes) re-assert the live tail after the pass settles, so a pinned terminal with large scrollback keeps the prompt visible above the keyboard instead of stranding it (SwiftTerm only re-snaps when cols/rows change, and a mouse-mode TUI repainting in place emits no scroll events to self-heal). When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). The chat composer input is a `UITextView`-backed field (`WorkComposerTextView` in `WorkComposerTypedTriggers.swift`) rather than a plain SwiftUI `TextField`, because it needs the cursor position and inline styled runs. `WorkComposerTriggerDetector` runs the same cursor-relative regexes as the shared desktop/TUI `composerTriggers.ts` (slash `(?:^|\s)/([^\s/]*)$`, at `(?:^|\s)@([^\s@]*)$`), so a `/command` or `@file` trigger is detected anywhere in the draft, not just at position 0. `WorkComposerSuggestionController` drives an inline suggestion strip (`WorkComposerSuggestionStrip`) above the input — a curated per-provider slash catalog (`WorkComposerSlashCatalog`) resolved locally, and `@file` quick-open resolved over sync via `SyncService.quickOpen` against the lane's files workspace (40 ms debounce, workspace id cached per lane, invalidated on lane change). Its visibility derives purely from the active trigger match, never from `@FocusState`. Committing a suggestion splices exactly the trigger span on the live text view, and confirmed `/command` / `@path` tokens render as tinted chip pills drawn by a custom TextKit 1 `WorkComposerChipLayoutManager` (provider-accent tint, monospace for slash, semibold for at) while `draftState.text` stays the plain-text source of truth that is sent. `WorkSmartLinkDetector` styles GitHub, Linear, ADE, and generic web URLs with the same chip layout manager in both new-chat and in-session composers; Backspace/Delete removes an intersected URL atomically, and long press offers Copy link and Remove link. The raw URL remains the SwiftUI draft and sent prompt. This replaced the modal `WorkMentionsPickerSheet` and `WorkSlashCommandsSheet` (both deleted). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: GitHub stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, Integration/Rebase workflow cards rendered from `PrWorkflowCard`, and per-PR action capabilities. The PR detail screen (`PrDetailView`) is a single-column adaptation of the desktop Timeline+Rails layout — its Overview is emitted as sibling `List` rows so the list virtualizes offscreen content, and it stays live off a warm-cache freshness gate (see [PR detail screen](#pr-detail-screen)). |
 | **CTO** | `brain` | `/cto` | The CTO chat thread rendered inline as the tab body (single persistent session via `CtoSessionDestinationView`) with a compact one-line voice/send composer. The top-bar gear opens settings for identity/personality, live model/reasoning/Fast selection, read-only Linear status, memory via `cto.getMemory`, and re-run setup. The tab badges when the thread is blocked on the user: `SyncService.refreshCtoAttentionIfNeeded()` calls the optional `cto.getAttention` command (5 s debounce, gated on `supportsRemoteAction`) and publishes `ctoAttention`. It rides the change pulse that rebuilds the session roster, but is invoked *before* `refreshActiveSessionsAndSnapshot`'s roster-signature early return — the CTO is excluded from that roster, so a CTO-only change leaves the signature unchanged and a probe below the guard could never fire. `saveRemoteCommandDescriptors` also calls it with `force: true`, so the first probe after a (re)connect happens as soon as the host advertises the command. Transport failures and the host's explicit `unknown` status both keep the last known value; an older brain that does not advertise the action clears it. The decoded status is optional so a new phone still infers idle/waiting correctly from the legacy `awaitingInput` field. |
@@ -2698,6 +2937,23 @@ the stats and shows update guidance.
   is a CRR, make sure writes land in a table the phone reads), not
   on the phone. Avoid adding runtime-only caches that the phone has no
   way to observe.
+- **The synced model catalog is sized for the phone.** `ade.agentChat.modelCatalog`
+  emits only connected OpenCode providers' models; the full OpenCode directory is
+  models.dev in its entirety (~195 providers / ~7.2k models, ~4.85 MB) and shipping
+  it stalled or killed the iOS model picker. The host still emits an empty block
+  for each unconnected provider, but that is for the desktop payload shape — the
+  phone drops them (`providers.filter { !$0.models.isEmpty }`, then the same
+  filter on groups), because iOS has no OpenCode connect flow and an empty row
+  would be a dead end. The phone's connect affordance is a static hint in
+  `WorkModelPickerSheet` pointing at the paired machine, not a catalog block.
+  Anything that widens what the host puts in this payload has to be weighed
+  against the phone decoding and rendering all of it.
+- **Long model lists must be lazy on the phone.** `WorkNewChatSheet`'s model
+  section uses a `LazyVStack`: each row materializes two `RoundedRectangle`s and a
+  `.glassEffect` layer, and an eager `VStack` builds every one synchronously the
+  moment a provider is picked. This stays load-bearing even with the host scoped
+  to connected providers — a single connected provider such as `openrouter` or
+  `github-copilot` still lists hundreds of models.
 - **Personal chats are the exception to project-DB reads.** Their durable state
   belongs to the machine scope, so iOS reads summaries through
   `personalChats.list`, caches them per host, and streams transcripts with
@@ -2890,29 +3146,77 @@ the stats and shows update guidance.
   Codex and other adapters reuse compact tool cards; data URIs are never printed
   into the timeline, and stored/mobile compaction byte counts become a short
   "preview omitted" detail.
-- **Tool telemetry is disclosed from turn status, not repeated through the
-  mobile transcript.** `WorkChatSessionView` keeps assistant narration,
-  reasoning, provider-specific cards, and `WorkChangedFilesPanelView` rows in
-  chronological order, but filters normalized `toolGroup` rows from the visible
-  timeline. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView`
-  open the corresponding activity in `WorkTurnActivitySheet`. The live row uses
-  `ViewThatFits` so narrow phones retain the activity verb and monospaced elapsed
-  time without squeezing tool details into the same line. The association is
-  data-driven and never invents file changes for providers that did not emit
-  them.
-- **Active-turn send and Stop use dismissing native popovers.** For Claude,
-  the in-session composer mirrors desktop's three delivery choices: **Send
-  during turn**, **Send after turn**, and **Interrupt & send**. The primary
-  button's icon/label communicates the selected behavior, the chevron opens a
-  custom SwiftUI popover, and selection dismisses it immediately. Non-Claude
-  providers keep the single stage-behind-turn action. When the host advertises
-  additive `chat.interruptWithQueueMode`, Claude Stop likewise becomes a split
-  control for **Stop & clear queue**
+- **Tool telemetry keeps one chronological row, and is also disclosed from turn
+  status.** `WorkChatSessionView` draws assistant narration, reasoning,
+  provider-specific cards, `WorkToolCallsPanelView` clusters and
+  `WorkChangedFilesPanelView` rows in chronological order;
+  `workPresentedTimelineEntries` in `WorkTimelineHelpers.swift` is the seam that
+  decides what reaches the visible timeline. It used to drop every normalized
+  `toolGroup` row, which meant a turn whose only work was a `Read` and an
+  approved shell command left no trace in the transcript at all. That rule was
+  written when a cluster had no compact form; a finished cluster is now a single
+  44pt row in the same one-liner grammar the changed-files panel uses, so it
+  stays. The live `WorkActivityIndicator` and each `WorkTurnEndMarkerView` still
+  open the whole turn's activity in `WorkTurnActivitySheet`, where tapping a
+  member reveals its result or output. The live row uses `ViewThatFits` so
+  narrow phones retain the activity verb and monospaced elapsed time without
+  squeezing tool details into the same line. The association is data-driven and
+  never invents file changes for providers that did not emit them.
+- **Active-turn send and Stop use dismissing native popovers.** The in-session
+  composer's delivery choices come from `WorkActiveSendCapability` in
+  `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical
+  `ACTIVE_TURN_DISPATCH_MODES` table in `apps/desktop/src/shared/types/chat.ts`,
+  kept in step by hand because iOS cannot import the TS. Modes are in menu order
+  and the first is the default, so Claude mirrors desktop's three choices
+  (**Send during turn**, **Send after turn**, **Interrupt & send**, defaulting to
+  *Send during turn*) and Cursor gets two (**Interrupt & continue**, **Send after
+  turn**, defaulting to *Interrupt & continue*). `interruptContinues` is mirrored
+  alongside the table, so Cursor's button and hint say "continue" — its SDK has
+  no mid-run message API, and the redirect cancels and resends on the same agent
+  thread. Every provider name in the option titles, details, hints and VoiceOver
+  strings comes from the capability's `agentLabel` rather than hard-coded
+  "Claude". The primary button's icon/label communicates the selected behavior,
+  the chevron opens a custom SwiftUI popover, and selection dismisses it
+  immediately. The pick is remembered per chat in `WorkActiveSendModeStore`
+  (App Group defaults, same bounded JSON-map mechanism as the composer drafts),
+  so a working habit survives backgrounding and relaunch; a turn starting or
+  ending does not reset it, and a provider change snaps back to that provider's
+  default only when the new provider cannot honor the remembered mode.
+  Queue-only providers (a single mode is not a choice) keep the plain
+  stage-behind-turn button, matching the desktop composer. When the host
+  advertises additive `chat.interruptWithQueueMode`, Claude Stop likewise
+  becomes a split control for **Stop & clear queue**
   and **Stop only**; the per-chat choice is stored in `UserDefaults`, carries
   VoiceOver labels and haptics, and falls back to legacy Stop against older
-  brains. Immediate send still stages once on the host before
-  `chat.dispatchSteer`; if dispatch fails, the one queued message remains and
-  the draft is not restored as a duplicate.
+  brains.
+- **Active-turn sends are atomic, so nothing flashes through the staged strip.**
+  `AgentChatSteerRequest` carries the desktop's `dispatchMode` field
+  (`"inline"` / `"interrupt"`, spelled exactly as the host validates it), and
+  `SyncService.steerChatSession` sends it with the steer itself. A host that can
+  honor it dispatches in the same round-trip and answers `queued: false`, so no
+  queued transcript row is written and no optimistic staged entry is created.
+  The mode is resolved once, before the send, so the branch that resends as a
+  steer after a "turn already active" rejection carries the same mode — losing
+  it there used to downgrade a *Send now* tap into a silently staged message.
+  `workChatAtomicSteerDispatchMode` returns nil for **Send after turn**, for a
+  provider with no such channel, and for a brain that does not advertise
+  `chat.dispatchSteer` — the same gate the staged strip's buttons read, so the
+  composer can never request a promotion the strip is hiding the recovery for.
+  A host old enough to advertise `chat.dispatchSteer` but too old to accept
+  `dispatchMode` on `chat.steer` answers `queued: true`; that one case falls
+  back to the legacy two-step promotion rather than dropping the user's choice,
+  and if the promotion fails the single queued message remains and the draft is
+  not restored as a duplicate.
+- **The staged strip is only ever "you queued this".** With active-turn sends
+  atomic, `WorkQueuedSteerStrip` renders exclusively messages the user chose to
+  queue, so it no longer hides behind an accordion: one queued message is a
+  single compact card — waiting glyph, one truncated line of the message, its
+  disposition beneath, and **Send now** / **Interrupt** / **Edit** / **Cancel**
+  as visible icon-only buttons with 44pt-tall touch areas. Only a pile-up gets
+  a slim `N queued` count above the rows. While a turn is running the clock
+  glyph breathes and the disposition reads "sends when turn ends"; on an idle
+  session it sits still and reads "after turn". The pulse goes through
+  `ADEMotion.pulse`, so Reduce Motion simply draws the glyph at full strength.
 - **The Work context meter treats completed compaction as a usage boundary.**
   `RemoteModels.swift`, `WorkEventMapping.swift`, and the persisted JSONL parser
   retain `context_compact.postTokens` plus the automatic `context_usage.state`.
@@ -3088,7 +3392,9 @@ the stats and shows update guidance.
   into `WorkSessionNavigationRequest` / `PrNavigationRequest`, and navigation
   selects or adopts that exact machine before opening the session, pending
   item/event, PR, or PR tab. Missing keys remain valid only for legacy/local
-  payloads.
+  payloads. `ade://activity?state=<group>` is the widget/island glyph-strip
+  target: it opens the drawer pre-filtered to that band, and an unrecognised
+  value is ignored rather than rejected.
 - **The chat-summary cache merges, it never wholesale-replaces.**
   `cacheChatSummaries` folds each incoming summary into
   `chatSummaryCache` by session id rather than swapping the whole map.

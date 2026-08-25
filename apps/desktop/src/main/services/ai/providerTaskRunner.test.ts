@@ -14,6 +14,9 @@ const resolveCodexExecutableMock = vi.fn(() => ({
   path: "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd",
   source: "path",
 }));
+const cursorAgentCreateMock = vi.fn();
+const cursorAgentResumeMock = vi.fn();
+const cursorAgentSendMock = vi.fn();
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof childProcess>("node:child_process");
@@ -29,6 +32,15 @@ vi.mock("./claudeCodeExecutable", () => ({
 
 vi.mock("./codexExecutable", () => ({
   resolveCodexExecutable: () => resolveCodexExecutableMock(),
+}));
+
+vi.mock("./cursorSdkLoader", () => ({
+  loadCursorSdk: async () => ({
+    Agent: {
+      create: (...args: unknown[]) => cursorAgentCreateMock(...args),
+      resume: (...args: unknown[]) => cursorAgentResumeMock(...args),
+    },
+  }),
 }));
 
 import { makeCodexCompatibleJsonSchema, runProviderTask } from "./providerTaskRunner";
@@ -109,6 +121,9 @@ afterEach(() => {
   spawnMock.mockReset();
   resolveClaudeCodeExecutableMock.mockClear();
   resolveCodexExecutableMock.mockClear();
+  cursorAgentCreateMock.mockReset();
+  cursorAgentResumeMock.mockReset();
+  cursorAgentSendMock.mockReset();
 });
 
 describe("runProviderTask", () => {
@@ -232,5 +247,118 @@ describe("runProviderTask", () => {
       mkdtempSpy.mockRestore();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("does not map Cursor full-auto onto local.force and omits default tools", async () => {
+    cursorAgentSendMock.mockResolvedValue({
+      wait: async () => ({ status: "finished", result: "ok" }),
+      cancel: async () => {},
+    });
+    cursorAgentCreateMock.mockResolvedValue({
+      agentId: "agent-1",
+      send: cursorAgentSendMock,
+    });
+
+    const result = await runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: {
+        family: "cursor",
+        isCliWrapped: false,
+        providerModelId: "composer-2",
+      } as any,
+      prompt: "Ship the change.",
+      feature: "unit-test",
+      permissionMode: "full-auto",
+      auth: [{ type: "api-key", provider: "cursor", key: "cursor-test-key" }] as any,
+      projectConfig: {} as any,
+    });
+
+    expect(result.text).toBe("ok");
+    expect(cursorAgentCreateMock).toHaveBeenCalledTimes(1);
+    const createOptions = cursorAgentCreateMock.mock.calls[0]![0] as Record<string, any>;
+    expect(createOptions.mode).toBe("agent");
+    expect(createOptions.mode).not.toBe("auto");
+    expect(createOptions.tools).toBeUndefined();
+    expect(createOptions.local).toMatchObject({
+      cwd: "/tmp/lane",
+      sandboxOptions: { enabled: false },
+      autoReview: false,
+    });
+    expect(createOptions.local.force).toBeUndefined();
+    expect(cursorAgentSendMock.mock.calls[0]![1]?.local?.force).toBeUndefined();
+  });
+
+  it("applies Cursor Auto-review for middle-trust edit tasks", async () => {
+    cursorAgentSendMock.mockResolvedValue({
+      wait: async () => ({ status: "finished", result: "ok" }),
+      cancel: async () => {},
+    });
+    cursorAgentCreateMock.mockResolvedValue({
+      agentId: "agent-2",
+      send: cursorAgentSendMock,
+    });
+
+    await runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: {
+        family: "cursor",
+        isCliWrapped: false,
+        providerModelId: "composer-2",
+      } as any,
+      prompt: "Inspect then patch.",
+      feature: "unit-test",
+      permissionMode: "edit",
+      auth: [{ type: "api-key", provider: "cursor", key: "cursor-test-key" }] as any,
+      projectConfig: {} as any,
+    });
+
+    const createOptions = cursorAgentCreateMock.mock.calls[0]![0] as Record<string, any>;
+    expect(createOptions.mode).toBe("agent");
+    expect(createOptions.local.autoReview).toBe(true);
+    // Middle-trust maps to Cursor "agent", where ADE has no sandbox opinion: an
+    // explicit false would make the SDK skip the user's ~/.cursor/sandbox.json.
+    expect(createOptions.local.sandboxOptions).toBeUndefined();
+    expect(createOptions.tools).toBeUndefined();
+  });
+
+  it("retries Cursor sandbox ConfigurationError without crashing", async () => {
+    cursorAgentSendMock.mockResolvedValue({
+      wait: async () => ({ status: "finished", result: "ok" }),
+      cancel: async () => {},
+    });
+    cursorAgentCreateMock
+      .mockRejectedValueOnce(new Error(
+        "Local SDK sandboxing was requested, but sandboxing is not supported in this environment. Disable local.sandboxOptions.enabled or remove ~/.cursor/sandbox.json to run without sandboxing.",
+      ))
+      .mockResolvedValueOnce({
+        agentId: "agent-3",
+        send: cursorAgentSendMock,
+      });
+
+    await runProviderTask({
+      cwd: "/tmp/lane",
+      descriptor: {
+        family: "cursor",
+        isCliWrapped: false,
+        providerModelId: "composer-2",
+      } as any,
+      prompt: "What does this file do?",
+      feature: "unit-test",
+      permissionMode: "read-only",
+      auth: [{ type: "api-key", provider: "cursor", key: "cursor-test-key" }] as any,
+      projectConfig: {} as any,
+    });
+
+    expect(cursorAgentCreateMock).toHaveBeenCalledTimes(2);
+    expect(cursorAgentCreateMock.mock.calls[0]![0]).toMatchObject({
+      mode: "plan",
+      tools: ["read", "grep", "glob", "ls"],
+      local: { sandboxOptions: { enabled: true }, autoReview: false },
+    });
+    expect(cursorAgentCreateMock.mock.calls[1]![0]).toMatchObject({
+      mode: "plan",
+      tools: ["read", "grep", "glob", "ls"],
+      local: { sandboxOptions: { enabled: false }, autoReview: false },
+    });
   });
 });

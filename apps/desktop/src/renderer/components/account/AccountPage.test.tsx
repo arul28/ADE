@@ -4,11 +4,12 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { AccountPage, SignInCard, reconnectNeedsFreshSignIn } from "./AccountPage";
+import { AccountPage, SignInCard, describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./AccountPage";
 import { PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE } from "../../../../../ade-cli/src/services/account/accountMachinePublisherService";
 import { docs } from "../../onboarding/docsLinks";
-import type { AdeAccountMachine, AdeAccountStatus } from "../../../shared/types";
+import type { AdeAccountMachine, AdeAccountMachineRemovalResult, AdeAccountStatus } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { WebWorkspaceProvider } from "../../webclient/workspace/WebWorkspaceContext";
 
 const beginLogin = vi.fn(async () => undefined);
 const refreshAccount = vi.fn(async () => SIGNED_OUT);
@@ -124,7 +125,7 @@ describe("AccountPage signed-out card", () => {
 
     expect(
       screen.getByText(
-        "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+        "Can't read your sign-in right now — your session is still there. Try Repair before signing in again.",
       ),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Sign in or create account" })).toBeNull();
@@ -188,7 +189,7 @@ describe("AccountPage signed-in", () => {
   const signOut = vi.fn(async () => SIGNED_OUT);
   const repairMachinePairing = vi.fn();
 
-  /** The directory answers `ok` but has no row for this computer — i.e. removed. */
+  /** The directory answers `ok` but has no row for this computer. */
   function machinesWithoutThisComputer() {
     listMachines.mockResolvedValue({
       state: "ok",
@@ -219,7 +220,10 @@ describe("AccountPage signed-in", () => {
     });
     getLocalMachineIdentity.mockResolvedValue({ machineKey: "this-key", deviceId: "this-dev" });
     window.ade = {
-      app: { openExternal: vi.fn(async () => undefined) },
+      app: {
+        openExternal: vi.fn(async () => undefined),
+        restartBackgroundService: vi.fn(async () => undefined),
+      },
       github: {
         getStatus: vi.fn(async () => ({ connected: false })),
         onStatusChanged: vi.fn(() => () => {}),
@@ -230,6 +234,12 @@ describe("AccountPage signed-in", () => {
         removeMachine,
         renameMachine,
         repairMachinePairing,
+        repairSession: vi.fn(async () => ({
+          outcome: "repaired" as const,
+          readable: true,
+          recoveredKeys: 0,
+          brainRestarted: true,
+        })),
         signOut,
       },
     } as unknown as typeof window.ade;
@@ -273,6 +283,115 @@ describe("AccountPage signed-in", () => {
     expect(screen.getByText("Signed in with Google")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
     expect(screen.queryByText(/you're in/i)).toBeNull();
+  });
+
+  it("marks a computer this one holds a live channel to, and drops the stale last-seen", async () => {
+    // Directory heartbeats alone said "Last seen 1h ago" about a machine this
+    // computer was actively talking to. The live channel outranks them, and
+    // the badge — not the status line — is what says the word.
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({
+          machineKey: "studio-key",
+          deviceId: "studio-dev",
+          name: "Studio",
+          online: false,
+          lastSeenAt: Date.now() - 3_600_000,
+          power: { onExternalPower: true },
+        }),
+      ],
+    });
+    const remoteRuntime = {
+      getConnectionSnapshot: vi.fn(async () => ({
+        connections: [
+          {
+            target: {
+              id: "t-1",
+              name: "Studio",
+              hostname: "studio.local",
+              pairedMachine: { hostIdentity: "studio-dev" },
+              sshUser: null,
+              port: null,
+              sshKeyPath: null,
+              lastSeenArch: null,
+              runtimeBinaryVersion: null,
+              lastConnectedAt: null,
+            },
+            state: "connected",
+            arch: null,
+            version: null,
+            projects: [],
+            lastError: null,
+            lastAttemptedAt: null,
+            connectedAt: Date.now(),
+          },
+        ],
+        connectedCount: 1,
+        updatedAt: Date.now(),
+      })),
+      onConnectionSnapshotChanged: vi.fn(() => () => {}),
+    };
+    (window.ade as unknown as Record<string, unknown>).remoteRuntime = remoteRuntime;
+
+    renderPage();
+    await screen.findByText("Studio");
+    await waitFor(() => expect(screen.getByText("Connected")).toBeTruthy());
+    expect(screen.getByText("Plugged in")).toBeTruthy();
+    expect(screen.queryByText(/Last seen/)).toBeNull();
+  });
+
+  it("never counts a computer online while its own row says asleep", async () => {
+    // A Mac that announced its suspend is still inside the directory's
+    // 90-second online window. The header counted that raw flag while the row
+    // below rendered resolved presence, so one card said both things at once.
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [
+        machine({
+          machineKey: "studio-key",
+          deviceId: "studio-dev",
+          name: "Studio",
+          online: true,
+          lastSeenAt: Date.now() - 20_000,
+          sleepState: "asleep",
+          sleepStateAt: Date.now() - 60_000,
+          power: { onExternalPower: false, battery: { percent: 82, charging: false } },
+        }),
+        machine({
+          machineKey: "this-key",
+          deviceId: "this-dev",
+          name: "MacBook Pro",
+          online: true,
+          lastSeenAt: Date.now(),
+        }),
+      ],
+    });
+
+    renderPage();
+    const name = await screen.findByText("Studio");
+    const row = name.parentElement as HTMLElement;
+
+    expect(screen.getByText("Asleep · 82% battery")).toBeTruthy();
+    expect(row.querySelector("[data-machine-presence]")?.getAttribute("data-machine-presence"))
+      .toBe("asleep");
+    expect(within(row).queryByText("Connected")).toBeNull();
+    await waitFor(() => expect(screen.getByText("1 online · 2 connected")).toBeTruthy());
+  });
+
+  it("tells an offline computer's last-seen time rather than the bare word Offline", async () => {
+    // `machineStatusLine` only ever returns null for a CONNECTED machine, so
+    // the `?? lastSeenLabel(...)` arm this list used to rely on was dead and
+    // every offline row silently degraded to "Offline" — while the remote
+    // targets list, describing the same machine, kept saying "Last seen 1h
+    // ago". Two lists, one machine, two stories.
+    renderPage();
+    await screen.findByText("Studio");
+
+    expect(await screen.findByText(/Last seen/)).toBeTruthy();
+    expect(screen.queryByText("Offline")).toBeNull();
   });
 
   it("pins this computer first with a badge and offers rename but never removal", async () => {
@@ -353,6 +472,31 @@ describe("AccountPage signed-in", () => {
     await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
   });
 
+  it("keeps the removal confirmation open while removal is in flight", async () => {
+    let resolveRemoval!: (result: AdeAccountMachineRemovalResult) => void;
+    removeMachine.mockImplementationOnce(
+      () => new Promise<AdeAccountMachineRemovalResult>((resolve) => {
+        resolveRemoval = resolve;
+      }),
+    );
+    renderPage();
+    await screen.findByText("Studio");
+
+    fireEvent.click(screen.getByRole("button", { name: /Options for Studio/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Remove from account/ }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(dialog);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+
+    resolveRemoval({ ok: true, machineKey: "studio-key" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("signs out only after the honest confirmation", async () => {
     renderPage();
     await screen.findByText("MacBook Pro");
@@ -425,6 +569,86 @@ describe("AccountPage signed-in", () => {
     expect(screen.queryByRole("button", { name: /Manage connections/ })).toBeNull();
   });
 
+  it("uses the shared web roster so a leftover pairing is labeled, not a fourth account computer", async () => {
+    window.__adeWebClient = true;
+    const removeAccountMachine = vi.fn(async () => undefined);
+    const environment = {
+      envId: "alpha-env",
+      machineName: "windows alpha",
+      hostDeviceId: "alpha",
+    };
+    render(
+      <WebWorkspaceProvider
+        value={{
+          account: {
+            state: "signed_in",
+            userId: "user_1",
+            email: null,
+            name: null,
+            imageUrl: null,
+            expiresAt: null,
+            machines: [
+              machine({
+                machineKey: "studio-key",
+                deviceId: "studio-dev",
+                name: "Studio",
+                online: true,
+                reachableEndpoints: [{ kind: "lan", host: "192.168.1.5" }],
+              }),
+            ],
+            relayBaseUrls: [],
+            message: null,
+          },
+          snapshot: {
+            sessions: [{
+              targetId: "alpha-env",
+              environment,
+              status: { state: "reconnecting" },
+              state: "reconnecting",
+              projects: [],
+              lastUsedAt: Date.now(),
+              activeProjectId: null,
+              error: null,
+            }],
+            environments: [environment],
+            activeTargetId: null,
+            catalogs: [],
+            lastActiveMachineKey: null,
+            updatedAt: 0,
+          },
+          manager: {} as never,
+          adapter: { getActiveBinding: () => null } as never,
+          connectingMachineKey: null,
+          directoryLoading: false,
+          notice: null,
+          dismissNotice: vi.fn(),
+          consumePendingProjectPath: () => null,
+          signIn: vi.fn(),
+          signOut: vi.fn(),
+          retryDirectory: vi.fn(async () => undefined),
+          connectAccountMachine: vi.fn(),
+          connectEnvironment: vi.fn(),
+          connectMachineEntry: vi.fn(),
+          forgetMachineCatalog: vi.fn(),
+          renameMachine: vi.fn(),
+          removeAccountMachine,
+          forgetEnvironment: vi.fn(),
+        } as never}
+      >
+        <MemoryRouter initialEntries={["/account"]}>
+          <Routes>
+            <Route path="/account" element={<AccountPage />} />
+          </Routes>
+        </MemoryRouter>
+      </WebWorkspaceProvider>,
+    );
+
+    expect(await screen.findByText("windows alpha")).toBeTruthy();
+    expect(screen.getByText("This browser")).toBeTruthy();
+    expect(screen.getByText("1 on this account · 1 remembered in this browser")).toBeTruthy();
+    expect(screen.queryByText(/3 online/)).toBeNull();
+  });
+
   // Removal revokes the machine durably: it cannot resurrect itself through its
   // own heartbeat, and restarting, signing out and in, or reinstalling all
   // leave it removed. These tests cover the only way back.
@@ -433,6 +657,12 @@ describe("AccountPage signed-in", () => {
     renderPage();
 
     expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    expect(screen.queryByText(/It was removed/)).toBeNull();
+    expect(
+      screen.getByText(/isn't sharing Activity and your other computers can't reach it/),
+    ).toBeTruthy();
+    expect(screen.getByText(/Repair restarts ADE's background service/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
 
     await waitFor(() => expect(repairMachinePairing).toHaveBeenCalledTimes(1));
@@ -441,6 +671,30 @@ describe("AccountPage signed-in", () => {
         "This computer is back on your account. Activity and alerts are delivering again.",
       ),
     ).toBeTruthy();
+  });
+
+  it("shows recovery controls when the local machine is the only missing row and the directory is empty", async () => {
+    listMachines.mockResolvedValue({
+      state: "ok",
+      message: null,
+      machines: [],
+    });
+    renderPage();
+
+    expect(await screen.findByText("This computer isn't on your account")).toBeTruthy();
+    expect(screen.getByText("No computers connected yet")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this computer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+  });
+
+  it("repairs the background service from a missing directory row", async () => {
+    machinesWithoutThisComputer();
+    renderPage();
+    await screen.findByText("This computer isn't on your account");
+
+    fireEvent.click(screen.getByRole("button", { name: "Repair" }));
+    await waitFor(() => expect(window.ade.account?.repairSession).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Fixed — your sign-in is back.")).toBeTruthy();
   });
 
   it("shows the brain's reason and says the computer is still disconnected on failure", async () => {
@@ -514,6 +768,7 @@ describe("AccountPage signed-in", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reconnect this computer" }));
     const pending = await screen.findByRole("button", { name: "Reconnecting…" });
     expect(pending.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Repair" }).hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(pending);
     expect(repairMachinePairing).toHaveBeenCalledTimes(1);
@@ -772,5 +1027,26 @@ describe("AccountPage signed-in", () => {
 
     expect(await screen.findByText("Use the machine menu above to switch computers.")).toBeTruthy();
     expect(screen.queryByText(/still connect from Connections/)).toBeNull();
+  });
+});
+
+describe("describeThisComputerMissing", () => {
+  it("never claims removal as fact for an active session", () => {
+    const copy = describeThisComputerMissing("active");
+    expect(copy.title).toBe("This computer isn't on your account");
+    expect(copy.body).toMatch(/isn't sharing Activity/);
+    expect(copy.body).toMatch(/Repair restarts ADE's background service/);
+    expect(copy.body).not.toMatch(/It was removed/);
+  });
+
+  it("explains an expired sign-in as a publish stop, not a removal", () => {
+    expect(describeThisComputerMissing("expired").body).toMatch(/sign-in expired/);
+    expect(describeThisComputerMissing("expired").body).toMatch(/Repair restarts ADE's background service/);
+    expect(describeThisComputerMissing("expired").body).not.toMatch(/It was removed/);
+  });
+
+  it("points an unreadable session at Repair rather than removal", () => {
+    expect(describeThisComputerMissing("unreadable").body).toMatch(/can't read this computer's sign-in/);
+    expect(describeThisComputerMissing("unreadable").body).not.toMatch(/It was removed/);
   });
 });

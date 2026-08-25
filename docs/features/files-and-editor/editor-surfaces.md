@@ -10,18 +10,29 @@ Path: `apps/desktop/src/renderer/components/files/FilesTab.tsx`
 `FilesTab` is the shared entry point for the standalone Files route and the
 embedded Work sidebar. It renders `FilesWorkbench` unconditionally.
 
+It also reads the router state a chat click leaves behind and hands it down as
+a single `FilesNavigationOpenRequest`: `openFilePath` / `laneId` /
+`startLine` / `startColumn` as before, plus `openPathType: "directory"` (reveal
+in the tree instead of opening an editor tab), `searchQuery` (open the search
+panel with that query, for a name that matched several files), and `filesPin`
+(the machine that owns the file). Router state is untrusted, so `filesPin` is
+accepted only when it is genuinely an `OpenProjectBinding` — a `local` binding
+must carry `displayName`, a `remote` one `targetId`, `projectId`, and
+`runtimeName`, because the machine chip reads those unguarded.
+
 ## Workbench Shell: `FilesWorkbench.tsx`
 
 Path: `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx`
 
 `FilesWorkbench` owns the VS Code-style shell:
 
+- the machine pin, and the Files API bound to it
 - workspace resolution from `files.listWorkspaces()`
-- cached root tree loading and git decorations
+- cached root tree loading and git decorations (delegated to `useFilesTree`)
 - the reusable `FilesExplorer` tree
 - editor groups with preview and pinned tabs
 - split editor groups and tab move/drop behavior
-- unified quick-open and content-search overlay
+- the unified `FilesSearchPanel`, in the sidebar column and as a centred modal
 - file and directory creation prompts
 - context-menu actions for open, rename, delete, copy full/relative path,
   copy name, and reveal
@@ -33,6 +44,53 @@ The component accepts `preferredLaneId`, `embedded`, and `active`. The
 `preferredLaneId` selects a lane workspace when Files is mounted from Work.
 `embedded` compacts the Work-sidebar mount without introducing a separate
 implementation path.
+
+### Machine pin and the bound Files API
+
+`machinePin` is the machine this workbench is reading from when that is *not*
+the machine the project tab is bound to. It is set by a navigation request that
+came from a chat on another machine and cleared by **Back to this computer** or
+by picking a workspace from the bound machine. Everything downstream keys off
+`projectBinding = machinePin ?? boundProjectBinding` and
+`projectRootPath = machinePin?.rootPath ?? boundProjectRootPath`, so the
+workspace roster, the tree caches, and every read and write follow the pin
+without the window rebinding.
+
+`createPinnedFilesApi(machinePin)` (`v2/pinnedFilesApi.ts`) produces the Files
+API with that machine already attached, cached per binding key so its identity
+changes exactly when the machine does. That object — not `window.ade.files` —
+is what `useFilesTree`, `EditorGroups`, `EditorGroup`, `ViewerHost`,
+`useFileContent`, `streamFileBytes`, and every viewer receive. Viewers **must**
+use it: a workspace id is a lane id, lane rows sync across machines, so an
+unpinned read or write resolves the local worktree for that lane and silently
+succeeds against the wrong disk.
+
+Two consequences worth remembering:
+
+- The workbench publishes nothing into the dirty-buffer map while pinned (that
+  map is machine-less and feeds local agent reads), and resumes only once the
+  roster has been re-listed for the bound machine.
+- Roster and tree caches written under a pinned cache key are released on
+  unpin, in a `queueMicrotask` so the release lands after `useFilesTree`'s
+  `unpinCachedTree` cleanup — `filesTreeCache` refuses to release a still-pinned
+  entry. `App.tsx` cannot do this itself: it derives cache keys from a
+  surface's own binding and never sees a key produced by a pin chosen in here.
+
+### Tree state: `useFilesTree`
+
+`v2/useFilesTree.ts` owns tree state, root listing, directory paging,
+expansion, and git decorations — the one genuinely closed unit in the
+workbench, driven by (workspace, machine) alone. It also owns the per-path
+serialization queue that keeps a watcher refresh from shrinking a window a
+load-more just grew, and the `decorationsTruncated` flag behind the "Some git
+decorations hidden" strip.
+
+The file watcher deliberately did **not** move with it: that effect refreshes
+the tree *and* reloads open editor tabs, so it is coordination between two
+layers rather than part of either. Callback identities in the hook are
+preserved exactly as they were inline, because the watcher subscription is
+keyed on them — a widened dependency there costs a real chokidar tear-down and
+re-subscribe, not just a re-render.
 
 Module-level caches in `v2/filesTreeCache.ts` keep workspaces and root
 trees warm across route remounts. Both are keyed by the **binding
@@ -117,6 +175,13 @@ Visual indicators per node:
 Context-menu actions are built in `FilesWorkbench` and rendered by
 `v2/ContextMenu.tsx`. The menu clamps to the viewport before opening.
 
+The explorer owns the search *field* but not the search: it renders whatever
+the workbench passes as `searchResults` in place of the tree while the query is
+non-empty, and skips its own flatten/filter pass entirely. The old
+`onOpenQuickOpen` / `onOpenContentSearch` / `onSearchSubmit` /
+`singleRowHeader` props are gone along with the separate Quick Open and Content
+Search buttons.
+
 ## Editor Groups
 
 Implementation:
@@ -188,25 +253,69 @@ Supported viewers:
 - `DiffViewer`, backed by `window.ade.diff` and `AdeDiffViewer`
 
 Large text and media/document previews use `readFileRange` for follow-up
-chunks. Unsupported binary content remains non-editable.
+chunks, through the `PinnedFilesApi` on `ViewerProps.files` rather than
+`window.ade.files` — a viewer that reaches for the global would read the wrong
+machine's disk whenever a pin is active. Unsupported binary content remains
+non-editable.
 
-## Search And Create Overlays
+## Search Panel And Create Prompt
 
-`v2/overlays.tsx` provides:
+`v2/FilesSearchPanel.tsx` is the only Files search surface. One component,
+two variants:
 
-- `SearchOverlay`, a unified quick-open plus text-search surface
-- `CreatePromptModal` for new file and new directory prompts
+- `variant="sidebar"` — rendered into `FilesExplorer`'s `searchResults` slot,
+  driven by the search field in the explorer header. Keys are handled by a
+  document listener reading a ref-backed snapshot, because the field lives
+  outside the panel's subtree. It stays open after an open, so several hits can
+  be opened in a row.
+- `variant="overlay"` — the centred modal, with its own focused input. It is a
+  one-shot pick and dismisses on open; every exit clears the shared query, so
+  the search does not keep running behind a closed modal.
+
+Both mounts share the workbench's `searchQuery`, and the sidebar copy is
+suppressed while the modal is open so the same workspace is never searched
+twice. Both are handed the workbench's `machinePin`, so searching a pinned
+machine's workspace runs on that machine.
+
+Names (`quickOpen`, 120 ms debounce) and contents (`searchText`, 250 ms
+debounce) are independent requests; the panel also owns the persisted
+"Include ignored files" toggle. See
+[README.md](./README.md#the-search-ui) for the full behaviour.
+
+`v2/overlays.tsx` now holds only `CreatePromptModal` (new file / new directory
+prompts) and re-exports the shared `Backdrop` / panel surface from
+`FilesSearchPanel`.
 
 `Cmd+P` / `Ctrl+P` and `Cmd+Shift+F` / `Ctrl+Shift+F` both open the search
-overlay. File hits open directly; content hits call `setPendingReveal` so the
+modal. File hits open directly; content hits call `setPendingReveal` so the
 next `CodeViewer` mount jumps to the matching line.
 
 ## Embedded Files In Work
 
-`WorkSidebar` mounts `FilesTab` with `preferredLaneId={laneId}` and
-`embedded={true}`. The embedded layout keeps the same service calls, editor
-groups, viewers, and tree behavior as the standalone route, but uses a
-narrower explorer column and compact explorer controls.
+`WorkSidebar` mounts `FilesTab` with `preferredLaneId={laneId}`,
+`embedded={true}`, and `pin={runtimePin}`. The embedded layout keeps the same
+service calls, editor groups, viewers, tree behavior, and search as the
+standalone route, but uses a narrower explorer column, compact explorer
+controls, and no workspace picker.
+
+`FilesTab` / `FilesWorkbench` take an optional `pin` — the machine the files
+live on, for hosts that already know it is not this tab's machine (the Work
+tools pane, following its chat). Null keeps the historical behavior: the tab's
+bound machine. The prop seeds `FilesWorkbench`'s `machinePin` state, and a
+host-supplied pin wins whenever it changes; identity is compared by binding key
+so an equal binding rebuilt each render does not thrash the roster. Navigation
+requests still repin as they did before — the prop only supplies the starting
+machine.
+
+The embedded mount is also the **only** listener on the
+`v2/filesOpenRequests.ts` channel: a filename clicked in a chat on this machine,
+in that chat's own lane, opens here next to the conversation rather than
+throwing the user into the Files tab. `TerminalsPage` subscribes separately just
+to switch the Work sidebar to Files — the request itself waits in the channel
+until this workbench mounts and drains it, and the mount that takes it clears
+the channel's hold so a later mount cannot replay it. Everything else (another
+lane, another machine, a chat outside `/work`) routes to the Files tab through
+router state instead, so the destination stays deep-linkable.
 
 The embedded mount shares Work's right-edge sidebar. Keep context menus,
 overlays, and editor controls clamped to the renderer viewport so they remain

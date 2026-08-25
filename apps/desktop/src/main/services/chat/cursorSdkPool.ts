@@ -82,7 +82,7 @@ export type CursorSdkPooled = {
 };
 
 let cursorSdkGenCounter = 0;
-const pools = new Map<string, {
+type CursorSdkPoolEntry = {
   ref: number;
   generation: number;
   pooled: CursorSdkPooled;
@@ -90,7 +90,10 @@ const pools = new Map<string, {
   stateRoot: string;
   socketPath: string;
   cleanupStateRoot: boolean;
-}>();
+  idleTimer: ReturnType<typeof setTimeout> | null;
+};
+
+const pools = new Map<string, CursorSdkPoolEntry>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
 /**
@@ -462,14 +465,11 @@ export async function acquireCursorSdkConnection(args: {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const existing = pools.get(args.poolKey);
     if (existing && isCursorSdkPooledAlive(existing.pooled)) {
+      clearCursorSdkIdleTimer(existing);
       existing.ref += 1;
       return { pooled: existing.pooled, generation: existing.generation };
     }
-    if (existing) {
-      pools.delete(args.poolKey);
-      existing.pooled.dispose();
-      cleanupCursorSdkRuntimePaths(existing);
-    }
+    if (existing) disposeCursorSdkPoolEntry(args.poolKey, existing);
 
     let initOwner = false;
     let init = pendingInits.get(args.poolKey);
@@ -856,6 +856,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     stateRoot: paths.stateRoot,
     socketPath: paths.socketPath,
     cleanupStateRoot: args.cleanupStateRoot === true,
+    idleTimer: null,
   });
   return pooled;
 }
@@ -900,17 +901,75 @@ export function cleanupCursorSdkRuntimePaths(entry: {
   }
 }
 
-export function releaseCursorSdkConnection(poolKey: string, generation?: number): void {
+/** Look up a pool entry, honouring an optional generation guard. */
+function findCursorSdkPoolEntry(poolKey: string, generation?: number): CursorSdkPoolEntry | null {
   const entry = pools.get(poolKey);
+  if (!entry) return null;
+  if (generation !== undefined && entry.generation !== generation) return null;
+  return entry;
+}
+
+function clearCursorSdkIdleTimer(entry: CursorSdkPoolEntry): void {
+  if (!entry.idleTimer) return;
+  clearTimeout(entry.idleTimer);
+  entry.idleTimer = null;
+}
+
+/** Evict an entry from the map and tear its worker + runtime paths down. */
+function disposeCursorSdkPoolEntry(poolKey: string, entry: CursorSdkPoolEntry): void {
+  clearCursorSdkIdleTimer(entry);
+  pools.delete(poolKey);
+  entry.pooled.dispose();
+  cleanupCursorSdkRuntimePaths(entry);
+}
+
+/**
+ * Force-dispose a pooled worker regardless of its refcount, so the next
+ * `acquireCursorSdkConnection` for this key forks a brand-new one.
+ *
+ * `isCursorSdkPooledAlive` only checks process liveness, which is not the same
+ * as connection health: a run that dies with a transport error (NGHTTP2 reset,
+ * `[internal] write ECANCELED`) leaves the worker process happily alive while
+ * the server-side Cursor agent thread is wedged — every subsequent send then
+ * hangs forever with zero stream events. Reference counting cannot express
+ * that. Pool keys embed the session id, so the outstanding lease that a
+ * refcount decrement would preserve belongs to the *same* session acquiring
+ * twice, not to another chat. Callers therefore evict the entry outright.
+ *
+ * Returns true when an entry was actually disposed.
+ */
+export function poisonCursorSdkConnection(poolKey: string, generation?: number): boolean {
+  const entry = findCursorSdkPoolEntry(poolKey, generation);
+  if (!entry) return false;
+  disposeCursorSdkPoolEntry(poolKey, entry);
+  return true;
+}
+
+export function releaseCursorSdkConnection(poolKey: string, generation?: number): void {
+  const entry = findCursorSdkPoolEntry(poolKey, generation);
   if (!entry) return;
-  if (generation !== undefined && entry.generation !== generation) return;
   entry.ref -= 1;
   if (entry.ref < 0) entry.ref = 0;
-  if (entry.ref <= 0) {
-    entry.pooled.dispose();
-    pools.delete(poolKey);
-    cleanupCursorSdkRuntimePaths(entry);
-  }
+  if (entry.ref <= 0) disposeCursorSdkPoolEntry(poolKey, entry);
+}
+
+export function releaseCursorSdkConnectionAfterIdle(
+  poolKey: string,
+  generation: number,
+  idleMs: number,
+): void {
+  const entry = findCursorSdkPoolEntry(poolKey, generation);
+  if (!entry) return;
+  entry.ref -= 1;
+  if (entry.ref < 0) entry.ref = 0;
+  if (entry.ref > 0) return;
+  clearCursorSdkIdleTimer(entry);
+  entry.idleTimer = setTimeout(() => {
+    const current = findCursorSdkPoolEntry(poolKey, generation);
+    if (!current || current.ref > 0) return;
+    disposeCursorSdkPoolEntry(poolKey, current);
+  }, idleMs);
+  (entry.idleTimer as { unref?: () => void }).unref?.();
 }
 
 export async function runCursorSdkCatalogRequest<T = unknown>(
@@ -935,9 +994,10 @@ export async function runCursorSdkCatalogRequest<T = unknown>(
       chatMode: "agent",
       approvalPolicy: "never",
       sandbox: "off",
-      force: true,
+      fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,
+      autoReview: false,
     },
     logger: args.logger,
   });
@@ -959,9 +1019,12 @@ type CursorSdkCloudOneShotType = Extract<
       | "cloud.run.cancel"
       | "cloud.run.conversation"
       | "cloud.artifacts.list"
-      | "cloud.artifacts.download";
+      | "cloud.artifacts.download"
+      | "agent.getUsage";
   }
 >["type"];
+
+export const CURSOR_SDK_CLOUD_ONESHOT_IDLE_MS = 60_000;
 
 export async function runCursorSdkCloudRequest<T = unknown>(
   args: {
@@ -973,7 +1036,10 @@ export async function runCursorSdkCloudRequest<T = unknown>(
     logger?: Logger;
   },
 ): Promise<T> {
-  const poolKey = `cloud:${args.type}:${args.workspacePath}:${Date.now()}:${Math.random()}`;
+  // One worker per workspace, kept warm for a short idle window so list +
+  // conversation + watched polls reuse it instead of forking Node (and a
+  // throwaway state dir) on every tick.
+  const poolKey = `cloud-oneshot:${args.workspacePath}`;
   const { pooled, generation } = await acquireCursorSdkConnection({
     poolKey,
     projectRoot: args.projectRoot,
@@ -986,15 +1052,16 @@ export async function runCursorSdkCloudRequest<T = unknown>(
       chatMode: "agent",
       approvalPolicy: "never",
       sandbox: "off",
-      force: true,
+      fullAuto: true,
       hardGuards: false,
       orchestrationLead: false,
+      autoReview: false,
     },
     logger: args.logger,
   });
   try {
     return await pooled.request<T>(args.type, { apiKey: args.apiKey ?? null, ...args.payload });
   } finally {
-    releaseCursorSdkConnection(poolKey, generation);
+    releaseCursorSdkConnectionAfterIdle(poolKey, generation, CURSOR_SDK_CLOUD_ONESHOT_IDLE_MS);
   }
 }

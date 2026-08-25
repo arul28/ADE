@@ -38,6 +38,8 @@ export type TrackedCliLaunchCommand = {
   initialInput?: string;
   initialInputDelayMs?: number;
   env?: Record<string, string>;
+  /** Provider-native session id ADE assigned at launch, when the CLI accepts one. */
+  assignedSessionId?: string;
 };
 
 export type CodexComputerUseCliConfig = {
@@ -463,33 +465,97 @@ export function shellCommandLineArgIndex(args: string[]): number {
   return commandIndex < args.length ? commandIndex : -1;
 }
 
-// Insert `--plugin-dir <root>` right after the `claude` token of a shell
-// command line, leaving env-var prefixes and the caller's own flags intact.
-export function withClaudePluginInCommandLine(commandLine: string, pluginRoot: string): string {
-  if (!commandLine?.trim()) return commandLine;
+function stripSurroundingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length >= 2 && (trimmed.startsWith("\"") || trimmed.startsWith("'")) && trimmed.endsWith(trimmed[0]!)) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+/**
+ * A command line can name Claude as a bare word, an absolute path, or a quoted
+ * Windows path. POSIX parsing eats the backslashes of a double-quoted Windows
+ * path, so the raw word — quotes stripped, backslashes intact — is checked too.
+ */
+function wordNamesClaude(parsedWord: string, rawWord: string): boolean {
+  return isClaudeBinaryCommand(parsedWord) || isClaudeBinaryCommand(stripSurroundingQuotes(rawWord));
+}
+
+/**
+ * Locate the `claude` token of a shell command line, allowing leading
+ * `KEY=value` env prefixes, and return the args that follow it.
+ */
+export function claudeInvocationInCommandLine(
+  commandLine: string,
+): { claudeIndex: number; claudeArgs: string[] } | null {
+  if (!commandLine?.trim()) return null;
   let commandArgs: string[] = [];
   try {
     commandArgs = parseCommandLine(commandLine);
   } catch {
     // Keep malformed or unsupported shell input intact.
-    return commandLine;
+    return null;
   }
-  const claudeIndex = commandArgs.findIndex((arg, index) =>
-    arg === "claude"
-    && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
-  );
-  const claudeArgs = claudeIndex >= 0 ? commandArgs.slice(claudeIndex + 1) : [];
-  const hasPluginRoot = claudeArgs.some((arg, index) =>
-    (arg === "--plugin-dir" && claudeArgs[index + 1] === pluginRoot)
-    || arg === `--plugin-dir=${pluginRoot}`,
-  );
-  if (claudeIndex < 0 || hasPluginRoot) {
-    return commandLine;
-  }
+  const spans = shellWordSpans(commandLine);
+  const claudeIndex = commandArgs.findIndex((arg, index) => {
+    const span = spans[index];
+    const raw = span ? commandLine.slice(span.start, span.end) : arg;
+    return wordNamesClaude(arg, raw)
+      && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix));
+  });
+  if (claudeIndex < 0) return null;
+  return { claudeIndex, claudeArgs: commandArgs.slice(claudeIndex + 1) };
+}
+
+function withArgsAfterClaudeToken(commandLine: string, claudeIndex: number, extraArgs: string[]): string {
   const claudeSpan = shellWordSpans(commandLine)[claudeIndex];
   if (!claudeSpan) return commandLine;
-  const pluginArgs = commandArrayToLine(["--plugin-dir", pluginRoot]);
-  return `${commandLine.slice(0, claudeSpan.end)} ${pluginArgs}${commandLine.slice(claudeSpan.end)}`;
+  return `${commandLine.slice(0, claudeSpan.end)} ${commandArrayToLine(extraArgs)}${commandLine.slice(claudeSpan.end)}`;
+}
+
+// Insert `--plugin-dir <root>` right after the `claude` token of a shell
+// command line, leaving env-var prefixes and the caller's own flags intact.
+export function withClaudePluginInCommandLine(commandLine: string, pluginRoot: string): string {
+  const invocation = claudeInvocationInCommandLine(commandLine);
+  if (!invocation) return commandLine;
+  const hasPluginRoot = invocation.claudeArgs.some((arg, index) =>
+    (arg === "--plugin-dir" && invocation.claudeArgs[index + 1] === pluginRoot)
+    || arg === `--plugin-dir=${pluginRoot}`,
+  );
+  if (hasPluginRoot) return commandLine;
+  return withArgsAfterClaudeToken(commandLine, invocation.claudeIndex, ["--plugin-dir", pluginRoot]);
+}
+
+// Insert `--session-id <uuid>` right after the `claude` token of a shell
+// command line. Same placement rule as the plugin flag: prepending it to the
+// wrapping shell's own argv would make bash die with "invalid option".
+export function withClaudeSessionIdInCommandLine(commandLine: string, sessionId: string): string {
+  const invocation = claudeInvocationInCommandLine(commandLine);
+  if (!invocation) return commandLine;
+  if (claudeArgsCarrySessionId(invocation.claudeArgs)) return commandLine;
+  return withArgsAfterClaudeToken(commandLine, invocation.claudeIndex, ["--session-id", sessionId]);
+}
+
+function claudeArgsCarrySessionId(args: readonly string[]): boolean {
+  return args.some((arg) => arg === "--session-id" || arg.startsWith("--session-id="));
+}
+
+/**
+ * `claude --session-id <uuid>` starts a NEW conversation with that id, so it
+ * is mutually exclusive with `--resume`/`--continue`: assigning one to a
+ * continuation launch would either be rejected by the CLI or silently start a
+ * fresh session in place of the one the user asked to resume.
+ */
+export function claudeArgsResumeExistingSession(args: readonly string[]): boolean {
+  return args.some((arg) =>
+    arg === "--resume"
+    || arg === "-r"
+    || arg === "--continue"
+    || arg === "-c"
+    || arg.startsWith("--resume=")
+    || arg.startsWith("--continue="),
+  );
 }
 
 export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
@@ -620,9 +686,9 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "claude") {
     const commandArgs: string[] = [];
-    // Inject --session-id so we know the Claude session ID upfront for resume.
-    if (args.sessionId) {
-      commandArgs.push("--session-id", args.sessionId);
+    const assignedSessionId = args.sessionId?.trim() || null;
+    if (assignedSessionId) {
+      commandArgs.push("--session-id", assignedSessionId);
     }
     const model = resolveClaudeCliModelForLaunch(args.model);
     if (model) {
@@ -660,6 +726,7 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "claude",
       args: commandArgs,
       startupCommand: commandArrayToLine(["claude", ...shellArgs], { platform: "linux" }),
+      ...(assignedSessionId ? { assignedSessionId } : {}),
       ...(initialPrompt && !promptRidesInArgv
         ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
         : {}),
@@ -784,12 +851,17 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  // Only the user's own text rides `--prompt`. OpenCode submits that value as a
+  // real user message and renders it in the TUI, so the ADE preamble that used
+  // to be prepended here was displayed to the user verbatim on every launch —
+  // the reported "OpenCode echoes ADE's system prompt" — and reached the model
+  // as ordinary user text rather than as system instructions. The ADE contract
+  // now travels through `instructions` in OPENCODE_CONFIG_CONTENT instead; see
+  // withOpenCodeAdeInstructions.
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model: args.model,
-    reasoningEffort: args.reasoningEffort,
-    fastMode: args.fastMode,
-    prompt: workTabCliPrompt(initialPrompt, skillRoots, guidanceOptions),
+    ...(initialPrompt ? { prompt: initialPrompt } : {}),
   });
   const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
   return {
@@ -1019,6 +1091,7 @@ function codexResumePermissionFlags(args: {
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--force"];
   if (permissionMode === "plan") return ["--mode", "plan"];
+  if (permissionMode === "edit") return ["--mode", "ask"];
   return [];
 }
 
@@ -1107,7 +1180,101 @@ function buildDroidCommandLine(args: {
   ].join(" && ");
 }
 
-const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
+export const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
+
+/**
+ * Add ADE's instruction file to an OpenCode launch environment.
+ *
+ * This is how the tracked CLI gets the same ADE instruction contract the chat
+ * runtime sends through `session.prompt`'s first-class `system` field. OpenCode
+ * gives a CLI launch no per-request system hook, and its two config-level
+ * alternatives are not interchangeable: `agent.<name>.prompt` REPLACES the
+ * provider base prompt (`agent.prompt ? [agent.prompt] : SystemPrompt.provider(model)`
+ * in the server's request builder), which would delete OpenCode's own tool
+ * instructions. `instructions` is the additive one — it lands in the same
+ * assembled system block as AGENTS.md, after the base prompt, and never appears
+ * in the transcript.
+ *
+ * Config layers concatenate this key rather than overwrite it (the loader uses a
+ * union merge for `instructions` specifically), so ADE's entry is added to the
+ * user's own instruction files instead of replacing them. A path that does not
+ * exist is silently skipped by OpenCode, so a stale entry degrades to "no ADE
+ * prompt" rather than a launch failure.
+ */
+export function withOpenCodeAdeInstructions(
+  launch: { env?: Record<string, string> | undefined; startupCommand?: string | undefined },
+  instructionsPath: string | null | undefined,
+): { env?: Record<string, string>; startupCommand?: string } | null {
+  const resolved = instructionsPath?.trim();
+  if (!resolved) return null;
+  let config: Record<string, unknown> = {};
+  // The command line wins over the environment, because that is the precedence
+  // the shell itself applies to a leading `NAME=value` assignment. Reading only
+  // `env` dropped whatever the assignment carried alone — a resumed session's
+  // persisted command holds its `permission` policy there while the launch
+  // environment has no such key, so rebuilding from `env` erased the policy.
+  const existing = readOpenCodeConfigAssignment(launch.startupCommand)
+    ?? launch.env?.[OPENCODE_INLINE_CONFIG_ENV];
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A value ADE cannot parse is not ADE's to extend. Leave it untouched
+      // rather than dropping whatever the caller meant to send.
+      return null;
+    }
+  }
+  const current = Array.isArray(config.instructions)
+    ? config.instructions.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  if (current.includes(resolved)) return null;
+  const nextValue = JSON.stringify({ ...config, instructions: [...current, resolved] });
+  return {
+    env: { ...(launch.env ?? {}), [OPENCODE_INLINE_CONFIG_ENV]: nextValue },
+    // The startup command carries its own inline `OPENCODE_CONFIG_CONTENT=…`
+    // assignment, and a shell assignment on the command line OVERRIDES the
+    // process environment for that child. Updating only `env` would therefore
+    // silently drop the instructions on every launch that goes through the
+    // typed-command fallback rather than a direct spawn. Both spellings are
+    // rebuilt here so they cannot disagree.
+    ...(launch.startupCommand === undefined
+      ? {}
+      : { startupCommand: withOpenCodeConfigAssignment(launch.startupCommand, nextValue) }),
+  };
+}
+
+/** The JSON carried by a command line's leading inline OpenCode config assignment. */
+function readOpenCodeConfigAssignment(startupCommand: string | undefined): string | undefined {
+  if (!startupCommand?.trim()) return undefined;
+  const [first] = parseCommandLine(startupCommand, { platform: "linux" });
+  return first?.startsWith(`${OPENCODE_INLINE_CONFIG_ENV}=`)
+    ? first.slice(`${OPENCODE_INLINE_CONFIG_ENV}=`.length)
+    : undefined;
+}
+
+/** Replace (or insert) the leading inline OpenCode config assignment on a command line. */
+function withOpenCodeConfigAssignment(startupCommand: string, configValue: string): string {
+  if (!startupCommand.trim()) return startupCommand;
+  const tokens = parseCommandLine(startupCommand, { platform: "linux" });
+  if (!tokens.length) return startupCommand;
+  const rest = tokens[0]!.startsWith(`${OPENCODE_INLINE_CONFIG_ENV}=`) ? tokens.slice(1) : tokens;
+  if (!rest.length) return startupCommand;
+  // Only the VALUE is quoted. Quoting `NAME=value` as one word would stop the
+  // shell reading it as an assignment at all and make it the command instead,
+  // so this has to match how openCodeEnvAssignment builds the same prefix. The
+  // remaining arguments round-trip through the quoter that produced them.
+  return [
+    openCodeConfigAssignmentPrefix(configValue),
+    commandArrayToLine(rest, { platform: "linux" }),
+  ].join("");
+}
+
+function openCodeConfigAssignmentPrefix(configValue: string): string {
+  return `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(configValue, { platform: "linux" })} `;
+}
 
 function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
   if (permissionMode == null) return null;
@@ -1125,7 +1292,7 @@ function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | unde
 
 function openCodeEnvAssignment(permissionMode: AgentChatPermissionMode | null | undefined): string {
   const config = openCodeConfigEnv(permissionMode);
-  return config ? `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(config, { platform: "linux" })} ` : "";
+  return config ? openCodeConfigAssignmentPrefix(config) : "";
 }
 
 function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
@@ -1140,42 +1307,44 @@ function normalizeOpenCodeCliModel(model: string | null | undefined): string | n
   return `${decoded.openCodeProviderId}/${decoded.openCodeModelId}`;
 }
 
-function openCodeVariantForLaunch(args: {
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-}): string | null {
-  // Fast mode takes priority: when enabled, the "fast" variant supersedes any reasoningEffort variant.
-  if (args.fastMode === true) return "fast";
-  return normalizeCliFlagValue(args.reasoningEffort);
-}
-
-function buildOpenCodeCommandParts(args: {
+/// Shared OpenCode launch-argument core: permission agent, model, and the
+/// resume/continue selector. Both the fresh-launch builder (root TUI) and the
+/// replay-resume builder (`--mini`) wrap this so flag assembly cannot drift —
+/// the old pair diverged once already (`--` positional vs `--prompt`).
+function openCodeCoreCommandArgs(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-  prompt?: string;
   resumeTarget?: string | null;
   continueLast?: boolean;
-}): { args: string[]; startupCommand: string; env?: Record<string, string> } {
-  const variant = openCodeVariantForLaunch(args);
+}): string[] {
   const commandArgs = [
-    ...(variant ? ["run", "--interactive"] : []),
     ...permissionModeToOpenCodeArgs(args.permissionMode),
   ];
   commandArgs.push(...modelToCliFlag(normalizeOpenCodeCliModel(args.model)));
-  if (variant) commandArgs.push("--variant", variant);
   if (args.resumeTarget) {
     commandArgs.push("--session", args.resumeTarget);
   } else if (args.continueLast) {
     commandArgs.push("--continue");
   }
+  return commandArgs;
+}
+
+function buildOpenCodeCommandParts(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  model?: string | null;
+  prompt?: string;
+  resumeTarget?: string | null;
+  continueLast?: boolean;
+}): { args: string[]; startupCommand: string; env?: Record<string, string> } {
+  // Always launch the full root TUI. The old shape branched into
+  // `opencode run --interactive` whenever a reasoning variant was set, which is
+  // OpenCode's bare split-footer mode — users read it as "a plain terminal with
+  // no UI". The root command has no --variant flag (it silently drops unknown
+  // args), so variants remain a chat-runtime feature; CLI launches keep the
+  // model and permission agent only.
+  const commandArgs = openCodeCoreCommandArgs(args);
   if (args.prompt) {
-    if (variant) {
-      commandArgs.push("--", args.prompt);
-    } else {
-      commandArgs.push("--prompt", args.prompt);
-    }
+    commandArgs.push("--prompt", args.prompt);
   }
   const config = openCodeConfigEnv(args.permissionMode);
   return {
@@ -1190,8 +1359,6 @@ export const OPENCODE_RESUME_REPLAY_LIMIT = 40;
 type OpenCodeReplayResumeArgs = {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
   prompt: string;
   resumeTarget?: string | null;
   continueLast?: boolean;
@@ -1201,24 +1368,20 @@ type OpenCodeReplayResumeArgs = {
 export function buildOpenCodeReplayResumeLaunchCommand(
   args: OpenCodeReplayResumeArgs,
 ): TrackedCliLaunchCommand {
-  const variant = openCodeVariantForLaunch(args);
+  // Mini mode replays the newest messages on resume by default (upstream made
+  // an explicit --replay flag an error); --replay-limit caps how far back the
+  // freeze-frame reaches.
   const commandArgs = [
-    "run",
-    "--interactive",
-    ...permissionModeToOpenCodeArgs(args.permissionMode),
-    ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
+    "--mini",
+    ...openCodeCoreCommandArgs(args),
   ];
-  if (variant) commandArgs.push("--variant", variant);
-  if (args.resumeTarget) {
-    commandArgs.push("--session", args.resumeTarget);
-  } else if (args.continueLast) {
-    commandArgs.push("--continue");
-  }
-  commandArgs.push("--replay");
   const replayLimit = Number.isFinite(args.replayLimit)
     ? Math.max(1, Math.floor(Number(args.replayLimit)))
     : OPENCODE_RESUME_REPLAY_LIMIT;
-  commandArgs.push("--replay-limit", String(replayLimit), "--", args.prompt);
+  commandArgs.push("--replay-limit", String(replayLimit));
+  if (args.prompt) {
+    commandArgs.push("--prompt", args.prompt);
+  }
   const config = openCodeConfigEnv(args.permissionMode);
   return {
     command: "opencode",
@@ -1413,8 +1576,6 @@ export function buildTrackedCliResumeLaunchCommand(
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model,
-    reasoningEffort,
-    fastMode,
     ...(prompt ? { prompt } : {}),
     resumeTarget: targetId || null,
     continueLast: !targetId,

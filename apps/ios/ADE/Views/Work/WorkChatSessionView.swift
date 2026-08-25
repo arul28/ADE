@@ -6,12 +6,28 @@ let workChatScrollCoordinateSpace = "WorkChatScrollCoordinateSpace"
 let workChatStickThreshold: CGFloat = 160
 let workChatStickResumeThreshold: CGFloat = 48
 let workChatTouchScrollDeadband: CGFloat = 2
+/// How far a drag has to travel before it counts as the reader taking over from
+/// the initial bottom pin.
+///
+/// Deliberately larger than `workChatTouchScrollDeadband`: 2pt is the right
+/// sensitivity for releasing bottom-stickiness during a streaming turn (a nudge
+/// upward means "stop following"), but it is well inside the finger jitter of a
+/// tap on a freshly-opened chat, and cancelling the pin there is what left
+/// transcripts parked at a random offset while hydration was still growing the
+/// content underneath.
 let workChatBottomAnchorSpacerHeight: CGFloat = 1
 let workChatContentBottomGutterHeight: CGFloat = 2
 let workChatSubagentActivePopupHeight: CGFloat = 34
+/// The composer chip strip. Its capsules declare `minHeight: 44` for the touch
+/// target, so the row that holds them has to be 44 too — pinning it to 34 was
+/// what squeezed the PR chip's label into an ellipsis.
+let workChatComposerChipRowHeight: CGFloat = 44
 let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
+/// How long the transcript's content size has to stay unchanged before the
+/// opening bottom pin is considered settled.
+let workChatInitialPinQuiescenceMilliseconds = 600
 
 struct WorkChatOlderHistoryLoadResult {
   let succeeded: Bool
@@ -54,32 +70,63 @@ func workChatTranscriptFailureMessage(_ message: String) -> String {
   return trimmed
 }
 
+/// `distanceFromTop` is how far the reader has scrolled from the first row, so
+/// it grows downward — the inverse of the geometry-probe `topY` this used to
+/// take, which was published from a per-frame `GeometryReader` riding the
+/// header row.
+///
+/// `hasError` scopes to the host page that failed, not to scroll-back as a
+/// whole. Buffered entries are already on the phone and cost no network, so a
+/// dropped history page must not strand the reader on top of history they
+/// already have — that combination is what turned one timed-out page into a
+/// transcript that would not scroll again.
 func workChatShouldRequestOlderHistory(
-  topY: CGFloat,
+  distanceFromTop: CGFloat,
   triggerArmed: Bool,
   loading: Bool,
   hasError: Bool,
   hasBufferedEntries: Bool,
   hasHostHistory: Bool
 ) -> Bool {
-  topY >= -workChatOlderHistoryTriggerDistance
-    && triggerArmed
-    && !loading
-    && !hasError
-    && (hasBufferedEntries || hasHostHistory)
+  guard distanceFromTop <= workChatOlderHistoryTriggerDistance,
+        triggerArmed,
+        !loading
+  else { return false }
+  if hasBufferedEntries { return true }
+  return !hasError && hasHostHistory
 }
 
+/// Keeps pulling while the transcript is still too short to scroll.
+///
+/// The buffered-entry bypass matters more here than at the scroll trigger: a
+/// transcript that fits the viewport cannot be scrolled, so the reader has no
+/// way to re-arm anything. Letting a failed host page block the local reveal
+/// there leaves buffered history unreachable by any gesture at all.
 func workChatShouldContinueAutomaticOlderHistory(
   distanceFromBottom: CGFloat,
+  contentFitsViewport: Bool,
   loading: Bool,
   hasError: Bool,
   hasBufferedEntries: Bool,
   hasHostHistory: Bool
 ) -> Bool {
-  distanceFromBottom <= workChatOlderHistoryScrollableDistance
-    && !loading
-    && !hasError
-    && (hasBufferedEntries || hasHostHistory)
+  guard contentFitsViewport,
+        distanceFromBottom <= workChatOlderHistoryScrollableDistance,
+        !loading
+  else { return false }
+  if hasBufferedEntries { return true }
+  return !hasError && hasHostHistory
+}
+
+/// The prepend probe is only useful while the reader is close enough to the
+/// head for a history page to land. Keeping it installed on the first row for
+/// the whole transcript makes every ordinary scroll participate in SwiftUI's
+/// preference graph, even though there is no correction to perform.
+func workChatShouldInstallPrependProbe(
+  distanceFromTop: CGFloat,
+  hasPrependAnchor: Bool
+) -> Bool {
+  hasPrependAnchor || distanceFromTop <= workChatOlderHistoryTriggerDistance
 }
 
 /// Scroll state a prepend has to preserve: which row led the list, where that
@@ -106,6 +153,7 @@ struct WorkChatPrependAnchor {
 /// keeps its existing meaning.
 final class WorkChatScrollMetrics {
   var distanceFromBottom: CGFloat = 0
+  var distanceFromTop: CGFloat = 0
   var offsetY: CGFloat = 0
   var scrollableHeight: CGFloat = 0
   /// Position of the row currently being probed (the list's first row, or the
@@ -117,13 +165,48 @@ final class WorkChatScrollMetrics {
 
 /// The scroll geometry the transcript reacts to, rounded so sub-pixel jitter
 /// doesn't wake the observer.
+///
+/// Everything the transcript needs about its position is derived here, from the
+/// one sample the scroll view already produces. The content-top and
+/// content-bottom `GeometryReader` + `PreferenceKey` probes this replaced
+/// measured the same two numbers by laying out two extra views and running the
+/// preference reduce/observe machinery on every frame of every scroll.
 struct WorkChatScrollGeometrySample: Equatable {
   let offsetY: CGFloat
   /// Largest in-range content offset, used only to clamp a restore.
   let scrollableHeight: CGFloat
+  /// Distance scrolled past the first row. 0 at the very top.
+  let distanceFromTop: CGFloat
+  /// Distance still to scroll to reach the last row. 0 at the very bottom.
+  let distanceFromBottom: CGFloat
+  let containerHeight: CGFloat
 
   init(_ geometry: ScrollGeometry) {
     self.offsetY = (geometry.contentOffset.y * 2).rounded() / 2
+    let scrollable = geometry.contentSize.height - geometry.containerSize.height
+      + geometry.contentInsets.top + geometry.contentInsets.bottom
+    self.scrollableHeight = max(0, (scrollable * 2).rounded() / 2)
+    // Content insets shift `contentOffset` so that resting at the top reads as
+    // `-contentInsets.top`; adding it back puts both distances on the same
+    // inset-free 0…scrollableHeight range.
+    let position = geometry.contentOffset.y + geometry.contentInsets.top
+    self.distanceFromTop = max(0, (position * 2).rounded() / 2)
+    self.distanceFromBottom = max(0, self.scrollableHeight - self.distanceFromTop)
+    self.containerHeight = geometry.containerSize.height
+  }
+}
+
+/// The transcript's content size, sampled separately from the per-frame scroll
+/// position so layout-driven work (the opening pin, the short-transcript
+/// alignment) runs on content changes instead of on every scroll frame.
+struct WorkChatContentSizeSample: Equatable {
+  let contentHeight: CGFloat
+  let scrollableHeight: CGFloat
+
+  var contentFitsViewport: Bool { scrollableHeight <= 0.5 }
+
+  init(_ geometry: ScrollGeometry) {
+    self.contentHeight = (geometry.contentSize.height * 2).rounded() / 2
     let scrollable = geometry.contentSize.height - geometry.containerSize.height
       + geometry.contentInsets.top + geometry.contentInsets.bottom
     self.scrollableHeight = max(0, (scrollable * 2).rounded() / 2)
@@ -132,6 +215,129 @@ struct WorkChatScrollGeometrySample: Equatable {
 
 /// Number of layout passes a prepend anchor stays armed for.
 let workChatPrependAnchorAttempts = 12
+
+/// What a presentation change does to the prepend anchor.
+enum WorkChatPrependArmDecision: Equatable {
+  case ignore
+  /// A second prepend landed while the first was still being corrected.
+  case extendExistingAnchorWindow
+  /// The anchored row is gone; nothing left to measure against.
+  case retireAnchor
+  case arm(rowId: String, rowY: CGFloat)
+}
+
+/// Decides how a presentation change affects the prepend anchor.
+///
+/// The overlapping-prepend case is the subtle one. The armed anchor rides a row
+/// that BOTH insertions pushed down, so the displacement measured on it already
+/// accumulates them. Re-arming on the new first row would measure only the
+/// second insertion and leave the first uncorrected — the "teleport up" that
+/// back-to-back page loads produced.
+func workChatPrependArmDecision(
+  previousFirstId: String?,
+  nextFirstId: String?,
+  previousVisibleCount: Int,
+  nextVisibleCount: Int,
+  existingAnchorRowId: String?,
+  anchorRowStillVisible: Bool,
+  previousFirstRowStillVisible: Bool,
+  probeRowId: String?,
+  probeRowY: CGFloat?
+) -> WorkChatPrependArmDecision {
+  guard nextVisibleCount > previousVisibleCount,
+        let previousFirstId,
+        nextFirstId != previousFirstId
+  else { return .ignore }
+
+  if existingAnchorRowId != nil {
+    return anchorRowStillVisible ? .extendExistingAnchorWindow : .retireAnchor
+  }
+
+  guard
+    // The probe has to already be measuring the row we are about to anchor on,
+    // or there is no "before" position to restore to.
+    probeRowId == previousFirstId,
+    let probeRowY,
+    // Only a genuine prepend: the row that used to lead the list has to still
+    // be in the list, just further down.
+    previousFirstRowStillVisible
+  else { return .ignore }
+
+  return .arm(rowId: previousFirstId, rowY: probeRowY)
+}
+
+/// What an armed anchor may do on this layout pass.
+enum WorkChatPrependCorrection: Equatable {
+  /// The reader owns the offset. Stay armed and spend no attempt.
+  case wait
+  /// No usable measurement yet. Spend an attempt.
+  case retry
+  /// Undo this much inserted height.
+  case apply(CGFloat)
+}
+
+/// Turns a probe sample into a correction.
+///
+/// The two `retry` cases are what keeps a correction honest. A probe describing
+/// some OTHER row carries no information about the anchored row, and treating a
+/// mismatch as a zero row shift reduces the correction to the reader's own
+/// scroll delta and applies it a second time — a teleport, not a correction.
+func workChatPrependCorrection(
+  anchor: WorkChatPrependAnchor,
+  probed: WorkChatPrependProbeSample?,
+  currentOffsetY: CGFloat,
+  mayWriteScrollOffset: Bool
+) -> WorkChatPrependCorrection {
+  // A correction is a scroll write, so it waits for the reader to let go. The
+  // anchor stays armed and spends no attempt meanwhile: the measurement below
+  // isolates the insertion from the reader's own scrolling, so applying it once
+  // the fling settles restores the same reading position it would have restored
+  // mid-fling — without fighting the fling for the offset.
+  guard mayWriteScrollOffset else { return .wait }
+  guard let probed, probed.rowId == anchor.rowId else { return .retry }
+
+  // The anchored row moves by the height inserted above it *minus* whatever the
+  // reader scrolled in the meantime, because scrolling moves the row up the
+  // screen too. Adding the offset change back isolates the insertion: with an
+  // inserted height H and a user scroll D, the row moves H - D and the offset
+  // moves D, so the sum is H either way — and a pure scroll with no prepend
+  // sums to zero and correctly restores nothing.
+  let insertedHeight = (probed.y - anchor.rowY) + (currentOffsetY - anchor.offsetY)
+  guard insertedHeight > 0.5 else { return .retry }
+  return .apply(insertedHeight)
+}
+
+/// Whether a scroll phase means the reader — not the app — owns the offset.
+///
+/// `.animating` is deliberately not user-driven: it is the phase our own
+/// `scrollTo` animations run in, and treating it as the reader's would let one
+/// programmatic scroll suppress the next one.
+func workChatScrollPhaseIsUserDriven(_ phase: ScrollPhase) -> Bool {
+  switch phase {
+  case .tracking, .interacting, .decelerating:
+    return true
+  default:
+    return false
+  }
+}
+
+/// Whether the transcript may write the scroll offset right now.
+///
+/// Every programmatic scroll — bottom-follow pins, the initial pin, the prepend
+/// correction — goes through this. Writing an offset while the reader's finger
+/// is down or a fling is still decelerating kills the fling and lands the
+/// content somewhere neither the app nor the reader chose.
+func workChatMayWriteScrollOffset(dragActive: Bool, scrollPhaseUserDriven: Bool) -> Bool {
+  !dragActive && !scrollPhaseUserDriven
+}
+
+/// Where the transcript's content sits inside a viewport it does not fill.
+///
+/// Only meaningful while the content is shorter than the viewport: past that the
+/// content frame is sized by the content and the alignment is inert.
+func workChatTranscriptContentAlignment(contentFitsViewport: Bool) -> Alignment {
+  contentFitsViewport ? .topLeading : .bottomLeading
+}
 
 /// Position of the single probed row, published from the row itself so a
 /// prepend's displacement can be measured without a geometry reader per row.
@@ -169,8 +375,12 @@ struct WorkChatSummaryRenderContext: Equatable {
   let modelLabel: String
   let contextWindowFallback: Int?
   let claudeGoal: AgentChatClaudeGoal?
+  let spawnKind: AgentChatSpawnKind?
+  let orchestrationParentSessionId: String?
+  let subagentTakeoverPromptShownAt: String?
+  let parentTitle: String?
 
-  init(_ summary: AgentChatSessionSummary?) {
+  init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
       self.isAvailable = false
       self.provider = ""
@@ -187,6 +397,10 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.modelLabel = "Model"
       self.contextWindowFallback = nil
       self.claudeGoal = nil
+      self.spawnKind = nil
+      self.orchestrationParentSessionId = nil
+      self.subagentTakeoverPromptShownAt = nil
+      self.parentTitle = nil
       return
     }
 
@@ -205,6 +419,10 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.modelLabel = prettyWorkChatModelName(summary.model)
     self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
     self.claudeGoal = summary.claudeGoal
+    self.spawnKind = summary.spawnKind
+    self.orchestrationParentSessionId = summary.orchestrationParentSessionId
+    self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
+    self.parentTitle = parentTitle
   }
 
   var currentModelId: String {
@@ -249,6 +467,8 @@ struct WorkChatSessionView: View {
   let chatSummaryContext: WorkChatSummaryRenderContext
   let transcript: [WorkChatEnvelope]
   let transcriptRenderSignature: Int
+  let allowsIncrementalTranscriptUpdate: Bool
+  @Binding var transcriptIncrementalDelta: [WorkChatEnvelope]
   let fallbackEntries: [AgentChatTranscriptEntry]
   let fallbackEntriesRenderSignature: Int
   let artifacts: [ComputerUseArtifactSummary]
@@ -257,13 +477,13 @@ struct WorkChatSessionView: View {
   let optimisticPendingSteersRenderSignature: Int
   let localEchoMessages: [WorkLocalEchoMessage]
   let localEchoMessagesRenderSignature: Int
-  let expandedToolCardIdsSnapshot: Set<String>
-  let expandedToolCardIdsRenderSignature: Int
+  let cardExpansionSnapshot: WorkCardExpansionState
+  let cardExpansionRenderSignature: Int
   let artifactContentRenderSignature: Int
   let artifactDrawerPresentedSnapshot: Bool
   let sendingSnapshot: Bool
   let errorMessageSnapshot: String?
-  @Binding var expandedToolCardIds: Set<String>
+  @Binding var cardExpansion: WorkCardExpansionState
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
   @Binding var fullscreenImage: WorkFullscreenImage?
   @Binding var artifactDrawerPresented: Bool
@@ -284,6 +504,10 @@ struct WorkChatSessionView: View {
   /// follow and the jump-to-latest pill keep using `ScrollViewProxy.scrollTo`.
   @State var scrollPosition = ScrollPosition()
   @State var timelineDragActive = false
+  /// True from the moment the reader touches the transcript until the fling it
+  /// launched has come to rest. The drag gesture alone ends at finger-up, which
+  /// is the middle of the interaction, not the end of it.
+  @State var timelineScrollPhaseUserDriven = false
   @State var bottomStickinessReleasedByUser = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
@@ -297,13 +521,27 @@ struct WorkChatSessionView: View {
   @State var latestPinTask: Task<Void, Never>?
   @State var latestPinGeneration = 0
   @State var assistantPreviewCache = WorkAssistantPreviewCache()
-  @State private var contextUsageViewModelCache = WorkContextUsageViewModelCache()
+  @State var contextUsageViewModelCache = WorkContextUsageViewModelCache()
   @State var assistantLineBudgets: [String: Int] = [:]
+  /// Largest budget each assistant message has already rendered under. A budget
+  /// may grow but never shrink, so "Show more" cannot appear on a message the
+  /// reader already read in full.
+  @State var assistantBudgetFloors: [String: Int] = [:]
+  /// Messages the reader expanded. They read from the top from then on, so a
+  /// tap does not swap the visible slice for the other end of the message.
+  @State var assistantHeadAnchorOverrides: Set<String> = []
+  /// One presentation host for every box in this transcript. Boxes reach it
+  /// through `\.workOutputViewer` rather than each carrying its own cover.
+  @StateObject var outputViewer = WorkOutputViewerModel()
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
   @State var scrollStateSessionId: String?
   @State var pendingInitialBottomPinSessionId: String?
+  @State var initialBottomPinQuiescenceGeneration = 0
+  /// Whether the whole transcript fits on screen. Flips rarely, so it is safe as
+  /// `@State` even though the sample that produces it arrives per scroll frame.
+  @State var transcriptContentFitsViewport = true
   @State var timelineLayoutPinToken = 0
   @State var olderHistoryLoadInFlight = false
   @State var olderHistoryLoadError: String?
@@ -356,6 +594,10 @@ struct WorkChatSessionView: View {
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
 
+  /// Opens the parent chat for a standalone spawned child session. The nested
+  /// transcript viewer uses its own back control and leaves this unset.
+  var onOpenParentSession: (() -> Void)? = nil
+
   var resolvedSessionStatus: String? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
@@ -369,10 +611,11 @@ struct WorkChatSessionView: View {
   var scheduledWorkSnapshotsRenderSignature: Int = 0
   var selectedSubagentTaskId: String? = nil
   var onOpenChatInfo: (() -> Void)? = nil
-  var onOpenSubagents: (() -> Void)? = nil
   /// Tapping a subagent spawn/result timeline row opens the same detail surface
   /// the Chat Info roster row opens (full transcript takeover or expanded row).
   var onSelectSubagentRow: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+  /// Fork the current Claude thread in this lane (session-quota card).
+  var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
   /// Live "turn is running" signal from the sync layer (chat_subscribe ack +
@@ -403,6 +646,8 @@ struct WorkChatSessionView: View {
   /// Re-requests the transcript after a failed load. When nil the failure state
   /// renders without a Retry button rather than offering a dead control.
   var onRetryTranscript: (() -> Void)? = nil
+  var onTakeOverSubagent: (@MainActor () async -> Void)? = nil
+  var onKeepReportingSubagent: (@MainActor () async -> Void)? = nil
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -414,6 +659,9 @@ struct WorkChatSessionView: View {
   /// Last blocking pending-input id we reacted to, so re-renders that keep the
   /// same gate open don't re-fire the haptic or re-scroll.
   @State var lastBlockingPendingInputId: String?
+  /// Light haptic when a Claude session-quota card first appears.
+  @State var quotaCardHapticToken = 0
+  @State var lastLiveQuotaCardId: String?
   /// Item ids of pending inputs the user just answered. They are hidden from the
   /// consolidated strip immediately (optimistic removal) so it advances to the
   /// next request without waiting for the host, and reconciled back out once the
@@ -435,6 +683,32 @@ struct WorkChatSessionView: View {
 
   private var chatSummaryTimelineKey: WorkChatSummaryTimelineKey {
     WorkChatSummaryTimelineKey(chatSummaryContext)
+  }
+
+  private var selectedSubagentSnapshot: WorkSubagentSnapshot? {
+    guard let selectedId = selectedSubagentTaskId else { return nil }
+    return subagentSnapshots.first { snapshot in
+      snapshot.taskId == selectedId || snapshot.agentId == selectedId
+    }
+  }
+
+  private var transcriptModelId: String {
+    if let model = selectedSubagentSnapshot?.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !model.isEmpty {
+      return model
+    }
+    return chatSummaryContext.currentModelId
+  }
+
+  private var transcriptModelLabel: String {
+    if let snapshot = selectedSubagentSnapshot,
+       let chip = workSubagentModelChip(
+        snapshotModel: snapshot.model,
+        sessionModel: chatSummaryContext.model
+       ) {
+      return chip
+    }
+    return chatSummaryContext.modelLabel
   }
 
   /// Terminal transcript signal from the local event window. When present, it
@@ -601,6 +875,26 @@ struct WorkChatSessionView: View {
     return primaryPendingInput?.id
   }
 
+  var liveClaudeQuotaCardId: String? {
+    guard isLive else { return nil }
+    for entry in timelineSnapshot.timeline {
+      if case .adeCard(let card) = entry.payload,
+         card.variant == "claude_session_quota",
+         !card.isTerminal {
+        return card.id
+      }
+    }
+    return nil
+  }
+
+  @MainActor
+  func handleLiveQuotaCardChange(_ id: String?) {
+    guard id != lastLiveQuotaCardId else { return }
+    lastLiveQuotaCardId = id
+    guard id != nil else { return }
+    quotaCardHapticToken &+= 1
+  }
+
   /// React to a newly-arrived blocking pending input: fire one light haptic.
   /// All pending inputs now render in the consolidated strip pinned above the
   /// composer, so none require a transcript scroll. No-ops when the same gate is
@@ -676,13 +970,16 @@ struct WorkChatSessionView: View {
   }
 
   @MainActor
-  func refreshTimelinePresentation(sourceTimeline: [WorkTimelineEntry]? = nil) {
+  func refreshTimelinePresentation(
+    sourceTimeline: [WorkTimelineEntry]? = nil,
+    rebuildToolActivityIndex: Bool = true
+  ) {
     let timeline = sourceTimeline ?? timelineSnapshot.timeline
-    turnToolActivity = workTurnToolActivityIndex(from: timeline)
-    let presentedTimeline = timeline.filter { entry in
-      if case .toolGroup = entry.payload { return false }
-      return true
+    if rebuildToolActivityIndex {
+      turnToolActivity = workTurnToolActivityIndex(from: timeline)
     }
+    let presentedTimeline = workPresentedTimelineEntries(timeline)
+    var budgetFloors = assistantBudgetFloors
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: presentedTimeline,
       visibleCount: visibleTimelineCount,
@@ -690,6 +987,8 @@ struct WorkChatSessionView: View {
       transcript: transcript,
       assistantPreviewCache: assistantPreviewCache,
       assistantLineBudgets: assistantLineBudgets,
+      assistantBudgetFloors: &budgetFloors,
+      assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
       streamingAssistantMessageId: streamingAssistantMessageId
     )
     let timelineDelta = nextPresentation.timelineCount - timelinePresentation.timelineCount
@@ -712,8 +1011,13 @@ struct WorkChatSessionView: View {
         transcript: transcript,
         assistantPreviewCache: assistantPreviewCache,
         assistantLineBudgets: assistantLineBudgets,
+        assistantBudgetFloors: &budgetFloors,
+        assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
         streamingAssistantMessageId: streamingAssistantMessageId
       )
+    }
+    if budgetFloors != assistantBudgetFloors {
+      assistantBudgetFloors = budgetFloors
     }
     guard nextPresentation != timelinePresentation else { return }
     armPrependAnchorIfRowsInsertedAbove(nextPresentation)
@@ -724,7 +1028,32 @@ struct WorkChatSessionView: View {
   /// the armed row while a prepend is in flight (it is no longer first once the
   /// older page lands above it).
   var prependProbeRowId: String? {
-    scrollMetrics.prependAnchor?.rowId ?? timelinePresentation.visibleEntries.first?.id
+    let hasPrependAnchor = scrollMetrics.prependAnchor != nil
+    guard workChatShouldInstallPrependProbe(
+      distanceFromTop: scrollMetrics.distanceFromTop,
+      hasPrependAnchor: hasPrependAnchor
+    ) else {
+      return nil
+    }
+    return scrollMetrics.prependAnchor?.rowId ?? timelinePresentation.visibleEntries.first?.id
+  }
+
+  /// The last real probe measurement, replayed when a correction had to wait for
+  /// the reader's fling to settle (no new preference change arrives once layout
+  /// is quiet).
+  var lastPrependProbeSample: WorkChatPrependProbeSample? {
+    guard let rowId = scrollMetrics.probeRowId, let y = scrollMetrics.probeRowY else { return nil }
+    return WorkChatPrependProbeSample(rowId: rowId, y: y)
+  }
+
+  /// Where a transcript shorter than the viewport sits.
+  ///
+  /// The alignment only has an effect while the content is shorter than the
+  /// viewport (past that the frame is content-sized), and there desktop renders
+  /// the first prompt at the TOP — a one-message chat pinned to the bottom of an
+  /// otherwise empty screen reads like the transcript failed to load.
+  var transcriptContentAlignment: Alignment {
+    workChatTranscriptContentAlignment(contentFitsViewport: transcriptContentFitsViewport)
   }
 
   /// Records where the reader is whenever the next presentation inserts rows
@@ -734,25 +1063,37 @@ struct WorkChatSessionView: View {
   /// user was reading slides down by the height of the inserted page.
   @MainActor
   private func armPrependAnchorIfRowsInsertedAbove(_ nextPresentation: WorkTimelinePresentation) {
-    guard scrollMetrics.prependAnchor == nil,
-          nextPresentation.visibleEntries.count > timelinePresentation.visibleEntries.count,
-          let previousFirstId = timelinePresentation.visibleEntries.first?.id,
-          nextPresentation.visibleEntries.first?.id != previousFirstId,
-          // The probe has to already be measuring the row we are about to anchor
-          // on, or there is no "before" position to restore to.
-          scrollMetrics.probeRowId == previousFirstId,
-          let previousFirstRowY = scrollMetrics.probeRowY
-    else { return }
-    // Only a genuine prepend: the row that used to lead the list has to still be
-    // in the list, just further down.
-    guard nextPresentation.visibleEntries.contains(where: { $0.id == previousFirstId }) else { return }
-
-    scrollMetrics.prependAnchor = WorkChatPrependAnchor(
-      rowId: previousFirstId,
-      rowY: previousFirstRowY,
-      offsetY: scrollMetrics.offsetY,
-      remainingAttempts: workChatPrependAnchorAttempts
-    )
+    let previousFirstId = timelinePresentation.visibleEntries.first?.id
+    let existingAnchorRowId = scrollMetrics.prependAnchor?.rowId
+    switch workChatPrependArmDecision(
+      previousFirstId: previousFirstId,
+      nextFirstId: nextPresentation.visibleEntries.first?.id,
+      previousVisibleCount: timelinePresentation.visibleEntries.count,
+      nextVisibleCount: nextPresentation.visibleEntries.count,
+      existingAnchorRowId: existingAnchorRowId,
+      anchorRowStillVisible: existingAnchorRowId.map { rowId in
+        nextPresentation.visibleEntries.contains { $0.id == rowId }
+      } ?? false,
+      previousFirstRowStillVisible: previousFirstId.map { rowId in
+        nextPresentation.visibleEntries.contains { $0.id == rowId }
+      } ?? false,
+      probeRowId: scrollMetrics.probeRowId,
+      probeRowY: scrollMetrics.probeRowY
+    ) {
+    case .ignore:
+      return
+    case .extendExistingAnchorWindow:
+      scrollMetrics.prependAnchor?.remainingAttempts = workChatPrependAnchorAttempts
+    case .retireAnchor:
+      scrollMetrics.prependAnchor = nil
+    case .arm(let rowId, let rowY):
+      scrollMetrics.prependAnchor = WorkChatPrependAnchor(
+        rowId: rowId,
+        rowY: rowY,
+        offsetY: scrollMetrics.offsetY,
+        remainingAttempts: workChatPrependAnchorAttempts
+      )
+    }
   }
 
   /// Re-applies the reader's position once the prepended rows have laid out.
@@ -764,19 +1105,24 @@ struct WorkChatSessionView: View {
   func restorePrependAnchorIfNeeded(probed: WorkChatPrependProbeSample?) {
     guard var anchor = scrollMetrics.prependAnchor else { return }
 
-    // The anchored row moves by the height inserted above it *minus* whatever
-    // the reader scrolled in the meantime, because scrolling moves the row up
-    // the screen too. Adding the offset change back isolates the insertion:
-    // with an inserted height H and a user scroll D, the row moves H - D and the
-    // offset moves D, so the sum is H either way — and a pure scroll with no
-    // prepend sums to zero and correctly restores nothing.
-    let rowShift = probed?.rowId == anchor.rowId ? (probed?.y ?? anchor.rowY) - anchor.rowY : 0
-    let scrolled = scrollMetrics.offsetY - anchor.offsetY
-    let insertedHeight = rowShift + scrolled
-    guard insertedHeight > 0.5 else {
+    let insertedHeight: CGFloat
+    switch workChatPrependCorrection(
+      anchor: anchor,
+      probed: probed,
+      currentOffsetY: scrollMetrics.offsetY,
+      mayWriteScrollOffset: workChatMayWriteScrollOffset(
+        dragActive: timelineDragActive,
+        scrollPhaseUserDriven: timelineScrollPhaseUserDriven
+      )
+    ) {
+    case .wait:
+      return
+    case .retry:
       anchor.remainingAttempts -= 1
       scrollMetrics.prependAnchor = anchor.remainingAttempts > 0 ? anchor : nil
       return
+    case .apply(let height):
+      insertedHeight = height
     }
 
     scrollMetrics.prependAnchor = nil
@@ -866,6 +1212,17 @@ struct WorkChatSessionView: View {
     // so the Accept / Decline actions are always in reach instead of scrolled
     // off the top of the transcript.
 
+    if let parentId = chatSummaryContext.orchestrationParentSessionId?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+       !parentId.isEmpty,
+       parentId != session.id,
+       let onOpenParentSession {
+      WorkSubagentLineageBreadcrumb(
+        parentTitle: chatSummaryContext.parentTitle,
+        onOpen: onOpenParentSession
+      )
+    }
+
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
     if let errorMessageSnapshot, !hostUnreachable {
@@ -911,14 +1268,6 @@ struct WorkChatSessionView: View {
         }
       }
       .font(.footnote.weight(.semibold))
-      .background(
-        GeometryReader { geometry in
-          Color.clear.preference(
-            key: WorkChatContentTopPreferenceKey.self,
-            value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).minY
-          )
-        }
-      )
     }
 
     if timeline.isEmpty {
@@ -933,7 +1282,15 @@ struct WorkChatSessionView: View {
       // or the probe silently never installs and the anchor never arms.
       let probeRenderRowId = visibleTimelineRenderEntries
         .first { $0.sourceEntryId == probeRowId }?.id
-      ForEach(visibleTimelineRenderEntries) { entry in
+      // Keep SwiftUI's identity pass over tiny values. Render entries carry
+      // full assistant payloads, so iterating them directly makes AttributeGraph
+      // copy long markdown responses just to read `id` during layout.
+      let renderEntries = visibleTimelineRenderEntries
+      let renderRowReferences = renderEntries.enumerated().map { index, entry in
+        WorkTimelineRenderRowReference(id: entry.id, index: index)
+      }
+      ForEach(renderRowReferences) { reference in
+        let entry = renderEntries[reference.index]
         timelineRenderEntryView(
           for: entry,
           proxy: proxy,
@@ -1049,26 +1406,31 @@ struct WorkChatSessionView: View {
         WorkClaudeGoalPill(goal: claudeGoal)
       }
 
-      let subagentCount = subagentSnapshots.count
-      let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
-      let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil
-      let showsSubagentBadge = inputLockMessage == nil && subagentCount > 0 && onOpenSubagents != nil
+      // One chip per destination. Subagents used to get their own capsule that
+      // opened the very same sheet as Chat Info; the count now covers both.
+      let chatInfoCount = workChatInfoItemCount(
+        subagents: subagentSnapshots,
+        scheduledWork: scheduledWorkSnapshots
+      )
+      let showsChatInfoBadge = inputLockMessage == nil && chatInfoCount > 0 && onOpenChatInfo != nil
       let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
-      if showsChatInfoBadge || showsSubagentBadge || showsPrBadge {
-        HStack(spacing: 8) {
-          if showsChatInfoBadge, let onOpenChatInfo {
-            WorkChatInfoActivePopup(count: activeScheduledWorkCount, onOpen: onOpenChatInfo)
+      if showsChatInfoBadge || showsPrBadge {
+        // Horizontally scrollable so a future chip can never truncate the ones
+        // beside it — it just scrolls out of reach instead.
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            if showsChatInfoBadge, let onOpenChatInfo {
+              WorkChatInfoActivePopup(count: chatInfoCount, onOpen: onOpenChatInfo)
+            }
+            if showsPrBadge, let prBadge, let onOpenPrDetails {
+              WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
+            }
           }
-          if showsSubagentBadge, let onOpenSubagents {
-            WorkSubagentActivePopup(count: subagentCount, onOpen: onOpenSubagents)
-          }
-          if showsPrBadge, let prBadge, let onOpenPrDetails {
-            WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
-          }
-          Spacer(minLength: 0)
+          .padding(.trailing, 8)
         }
+        .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: workChatSubagentActivePopupHeight, alignment: .leading)
+        .frame(height: workChatComposerChipRowHeight, alignment: .leading)
       }
 
       if !pendingSteers.isEmpty {
@@ -1077,6 +1439,7 @@ struct WorkChatSessionView: View {
           drafts: $steerEditDrafts,
           busy: actionInFlight,
           isLive: isLive,
+          turnActive: sessionStatus == "active",
           onCancel: { steerId in
             await runSessionAction {
               await onCancelSteer(steerId)
@@ -1145,17 +1508,31 @@ struct WorkChatSessionView: View {
         )
       }
 
+      if chatSummaryContext.spawnKind == .subagent,
+         let parentId = chatSummaryContext.orchestrationParentSessionId,
+         !parentId.isEmpty,
+         chatSummaryContext.subagentTakeoverPromptShownAt == nil,
+         onTakeOverSubagent != nil || onKeepReportingSubagent != nil {
+        WorkSubagentTakeoverBanner(
+          parentTitle: chatSummaryContext.parentTitle,
+          takeOverEnabled: onTakeOverSubagent != nil && !actionInFlight && !hostUnreachable,
+          keepReportingEnabled: onKeepReportingSubagent != nil && !actionInFlight && !hostUnreachable,
+          onTakeOver: {
+            guard let onTakeOverSubagent else { return }
+            await runSessionAction { await onTakeOverSubagent() }
+          },
+          onKeepReporting: {
+            guard let onKeepReportingSubagent else { return }
+            await runSessionAction { await onKeepReportingSubagent() }
+          }
+        )
+      }
+
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
-        usageViewModel: contextUsageViewModelCache.value(
-          sessionId: session.id,
-          transcript: transcript,
-          transcriptRenderSignature: transcriptRenderSignature,
-          provider: chatSummaryContext.provider,
-          fallbackContextWindow: chatSummaryContext.contextWindowFallback
-        ),
-        laneId: session.laneId,
         sessionId: session.id,
+        isPersonalChat: isPersonalChat,
+        laneId: session.laneId,
         dictationTargetId: "work-chat:\(session.id)",
         awaitingInputGate: hasPendingInputGate,
         composerPlaceholder: composerPlaceholderText,
@@ -1182,6 +1559,7 @@ struct WorkChatSessionView: View {
           }
         },
         onOpenModelPicker: !chatSummaryContext.isAvailable
+          || selectedSubagentTaskId != nil
           || (isPersonalChat && (
             !personalModelCatalogAvailable || !personalSessionUpdatesAvailable
           ))
@@ -1206,9 +1584,12 @@ struct WorkChatSessionView: View {
     .padding(.bottom, 0)
   }
 
-  var body: some View {
-    ScrollViewReader { proxy in
-      VStack(spacing: 0) {
+  /// Extracted from `body` so the type-checker sees two bounded
+  /// expressions instead of one ~300-line chain; the x86_64 simulator
+  /// slice hit the "unable to type-check in reasonable time" ceiling
+  /// on the combined expression.
+  @ViewBuilder
+  private func transcriptScrollView(proxy: ScrollViewProxy) -> some View {
         ScrollView {
           LazyVStack(alignment: .leading, spacing: 14) {
             sessionOverviewSection
@@ -1221,26 +1602,18 @@ struct WorkChatSessionView: View {
               .transaction { transaction in
                 transaction.animation = nil
               }
-              .background(
-                GeometryReader { geometry in
-                  Color.clear.preference(
-                    key: WorkChatContentBottomPreferenceKey.self,
-                    value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).maxY
-                  )
-                }
-              )
           }
           .padding(16)
           .frame(
             maxWidth: .infinity,
             minHeight: max(scrollViewportHeight, 0),
-            alignment: .bottomLeading
+            alignment: transcriptContentAlignment
           )
           .modifier(
             WorkChatTranscriptEnvironmentModifier(
               provider: chatSummaryContext.provider,
-              modelId: chatSummaryContext.currentModelId,
-              modelLabel: chatSummaryContext.modelLabel,
+              modelId: transcriptModelId,
+              modelLabel: transcriptModelLabel,
               laneId: session.laneId,
               requestedCwd: chatSummaryContext.requestedCwd,
               isPersonalChat: isPersonalChat
@@ -1252,14 +1625,53 @@ struct WorkChatSessionView: View {
           .clipped()
           .scrollIndicators(.hidden)
           .scrollDismissesKeyboard(.interactively)
+          // Open at the tail without waiting for a layout pass. Scoped to
+          // `.initialOffset` on purpose: the `.sizeChanges` anchor would keep
+          // the bottom pinned as content grows, which is exactly the total-height
+          // correction the prepend machinery exists to avoid. The retry pin
+          // stays as belt-and-braces for the hydration that lands afterwards.
+          .defaultScrollAnchor(.bottom, for: .initialOffset)
           .scrollPosition($scrollPosition)
+          .onScrollPhaseChange { _, phase in
+            let userDriven = workChatScrollPhaseIsUserDriven(phase)
+            guard timelineScrollPhaseUserDriven != userDriven else { return }
+            timelineScrollPhaseUserDriven = userDriven
+            timelineDragActive = userDriven
+            if userDriven {
+              // Let the native ScrollView own the whole interaction. The old
+              // zero-distance simultaneous DragGesture competed with it and
+              // could leave a tail-pinned chat one gesture away from moving.
+              cancelPendingInitialBottomPinForUserScroll()
+              releaseBottomStickinessForUserScroll(reason: "scroll-phase")
+              return
+            }
+            // A fling that ended may have left a prepend correction waiting.
+            restorePrependAnchorIfNeeded(probed: lastPrependProbeSample)
+          }
           .onScrollGeometryChange(for: WorkChatScrollGeometrySample.self) { geometry in
             WorkChatScrollGeometrySample(geometry)
           } action: { _, sample in
-            // Recorded into a reference box, not @State: this fires per scroll
-            // frame and must not invalidate the transcript.
+            // Fires per scroll frame. Everything here is O(1) and writes to a
+            // reference box or to state that only changes at a threshold — no
+            // list scans, and nothing that invalidates the transcript per frame.
             scrollMetrics.offsetY = sample.offsetY
+            scrollMetrics.distanceFromTop = sample.distanceFromTop
             scrollMetrics.scrollableHeight = sample.scrollableHeight
+            guard sample.containerHeight > 1 else { return }
+            updateBottomStickiness(distanceFromBottom: sample.distanceFromBottom, proxy: proxy)
+            continueAutomaticOlderHistoryIfNeeded()
+            requestOlderHistoryIfScrolledNearTop(distanceFromTop: sample.distanceFromTop)
+          }
+          // Content SIZE changes only — this observer never fires while the
+          // reader is merely scrolling, which is what keeps the tail scan in
+          // `resolvePendingInitialBottomPinAfterLayout` off the scroll path.
+          .onScrollGeometryChange(for: WorkChatContentSizeSample.self) { geometry in
+            WorkChatContentSizeSample(geometry)
+          } action: { _, sample in
+            if transcriptContentFitsViewport != sample.contentFitsViewport {
+              transcriptContentFitsViewport = sample.contentFitsViewport
+            }
+            resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-size")
           }
           .coordinateSpace(name: workChatScrollCoordinateSpace)
           .background(
@@ -1274,27 +1686,6 @@ struct WorkChatSessionView: View {
                   value: geometry.size.width
                 )
             }
-          )
-          .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-              .onChanged { value in
-                if !timelineDragActive {
-                  timelineDragActive = true
-                }
-                if value.translation.height > workChatTouchScrollDeadband {
-                  releaseBottomStickinessForUserScroll(reason: "drag")
-                } else if value.translation.height < -workChatTouchScrollDeadband {
-                  allowBottomStickinessResumeFromUserScroll(reason: "drag")
-                }
-              }
-              .onEnded { value in
-                let releasedBottomStickiness = value.translation.height > workChatTouchScrollDeadband
-                if timelineDragActive {
-                  timelineDragActive = false
-                }
-                guard !releasedBottomStickiness else { return }
-                updateBottomStickiness(distanceFromBottom: scrollMetrics.distanceFromBottom, proxy: proxy)
-              }
           )
           .overlay(alignment: .top) {
             WorkChatNavigationBackdrop()
@@ -1314,6 +1705,15 @@ struct WorkChatSessionView: View {
               .transition(.move(edge: .trailing).combined(with: .opacity))
             }
           }
+  }
+
+  /// Layout half of the chat column (structure + geometry preferences).
+  /// Split from `body` so the type-checker sees bounded expressions; the
+  /// behavior chain (onChange/sheet/task) stays in `body`.
+  @ViewBuilder
+  private func chatColumn(proxy: ScrollViewProxy) -> some View {
+      VStack(spacing: 0) {
+        transcriptScrollView(proxy: proxy)
 
         composerInset(proxy: proxy)
           .fixedSize(horizontal: false, vertical: true)
@@ -1333,12 +1733,11 @@ struct WorkChatSessionView: View {
         .background(workChatCanvasBackground.ignoresSafeArea())
         .adeNavigationGlass()
         .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
-          let changed = abs(scrollViewportHeight - height) > 1
+          guard height > 0, abs(scrollViewportHeight - height) > 1 else { return }
           scrollViewportHeight = height
-          guard changed, isNearBottom else { return }
-          pinToLatestAfterLayout(proxy, reason: "viewport-height")
         }
         .onPreferenceChange(WorkChatViewportWidthPreferenceKey.self) { width in
+          guard width > 0, abs(scrollViewportWidth - width) > 1 else { return }
           scrollViewportWidth = width
         }
         .onPreferenceChange(WorkChatPrependProbePreferenceKey.self) { sample in
@@ -1357,33 +1756,42 @@ struct WorkChatSessionView: View {
         .onPreferenceChange(WorkChatComposerLayoutHeightPreferenceKey.self) { height in
           guard height > 0, abs(composerLayoutHeight - height) > 1 else { return }
           composerLayoutHeight = height
-          guard isNearBottom else { return }
-          pinToLatestAfterLayout(proxy, reason: "composer-height")
         }
-        .onPreferenceChange(WorkChatContentBottomPreferenceKey.self) { bottomY in
-          guard scrollViewportHeight > 1 else { return }
-          updateBottomStickiness(
-            distanceFromBottom: max(0, bottomY - scrollViewportHeight),
-            proxy: proxy
-          )
-          continueAutomaticOlderHistoryIfNeeded()
-          resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-bottom")
-        }
-        .onPreferenceChange(WorkChatContentTopPreferenceKey.self) { topY in
-          if topY < -workChatOlderHistoryRearmDistance {
-            olderHistoryTriggerArmed = true
-          }
-          guard workChatShouldRequestOlderHistory(
-            topY: topY,
-            triggerArmed: olderHistoryTriggerArmed,
-            loading: olderHistoryLoadInFlight,
-            hasError: olderHistoryLoadError != nil,
-            hasBufferedEntries: hiddenTimelineCount > 0,
-            hasHostHistory: canRequestOlderTranscriptHistory
-          ) else { return }
-          olderHistoryTriggerArmed = false
-          requestEarlierTimelineEntries(automatically: true)
-        }
+  }
+
+  /// Older-history scroll-back trigger, driven by the shared scroll sample.
+  @MainActor
+  private func requestOlderHistoryIfScrolledNearTop(distanceFromTop: CGFloat) {
+    if distanceFromTop > workChatOlderHistoryRearmDistance {
+      if !olderHistoryTriggerArmed {
+        olderHistoryTriggerArmed = true
+      }
+      // Scrolling back down past the re-arm distance retires the previous
+      // failure. A dropped history page is almost always a transient host
+      // timeout, and latching it until someone finds the retry row means the
+      // next approach to the top does nothing at all — the transcript reads as
+      // frozen. Clearing it here keeps the retry gesture the same one the
+      // reader already makes, and cannot spin: a fresh attempt still costs a
+      // full round trip past `workChatOlderHistoryRearmDistance`.
+      if olderHistoryLoadError != nil {
+        olderHistoryLoadError = nil
+      }
+    }
+    guard workChatShouldRequestOlderHistory(
+      distanceFromTop: distanceFromTop,
+      triggerArmed: olderHistoryTriggerArmed,
+      loading: olderHistoryLoadInFlight,
+      hasError: olderHistoryLoadError != nil,
+      hasBufferedEntries: hiddenTimelineCount > 0,
+      hasHostHistory: canRequestOlderTranscriptHistory
+    ) else { return }
+    olderHistoryTriggerArmed = false
+    requestEarlierTimelineEntries(automatically: true)
+  }
+
+  /// Timeline/scroll change handlers, split from `body` for type-checker budget.
+  private func timelineScrollHandlers<V: View>(_ content: V, proxy: ScrollViewProxy) -> some View {
+    content
         .onChange(of: timeline.count) { oldCount, newCount in
           let previousTailId = lastTimelineTailId
           lastTimelineTailId = timeline.last?.id
@@ -1431,6 +1839,19 @@ struct WorkChatSessionView: View {
             unreadBelowCount = 0
           }
         }
+        // The turn ending is the single collapse trigger. Dropping every
+        // override here is what makes the finished turn fold to one line each,
+        // and what stops a "keep this shut while it runs" tap from outliving
+        // the run it was about.
+        .onChange(of: isStreamingTurn) { wasStreaming, isStreaming in
+          guard wasStreaming, !isStreaming else { return }
+          cardExpansion.clearForTurnEnd()
+        }
+  }
+
+  /// Session lifecycle + input-recovery handlers, split from `body` for type-checker budget.
+  private func sessionLifecycleHandlers<V: View>(_ content: V, proxy: ScrollViewProxy) -> some View {
+    content
         .onAppear {
           prepareScrollStateForCurrentSessionIfNeeded(reason: "appear")
           if transcript.isEmpty && fallbackEntries.isEmpty {
@@ -1467,9 +1888,13 @@ struct WorkChatSessionView: View {
           pendingCodexFastMode = nil
           lastBlockingPendingInputId = nil
           blockingPendingHapticToken = 0
+          lastLiveQuotaCardId = nil
+          quotaCardHapticToken = 0
           optimisticallyAnsweredInputIds.removeAll()
           collapsedPendingInputId = nil
           assistantLineBudgets.removeAll()
+          assistantBudgetFloors.removeAll()
+          assistantHeadAnchorOverrides.removeAll()
           composerSettingMutationInFlight = false
           composerSettingMutationGeneration &+= 1
           resetScrollStateForCurrentSession(reason: "session-change")
@@ -1512,7 +1937,20 @@ struct WorkChatSessionView: View {
         .onChange(of: blockingPendingInputId) { _, newId in
           handleBlockingPendingInputChange(newId)
         }
+        .onChange(of: liveClaudeQuotaCardId) { _, newId in
+          handleLiveQuotaCardChange(newId)
+        }
+  }
+
+  /// Haptics and sheet presenters, split from `body` for type-checker budget.
+  private func feedbackAndSheets<V: View>(_ content: V) -> some View {
+    content
         .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
+        .sensoryFeedback(.impact(weight: .light), trigger: quotaCardHapticToken)
+        .environment(\.workOutputViewer, outputViewer)
+        .fullScreenCover(item: $outputViewer.request) { request in
+          WorkOutputViewerScreen(request: request)
+        }
         .sheet(isPresented: $artifactDrawerPresented) {
           WorkArtifactDrawerSheet(
             artifacts: artifacts,
@@ -1550,8 +1988,8 @@ struct WorkChatSessionView: View {
                   await onSelectEffort(nextReasoning)
                 }
                 guard !Task.isCancelled else { return }
-                if option.supportsCodexFastMode || chatSummaryContext.effectiveFastMode != pickedFastMode {
-                  _ = await onSelectCodexFastMode(option.supportsCodexFastMode ? pickedFastMode : false)
+                if chatSummaryContext.effectiveFastMode != pickedFastMode {
+                  _ = await onSelectCodexFastMode(pickedFastMode)
                 }
               }
             }
@@ -1564,8 +2002,31 @@ struct WorkChatSessionView: View {
               .presentationDragIndicator(.visible)
           }
         }
-      }
+  }
+
+  var body: some View {
+    ScrollViewReader { proxy in
+      feedbackAndSheets(
+        sessionLifecycleHandlers(
+          timelineScrollHandlers(chatColumn(proxy: proxy), proxy: proxy),
+          proxy: proxy
+        )
+      )
     }
+  }
+}
+
+/// Lightweight identity passed to SwiftUI's `ForEach` for the transcript.
+///
+/// `WorkTimelineRenderEntry` intentionally carries the render payload, which
+/// can include an entire assistant response and its streaming classifier. If
+/// `ForEach` iterates that value type directly, SwiftUI copies the payload just
+/// to read `Identifiable.id` while reconciling rows. A long chat can therefore
+/// spend its layout budget copying markdown instead of drawing the viewport.
+/// Keep the heavy array captured once and reconcile only these tiny references.
+private struct WorkTimelineRenderRowReference: Identifiable {
+  let id: String
+  let index: Int
 }
 
 private extension WorkChatSessionView {
@@ -1674,15 +2135,6 @@ func workLocalEchoMessagesRenderSignature(_ messages: [WorkLocalEchoMessage]) ->
       hasher.combine(attachment.type)
       hasher.combine(attachment.url)
     }
-  }
-  return hasher.finalize()
-}
-
-func workExpandedToolCardIdsRenderSignature(_ ids: Set<String>) -> Int {
-  var hasher = Hasher()
-  hasher.combine(ids.count)
-  for id in ids.sorted() {
-    hasher.combine(id)
   }
   return hasher.finalize()
 }
@@ -1812,22 +2264,6 @@ private struct WorkChatComposerLayoutHeightPreferenceKey: PreferenceKey {
   }
 }
 
-private struct WorkChatContentBottomPreferenceKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = nextValue()
-  }
-}
-
-private struct WorkChatContentTopPreferenceKey: PreferenceKey {
-  static var defaultValue: CGFloat = -CGFloat.greatestFiniteMagnitude
-
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = max(value, nextValue())
-  }
-}
-
 /// Flat transcript canvas. Desktop parity: a single dark #0f0f11 fill behind
 /// the agent prose — no card, no gradient. Light mode keeps the app's warm
 /// paper tone so the chat doesn't look out of place there.
@@ -1901,6 +2337,8 @@ private func makeWorkTimelinePresentation(
   transcript: [WorkChatEnvelope],
   assistantPreviewCache: WorkAssistantPreviewCache,
   assistantLineBudgets: [String: Int],
+  assistantBudgetFloors: inout [String: Int],
+  assistantHeadAnchorOverrides: Set<String>,
   streamingAssistantMessageId: String?
 ) -> WorkTimelinePresentation {
   let rawVisibleEntries = visibleWorkTimelineEntries(from: timeline, visibleCount: visibleCount)
@@ -1911,17 +2349,22 @@ private func makeWorkTimelinePresentation(
     modelId: chatSummary.modelId,
     transcript: transcript
   )
+  var resolvedLineBudgets: [String: Int] = [:]
   let visibleEntries = workTimelineEntriesWithAssistantPreviews(
     visibleEntriesWithSeparators,
     cache: assistantPreviewCache,
     assistantLineBudgets: assistantLineBudgets,
+    assistantBudgetFloors: &assistantBudgetFloors,
+    assistantHeadAnchorOverrides: assistantHeadAnchorOverrides,
+    resolvedLineBudgets: &resolvedLineBudgets,
     tailAnchoredAssistantMessageId: workLatestAssistantMessageId(in: timeline)
   )
   let renderEntries = workTimelineRenderEntries(
     from: visibleEntries,
     streamingAssistantMessageId: streamingAssistantMessageId,
     splitAssistantMessageId: workLatestAssistantMessageId(in: timeline),
-    assistantLineBudgets: assistantLineBudgets
+    assistantLineBudgets: assistantLineBudgets,
+    resolvedAssistantLineBudgets: resolvedLineBudgets
   )
   let hiddenCount = max(timeline.count - rawVisibleEntries.count, 0)
   return WorkTimelinePresentation(
@@ -1984,24 +2427,39 @@ private func workTimelinePresentationSignature(
         hasher.combine(message.unprocessedResolution?.action)
         hasher.combine(message.unprocessedResolution?.state)
         hasher.combine(message.unprocessedResolution?.resolvedAt)
-        workTimelineCombineTextSignature(message.markdown, into: &hasher)
+        workTimelineCombineMessageTextSignature(message, into: &hasher)
         if let preview = message.assistantPreview {
-          workTimelineCombineTextSignature(preview.text, into: &hasher)
+          // A preview is a pure function of (message text, anchor, budget), and
+          // the text is already in this hash. Its shape is enough to separate
+          // two previews of the same message — no need to hash the slice, which
+          // is O(message) on every refresh.
           hasher.combine(preview.isTruncated)
+          hasher.combine(preview.anchor)
           hasher.combine(preview.visibleLineCount)
           hasher.combine(preview.totalLineCount)
+          hasher.combine(preview.visibleCharacterCount)
+          hasher.combine(preview.usesMonospacedRendering)
         }
       }
     case .assistantMarkdownBlock(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
       hasher.combine(model.block.id)
-      workTimelineCombineTextSignature(model.block.kind.cacheKey, into: &hasher)
+      // The block's own precomputed digest, not a rebuilt `kind.cacheKey`:
+      // building that key allocates a full copy of the block's text, once per
+      // block, on every presentation refresh.
+      hasher.combine(model.block.digest)
+      hasher.combine(model.isStreamingTail)
+      hasher.combine(model.codeSource?.markdownIdentity)
     case .assistantMonospaced(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
-      workTimelineCombineTextSignature(model.text, into: &hasher)
-      workTimelineCombineTextSignature(model.accessibilityLabel, into: &hasher)
+      // Digest of the source message plus the size of the slice taken from it:
+      // together these change whenever the rendered text does, without hashing
+      // the (potentially very long) slice itself.
+      hasher.combine(model.sourceDigest)
+      hasher.combine(model.text.utf8.count)
+      hasher.combine(model.accessibilityLabel)
     case .assistantControls(let model):
       hasher.combine(model.id)
       hasher.combine(model.messageId)
@@ -2010,20 +2468,84 @@ private func workTimelinePresentationSignature(
       hasher.combine(model.totalLineCount)
       hasher.combine(model.canShowMore)
       hasher.combine(model.nextLineBudget)
+      hasher.combine(model.willRemainTruncatedAfterNextStep)
     }
   }
   return hasher.finalize()
 }
 
-private func workTimelineCombineTextSignature(_ text: String, into hasher: inout Hasher) {
-  hasher.combine(text.utf8.count)
-  hasher.combine(text.hashValue)
+/// Prefers the digest the snapshot fold stamped on the message; only messages
+/// built outside the fold pay to hash their text here.
+private func workTimelineCombineMessageTextSignature(_ message: WorkChatMessage, into hasher: inout Hasher) {
+  hasher.combine(message.markdownRevision)
+
+  // Live assistant deltas already carry a monotonic revision and exact
+  // character metadata. Do not count or hash the growing response here: this
+  // helper runs as part of the presentation signature on every streaming
+  // refresh. The revision is the authoritative invalidation token; the count
+  // only keeps the signature useful when a caller inspects it while a message
+  // is being assembled.
+  if message.markdownRevision > 0 {
+    hasher.combine(message.markdownCharacterCount)
+    return
+  }
+
+  if let digest = message.markdownDigest {
+    hasher.combine(digest)
+    hasher.combine(message.markdownCharacterCount)
+    hasher.combine(message.markdownLineCount)
+  } else {
+    hasher.combine(message.markdown.utf8.count)
+    hasher.combine(message.markdown.hashValue)
+  }
+}
+
+/// What a message renders under this pass: how much of it, and from which end.
+struct WorkAssistantRenderBudget: Equatable {
+  let lineBudget: Int
+  let anchor: WorkAssistantMessagePreviewAnchor
+}
+
+/// The budget rule, as one pure decision.
+///
+/// The contract it enforces is that a budget never shrinks. The newest assistant
+/// message renders tail-anchored under a generous budget so a finishing turn is
+/// readable in place; the moment a newer message arrives it becomes head-
+/// anchored, and *that* used to drop it back to the 48-line budget — so a
+/// message the reader had just read in full grew a "Show more" behind their
+/// back. The budget it already rendered under becomes its floor instead.
+///
+/// - Parameters:
+///   - userLineBudget: what "Show more" has asked for, nil if untouched.
+///   - floorLineBudget: the largest budget this message has already rendered under.
+///   - isTail: this is the newest assistant message in the timeline.
+///   - headAnchorOverride: the reader expanded this message, so it reads from
+///     the top from now on even while it is still the tail.
+///   - tailCanRenderFull: the whole message fits within the tail-full budgets.
+func workAssistantRenderBudget(
+  userLineBudget: Int?,
+  floorLineBudget: Int?,
+  isTail: Bool,
+  headAnchorOverride: Bool,
+  tailCanRenderFull: Bool
+) -> WorkAssistantRenderBudget {
+  var floor = max(floorLineBudget ?? 0, workAssistantMessageInitialLineBudget)
+  if isTail, tailCanRenderFull {
+    floor = max(floor, workAssistantMessageTailFullLineBudget)
+  }
+  return WorkAssistantRenderBudget(
+    lineBudget: max(userLineBudget ?? 0, floor),
+    anchor: (isTail && !headAnchorOverride) ? .tail : .head
+  )
 }
 
 private func workTimelineEntriesWithAssistantPreviews(
   _ entries: [WorkTimelineEntry],
   cache: WorkAssistantPreviewCache,
   assistantLineBudgets: [String: Int],
+  assistantBudgetFloors: inout [String: Int],
+  assistantHeadAnchorOverrides: Set<String>,
+  resolvedLineBudgets: inout [String: Int],
   tailAnchoredAssistantMessageId: String?
 ) -> [WorkTimelineEntry] {
   var visibleAssistantMessageIds = Set<String>()
@@ -2033,26 +2555,36 @@ private func workTimelineEntriesWithAssistantPreviews(
     else { return entry }
 
     visibleAssistantMessageIds.insert(message.id)
-    let previewAnchor: WorkAssistantMessagePreviewAnchor = message.id == tailAnchoredAssistantMessageId ? .tail : .head
-    let baselinePreview = cache.preview(for: message, anchor: previewAnchor)
-    let tailCanRenderFull = previewAnchor == .tail
+    let isTail = message.id == tailAnchoredAssistantMessageId
+    let headAnchorOverride = assistantHeadAnchorOverrides.contains(message.id)
+    let baselineAnchor: WorkAssistantMessagePreviewAnchor = (isTail && !headAnchorOverride) ? .tail : .head
+    let baselinePreview = cache.preview(for: message, anchor: baselineAnchor)
+    let tailCanRenderFull = baselineAnchor == .tail
       && !baselinePreview.usesMonospacedRendering
       && baselinePreview.totalLineCount <= workAssistantMessageTailFullLineBudget
       && baselinePreview.totalCharacterCount <= workAssistantMessageTailFullCharacterBudget
-    let lineBudget = assistantLineBudgets[message.id]
-      ?? (tailCanRenderFull ? workAssistantMessageTailFullLineBudget : workAssistantMessageInitialLineBudget)
-    let characterBudget = workAssistantMessageCharacterBudget(
-      forLineBudget: lineBudget,
-      tailCanRenderFull: tailCanRenderFull && assistantLineBudgets[message.id] == nil
+    let budget = workAssistantRenderBudget(
+      userLineBudget: assistantLineBudgets[message.id],
+      floorLineBudget: assistantBudgetFloors[message.id],
+      isTail: isTail,
+      headAnchorOverride: headAnchorOverride,
+      tailCanRenderFull: tailCanRenderFull
     )
-    if lineBudget == workAssistantMessageInitialLineBudget {
+    // Persist the floor so the flip to head-anchoring cannot take back what the
+    // reader could already see.
+    if budget.lineBudget > (assistantBudgetFloors[message.id] ?? 0) {
+      assistantBudgetFloors[message.id] = budget.lineBudget
+    }
+    resolvedLineBudgets[message.id] = budget.lineBudget
+
+    if budget.lineBudget == workAssistantMessageInitialLineBudget, budget.anchor == baselineAnchor {
       message.assistantPreview = baselinePreview
     } else {
-      message.assistantPreview = workAssistantMessagePreview(
-        message.markdown,
-        lineBudget: lineBudget,
-        characterBudget: characterBudget,
-        anchor: previewAnchor,
+      message.assistantPreview = cache.preview(
+        for: message,
+        anchor: budget.anchor,
+        lineBudget: budget.lineBudget,
+        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: budget.lineBudget),
         classification: baselinePreview.usesMonospacedRendering
       )
     }
@@ -2064,6 +2596,10 @@ private func workTimelineEntriesWithAssistantPreviews(
     )
   }
   cache.prune(keeping: visibleAssistantMessageIds)
+  // Floors are deliberately NOT pruned with the preview cache. A message that
+  // leaves the paged window and is revealed again by scroll-back must come back
+  // rendered the way the reader last saw it. The map holds one small entry per
+  // assistant message seen in this session and is dropped on session change.
   return hydratedEntries
 }
 
@@ -2081,7 +2617,11 @@ func workTimelineRenderEntries(
   from entries: [WorkTimelineEntry],
   streamingAssistantMessageId: String?,
   splitAssistantMessageId: String? = nil,
-  assistantLineBudgets: [String: Int] = [:]
+  assistantLineBudgets: [String: Int] = [:],
+  /// Budget each message actually rendered under, after floors were applied.
+  /// "Show more" has to step from this, not from the raw request, or the first
+  /// tap on a message held at a floor would step backwards.
+  resolvedAssistantLineBudgets: [String: Int] = [:]
 ) -> [WorkTimelineRenderEntry] {
   var rendered: [WorkTimelineRenderEntry] = []
   rendered.reserveCapacity(entries.count)
@@ -2114,7 +2654,10 @@ func workTimelineRenderEntries(
       continue
     }
 
-    let requestedLineBudget = assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
+    let requestedLineBudget = max(
+      resolvedAssistantLineBudgets[message.id] ?? 0,
+      assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
+    )
     // One bounded step per tap, with no ceiling. A 1000-line answer is reached
     // by tapping "Show more" until it is all here; the reader is never left
     // with a truncated message and no way to see the rest.
@@ -2126,12 +2669,15 @@ func workTimelineRenderEntries(
     // flips into the tiny whole-message monospace renderer while paginating.
     if preview.usesMonospacedRendering {
       let model = WorkAssistantMonospacedRenderModel(
-        id: "\(entry.id)-assistant-monospace",
+        // Keep the first rendered row anchored to the source timeline entry so
+        // Show More can restore it after the preview changes anchor.
+        id: entry.id,
         messageId: message.id,
         turnId: message.turnId,
         itemId: message.itemId,
         text: preview.text,
-        accessibilityLabel: accessibilityLabel
+        accessibilityLabel: accessibilityLabel,
+        sourceDigest: "\(message.markdownDigest ?? ""):\(message.markdownRevision)",
       )
       rendered.append(WorkTimelineRenderEntry(
         id: model.id,
@@ -2141,18 +2687,35 @@ func workTimelineRenderEntries(
       ))
     } else {
       let blocks = message.id == streamingAssistantMessageId
-        ? parseMarkdownBlocksForStreaming(preview.text, cacheKey: "\(message.id):preview")
+        ? parseMarkdownBlocksForStreaming(
+          preview.text,
+          cacheKey: "\(message.id):preview",
+          appendOnly: true
+        )
         : parseMarkdownBlocks(preview.text)
       rendered.reserveCapacity(rendered.count + blocks.count + (preview.isTruncated ? 1 : 0))
       let streamingTailBlockId = message.id == streamingAssistantMessageId ? blocks.last?.id : nil
+      // Only a bounded slice needs resolving; a whole message already holds its
+      // own blocks, and numbering them would be work for nothing.
+      let codeOrdinals = preview.isTruncated
+        ? workCodeBlockOrdinals(blocks, countsFromEnd: preview.anchor == .tail)
+        : [:]
       for block in blocks {
         let model = WorkAssistantMarkdownBlockRenderModel(
-          id: "\(entry.id)-\(block.id)",
+          id: block.id == blocks.first?.id ? entry.id : "\(entry.id)-\(block.id)",
           messageId: message.id,
           turnId: message.turnId,
           itemId: message.itemId,
           block: block,
-          isStreamingTail: block.id == streamingTailBlockId
+          isStreamingTail: block.id == streamingTailBlockId,
+          codeSource: codeOrdinals[block.id].map { ordinal in
+            WorkCodeBlockSource(
+              markdown: message.markdown,
+              ordinal: ordinal,
+              countsFromEnd: preview.anchor == .tail,
+              markdownIdentity: "\(message.markdownDigest ?? workStableDigest(message.markdown)):\(message.markdownRevision)"
+            )
+          }
         )
         rendered.append(WorkTimelineRenderEntry(
           id: model.id,
@@ -2174,7 +2737,14 @@ func workTimelineRenderEntries(
         // step that shows it — the control only disappears once the whole
         // message is rendered and this branch stops running.
         canShowMore: true,
-        nextLineBudget: nextLineBudget
+        nextLineBudget: nextLineBudget,
+        willRemainTruncatedAfterNextStep: workAssistantMessageWillRemainTruncated(
+          preview,
+          nextLineBudget: nextLineBudget
+        ),
+        // Only an explicit tap writes this map, so its presence *is* "the
+        // reader already expanded this message once".
+        hasExpandedInPlace: assistantLineBudgets[message.id] != nil
       )
       rendered.append(WorkTimelineRenderEntry(
         id: controls.id,
@@ -2205,11 +2775,11 @@ func mergeWorkPendingSteers(
 
 private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
-  let usageViewModel: WorkContextUsageViewModel?
-  let laneId: String
   /// The chat this composer sends to. Carried so a contributed composer button
   /// can name it, and so an edit the button answers with reaches this draft.
   let sessionId: String
+  let isPersonalChat: Bool
+  let laneId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
   let composerPlaceholder: String
@@ -2240,9 +2810,9 @@ private struct WorkChatComposerCard: View {
   var body: some View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
-      usageViewModel: usageViewModel,
-      laneId: laneId,
       sessionId: sessionId,
+      isPersonalChat: isPersonalChat,
+      laneId: laneId,
       dictationTargetId: dictationTargetId,
       awaitingInputGate: awaitingInputGate,
       composerPlaceholder: composerPlaceholder,
@@ -2283,9 +2853,11 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
-  let usageViewModel: WorkContextUsageViewModel?
-  let laneId: String
+  /// The chat this composer sends to. Carried so a contributed composer button
+  /// can name it, and so an edit the button answers with reaches this draft.
   let sessionId: String
+  let isPersonalChat: Bool
+  let laneId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
   let composerPlaceholder: String
@@ -2314,7 +2886,6 @@ private struct WorkChatComposerDraftInput: View {
   @EnvironmentObject private var syncService: SyncService
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()
-  @State private var contextUsagePresented = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
   /// Composer-action contributions for THIS chat, read once per plugin-row
@@ -2333,6 +2904,74 @@ private struct WorkChatComposerDraftInput: View {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
   }
 
+  /// One capability lookup for the whole active-turn send affordance. See
+  /// `WorkActiveSendCapability` for the table it mirrors.
+  private var activeSendCapability: WorkActiveSendCapability {
+    WorkActiveSendCapability.forProvider(chatSummary.provider)
+  }
+
+  /// Derived rather than stored, so switching providers can never leave a mode
+  /// selected that the new provider cannot honor.
+  private var effectiveActiveSendMode: WorkActiveSendMode {
+    activeSendCapability.modes.contains(activeSendMode)
+      ? activeSendMode
+      : activeSendCapability.defaultMode
+  }
+
+  /// A single mode is not a choice: queue-only providers get the plain send
+  /// button, matching the desktop composer.
+  private var activeSendModePickerVisible: Bool {
+    activeSendModesAvailable && activeSendCapability.modes.count > 1
+  }
+
+  /// Where this chat's remembered send mode lives. Blank for the projectless
+  /// "new chat" composers, which have no session to remember against.
+  private var activeSendModeStorageKey: String {
+    WorkActiveSendModeStore.chatKey(sessionId: sessionId)
+  }
+
+  /// Restores the remembered mode for this chat, falling back to the provider
+  /// default when nothing is stored or the stored mode is one this provider
+  /// cannot honor.
+  private func restoreActiveSendMode() {
+    let remembered = WorkActiveSendModeStore.load(activeSendModeStorageKey)
+    activeSendMode = remembered.flatMap { mode in
+      activeSendCapability.modes.contains(mode) ? mode : nil
+    } ?? activeSendCapability.defaultMode
+  }
+
+  private var activeSendAgentLabel: String { activeSendCapability.agentLabel }
+
+  private var activeSendInterruptContinues: Bool { activeSendCapability.interruptContinues }
+
+  private func activeSendModeTitle(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "Send after turn"
+    case .interrupt: return activeSendInterruptContinues ? "Interrupt & continue" : "Interrupt & send"
+    case .inline: return "Send during turn"
+    }
+  }
+
+  private func activeSendModeDetail(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "Keep this message staged until the turn finishes."
+    case .interrupt: return "Stop and redirect \(activeSendAgentLabel) now."
+    case .inline: return "\(activeSendAgentLabel) picks this up after the current tool step."
+    }
+  }
+
+  private func activeSendModeIcon(_ mode: WorkActiveSendMode) -> String {
+    switch mode {
+    case .queue: return "clock"
+    case .interrupt: return "bolt.fill"
+    case .inline: return "arrow.turn.down.right"
+    }
+  }
+
+  private var stashAvailable: Bool {
+    !isPersonalChat && syncService.canInvokeRemoteAction("chat.listPromptStashes")
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if compact {
@@ -2343,11 +2982,7 @@ private struct WorkChatComposerDraftInput: View {
 
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
-            WorkChatAttachmentAddButton(
-              pickerPresented: $attachmentPickerPresented,
-              attachmentCount: inputAttachments.count,
-              disabled: !canCompose || !attachmentsAvailable || settingsMutationInFlight
-            )
+            composerOverflowMenu
 
             pluginComposerActions
 
@@ -2364,13 +2999,7 @@ private struct WorkChatComposerDraftInput: View {
             )
           }
 
-          DictationMicButton(
-            draft: $draftState.text,
-            coordinator: dictationCoordinator,
-            targetId: dictationTargetId,
-            onRecordingChange: { isDictating = $0 }
-          )
-          .frame(maxWidth: isDictating ? .infinity : nil)
+          composerDictationControl
 
           if !isDictating {
             sendOrInterruptControls()
@@ -2402,14 +3031,8 @@ private struct WorkChatComposerDraftInput: View {
         }
 
         HStack(alignment: .center, spacing: 8) {
-        // Leading controls collapse while dictating so the recording pill can
-        // expand into the row without a layout jump.
         if !isDictating {
-          WorkChatAttachmentAddButton(
-            pickerPresented: $attachmentPickerPresented,
-            attachmentCount: inputAttachments.count,
-            disabled: !canCompose || !attachmentsAvailable || settingsMutationInFlight
-          )
+          composerOverflowMenu
 
           WorkComposerChipStrip(
             chatSummary: chatSummary,
@@ -2424,47 +3047,14 @@ private struct WorkChatComposerDraftInput: View {
           pluginComposerActions
 
           Spacer(minLength: 0)
-
-          if let usageViewModel {
-            WorkContextUsageMeter(
-              usage: usageViewModel,
-              active: showInterrupt,
-              isPresented: $contextUsagePresented
-            )
-            .popover(
-              isPresented: $contextUsagePresented,
-              attachmentAnchor: .rect(.bounds),
-              arrowEdge: .bottom
-            ) {
-              WorkContextUsagePopover(
-                usage: usageViewModel,
-                modelLabel: chatSummary.modelLabel
-              )
-              .frame(maxWidth: 320, alignment: .leading)
-              .presentationCompactAdaptation(.popover)
-            }
-          }
         }
 
-        // Single mic control: renders the 28×28 mic when idle and the inline
-        // recording pill (full-width) while recording.
-        DictationMicButton(
-          draft: $draftState.text,
-          coordinator: dictationCoordinator,
-          targetId: dictationTargetId,
-          onRecordingChange: { isDictating = $0 }
-        )
-        .frame(maxWidth: isDictating ? .infinity : nil)
+          composerDictationControl
 
           if !isDictating {
             sendOrInterruptControls()
           }
         }
-      }
-    }
-    .onChange(of: usageViewModel) { _, newValue in
-      if newValue == nil {
-        contextUsagePresented = false
       }
     }
     .onAppear {
@@ -2477,7 +3067,7 @@ private struct WorkChatComposerDraftInput: View {
       stopMode = UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") == AgentChatStopMode.stopOnly.rawValue
         ? .stopOnly
         : .stopAndClear
-      activeSendMode = .inline
+      restoreActiveSendMode()
       sendOptionsPresented = false
       stopOptionsPresented = false
       draftState.bind(persistenceKey: draftPersistenceKey)
@@ -2489,13 +3079,18 @@ private struct WorkChatComposerDraftInput: View {
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
+    // A turn starting or ending is not a change of intent: the mode the user
+    // picked survives it, and only the transient popovers close.
     .onChange(of: showInterrupt) { _, _ in
-      activeSendMode = .inline
       sendOptionsPresented = false
       stopOptionsPresented = false
     }
+    // A provider change is: the new runtime may have no inline channel at all,
+    // so anything it cannot honor snaps back to that provider's default.
     .onChange(of: chatSummary.provider) { _, _ in
-      activeSendMode = .inline
+      if !activeSendCapability.modes.contains(activeSendMode) {
+        activeSendMode = activeSendCapability.defaultMode
+      }
       sendOptionsPresented = false
       stopOptionsPresented = false
       configureSuggestionController()
@@ -2553,12 +3148,38 @@ private struct WorkChatComposerDraftInput: View {
     draftState.isFocused = true
   }
 
+  private var composerOverflowMenu: some View {
+    WorkComposerOverflowButton(
+      attachmentPickerPresented: $attachmentPickerPresented,
+      draft: $draftState.text,
+      attachments: $inputAttachments,
+      canCompose: canCompose && !settingsMutationInFlight,
+      attachmentsAvailable: attachmentsAvailable,
+      onDictate: { dictationCoordinator.requestStart() },
+      stashAvailable: stashAvailable,
+      scope: WorkPromptStashScope(chatSessionId: sessionId),
+      provider: chatSummary.provider,
+      modelId: chatSummary.currentModelId
+    )
+  }
+
+  private var composerDictationControl: some View {
+    DictationMicButton(
+      draft: $draftState.text,
+      coordinator: dictationCoordinator,
+      targetId: dictationTargetId,
+      showsIdleButton: false,
+      onRecordingChange: { isDictating = $0 }
+    )
+    .frame(maxWidth: isDictating ? .infinity : nil)
+  }
+
   @ViewBuilder
   private func sendOrInterruptControls() -> some View {
     if showInterrupt {
       if hasSendableDraftOrAttachment {
         stopButton()
-        if chatSummary.provider.lowercased() == "claude" && activeSendModesAvailable {
+        if activeSendModePickerVisible {
           activeTurnSendButton()
         } else {
           WorkChatComposerSendButton(
@@ -2601,11 +3222,11 @@ private struct WorkChatComposerDraftInput: View {
         canSend: canSend,
         canUploadAttachments: canUploadAttachments,
         sending: sending,
-        accessibilityLabelText: activeSendModeTitle,
-        systemImageName: activeSendModeIcon,
+        accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
+        systemImageName: activeSendModeIcon(effectiveActiveSendMode),
         minimumTapTargetSize: 32,
         onSend: { text, attachments in
-          await onSend(text, attachments, activeSendMode)
+          await onSend(text, attachments, effectiveActiveSendMode)
         },
         onSent: onSent
       )
@@ -2621,30 +3242,19 @@ private struct WorkChatComposerDraftInput: View {
       }
       .buttonStyle(.plain)
       .accessibilityLabel("More send options")
-      .accessibilityValue(activeSendModeTitle)
-      .accessibilityHint("Choose whether this message sends during, after, or by interrupting the active Claude turn")
+      .accessibilityValue(activeSendModeTitle(effectiveActiveSendMode))
+      .accessibilityHint("Choose how this message reaches the active \(activeSendAgentLabel) turn")
       .popover(isPresented: $sendOptionsPresented, arrowEdge: .bottom) {
         VStack(alignment: .leading, spacing: 0) {
-          activeSendOption(
-            mode: .inline,
-            title: "Send during turn",
-            detail: "Claude picks this up after the current tool step.",
-            systemImage: "arrow.turn.down.right"
-          )
-          Divider()
-          activeSendOption(
-            mode: .queue,
-            title: "Send after turn",
-            detail: "Keep this message staged until the turn finishes.",
-            systemImage: "clock"
-          )
-          Divider()
-          activeSendOption(
-            mode: .interrupt,
-            title: "Interrupt & send",
-            detail: "Stop the current model step and redirect Claude now.",
-            systemImage: "bolt.fill"
-          )
+          ForEach(Array(activeSendCapability.modes.enumerated()), id: \.element) { index, mode in
+            if index > 0 { Divider() }
+            activeSendOption(
+              mode: mode,
+              title: activeSendModeTitle(mode),
+              detail: activeSendModeDetail(mode),
+              systemImage: activeSendModeIcon(mode)
+            )
+          }
         }
         .frame(width: 270)
         .presentationCompactAdaptation(.popover)
@@ -2653,30 +3263,14 @@ private struct WorkChatComposerDraftInput: View {
     .clipShape(Capsule())
   }
 
-  private var activeSendModeTitle: String {
-    switch activeSendMode {
-    case .queue: return "Send after turn"
-    case .interrupt: return "Interrupt and send"
-    default: return "Send during turn"
-    }
-  }
-
-  private var activeSendModeIcon: String {
-    switch activeSendMode {
-    case .queue: return "clock"
-    case .interrupt: return "bolt.fill"
-    default: return "arrow.turn.down.right"
-    }
-  }
-
   private var activeTurnSendHint: String {
-    guard chatSummary.provider.lowercased() == "claude", activeSendModesAvailable else {
+    guard activeSendModePickerVisible else {
       return "Message will stage behind the active turn."
     }
-    switch activeSendMode {
+    switch effectiveActiveSendMode {
     case .queue: return "Message will send after the active turn."
-    case .interrupt: return "Message will interrupt and redirect Claude."
-    default: return "Message will reach Claude during the active turn."
+    case .interrupt: return "Message will interrupt and redirect \(activeSendAgentLabel)."
+    case .inline: return "Message will reach \(activeSendAgentLabel) during the active turn."
     }
   }
 
@@ -2684,6 +3278,7 @@ private struct WorkChatComposerDraftInput: View {
   private func activeSendOption(mode: WorkActiveSendMode, title: String, detail: String, systemImage: String) -> some View {
     Button {
       activeSendMode = mode
+      WorkActiveSendModeStore.save(mode, for: activeSendModeStorageKey)
       sendOptionsPresented = false
     } label: {
       HStack(alignment: .top, spacing: 10) {
@@ -2700,7 +3295,7 @@ private struct WorkChatComposerDraftInput: View {
             .foregroundStyle(ADEColor.textSecondary)
         }
         Spacer(minLength: 4)
-        if activeSendMode == mode {
+        if effectiveActiveSendMode == mode {
           Image(systemName: "checkmark")
             .font(.caption.weight(.bold))
             .foregroundStyle(ADEColor.accent)
@@ -2868,6 +3463,112 @@ private struct WorkChatComposerDraftInput: View {
   }
 }
 
+private struct WorkSubagentTakeoverBanner: View {
+  let parentTitle: String?
+  let takeOverEnabled: Bool
+  let keepReportingEnabled: Bool
+  let onTakeOver: @MainActor () async -> Void
+  let onKeepReporting: @MainActor () async -> Void
+
+  private var line: String {
+    if let named = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !named.isEmpty {
+      return "This chat reports back to \"\(named)\". Take it over?"
+    }
+    return "This chat reports back to its parent. Take it over?"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Take over this chat?")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Text(line)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: 8) {
+        Button {
+          Task { await onTakeOver() }
+        } label: {
+          Text("Take over")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(!takeOverEnabled)
+        Button {
+          Task { await onKeepReporting() }
+        } label: {
+          Text("Keep reporting")
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!keepReportingEnabled)
+        Spacer(minLength: 0)
+      }
+    }
+    .padding(10)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(ADEColor.accent.opacity(0.08))
+    )
+    .accessibilityElement(children: .contain)
+  }
+}
+
+private struct WorkSubagentLineageBreadcrumb: View {
+  let parentTitle: String?
+  let onOpen: () -> Void
+
+  private var sourceLabel: String {
+    let trimmed = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? "parent chat" : trimmed
+  }
+
+  var body: some View {
+    Button(action: onOpen) {
+      HStack(spacing: 8) {
+        Image(systemName: "arrow.turn.up.left")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+
+        VStack(alignment: .leading, spacing: 1) {
+          Text("Subagent chat")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+          Text("from \(sourceLabel)")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+        }
+
+        Spacer(minLength: 4)
+
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.18), lineWidth: 1)
+      )
+      .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Open parent chat, \(sourceLabel)")
+    .accessibilityHint("Returns to the chat that spawned this subagent.")
+  }
+}
+
 private struct WorkQueueRecoveryBanner: View {
   let recovery: WorkQueueRecoveryModel
   let restoring: Bool
@@ -2919,205 +3620,6 @@ private struct WorkQueueRecoveryBanner: View {
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(ADEColor.warning.opacity(0.18), lineWidth: 1)
     }
-  }
-}
-
-private struct WorkContextUsageMeter: View {
-  let usage: WorkContextUsageViewModel
-  let active: Bool
-  @Binding var isPresented: Bool
-
-  private var percent: Int? {
-    guard usage.state == .measured else { return nil }
-    return usage.ratio.map { Int(($0 * 100).rounded()) }
-  }
-
-  private var ringColor: Color {
-    guard let ratio = usage.ratio else { return ADEColor.textSecondary }
-    if ratio >= 0.9 { return ADEColor.danger }
-    if ratio >= 0.7 { return ADEColor.warning }
-    return Color(red: 0.22, green: 0.74, blue: 0.97)
-  }
-
-  private var accessibilityLabel: String {
-    switch usage.state {
-    case .compacting:
-      return "Context usage: compacting"
-    case .recalculating:
-      return "Context usage: recalculating"
-    case .unknown:
-      return "Context usage unavailable"
-    case .measured:
-      return percent.map { "Context usage: \($0)% full" } ?? "Context usage"
-    }
-  }
-
-  var body: some View {
-    if usage.ratio != nil || usage.usedTokens != nil {
-      Button {
-        withAnimation(.easeInOut(duration: 0.18)) {
-          isPresented.toggle()
-        }
-      } label: {
-        ZStack {
-          if usage.state != .measured {
-            Circle()
-              .stroke(Color.white.opacity(0.12), lineWidth: 1.5)
-              .frame(width: 22, height: 22)
-            Text(usage.state == .unknown ? "?" : "…")
-              .font(.system(size: 10, weight: .semibold, design: .rounded))
-              .foregroundStyle(ADEColor.textSecondary)
-          } else if let ratio = usage.ratio, let percent {
-            Circle()
-              .stroke(Color.white.opacity(0.10), lineWidth: 2.5)
-              .frame(width: 22, height: 22)
-
-            Circle()
-              .trim(from: 0, to: CGFloat(ratio))
-              .stroke(ringColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-              .rotationEffect(.degrees(-90))
-              .frame(width: 22, height: 22)
-
-            Text("\(percent)")
-              .font(.system(size: percent >= 100 ? 7 : 8, weight: .semibold, design: .rounded))
-              .monospacedDigit()
-              .foregroundStyle(ADEColor.textPrimary.opacity(0.78))
-              .minimumScaleFactor(0.65)
-          } else if let usedTokens = usage.usedTokens {
-            Text(workAbbreviateCount(usedTokens))
-              .font(.system(size: 10, weight: .semibold, design: .rounded))
-              .monospacedDigit()
-              .foregroundStyle(ADEColor.textSecondary)
-              .minimumScaleFactor(0.7)
-          }
-        }
-        .frame(width: 28, height: 28)
-        .contentShape(Rectangle())
-        .opacity(active ? 1 : 0.92)
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(accessibilityLabel)
-      .accessibilityHint(isPresented ? "Dismisses context usage details" : "Shows context usage details")
-      .adeInspectable(
-        "Work.Chat.Composer.ContextUsageMeter",
-        metadata: [
-          "label": percent.map { "Context usage: \($0)% full" } ?? "Context usage",
-          "role": "button"
-        ]
-      )
-    }
-  }
-}
-
-private struct WorkContextUsagePopover: View {
-  let usage: WorkContextUsageViewModel
-  let modelLabel: String?
-
-  private var percent: Int? {
-    guard usage.state == .measured else { return nil }
-    return usage.ratio.map { Int(($0 * 100).rounded()) }
-  }
-
-  private var windowLabel: String? {
-    usage.contextWindow.map { workAbbreviateCount($0) }
-  }
-
-  private var usedLabel: String? {
-    usage.usedTokens.map { workAbbreviateCount($0) }
-  }
-
-  private var description: String {
-    if usage.state == .compacting {
-      return "Claude is compacting this chat. The previous exact reading is temporarily hidden."
-    }
-    if usage.state == .recalculating {
-      return "Compaction finished. ADE is waiting for the next authoritative usage snapshot."
-    }
-    if usage.state == .unknown {
-      return "The runtime did not return an authoritative context reading."
-    }
-    let model = modelLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
-    if let percent, let windowLabel {
-      let owner: String
-      if let model, !model.isEmpty {
-        owner = "\(model)'s "
-      } else {
-        owner = "the "
-      }
-      let estimated = usage.windowSource == .registry ? " (estimated)" : ""
-      return "Using \(percent)% of \(owner)\(windowLabel)-token context window\(estimated)."
-    }
-    let used = usedLabel ?? "--"
-    if let model, !model.isEmpty {
-      return "\(used) tokens used so far by \(model); context window unknown."
-    }
-    return "\(used) tokens used so far; context window unknown."
-  }
-
-  private var breakdown: String? {
-    guard usage.state == .measured else { return nil }
-    var segments: [String] = []
-    if let value = usage.inputTokens { segments.append("in \(workAbbreviateCount(value))") }
-    if let value = usage.outputTokens { segments.append("out \(workAbbreviateCount(value))") }
-    if let value = usage.cacheReadTokens { segments.append("cached \(workAbbreviateCount(value)) *") }
-    if let value = usage.reasoningTokens { segments.append("reasoning \(workAbbreviateCount(value))") }
-    return segments.isEmpty ? nil : segments.joined(separator: " · ")
-  }
-
-  private var effect: String? {
-    guard let percent, let windowLabel else { return nil }
-    return "\(usedLabel ?? "--") / \(windowLabel) tokens · \(percent)% full"
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
-      Text("Context usage")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-
-      Text(description)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textSecondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-      if breakdown != nil || effect != nil {
-        Rectangle()
-          .fill(ADEColor.border.opacity(0.35))
-          .frame(height: 1)
-      }
-
-      if let breakdown {
-        Text(breakdown)
-          .font(.caption.monospaced())
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(2)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      if let effect {
-        Text(effect)
-          .font(.caption.monospacedDigit())
-          .foregroundStyle((usage.ratio ?? 0) >= 0.8 ? ADEColor.warning : ADEColor.success)
-          .lineLimit(1)
-          .minimumScaleFactor(0.7)
-      }
-
-      if usage.state == .measured, let ratio = usage.ratio, ratio >= 0.8 {
-        Text("Nearing the limit; older context may be auto-trimmed or compacted.")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.warning)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-    .background(ADEColor.surfaceBackground.opacity(0.94), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
-    )
-    .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
-    .accessibilityIdentifier("Work.Chat.Composer.ContextUsagePopover")
   }
 }
 

@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 describe("ReviewLaunchModelControls", () => {
-  it("clamps Sol Ultra to Luna's medium default when the model changes", () => {
+  it("preserves Sol Ultra when the model changes", () => {
     (window as unknown as { ade: unknown }).ade = {
       ai: { getStatus: vi.fn().mockResolvedValue(null) },
     };
@@ -41,7 +41,6 @@ describe("ReviewLaunchModelControls", () => {
 
     expect(onModelChange).toHaveBeenCalledTimes(1);
     expect(onModelChange).toHaveBeenCalledWith("openai/gpt-5.6-luna");
-    expect(onReasoningEffortChange).toHaveBeenCalledTimes(1);
-    expect(onReasoningEffortChange).toHaveBeenCalledWith("medium");
+    expect(onReasoningEffortChange).not.toHaveBeenCalled();
   });
 });

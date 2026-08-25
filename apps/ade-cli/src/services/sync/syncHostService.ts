@@ -104,6 +104,7 @@ import type {
   SyncTerminalInputAckPayload,
   SyncTerminalInputPayload,
   SyncTerminalSnapshotPayload,
+  SyncTerminalScreenSnapshot,
 } from "../../../../desktop/src/shared/types";
 import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
@@ -138,6 +139,7 @@ import type { AccountAuthService } from "../account/accountAuthService";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -171,6 +173,10 @@ import {
   createPairFailureTracker,
   type PairFailureSubject,
 } from "./syncPairFailureTracker";
+import {
+  applyPairedDeviceRejectionThrottle,
+  createPairedDeviceRejectionLimiter,
+} from "./pairedDeviceRejectionLimiter";
 import {
   createSyncDpopNonceCache,
   evaluatePairedHelloDpop,
@@ -671,6 +677,7 @@ const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
 const MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS = 256;
 const MAX_PENDING_TERMINAL_SNAPSHOT_BYTES = 2_000_000;
 const MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS = 4;
+const MAX_TERMINAL_SCREEN_SERIALIZED_CHARS = 256_000;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
@@ -1274,6 +1281,7 @@ type SyncHostServiceArgs = {
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: Pick<
     PersonalChatScopeContract,
     "call" | "streamEvents" | "transcriptPath" | "isTurnActive"
@@ -1431,6 +1439,10 @@ function fileContentToBlob(filePath: string, content: FileContent): SyncFileBlob
     ...(content.dataUrl ? { dataUrl: content.dataUrl } : {}),
     ...(typeof content.contentOmitted === "boolean" ? { contentOmitted: content.contentOmitted } : {}),
     ...(content.omittedReason ? { omittedReason: content.omittedReason } : {}),
+    // Forwarded so a mobile client can say WHY only part of a large file
+    // arrived. Without these the phone shows a prefix with no explanation.
+    ...(typeof content.isPartial === "boolean" ? { isPartial: content.isPartial } : {}),
+    ...(typeof content.totalSize === "number" ? { totalSize: content.totalSize } : {}),
   };
 }
 
@@ -2270,6 +2282,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     filePath: pairingSecretsPath,
     pinStore: args.pinStore,
   });
+  const pairedDeviceRejectionLimiter = createPairedDeviceRejectionLimiter();
   const machineIdentitySigningStore =
     args.machineIdentitySigningStore
     ?? createMachineIdentitySigningStore({ logger: args.logger });
@@ -2292,6 +2305,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     conflictService: args.conflictService,
     operationService: args.operationService,
     agentChatService: args.agentChatService,
+    cursorCloudFleetService: args.cursorCloudFleetService,
     personalChatScope: args.personalChatScope,
     aiIntegrationService: args.aiIntegrationService,
     orchestrationService: args.orchestrationService,
@@ -3223,7 +3237,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && peer.ws.readyState === WebSocket.OPEN;
   }
 
-  function isCurrentTerminalSnapshotBarrier(
+  function isActiveTerminalSnapshotBarrier(
     peer: PeerState,
     sessionId: string,
     barrier: PendingTerminalSnapshotBarrier,
@@ -3231,8 +3245,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   ): boolean {
     const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
     return isPeerLifecycleCurrent(peer, lifecycleGeneration)
-      && currentBarrier === barrier
-      && !barrier.failed;
+      && currentBarrier === barrier;
   }
 
   function clearTerminalSnapshotBarrier(
@@ -3276,6 +3289,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     barrier.queuedBytes = queuedBytes;
   }
 
+  function readTerminalScreenSnapshot(sessionId: string): SyncTerminalScreenSnapshot | null {
+    const screen = args.ptyService.readScreenSnapshot?.(sessionId) ?? null;
+    if (!screen?.serialized) return null;
+    if (screen.serialized.length > MAX_TERMINAL_SCREEN_SERIALIZED_CHARS) return null;
+    if (!Number.isFinite(screen.cols) || !Number.isFinite(screen.rows)) return null;
+    if (screen.cols < 1 || screen.rows < 1) return null;
+    return {
+      cols: Math.floor(screen.cols),
+      rows: Math.floor(screen.rows),
+      bufferType: screen.bufferType === "alternate" ? "alternate" : "normal",
+      serialized: screen.serialized,
+    };
+  }
+
+  function withTerminalScreen(
+    sessionId: string,
+    snapshot: SyncTerminalSnapshotPayload,
+  ): SyncTerminalSnapshotPayload {
+    if (snapshot.delta === true) return snapshot;
+    const screen = readTerminalScreenSnapshot(sessionId);
+    return screen ? { ...snapshot, screen } : snapshot;
+  }
+
   function failTerminalSnapshotBarrier(
     peer: PeerState,
     sessionId: string,
@@ -3292,11 +3328,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       queuedBytes: barrier.queuedBytes,
       peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
     });
-    try {
-      peer.ws.close(4001, "Terminal snapshot catch-up failed");
-    } catch {
-      // The failed barrier still prevents an out-of-order or lossy flush.
-    }
+    // Do not close the controller socket. A hot Claude TUI can overflow the
+    // catch-up queue on LAN; tearing down sync blanks every other surface on
+    // that phone. The subscribe loop sends the last captured snapshot instead.
   }
 
   function enqueueTerminalSnapshotEvent(
@@ -7743,10 +7777,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             // is and logs it below, but telling an UNAUTHENTICATED caller
             // whether a device id exists here turns this into an existence
             // oracle, and the user's next step is the same either way.
-            args.logger.warn("sync_host.paired_device_rejected", {
-              deviceId: pairedAuth.deviceId,
-              reason: knownRecord ? "secret_mismatch" : "unknown_device",
-            });
+            // Throttle is keyed only by device id — never by reason — so the
+            // delay and log cadence cannot leak existence either.
+            const throttle = pairedDeviceRejectionLimiter.record(pairedAuth.deviceId);
+            if (throttle.shouldLog) {
+              args.logger.warn("sync_host.paired_device_rejected", {
+                deviceId: pairedAuth.deviceId,
+                reason: knownRecord ? "secret_mismatch" : "unknown_device",
+                countInWindow: throttle.countInWindow,
+                delayMs: throttle.delayMs,
+              });
+            }
+            await applyPairedDeviceRejectionThrottle(throttle);
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             return authFail(SYNC_REPAIR_REQUIRED_MESSAGE, "repair_required");
           }
           authenticatedPairingRecord = pairingStore.getPairingRecordForSecret(
@@ -7829,7 +7872,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer),
             allowLegacyUpgrade: true,
             pairingCodeNoun: "PIN",
-            notSignedInCode: "auth_failed",
+            notSignedInCode: "account_not_signed_in",
           });
           if (accountResult.kind === "stale") return true;
           if (accountResult.kind === "rejected") {
@@ -8288,9 +8331,41 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           : null;
         let forceReplacement = false;
         let barrierCompleted = false;
+        let lastCapturedTranscript: {
+          data: string;
+          startOffset: number | null;
+          endOffset: number | null;
+        } | null = null;
+        const sendReplacingSnapshot = (
+          session: ReturnType<typeof args.sessionService.get>,
+          transcriptSnapshot: {
+            data: string;
+            startOffset: number | null;
+            endOffset: number | null;
+          } | null,
+        ): boolean => {
+          const snapshot = withTerminalScreen(sessionId, {
+            sessionId,
+            transcript: transcriptSnapshot?.data ?? "",
+            status: session?.status ?? null,
+            runtimeState: session?.runtimeState ?? null,
+            lastOutputPreview: session?.lastOutputPreview ?? null,
+            capturedAt: nowIso(),
+            startOffset: transcriptSnapshot?.startOffset ?? null,
+            endOffset: transcriptSnapshot?.endOffset ?? null,
+            live: args.ptyService.hasLivePty(sessionId),
+          });
+          return sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
+        };
         try {
           while (barrier.captureAttempt < MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS) {
-            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (barrier.failed) {
+              if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
+                barrierCompleted = true;
+              }
+              break;
+            }
             barrier.captureAttempt += 1;
             const session = args.sessionService.get(sessionId);
             const transcriptSnapshot = session
@@ -8304,7 +8379,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                   "Sync operation aborted.",
                 )
               : null;
-            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (transcriptSnapshot) lastCapturedTranscript = transcriptSnapshot;
+            if (!isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            if (barrier.failed) {
+              if (sendReplacingSnapshot(session, lastCapturedTranscript)) {
+                barrierCompleted = true;
+              }
+              break;
+            }
 
             const flush = planTerminalSnapshotFlush(
               barrier,
@@ -8339,7 +8421,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 startsAtUtf8Boundary
                 && snapshotBytes.length === transcriptSnapshot.endOffset - transcriptSnapshot.startOffset
               ) {
-                snapshot = {
+                snapshot = withTerminalScreen(sessionId, {
                   sessionId,
                   transcript: snapshotBytes.subarray(byteStart).toString("utf8"),
                   status: session?.status ?? null,
@@ -8350,10 +8432,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                   endOffset: transcriptSnapshot.endOffset,
                   delta: true,
                   live: args.ptyService.hasLivePty(sessionId),
-                };
+                });
               }
             }
-            snapshot ??= {
+            snapshot ??= withTerminalScreen(sessionId, {
               sessionId,
               transcript: transcriptSnapshot?.data ?? "",
               status: session?.status ?? null,
@@ -8363,7 +8445,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               startOffset: transcriptSnapshot?.startOffset ?? null,
               endOffset: transcriptSnapshot?.endOffset ?? null,
               live: args.ptyService.hasLivePty(sessionId),
-            };
+            });
             if (!sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId)) break;
             barrierCompleted = true;
             for (const event of flush.events) {
@@ -8379,10 +8461,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
           if (
             !barrierCompleted
-            && isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)
-            && barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS
+            && isActiveTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)
+            && (barrier.failed || barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS)
           ) {
             failTerminalSnapshotBarrier(peer, sessionId, barrier, "capture_did_not_reach_stable_offset");
+            if (sendReplacingSnapshot(args.sessionService.get(sessionId), lastCapturedTranscript)) {
+              barrierCompleted = true;
+            }
           }
         } catch (error) {
           if (peer.pendingTerminalSnapshots.get(sessionId) === barrier) {

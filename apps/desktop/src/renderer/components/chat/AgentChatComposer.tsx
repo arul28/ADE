@@ -33,6 +33,8 @@ import {
 } from "../../../shared/types";
 import {
   buildChatContextAttachmentPrompt,
+  chatContextAttachmentKey,
+  makeGitHubIssueContextAttachment,
   makeLinearIssueContextAttachment,
 } from "../../../shared/chatContextAttachments";
 import type {
@@ -47,15 +49,24 @@ import {
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
   findConfirmedComposerTokens,
+  isComposerTriggerDismissed,
   replaceComposerTriggerSpan,
   type ComposerTrigger,
+  type ComposerTriggerDismissal,
 } from "../../../shared/composerTriggers";
+import { codexUserShellChipRange } from "../../../shared/codexComposerCommands";
 import {
   formatChatMentionToken,
   isChatMentionTokenBody,
   parseChatMentions,
 } from "../../../shared/chatMentions";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
+import {
+  activeTurnDispatchModes,
+  activeTurnInterruptContinues,
+  defaultActiveTurnDispatchMode,
+  type ActiveTurnSendMode,
+} from "../../../shared/types/chat";
 import { cn } from "../ui/cn";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
@@ -65,6 +76,7 @@ import {
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
@@ -77,8 +89,10 @@ import {
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
+import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
+import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
@@ -97,9 +111,11 @@ import {
   shouldReconcileSmartLinkDraft,
   type SmartLinkPreview,
 } from "../../../shared/smartLinks";
+import { hasChatOutputContext } from "../../../shared/chatOutputContext";
+import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
+import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
 import {
   PluginComposerActions,
@@ -120,7 +136,7 @@ const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
 type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
 const BASE64_ENCODE_CHUNK_SIZE = 0x8000;
-const ISSUE_CONTEXT_MENU_WIDTH = 256;
+const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
@@ -585,14 +601,15 @@ const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
  * rather than as an answer — and "where is this actually running" is a question
  * worth answering while you are typing into it.
  */
-function ComposerMachineChip({ machineName }: { machineName: string }) {
+function ComposerMachineChip({ machineName, cloud = false }: { machineName: string; cloud?: boolean }) {
   return (
     <SmartTooltip
       forceEnabled
       content={{
         label: machineName,
-        description:
-          "This chat runs on the machine that owns its lane. To move it, use Chat actions → Handoff → Continue on another machine.",
+        description: cloud
+          ? "This chat is a live view of a Cursor Cloud agent. Replies run in cloud."
+          : "This chat runs on the machine that owns its lane. To move it, use Chat actions → Handoff → Continue on another machine.",
       }}
     >
       <span
@@ -604,11 +621,11 @@ function ComposerMachineChip({ machineName }: { machineName: string }) {
         )}
         style={{ whiteSpace: "nowrap" }}
       >
-        {/* Amber tower, the same identity mark the sidebar badge and the session
-            hover card use. Bare here — no pill — because the composer toolbar's
-            other controls are already bordered and a third box would read as a
-            fourth button. */}
-        <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+        {cloud ? (
+          <CloudArrowUp size={11} weight="fill" className="text-violet-300/85" aria-hidden />
+        ) : (
+          <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+        )}
         <span className="max-w-24 truncate">{machineName}</span>
       </span>
     </SmartTooltip>
@@ -1090,6 +1107,7 @@ function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | 
 /** Inline display of a single pending (queued) steer message with cancel and edit controls. */
 function PendingSteerItem({
   steer,
+  capability,
   onCancel,
   onEdit,
   onSendNow,
@@ -1101,11 +1119,13 @@ function PendingSteerItem({
     attachments: AgentChatFileRef[];
     contextAttachments: AgentChatContextAttachment[];
   };
+  capability: ActiveTurnSendCapability;
   onCancel: () => void;
   onEdit: () => void;
   onSendNow?: () => void;
   onInterrupt?: () => void;
 }) {
+  const interruptCopy = activeTurnSendCopy("interrupt", capability);
   return (
     <div className="group flex items-start gap-2 rounded-lg border border-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_4%,transparent)] px-2.5 py-1.5">
       <div className="mt-px h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--chat-accent)] opacity-60" />
@@ -1119,7 +1139,7 @@ function PendingSteerItem({
       </div>
       <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
           {onSendNow ? (
-            <SmartTooltip forceEnabled content={{ label: "Send during turn", description: "Claude picks this up after the current tool step, before continuing." }}>
+            <SmartTooltip forceEnabled content={{ label: "Send during turn", description: `${capability.agentLabel} picks this up after the current tool step, before continuing.` }}>
               <button
                 type="button"
                 onClick={onSendNow}
@@ -1131,12 +1151,20 @@ function PendingSteerItem({
             </SmartTooltip>
           ) : null}
           {onInterrupt ? (
-            <SmartTooltip forceEnabled content={{ label: "Interrupt & send", description: "Stop Claude's current model step and redirect it to this message now." }}>
+            <SmartTooltip
+              forceEnabled
+              content={{
+                label: interruptCopy.label,
+                description: capability.interruptContinues
+                  ? `Stop the current ${capability.agentLabel} turn and continue this thread with this message.`
+                  : `Stop ${capability.agentLabel}'s current model step and redirect it to this message now.`,
+              }}
+            >
               <button
                 type="button"
                 onClick={onInterrupt}
                 className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/30 hover:bg-amber-500/12 hover:text-amber-400 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-400/40"
-                aria-label="Interrupt and send"
+                aria-label={interruptCopy.label}
               >
                 <Lightning size={11} weight="fill" />
               </button>
@@ -1172,22 +1200,51 @@ function PendingSteerItem({
  * delivery mode, while the primary button and Enter execute that mode. All
  * controls carry force-enabled tooltips so hover explains the action.
  */
-type ActiveTurnSendMode = "inline" | "queue" | "interrupt";
-
-const ACTIVE_TURN_SEND_COPY: Record<ActiveTurnSendMode, { label: string; description: string }> = {
-  inline: {
-    label: "Send during turn",
-    description: "After the current tool step.",
-  },
-  queue: {
-    label: "Send after turn",
-    description: "When this turn finishes.",
-  },
-  interrupt: {
-    label: "Interrupt & send",
-    description: "Stop and redirect Claude now.",
-  },
+export type ActiveTurnSendCapability = {
+  /** Modes this provider can honor, in menu order. */
+  modes: readonly ActiveTurnSendMode[];
+  /** Pre-selected mode for a fresh session on this provider. */
+  defaultMode: ActiveTurnSendMode;
+  /** Agent name used in the mode descriptions. */
+  agentLabel: string;
+  /**
+   * True when interrupting continues the same thread rather than injecting
+   * into the live turn — the label says "continue" instead of "send".
+   */
+  interruptContinues: boolean;
 };
+
+/**
+ * The copy layer over the canonical `ACTIVE_TURN_DISPATCH_MODES` table in
+ * `shared/types/chat.ts`. Modes and default come from there; only the labels
+ * are decided here. Cursor's interrupt continues the same thread (cancel +
+ * resend on the same agent) rather than injecting into the live run, so its
+ * button says "continue".
+ */
+export function activeTurnSendModesForProvider(provider: string | undefined): ActiveTurnSendCapability {
+  return {
+    modes: activeTurnDispatchModes(provider),
+    defaultMode: defaultActiveTurnDispatchMode(provider),
+    agentLabel: providerDisplayLabel(provider, "the agent"),
+    interruptContinues: activeTurnInterruptContinues(provider),
+  };
+}
+
+function activeTurnSendCopy(
+  mode: ActiveTurnSendMode,
+  capability: ActiveTurnSendCapability,
+): { label: string; description: string } {
+  if (mode === "inline") {
+    return { label: "Send during turn", description: "After the current tool step." };
+  }
+  if (mode === "queue") {
+    return { label: "Send after turn", description: "When this turn finishes." };
+  }
+  return {
+    label: capability.interruptContinues ? "Interrupt & continue" : "Interrupt & send",
+    description: `Stop and redirect ${capability.agentLabel} now.`,
+  };
+}
 
 function ActiveTurnSendIcon({ mode, size = 14 }: { mode: ActiveTurnSendMode; size?: number }) {
   if (mode === "interrupt") return <Lightning size={size} weight="fill" />;
@@ -1232,18 +1289,30 @@ function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperti
 function ActiveTurnSendButton({
   enabled,
   mode,
+  capability,
+  allowInline,
   allowInterrupt,
   onModeChange,
   onSend,
 }: {
   enabled: boolean;
   mode: ActiveTurnSendMode;
+  capability: ActiveTurnSendCapability;
+  allowInline: boolean;
   allowInterrupt: boolean;
   onModeChange: (mode: ActiveTurnSendMode) => void;
   onSend: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-active-send-menu]");
-  const selectedCopy = ACTIVE_TURN_SEND_COPY[mode];
+  const selectedCopy = activeTurnSendCopy(mode, capability);
+  // The table says what the provider can do; the wired handlers say what this
+  // pane can dispatch right now (they follow the *session's* provider, which
+  // differs from `capability` while a model for another provider is picked
+  // mid-turn). Only offer a mode both agree on, so the menu can never select a
+  // dispatch that has nowhere to go.
+  const offeredModes = capability.modes.filter((option) => (
+    (option !== "interrupt" || allowInterrupt) && (option !== "inline" || allowInline)
+  ));
 
   return (
     <div className="relative inline-flex items-center">
@@ -1274,7 +1343,7 @@ function ActiveTurnSendButton({
           forceEnabled
           content={{
             label: "More send options",
-            description: "Choose how the next message should reach Claude during this turn.",
+            description: `Choose how the next message should reach ${capability.agentLabel} during this turn.`,
           }}
         >
           <button
@@ -1308,8 +1377,8 @@ function ActiveTurnSendButton({
                   className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={composerSplitMenuPosition(caretRef.current)}
                 >
-                  {(["inline", "queue", ...(allowInterrupt ? ["interrupt" as const] : [])] as const).map((option, index) => {
-                    const copy = ACTIVE_TURN_SEND_COPY[option];
+                  {offeredModes.map((option, index) => {
+                    const copy = activeTurnSendCopy(option, capability);
                     const selected = option === mode;
                     return (
                       <button
@@ -1499,6 +1568,8 @@ export function AgentChatComposer({
   onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
+  cursorRuntime = null,
+  modelRuntimePin = null,
   attachmentPersistenceUnavailableReason = null,
   contextAttachments = [],
   allowAttachmentOnlySubmit = false,
@@ -1601,16 +1672,8 @@ export function AgentChatComposer({
   showIosSimulatorToggle = false,
   iosSimulatorOpen = false,
   onToggleIosSimulator,
-  cursorCloudAvailable = false,
   cursorCloudCanLaunch = false,
-  cursorCloudAgentId = null,
-  cursorCloudPaneOpen = false,
-  cursorCloudActiveCount = 0,
-  cursorCloudLaunchModeOpen = false,
-  cursorCloudLaunchPanel = null,
-  onOpenCloudLaunchMode,
-  onCloseCloudLaunchMode,
-  onOpenCloudBringToLocal,
+  cursorCloudModeActive = false,
   onSubmitToCloud,
   showAppControlToggle = false,
   appControlOpen = false,
@@ -1641,6 +1704,14 @@ export function AgentChatComposer({
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
+  /** Cloud chats run on Cursor Cloud, not on this computer or a paired machine. */
+  cursorRuntime?: "local" | "cloud" | null;
+  /**
+   * Machine whose model catalog this composer should show. Work always passes
+   * the prompt-box / chat machine, including when it equals the global project
+   * tab. `null` is only for surfaces with no composer machine.
+   */
+  modelRuntimePin?: OpenProjectBinding | null;
   /** Fail-closed reason shown when the selected runtime cannot own new attachments. */
   attachmentPersistenceUnavailableReason?: string | null;
   contextAttachments?: AgentChatContextAttachment[];
@@ -1760,7 +1831,12 @@ export function AgentChatComposer({
    * providers whose runtime can dispatch a queued steer into a live turn.
    */
   onSendSteerNow?: () => void;
-  /** Active-turn split-button option: submit the draft, then stop the current turn and run it. */
+  /**
+   * Active-turn split-button option: submit the draft, then stop the current
+   * turn and run it. On Cursor this is the default mode — the SDK has no
+   * mid-run message API, so stopping and resending on the same thread is the
+   * only way to redirect a live turn.
+   */
   onSendSteerInterrupt?: () => void;
   onOpenAiSettings?: (family?: ProviderFamily) => void;
   onOpenLinearSettings?: () => void;
@@ -1800,23 +1876,18 @@ export function AgentChatComposer({
   showIosSimulatorToggle?: boolean;
   iosSimulatorOpen?: boolean;
   onToggleIosSimulator?: () => void;
-  cursorCloudAvailable?: boolean;
   /**
-   * Whether the composer can launch a brand-new cloud run from the current chat. Only true for
-   * fresh chats with no events and no existing cloud agent — once a chat has any turns, the
-   * "Send to Cursor Cloud" affordance hides and the inline launch strip becomes unavailable.
-   * The "Open existing cloud chat" menu item is independent and remains visible whenever
-   * `cursorCloudAvailable` is true, since it spawns a separate session.
+   * Whether this chat can still start a cloud run. Only true for fresh chats with no events and
+   * no existing cloud agent — once a chat has turns, the cloud toggle goes disabled rather than
+   * disappearing, so the affordance does not move around under the cursor.
    */
   cursorCloudCanLaunch?: boolean;
-  cursorCloudAgentId?: string | null;
-  cursorCloudPaneOpen?: boolean;
-  cursorCloudActiveCount?: number;
-  cursorCloudLaunchModeOpen?: boolean;
-  cursorCloudLaunchPanel?: React.ReactNode;
-  onOpenCloudLaunchMode?: () => void;
-  onCloseCloudLaunchMode?: () => void;
-  onOpenCloudBringToLocal?: () => void;
+  /**
+   * Cloud mode: the next send goes to Cursor Cloud instead of the local runtime. The composer
+   * owns no control for it — it is set by picking "Cursor Cloud" in the launch shelf's machine
+   * picker, and the Send button's cloud glyph is the whole visual signal.
+   */
+  cursorCloudModeActive?: boolean;
   onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
@@ -1841,20 +1912,66 @@ export function AgentChatComposer({
   }, [attachNotice]);
   const [issueContextMenuOpen, setIssueContextMenuOpen] = useState(false);
   const [linearIssuePickerOpen, setLinearIssuePickerOpen] = useState(false);
+  const [linearIssuePickerMode, setLinearIssuePickerMode] = useState<"attach" | "details">("attach");
+  const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
+  const [githubIssuePickerMode, setGitHubIssuePickerMode] = useState<"attach" | "details">("attach");
+  const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
+  const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
+  const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade?.github?.detectRepo?.()
+      .then((repo) => {
+        if (!cancelled) setGitHubRepo(repo);
+      })
+      .catch(() => {
+        if (!cancelled) setGitHubRepo(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
-  const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(() => findSmartLinks(draft).length > 0);
+  const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(
+    () => findSmartLinks(draft).length > 0 || hasChatOutputContext(draft),
+  );
   const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
-  const [activeTurnSendMode, setActiveTurnSendMode] = useState<ActiveTurnSendMode>("inline");
+  const activeTurnSendCapability = useMemo(
+    () => activeTurnSendModesForProvider(sessionProvider),
+    [sessionProvider],
+  );
+  // Only the user's explicit pick is state; the effective mode is derived, so
+  // it is never stale for a render. A pick the current provider cannot honor
+  // (Cursor has no "send during turn") reads back as that provider's default,
+  // and until the user picks anything the mode simply follows the provider.
+  const [activeTurnSendModePick, setActiveTurnSendMode] = useState<ActiveTurnSendMode | null>(null);
   const [activeTurnStopMode, setActiveTurnStopMode] = useState<AgentChatStopMode>("stop_and_clear");
-  const effectiveActiveTurnSendMode = activeTurnSendMode === "interrupt" && !onSendSteerInterrupt
-    ? "inline"
-    : activeTurnSendMode;
+  const selectedActiveTurnSendMode = activeTurnSendModePick
+    && activeTurnSendCapability.modes.includes(activeTurnSendModePick)
+    ? activeTurnSendModePick
+    : activeTurnSendCapability.defaultMode;
+  // A dispatch mode with no wired handler downgrades rather than dead-ending:
+  // interrupt prefers inline and falls back to queue, inline falls back to
+  // queue. Reachable whenever the picked model's provider (which drives
+  // `activeTurnSendCapability`) differs from the live session's provider (which
+  // drives the handlers).
+  const effectiveActiveTurnSendMode: ActiveTurnSendMode =
+    selectedActiveTurnSendMode === "interrupt" && !onSendSteerInterrupt
+      ? (activeTurnSendCapability.modes.includes("inline") && onSendSteerNow ? "inline" : "queue")
+      : selectedActiveTurnSendMode === "inline" && !onSendSteerNow
+        ? "queue"
+        : selectedActiveTurnSendMode;
+  // The split send affordance appears for any provider with at least one
+  // atomic active-turn delivery mode (Claude: inline + interrupt; Cursor:
+  // interrupt only). Everything else keeps the single queue button.
+  const activeTurnSendMenuEnabled = Boolean(onSendSteerNow || onSendSteerInterrupt);
 
   useEffect(() => {
-    setActiveTurnSendMode("inline");
-  }, [sessionId, turnActive]);
+    if (hasChatOutputContext(draft)) setSmartLinkEditorEnabled(true);
+  }, [draft]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1877,6 +1994,43 @@ export function AgentChatComposer({
   const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
+  // The last trigger the user dismissed (Escape) or that died on a no-match
+  // query. Held in a ref because it only gates the next open, never a render.
+  const dismissedTriggerRef = useRef<ComposerTriggerDismissal | null>(null);
+  /** Close the menu and forget any dismissal — the trigger is resolved. */
+  const closeCommandMenu = useCallback(() => {
+    dismissedTriggerRef.current = null;
+    setCommandMenuTrigger(null);
+  }, []);
+  /**
+   * Close the menu and leave any existing dismissal untouched.
+   *
+   * The third close semantic, and the one that is easy to write by accident:
+   * this trigger cannot open a menu right now (it is already a confirmed
+   * token, or it is still covered by a dismissal the user made earlier), but
+   * nothing about it is *resolved* and nothing new was *dismissed*. Clearing
+   * the dismissal here would re-open the menu the user just escaped; recording
+   * one would suppress the menu for a trigger the user never dismissed.
+   */
+  const closeCommandMenuKeepingDismissal = useCallback(() => {
+    setCommandMenuTrigger(null);
+  }, []);
+  /** Close the menu and keep it closed while the user extends this query. */
+  const dismissCommandMenu = useCallback((trigger: ComposerTrigger | null) => {
+    dismissedTriggerRef.current = trigger
+      ? { type: trigger.type, start: trigger.start, query: trigger.query }
+      : null;
+    setCommandMenuTrigger(null);
+  }, []);
+  /**
+   * True when this trigger may open the menu. A trigger that is no longer
+   * covered by the dismissal clears it, so the next dead query starts fresh.
+   */
+  const allowCommandMenuTrigger = useCallback((trigger: ComposerTrigger): boolean => {
+    if (isComposerTriggerDismissed(trigger, dismissedTriggerRef.current)) return false;
+    dismissedTriggerRef.current = null;
+    return true;
+  }, []);
 
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
@@ -1911,6 +2065,9 @@ export function AgentChatComposer({
   const fileAddInProgressRef = useRef(false);
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
+  // Catalog bucket for every model-derived control in this composer (picker
+  // rows, availability, thinking levels). Empty only when no machine is known.
+  const modelCatalogScopeKey = modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
   const objectPreviewUrlsRef = useRef<Set<string>>(new Set());
   const cancelledPendingImageAttachmentsRef = useRef<Set<string>>(new Set());
   const pendingImageAttachmentSequenceRef = useRef(0);
@@ -2110,7 +2267,7 @@ export function AgentChatComposer({
     setAttachmentPickerOpen(false);
     setIssueContextMenuOpen(false);
     setLinearIssuePickerOpen(false);
-    setCommandMenuTrigger(null);
+    closeCommandMenu();
     setDragActive(false);
     if (clipboardImagePasteFallbackTimerRef.current != null) {
       window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);
@@ -2124,7 +2281,7 @@ export function AgentChatComposer({
       if (!current.length) return current;
       return [];
     });
-  }, [composerInputLocked, pendingImageAttachments]);
+  }, [closeCommandMenu, composerInputLocked, pendingImageAttachments]);
   useLayoutEffect(() => {
     resizeTextarea();
   }, [draft, resizeTextarea]);
@@ -2153,17 +2310,46 @@ export function AgentChatComposer({
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
+  const userShellChipRange = sessionProvider === "codex"
+    ? codexUserShellChipRange(draft)
+    : null;
+  const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
   useLayoutEffect(() => {
-    if (!plainComposerTokens.length) return;
+    if (!plainComposerTokens.length && !plainUserShellChipRange) return;
     setPlainOverlayScrollTop(textareaRef.current?.scrollTop ?? 0);
-  }, [draft, plainComposerTokens.length]);
+  }, [draft, plainComposerTokens.length, plainUserShellChipRange]);
   const plainOverlayContent = useMemo(() => {
-    if (!plainComposerTokens.length) return null;
+    if (!plainComposerTokens.length && !plainUserShellChipRange) return null;
     const segments: React.ReactNode[] = [];
     let pos = 0;
-    plainComposerTokens.forEach((token, index) => {
+    const tokens: Array<{ start: number; end: number; kind: "file" | "command" | "mention" | "shell" }> = [...plainComposerTokens];
+    if (plainUserShellChipRange) {
+      tokens.push({
+        start: plainUserShellChipRange.start,
+        end: plainUserShellChipRange.end,
+        kind: "shell" as const,
+      });
+      tokens.sort((left, right) => left.start - right.start);
+    }
+    tokens.forEach((token, index) => {
       if (token.start > pos) segments.push(draft.slice(pos, token.start));
       const tokenText = draft.slice(token.start, token.end);
+      if (token.kind === "shell") {
+        segments.push(
+          <span
+            key={`chip-${index}-${token.start}`}
+            className="rounded-[4px] bg-cyan-500/16 px-0.5 text-cyan-100/92 shadow-[inset_0_0_0_1px_rgba(103,232,249,0.28)]"
+            title="User shell · unsandboxed"
+          >
+            <span className="relative inline-block align-baseline">
+              <span className="invisible whitespace-pre">{tokenText}</span>
+              <span className="absolute inset-0 overflow-hidden text-ellipsis whitespace-nowrap">$</span>
+            </span>
+          </span>,
+        );
+        pos = token.end;
+        return;
+      }
       const displayText = token.kind === "mention"
         ? mentionLabels?.[tokenText]?.trim() || mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
         : tokenText;
@@ -2196,7 +2382,7 @@ export function AgentChatComposer({
     // measurable so the overlay height matches the textarea's scrollHeight.
     segments.push("​");
     return segments;
-  }, [draft, mentionLabels, plainComposerTokens]);
+  }, [draft, mentionLabels, plainComposerTokens, plainUserShellChipRange]);
 
   // Pre-warm the lane's quick-open file index as soon as the composer is
   // bound to a session so the first "@" query is served from a warm index.
@@ -2528,6 +2714,7 @@ export function AgentChatComposer({
     const editor = richEditorRef.current;
     if (!editor) return draft;
     const parts: string[] = [];
+    const preservedChipText = new Map<string, string>();
     const visit = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         parts.push(node.textContent ?? "");
@@ -2535,7 +2722,13 @@ export function AgentChatComposer({
       }
       if (!(node instanceof HTMLElement)) return;
       if (node.dataset.composerChipText != null) {
-        parts.push(node.dataset.composerChipText);
+        if (node.dataset.composerChip === "chat-context") {
+          const token = `\u0000ctx${preservedChipText.size}\u0000`;
+          preservedChipText.set(token, node.dataset.composerChipText);
+          parts.push(token);
+        } else {
+          parts.push(node.dataset.composerChipText);
+        }
         return;
       }
       if (
@@ -2554,11 +2747,15 @@ export function AgentChatComposer({
       if (node.tagName === "DIV" || node.tagName === "P") parts.push("\n");
     };
     editor.childNodes.forEach(visit);
-    return parts
+    let serialized = parts
       .join("")
       .replace(/\u00a0/g, " ")
       .replace(/[ \t]{2,}/g, " ")
       .replace(/[ \t]+\n/g, "\n");
+    for (const [token, value] of preservedChipText) {
+      serialized = serialized.replace(token, value);
+    }
+    return serialized;
   }, [draft]);
 
   const syncRichDraft = useCallback(() => {
@@ -2794,7 +2991,8 @@ export function AgentChatComposer({
     } else {
       candidate = range.startContainer.childNodes[direction === "backward" ? range.startOffset - 1 : range.startOffset] ?? null;
     }
-    if (!(candidate instanceof HTMLElement) || !candidate.dataset.smartLinkUrl) return false;
+    if (!(candidate instanceof HTMLElement)) return false;
+    if (!candidate.dataset.smartLinkUrl && candidate.dataset.composerChip !== "chat-context") return false;
     removeSmartLinkNode(candidate);
     return true;
   }, [removeSmartLinkNode]);
@@ -2829,14 +3027,18 @@ export function AgentChatComposer({
   const evaluatePlainTrigger = useCallback((node: HTMLTextAreaElement, caret: number, openIfNew: boolean) => {
     const trigger = detectComposerTrigger(node.value, caret);
     if (!trigger) {
-      setCommandMenuTrigger(null);
+      closeCommandMenu();
       return;
     }
     if (composerTriggerHasConfirmedPrefix(node.value, trigger, {
       isFile: (body) => attachedPaths.has(body),
       isMention: isChatMentionTokenBody,
     })) {
-      setCommandMenuTrigger(null);
+      closeCommandMenuKeepingDismissal();
+      return;
+    }
+    if (!allowCommandMenuTrigger(trigger)) {
+      closeCommandMenuKeepingDismissal();
       return;
     }
     if (!openIfNew) {
@@ -2851,7 +3053,7 @@ export function AgentChatComposer({
     setCommandMenuTrigger(trigger);
     const anchor = getCommandMenuAnchor(node);
     if (anchor) setCommandMenuAnchor(anchor);
-  }, [attachedPaths]);
+  }, [allowCommandMenuTrigger, attachedPaths, closeCommandMenu, closeCommandMenuKeepingDismissal]);
 
   const restoreTextareaCaret = useCallback((caret: number) => {
     lastPlainSelectionRef.current = caret;
@@ -3354,6 +3556,7 @@ export function AgentChatComposer({
     }
 
     hydrateMentionChipsInEditor();
+    hydrateChatOutputContextChipsInEditor(editor);
 
     const isFocusedInsideEditor = document.activeElement === editor;
     const insertChipFragment = (chip: HTMLElement) => {
@@ -3622,7 +3825,7 @@ export function AgentChatComposer({
       ? (parallelModelSlots[parallelConfiguringIndex]?.modelId ?? "")
       : (modelId ?? "");
   const fastModeSupported = modelSupportsFastMode(
-    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId) ?? getModelById(fastModeModelId),
+    resolveModelDescriptorWithRuntimeCatalog(fastModeModelId, modelCatalogScopeKey) ?? getModelById(fastModeModelId),
   );
   const fastModeActive =
     parallelChatMode && parallelConfiguringIndex != null
@@ -3640,9 +3843,11 @@ export function AgentChatComposer({
      drop actually lands. Its absence is meaningful rather than unknown: a chat
      with no remote binding is running on this Mac. */
   const composerMachineName = sessionId
-    ? composerMachineBinding?.kind === "remote"
-      ? composerMachineBinding.runtimeName
-      : THIS_MACHINE_NAME
+    ? cursorRuntime === "cloud"
+      ? "Cursor Cloud"
+      : composerMachineBinding?.kind === "remote"
+        ? composerMachineBinding.runtimeName
+        : THIS_MACHINE_NAME
     : null;
 
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
@@ -4178,18 +4383,18 @@ export function AgentChatComposer({
     }
 
     if (event.currentTarget instanceof HTMLDivElement) {
-      const focusedSmartLink = document.activeElement instanceof HTMLElement
-        ? document.activeElement.closest<HTMLElement>("[data-smart-link-url]")
+      const focusedChip = document.activeElement instanceof HTMLElement
+        ? document.activeElement.closest<HTMLElement>("[data-smart-link-url], [data-composer-chip='chat-context']")
         : null;
-      if (focusedSmartLink && event.currentTarget.contains(focusedSmartLink)) {
+      if (focusedChip && event.currentTarget.contains(focusedChip)) {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          setSelectedSmartLinkNode(focusedSmartLink);
+          setSelectedSmartLinkNode(focusedChip);
           return;
         }
         if (event.key === "Backspace" || event.key === "Delete") {
           event.preventDefault();
-          removeSmartLinkNode(focusedSmartLink);
+          removeSmartLinkNode(focusedChip);
           return;
         }
       }
@@ -4227,14 +4432,16 @@ export function AgentChatComposer({
     /* Command menu keyboard navigation */
     if (commandMenuTrigger) {
       if (event.key === "ArrowUp" || event.key === "ArrowDown") cancelPromptHistorySequence();
-      if (event.key === "Escape") { event.preventDefault(); setCommandMenuTrigger(null); return; }
+      // Escape is an explicit dismissal: typing the rest of this token must not
+      // bring the menu back.
+      if (event.key === "Escape") { event.preventDefault(); dismissCommandMenu(commandMenuTrigger); return; }
       if (event.key === "ArrowDown") { event.preventDefault(); commandMenuRef.current?.moveDown(); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); commandMenuRef.current?.moveUp(); return; }
       if (event.key === "Enter" || event.key === "Tab") {
         if (commandMenuRef.current?.selectCurrent()) { event.preventDefault(); return; }
         // No matching row (e.g. "check /tmp"): close the menu and let
         // Enter/Tab fall through to their normal send/suggestion behavior.
-        setCommandMenuTrigger(null);
+        dismissCommandMenu(commandMenuTrigger);
       }
     }
 
@@ -4291,9 +4498,9 @@ export function AgentChatComposer({
     const shouldSend = sendOnEnter ? !commandEnter : commandEnter;
     if (!shouldSend) return;
     event.preventDefault();
-    // During a Claude turn, Enter follows the delivery mode selected from the
-    // split send button. Other providers keep their queue-on-Enter behavior.
-    if (turnActive && onSendSteerNow) {
+    // During a Claude or Cursor turn, Enter follows the delivery mode selected
+    // from the split send button. Other providers keep queue-on-Enter.
+    if (turnActive && activeTurnSendMenuEnabled) {
       if (activeSteerEnabled) submitActiveTurnDraft();
       return;
     }
@@ -4386,13 +4593,13 @@ export function AgentChatComposer({
 
   const handleCommandMenuSelect = useCallback((item: ChatCommandMenuItem) => {
     if (composerInputLocked) {
-      setCommandMenuTrigger(null);
+      closeCommandMenu();
       return;
     }
     if (item.type === "file" && commandMenuTrigger) {
       if (!canAttach) {
         setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
-        setCommandMenuTrigger(null);
+        closeCommandMenu();
         return;
       }
       // Replace exactly the @query trigger span with the confirmed token.
@@ -4440,7 +4647,7 @@ export function AgentChatComposer({
       // which is entirely about text a runtime is going to receive.
       if (selected?.source === "plugin" && selected.plugin) {
         runPluginSlashCommand(selected.plugin, commandMenuTrigger);
-        setCommandMenuTrigger(null);
+        closeCommandMenu();
         return;
       }
       const wholeDraft = composerTriggerSpansWholeDraft(draft, commandMenuTrigger);
@@ -4462,8 +4669,8 @@ export function AgentChatComposer({
         restoreTextareaCaret(next.caret);
       }
     }
-    setCommandMenuTrigger(null);
-  }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, runPluginSlashCommand, useRichComposer]);
+    closeCommandMenu();
+  }, [attachBlockedReason, canAttach, closeCommandMenu, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onAddAttachment, onDraftChange, onMentionLabelChange, replaceRichTriggerWith, restoreTextareaCaret, runPluginSlashCommand, useRichComposer]);
 
   const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
@@ -4480,15 +4687,22 @@ export function AgentChatComposer({
       return;
     }
     const context = getRichTriggerContext();
-    if (context) {
-      setCommandMenuTrigger(context.trigger);
-      const anchor = getCommandMenuAnchor(editor);
-      if (anchor) setCommandMenuAnchor(anchor);
-    } else {
-      setCommandMenuTrigger(null);
+    if (!context) {
+      // No trigger under the caret at all — the trigger is gone, not dismissed.
+      closeCommandMenu();
+      captureRichSelection();
+      return;
     }
+    if (!allowCommandMenuTrigger(context.trigger)) {
+      closeCommandMenuKeepingDismissal();
+      captureRichSelection();
+      return;
+    }
+    setCommandMenuTrigger(context.trigger);
+    const anchor = getCommandMenuAnchor(editor);
+    if (anchor) setCommandMenuAnchor(anchor);
     captureRichSelection();
-  }, [captureRichSelection, clearPromptHistory, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
+  }, [allowCommandMenuTrigger, captureRichSelection, clearPromptHistory, closeCommandMenu, closeCommandMenuKeepingDismissal, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
@@ -4555,16 +4769,15 @@ export function AgentChatComposer({
       return;
     }
     // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
-    // turns have been exchanged the inline launch strip is unavailable, so this branch is gated
-    // on `cursorCloudCanLaunch` to defend against a stale `cursorCloudLaunchModeOpen=true`.
+    // turns have been exchanged the cloud target is unavailable, so this branch is gated on
+    // `cursorCloudCanLaunch` to defend against a stale `cursorCloudModeActive=true`.
     const hasContextSelection =
       iosElementContextItems.length > 0
       || appControlContextItems.length > 0
       || builtInBrowserContextItems.length > 0;
     if (
-      cursorCloudAvailable
-      && cursorCloudCanLaunch
-      && cursorCloudLaunchModeOpen
+      cursorCloudCanLaunch
+      && cursorCloudModeActive
       && onSubmitToCloud
     ) {
       const trimmed = draft.trim();
@@ -4585,7 +4798,7 @@ export function AgentChatComposer({
       return;
     }
     onSubmit();
-  }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, runPluginSlashCommand, singleModelBlockedMessage, singleModelReady, typedPluginSlashCommand]);
+  }, [allowAttachmentOnlySubmit, appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudModeActive, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, runPluginSlashCommand, singleModelBlockedMessage, singleModelReady, typedPluginSlashCommand]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -4593,10 +4806,12 @@ export function AgentChatComposer({
       return;
     }
     if (effectiveActiveTurnSendMode === "interrupt") {
-      onSendSteerInterrupt?.();
+      if (onSendSteerInterrupt) onSendSteerInterrupt();
+      else submitComposerDraft();
       return;
     }
-    onSendSteerNow?.();
+    if (onSendSteerNow) onSendSteerNow();
+    else submitComposerDraft();
   }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
 
   /**
@@ -4722,7 +4937,7 @@ export function AgentChatComposer({
   );
   const issueContextMenu = issueContextMenuOpen && linearSurfaceVisible && issueContextButtonRef.current ? createPortal(
     <div
-      className="ade-chat-drawer-glass fixed z-[1000] overflow-hidden"
+      className="fixed z-[1000] overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
       data-issue-context-menu="true"
       role="menu"
       aria-label="Attach issue context"
@@ -4739,6 +4954,7 @@ export function AgentChatComposer({
           onClick={() => {
             if (!canAttachIssueContext) return;
             setIssueContextMenuOpen(false);
+            setLinearIssuePickerMode("attach");
             setLinearIssuePickerOpen(true);
           }}
         >
@@ -4750,31 +4966,61 @@ export function AgentChatComposer({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block font-medium">Linear issue</span>
-            <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/45">Attach a ticket as chat context.</span>
           </span>
         </button>
-        <button
-          type="button"
-          className="flex w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/30"
-          disabled
-        >
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-white/[0.04] text-muted-fg/35">
-            <GithubLogo size={13} weight="fill" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">GitHub issue</span>
-            <span className="block truncate text-[length:calc(var(--chat-font-size)*9/14)] text-muted-fg/30">Coming later.</span>
-          </span>
-        </button>
+        {githubRepo ? (
+          <button
+            type="button"
+            className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+            disabled={!canAttachIssueContext}
+            onClick={() => {
+              if (!canAttachIssueContext) return;
+              setIssueContextMenuOpen(false);
+              setGitHubIssuePickerMode("attach");
+              setGitHubIssuePickerOpen(true);
+            }}
+          >
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+              style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+            >
+              <GithubLogo size={13} weight="fill" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">GitHub issue</span>
+            </span>
+          </button>
+        ) : null}
       </div>
     </div>,
     document.body,
   ) : null;
 
-  const selectedLinearContextIssue = contextAttachments.find(
-    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-      attachment.type === "linear_issue"
-    ),
+  const selectedLinearContextIssue = (
+    linearIssuePickerMode === "details" && linearDetailsIssueId
+      ? contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+          attachment.type === "linear_issue" && attachment.issue.id === linearDetailsIssueId
+        ),
+      )
+      : contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+          attachment.type === "linear_issue"
+        ),
+      )
+  )?.issue ?? null;
+  const selectedGitHubContextIssue = (
+    githubIssuePickerMode === "details" && githubDetailsIssueId
+      ? contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
+          attachment.type === "github_issue" && attachment.issue.id === githubDetailsIssueId
+        ),
+      )
+      : contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
+          attachment.type === "github_issue"
+        ),
+      )
   )?.issue ?? null;
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
   const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
@@ -4789,7 +5035,7 @@ export function AgentChatComposer({
       {issueContextMenu}
       <LinearIssueSelectModal
         open={linearIssuePickerOpen && linearSurfaceVisible}
-        ariaLabel="Attach Linear issue"
+        ariaLabel={linearIssuePickerMode === "details" ? "Linear issue" : "Attach Linear issue"}
         selectedIssue={selectedLinearContextIssue}
         pinnedIssue={pinnedLinearIssue}
         pinnedIssueLabel={pinnedLinearIssue ? "Linked to this lane" : "Attached to chat"}
@@ -4797,6 +5043,7 @@ export function AgentChatComposer({
         actionBusyLabel="Attaching issue"
         actionDisabled={busy || parallelLaunchBusy}
         showBranchPreview={false}
+        mode={linearIssuePickerMode}
         onOpenChange={setLinearIssuePickerOpen}
         onSelectIssue={(laneIssue) => {
           onAddContextAttachment?.(makeLinearIssueContextAttachment(
@@ -4804,7 +5051,32 @@ export function AgentChatComposer({
             pinnedLinearIssue?.id === laneIssue.id ? "lane_link" : "manual",
           ));
         }}
+        onRemoveIssue={(issue) => {
+          const attachment = contextAttachments.find(
+            (entry) => entry.type === "linear_issue" && entry.issue.id === issue.id,
+          );
+          if (attachment) onRemoveContextAttachment?.(chatContextAttachmentKey(attachment));
+        }}
         onOpenLinearSettings={onOpenLinearSettings}
+      />
+      <GitHubIssueSelectModal
+        open={githubIssuePickerOpen}
+        ariaLabel={githubIssuePickerMode === "details" ? "GitHub issue" : "Attach GitHub issue"}
+        selectedIssue={selectedGitHubContextIssue}
+        mode={githubIssuePickerMode}
+        actionLabel="Attach issue"
+        actionBusyLabel="Attaching issue"
+        actionDisabled={busy || parallelLaunchBusy}
+        onOpenChange={setGitHubIssuePickerOpen}
+        onSelectIssue={(issue) => {
+          onAddContextAttachment?.(makeGitHubIssueContextAttachment(issue));
+        }}
+        onRemoveIssue={(issue) => {
+          const attachment = contextAttachments.find(
+            (entry) => entry.type === "github_issue" && entry.issue.id === issue.id,
+          );
+          if (attachment) onRemoveContextAttachment?.(chatContextAttachmentKey(attachment));
+        }}
       />
       {showLaunchClipboardNotice && layoutVariant !== "grid-tile" ? (
         <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,52rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
@@ -4862,6 +5134,8 @@ export function AgentChatComposer({
                 metadata={meta}
                 {...(availableModelIdsForPicker ? { availableModelIds: availableModelIdsForPicker } : {})}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
+                runtimePin={modelRuntimePin}
+                catalogScopeKey={modelCatalogScopeKey}
                 responding={approvalResponding ?? false}
                 onConfirm={(selection) => {
                   onApproval("accept", null, { selection: JSON.stringify(selection) });
@@ -5170,6 +5444,19 @@ export function AgentChatComposer({
               mode={surfaceMode}
               onRemove={handleRemoveAttachment}
               onRemoveContext={onRemoveContextAttachment}
+              onOpenContext={(attachment) => {
+                if (attachment.type === "linear_issue") {
+                  setLinearDetailsIssueId(attachment.issue.id);
+                  setLinearIssuePickerMode("details");
+                  setLinearIssuePickerOpen(true);
+                  return;
+                }
+                if (attachment.type === "github_issue") {
+                  setGitHubDetailsIssueId(attachment.issue.id);
+                  setGitHubIssuePickerMode("details");
+                  setGitHubIssuePickerOpen(true);
+                }
+              }}
               onRemovePendingImageAttachment={removePendingImageAttachment}
               onFocusPrompt={focusComposerInput}
               className="px-3 py-0"
@@ -5424,6 +5711,7 @@ export function AgentChatComposer({
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+                  runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
                   disabled={parallelLaunchBusy}
                   compact
@@ -5444,6 +5732,7 @@ export function AgentChatComposer({
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                  catalogScopeKey={modelCatalogScopeKey}
                 />
               </>
             ) : null}
@@ -5460,6 +5749,7 @@ export function AgentChatComposer({
                   {...(providerAuthStatus ? { providerAuthStatus } : {})}
                   {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
                   {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+                  runtimePin={modelRuntimePin}
                   allowCliOnlyModels={allowCliOnlyModels}
                   disabled={modelSelectionLocked}
                   compact
@@ -5475,6 +5765,7 @@ export function AgentChatComposer({
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                  catalogScopeKey={modelCatalogScopeKey}
                 />
               </>
             ) : null}
@@ -5483,7 +5774,10 @@ export function AgentChatComposer({
                 outside that conditional because orchestration leads and host
                 surfaces hide model controls without hiding a running chat. */}
             {composerMachineName ? (
-              <ComposerMachineChip machineName={composerMachineName} />
+              <ComposerMachineChip
+                machineName={composerMachineName}
+                cloud={cursorRuntime === "cloud"}
+              />
             ) : null}
           </div>
 
@@ -5508,7 +5802,7 @@ export function AgentChatComposer({
               usage={usageViewModel}
               active={turnActive}
               compactionPulse={compactionPulse}
-              modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId)?.displayName ?? undefined}
+              modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey)?.displayName ?? undefined}
             />
           ) : null}
 
@@ -5533,18 +5827,11 @@ export function AgentChatComposer({
                 <Paperclip className="h-3 w-3" size={14} weight="bold" />
               </button>
             </SmartTooltip>
-                        {cursorCloudAvailable && (onOpenCloudLaunchMode || onOpenCloudBringToLocal) ? (
-              <CursorCloudActionMenu
-                canLaunch={cursorCloudCanLaunch}
-                paneOpen={cursorCloudPaneOpen}
-                launchModeOpen={cursorCloudLaunchModeOpen}
-                cloudAgentId={cursorCloudAgentId}
-                activeCount={cursorCloudActiveCount}
-                onOpenLaunchMode={onOpenCloudLaunchMode}
-                onCloseLaunchMode={onCloseCloudLaunchMode}
-                onOpenBringToLocal={onOpenCloudBringToLocal}
-              />
-            ) : null}
+            {/* CURSOR-CLOUD-PANEL: the composer's Cursor Cloud glyph and its menu (whose second
+                entry, "Open existing cloud chat", mounted the right-side cloud panel) are
+                temporarily disabled; they return in the dedicated cloud-panel PR. Cloud mode is
+                now chosen in the launch shelf's machine picker, and the Send button carries the
+                cloud glyph while it is on. */}
 
             {/* Secondary toggles, folded behind one glyph. Each entry is still
                 gated by exactly the condition that used to gate its button, so
@@ -5642,12 +5929,14 @@ export function AgentChatComposer({
                   </SmartTooltip>
                 ) : null}
                 {!composerInputLocked ? (
-                  onSendSteerNow ? (
+                  activeTurnSendMenuEnabled ? (
                     // Claude Code parity: the caret selects delivery behavior;
                     // the primary button and Enter execute that selection.
                     <ActiveTurnSendButton
                       enabled={activeSteerEnabled}
                       mode={effectiveActiveTurnSendMode}
+                      capability={activeTurnSendCapability}
+                      allowInline={Boolean(onSendSteerNow)}
                       allowInterrupt={Boolean(onSendSteerInterrupt)}
                       onModeChange={setActiveTurnSendMode}
                       onSend={submitActiveTurnDraft}
@@ -5684,10 +5973,9 @@ export function AgentChatComposer({
               (() => {
                 // Switch the Send button to its cloud variant only when the chat is fresh enough
                 // to actually launch a new cloud run. Once turns exist, the launch path is closed
-                // and we keep the standard local Send affordance even if the cloud pane is open.
-                const cloudMode = cursorCloudAvailable
-                  && cursorCloudCanLaunch
-                  && cursorCloudLaunchModeOpen
+                // and we keep the standard local Send affordance.
+                const cloudMode = cursorCloudCanLaunch
+                  && cursorCloudModeActive
                   && !parallelChatMode;
                 const label = parallelChatMode
                   ? "Send to lanes"
@@ -5757,11 +6045,6 @@ export function AgentChatComposer({
         />
       ) : (
       <>
-      {cursorCloudLaunchModeOpen && cursorCloudLaunchPanel ? (
-        <div className="border-b border-violet-300/[0.10] bg-violet-500/[0.04] px-3 py-3">
-          {cursorCloudLaunchPanel}
-        </div>
-      ) : null}
       {/* Pending steers queue — shows queued messages above the input */}
       {pendingSteers.length > 0 ? (
         <div className="border-b border-white/[0.06] bg-white/[0.02] px-3 py-2 space-y-1.5">
@@ -5770,15 +6053,18 @@ export function AgentChatComposer({
               Staged {pendingSteers.length === 1 ? "message" : `messages (${pendingSteers.length})`}
             </span>
             <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
-              {onDispatchSteerInline || onDispatchSteerInterrupt
+              {onDispatchSteerInline
                 ? "Hover to send during the turn, interrupt, edit, or remove."
-                : "Hover to edit or remove."}
+                : onDispatchSteerInterrupt
+                  ? "Hover to interrupt with this message, edit, or remove."
+                  : "Hover to edit or remove."}
             </span>
           </div>
           {pendingSteers.map((steer) => (
             <PendingSteerItem
               key={steer.steerId}
               steer={steer}
+              capability={activeTurnSendCapability}
               onCancel={() => onCancelSteer?.(steer.steerId)}
               onEdit={() => onEditSteer?.(
                 steer.steerId,
@@ -5833,7 +6119,8 @@ export function AgentChatComposer({
             onMentionSearch={onSearchMentions}
             anchor={commandMenuAnchor}
             onSelect={handleCommandMenuSelect}
-            onClose={() => setCommandMenuTrigger(null)}
+            onClose={closeCommandMenu}
+            onNoMatches={dismissCommandMenu}
           />
           {useRichComposer ? (
             <div className="relative">
@@ -5885,6 +6172,13 @@ export function AgentChatComposer({
                     event.preventDefault();
                     event.stopPropagation();
                     setSelectedSmartLinkNode(smartLinkChip);
+                    return;
+                  }
+                  const chatContextChip = target?.closest?.("[data-composer-chip='chat-context']") as HTMLElement | null;
+                  if (chatContextChip) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSelectedSmartLinkNode(chatContextChip);
                     return;
                   }
                   const iosChip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;
@@ -5967,7 +6261,9 @@ export function AgentChatComposer({
                 rows={1}
                 onInput={resizeTextarea}
                 onScroll={(event) => {
-                  if (plainComposerTokens.length) setPlainOverlayScrollTop(event.currentTarget.scrollTop);
+                  if (plainComposerTokens.length || plainUserShellChipRange) {
+                    setPlainOverlayScrollTop(event.currentTarget.scrollTop);
+                  }
                 }}
                 onCompositionStart={() => {
                   imeComposingRef.current = true;
@@ -6010,6 +6306,20 @@ export function AgentChatComposer({
               />
             </div>
           )}
+          {userShellChipRange && useRichComposer ? (
+            <div
+              className="flex items-center gap-1.5 px-4 pb-1.5 font-mono text-[11px] leading-none text-cyan-200/55"
+              title="User shell · unsandboxed"
+            >
+              <span
+                className="rounded-[4px] bg-cyan-500/16 px-1 py-px text-cyan-100/85 shadow-[inset_0_0_0_1px_rgba(103,232,249,0.28)]"
+                aria-hidden
+              >
+                $
+              </span>
+              <span>User shell</span>
+            </div>
+          ) : null}
           {selectedSmartLinkNode?.isConnected ? (
             <ComposerSmartLinkMenu
               anchor={selectedSmartLinkNode}
@@ -6027,143 +6337,3 @@ export function AgentChatComposer({
   );
 }
 
-function CursorCloudActionMenu({
-  canLaunch,
-  paneOpen,
-  launchModeOpen,
-  cloudAgentId,
-  activeCount,
-  onOpenLaunchMode,
-  onCloseLaunchMode,
-  onOpenBringToLocal,
-}: {
-  /**
-   * Whether the "Send to Cursor Cloud" launch item should be available. The trigger button itself
-   * is always shown (so users can always reach "Open existing cloud chat") but the launch row is
-   * only useful for fresh chats with no exchanged turns.
-   */
-  canLaunch: boolean;
-  paneOpen: boolean;
-  launchModeOpen: boolean;
-  cloudAgentId: string | null;
-  activeCount: number;
-  onOpenLaunchMode?: () => void;
-  onCloseLaunchMode?: () => void;
-  onOpenBringToLocal?: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const recalc = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const menuWidth = 280;
-      const gap = 8;
-      const top = Math.max(8, rect.top - gap);
-      const left = Math.min(window.innerWidth - menuWidth - 8, Math.max(8, rect.right - menuWidth));
-      setMenuPos({ left, top });
-    };
-    recalc();
-    window.addEventListener("resize", recalc);
-    window.addEventListener("scroll", recalc, true);
-    return () => {
-      window.removeEventListener("resize", recalc);
-      window.removeEventListener("scroll", recalc, true);
-    };
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handle = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (wrapRef.current?.contains(target)) return;
-      if (menuRef.current?.contains(target)) return;
-      setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
-    window.addEventListener("mousedown", handle);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", handle);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-  const active = paneOpen || launchModeOpen;
-  return (
-    <div ref={wrapRef} className="relative">
-      <SmartTooltip
-        content={{
-          label: "Cursor Cloud",
-          description: "Send this prompt to Cursor Cloud or resume a cloud chat locally.",
-          effect: cloudAgentId ? "This chat is promoted to cloud." : undefined,
-        }}
-      >
-        <button
-          type="button"
-          ref={triggerRef}
-          onClick={() => setOpen((v) => !v)}
-          className={cn(
-            "relative inline-flex h-7 min-w-7 items-center justify-center gap-1 rounded-lg border px-1.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] font-medium transition-colors",
-            active
-              ? "border-violet-300/30 bg-violet-500/[0.16] text-violet-100/90"
-              : "border-white/[0.06] bg-white/[0.02] text-muted-fg/30 hover:border-violet-300/22 hover:text-violet-200/80",
-          )}
-          aria-label="Cursor Cloud actions"
-          aria-haspopup="menu"
-          aria-expanded={open}
-        >
-          <CloudArrowUp className="h-3 w-3" size={14} weight={active ? "fill" : "regular"} />
-          {activeCount > 0 ? (
-            <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 px-0.5 font-mono text-[8px] font-bold text-black" style={{ background: "#A78BFA" }}>{activeCount}</span>
-          ) : cloudAgentId ? (
-            <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full border border-black/40" style={{ background: "#A78BFA" }} aria-hidden />
-          ) : null}
-        </button>
-      </SmartTooltip>
-      {open && menuPos ? createPortal(
-        <div
-          ref={menuRef}
-          role="menu"
-          style={{ left: menuPos.left, top: menuPos.top, transform: "translateY(-100%)", width: 280 }}
-          className="fixed z-[1000] overflow-hidden rounded-lg border border-white/[0.08] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong)_94%,black_6%)] shadow-[0_18px_48px_rgba(0,0,0,0.48)] backdrop-blur-xl"
-        >
-          {canLaunch ? (
-            <>
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => { setOpen(false); if (launchModeOpen) onCloseLaunchMode?.(); else onOpenLaunchMode?.(); }}
-                className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-violet-500/[0.10]"
-              >
-                <CloudArrowUp size={14} weight="fill" className="mt-0.5 shrink-0 text-violet-300" />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-sans text-[12px] font-semibold text-fg/90">{launchModeOpen ? "Cancel cloud send" : "Send to Cursor Cloud"}</span>
-                  <span className="block font-sans text-[10.5px] leading-snug text-fg/45">{launchModeOpen ? "Hide the cloud launch options." : "Pick a repo, branch, model — then send your prompt to a fresh cloud agent."}</span>
-                </span>
-              </button>
-              <div className="h-px bg-white/[0.05]" />
-            </>
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => { setOpen(false); onOpenBringToLocal?.(); }}
-            className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-violet-500/[0.10]"
-          >
-            <ArrowBendDownRight size={14} weight="bold" className="mt-0.5 shrink-0 text-violet-300/85" />
-            <span className="min-w-0 flex-1">
-              <span className="block font-sans text-[12px] font-semibold text-fg/90">Open existing cloud chat</span>
-              <span className="block font-sans text-[10.5px] leading-snug text-fg/45">Browse your Cursor Cloud agents and open one as a chat in ADE.</span>
-            </span>
-          </button>
-        </div>,
-        document.body,
-      ) : null}
-    </div>
-  );
-}

@@ -32,20 +32,14 @@ extension WorkSessionSettingsSheet {
         ?? storedIdMatch
         ?? storedNameMatch
         ?? displayNameMatch
-        ?? defaultMatch
-        ?? firstMatch
-        ?? ""
+        ?? (selectedModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (defaultMatch ?? firstMatch ?? "") : selectedModelId)
 
       selectedModelId = matchedModelId
-      if !workVisibleReasoningEfforts(for: selectedModel).contains(where: { $0.effort == selectedReasoningEffort }) {
-        selectedReasoningEffort = ""
-      }
       errorMessage = nil
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
       models = []
-      selectedModelId = ""
     }
   }
 
@@ -63,7 +57,7 @@ extension WorkSessionSettingsSheet {
     let normalizedReasoning = selectedReasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
     let reasoningPayload = normalizedReasoning.isEmpty ? "" : normalizedReasoning
     let reasoningChanged = reasoningPayload != resolvedInitialReasoningEffort
-    let effectiveCodexFastMode = supportsCodexFastModeToggle ? selectedCodexFastMode : false
+    let effectiveCodexFastMode = selectedCodexFastMode
     let codexFastModeChanged = effectiveCodexFastMode != resolvedInitialCodexFastMode
     let initialRuntimeMode = workInitialRuntimeMode(summary)
 

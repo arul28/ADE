@@ -10,7 +10,7 @@ describe("commands", () => {
     expect(paletteCommands("/act")).toContainEqual(expect.objectContaining({
       name: "/activity",
       source: "ade",
-      description: "Show account-wide work that needs you",
+      description: "Show account-wide Activity across machines",
     }));
   });
 
@@ -52,6 +52,17 @@ describe("commands", () => {
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
   });
 
+  it("registers /import as an ADE-owned right-pane command", () => {
+    const parsed = parseCommand("/import");
+    expect(parsed).toMatchObject({ name: "/import", args: "" });
+    expect(parsed && commandPlacement(parsed)).toBe("right");
+    // ADE owns the name even when a runtime advertises its own /import.
+    const shadowed = parseCommand("/import", [{ name: "/import", description: "runtime import" } as never]);
+    expect(shadowed?.spec?.name).toBe("/import");
+    expect(shadowed?.userCommand).toBeNull();
+    expect(paletteCommands("import").some((command) => command.name === "/import")).toBe(true);
+  });
+
   it("routes PR comments to the right pane", () => {
     const parsed = parseCommand("/pr comments");
     expect(parsed?.name).toBe("/pr comments");
@@ -61,6 +72,21 @@ describe("commands", () => {
       source: "ade",
       description: "Show actionable PR comments",
     }));
+  });
+
+  it("routes /issue commands to the right pane", () => {
+    const parsed = parseCommand("/issue attach ADE-123");
+    expect(parsed?.name).toBe("/issue attach");
+    expect(parsed?.args).toBe("ADE-123");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/issue")).toContainEqual(expect.objectContaining({
+      name: "/issue",
+      source: "ade",
+      description: "Attach, list, or detach Linear and GitHub issues",
+    }));
+    expect(parseCommand("/issue list")?.name).toBe("/issue list");
+    expect(parseCommand("/issue detach ade/app#42")?.name).toBe("/issue detach");
+    expect(parseCommand("/issue detach ade/app#42")?.args).toBe("ade/app#42");
   });
 
   it("parses /pr update-branch as a multi-word ADE command with a strategy arg", () => {
@@ -204,6 +230,26 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /project and /machines to the ADE Code right pane", () => {
+    expect(parseCommand("/project")).toMatchObject({
+      name: "/project",
+      spec: { placement: "right" },
+    });
+    expect(parseCommand("/machines studio")).toMatchObject({
+      name: "/machines",
+      args: "studio",
+      spec: { placement: "right" },
+    });
+    expect(paletteCommands("/mach")).toContainEqual(expect.objectContaining({
+      name: "/machines",
+      source: "ade",
+    }));
+    expect(paletteCommands("/proj")).toContainEqual(expect.objectContaining({
+      name: "/project",
+      source: "ade",
+    }));
+  });
+
   it("routes /secrets to the ADE Code right pane", () => {
     const parsed = parseCommand("/secrets");
     expect(parsed?.spec?.name).toBe("/secrets");
@@ -212,6 +258,17 @@ describe("commands", () => {
       name: "/secrets",
       source: "ade",
       description: "List project secret names and copy masked values",
+    }));
+  });
+
+  it("routes /cloud to the ADE Code right pane", () => {
+    const parsed = parseCommand("/cloud");
+    expect(parsed?.spec?.name).toBe("/cloud");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/clo")).toContainEqual(expect.objectContaining({
+      name: "/cloud",
+      source: "ade",
+      description: "List Cursor Cloud agents for this project",
     }));
   });
 
@@ -274,6 +331,17 @@ describe("commands", () => {
     expect(parsed?.name).toBe("/new lane");
     expect(parsed?.args).toBe("perf-pass");
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+  });
+
+  it("aliases /new to /new chat without stealing /new lane", () => {
+    expect(parseCommand("/new")?.name).toBe("/new");
+    expect(parseCommand("/new Fix the pane")?.name).toBe("/new");
+    expect(parseCommand("/new Fix the pane")?.args).toBe("Fix the pane");
+    expect(parseCommand("/new chat")?.name).toBe("/new chat");
+    expect(parseCommand("/new lane")?.name).toBe("/new lane");
+    expect(parseCommand("/new", [
+      { name: "/new", description: "Start a new runtime chat", source: "sdk" },
+    ])?.spec?.name).toBe("/new");
   });
 
   it("tags built-ins and user commands in the palette", () => {
@@ -345,6 +413,22 @@ describe("commands", () => {
     expect(goalRows).toEqual([
       expect.objectContaining({ description: "Set, clear, or inspect the active chat goal" }),
     ]);
+  });
+
+  it("offers each /steer dispatch command exactly where the provider accepts that mode", () => {
+    // Gating is derived from ACTIVE_TURN_DISPATCH_MODES, not restated: Claude
+    // takes inline + interrupt, Cursor only interrupt, everything else stages.
+    const steerRows = (provider: string) => paletteCommands("/steer", [], { provider })
+      .map((row) => row.name);
+    expect(steerRows("claude")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
+    expect(steerRows("cursor")).toContain("/steer interrupt");
+    expect(steerRows("cursor")).not.toContain("/steer send");
+    for (const provider of ["codex", "droid", "opencode"]) {
+      expect(steerRows(provider)).not.toContain("/steer send");
+      expect(steerRows(provider)).not.toContain("/steer interrupt");
+      // The provider-agnostic staging commands stay available everywhere.
+      expect(steerRows(provider)).toEqual(expect.arrayContaining(["/steer edit", "/steer cancel"]));
+    }
   });
 
   it("filters provider-specific ADE commands outside supported chats", () => {
@@ -487,6 +571,15 @@ describe("commands", () => {
 
     const parsed = parseCommand("/subagents");
     expect(parsed?.spec).toBeNull();
+  });
+
+  it("registers /lane details as a right-pane lane command", () => {
+    const parsed = parseCommand("/lane details");
+    expect(parsed?.spec?.name).toBe("/lane details");
+    expect(parsed?.spec?.placement).toBe("right");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(parseCommand("/lane details Primary")?.args).toBe("Primary");
+    expect(paletteCommands("lane det").some((row) => row.name === "/lane details")).toBe(true);
   });
 
   it("surfaces active ADE Code panes in the palette and not removed aliases", () => {

@@ -63,6 +63,8 @@ export function triggerClause(trigger: AutomationTrigger): string {
   if (type.startsWith("linear.")) {
     return linearClause(type, trigger);
   }
+  if (type === "cursor.cloud_finished") return "A Cursor Cloud agent finishes";
+  if (type === "cursor.cloud_error") return "A Cursor Cloud agent errors";
   // Fallback: humanize the event label.
   return eventLabel(type);
 }

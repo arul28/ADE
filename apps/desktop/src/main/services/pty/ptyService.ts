@@ -27,6 +27,7 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
+import { ensureOpenCodeAdeInstructionsFile } from "../opencode/openCodeAdeInstructions";
 import {
   acquirePiSessionLease,
   piSessionCreationLeaseTarget,
@@ -51,7 +52,7 @@ import {
   shouldUseWindowsCmdWrapper,
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
-import { pathsEqual } from "../shared/pathCompare";
+import { pathKey, pathsEqual } from "../shared/pathCompare";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
@@ -82,6 +83,7 @@ import type {
   ChatTerminalWriteArgs,
   ChatTerminalPreviewArgs,
   ChatTerminalPreviewResult,
+  TerminalScreenSnapshot,
   TerminalSerializedSnapshot,
   TerminalSnapshotCell,
   TerminalSnapshotRow,
@@ -103,14 +105,18 @@ import {
   buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
+  claudeArgsResumeExistingSession,
+  claudeInvocationInCommandLine,
   isClaudeBinaryCommand,
   isLaunchProfile,
   sanitizeTrackedCliPromptSeed,
   shellCommandLineArgIndex,
   trackedCliTitleFromPromptSeed,
+  withOpenCodeAdeInstructions,
   type TrackedCliLaunchCommand,
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
+  withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
@@ -124,10 +130,15 @@ import {
 import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
 import { discoverPiSessions } from "../externalSessions/discoverPi";
 import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
+import {
+  captureProviderSessionFromPidTree,
+  PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS,
+} from "../externalSessions/providerSessionHandles";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/terminalPreview";
+import { claudeConfigHome, codexConfigHome, factoryConfigHome } from "../shared/providerConfigHomes";
 import {
   clearTuiWaitingInput,
   createTuiMarkerState,
@@ -181,11 +192,14 @@ export function materializeRuntimeCliLaunch(
   if (!isLaunchProfile(provider) || provider === "shell") {
     throw new Error(`Unsupported runtime CLI launch provider '${provider}'.`);
   }
+  const sessionId = runtimeCliLaunch.sessionId?.trim()
+    || (provider === "claude" ? randomUUID() : undefined);
   return buildTrackedCliLaunchCommand({
     ...runtimeCliLaunch,
     provider,
     laneWorktreePath,
     installedBuiltinSurfaces: readInstalledBuiltinSurfaces(),
+    ...(sessionId ? { sessionId } : {}),
   });
 }
 
@@ -455,7 +469,10 @@ function openCodeSupportsReplayResume(): boolean {
     const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
     delete env.FORCE_COLOR;
     const executable = resolveOpenCodeBinaryPath() ?? "opencode";
-    const result = spawnSync(executable, ["run", "--help"], {
+    // Replay resume is a root `--mini` feature: `--replay-limit` requires
+    // --mini, and an explicit `--replay` flag is rejected outright on current
+    // OpenCode. Probe the root help, not `run --help`.
+    const result = spawnSync(executable, ["--help"], {
       encoding: "utf8",
       timeout: 3000,
       maxBuffer: 512 * 1024,
@@ -463,9 +480,11 @@ function openCodeSupportsReplayResume(): boolean {
       windowsHide: true,
     });
     const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
+    // Flag tokens start with "-", a non-word character, so \b can never match
+    // before them; anchor on whitespace/string edges instead.
     cachedOpenCodeReplayResumeSupport = result.status === 0
-      && /\b--replay\b/.test(output)
-      && /\b--interactive\b/.test(output);
+      && /(^|\s)--mini(\s|$)/.test(output)
+      && /(^|\s)--replay-limit(\s|$)/.test(output);
     return cachedOpenCodeReplayResumeSupport;
   } catch {
     cachedOpenCodeReplayResumeSupport = false;
@@ -722,6 +741,11 @@ type PtyEntry = {
   /** Last size set by a non-mobile caller, restored when a phone detaches. */
   lastDesktopCols: number | null;
   lastDesktopRows: number | null;
+  /**
+   * A subscribed mobile/web viewport currently owns the live PTY size.
+   * Desktop fit-resizes remember lastDesktop* but must not fight the phone.
+   */
+  mobileViewportActive: boolean;
   pendingDataChunks: string[];
   pendingDataChars: number;
   pendingDataTimer: ReturnType<typeof setTimeout> | null;
@@ -738,6 +762,8 @@ type PtyEntry = {
   runtimeWindowTitleScanBuffer: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
+  /** Retry timer for the open-handle resume-target capture; cleared on close. */
+  sessionHandleCaptureTimer: ReturnType<typeof setTimeout> | null;
   startupTimer: ReturnType<typeof setTimeout> | null;
   initialInputTimer: ReturnType<typeof setTimeout> | null;
   /** Cancels a readiness wait that is not a plain timer (Pi's quiescence wait). */
@@ -1347,6 +1373,87 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
 function extractClaudeSessionIdFromCommand(command: string): string | null {
   const match = command.match(/--session-id(?:=|\s+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
   return match?.[1] ?? null;
+}
+
+function extractClaudeSessionIdFromArgs(args: readonly string[]): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index];
+    if (token === "--session-id") {
+      return args[index + 1]?.trim() || null;
+    }
+    if (token?.startsWith("--session-id=")) {
+      return token.slice("--session-id=".length).trim() || null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Give a fresh Claude launch a deterministic `--session-id` so ADE knows the
+ * provider session id without waiting for the transcript to appear.
+ *
+ * Placement follows the same rule as the bundled-plugin flag: `args` is the
+ * argv of whatever is actually spawned, which for resume/reattach launches is
+ * `/bin/bash --noprofile --norc -lc "<command line>"`. Prepending a Claude
+ * flag to a shell's argv makes bash exit 2 with "invalid option", so the flag
+ * goes into the -lc command line instead. Continuation launches
+ * (`--resume`/`--continue`) get no assignment at all — `--session-id` starts a
+ * new conversation and cannot be combined with them.
+ */
+function assignClaudeLaunchSessionId(args: {
+  command: string | null;
+  startupCommand: string;
+  commandArgs: string[];
+}): { startupCommand: string; commandArgs: string[]; assignedId: string | null } {
+  const shellCommandLine = isClaudeBinaryCommand(args.command) || !args.command?.trim()
+    ? null
+    : args.commandArgs[shellCommandLineArgIndex(args.commandArgs)] ?? null;
+  const existing = extractClaudeSessionIdFromArgs(args.commandArgs)
+    ?? extractClaudeSessionIdFromCommand(shellCommandLine ?? "")
+    ?? extractClaudeSessionIdFromCommand(args.startupCommand);
+  if (existing) {
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: existing };
+  }
+  const resumesExistingSession = claudeArgsResumeExistingSession(args.commandArgs)
+    || claudeArgsResumeExistingSession(claudeInvocationInCommandLine(shellCommandLine ?? "")?.claudeArgs ?? [])
+    || claudeArgsResumeExistingSession(claudeInvocationInCommandLine(args.startupCommand)?.claudeArgs ?? []);
+  if (resumesExistingSession) {
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+  }
+
+  const assignedId = randomUUID();
+  let commandArgs = args.commandArgs;
+  if (shellCommandLine != null) {
+    const index = shellCommandLineArgIndex(args.commandArgs);
+    const rewritten = withClaudeSessionIdInCommandLine(shellCommandLine, assignedId);
+    if (rewritten === shellCommandLine) {
+      // The wrapped command line does not invoke `claude`; leave it alone
+      // rather than smuggling the flag into someone else's argv.
+      return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+    }
+    commandArgs = args.commandArgs.slice();
+    commandArgs[index] = rewritten;
+  } else if (args.command?.trim()) {
+    commandArgs = ["--session-id", assignedId, ...args.commandArgs];
+  }
+
+  // argv and the startup command line describe the same launch, so they have to
+  // agree about the id: the direct spawn can fail and fall back to typing
+  // `startupCommand` at the shell. An empty startup command stays empty —
+  // `create()` fills it with the real fallback line rather than a fabricated one.
+  let startupCommand = args.startupCommand;
+  if (args.startupCommand.trim()) {
+    startupCommand = withClaudeSessionIdInCommandLine(args.startupCommand, assignedId);
+    if (startupCommand === args.startupCommand) {
+      // The startup line does not invoke `claude` anywhere reachable; assigning
+      // an id only to argv would make the two disagree.
+      return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+    }
+  } else if (commandArgs === args.commandArgs) {
+    // Nothing carries the flag: no command, no startup line.
+    return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+  }
+  return { startupCommand, commandArgs, assignedId };
 }
 
 function buildInitialResumeMetadata(args: {
@@ -2227,6 +2334,7 @@ export function createPtyService({
       baseY: buffer.baseY,
       viewportY: buffer.viewportY,
       serialized: mirror.serializeAddon.serialize({ scrollback: TERMINAL_SNAPSHOT_SCROLLBACK }),
+      screenSerialized: mirror.serializeAddon.serialize({ scrollback: 0 }),
       visibleRows: visibleRowsFromTerminal(mirror.terminal),
     };
   };
@@ -2327,6 +2435,64 @@ export function createPtyService({
     } catch {
       return null;
     }
+  };
+
+  const screenSnapshotBufferType = (raw: unknown): "normal" | "alternate" => (
+    raw === "alternate" ? "alternate" : "normal"
+  );
+
+  const liveScreenSnapshot = (entry: PtyEntry): TerminalScreenSnapshot | null => {
+    const mirror = entry.terminalSnapshot;
+    // Disk snapshot writes may be disabled (ENOSPC) while the live headless
+    // xterm is still current. Mobile hydrate needs that live serialize.
+    if (!mirror || !entry.tracked) return null;
+    try {
+      const serialized = mirror.serializeAddon.serialize({ scrollback: 0 });
+      if (typeof serialized !== "string" || serialized.length === 0) return null;
+      return {
+        cols: mirror.terminal.cols,
+        rows: mirror.terminal.rows,
+        bufferType: screenSnapshotBufferType(mirror.terminal.buffer.active.type),
+        serialized,
+      };
+    } catch (err) {
+      const now = Date.now();
+      if (now - mirror.lastErrorAt > 10_000) {
+        mirror.lastErrorAt = now;
+        logger.warn("pty.terminal_screen_snapshot_failed", { sessionId: entry.sessionId, err: String(err) });
+      }
+      return null;
+    }
+  };
+
+  const storedScreenSnapshot = (sessionId: string): TerminalScreenSnapshot | null => {
+    const stored = readStoredTerminalSnapshot(sessionId);
+    if (!stored?.screenSerialized) return null;
+    return {
+      cols: stored.cols,
+      rows: stored.rows,
+      bufferType: screenSnapshotBufferType(stored.bufferType),
+      serialized: stored.screenSerialized,
+    };
+  };
+
+  const rememberDesktopSize = (entry: PtyEntry, cols: number, rows: number): void => {
+    entry.lastDesktopCols = cols;
+    entry.lastDesktopRows = rows;
+  };
+
+  const applyLivePtyResize = (entry: PtyEntry, cols: number, rows: number): void => {
+    if (entry.lastResizeCols === cols && entry.lastResizeRows === rows) return;
+    entry.pty.resize(cols, rows);
+    entry.lastResizeCols = cols;
+    entry.lastResizeRows = rows;
+    resizeTerminalSnapshot(entry, cols, rows);
+  };
+
+  const applyDesktopDrivenResize = (entry: PtyEntry, cols: number, rows: number): void => {
+    rememberDesktopSize(entry, cols, rows);
+    if (entry.mobileViewportActive) return;
+    applyLivePtyResize(entry, cols, rows);
   };
 
   const isTitleGenerationEnabled = (): boolean => {
@@ -2808,7 +2974,7 @@ export function createPtyService({
     // every non-alphanumeric character into `-` without collapsing runs or
     // trimming. Cursor and Droid each escape differently; reuse the one that
     // already encodes Claude's rule rather than generalise across vendors.
-    return path.join(os.homedir(), ".claude", "projects", claudeProjectSlugForCwd(cwd));
+    return path.join(claudeConfigHome({ homeDir: os.homedir() }), "projects", claudeProjectSlugForCwd(cwd));
   }
 
   function claudeSessionFilePathForCwd(cwd: string, claudeSessionId: string): string {
@@ -3059,7 +3225,7 @@ export function createPtyService({
   }
 
   function readCodexThreadNameFromIndex(codexSessionId: string): string | null {
-    const indexPath = path.join(os.homedir(), ".codex", "session_index.jsonl");
+    const indexPath = path.join(codexConfigHome({ homeDir: os.homedir() }), "session_index.jsonl");
     const text = readFileSuffix(indexPath, CODEX_THREAD_NAME_SCAN_BYTES);
     if (!text) return null;
     const lines = text.split(/\r?\n/).filter(Boolean);
@@ -3101,7 +3267,7 @@ export function createPtyService({
     ownershipOriginator?: string | null;
   }): CodexStorageSessionMatch | null => {
     try {
-      const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
+      const sessionsBase = path.join(codexConfigHome({ homeDir: os.homedir() }), "sessions");
       if (!fs.existsSync(sessionsBase)) return null;
 
       const now = new Date();
@@ -3236,7 +3402,7 @@ export function createPtyService({
     maxStartDeltaMs?: number;
   }): string | null => {
     try {
-      const droidSessionsDir = path.join(os.homedir(), ".factory", "sessions");
+      const droidSessionsDir = path.join(factoryConfigHome({ homeDir: os.homedir() }), "sessions");
       if (!fs.existsSync(droidSessionsDir)) return null;
       const projectEntries = fs.readdirSync(droidSessionsDir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory());
@@ -3304,6 +3470,20 @@ export function createPtyService({
       if (jsonStart < 0) return null;
       const rows = JSON.parse(stdout.slice(jsonStart)) as unknown;
       if (!Array.isArray(rows)) return null;
+      // macOS hands back /var/... while the session row records the resolved
+      // /private/var/... spelling (and Windows adds case drift). Compare
+      // realpath-resolved, platform-folded keys or every lane under a symlinked
+      // tmp root misses its own resume target.
+      const canonicalKey = (value: string): string => {
+        let resolved = value;
+        try {
+          resolved = fs.realpathSync(value);
+        } catch {
+          // Missing/deleted directory: compare the raw spelling.
+        }
+        return pathKey(resolved);
+      };
+      const requestedKey = canonicalKey(args.cwd);
       const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
       const hasStartedAt = Number.isFinite(requestedStartedAtMs);
       let bestMatch: { id: string; score: number; updatedMs: number } | null = null;
@@ -3311,7 +3491,7 @@ export function createPtyService({
         const record = row && typeof row === "object" ? row as Record<string, unknown> : null;
         const id = typeof record?.id === "string" ? record.id.trim() : "";
         const directory = typeof record?.directory === "string" ? record.directory.trim() : "";
-        if (!id || directory !== args.cwd) continue;
+        if (!id || !directory || canonicalKey(directory) !== requestedKey) continue;
         const createdMs = Number(record?.created);
         const updatedMs = Number(record?.updated);
         let referenceMs: number;
@@ -3387,6 +3567,79 @@ export function createPtyService({
     } catch {
       return null;
     }
+  };
+
+  // Provider CLIs only open their transcript once they have booted, so the
+  // capture polls on a decaying schedule. Every attempt is deferred and the
+  // enumeration itself is async: shelling out to lsof/handle.exe on the main
+  // thread would stall the whole app, and a live PTY that is being torn down
+  // must never trigger another probe (closeEntry clears the timer).
+  const scheduleProviderSessionHandleCapture = (entry: PtyEntry): void => {
+    let attempt = 0;
+    const tick = async (): Promise<void> => {
+      entry.sessionHandleCaptureTimer = null;
+      if (entry.disposed) return;
+      const session = sessionService.get(entry.sessionId);
+      if (sanitizeResumeTargetId(session?.resumeMetadata?.targetId ?? null)) return;
+      const pid = entry.pty.pid;
+      if (typeof pid === "number" && pid > 0) {
+        const captured = await captureProviderSessionFromPidTree({ rootPid: pid }).catch(() => null);
+        if (entry.disposed) return;
+        if (captured) {
+          let resumeCmd: string;
+          switch (captured.provider) {
+            case "codex":
+              resumeCmd = `codex resume ${captured.sessionId}`;
+              break;
+            case "claude":
+              resumeCmd = `claude --resume ${captured.sessionId}`;
+              break;
+            case "droid":
+              resumeCmd = `droid --resume ${captured.sessionId}`;
+              break;
+            case "opencode":
+              resumeCmd = `opencode --session ${captured.sessionId}`;
+              break;
+            case "pi":
+              // Canonical POSIX form, matching the storage-backfill producer below.
+              resumeCmd = commandArrayToLine(["pi", "--session", captured.sessionId], { platform: "linux" });
+              break;
+            case "cursor":
+              resumeCmd = `cursor-agent --resume ${captured.sessionId}`;
+              break;
+            default: {
+              const exhaustive: never = captured.provider;
+              throw new Error(`Unhandled provider ${exhaustive}`);
+            }
+          }
+          sessionService.setResumeCommand(entry.sessionId, resumeCmd);
+          logger.info("pty.resume_target_captured_from_handles", {
+            sessionId: entry.sessionId,
+            provider: captured.provider,
+            nativeSessionId: captured.sessionId,
+            pid: captured.pid,
+          });
+          return;
+        }
+      }
+      if (attempt >= PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS.length) {
+        logger.info("pty.resume_target_handle_capture_exhausted", {
+          sessionId: entry.sessionId,
+          toolType: entry.toolTypeHint,
+        });
+        return;
+      }
+      scheduleNextAttempt();
+    };
+    const scheduleNextAttempt = (): void => {
+      if (entry.disposed) return;
+      const delayMs = PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS[attempt]!;
+      attempt += 1;
+      const timer = setTimeout(() => { void tick(); }, delayMs);
+      timer.unref?.();
+      entry.sessionHandleCaptureTimer = timer;
+    };
+    scheduleNextAttempt();
   };
 
   const tryBackfillResumeTarget = async (
@@ -3723,7 +3976,7 @@ export function createPtyService({
   ): void => {
     const startedAtMs = Date.parse(startedAt);
     const startedAtFinite = Number.isFinite(startedAtMs) ? startedAtMs : null;
-    const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
+    const sessionsBase = path.join(codexConfigHome({ homeDir: os.homedir() }), "sessions");
     let captured = false;
     const watchers: Array<{ close: () => void }> = [];
     const timers = new Set<NodeJS.Timeout>();
@@ -3901,6 +4154,10 @@ export function createPtyService({
     if (entry.aiTitleTimer) {
       clearTimeout(entry.aiTitleTimer);
       entry.aiTitleTimer = null;
+    }
+    if (entry.sessionHandleCaptureTimer) {
+      clearTimeout(entry.sessionHandleCaptureTimer);
+      entry.sessionHandleCaptureTimer = null;
     }
     if (entry.startupTimer) {
       clearTimeout(entry.startupTimer);
@@ -5193,7 +5450,7 @@ export function createPtyService({
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath)
         : null;
-      const effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
+      let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
         ? {
             ...args,
             startupCommand: materializedRuntimeLaunch.startupCommand,
@@ -5294,7 +5551,27 @@ export function createPtyService({
           throw Object.assign(new Error(decision.message), { code: decision.code });
         }
       }
-      const requestedStartupCommand = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
+      const requestedStartupCommandRaw = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
+      let requestedStartupCommand = requestedStartupCommandRaw;
+      if (
+        tracked
+        && isClaudeTrackedCliToolType(toolTypeHint)
+        && !existingSession
+      ) {
+        const assigned = assignClaudeLaunchSessionId({
+          command: typeof effectiveArgs.command === "string" ? effectiveArgs.command : null,
+          startupCommand: requestedStartupCommandRaw,
+          commandArgs: Array.isArray(effectiveArgs.args)
+            ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
+            : [],
+        });
+        requestedStartupCommand = assigned.startupCommand;
+        effectiveArgs = {
+          ...effectiveArgs,
+          startupCommand: assigned.startupCommand,
+          args: assigned.commandArgs,
+        };
+      }
       const requestedInitialInput = typeof effectiveArgs.initialInput === "string" ? effectiveArgs.initialInput : "";
       const requestedResumeMetadata = args.resumeMetadata ?? null;
       let initialResumeMetadata = existingSession?.resumeMetadata
@@ -5705,6 +5982,32 @@ export function createPtyService({
           }
           launchEnv.ADE_PI_SESSION_LEASE_PATH = piSessionLease.lockPath;
         }
+        // Applied here, not earlier, because `startupCommand` is still being
+        // rewritten above this point — resume-target backfill in particular
+        // replaces it wholesale with the session's persisted `resumeCommand`,
+        // which carries its own inline OPENCODE_CONFIG_CONTENT assignment and
+        // no instructions. Since a command-line assignment overrides the
+        // process environment, merging any earlier meant the restored
+        // assignment silently dropped the ADE contract on exactly the resume
+        // path this exists to cover.
+        if (isOpenCodeToolType(toolTypeHint)) {
+          const instructionsPath = ensureOpenCodeAdeInstructionsFile({
+            projectRoot,
+            laneWorktreePath: worktreePath,
+            permissionMode: args.runtimeCliLaunch?.permissionMode
+              ?? initialResumeMetadata?.launch?.permissionMode
+              ?? existingSession?.resumeMetadata?.launch?.permissionMode
+              ?? null,
+          });
+          const withInstructions = withOpenCodeAdeInstructions(
+            { env: launchEnv as Record<string, string>, startupCommand },
+            instructionsPath,
+          );
+          if (withInstructions?.env) launchEnv = withInstructions.env;
+          if (typeof withInstructions?.startupCommand === "string") {
+            startupCommand = withInstructions.startupCommand;
+          }
+        }
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
         if (spawnHelperRepair.status === "chmod_applied") {
           logger.info("pty.spawn_helper_chmod_applied", { path: spawnHelperRepair.path });
@@ -5883,6 +6186,7 @@ export function createPtyService({
         lastResizeRows: null,
         lastDesktopCols: cols,
         lastDesktopRows: rows,
+        mobileViewportActive: false,
         pendingDataChunks: [],
         pendingDataChars: 0,
         pendingDataTimer: null,
@@ -5894,6 +6198,7 @@ export function createPtyService({
         recentOutputTail: "",
         runtimeWindowTitleScanBuffer: "",
         aiTitleTimer: null,
+        sessionHandleCaptureTimer: null,
         startupTimer: null,
         initialInputTimer: null,
         initialInputCancel: null,
@@ -5912,6 +6217,12 @@ export function createPtyService({
         piSessionLeaseUpgradeAttempts: 0,
       };
       ptys.set(ptyId, entry);
+      if (
+        isTrackedAgentCliToolType(toolTypeHint)
+        && !sanitizeResumeTargetId(initialResumeMetadata?.targetId ?? null)
+      ) {
+        scheduleProviderSessionHandleCapture(entry);
+      }
       if (chatSessionId) {
         terminalChatSessions.set(sessionId, chatSessionId);
         promoteActiveChatTerminal(chatSessionId, sessionId, toolTypeHint);
@@ -6591,11 +6902,6 @@ export function createPtyService({
                 ?? resumableSession.resumeMetadata?.launch.permissionMode
                 ?? null,
               model: overrides.model ?? launchMetadata?.model ?? null,
-              reasoningEffort: overrides.reasoningEffort ?? launchMetadata?.reasoningEffort ?? null,
-              fastMode: overrides.fastMode
-                ?? launchMetadata?.fastMode
-                ?? launchMetadata?.codexFastMode
-                ?? null,
               prompt: text,
             };
             return process.platform === "win32"
@@ -7052,14 +7358,8 @@ export function createPtyService({
       if (!live) throw new Error("No running terminal matched the requested resize target.");
       const [liveId, entry] = live;
       const safe = clampDims(args.cols, args.rows);
-      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) {
-        return { ok: true, cols: safe.cols, rows: safe.rows };
-      }
       try {
-        entry.pty.resize(safe.cols, safe.rows);
-        entry.lastResizeCols = safe.cols;
-        entry.lastResizeRows = safe.rows;
-        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        applyDesktopDrivenResize(entry, safe.cols, safe.rows);
         return { ok: true, cols: safe.cols, rows: safe.rows };
       } catch (err) {
         logger.warn("pty.terminal_resize_failed", { ptyId: liveId, err: String(err) });
@@ -7101,15 +7401,11 @@ export function createPtyService({
       const safe = clampDims(cols, rows);
       // The ptyId-based path is only driven by the desktop renderer: remember
       // its size (even when the resize itself dedupes) so a mobile-driven
-      // resize can be undone when the phone detaches.
-      entry.lastDesktopCols = safe.cols;
-      entry.lastDesktopRows = safe.rows;
-      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return;
+      // resize can be undone when the phone detaches. While a phone is
+      // subscribed, do not apply the live resize — last writer used to win
+      // and a focused desktop pane kept ultrawide TUIs off the phone screen.
       try {
-        entry.pty.resize(safe.cols, safe.rows);
-        entry.lastResizeCols = safe.cols;
-        entry.lastResizeRows = safe.rows;
-        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        applyDesktopDrivenResize(entry, safe.cols, safe.rows);
       } catch (err) {
         logger.warn("pty.resize_failed", { ptyId, err: String(err) });
       }
@@ -7158,16 +7454,18 @@ export function createPtyService({
       const safe = clampDims(cols, rows);
       // A mobile viewport must never become the desktop-preferred size — it
       // is restored from lastDesktop* when the phone detaches.
-      if (opts?.source !== "mobile") {
-        entry.lastDesktopCols = safe.cols;
-        entry.lastDesktopRows = safe.rows;
+      if (opts?.source === "mobile") {
+        entry.mobileViewportActive = true;
+        try {
+          applyLivePtyResize(entry, safe.cols, safe.rows);
+          return true;
+        } catch (err) {
+          logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
+          return false;
+        }
       }
-      if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return true;
       try {
-        entry.pty.resize(safe.cols, safe.rows);
-        entry.lastResizeCols = safe.cols;
-        entry.lastResizeRows = safe.rows;
-        resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        applyDesktopDrivenResize(entry, safe.cols, safe.rows);
         return true;
       } catch (err) {
         logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
@@ -7189,12 +7487,10 @@ export function createPtyService({
       const cols = entry.lastDesktopCols;
       const rows = entry.lastDesktopRows;
       if (cols == null || rows == null) return false;
+      entry.mobileViewportActive = false;
       if (entry.lastResizeCols === cols && entry.lastResizeRows === rows) return false;
       try {
-        entry.pty.resize(cols, rows);
-        entry.lastResizeCols = cols;
-        entry.lastResizeRows = rows;
-        resizeTerminalSnapshot(entry, cols, rows);
+        applyLivePtyResize(entry, cols, rows);
         return true;
       } catch (err) {
         logger.warn("pty.restore_desktop_size_failed", { sessionId, err: String(err) });
@@ -7215,6 +7511,16 @@ export function createPtyService({
 
     list(args: Parameters<typeof sessionService.list>[0] = {}): TerminalSessionSummary[] {
       return service.enrichSessions(sessionService.list(args));
+    },
+
+    listLiveTrackedCliPids(): number[] {
+      const pids: number[] = [];
+      for (const entry of ptys.values()) {
+        if (entry.disposed || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+        const pid = entry.pty.pid;
+        if (typeof pid === "number" && pid > 0) pids.push(pid);
+      }
+      return pids;
     },
 
     async readTranscriptTail(args: {
@@ -7368,6 +7674,22 @@ export function createPtyService({
         endOffset: window.endOffset,
         alignStartToSafeBoundary: args.alignStartToSafeBoundary,
       });
+    },
+
+    /**
+     * Current-screen CSI for mobile/web replacing hydrates. Prefers the live
+     * headless xterm (already in alt-screen when the PTY is) and falls back to
+     * the on-disk snapshot for ended sessions. Never includes visibleRows.
+     */
+    readScreenSnapshot(sessionId: string): TerminalScreenSnapshot | null {
+      const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!trimmed) return null;
+      const live = liveEntryBySessionId(trimmed)?.[1] ?? null;
+      if (live) {
+        const liveScreen = liveScreenSnapshot(live);
+        if (liveScreen) return liveScreen;
+      }
+      return storedScreenSnapshot(trimmed);
     },
 
     /**

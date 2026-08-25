@@ -198,6 +198,33 @@ describe("account session state", () => {
     ).toBe("unreadable");
   });
 
+  it("uses one signed-out Connections header for expired and signed-out", async () => {
+    const { accountSessionTitle, accountSessionConnectionsSubtitle } = await import("./account");
+
+    expect(accountSessionTitle("signed_out")).toBe("Signed out");
+    expect(accountSessionTitle("expired")).toBe("Signed out");
+    expect(accountSessionTitle("unreadable")).toBe("Can't read your sign-in");
+    expect(accountSessionConnectionsSubtitle("signed_out")).toBe(
+      "Sign in to easily connect your machines",
+    );
+    expect(accountSessionConnectionsSubtitle("expired")).toBe(
+      "Sign in to easily connect your machines",
+    );
+  });
+
+  it("keeps Connections header actions in the session label table", async () => {
+    const {
+      accountSessionConnectionsAction,
+      accountSessionConnectionsActionAria,
+    } = await import("./account");
+
+    expect(accountSessionConnectionsAction("signed_out")).toBe("Sign in");
+    expect(accountSessionConnectionsAction("expired")).toBe("Sign in");
+    expect(accountSessionConnectionsAction("unreadable")).toBe("Fix sign-in");
+    expect(accountSessionConnectionsAction("active")).toBe("Manage account");
+    expect(accountSessionConnectionsActionAria("unreadable")).toBe("Fix your sign-in");
+  });
+
   it("only prompts a fresh sign-in for the state where it is safe", async () => {
     const { accountSessionNotice } = await import("./account");
 
@@ -205,7 +232,7 @@ describe("account session state", () => {
     expect(accountSessionNotice("active")).toBeNull();
     expect(accountSessionNotice("expired")).toBe("Your ADE sign-in expired — sign in again.");
     expect(accountSessionNotice("unreadable")).toBe(
-      "Can't read your sign-in right now — your session is still there. Fix access instead of signing in again.",
+      "Can't read your sign-in right now — your session is still there. Try Repair before signing in again.",
     );
   });
 });

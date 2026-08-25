@@ -195,10 +195,12 @@ export function sessionStatusPresentation(
   // had already finished, and offered no elapsed to judge it by. Name the state
   // for what it is and let the row show its elapsed.
   //
-  // That elapsed is time since the session's last activity (the caller supplies
-  // the anchor — see `SessionStatusSlot`), NOT the job's own runtime, which is
-  // not in the session summary. It is a proxy: a job launched early in a long
-  // turn reads ~0s at turn end. `showsElapsed` also re-enables the breathing
+  // That elapsed counts from `backgroundWorkSince` — when this session's live
+  // background set last went from empty to non-empty — via
+  // `sessionElapsedAnchor` below, falling back to last activity for a provider
+  // that reports no background level. It is a session-level anchor, NOT any
+  // single job's runtime: a second job joining a live set counts from the
+  // first one's start. `showsElapsed` also re-enables the breathing
   // animation, which is intended — background work genuinely is a live state.
   if (phase === "running" && liveness !== "turn") {
     const work = activity.backgroundWork;
@@ -238,6 +240,71 @@ export function sessionStatusPresentation(
   }
 
   return PHASE_PRESENTATION[phase];
+}
+
+/**
+ * The ONE elapsed anchor, shared by the desktop status slot and `ade code`'s
+ * work list so the two cannot report different durations for the same row.
+ *
+ * Three anchors, one per kind of "how long":
+ *   • a live turn counts from `currentTurnStartedAt` — immutable for the turn,
+ *     so a CLI repainting its TUI cannot reset it every few seconds,
+ *   • background work counts from when that work STARTED. It used to count
+ *     from `lastActivityAt`, which every provider frame refreshes: a job that
+ *     had been running two hours read "Background work ×2 3s", which is the
+ *     same thing a job that started three seconds ago reads. The row could not
+ *     tell a long-running commitment from a fresh one, which is exactly the
+ *     judgement the elapsed exists to support,
+ *   • everything else counts from last activity.
+ *
+ * `backgroundWorkSince` is runtime-derived and may be absent (a provider with
+ * no background level, a summary from an older peer). Falling back to
+ * `lastActivityAt` keeps those rows exactly as they read before.
+ */
+export type SessionElapsedAnchors = {
+  currentTurnStartedAt?: string | null;
+  lastActivityAt?: string | null;
+  startedAt?: string | null;
+  backgroundWorkSince?: string | null;
+};
+
+export function sessionElapsedAnchor(
+  session: SessionElapsedAnchors,
+  phase: CanonicalSessionPhase,
+  liveness: SessionLiveness | null | undefined,
+): string | null {
+  const lastActivity = session.lastActivityAt ?? session.startedAt ?? null;
+  if (phase !== "running") return lastActivity;
+  if (liveness && liveness !== "turn") return session.backgroundWorkSince ?? lastActivity;
+  return session.currentTurnStartedAt ?? lastActivity;
+}
+
+/**
+ * The already-formatted elapsed a text surface shows beside a status word —
+ * "2h" in "Background work ×2 2h".
+ *
+ * `ade code` and `ade session show` both need a finished string, and each would
+ * otherwise re-derive the same three steps (does this presentation want an
+ * elapsed, is the anchor parseable, format it). One helper so the two cannot
+ * report different durations for the same session. The desktop deliberately
+ * does NOT use it: its status slot feeds the raw anchor to a component that
+ * ticks, so it wants `sessionElapsedAnchor` instead.
+ *
+ * Null whenever the presentation does not want an elapsed, or the anchor is
+ * missing or unparseable.
+ */
+export function sessionElapsedLabel(
+  session: SessionElapsedAnchors,
+  presentation: SessionStatusPresentation | null,
+  phase: CanonicalSessionPhase,
+  liveness: SessionLiveness | null | undefined,
+  nowMs: number,
+): string | null {
+  if (!presentation?.showsElapsed) return null;
+  const anchor = sessionElapsedAnchor(session, phase, liveness);
+  const anchorMs = anchor ? Date.parse(anchor) : Number.NaN;
+  if (!Number.isFinite(anchorMs)) return null;
+  return formatWorkingDuration(Math.max(0, nowMs - anchorMs));
 }
 
 /**

@@ -39,6 +39,11 @@ export interface ExternalSessionSummary {
   alreadyImported: boolean;
   importedSessionRef?: { kind: "chat" | "cli"; sessionId: string } | null;
   possiblyActive: boolean;
+  /**
+   * True when ADE imported this provider session before and the ADE row is gone.
+   * Browse still lists it as importable; this is a hint, not a hide.
+   */
+  importedBefore?: boolean;
   cwdMatchesRequestedLane: boolean | null;
   capabilities: ExternalSessionCapabilities;
 }

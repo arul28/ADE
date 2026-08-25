@@ -4,6 +4,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatSubagentTranscriptMessage,
 } from "./types/chat";
+import { resolveModelDescriptor } from "./modelRegistry";
 
 export type SubagentSnapshot = {
   id: string;
@@ -118,6 +119,8 @@ export type SubagentPaneViewState = {
   showAll?: Partial<Record<SubagentPaneViewSection, boolean>>;
   cleared?: Partial<Record<SubagentPaneViewSection, readonly string[] | ReadonlySet<string>>>;
   pinnedIds?: readonly string[] | ReadonlySet<string>;
+  /** TUI chat-info: omit the ghost "main" row; selection 0 still means the parent chat. */
+  hideMain?: boolean;
 };
 
 export type SubagentPaneRow =
@@ -151,6 +154,56 @@ export type SubagentPaneContent = {
 
 function textField(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export const SUBAGENT_MODEL_INHERITED_SUFFIX = "inherited";
+
+export type SubagentModelAttribution = {
+  label: string;
+  inherited: boolean;
+};
+
+/** Pretty-print a reported subagent model id. Does not invent a parent fallback. */
+export function formatSubagentModelLabel(model: string | null | undefined): string | null {
+  const raw = textField(model);
+  if (!raw) return null;
+  return resolveModelDescriptor(raw)?.displayName ?? raw;
+}
+
+/**
+ * Display-only attribution for Chat Info header/roster chips.
+ * A reported snapshot model is ground truth. Missing model falls back to the
+ * parent session label and is marked inherited — never written onto the envelope.
+ */
+export function subagentModelAttribution(args: {
+  snapshotModel?: string | null;
+  sessionModelLabel?: string | null;
+}): SubagentModelAttribution | null {
+  const reported = formatSubagentModelLabel(args.snapshotModel);
+  if (reported) return { label: reported, inherited: false };
+  const session = formatSubagentModelLabel(args.sessionModelLabel);
+  if (!session) return null;
+  return { label: session, inherited: true };
+}
+
+export function formatSubagentModelChip(attribution: SubagentModelAttribution | null): string | null {
+  if (!attribution) return null;
+  return attribution.inherited
+    ? `${attribution.label} · ${SUBAGENT_MODEL_INHERITED_SUFFIX}`
+    : attribution.label;
+}
+
+export function chatInfoHeaderModelAttribution(args: {
+  inspectedSnapshotModel?: string | null;
+  sessionModelLabel: string;
+  inspecting: boolean;
+}): SubagentModelAttribution {
+  const session = textField(args.sessionModelLabel) ?? args.sessionModelLabel;
+  if (!args.inspecting) return { label: session, inherited: false };
+  return subagentModelAttribution({
+    snapshotModel: args.inspectedSnapshotModel,
+    sessionModelLabel: session,
+  }) ?? { label: session, inherited: true };
 }
 
 export function subagentAgentKey(event: { agentId?: string | null; taskId?: string | null }): string | null {
@@ -918,7 +971,9 @@ export function buildSubagentPaneRows(
     ];
   }
 
-  const rows: SubagentPaneRow[] = [{ kind: "main", key: "main", section: "main", label: "main" }];
+  const rows: SubagentPaneRow[] = viewState.hideMain
+    ? []
+    : [{ kind: "main", key: "main", section: "main", label: "main" }];
   const pinnedIds = new Set(viewState.pinnedIds ?? []);
   const sections: Array<{
     section: SubagentPaneDisclosureSection;
@@ -1106,7 +1161,7 @@ export function subagentIndexForPaneLine(
     ? { visibleRows: rows.filter((row) => row.kind !== "main"), hiddenBefore: 0, hiddenAfter: 0 }
     : windowSubagentPaneRows(rows, selectedIndex, windowCapacity);
   const visibleRows: Array<SubagentPaneRow | null> = [
-    rows.find((row) => row.kind === "main") ?? null,
+    ...(rows.find((row) => row.kind === "main") ? [rows.find((row) => row.kind === "main")!] : []),
     ...(windowed.hiddenBefore > 0 ? [null] : []),
     ...windowed.visibleRows,
     ...(windowed.hiddenAfter > 0 ? [null] : []),

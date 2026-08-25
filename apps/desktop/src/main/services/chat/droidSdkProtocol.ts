@@ -20,11 +20,19 @@ export type DroidSdkReasoningEffort =
 
 export type DroidSdkSessionSettings = {
   modelId: string;
-  autonomyLevel: DroidSdkAutonomyLevel;
-  interactionMode: DroidSdkInteractionMode;
-  reasoningEffort?: DroidSdkReasoningEffort | null;
-  specModeModelId?: string | null;
-  specModeReasoningEffort?: DroidSdkReasoningEffort | null;
+  /**
+   * Omitted when the user has chosen no ADE permission mode, so Droid resolves
+   * autonomy from their own ~/.factory/settings.json. Both keys are optional in
+   * the SDK, and omission resolves per key — a live probe confirmed an omitted
+   * key falls through to the user's file while any stated value outranks it.
+   * Never send null: an explicit null wedges the Droid RPC for 30 seconds.
+   * See services/shared/providerConfigHomes.ts for the rule this follows.
+   */
+  autonomyLevel?: DroidSdkAutonomyLevel;
+  interactionMode?: DroidSdkInteractionMode;
+  reasoningEffort?: DroidSdkReasoningEffort;
+  specModeModelId?: string;
+  specModeReasoningEffort?: DroidSdkReasoningEffort;
   /**
    * Droid tool categories to withhold from the model, resolved to concrete
    * `disabledToolIds` in the worker (tool ids are build-specific, categories
@@ -41,6 +49,29 @@ export type DroidSdkSessionSettings = {
  * `apply-patch-cli`, `create-cli`, …), so ADE selects by the category Droid
  * itself reports rather than pinning a brittle id list.
  */
+/**
+ * Undefined in, undefined out. An omitted interactionMode means "ADE has no
+ * opinion, let ~/.factory/settings.json decide" — materialising a default here
+ * would restate it at the highest precedence and undo the omission upstream.
+ *
+ * Takes the enum table rather than the SDK module so it stays a pure mapping.
+ */
+export function droidInteractionModeValue<T>(
+  table: { Auto: T; Spec: T; AGI: T },
+  mode: DroidSdkInteractionMode | undefined,
+): T | undefined {
+  switch (mode) {
+    case "spec":
+      return table.Spec;
+    case "agi":
+      return table.AGI;
+    case "auto":
+      return table.Auto;
+    default:
+      return undefined;
+  }
+}
+
 export function droidDisabledToolIdsForCategories(
   tools: ReadonlyArray<{ id?: unknown; category?: unknown }>,
   categories: readonly DroidToolCategory[],

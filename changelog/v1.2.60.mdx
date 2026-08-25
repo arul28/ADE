@@ -1,0 +1,38 @@
+---
+title: "v1.2.60"
+description: "Release notes for ADE v1.2.60 - August 17, 2026"
+---
+
+A slow-starting background service no longer looks like a broken install. Project creation and chat recovery are more direct, connection surfaces are clearer, and the Files tab can browse any connected machine.
+
+---
+
+## Startup and recovery
+
+- **A brain that is still booting is no longer reported as broken.** ADE used to show "the background service couldn't be set up" and "ADE couldn't open this project" while the background service was simply still starting — most often right after an auto-update. ADE now waits for a starting service instead of declaring failure, and Repair no longer interrupts one that is on its way up.
+- **The `ade` CLI launches on macOS again.** A missing entitlement made the command-line tool crash during startup on every launch.
+
+## Work and chat
+
+- **Create and open projects land in Work.** The project flow now takes you directly to the place where you can start working, without an extra setup detour.
+- **Selected output becomes chat context.** Highlighted assistant text can be turned into context chips for the next prompt.
+- **Imported sessions follow ADE's existing ownership model.** Import Sessions now reuses the session state ADE already owns, keeping the browser focused on useful recovery actions.
+- **The new-chat column reads in order.** The import hint moved below the activity graph instead of splitting the composer from the launch shelf, and the wordmark is scaled to match.
+
+## Files
+
+- **Files browses any connected machine.** Navigation and editing work across machines, not just the one in front of you.
+
+## Connections and authentication
+
+- **The Connections pane is easier to scan.** Machine connection states and actions are organized around the information needed to connect, recover, or manage a machine.
+- **Sign-in recovers from session-ticket failures.** When session creation returns a client error, ADE falls back to Clerk sign-in tickets instead of leaving the account flow stranded.
+
+## iOS
+
+- **The composer handles long content cleanly.** Overflow behavior is corrected, and the turn-end meter makes context usage visible at the right moment.
+- **Prompt stashes are per-project.** Reusable prompts stay with the project where they belong.
+
+## Delivery
+
+- **Push relay deploys now prove authenticated paths.** Production deployment smoke credentials are minted as part of the guarded release checks.

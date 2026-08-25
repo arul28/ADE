@@ -70,6 +70,13 @@ type ChatCommandMenuProps = {
   onSelect: (item: ChatCommandMenuItem) => void;
   /** Called when menu should close. */
   onClose: () => void;
+  /**
+   * Called once when a non-empty @ query settles with nothing to show. The
+   * owner closes the menu and keeps it closed while the user keeps typing that
+   * dead query — search only narrows, so more characters cannot bring matches
+   * back.
+   */
+  onNoMatches?: (trigger: ComposerTrigger) => void;
 };
 
 type FileResult = { path: string };
@@ -117,7 +124,8 @@ const QUERY_CACHE_MAX = 40;
 // ---------------------------------------------------------------------------
 
 type SuggestionSource<T> = ((query: string) => Promise<T[]>) | undefined;
-type SuggestionState<T> = { search: SuggestionSource<T>; results: T[] };
+/** `query` is the query these results belong to — anything else is in flight. */
+type SuggestionState<T> = { search: SuggestionSource<T>; query: string | null; results: T[] };
 
 /**
  * One @-menu suggestion source. Cached queries render in the same frame with a
@@ -134,7 +142,7 @@ function useDebouncedSuggestions<T>(
   /** Identity of the open menu; `null` means "closed — drop the cache". */
   cacheKey: string | null,
 ): { results: T[]; loading: boolean } {
-  const [state, setState] = useState<SuggestionState<T>>({ search: undefined, results: [] });
+  const [state, setState] = useState<SuggestionState<T>>({ search: undefined, query: null, results: [] });
   const [loading, setLoading] = useState(false);
   const cacheRef = useRef<{ search: SuggestionSource<T>; map: Map<string, T[]> }>({
     search: undefined,
@@ -153,7 +161,7 @@ function useDebouncedSuggestions<T>(
   useEffect(() => {
     if (!enabled || !search) {
       seqRef.current += 1;
-      setState({ search, results: [] });
+      setState({ search, query, results: [] });
       setLoading(false);
       return;
     }
@@ -164,10 +172,10 @@ function useDebouncedSuggestions<T>(
     }
     const cached = cacheRef.current.map.get(query);
     if (cached) {
-      setState({ search, results: cached.slice(0, max) });
+      setState({ search, query, results: cached.slice(0, max) });
       setLoading(false);
     } else {
-      setState({ search, results: [] });
+      setState({ search, query, results: [] });
       setLoading(true);
     }
 
@@ -184,9 +192,9 @@ function useDebouncedSuggestions<T>(
           const oldest = map.keys().next().value;
           if (oldest !== undefined) map.delete(oldest);
         }
-        setState({ search, results: results.slice(0, max) });
+        setState({ search, query, results: results.slice(0, max) });
       } catch {
-        if (seqRef.current === seq && !cached) setState({ search, results: [] });
+        if (seqRef.current === seq && !cached) setState({ search, query, results: [] });
       } finally {
         if (seqRef.current === seq) setLoading(false);
       }
@@ -197,8 +205,12 @@ function useDebouncedSuggestions<T>(
     };
   }, [enabled, query, search, max, cacheKey]);
 
-  // Results produced by a previous provider are discarded rather than shown.
-  return { results: state.search === search ? state.results : [], loading };
+  // Results produced by a previous provider or a previous query are discarded
+  // rather than shown, and count as still-loading: state updates from this
+  // render's effects are not visible to consumers until the next render, so
+  // `loading` alone would read "settled" for one frame after every keystroke.
+  const stale = state.search !== search || state.query !== query;
+  return { results: stale ? [] : state.results, loading: loading || stale };
 }
 
 
@@ -286,7 +298,7 @@ function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]
 
 export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenuProps>(
   function ChatCommandMenu(
-    { trigger, slashCommands, onFileSearch, onMentionSearch, anchor, onSelect, onClose },
+    { trigger, slashCommands, onFileSearch, onMentionSearch, anchor, onSelect, onClose, onNoMatches },
     ref,
   ) {
     const [selectedIndex, setSelectedIndex] = useState(0);
@@ -446,6 +458,24 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const isAtTrigger = trigger?.type === "at";
     const canSearchAt = Boolean(onFileSearch) || Boolean(onMentionSearch);
     const loading = fileLoading || mentionLoading;
+
+    // ---- Dead-query dismissal ----
+    // An @ query that settles with zero rows is reported once so the owner can
+    // close the menu instead of leaving it parked over the draft while the user
+    // types the rest of a sentence. An empty query is a browse, not a search:
+    // it can legitimately show nothing now and match once the user types.
+    const reportedEmptyQueryRef = useRef<string | null>(null);
+    useEffect(() => {
+      if (!trigger || trigger.type !== "at" || !canSearchAt) {
+        reportedEmptyQueryRef.current = null;
+        return;
+      }
+      if (!trigger.query.trim() || loading || items.length > 0) return;
+      if (reportedEmptyQueryRef.current === trigger.query) return;
+      reportedEmptyQueryRef.current = trigger.query;
+      onNoMatches?.(trigger);
+    }, [trigger, canSearchAt, loading, items.length, onNoMatches]);
+
     // One empty-state message; the branches are mutually exclusive by construction.
     const emptyMessage = !trigger || loading
       ? null

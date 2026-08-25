@@ -70,6 +70,7 @@ import {
   discoverClaudePlugins,
   discoverClaudeOutputStyles,
   readClaudeOutputStyleSelection,
+  readClaudeWorkflowSizeGuideline,
   resolveClaudeOutputStyle,
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
@@ -92,7 +93,29 @@ import {
 } from "./claudeWorkflowProgress";
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
-import { parentShouldWakeForChildTurn } from "./spawnMissionOwnership";
+import {
+  CODEX_COMPACTION_STALL_MS,
+  type CodexCompactionFailReason,
+  codexServerSupportsBackgroundTerminals,
+  codexServerSupportsDeferGoalContinuation,
+  codexServerSupportsMemoryRpc,
+  codexServerSupportsPaginatedHistory,
+  codexServerSupportsThreadQueue,
+  codexServerSupportsThreadRevert,
+  codexServerSupportsThreadSettings,
+  codexServerSupportsUserShell,
+} from "./codexAppServerFeatures";
+import {
+  CODEX_MEMORY_RESET_RECEIPT,
+  parseCodexMemorySlashCommand,
+  parseCodexShellSlashCommand,
+  parseCodexUserShellDraft,
+  shouldCoalesceCodexCheckIn,
+} from "../../../shared/codexComposerCommands";
+import {
+  countHumanChildMessagesForTurn,
+  formatHumanChildMessageAnnotation,
+} from "./spawnMissionOwnership";
 import {
   classifyCodexResumeFailure,
   type ResumeFailureClassification,
@@ -127,6 +150,11 @@ import {
   type BufferedAssistantText,
 } from "./chatTextBatching";
 import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
+import {
+  buildFittedTranscriptReplay,
+  buildTranscriptReplayDocument,
+  toReplayForkDisclosure,
+} from "./crossProviderReplayFork";
 import {
   isPrimaryPinnedIdentity,
   normalizeIdentityPermissionMode,
@@ -220,6 +248,8 @@ import type {
   AgentChatCrossMachineForkTransport,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexResetMemoryArgs,
+  AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexGetGoalArgs,
@@ -245,12 +275,16 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
   AgentChatSpawnCompletion,
+  AgentChatSpawnKind,
+  AgentChatSetSpawnKindArgs,
+  AgentChatDismissSubagentTakeoverPromptArgs,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
   AgentChatFileRef,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
+  AgentChatReplayForkDisclosure,
   AgentChatIdentityKey,
   AgentChatImportedFrom,
   AgentChatImportExternalSessionArgs,
@@ -358,8 +392,13 @@ import {
   isPtySendPreDeliveryError,
   isTrackedAgentCliToolType,
   providerSupportsCrossMachineHandoffFork,
+  providerForkReplaysTranscript,
   providerSupportsHandoffFork,
 } from "../../../shared/types";
+import {
+  supportsActiveTurnDispatchMode,
+  unsupportedActiveTurnDispatchModeMessage,
+} from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   flattenAnswerForSingleStringProvider,
@@ -390,6 +429,14 @@ import type {
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
 } from "../../../shared/types/chatMentions";
+import type { RuntimeProcessSummary } from "../../../shared/types/sessions";
+import { formatWorkingDuration } from "../../../shared/sessionStatusPresentation";
+import {
+  createChatRuntimeBudget,
+  type ChatRuntimeBudget,
+  type EvictableRuntime,
+  type RuntimeBudgetParticipant,
+} from "./chatRuntimeBudget";
 import { createChatMentionService, markChatMentionsExpanded } from "./chatMentionService";
 import {
   claudeJsonlToChatEvents,
@@ -478,6 +525,15 @@ import {
   type AdeCardRow,
 } from "../../../shared/adeCard";
 import { readTrustedAdeCardAuthor } from "./adeCardProvenance";
+import {
+  buildClaudeSessionQuotaCard,
+  classifyClaudeRateLimitInfo,
+  claudeSessionQuotaCardId,
+  isClaudeSessionQuotaText,
+  mergeClaudeSessionQuotaSnapshot,
+  snapshotFromClaudeSessionQuotaText,
+  type ClaudeSessionQuotaSnapshot,
+} from "../../../shared/claudeSessionQuota";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import {
@@ -490,6 +546,7 @@ import {
 } from "../skills/agentSkillRuntimeService";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
+  SESSION_STALE_AFTER_MS,
   summarizeBackgroundWork,
   totalBackgroundWork,
   type SessionBackgroundWork,
@@ -506,6 +563,8 @@ import {
   deriveBackgroundItems,
   resolveScheduledWorkTiming,
 } from "../../../shared/chatScheduledWork";
+import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
+import { createHostSleepChipTracker } from "./hostSleepChipTracker";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
   readTranscriptHistoryPage,
@@ -538,6 +597,7 @@ import {
   buildOpenCodePromptParts,
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
+  openCodePartUpdatedDelta,
   refreshOpenCodeSessionToolSelection,
   resolveOpenCodeExecutablePath,
   resolveOpenCodeModelSelection,
@@ -552,11 +612,28 @@ import { resolveDroidExecutable } from "../ai/droidExecutable";
 import {
   acquireCursorSdkConnection,
   isCursorSdkPooledAlive,
+  poisonCursorSdkConnection,
   releaseCursorSdkConnection,
   resolveCursorSdkUserHome,
   runCursorSdkCloudRequest,
   type CursorSdkPooled,
 } from "./cursorSdkPool";
+import {
+  cloudConversationHasTurns,
+  CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS,
+  CURSOR_CLOUD_CONVERSATION_RETRY_MS,
+  flattenCloudConversationMessages,
+  fingerprintAlreadyHydrated,
+  isCloudRunStillLive,
+  cloudRunsFromList,
+  readCloudTextField,
+  cloudTurnFingerprint,
+  transcriptCloudFingerprints,
+  unwrapCloudConversationTurn,
+  releaseCursorCloudAttachLease,
+  type CursorCloudMirrorRefreshResult,
+} from "./cursorCloudConversation";
+import { createCursorCloudMirrorWatch } from "./cursorCloudMirrorWatch";
 import {
   acquireDroidSdkConnection,
   releaseDroidSdkConnection,
@@ -602,6 +679,13 @@ import {
   mapCursorSdkRunResultToDoneEvent,
 } from "./cursorSdkEventMapper";
 import {
+  mapCursorAgentUsageToTokenEntry,
+  mapCursorAgentUsageToTokensEvent,
+  selectCursorAgentTurnUsage,
+} from "../usage/cursorUsageMapping";
+import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
+import type { CursorCloudIngressEventRecord } from "../automations/cursorCloudIngressService";
+import {
   createDroidSdkEventMapperState,
   mapDroidSdkMessageToChatEvents,
   mapDroidSdkRunResultToDoneEvent,
@@ -620,7 +704,12 @@ import {
   resolveCursorSdkPolicy,
 } from "./cursorSdkPolicy";
 import {
+  CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
   classifyCursorSdkErrorText,
+  isCursorSdkStaleAccessTokenText,
+  readCursorSdkStaleTokenFailure,
+  type CursorSdkStaleTokenFailure,
+  type CursorSdkErrorKind,
   type CursorSdkAgentMode,
   type CursorSdkCloudArtifactDescriptor,
   type CursorSdkCloudArtifactDownloadResult,
@@ -631,6 +720,7 @@ import {
   type CursorSdkHookRequest,
   type CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
+import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
   DroidSdkAskUserResponse,
@@ -1015,6 +1105,22 @@ type PersistedChatState = {
   cursorSdkAgentProtocolVersion?: number;
   cursorSdkAgentId?: string;
   cursorSdkRunId?: string;
+  /**
+   * One-shot: the next Cursor send may expire a still-active persisted run
+   * (SDK `local.force`). Durable because the runtime that observed the
+   * abandonment can be evicted (idle TTL, budget) before the next send, while
+   * `cursorSdkAgentId` survives and resumes the very agent holding the run.
+   */
+  cursorSdkForceExpireNextSend?: boolean;
+  /**
+   * One-shot: ADE decided this session's Cursor agent is unusable and the next
+   * runtime must open a fresh one. Durable for the same reason as the expiry
+   * flag — `teardownRuntime("pool_compaction")` preserves and persists the
+   * *wedged* `cursorSdkAgentId`, so a restart before the next send would
+   * otherwise resume the very thread ADE just abandoned. Holds the previous
+   * agent id so the rotation preamble can name it.
+   */
+  cursorSdkPendingRotationPreviousAgentId?: string;
   /** Durable Cursor Cloud agent id once this session has been promoted to cloud. */
   cursorCloudAgentId?: string;
   /** Default runtime for new turns in this session. Set on promotion. */
@@ -1055,6 +1161,8 @@ type PersistedChatState = {
   orchestrationRole?: "lead" | "worker" | "validator";
   orchestrationParentSessionId?: string;
   spawnKind?: AgentChatSession["spawnKind"];
+  subagentTakeoverPromptShownAt?: string | null;
+  pendingTranscriptReplay?: string | null;
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
@@ -1302,6 +1410,20 @@ type CodexRuntime = {
   planTextByItemId: Map<string, string>;
   manualCompactionItemIds: Set<string>;
   manualCompactionPending: boolean;
+  activeCompactions: Map<string, {
+    itemId: string;
+    trigger: "manual" | "auto";
+    turnId: string;
+    startedAt: number;
+    timer: NodeJS.Timeout | null;
+  }>;
+  reviewTurnIds: Set<string>;
+  lastQueuedCheckIn: { text: string; atMs: number } | null;
+  queuedSubmissionBySteerId: Map<string, string>;
+  backgroundTerminalsByProcessId: Map<string, { command: string; cwd: string | null; itemId: string | null }>;
+  userShellItemIds: Set<string>;
+  memoryMode: "enabled" | "disabled" | null;
+  historyPaginated: boolean;
   webSearchActionsByItemId: Map<string, CodexWebSearchAction[]>;
   planningApprovalGuardByTurnId: Map<string, boolean>;
   pendingTurnPlanningApprovalGuarded: boolean | null;
@@ -1428,6 +1550,8 @@ type ClaudeActiveSubagent = {
    * so must never appear as a row in the Subagents roster.
    */
   nonAgentTaskRun?: boolean;
+  /** Child model from Task/Agent input or SDK messages — never the parent session model. */
+  model?: string;
 };
 
 type ClaudeContextGuardrailState = {
@@ -1492,6 +1616,7 @@ type ClaudeRuntime = {
     name?: string;
     description?: string;
     isBackground?: boolean;
+    model?: string;
   }>;
   /**
    * Per-workflow-task emit state for the SDK's undocumented
@@ -1534,6 +1659,19 @@ type ClaudeRuntime = {
    * background shell, and would silently classify those as unknown.
    */
   backgroundTaskTypeById: Map<string, string>;
+  /**
+   * When `liveBackgroundTaskIds` last went from empty to non-empty, in epoch ms.
+   *
+   * The status row's elapsed used to count from the session's last activity,
+   * which for a background-only session is refreshed by every provider frame —
+   * so a job that had been running for hours still read "Background work ×2 3s"
+   * and was indistinguishable from one that had just started. This is the
+   * honest anchor: how long this session has owned background work.
+   *
+   * Reset with the set, so a session that drains its jobs and starts new ones
+   * counts from the new ones. Null whenever no background work is live.
+   */
+  backgroundWorkStartedAt: number | null;
   /** True after this CLI process has emitted its first authoritative level. */
   backgroundTasksLevelObserved: boolean;
   seenBackgroundTaskIds: Set<string>;
@@ -1591,10 +1729,24 @@ type ClaudeRuntime = {
   rateLimitWarningEmitted: boolean;
 };
 
+/**
+ * Keep `backgroundWorkStartedAt` in step with the live level set. Idempotent by
+ * design so every site that mutates `liveBackgroundTaskIds` can call it without
+ * having to know whether it was the transition.
+ */
+function syncClaudeBackgroundWorkAnchor(runtime: ClaudeRuntime): void {
+  if (runtime.liveBackgroundTaskIds.size === 0) {
+    runtime.backgroundWorkStartedAt = null;
+    return;
+  }
+  if (runtime.backgroundWorkStartedAt == null) runtime.backgroundWorkStartedAt = Date.now();
+}
+
 function resetClaudeProcessBackgroundLevel(runtime: ClaudeRuntime): void {
   runtime.liveBackgroundTaskIds.clear();
   runtime.backgroundTaskTypeById.clear();
   runtime.backgroundTasksLevelObserved = false;
+  syncClaudeBackgroundWorkAnchor(runtime);
 }
 
 function settleClaudeInitialInputDispatch(
@@ -1624,6 +1776,9 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/init", description: "Generate an AGENTS.md scaffold in the current directory.", source: "sdk" },
   { name: "/goal", description: "Set, show, pause, resume, or clear the chat goal.", source: "local", argumentHint: "[pause|resume|clear|<objective>]" },
   { name: "/inject", description: "Inject context text into Codex thread history.", source: "local", argumentHint: "<context text>" },
+  { name: "/shell", description: "Run an unsandboxed user shell command.", source: "local", argumentHint: "<command>" },
+  { name: "/memory", description: "Show or change this thread's Codex memory eligibility.", source: "local", argumentHint: "[on|off|status]" },
+  { name: "/memory-reset", description: "Clear every memory file under this Codex home.", source: "local" },
   { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
   { name: "/fast", description: "Toggle Fast mode for supported models.", source: "local", argumentHint: "[on|off|status]" },
@@ -1715,6 +1870,106 @@ type PendingOpenCodeApproval = {
   request?: PendingInputRequest;
 };
 
+/** Stable id for one OpenCode todo entry, which carries no id of its own. */
+function openCodeTodoId(todo: unknown, index: number): string {
+  const candidate = (todo as { id?: unknown } | null | undefined)?.id;
+  return typeof candidate === "string" && candidate.trim().length
+    ? candidate.trim()
+    : `todo-${index}`;
+}
+
+/**
+ * The pre-`permission.asked` approval event.
+ *
+ * OpenCode 1.18.21 — the version ADE pins and bundles — publishes only
+ * `permission.asked` and `permission.replied`; `permission.updated` is gone from
+ * both its source and the current SDK types. But `resolveOpenCodeBinaryPath`
+ * prefers a *user-installed* binary over the bundled one, so an older install
+ * can still be the server ADE is talking to, and dropping this handler would
+ * leave those users' approvals unanswered forever. It is declared here rather
+ * than narrowed from the event union because the union no longer contains it.
+ */
+type LegacyOpenCodePermissionUpdatedEvent = {
+  type: "permission.updated";
+  properties: {
+    id: string;
+    type: string;
+    sessionID: string;
+    title: string;
+    callID?: string;
+    metadata: Record<string, unknown>;
+  };
+};
+
+function asLegacyOpenCodePermissionUpdated(
+  event: { type: string },
+): LegacyOpenCodePermissionUpdatedEvent | null {
+  if (event.type !== "permission.updated") return null;
+  const properties = (event as { properties?: unknown }).properties;
+  if (!properties || typeof properties !== "object") return null;
+  const record = properties as Record<string, unknown>;
+  if (typeof record.id !== "string" || typeof record.sessionID !== "string") return null;
+  return {
+    type: "permission.updated",
+    properties: {
+      id: record.id,
+      sessionID: record.sessionID,
+      type: typeof record.type === "string" ? record.type : "",
+      title: typeof record.title === "string" ? record.title : "",
+      ...(typeof record.callID === "string" ? { callID: record.callID } : {}),
+      metadata: (record.metadata && typeof record.metadata === "object"
+        ? record.metadata
+        : {}) as Record<string, unknown>,
+    },
+  };
+}
+
+/**
+ * Answer one pending OpenCode approval.
+ *
+ * The two protocols are different endpoints, not different spellings of one:
+ * `permission.asked` carries a request id answered at `/permission/{id}/reply`,
+ * while the legacy `permission.updated` flow is keyed by session + permission id
+ * at `/session/{id}/permissions/{permissionID}`. Both are reachable from the v2
+ * client. Routing every reply through here keeps teardown, interrupt, and the
+ * user-facing decision path on one implementation — they had drifted onto
+ * different call shapes before, and only the user-facing one had `throwOnError`.
+ */
+async function replyToOpenCodePendingApproval(
+  handle: OpenCodeSessionHandle,
+  pending: PendingOpenCodeApproval,
+  reply: "once" | "always" | "reject",
+): Promise<void> {
+  if (pending.protocol === "v2") {
+    await handle.client.permission.reply(
+      {
+        requestID: pending.permissionId,
+        directory: handle.directory,
+        reply,
+      },
+      { throwOnError: true },
+    );
+    return;
+  }
+  await handle.client.permission.respond(
+    {
+      sessionID: handle.sessionId,
+      permissionID: pending.permissionId,
+      directory: handle.directory,
+      response: reply,
+    },
+    { throwOnError: true },
+  );
+}
+
+/** Best-effort rejection used by teardown and interrupt, where failures are ignorable. */
+async function rejectOpenCodePendingApproval(
+  handle: OpenCodeSessionHandle,
+  pending: PendingOpenCodeApproval,
+): Promise<void> {
+  await replyToOpenCodePendingApproval(handle, pending, "reject");
+}
+
 type OpenCodeRuntime = {
   kind: "opencode";
   handle: OpenCodeSessionHandle;
@@ -1775,6 +2030,23 @@ type CursorRuntime = {
   availableModelIds: string[];
   /** Set when the user switches Cursor models during a live run; flushed when idle. */
   pendingModelSwitchReset?: boolean;
+  /**
+   * Armed only for the "interrupt & continue" redirect. That stop exists purely
+   * to resend on the same thread, so the user's other queued messages must
+   * survive it; every other interrupt still clears the queue.
+   *
+   * A runtime flag rather than an `interrupt()` parameter because the cancel it
+   * suppresses runs later, in the interrupted turn's own tail, not inside
+   * `interrupt()`. Armed until consumed: `cancelQueuedSteers` clears it when it
+   * honors it, so a settle that outlives the redirect call is still covered.
+   */
+  preserveQueuedSteersOnInterrupt?: boolean;
+  /**
+   * Steer ids whose explicit dispatch is mid-flight. Same contract as
+   * ClaudeRuntime's: while one is promoted, the turn boundary must not
+   * auto-deliver another row underneath it (see deliverNextQueuedSteer).
+   */
+  dispatchingSteerIds: Set<string>;
   pendingSteers: QueuedSteer[];
   permissionWaiters: Map<string, CursorPermissionWaiter>;
   modeConfigId: string | null;
@@ -1787,6 +2059,33 @@ type CursorRuntime = {
   /** RunId attached to the currently active cloud turn, when runtime === "cloud". */
   activeCloudRunId: string | null;
   pendingDispatchAck?: { turnId: string; resolve: () => void };
+  /** First-event watchdog bookkeeping for the in-flight local turn. */
+  sdkSilenceWatch: CursorSdkSilenceWatch | null;
+  /**
+   * Set when the bridge swallows a terminal stale-access-token error for the
+   * in-flight turn. The turn body owns what the user sees from there: a silent
+   * recycle-and-resume, or the terminal copy if recovery is already spent.
+   */
+  sdkStaleTokenFailure?: CursorSdkStaleTokenFailure | null;
+};
+
+/**
+ * Bookkeeping for one turn's first-event watchdog. `seen` flips on the first
+ * streamed worker event for the run and disarms the timer.
+ */
+type CursorSdkSilenceWatch = {
+  turnId: string;
+  /** Bound when the run starts; scopes late events from an abandoned run out. */
+  runId: string | null;
+  seen: boolean;
+  /**
+   * Narrower than `seen`: flips only when the run produced something the model
+   * actually did — assistant text, reasoning, a tool call or its result. Status
+   * and activity frames do not count. This is what decides whether a resumed
+   * turn is asked to *continue* rather than to redo the request.
+   */
+  sawVisibleOutput: boolean;
+  disarm: (() => void) | null;
 };
 
 type DroidRuntime = {
@@ -1851,30 +2150,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
-}
-
-/**
- * `Cursor SDK Run.conversation()` returns a list of message-shaped records.
- * The shape can vary across SDK versions, so we walk it tolerantly: any
- * record that already looks like an SDK message gets fed back through
- * `mapCursorSdkMessageToChatEvents`; anything that just exposes
- * `{ role, text }` becomes a user/assistant text event directly.
- */
-function flattenCloudConversationMessages(conversation: unknown): unknown[] {
-  if (!conversation) return [];
-  if (Array.isArray(conversation)) return conversation;
-  const record = asRecord(conversation);
-  if (!record) return [];
-  if (Array.isArray(record.messages)) return record.messages;
-  if (Array.isArray(record.content)) return record.content;
-  if (Array.isArray(record.items)) return record.items;
-  return [];
-}
-
-function isCloudRunStillLive(status: string | null | undefined): boolean {
-  if (!status) return false;
-  const lower = status.toLowerCase();
-  return lower === "creating" || lower === "running" || lower === "queued";
 }
 
 function pickCodexTurnId(...values: unknown[]): string | undefined {
@@ -2209,6 +2484,9 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
       for (const subagent of runtime.activeSubagents.values()) {
         if (subagent.background) backgroundTypes.push(null);
       }
+      for (const _processId of runtime.backgroundTerminalsByProcessId.keys()) {
+        backgroundTypes.push("background_task");
+      }
       return summarizeBackgroundWork(backgroundTypes);
     }
     case "cursor": {
@@ -2242,6 +2520,56 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
   }
 }
 
+/**
+ * When this runtime's live background work started, or null when it cannot say.
+ *
+ * Claude-only for now, and that is the honest answer rather than a gap: it is
+ * the one runtime that reports a full background-task level ADE can watch for
+ * the empty→non-empty edge. Codex subagents and Cursor cloud runs are tracked
+ * per item with no shared anchor, so those surfaces keep the previous
+ * `lastActivityAt` fallback rather than being handed a made-up timestamp.
+ */
+function runtimeBackgroundWorkSince(runtime: ChatRuntime | null): string | null {
+  if (!runtime || runtime.kind !== "claude") return null;
+  const startedAt = runtime.backgroundWorkStartedAt;
+  return startedAt == null ? null : new Date(startedAt).toISOString();
+}
+
+/**
+ * A Claude runtime's BOUNDED claims: work with a known end and a party waiting
+ * on it. These can never be overridden by an inactivity backstop — a turn ends,
+ * a steer is delivered, an approval is answered.
+ */
+function claudeHasBoundedWorkload(runtime: ClaudeRuntime): boolean {
+  return Boolean(
+    runtime.busy
+    || runtime.activeTurnId
+    || runtime.pendingSteers.length > 0
+    || runtime.approvals.size > 0
+  );
+}
+
+/**
+ * A Claude runtime's BACKGROUND claims: work that outlives its turn and whose
+ * end ADE learns about only if the provider says so.
+ *
+ * Split from the bounded half so `hasRuntimeActiveWorkload` and
+ * `isRuntimeWorkloadExemptionStale` compose the same two predicates instead of
+ * hand-mirroring them. They used to be two copies of one list, and the drift
+ * failed OPEN: a claim added to the workload predicate alone would silently
+ * become overridable by the backstop an hour later.
+ *
+ * Before the first level signal, task edge state is the only evidence we have.
+ * Once observed, `background_tasks_changed` is authoritative for background
+ * agents/shells; only foreground subagent edges remain an independent signal.
+ */
+function claudeHasBackgroundWorkload(runtime: ClaudeRuntime): boolean {
+  const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
+    (subagent) => !subagent.background || !runtime.backgroundTasksLevelObserved,
+  );
+  return Boolean(hasUnlevelledSubagent || runtime.liveBackgroundTaskIds.size > 0);
+}
+
 function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
   if (!runtime) return false;
   switch (runtime.kind) {
@@ -2256,23 +2584,8 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
         || runtime.activeSubagents.size > 0
         || runtime.pendingPlanFollowups.length > 0
       );
-    case "claude": {
-      // Before the first level signal, task edge state is the only evidence we
-      // have. Once observed, background_tasks_changed is authoritative for
-      // background agents/shells; only foreground subagent edges remain an
-      // independent workload signal.
-      const hasUnlevelledSubagent = [...runtime.activeSubagents.values()].some(
-        (subagent) => !subagent.background || !runtime.backgroundTasksLevelObserved,
-      );
-      return Boolean(
-        runtime.busy
-        || runtime.activeTurnId
-        || runtime.pendingSteers.length > 0
-        || runtime.approvals.size > 0
-        || hasUnlevelledSubagent
-        || runtime.liveBackgroundTaskIds.size > 0
-      );
-    }
+    case "claude":
+      return claudeHasBoundedWorkload(runtime) || claudeHasBackgroundWorkload(runtime);
     case "opencode":
       return Boolean(
         runtime.busy
@@ -2306,6 +2619,65 @@ function hasRuntimeActiveWorkload(runtime: ChatRuntime | null): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * How long a runtime whose ONLY claim on life is background work may stay
+ * completely silent before the idle sweep is allowed to reclaim it anyway.
+ *
+ * Deliberately `SESSION_STALE_AFTER_MS` — ADE's own, already cross-surface bar
+ * for "nothing has happened here". A session past it is not being reported as
+ * working by anything: every surface already renders it neutral **Stale**
+ * rather than blue "Background work". Reclaiming a runtime that the whole
+ * product is already calling stale is coherent; inventing a shorter private
+ * threshold would have made ADE kill work its own UI still described as live.
+ *
+ * The honest limit of the signal, stated because it decides a destructive
+ * action: what ages here is silence ADE can SEE. A background job that runs for
+ * three hours without emitting a single event, a task edge, or a change to the
+ * background-task level is indistinguishable from a wedged one. That is the
+ * accepted cost — the alternative is what shipped before, where one task whose
+ * completion edge never arrived pinned an SDK process, its MCP children, and
+ * the whole project context for the life of the app (measured on a real
+ * machine: five such sessions, 5.4 GB across 35 processes, against a 404 MB
+ * brain). The teardown says so in the chat rather than happening quietly.
+ */
+const RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS = SESSION_STALE_AFTER_MS;
+
+/**
+ * Has a runtime's background-work exemption stopped meaning anything?
+ *
+ * `hasRuntimeActiveWorkload` is a truthful predicate and must stay one — it is
+ * the close/quit guard, and it has to fail closed. But for Claude it is also
+ * SELF-SEALING: `liveBackgroundTaskIds` is cleared only by teardown, and
+ * teardown is exactly what the flag blocks. A task whose completion edge never
+ * arrives (the SDK went quiet, the job died with its shell, an edge raced a
+ * reset) therefore pins the runtime, its MCP children, and the whole project
+ * context for the life of the app. The docs promise the exemption holds "until
+ * the work actually ends"; nothing enforced the second half.
+ *
+ * This is the enforcement, and it is deliberately NOT the wall-clock turn
+ * watchdog that was removed for false positives during long tool calls:
+ *
+ *   • It only ever looks at sessions the sweep already considers at rest —
+ *     no live turn, no pending input, past the idle window. A mid-turn
+ *     session is never reached by this path.
+ *   • The clock is event-driven. `lastActivityTimestamp` moves on every
+ *     emitted chat event and on every real change to the background-task
+ *     level, so a genuinely working job — one emitting progress, output, or
+ *     task edges — resets it and is never reclaimed. Only total silence ages.
+ *   • Anything bounded and attributable (a live turn, a queued steer, an
+ *     unanswered approval) still exempts the runtime unconditionally.
+ *
+ * Claude-only on purpose: it is the only runtime whose exemption has no other
+ * writer. Codex clears its subagents on turn end, Cursor's cloud runs are
+ * reconciled against the server, and neither can wedge this way.
+ */
+function isRuntimeWorkloadExemptionStale(runtime: ChatRuntime | null, silentForMs: number): boolean {
+  if (!runtime || runtime.kind !== "claude") return false;
+  if (silentForMs <= RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS) return false;
+  if (claudeHasBoundedWorkload(runtime)) return false;
+  return claudeHasBackgroundWorkload(runtime);
 }
 
 function isSignalPermissionError(error: unknown): boolean {
@@ -2728,6 +3100,7 @@ type ManagedChatSession = {
   deleted: boolean;
   ctoSessionStartedAt: string | null;
   pendingReconstructionContext: string | null;
+  pendingTranscriptReplay: string | null;
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
@@ -2766,6 +3139,21 @@ type ManagedChatSession = {
     turnId?: string;
   }>;
   continuitySummary: string | null;
+  /**
+   * One-shot: the next Cursor send may expire a still-active persisted run
+   * (SDK `local.force`). Session-scoped rather than runtime-scoped, because the
+   * runtime that observed the abandonment can be torn down (idle TTL, budget,
+   * a repooling policy change) before the next send while `cursorSdkAgentId`
+   * survives and resumes the very agent still holding the stale run. Mirrored
+   * to disk so it also survives a restart; cleared on consumption and by an
+   * agent rotation, which by definition produces an agent with no stale run.
+   */
+  cursorSdkForceExpireNextSend?: boolean;
+  /**
+   * In-memory mirror of the durable pending-rotation intent; see
+   * `PersistedChatState.cursorSdkPendingRotationPreviousAgentId`.
+   */
+  cursorSdkPendingRotationPreviousAgentId?: string;
   continuitySummaryUpdatedAt: string | null;
   continuitySummaryInFlight: boolean;
   preferredExecutionLaneId: string | null;
@@ -2774,6 +3162,15 @@ type ManagedChatSession = {
   runtimeInvalidated: boolean;
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
+  /**
+   * In-memory only: this chat's Claude session UUID hit a hard plan/session
+   * quota. ADE restart clears it. The next send reaps (already done) and
+   * resumes the same UUID; a successful turn dismisses the quota card.
+   */
+  claudeSessionQuotaSnapshot: ClaudeSessionQuotaSnapshot | null;
+  /** One transcript scan per process so a restart can still dismiss a live card. */
+  claudeQuotaCardLiveChecked?: boolean;
+  claudeQuotaCardWasLive?: boolean;
   codexTerminalTurnIds: Set<string>;
   codexAutomaticRecoveryAttempted: boolean;
   unprocessedMessageResolutionReceipts: Map<string, PersistedUnprocessedMessageResolutionReceipt>;
@@ -2974,6 +3371,29 @@ const MAX_INJECTED_PROJECT_COMMANDS = 20;
  */
 export const ADE_CARD_FINGERPRINT_CACHE_MAX = 512;
 const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
+/**
+ * How long a local Cursor run gets to produce its first stream event before
+ * ADE treats the server-side agent thread as dead. A transport failure
+ * (NGHTTP2 reset, `[internal] write ECANCELED`) can poison the thread so that
+ * every later send hangs at "Preparing response" forever with no events, no
+ * result, and no error — the only observable signal is silence.
+ *
+ * Longer than it looks like it needs to be, on purpose. Unlike Codex's
+ * advisory 120s stall watchdog, tripping this one is *destructive*: it
+ * abandons the run and rotates the agent. The budget therefore has to cover a
+ * full send round trip plus first token, including attachment upload on a slow
+ * link. 90s still bounds the incident's otherwise-infinite hang.
+ *
+ * Deliberately NOT re-armed on progress: once any event lands the watchdog is
+ * disarmed for the rest of the turn, so a legitimately long tool call can never
+ * trip it. See the note near the Codex watchdog constants about time-based idle
+ * watchdogs producing false positives.
+ */
+export const CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS = 90_000;
+/** Upper bound on the best-effort cancel issued while recycling a wedged thread. */
+const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
+const CURSOR_SDK_SILENT_RUN_MESSAGE =
+  "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.";
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
 const CLAUDE_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
@@ -3026,7 +3446,6 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
-const MAX_CONCURRENT_ACTIVE_RUNTIMES = 5;
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
 const MAX_SESSION_MAP_ENTRIES = 200;
 const CODEX_GOAL_BUDGET_CLEAR_RETRY_BACKOFF_MS = 30_000;
@@ -3412,10 +3831,22 @@ function sessionEffectiveFastMode(
   return session.fastMode === true && sessionSupportsFastMode(session, catalog);
 }
 
-function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexServiceTier | null } {
-  // JSON-RPC needs an explicit null to clear any app-server/config default.
-  const serviceTier = session.fastMode === true && sessionSupportsCodexServiceTier(session) ? "fast" : null;
-  return { serviceTier };
+function codexServiceTierArgs(session: AgentChatSession): { serviceTier?: CodexServiceTier } {
+  if (session.fastMode === true && sessionSupportsCodexServiceTier(session)) {
+    return { serviceTier: "fast" };
+  }
+  // Verified against a live app-server on thread/start: omitting the key inherits
+  // the user's config.toml (service_tier = "priority" -> "priority"; unset -> no
+  // tier), while an explicit null reports "default" in both cases. null is
+  // therefore a real downgrade, not a neutral "no opinion", and ADE has no UI
+  // showing service tier for the user to notice or undo it.
+  //
+  // Fast-off cannot mean "force default" either: fastMode is persisted only when
+  // true and rehydrated as `persisted?.fastMode === true`, so `false` is
+  // indistinguishable from never-set. Omitting is the only honest encoding of
+  // "ADE is not forcing a tier" — the app-server re-resolves per request, so a
+  // turn sent after the toggle goes off inherits the config again.
+  return {};
 }
 
 function codexThreadConfigArgs(
@@ -3507,6 +3938,32 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
+function optionalSubagentModelFields(model?: string | null, reasoningEffort?: string | null): {
+  model?: string;
+  reasoningEffort?: string;
+} {
+  const modelId = stringOrNull(model) ?? undefined;
+  const effort = stringOrNull(reasoningEffort) ?? undefined;
+  return {
+    ...(modelId ? { model: modelId } : {}),
+    ...(effort ? { reasoningEffort: effort } : {}),
+  };
+}
+
+function openCodeChildSessionModel(info: unknown): string | null {
+  const record = asRecord(info);
+  if (!record) return null;
+  if (typeof record.model === "string") return stringOrNull(record.model);
+  const nested = asRecord(record.model);
+  if (nested) {
+    const providerID = stringOrNull(nested.providerID) ?? stringOrNull(nested.providerId);
+    const modelID = stringOrNull(nested.modelID) ?? stringOrNull(nested.modelId) ?? stringOrNull(nested.id);
+    if (providerID && modelID) return `opencode/${providerID}/${modelID}`;
+    return modelID;
+  }
+  return stringOrNull(record.modelID) ?? stringOrNull(record.modelId);
+}
+
 export function parseCodexServerVersion(userAgent: unknown): CodexServerVersion | null {
   if (typeof userAgent !== "string") return null;
   const match = /(\d+)\.(\d+)\.(\d+)/.exec(userAgent);
@@ -3520,6 +3977,19 @@ export function codexServerSupportsForkBeforeTurn(version: CodexServerVersion | 
   if (!version) return false;
   if (version.major > 0) return true;
   return version.minor >= 145;
+}
+
+function isCodexCompactionActive(runtime: CodexRuntime): boolean {
+  return runtime.activeCompactions.size > 0;
+}
+
+function isCodexReviewTurnActive(runtime: CodexRuntime): boolean {
+  const turnId = runtime.activeTurnId ?? runtime.startedTurnId;
+  return Boolean(turnId && runtime.reviewTurnIds.has(turnId));
+}
+
+function codexTurnRejectsSteer(runtime: CodexRuntime): boolean {
+  return isCodexCompactionActive(runtime) || isCodexReviewTurnActive(runtime);
 }
 
 function codexTimestampOrNull(value: unknown): string | null {
@@ -4100,8 +4570,7 @@ function isCursorSdkAgentNotFoundError(error: unknown): boolean {
   const rawMessage = readErrorMessage(error);
   const rawDetail = readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error);
   const errorCode = readErrorCodeString(error);
-  const classification = classifyCursorSdkErrorText(rawMessage, rawDetail, errorCode);
-  if (classification.kind === "not_found") return true;
+  if (classifyCursorSdkErrorText(rawMessage, rawDetail, errorCode) === "not_found") return true;
   const combined = `${rawMessage}\n${rawDetail ?? ""}\n${errorCode ?? ""}`.toLowerCase();
   return combined.includes("agent.resume") && combined.includes("not found");
 }
@@ -4198,9 +4667,9 @@ function classifyProviderHostError(
   const statusCode = readErrorStatusCode(error);
   const errorCode = readErrorCodeString(error);
   const combinedLower = `${rawMessage}\n${rawDetail ?? ""}\n${errorCode ?? ""}`.toLowerCase();
-  const cursorClassification = options.cursorSdk
+  const cursorErrorKind: CursorSdkErrorKind = options.cursorSdk
     ? classifyCursorSdkErrorText(rawMessage, rawDetail, errorCode)
-    : { kind: "unknown" as const, retryable: false };
+    : "unknown";
 
   const payload = readErrorPayload(error);
   const payloadDetail = trimLine(
@@ -4214,7 +4683,7 @@ function classifyProviderHostError(
 
   if (
     statusCode === 429
-    || cursorClassification.kind === "rate_limit"
+    || cursorErrorKind === "rate_limit"
     || combinedLower.includes("rate limit")
     || combinedLower.includes("rate_limited")
     || combinedLower.includes("429")
@@ -4236,7 +4705,7 @@ function classifyProviderHostError(
   if (
     statusCode === 401
     || statusCode === 403
-    || cursorClassification.kind === "auth"
+    || cursorErrorKind === "auth"
     || combinedLower.includes("unauthorized")
     || combinedLower.includes("forbidden")
     || combinedLower.includes("authentication failed")
@@ -4269,7 +4738,7 @@ function classifyProviderHostError(
   }
 
   if (
-    cursorClassification.kind === "network"
+    cursorErrorKind === "network"
     || errorCode === "network"
     || errorCode === "transport"
     || combinedLower.includes("nghttp2")
@@ -4426,6 +4895,7 @@ function extractTaskToolInput(input: unknown): {
   name?: string;
   description?: string;
   isBackground?: boolean;
+  model?: string;
 } | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
@@ -4438,13 +4908,20 @@ function extractTaskToolInput(input: unknown): {
   const description = typeof record.description === "string" && record.description.trim().length
     ? record.description.trim()
     : undefined;
+  const model = typeof record.model === "string" && record.model.trim().length
+    ? record.model.trim()
+    : undefined;
   const isBackground = isBackgroundTask(record);
+  // Model rides along on an already-identified Task/Agent input. It must not
+  // create a stash by itself — `isNonAgentTaskRun` treats any stash as agent
+  // metadata, which would pull a plain task_type "other" run into the roster.
   if (!subagentType && !name && !description && !isBackground) return null;
   return {
     ...(subagentType ? { subagentType } : {}),
     ...(name ? { name } : {}),
     ...(description ? { description } : {}),
     ...(isBackground ? { isBackground } : {}),
+    ...(model ? { model } : {}),
   };
 }
 
@@ -4487,7 +4964,7 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
 
   const collapsed = normalized.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   if (REJECTED_TITLES.has(collapsed)) return null;
-  if (/^(new session|new chat|untitled chat|untitled)\b/u.test(collapsed)) return null;
+  if (/^(new session|new chat|child session|untitled chat|untitled)\b/u.test(collapsed)) return null;
 
   if (/^(completed?|done|finished|resolved|success)\b/u.test(collapsed)) {
     const remainder = collapsed.replace(/^(completed?|done|finished|resolved|success)\b/u, "").trim();
@@ -4591,7 +5068,10 @@ function handoffProviderLabel(provider: AgentChatProvider): string {
   return providerDisplayLabel(provider, String(provider));
 }
 
-const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat", "Pi Chat"]);
+// "Cursor cloud agent" is the placeholder ADE stamps on a freshly created cloud agent before
+// Cursor has named it. Treating it as a default keeps it from being adopted as a session title
+// (and from standing ADE's own auto-naming down behind a name that says nothing).
+const DEFAULT_SESSION_TITLES = new Set(["Codex Chat", "Claude Chat", "AI Chat", "Cursor Chat", "Droid Chat", "Pi Chat", "Cursor cloud agent"]);
 const DEFAULT_SESSION_TITLES_NORMALIZED = new Set(
   [...DEFAULT_SESSION_TITLES, "OpenCode Chat", "Open Code Chat"]
     .map((title) => title.toLowerCase()),
@@ -4626,6 +5106,303 @@ function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
   return isCursorSdkPooledAlive(runtime.sdk);
 }
 
+/**
+ * Marker error thrown when the first-event watchdog fires and no automatic
+ * recovery is left. Carried as a name rather than a message match so the
+ * user-facing copy can change without breaking the branch.
+ */
+const CURSOR_SDK_SILENT_RUN_ERROR_NAME = "CursorSdkSilentRunError";
+
+/**
+ * Why ADE decided a Cursor agent thread had to be thrown away.
+ *
+ * `stale_token` is the odd one out: the *worker* is dead (its access token
+ * expired and the SDK never re-exchanges it) but the *thread* is perfectly
+ * healthy, so that recycle keeps the agent id and resumes it in the fresh
+ * worker instead of rotating to a new one.
+ */
+type CursorSdkRecycleReason = "silent_run" | "transport_error" | "stale_token";
+
+/**
+ * Steer ids that have already had a resolution notice emitted — delivered or
+ * cancelled. Several paths can legitimately reach the same queued message
+ * (a runtime swap detaches a queue the attempt also drains, a nested turn
+ * recycles), and a second notice for one id renders as a contradictory
+ * transcript entry.
+ *
+ * Claimed by every emitter that resolves a steer: `cancelQueuedSteers`,
+ * `cancelCarriedCursorSteers`, both "Delivering your queued message…" sites,
+ * `cancelSteer`, and `editSteer`'s empty-edit cancel. The two cancel-all
+ * emitters also skip ids already claimed; the rest claim to lock the id.
+ *
+ * Keyed on the session, so the ids die with it. Re-opened whenever a steer goes
+ * back on the queue — after a failed delivery, or an undone cancellation.
+ */
+const settledSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
+
+/**
+ * Records `steerId` as settled and reports whether this caller is the first to
+ * do so. Only the first caller should emit the notice.
+ */
+function claimSteerSettlement(managed: ManagedChatSession, steerId: string): boolean {
+  let ids = settledSteerIds.get(managed);
+  if (!ids) {
+    ids = new Set<string>();
+    settledSteerIds.set(managed, ids);
+  }
+  if (ids.has(steerId)) return false;
+  ids.add(steerId);
+  return true;
+}
+
+/** Re-opens a steer for settlement after it has been put back on the queue. */
+function reopenSteerSettlement(managed: ManagedChatSession, steerId: string): void {
+  settledSteerIds.get(managed)?.delete(steerId);
+}
+
+function cursorSdkSilentRunError(): Error {
+  const error = new Error(CURSOR_SDK_SILENT_RUN_MESSAGE);
+  error.name = CURSOR_SDK_SILENT_RUN_ERROR_NAME;
+  return error;
+}
+
+function isCursorSdkSilentRunError(error: unknown): boolean {
+  return error instanceof Error && error.name === CURSOR_SDK_SILENT_RUN_ERROR_NAME;
+}
+
+/**
+ * Errors whose turn has already had its error/failed/done set emitted, so a
+ * caller that also reports failures does not report it twice.
+ *
+ * A side table rather than a property on the error: marking happens from inside
+ * a catch, and a frozen error would make the write throw. Every Cursor path
+ * that can reject does so with an `Error` (the pool's waiters, the worker exit
+ * and IPC handlers, and `ensureCursorSdkRuntime` all construct one), so a
+ * primitive rejection is unreachable and is deliberately not tracked — it would
+ * simply fall through to the caller's own reporting.
+ */
+const cursorTurnsAlreadyReported = new WeakSet<object>();
+
+function markCursorTurnReported(error: unknown): void {
+  if (typeof error === "object" && error !== null) cursorTurnsAlreadyReported.add(error);
+}
+
+function isCursorTurnAlreadyReported(error: unknown): boolean {
+  return typeof error === "object" && error !== null && cursorTurnsAlreadyReported.has(error);
+}
+
+/**
+ * True for the synthetic terminal `status: ERROR` event the worker posts
+ * immediately before `run_result` whenever a run dies (cursorSdkWorker's
+ * heldErrorEvent / streamErrorDetail branches) — including the ECANCELED
+ * transport shape this recovery exists for.
+ *
+ * That event is the run *ending*, exactly like `run_result`, not progress.
+ * Counting it as stream activity marked the turn "seen" before the send
+ * settled, which made the transport-result recovery branch unreachable in
+ * production even though it was reachable in a test that emitted no events.
+ * Only this terminal shape is excluded; every other event still disarms, so a
+ * long tool call is still protected.
+ */
+function isCursorSdkTerminalErrorEvent(event: unknown): boolean {
+  const record = asRecord(event);
+  if (record?.type !== "status") return false;
+  return typeof record.status === "string" && record.status.trim().toUpperCase() === "ERROR";
+}
+
+/**
+ * Arms the first-event watchdog for one local Cursor turn. Returns the watch
+ * (so the caller can read `seen` after the race) and a guard promise that
+ * rejects with the silent-run sentinel once the budget expires. A single
+ * `setTimeout`, no polling.
+ */
+function armCursorSdkSilenceWatch(
+  runtime: CursorRuntime,
+  turnId: string,
+): { watch: CursorSdkSilenceWatch; guard: Promise<never> } {
+  // A previous turn's watch on this runtime (settlement can leave one behind)
+  // must not keep a live timer once it can no longer be reached.
+  runtime.sdkSilenceWatch?.disarm?.();
+  const watch: CursorSdkSilenceWatch = { turnId, runId: null, seen: false, sawVisibleOutput: false, disarm: null };
+  runtime.sdkSilenceWatch = watch;
+  const guard = new Promise<never>((_resolve, reject) => {
+    let timer: NodeJS.Timeout | null = setTimeout(() => {
+      timer = null;
+      reject(cursorSdkSilentRunError());
+    }, CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS);
+    timer.unref?.();
+    watch.disarm = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+  });
+  return { watch, guard };
+}
+
+/**
+ * Called from the worker-event handlers: the first event for the active run
+ * disarms the silence watchdog. Any streamed worker event counts — text,
+ * reasoning, a tool call, a status change — because the failure being guarded
+ * against is total silence, not slow output.
+ *
+ * `run_started` deliberately does NOT count: the wedged-thread failure mode is
+ * exactly "the run is created and then nothing ever streams". Neither does
+ * `run_result`, which is terminal rather than progress.
+ *
+ * Run-scoped as well as turn-scoped: settlement can clear a turn while its run
+ * is still streaming, so late events from an abandoned run must not disarm the
+ * next turn's watchdog. Fails open when either side lacks a runId.
+ */
+function noteCursorSdkStreamActivity(
+  runtime: CursorRuntime,
+  turnId: string | null,
+  runId: string | null,
+): void {
+  const watch = runtime.sdkSilenceWatch;
+  if (!watch || watch.seen) return;
+  if (turnId && watch.turnId !== turnId) return;
+  if (watch.runId && runId && watch.runId !== runId) return;
+  watch.seen = true;
+  const disarm = watch.disarm;
+  watch.disarm = null;
+  disarm?.();
+}
+
+/**
+ * Chat events that prove the model did visible work on this turn, as opposed to
+ * the run merely existing. Status, activity, token and lifecycle frames are
+ * deliberately excluded: after those alone there is nothing for a resumed turn
+ * to "pick up from".
+ */
+const CURSOR_SDK_VISIBLE_OUTPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "text",
+  "reasoning",
+  "tool_call",
+  "tool_result",
+  "command",
+  "subagent_started",
+  "subagent_result",
+]);
+
+/**
+ * Narrower companion to `noteCursorSdkStreamActivity`; see `sawVisibleOutput`.
+ * Run-scoped for the same reason its sibling is: a late frame from a run the
+ * turn already abandoned must not be credited to the turn now in flight.
+ */
+function noteCursorSdkVisibleOutput(
+  runtime: CursorRuntime,
+  turnId: string | null,
+  runId: string | null,
+  eventType: string,
+): void {
+  const watch = runtime.sdkSilenceWatch;
+  if (!watch || watch.sawVisibleOutput) return;
+  if (turnId && watch.turnId !== turnId) return;
+  if (watch.runId && runId && watch.runId !== runId) return;
+  if (!CURSOR_SDK_VISIBLE_OUTPUT_EVENT_TYPES.has(eventType)) return;
+  watch.sawVisibleOutput = true;
+}
+
+/**
+ * True when a thrown Cursor SDK error is a transport failure — the signal the
+ * automatic recycle-and-resend recovery keys on.
+ */
+function isCursorSdkTransportError(error: unknown): boolean {
+  return classifyCursorSdkErrorText(
+    readErrorMessage(error),
+    readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error),
+    readErrorCodeString(error),
+  ) === "network";
+}
+
+/**
+ * Same check against a settled run result that reports `status: "error"`.
+ * Delegates to the thrown-error reader, which matches strictly more shapes
+ * (structured `cursorSdk` detail, status codes) than a message/code pair.
+ */
+function isCursorSdkTransportErrorResult(result: unknown): boolean {
+  const record = asRecord(result);
+  if (record?.status !== "error") return false;
+  return isCursorSdkTransportError(asRecord(record.error));
+}
+
+/**
+ * User-facing copy for the only stale-token failure that ever reaches the
+ * transcript: the silent reconnect already happened and Cursor rejected the
+ * retry too, so the key itself has to be re-authorized.
+ */
+const CURSOR_SDK_STALE_TOKEN_MESSAGE =
+  "Cursor's session expired. ADE reconnected and retried, but Cursor rejected the request again — "
+  + "sign in to Cursor again in Settings, then resend.";
+
+/**
+ * Prompt for the recovery re-send when the token expired *after* the run had
+ * started working. The thread is resumed, so the original request is already in
+ * the model's context; repeating it would restart finished work.
+ */
+const CURSOR_SDK_STALE_TOKEN_CONTINUATION =
+  "Continue where you left off; the previous run was cut off by a Cursor session refresh. "
+  + "Do not start over — pick up from the last step you completed.";
+
+/**
+ * True when a thrown Cursor SDK error is the expired-access-token signature —
+ * the worker's token aged out mid-session and the SDK will never refresh it.
+ * See `isCursorSdkStaleAccessTokenText` for why this is matched exactly rather
+ * than folded into the generic `auth` kind.
+ */
+function isCursorSdkStaleTokenError(error: unknown): boolean {
+  return isCursorSdkStaleAccessTokenText(
+    readErrorMessage(error),
+    readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error),
+    readErrorCodeString(error),
+  );
+}
+
+/** Same check against a settled run result that reports `status: "error"`. */
+function isCursorSdkStaleTokenResult(result: unknown): boolean {
+  const record = asRecord(result);
+  if (record?.status !== "error") return false;
+  return isCursorSdkStaleTokenError(asRecord(record.error));
+}
+
+/**
+ * Reads and clears the stale-token failure the bridge parked for this turn.
+ * A function rather than an inline read, so the turn body's own
+ * `sdkStaleTokenFailure = null` reset cannot narrow the property to `never`.
+ */
+function takeCursorSdkStaleTokenFailure(
+  runtime: CursorRuntime,
+  turnId: string,
+): CursorSdkStaleTokenFailure | null {
+  const failure = runtime.sdkStaleTokenFailure;
+  if (!failure || failure.turnId !== turnId) return null;
+  runtime.sdkStaleTokenFailure = null;
+  return failure;
+}
+
+/**
+ * Rebuilds the suppressed stale-token failure as a throwable error, so the one
+ * path that has to surface it (recovery already spent) goes through the same
+ * classifier as every other Cursor turn failure and keeps the request id.
+ */
+function cursorSdkStaleTokenError(detail: CursorSdkStaleTokenFailure): Error {
+  const error = new Error(detail.message) as Error & { cursorSdk?: Record<string, unknown> };
+  error.cursorSdk = {
+    message: detail.message,
+    ...(detail.code ? { code: detail.code } : {}),
+    ...(detail.requestId ? { requestId: detail.requestId } : {}),
+  };
+  return error;
+}
+
+function clearCursorSdkSilenceWatch(runtime: CursorRuntime, turnId?: string): void {
+  const watch = runtime.sdkSilenceWatch;
+  if (!watch) return;
+  if (turnId && watch.turnId !== turnId) return;
+  watch.disarm?.();
+  runtime.sdkSilenceWatch = null;
+}
+
 function classifyCursorSdkChatError(
   error: unknown,
   args: { cloud?: boolean; modelDisplayName?: string | null } = {},
@@ -4633,7 +5410,26 @@ function classifyCursorSdkChatError(
   message: string;
   detail?: string;
   errorInfo: { category: ChatErrorCategory; provider?: string; model?: string };
+  /**
+   * Machine-readable marker for the expired-access-token failure. The category
+   * stays `auth` so renderers keep treating it like any other auth error; this
+   * flag is what the recycle-and-resume recovery keys on.
+   */
+  cursorSdkStaleToken?: true;
 } {
+  if (isCursorSdkStaleTokenError(error)) {
+    const detail = readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error);
+    return {
+      message: CURSOR_SDK_STALE_TOKEN_MESSAGE,
+      ...(detail ? { detail } : {}),
+      errorInfo: {
+        category: "auth",
+        provider: args.cloud ? "Cursor Cloud" : "Cursor",
+        ...(args.modelDisplayName ? { model: args.modelDisplayName } : {}),
+      },
+      cursorSdkStaleToken: true,
+    };
+  }
   if (isCursorSdkAgentBusyError(error)) {
     const raw = readErrorMessage(error);
     return {
@@ -6211,6 +7007,7 @@ const ORCHESTRATION_SESSION_FIELD_NAMES = [
   "orchestrationRole",
   "orchestrationParentSessionId",
   "spawnKind",
+  "subagentTakeoverPromptShownAt",
   "orchestrationTag",
   "orchestrationStepId",
   "orchestrationBundlePath",
@@ -6241,6 +7038,10 @@ function hydrateOrchestrationFields(
   const spawnKind = record.spawnKind;
   if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
     out.spawnKind = spawnKind as "subagent" | "peer";
+  }
+  const shownAt = record.subagentTakeoverPromptShownAt;
+  if (typeof shownAt === "string" && shownAt.trim().length) {
+    out.subagentTakeoverPromptShownAt = shownAt.trim();
   }
   const tag = record.orchestrationTag;
   if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
@@ -6310,7 +7111,7 @@ function buildSpawnSelfReportGuidance(
 ): string | null {
   if (!session.orchestrationParentSessionId?.trim()) return null;
   if (session.spawnKind === "subagent") {
-    return "You were spawned as a subagent. While your parent owns your current mission, ADE automatically wakes it after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. If a human messages you directly, completions become quiet notes until your parent dispatches again. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
+    return "You were spawned as a subagent. ADE automatically wakes your parent after every turn you finish — including turns your own scheduled wakeups start — and includes your latest assistant summary. A human message does not close that report channel. If a human takes this chat over, ADE converts you to a peer and completions become quiet notes. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
   }
   if (session.spawnKind === "peer") {
     return "You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`.";
@@ -6518,14 +7319,24 @@ function resolveSessionOpenCodePermissionMode(
     ?? fallback;
 }
 
-function resolveSessionDroidPermissionMode(
+/**
+ * The Droid permission mode the user actually chose, or null when they have
+ * chosen nothing.
+ *
+ * Droid has no "use my config" mode — cliLaunch rejects config-toml for it — so
+ * null is the only way ADE can express "no opinion", and it matters: a live probe
+ * showed omitting these keys resolves them from the user's
+ * ~/.factory/settings.json, per key, while any value ADE states outranks that
+ * file. Droid's own documented default is autonomyLevel "off" (read-only), so a
+ * substituted fallback here hands out write access the CLI would not.
+ */
+function resolveSessionDroidPermissionModeOrNull(
   session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
-  fallback: AgentChatDroidPermissionMode,
-): AgentChatDroidPermissionMode {
+): AgentChatDroidPermissionMode | null {
   return session.droidPermissionMode
     ?? legacyPermissionModeToDroidPermissionMode(session.permissionMode)
     ?? legacyOpenCodePermissionModeToDroidPermissionMode(session.opencodePermissionMode)
-    ?? fallback;
+    ?? null;
 }
 
 function applyLocalHarnessPermissionMode(args: {
@@ -6696,9 +7507,8 @@ function resolveDroidRuntimeModelId(
 }
 
 function resolveDroidSdkAutonomyLevel(
-  session: Pick<AgentChatSession, "droidPermissionMode" | "opencodePermissionMode" | "permissionMode">,
+  mode: AgentChatDroidPermissionMode,
 ): DroidSdkSessionSettings["autonomyLevel"] {
-  const mode = resolveSessionDroidPermissionMode(session, "auto-low");
   switch (mode) {
     case "read-only":
       return "off";
@@ -6712,8 +7522,6 @@ function resolveDroidSdkAutonomyLevel(
       return "medium";
     case "auto-high":
       return "high";
-    default:
-      return "low";
   }
 }
 
@@ -6773,53 +7581,34 @@ function normalizeSessionNativePermissionControls(
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudePermissionMode(session, config.claudePermissionMode);
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.opencodePermissionMode;
-    delete session.droidPermissionMode;
   } else if (session.provider === "codex") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
     session.codexConfigSource = resolveSessionCodexConfigSource(session);
     if (session.codexConfigSource === "config-toml") {
-      delete session.codexApprovalPolicy;
-      delete session.codexSandbox;
+      // Keep the last flag-based values so switching back from config-toml does
+      // not erase the user's independent approval and sandbox choices.
     } else {
       session.codexApprovalPolicy = resolveSessionCodexApprovalPolicy(session, config.codexApprovalPolicy);
       session.codexSandbox = resolveSessionCodexSandbox(session, config.codexSandboxMode);
     }
-    delete session.claudePermissionMode;
-    delete session.opencodePermissionMode;
-    delete session.droidPermissionMode;
   } else if (session.provider === "droid") {
     session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
       : "default");
-    session.droidPermissionMode = resolveSessionDroidPermissionMode(session, "auto-low");
-    delete session.claudePermissionMode;
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.opencodePermissionMode;
+    // Materialising a fallback here would be read back as a real choice on the
+    // next launch and pin it forever, which is what made the equivalent Claude
+    // bug durable. Absence has to stay absent.
+    const chosenDroidMode = resolveSessionDroidPermissionModeOrNull(session);
+    if (chosenDroidMode) session.droidPermissionMode = chosenDroidMode;
+    else delete session.droidPermissionMode;
   } else if (session.provider === "pi") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
-    delete session.claudePermissionMode;
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.opencodePermissionMode;
-    delete session.droidPermissionMode;
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
-    delete session.claudePermissionMode;
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.droidPermissionMode;
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -6963,6 +7752,12 @@ type AgentChatAutomationService = {
   cancelRunForDeletedChat: (args: { sessionId: string; runId?: string | null }) => void;
 };
 
+/** Live in-memory chat-event rings kept by the brain. Snapshot hydration must
+ *  not grow this set — that is how a long-lived brain reached ~1 GB and wedged
+ *  the event loop on GC. */
+export const CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS = 64;
+
+
 export function createAgentChatService(args: {
   projectRoot: string;
   adeDir?: string;
@@ -6989,6 +7784,16 @@ export function createAgentChatService(args: {
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
+  /**
+   * This host's sleep state, so a turn interrupted by a suspending machine can
+   * say so instead of reporting a provider retry with cause `unknown`.
+   *
+   * Lifecycle is NOT owned here — the host that has the OS hook (the desktop
+   * main process) or the brain's shared monitor starts and disposes it. This
+   * service only subscribes, and works fine without one: absent, chats behave
+   * exactly as they did before sleep was tracked.
+   */
+  hostPowerSource?: MachinePowerSource | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: (
     Pick<
@@ -7050,7 +7855,16 @@ export function createAgentChatService(args: {
     linkedAt: string;
   }) => void | Promise<void>;
   getDirtyFileTextForPath: (absPath: string) => string | undefined | Promise<string | undefined>;
+  /**
+   * The warm-runtime budget this service shares with every other chat service
+   * in the process. Hosts that open more than one project scope MUST pass one
+   * shared instance — see `createChatRuntimeBudget`. Omitted, the service gets
+   * a private budget, which is the right answer for a single-scope host and for
+   * tests.
+   */
+  runtimeBudget?: ChatRuntimeBudget;
 }) {
+  const runtimeBudget = args.runtimeBudget ?? createChatRuntimeBudget();
   const {
     projectRoot,
     transcriptsDir,
@@ -7289,7 +8103,9 @@ export function createAgentChatService(args: {
   // emitted event (see emitChatEvent → commitChatEvent) and merged with the
   // persisted transcript when a snapshot is requested. The transcript recovers
   // older project/tab-switch history; the ring contributes events that may not
-  // have reached fs.appendFile yet.
+  // have reached fs.appendFile yet. Session count is LRU-capped: a history
+  // snapshot must not copy the transcript into this map, or every hydrated
+  // chat parks up to 4 MB in the brain until process death.
   const CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION = 4_000;
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
@@ -7388,6 +8204,16 @@ export function createAgentChatService(args: {
         : envelopes,
       CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
     );
+
+  const touchEventHistoryRing = (sessionId: string, envelopes: AgentChatEventEnvelope[]): void => {
+    eventHistoryBySession.delete(sessionId);
+    eventHistoryBySession.set(sessionId, envelopes);
+    while (eventHistoryBySession.size > CHAT_EVENT_HISTORY_BUFFER_MAX_SESSIONS) {
+      const oldestSessionId = eventHistoryBySession.keys().next().value;
+      if (typeof oldestSessionId !== "string" || oldestSessionId === sessionId) break;
+      eventHistoryBySession.delete(oldestSessionId);
+    }
+  };
   type TranscriptHistoryCacheEntry = {
     transcriptPath: string;
     size: number;
@@ -7437,7 +8263,7 @@ export function createAgentChatService(args: {
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
     current.push(envelope);
-    eventHistoryBySession.set(envelope.sessionId, boundRingEnvelopes(current));
+    touchEventHistoryRing(envelope.sessionId, boundRingEnvelopes(current));
   };
 
   const rememberTranscriptHistoryCache = (
@@ -7537,6 +8363,22 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  // Listeners for "this chat is over" (deleted or archived). Services that hold
+  // a per-chat lock — the iOS simulator session, for one — release it here
+  // instead of staying bound to a chat that no longer exists.
+  const chatSessionEndedListeners = new Set<(sessionId: string) => void>();
+  const notifyChatSessionEnded = (sessionId: string): void => {
+    for (const listener of chatSessionEndedListeners) {
+      try {
+        listener(sessionId);
+      } catch (error) {
+        logger.debug("agent_chat.session_ended_listener_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
   const lastPersistedPointerFingerprints = new Map<string, string>();
   const codexRecoveryInFlight = new Set<string>();
   const continuityRecoveryInFlight = new Set<string>();
@@ -7620,12 +8462,49 @@ export function createAgentChatService(args: {
     }
   };
 
+  const recordGitHubIssueContextForLane = (
+    managed: ManagedChatSession,
+    contextAttachments: AgentChatContextAttachment[],
+  ): void => {
+    if (contextAttachments.length === 0) return;
+    const issues = contextAttachments
+      .filter((attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> =>
+        attachment.type === "github_issue")
+      .map((attachment) => attachment.issue);
+    if (!issues.length) return;
+    try {
+      laneService.attachGitHubIssueToSession?.({
+        chatSessionId: managed.session.id,
+        issues,
+        role: "worked",
+        source: "chat_attach",
+        includeInPr: true,
+        closeOnMerge: true,
+        evidence: { chatSessionId: managed.session.id },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.github_issue_session_link_failed", {
+        sessionId: managed.session.id,
+        issueCount: issues.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   /** Interrupt arrived while `ensureDroidRuntime` was still acquiring the SDK worker. */
   const droidRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /** Interrupt arrived while the Pi SDK worker was still being acquired. */
   const piRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
   /** Interrupt arrived while `ensureCursorSdkRuntime` was still acquiring the SDK worker. */
   const cursorRuntimeSetupInterruptRequested = new WeakMap<ManagedChatSession, boolean>();
+  /**
+   * Set when ADE has decided the persisted Cursor agent thread is unusable
+   * (silent run, transport-poisoned run). The next `ensureCursorSdkRuntime`
+   * acquires with `agentId: null` and stages the rotation-recovery context so
+   * the fresh agent inherits the conversation, instead of resuming into the
+   * dead thread again.
+   */
+  const cursorSdkForcedAgentRotation = new WeakMap<ManagedChatSession, { previousAgentId: string | null }>();
   const sessionTurnCollectors = new Map<string, SessionTurnCollector>();
   const subagentStates = new Map<string, Map<string, AgentChatSubagentSnapshot>>();
 
@@ -8894,14 +9773,33 @@ export function createAgentChatService(args: {
     };
   };
 
-  const readTranscriptEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
+  const readTranscriptEnvelopes = (
+    managed: ManagedChatSession,
+    options?: {
+      /**
+       * Also merge the in-memory event ring (events that may not have reached
+       * fs.appendFile yet). Only for readers that want the LIVE view, e.g.
+       * transcript-replay forks. Durability guards (emitAdeCard's retry check)
+       * must read the file alone: a ring hit there suppresses the retry of an
+       * append that never landed on disk.
+       */
+      includeBuffered?: boolean;
+    },
+  ): AgentChatEventEnvelope[] => {
+    const buffered = options?.includeBuffered
+      ? (eventHistoryBySession.get(managed.session.id) ?? [])
+          .filter((entry) => entry.sessionId === managed.session.id)
+      : [];
     try {
       const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
-      if (!transcriptPath) return [];
-      return parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
+      if (!transcriptPath) return buffered;
+      const fromFile = parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8"))
+        .filter((entry) => entry.sessionId === managed.session.id);
+      if (!buffered.length) return fromFile;
+      return mergeEnvelopeStreams(fromFile, buffered)
         .filter((entry) => entry.sessionId === managed.session.id);
     } catch {
-      return [];
+      return buffered;
     }
   };
 
@@ -9848,7 +10746,6 @@ export function createAgentChatService(args: {
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
-    eventHistoryBySession.set(sessionId, boundRingEnvelopes(merged.slice()));
 
     const parentVisibleMerged = merged.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry));
     const parentVisibleLength = parentVisibleMerged.length;
@@ -10427,36 +11324,164 @@ export function createAgentChatService(args: {
     managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
   };
 
+  const CURSOR_CONTINUITY_DISCLAIMER =
+    "Use this ADE transcript context to continue the user's work. Do not claim access to hidden Cursor SDK state that was not restored.";
+
+  /**
+   * Shared seeding for every case where a Cursor conversation has to continue
+   * on an agent that has never seen it: an agent rotation (target === source)
+   * and an ADE-side fork (target is the new chat).
+   *
+   * Only the short header lands here. The conversation itself travels as the
+   * full fitted transcript replay (`pendingTranscriptReplay`), so nothing here
+   * repeats a conversation tail — that produced a doubled, and much thinner,
+   * view of the same chat.
+   *
+   * The lane directive key is cleared regardless, because the agent is new and
+   * must receive the lane execution directive rather than have it deduped away.
+   */
+  const stageCursorSdkContinuityHeader = (
+    target: ManagedChatSession,
+    headerSection: string,
+  ): void => {
+    const existing = target.pendingReconstructionContext?.trim() ?? "";
+    const nextContext = [headerSection.trim(), existing]
+      .filter((section) => section.length > 0)
+      .join("\n\n");
+    target.pendingReconstructionContext = nextContext.length ? nextContext : null;
+    clearLaneDirectiveKey(target);
+  };
+
+  const stageTranscriptReplayOnSession = (
+    managed: ManagedChatSession,
+    sourceEnvelopes: readonly AgentChatEventEnvelope[],
+    contextWindow: number | null | undefined,
+  ): AgentChatReplayForkDisclosure | undefined => {
+    const fit = buildFittedTranscriptReplay(sourceEnvelopes, contextWindow);
+    managed.pendingTranscriptReplay = fit.text;
+    persistChatState(managed);
+    if (fit.truncated) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Replayed the full prior transcript. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+      });
+    }
+    return toReplayForkDisclosure(fit);
+  };
+
+  type ConsumedTurnContextPrefix = {
+    composed: string;
+    replay: string;
+    reconstruction: string;
+  };
+
+  const consumePendingTurnContextPrefix = (
+    managed: ManagedChatSession,
+    skip: boolean,
+  ): ConsumedTurnContextPrefix | null => {
+    if (skip) return null;
+    const replay = managed.pendingTranscriptReplay?.trim() ?? "";
+    const reconstruction = managed.pendingReconstructionContext?.trim() ?? "";
+    if (!replay && !reconstruction) return null;
+    if (replay) managed.pendingTranscriptReplay = null;
+    if (reconstruction) managed.pendingReconstructionContext = null;
+    // Consumption has to be durable: `pendingTranscriptReplay` is restored on
+    // reconstruct, so clearing it in memory alone would replay the whole
+    // transcript a second time after a restart.
+    persistChatState(managed);
+    const parts: string[] = [];
+    if (replay) parts.push(replay);
+    if (reconstruction) {
+      parts.push(`System context (ADE continuity, do not echo verbatim):\n${reconstruction}`);
+    }
+    return {
+      composed: parts.join("\n\n"),
+      replay,
+      reconstruction,
+    };
+  };
+
+  /**
+   * Agent rotation recovery. The Cursor SDK opened a different agent than the
+   * one ADE asked to resume, so the new agent has none of the thread. It is
+   * seeded with the full fitted transcript replay (bounded by the session
+   * model's context window) rather than a 20-line tail, so the turn that
+   * triggered the rotation continues with the conversation intact.
+   */
   const stageCursorSdkAgentRotationRecovery = (
     managed: ManagedChatSession,
     previousAgentId: string,
     nextAgentId: string,
   ): void => {
-    const sections = [
-      [
-        "Cursor SDK continuity recovery",
-        `ADE attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
-        "Use this ADE transcript context to continue the user's work. Do not claim access to hidden Cursor SDK state that was not restored.",
-      ].join("\n"),
-    ];
-
-    if (managed.continuitySummary?.trim()) {
-      sections.push(["Continuity Summary", managed.continuitySummary.trim()].join("\n"));
+    const fit = buildFittedTranscriptReplay(
+      readTranscriptEnvelopes(managed, { includeBuffered: true }),
+      resolveSessionModelDescriptor(managed.session)?.contextWindow ?? null,
+    );
+    if (!fit.turnCount || !fit.text.trim().length) {
+      // Nothing to carry: a header that announces restored context with no
+      // context attached just lies to the model.
+      clearLaneDirectiveKey(managed);
+      return;
     }
-
-    const recentConversation = buildRecentConversationContext(managed);
-    if (recentConversation.length) {
-      sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
+    stageCursorSdkContinuityHeader(managed, [
+      "Cursor SDK continuity recovery",
+      `ADE attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
+      "The conversation so far was replayed into this agent in full.",
+      CURSOR_CONTINUITY_DISCLAIMER,
+    ].join("\n"));
+    // Same guard as the recycle restage: a replay already staged (a fork seed,
+    // or a previous rotation the turn has not consumed yet) is not overwritten.
+    // Both fits derive from the same transcript, so the incumbent is never
+    // thinner — and clobbering it would drop a fork's disclosure staging.
+    if (!managed.pendingTranscriptReplay) {
+      managed.pendingTranscriptReplay = fit.text;
     }
+    persistChatState(managed);
+    if (fit.truncated) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: `Replayed the full prior transcript onto a new Cursor agent. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the context window.`,
+      });
+    }
+    logger.info("agent_chat.cursor_sdk_rotation_transcript_replay_staged", {
+      sessionId: managed.session.id,
+      keptTurnCount: fit.keptTurnCount,
+      truncatedTurnCount: fit.truncatedTurnCount,
+    });
+  };
 
-    const existing = managed.pendingReconstructionContext?.trim();
-    if (existing) sections.push(existing);
-
-    const nextContext = sections.map((section) => section.trim()).filter((section) => section.length > 0).join("\n\n");
-    managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
-    // The rotated agent is brand new, so re-emit the lane execution directive on
-    // the next turn instead of letting the dedupe key suppress it.
-    clearLaneDirectiveKey(managed);
+  /**
+   * Cursor's ADE-side fork. `@cursor/sdk` exposes no fork/clone/branch
+   * operation on an agent, and a Cursor thread cannot be resumed twice, so the
+   * forked chat necessarily starts on a fresh agent. It is seeded with the same
+   * full fitted transcript replay the cross-provider fork uses, staged by the
+   * caller right after the transcript is copied into the new chat.
+   *
+   * Only the header and the continuity summary fields are handled here. The
+   * summary is carried over for the forked chat's own identity-continuity
+   * reconstruction (`refreshReconstructionContext`, identity-keyed chats only);
+   * agent rotation no longer reads it, and it is deliberately not injected into
+   * the seeding context here: the verbatim transcript replay strictly contains
+   * everything the tail-derived summary would have said.
+   *
+   * The new session deliberately has no `cursorSdkAgentId`, so its first send
+   * creates a brand-new Cursor agent instead of resuming the source's thread.
+   */
+  const stageCursorSdkForkContinuity = (
+    source: ManagedChatSession,
+    created: ManagedChatSession,
+  ): void => {
+    const persistedSource = readPersistedState(source.session.id);
+    created.continuitySummary = source.continuitySummary ?? persistedSource?.continuitySummary ?? null;
+    created.continuitySummaryUpdatedAt =
+      source.continuitySummaryUpdatedAt ?? persistedSource?.continuitySummaryUpdatedAt ?? null;
+    stageCursorSdkContinuityHeader(created, [
+      "Forked Cursor chat",
+      "This chat was forked from an earlier ADE chat. Cursor threads cannot be resumed twice, so this is a brand-new Cursor agent and the earlier conversation was replayed into it in full.",
+      CURSOR_CONTINUITY_DISCLAIMER,
+    ].join("\n"));
   };
 
   const detectAuth = async () => {
@@ -11072,9 +12097,7 @@ export function createAgentChatService(args: {
     } else if (managed.runtime) {
       teardownRuntime(managed, "handle_close");
     }
-    let activeCount = 0;
-    for (const [, session] of managedSessions) if (session.runtime) activeCount++;
-    if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
+    runtimeBudget.enforce(managed.session.id);
 
     const runtimeEnv = buildAgentRuntimeEnv(managed);
     const skillRoots = existingAgentSkillRoots(runtimeEnv);
@@ -11462,12 +12485,7 @@ export function createAgentChatService(args: {
     handle.setBusy(false);
     handle.touch();
 
-    // Evict least-recent runtime if at capacity
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
     managed.session.provider = "opencode";
@@ -12331,6 +13349,10 @@ export function createAgentChatService(args: {
       ...(managed.runtime?.kind === "cursor" && managed.runtime.sdkRunId
         ? { cursorSdkRunId: managed.runtime.sdkRunId }
         : prevPersisted?.cursorSdkRunId ? { cursorSdkRunId: prevPersisted.cursorSdkRunId } : {}),
+      ...(managed.cursorSdkForceExpireNextSend ? { cursorSdkForceExpireNextSend: true } : {}),
+      ...(managed.cursorSdkPendingRotationPreviousAgentId
+        ? { cursorSdkPendingRotationPreviousAgentId: managed.cursorSdkPendingRotationPreviousAgentId }
+        : {}),
       ...(managed.session.cursorCloudAgentId
         ? { cursorCloudAgentId: managed.session.cursorCloudAgentId }
         : prevPersisted?.cursorCloudAgentId ? { cursorCloudAgentId: prevPersisted.cursorCloudAgentId } : {}),
@@ -12377,6 +13399,11 @@ export function createAgentChatService(args: {
           }
         : {}),
       ...collectOrchestrationFields(managed.session, prevPersisted),
+      // Always written (never omitted) so a consumed replay overwrites the
+      // stored text instead of surviving into the next reconstruct.
+      pendingTranscriptReplay: managed.pendingTranscriptReplay?.trim()
+        ? managed.pendingTranscriptReplay
+        : null,
       ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
       updatedAt: nowIso()
     };
@@ -12602,6 +13629,12 @@ export function createAgentChatService(args: {
       const cursorSdkAgentId = typeof record.cursorSdkAgentId === "string" && record.cursorSdkAgentId.trim().length
         ? record.cursorSdkAgentId.trim()
         : undefined;
+      const cursorSdkForceExpireNextSend = record.cursorSdkForceExpireNextSend === true;
+      const cursorSdkPendingRotationPreviousAgentId =
+        typeof record.cursorSdkPendingRotationPreviousAgentId === "string"
+          && record.cursorSdkPendingRotationPreviousAgentId.trim().length
+          ? record.cursorSdkPendingRotationPreviousAgentId.trim()
+          : undefined;
       const cursorSdkRunId = typeof record.cursorSdkRunId === "string" && record.cursorSdkRunId.trim().length
         ? record.cursorSdkRunId.trim()
         : undefined;
@@ -12704,6 +13737,10 @@ export function createAgentChatService(args: {
         ...(cursorSdkAgentProtocolVersion ? { cursorSdkAgentProtocolVersion } : {}),
         ...(cursorSdkAgentId ? { cursorSdkAgentId } : {}),
         ...(cursorSdkRunId ? { cursorSdkRunId } : {}),
+        ...(cursorSdkForceExpireNextSend ? { cursorSdkForceExpireNextSend: true } : {}),
+        ...(cursorSdkPendingRotationPreviousAgentId
+          ? { cursorSdkPendingRotationPreviousAgentId }
+          : {}),
         ...(cursorCloudAgentId ? { cursorCloudAgentId } : {}),
         ...(cursorRuntime ? { cursorRuntime } : {}),
         ...(cursorPromotedTurnId ? { cursorPromotedTurnId } : {}),
@@ -14558,6 +15595,7 @@ export function createAgentChatService(args: {
     } else {
       runtime.seenBackgroundTaskIds.add(args.taskId);
     }
+    syncClaudeBackgroundWorkAnchor(runtime);
   };
 
   const isClaudeAgentBackgroundTaskType = (value: unknown): boolean => {
@@ -14574,6 +15612,11 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     tasks: unknown,
   ): void => {
+    // Snapshot the live set BEFORE anything below mutates it. The drain loop
+    // further down emits terminal updates, and a terminal update removes its id
+    // from `liveBackgroundTaskIds` — so comparing against the set afterwards
+    // would report a genuine drain as "nothing changed".
+    const previousIds = new Set(runtime.liveBackgroundTaskIds);
     const nextIds = new Set<string>();
     const nextTaskTypes = new Map<string, string>();
     for (const rawTask of Array.isArray(tasks) ? tasks : []) {
@@ -14608,6 +15651,7 @@ export function createAgentChatService(args: {
             background: true,
             ...(existing.taskType ? { taskType: existing.taskType } : {}),
             ...(existing.workflowName ? { workflowName: existing.workflowName } : {}),
+            ...optionalSubagentModelFields(existing.model),
             ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
             ...(runtime.sdkSessionId ? { providerSessionId: runtime.sdkSessionId } : {}),
           });
@@ -14646,6 +15690,11 @@ export function createAgentChatService(args: {
       });
     }
 
+    // Whether this level actually said anything new. A re-sent level with the
+    // same membership is the SDK repeating itself, not the session doing work.
+    const membershipChanged = nextIds.size !== previousIds.size
+      || [...nextIds].some((taskId) => !previousIds.has(taskId));
+
     runtime.liveBackgroundTaskIds.clear();
     for (const taskId of nextIds) runtime.liveBackgroundTaskIds.add(taskId);
     runtime.backgroundTaskTypeById.clear();
@@ -14653,7 +15702,13 @@ export function createAgentChatService(args: {
       runtime.backgroundTaskTypeById.set(taskId, taskType);
     }
     runtime.backgroundTasksLevelObserved = true;
-    managed.lastActivityTimestamp = Date.now();
+    syncClaudeBackgroundWorkAnchor(runtime);
+    // Bump the inactivity clock only on a real membership change. This level is
+    // level-triggered, not edge-triggered: a session whose background set never
+    // changes re-sends the identical set, and bumping unconditionally reset the
+    // idle-TTL clock forever — the runtime could then never age out no matter
+    // how long it had actually been silent.
+    if (membershipChanged) managed.lastActivityTimestamp = Date.now();
   };
 
   const pruneClaudeStoppingBackgroundTasks = (runtime: ClaudeRuntime): void => {
@@ -14765,7 +15820,18 @@ export function createAgentChatService(args: {
         runtime.taskToolInputByToolUseId.delete(existing.parentToolUseId);
       }
     }));
-    for (const taskId of taskIds) runtime.seenBackgroundTaskIds.delete(taskId);
+    for (const taskId of taskIds) {
+      runtime.seenBackgroundTaskIds.delete(taskId);
+      // The level set has to drop it too, not just the "seen" bookkeeping.
+      // `liveBackgroundTaskIds` is what exempts this runtime from idle-TTL
+      // teardown and budget eviction, so a task we just settled as stopped that
+      // stays in the set pins a warm SDK process (and its MCP children) for the
+      // life of the app. The terminal update above normally removes it; this
+      // covers the ids whose terminal edge came from the provider instead.
+      runtime.liveBackgroundTaskIds.delete(taskId);
+      runtime.backgroundTaskTypeById.delete(taskId);
+    }
+    syncClaudeBackgroundWorkAnchor(runtime);
   };
 
   const emitClaudeTranscriptRetraction = (
@@ -15365,7 +16431,7 @@ export function createAgentChatService(args: {
       // Single bulk ring update; the per-envelope recordChatEventInHistory
       // re-bounds the whole buffer each call (O(n²) across a large import).
       const current = eventHistoryBySession.get(managed.session.id) ?? [];
-      eventHistoryBySession.set(
+      touchEventHistoryRing(
         managed.session.id,
         boundRingEnvelopes([...current, ...storedEnvelopes]),
       );
@@ -16005,6 +17071,25 @@ export function createAgentChatService(args: {
     return runtime.activeTurnId ?? null;
   };
 
+  // ── Host sleep ───────────────────────────────────────────────────────────
+  //
+  // A machine that suspends mid-turn kills the agent's in-flight API call. The
+  // chip that says so, and the retry hold that stops the transcript blaming the
+  // API for it, live in `hostSleepChipTracker`.
+  const hostSleepChips = createHostSleepChipTracker<ManagedChatSession>({
+    powerSource: args.hostPowerSource ?? null,
+    sessions: () => managedSessions.values(),
+    sessionById: (sessionId) => managedSessions.get(sessionId),
+    activeTurnIdFor: activeTurnIdForManaged,
+    emit: (managed, event) => emitChatEvent(managed, event),
+    logger,
+  });
+  const holdRetryForHostSuspend = (
+    managed: ManagedChatSession,
+    error: string,
+    errorStatus: number | null,
+  ): boolean => hostSleepChips.holdRetry(managed, error, errorStatus);
+
   const firstAnswerText = (
     answers: Record<string, string[]> | undefined,
     fallback?: string | null,
@@ -16530,10 +17615,17 @@ export function createAgentChatService(args: {
     }
   };
 
+  const CURSOR_PERMISSION_WAITER_CLOSED_REASON =
+    "Cursor tool approval was cancelled because the session closed.";
+
   /** Tear down the active runtime, releasing all resources and cancelling pending approvals. */
   const teardownRuntime = (
     managed: ManagedChatSession,
     openCodeReason: "handle_close" | "idle_ttl" | "ended_session" | "model_switch" | "project_close" | "budget_eviction" | "pool_compaction" | "paused_run" | "shutdown" = "handle_close",
+    options?: {
+      /** Overrides the copy shown when pending Cursor tool approvals are cancelled. */
+      cursorPermissionWaiterReason?: string;
+    },
   ): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
@@ -16565,6 +17657,7 @@ export function createAgentChatService(args: {
       (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi") && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
+      failOpenCodexCompactions(managed, runtime, "teardown");
       const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
       const shouldMarkInterrupted =
         reasonAllowsPreservation
@@ -16692,11 +17785,7 @@ export function createAgentChatService(args: {
       managed.runtime.eventAbortController?.abort();
       managed.runtime.handle.setBusy(false);
       for (const pending of managed.runtime.pendingApprovals.values()) {
-        managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
-          path: { id: managed.runtime.handle.sessionId, permissionID: pending.permissionId },
-          query: { directory: managed.runtime.handle.directory },
-          body: { response: "reject" },
-        }).catch(() => {});
+        rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
       managed.runtime.handle.setEvictionHandler(null);
@@ -16705,8 +17794,9 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
+      clearCursorSdkSilenceWatch(rt);
       for (const [, w] of rt.permissionWaiters) {
-        cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the session closed.");
+        cancelCursorPermissionWaiter(w, options?.cursorPermissionWaiterReason ?? CURSOR_PERMISSION_WAITER_CLOSED_REASON);
       }
       rt.permissionWaiters.clear();
       if (preserveProviderResumeState) persistChatState(managed);
@@ -17072,6 +18162,7 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: row.status === "running" ? row.startedAt : null,
       pendingReconstructionContext: null,
+      pendingTranscriptReplay: null,
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
@@ -17079,6 +18170,10 @@ export function createAgentChatService(args: {
       manuallyNamed: persisted?.manuallyNamed === true || row.manuallyNamed === true,
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
+      ...(persisted?.cursorSdkForceExpireNextSend === true ? { cursorSdkForceExpireNextSend: true } : {}),
+      ...(persisted?.cursorSdkPendingRotationPreviousAgentId
+        ? { cursorSdkPendingRotationPreviousAgentId: persisted.cursorSdkPendingRotationPreviousAgentId }
+        : {}),
       continuitySummaryUpdatedAt: persisted?.continuitySummaryUpdatedAt ?? null,
       continuitySummaryInFlight: false,
       preferredExecutionLaneId: persisted?.preferredExecutionLaneId ?? null,
@@ -17086,6 +18181,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
       codexAutomaticRecoveryAttempted: persisted?.codexAutomaticRecoveryAttempted === true,
       unprocessedMessageResolutionReceipts: new Map(
@@ -17133,6 +18229,9 @@ export function createAgentChatService(args: {
     enforceOrchestrationLockedPermissionMode(managed.session);
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
+    if (typeof persisted?.pendingTranscriptReplay === "string" && persisted.pendingTranscriptReplay.trim()) {
+      managed.pendingTranscriptReplay = persisted.pendingTranscriptReplay;
+    }
 
     managedSessions.set(sessionId, managed);
     if (row.status === "detached") {
@@ -17237,7 +18336,7 @@ export function createAgentChatService(args: {
       onDispatched = undefined;
       callback();
     };
-    const slashText = args.promptText.trim();
+    const slashText = (args.userText?.trim() || args.promptText).trim();
 
     const emitCodexGoalNotice = (
       message: string,
@@ -17484,26 +18583,33 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (runtime.activeTurnId) {
+    const pendingUserShell = parseCodexUserShellDraft(slashText) ?? parseCodexShellSlashCommand(slashText);
+    const pendingMemoryCommand = parseCodexMemorySlashCommand(slashText);
+    if (runtime.activeTurnId && !pendingUserShell && !pendingMemoryCommand) {
       throw new Error("A turn is already active. Use steer or interrupt.");
     }
-    setSessionActive(managed);
-    if (!args.optimisticCodexTurnStart) {
-      emitPreparedUserMessage(managed, {
-        text: userText,
-        displayText,
-        attachments,
-        contextAttachments,
-        metadata: args.metadata,
-        laneDirectiveKey: args.laneDirectiveKey,
-        onDispatched: markDispatched,
-      });
-      emitChatEvent(managed, { type: "status", turnStatus: "started" });
-      captureTurnBeforeSha(managed);
-      emitChatEvent(managed, {
-        type: "activity",
-        ...initialTurnActivity(managed.session),
-      });
+    const skipTurnStartForActiveComposerCommand = Boolean(
+      runtime.activeTurnId && (pendingUserShell || pendingMemoryCommand),
+    );
+    if (!skipTurnStartForActiveComposerCommand) {
+      setSessionActive(managed);
+      if (!args.optimisticCodexTurnStart) {
+        emitPreparedUserMessage(managed, {
+          text: userText,
+          displayText,
+          attachments,
+          contextAttachments,
+          metadata: args.metadata,
+          laneDirectiveKey: args.laneDirectiveKey,
+          onDispatched: markDispatched,
+        });
+        emitChatEvent(managed, { type: "status", turnStatus: "started" });
+        captureTurnBeforeSha(managed);
+        emitChatEvent(managed, {
+          type: "activity",
+          ...initialTurnActivity(managed.session),
+        });
+      }
     }
     const providerSlashCommand = args.providerSlashCommand === true;
     const completeInlineCodexSlash = (
@@ -17615,6 +18721,7 @@ export function createAgentChatService(args: {
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
         runtime.awaitingTurnStart = false;
+        runtime.reviewTurnIds.add(reviewTurnId);
         if (isTerminalCodexTurn(runtime, reviewTurnId, managed)) {
           runtime.activeTurnId = null;
           runtime.startedTurnId = null;
@@ -17623,6 +18730,157 @@ export function createAgentChatService(args: {
         }
         runtime.activeTurnId = reviewTurnId;
         scheduleCodexNoFirstEventWatchdog(managed, runtime, reviewTurnId);
+      }
+      return;
+    }
+
+    const userShell = pendingUserShell;
+    if (userShell) {
+      if (!codexServerSupportsUserShell(runtime.serverVersion)) {
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "This Codex app-server cannot run unsandboxed user shell commands.",
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
+        runtime.awaitingTurnStart = false;
+        completeInlineCodexSlash("This Codex app-server cannot run unsandboxed user shell commands.");
+        return;
+      }
+      if (!skipTurnStartForActiveComposerCommand) runtime.awaitingTurnStart = true;
+      try {
+        const shellResult = await runtime.request<{ turn?: { id?: string } }>("thread/shellCommand", {
+          threadId: managed.session.threadId,
+          command: userShell.command,
+        });
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "user_message",
+            text: displayText || userText,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
+        const shellTurnId = typeof shellResult.turn?.id === "string" ? shellResult.turn.id : null;
+        if (!shellTurnId) {
+          runtime.awaitingTurnStart = false;
+          completeInlineCodexSlash();
+          return;
+        }
+        runtime.awaitingTurnStart = false;
+        if (isTerminalCodexTurn(runtime, shellTurnId, managed)) {
+          runtime.activeTurnId = null;
+          runtime.startedTurnId = null;
+        } else {
+          runtime.activeTurnId = shellTurnId;
+          scheduleCodexNoFirstEventWatchdog(managed, runtime, shellTurnId);
+        }
+      } catch (error) {
+        runtime.awaitingTurnStart = false;
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: `Unsandboxed user shell failed: ${error instanceof Error ? error.message : String(error)}`,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
+        completeFailedInlineCodexSlash("Unsandboxed user shell failed", error);
+        return;
+      }
+      markDispatched();
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      persistChatState(managed);
+      return;
+    }
+
+    const memoryCommand = pendingMemoryCommand;
+    if (memoryCommand) {
+      const finishMemory = (message?: string) => {
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          if (message) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message,
+              turnId: runtime.activeTurnId ?? undefined,
+            });
+          }
+          persistChatState(managed);
+          return;
+        }
+        completeInlineCodexSlash(message);
+      };
+      if (memoryCommand.kind === "invalid") {
+        finishMemory(memoryCommand.message);
+        return;
+      }
+      if (memoryCommand.kind === "reset") {
+        if (!memoryCommand.confirm) {
+          finishMemory("Reset Codex memory? Confirm with /memory-reset confirm. This deletes every memory file under this Codex home, not just this chat.");
+          return;
+        }
+        if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+          finishMemory("This Codex app-server cannot reset memory.");
+          return;
+        }
+        try {
+          await runtime.request("memory/reset", {});
+          finishMemory(CODEX_MEMORY_RESET_RECEIPT);
+        } catch (error) {
+          if (skipTurnStartForActiveComposerCommand) {
+            finishMemory(`Codex memory reset failed: ${error instanceof Error ? error.message : String(error)}`);
+          } else {
+            completeFailedInlineCodexSlash("Codex memory reset failed", error);
+          }
+        }
+        return;
+      }
+      if (!codexServerSupportsMemoryRpc(runtime.serverVersion) && memoryCommand.kind === "set") {
+        finishMemory("This Codex app-server cannot change memory mode.");
+        return;
+      }
+      if (memoryCommand.kind === "status") {
+        const mode = runtime.memoryMode ?? "unknown";
+        finishMemory(
+          mode === "enabled"
+            ? "Codex memory is on for this thread."
+            : mode === "disabled"
+              ? "Codex memory is off for this thread."
+              : "Codex memory status is unknown for this thread.",
+        );
+        return;
+      }
+      try {
+        await runtime.request("thread/memoryMode/set", {
+          threadId: managed.session.threadId,
+          mode: memoryCommand.enabled ? "enabled" : "disabled",
+        });
+        runtime.memoryMode = memoryCommand.enabled ? "enabled" : "disabled";
+        finishMemory(
+          memoryCommand.enabled ? "Codex memory is on for this thread." : "Codex memory is off for this thread.",
+        );
+      } catch (error) {
+        if (skipTurnStartForActiveComposerCommand) {
+          finishMemory(`Codex memory update failed: ${error instanceof Error ? error.message : String(error)}`);
+        } else {
+          completeFailedInlineCodexSlash("Codex memory update failed", error);
+        }
       }
       return;
     }
@@ -17737,17 +18995,13 @@ export function createAgentChatService(args: {
     const suppressTurnContext = providerSlashCommand && !planSlashCommand;
     const input: Array<Record<string, unknown>> = [];
 
-    const reconstructionContext = suppressTurnContext ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = suppressTurnContext ? "" : consumePendingTurnContextPrefix(managed, false)?.composed ?? "";
     if (reconstructionContext.length) {
       input.push({
         type: "text",
-        text: [
-          "System context (CTO reconstruction, do not echo verbatim):",
-          reconstructionContext
-        ].join("\n"),
+        text: reconstructionContext,
         text_elements: []
       });
-      managed.pendingReconstructionContext = null;
     }
     const { codexPolicy } = resolveCodexThreadParams(managed);
     await runtime.collaborationModesReady?.catch(() => {});
@@ -18254,6 +19508,8 @@ export function createAgentChatService(args: {
     const agentType = compactString(msg.subagent_type) ?? existing?.agentType;
     const command = compactString(msg.command) ?? existing?.command;
     const description = compactString(msg.description) ?? existing?.description ?? "Background task";
+    const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+    const model = compactString(msg.model) ?? existing?.model ?? stashed?.model;
     const backgroundShell = classification.backgroundShell;
     const nativeCronScheduleId = taskType === "cron"
       ? resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg)
@@ -18387,6 +19643,7 @@ export function createAgentChatService(args: {
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...(model ? { model } : {}),
       });
       if (taskType === "cron") {
         const scheduledWorkId = nativeCronScheduleId;
@@ -18415,6 +19672,7 @@ export function createAgentChatService(args: {
         background,
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...optionalSubagentModelFields(model),
         turnId,
       });
       return true;
@@ -18711,8 +19969,12 @@ export function createAgentChatService(args: {
     }
 
     if (msg.type === "system" && record.subtype === "api_retry") {
-      emitClaudeApiRetry(managed, record);
       const error = compactString(record.error) ?? "transient_error";
+      // A suspending host is a cause the provider could not name. Hold the
+      // retry — the sleep chip already says why — instead of counting an
+      // attempt against a socket that cannot answer until the lid opens.
+      if (holdRetryForHostSuspend(managed, error, numberOrNull(record.error_status))) return;
+      emitClaudeApiRetry(managed, record);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: error === "rate_limit" || error === "overloaded" ? "rate_limit" : "warning",
@@ -18771,19 +20033,22 @@ export function createAgentChatService(args: {
 
     if (msg.type === "rate_limit_event") {
       const info = asRecord(record.rate_limit_info) ?? {};
-      const rawStatus = compactString(info.status) ?? "updated";
-      if (rawStatus === "allowed") return;
-      if (rawStatus === "allowed_warning") {
-        if (managed.claudeRateLimitWarningEmitted) return;
-        managed.claudeRateLimitWarningEmitted = true;
-        runtime.rateLimitWarningEmitted = true;
+      const classified = classifyClaudeRateLimitInfo(info);
+      if (classified.kind === "ignore") return;
+      if (classified.kind === "rejected") {
+        noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
+        void resetClaudeQuerySession(managed, runtime, "session_reset");
+        return;
       }
+      if (managed.claudeRateLimitWarningEmitted) return;
+      managed.claudeRateLimitWarningEmitted = true;
+      runtime.rateLimitWarningEmitted = true;
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "rate_limit",
-        severity: rawStatus === "allowed_warning" ? "info" : "error",
-        status: rawStatus,
-        message: rawStatus === "allowed_warning" ? "Approaching Claude plan limit" : `Claude rate limit ${rawStatus.replace(/_/g, " ")}`,
+        severity: "info",
+        status: classified.status,
+        message: "Approaching Claude plan limit",
         ...(state.turnId ? { turnId: state.turnId } : {}),
       });
       return;
@@ -18826,6 +20091,11 @@ export function createAgentChatService(args: {
         }
         if (block.type === "text") {
           const text = typeof block.text === "string" ? block.text : "";
+          if (isClaudeSessionQuotaText(text)) {
+            noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(text), turnId);
+            void resetClaudeQuerySession(managed, runtime, "session_reset");
+            continue;
+          }
           const emittedRecord = providerMessageId && !resumedFromIncompleteThinking
             ? claudeEmittedTextRecord(runtime, providerMessageId)
             : null;
@@ -19427,6 +20697,7 @@ export function createAgentChatService(args: {
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultTerminalStatus: ClaudeTerminalStatus = "completed";
+    let quotaTrippedThisTurn = false;
     let resultTerminalReason: string | undefined;
     let resultCanonicalModel: string | undefined;
     let resultModelProvider: string | undefined;
@@ -19580,20 +20851,14 @@ export function createAgentChatService(args: {
 
     try {
       const providerSlashCommand = args.providerSlashCommand === true;
-      const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+      const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
       const basePromptText = providerSlashCommand
         ? args.promptText
         : [
-            reconstructionContext.length
-              ? [
-                  "System context (identity reconstruction, do not echo verbatim):",
-                  reconstructionContext,
-                ].join("\n")
-              : null,
+            reconstructionContext.length ? reconstructionContext : null,
             args.promptText,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
       if (reconstructionContext.length) {
-        managed.pendingReconstructionContext = null;
         persistChatState(managed);
       }
       // ── Stable query() session with background pre-warming ──
@@ -20059,47 +21324,29 @@ export function createAgentChatService(args: {
         if (msg.type === "rate_limit_event") {
           const rateMsg = msg as any;
           const info = rateMsg.rate_limit_info ?? {};
-          const rawStatus = typeof info.status === "string" ? info.status : "updated";
-          const isError = rawStatus !== "allowed" && rawStatus !== "allowed_warning";
-          // "allowed" = under threshold (no signal needed). "allowed_warning" = approaching limit;
-          // surface as an informational once-per-session notice. Anything else = real failure.
-          if (rawStatus === "allowed") continue;
-          if (rawStatus === "allowed_warning" && managed.claudeRateLimitWarningEmitted) continue;
-          if (rawStatus === "allowed_warning") {
-            managed.claudeRateLimitWarningEmitted = true;
-            runtime.rateLimitWarningEmitted = true;
+          const classified = classifyClaudeRateLimitInfo(info);
+          if (classified.kind === "ignore") continue;
+          if (classified.kind === "rejected") {
+            quotaTrippedThisTurn = true;
+            noteClaudeSessionQuota(managed, classified.snapshot, turnId);
+            continue;
           }
-          const severity: "info" | "warning" | "error" = isError ? "error" : "info";
+          if (managed.claudeRateLimitWarningEmitted) continue;
+          managed.claudeRateLimitWarningEmitted = true;
+          runtime.rateLimitWarningEmitted = true;
           const details: string[] = [];
-          if (typeof info.utilization === "number") {
-            const percent = info.utilization <= 1
-              ? Math.round(info.utilization * 100)
-              : Math.round(info.utilization);
-            details.push(`${percent}% utilized`);
+          if (classified.snapshot.utilizationPct != null) {
+            details.push(`${classified.snapshot.utilizationPct}% utilized`);
           }
-          if (typeof info.resetsAt === "number") {
-            const resetMs = info.resetsAt > 1_000_000_000_000 ? info.resetsAt : info.resetsAt * 1000;
-            const resetDate = new Date(resetMs);
-            if (!Number.isNaN(resetDate.getTime())) details.push(`resets ${resetDate.toISOString()}`);
+          if (classified.snapshot.resetsAtMs != null) {
+            details.push(`resets ${new Date(classified.snapshot.resetsAtMs).toISOString()}`);
           }
-          if (typeof info.errorCode === "string" && info.errorCode.trim().length > 0) {
-            details.push(`error: ${info.errorCode.replace(/_/g, " ")}`);
-          }
-          if (typeof info.canUserPurchaseCredits === "boolean") {
-            details.push(info.canUserPurchaseCredits ? "credits can be purchased" : "credits cannot be purchased here");
-          }
-          if (typeof info.hasChargeableSavedPaymentMethod === "boolean") {
-            details.push(info.hasChargeableSavedPaymentMethod ? "payment method available" : "no chargeable payment method");
-          }
-          const message = isError
-            ? `Claude rate limit ${rawStatus.replace(/_/g, " ")}`
-            : "Approaching Claude plan limit";
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "rate_limit",
-            severity,
-            status: rawStatus,
-            message,
+            severity: "info",
+            status: classified.status,
+            message: "Approaching Claude plan limit",
             detail: details.length ? details.join(" | ") : undefined,
             turnId,
           });
@@ -20110,6 +21357,18 @@ export function createAgentChatService(args: {
         if (msg.type === "system" && (msg as any).subtype === "api_retry") {
           const retryMsg = msg as any;
           const error = typeof retryMsg.error === "string" ? retryMsg.error : "transient_error";
+          // A suspending host is a cause the provider could not name. Hold the
+          // retry — the sleep chip already says why — instead of counting an
+          // attempt against a socket that cannot answer until the lid opens.
+          if (
+            holdRetryForHostSuspend(
+              managed,
+              error,
+              typeof retryMsg.error_status === "number" ? retryMsg.error_status : null,
+            )
+          ) {
+            continue;
+          }
           // A logged-out/auth retry will never recover on its own. Stop the retry
           // storm on the first auth attempt instead of surfacing
           // "retry 1/10 … 10/10" — rate-limit/overloaded retries still proceed.
@@ -20575,6 +21834,8 @@ export function createAgentChatService(args: {
             ? taskMsg.agent_id.trim()
             : undefined;
           const parentAgentId = compactString(taskMsg.parent_agent_id);
+          const existingStarted = resolveClaudeActiveSubagent(runtime, taskId, agentId);
+          const model = compactString(taskMsg.model) ?? stashed?.model ?? existingStarted?.model;
           const classification = classifyClaudeTaskMessage(
             runtime,
             taskMsg as Record<string, unknown>,
@@ -20661,6 +21922,7 @@ export function createAgentChatService(args: {
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(model ? { model } : {}),
             });
           const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
             claudeTaskTodoMap(managed, runtime),
@@ -20688,6 +21950,7 @@ export function createAgentChatService(args: {
             background,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...optionalSubagentModelFields(model),
             turnId,
           });
           continue;
@@ -20887,6 +22150,11 @@ export function createAgentChatService(args: {
               }
               if (block.type === "text") {
                 const blockText = block.text ?? "";
+                if (isClaudeSessionQuotaText(blockText)) {
+                  quotaTrippedThisTurn = true;
+                  noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(blockText), turnId);
+                  continue;
+                }
                 // Check both the real-id key AND the id-less fallback key. When
                 // content_block_delta fires before message_start (or when the
                 // SDK omits message_start entirely), streamed deltas record
@@ -21300,7 +22568,17 @@ export function createAgentChatService(args: {
             if (isClaudeRuntimeAuthError(resultErrors.userFacing.join(" "))) {
               failClaudeTurnUnauthenticated();
             }
+            const quotaErrors = resultErrors.userFacing.filter((err) => isClaudeSessionQuotaText(err));
+            if (quotaErrors.length > 0) {
+              quotaTrippedThisTurn = true;
+              noteClaudeSessionQuota(
+                managed,
+                snapshotFromClaudeSessionQuotaText(quotaErrors.join(" ")),
+                turnId,
+              );
+            }
             for (const err of resultErrors.userFacing) {
+              if (isClaudeSessionQuotaText(err)) continue;
               emitChatEvent(managed, {
                 type: "error",
                 message: err,
@@ -21428,7 +22706,11 @@ export function createAgentChatService(args: {
       if (runtime.interrupted) {
         await stopActiveClaudeSubagents(managed, runtime, turnId, "Interrupted");
       }
-      const finalStatus: ClaudeTerminalStatus = runtime.interrupted ? "interrupted" : resultTerminalStatus;
+      const finalStatus: ClaudeTerminalStatus = runtime.interrupted
+        ? "interrupted"
+        : quotaTrippedThisTurn
+          ? "failed"
+          : resultTerminalStatus;
       flushOpenClaudeToolUses(finalStatus);
       flushClaudeStructuredActivities(finalStatus);
       // Note: query is NOT closed here — it stays alive for the next turn.
@@ -21446,6 +22728,15 @@ export function createAgentChatService(args: {
         runtime.pendingSessionReset = false;
         runtime.pendingSessionResetClearSdkSessionId = false;
         await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId });
+      }
+
+      // Quota reject: reap once so the next send starts a fresh query with the
+      // same Claude UUID (current ~/.claude login). A successful later turn
+      // dismisses the card. Do not clear sdkSessionId.
+      if (runtimeStillCurrent && quotaTrippedThisTurn) {
+        await resetClaudeQuerySession(managed, runtime, "session_reset");
+      } else if (runtimeStillCurrent && finalStatus === "completed") {
+        dismissClaudeSessionQuota(managed);
       }
 
       const doneModel = buildDoneModelPayload();
@@ -21964,9 +23255,8 @@ export function createAgentChatService(args: {
     },
   ): Promise<string> => {
     const providerSlashCommand = args.providerSlashCommand === true;
-    const reconstructionContext = providerSlashCommand ? "" : managed.pendingReconstructionContext?.trim() ?? "";
+    const reconstructionContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed ?? "";
     if (reconstructionContext.length) {
-      managed.pendingReconstructionContext = null;
       persistChatState(managed);
     }
     const attachmentText = args.resolvedAttachments.length
@@ -21980,12 +23270,7 @@ export function createAgentChatService(args: {
         ].join("\n")
       : null;
     return [
-      reconstructionContext.length
-        ? [
-            "System context (identity reconstruction, do not echo verbatim):",
-            reconstructionContext,
-          ].join("\n")
-        : null,
+      reconstructionContext.length ? reconstructionContext : null,
       attachmentText,
       args.promptText,
     ].filter((section): section is string => Boolean(section)).join("\n\n");
@@ -22237,9 +23522,9 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, { type: "activity", ...initialTurnActivity(managed.session), turnId });
     try {
       let prompt = args.promptText;
-      if (managed.pendingReconstructionContext?.trim()) {
-        prompt = `System context (ADE continuity, do not echo verbatim):\n${managed.pendingReconstructionContext.trim()}\n\n${prompt}`;
-        managed.pendingReconstructionContext = null;
+      const pendingContext = consumePendingTurnContextPrefix(managed, false)?.composed;
+      if (pendingContext) {
+        prompt = `${pendingContext}\n\n${prompt}`;
       }
       if (!isPersonalSession(managed.session) && managed.lastLaneDirectiveKey !== args.laneDirectiveKey) {
         const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
@@ -22430,16 +23715,13 @@ export function createAgentChatService(args: {
       const attachmentHint = attachments.length
         ? `\n\nAttached context:\n${attachments.map((file) => `- ${file.type}: ${file.path}`).join("\n")}`
         : "";
+      const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
       const userContent = providerSlashCommand
         ? args.promptText
         : [
-            managed.pendingReconstructionContext?.trim().length
-              ? "System context (ADE continuity, do not echo verbatim):\n" + managed.pendingReconstructionContext.trim()
-              : null,
+            pendingContext,
             `${args.promptText}${attachmentHint}`,
           ].filter((section): section is string => Boolean(section)).join("\n\n");
-
-      if (!providerSlashCommand) managed.pendingReconstructionContext = null;
 
       const abortController = new AbortController();
       runtime.eventAbortController = abortController;
@@ -22475,6 +23757,8 @@ export function createAgentChatService(args: {
         session: managed.session,
       });
       const openCodePromptBody = {
+        sessionID: runtime.handle.sessionId,
+        directory: runtime.handle.directory,
         ...(openCodeAgent ? { agent: openCodeAgent } : {}),
         model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
         ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
@@ -22486,18 +23770,21 @@ export function createAgentChatService(args: {
         }),
       };
 
-      const promptAccepted = runtime.handle.client.session.promptAsync({
-        path: { id: runtime.handle.sessionId },
-        query: { directory: runtime.handle.directory },
-        throwOnError: true,
-        body: openCodePromptBody,
-      });
-
+      // Subscribe BEFORE dispatching. The event stream is live-only — it never
+      // replays events published before the connection lands — so a prompt
+      // request that wins this race would have its assistant `message.updated`
+      // role announcement (and first parts) lost, and the role gate below
+      // would then drop every part of that message.
       const eventStream = await openCodeEventStream({
         client: runtime.handle.client,
         directory: runtime.handle.directory,
         signal: abortController.signal,
       });
+
+      const promptAccepted = runtime.handle.client.session.promptAsync(
+        openCodePromptBody,
+        { throwOnError: true },
+      );
 
       await promptAccepted;
       if (args.onBackendDispatched) {
@@ -22505,7 +23792,14 @@ export function createAgentChatService(args: {
       }
 
       let stepNumber = 0;
-      const openCodeAssistantMessageIds = new Set<string>();
+      // Role of every message OpenCode tells us about, keyed by message id.
+      // Part events alone carry no role, and user-message parts (including
+      // synthetic/ignored prompt context) ride the same `message.part.updated`
+      // stream as assistant output — so content emission must be gated on a
+      // known assistant role, never on the part shape alone. OpenCode publishes
+      // `message.updated` before the first part of a message, so the role is
+      // always resolved by the time its parts arrive.
+      const openCodeMessageRoleById = new Map<string, "assistant" | "user">();
       const emittedOpenCodeImagePartIds = new Set<string>();
       const emitOpenCodeImagePart = (part: unknown): void => {
         const imageEvent = mapOpenCodeImagePart({
@@ -22518,6 +23812,8 @@ export function createAgentChatService(args: {
       let parentSessionIdle = false;
       for await (const event of eventStream) {
         const resolveSessionId = (): string | null => {
+          const legacyPermission = asLegacyOpenCodePermissionUpdated(event);
+          if (legacyPermission) return legacyPermission.properties.sessionID;
           switch (event.type) {
             case "message.updated":
               return event.properties.info.sessionID;
@@ -22527,9 +23823,8 @@ export function createAgentChatService(args: {
               return event.properties.info.id;
             case "message.part.updated":
               return event.properties.part.sessionID;
+            case "message.part.delta":
             case "message.part.removed":
-              return event.properties.sessionID;
-            case "permission.updated":
               return event.properties.sessionID;
             case "permission.asked":
               return event.properties.sessionID;
@@ -22597,6 +23892,7 @@ export function createAgentChatService(args: {
             const childDescription = (childInfo.title && childInfo.title.length)
               ? childInfo.title
               : "subagent";
+            const childModel = openCodeChildSessionModel(childInfo);
             const formatSummary = (): string => {
               const summary = childInfo.summary;
               return summary
@@ -22619,6 +23915,7 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 description: childDescription,
                 turnId,
+                ...optionalSubagentModelFields(childModel),
               });
             };
 
@@ -22640,6 +23937,7 @@ export function createAgentChatService(args: {
                 summary: formatSummary(),
                 ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
                 turnId,
+                ...optionalSubagentModelFields(childModel),
               });
             } else {
               // Deletion is distinct from normal completion (`session.idle`).
@@ -22681,11 +23979,40 @@ export function createAgentChatService(args: {
           continue;
         }
 
+        // Incremental assistant output. OpenCode's processor calls
+        // `updatePartDelta` for every `text-delta` and only calls `updatePart`
+        // at text-start and text-end, so `message.part.updated` carries an
+        // empty part, then the finished one — nothing in between. Without this
+        // branch the whole answer lands in a single jump at the end of the
+        // turn and the chat looks frozen while the model is talking. The
+        // running text is tracked here so the closing full-part update diffs to
+        // an empty delta instead of re-emitting the entire message.
+        if (event.type === "message.part.delta") {
+          const { messageID, partID, field, delta } = event.properties;
+          if (openCodeMessageRoleById.get(messageID) !== "assistant") continue;
+          if (typeof delta !== "string" || !delta.length) continue;
+          if (field === "text") {
+            runtime.textByPartId.set(partID, (runtime.textByPartId.get(partID) ?? "") + delta);
+            finalAssistantText += delta;
+            emitChatEvent(managed, { type: "text", text: delta, turnId, itemId: partID });
+            continue;
+          }
+          if (field === "reasoning") {
+            runtime.reasoningByPartId.set(partID, (runtime.reasoningByPartId.get(partID) ?? "") + delta);
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "thinking",
+              detail: REASONING_ACTIVITY_DETAIL,
+              turnId,
+            });
+            emitChatEvent(managed, { type: "reasoning", text: delta, turnId, itemId: partID });
+          }
+          continue;
+        }
+
         if (event.type === "message.updated") {
-          if (event.properties.info.role === "assistant") {
-            openCodeAssistantMessageIds.add(event.properties.info.id);
-          } else {
-            openCodeAssistantMessageIds.delete(event.properties.info.id);
+          if (event.properties.info.role === "assistant" || event.properties.info.role === "user") {
+            openCodeMessageRoleById.set(event.properties.info.id, event.properties.info.role);
           }
           continue;
         }
@@ -22710,7 +24037,8 @@ export function createAgentChatService(args: {
         }
 
         if (event.type === "message.part.updated") {
-          const { part, delta } = event.properties;
+          const { part } = event.properties;
+          const delta = openCodePartUpdatedDelta(event.properties);
           markFirstStreamEvent(part.type);
 
           // Compaction begin marker. OpenCode has no dedicated "started" event, but it
@@ -22759,10 +24087,21 @@ export function createAgentChatService(args: {
             continue;
           }
 
+          // Only assistant messages produce rendered content. User-message text
+          // parts stream through the same event; without this role gate the
+          // user's own prompt (or injected system context) would echo into the
+          // transcript as an assistant bubble. OpenCode announces every message
+          // (with its role) before its parts, so an unknown role means "not
+          // announced yet" — those stay unrendered too.
+          const openCodePartMessageRole = openCodeMessageRoleById.get(part.messageID);
+
           if (part.type === "text") {
             // Skip synthetic/ignored prompt parts (e.g. ADE launch directives
             // injected as system context) — they should not be rendered in chat.
             if ((part as { synthetic?: boolean }).synthetic || (part as { ignored?: boolean }).ignored) {
+              continue;
+            }
+            if (openCodePartMessageRole !== "assistant") {
               continue;
             }
             const previous = runtime.textByPartId.get(part.id) ?? "";
@@ -22786,6 +24125,9 @@ export function createAgentChatService(args: {
           }
 
           if (part.type === "reasoning") {
+            if (openCodePartMessageRole !== "assistant") {
+              continue;
+            }
             const previous = runtime.reasoningByPartId.get(part.id) ?? "";
             const nextText = part.text;
             const nextDelta = typeof delta === "string"
@@ -22814,7 +24156,7 @@ export function createAgentChatService(args: {
           if (part.type === "file") {
             // Prompt attachments use the same wire part. Only assistant-owned
             // files are output; tool attachments are handled below directly.
-            if (openCodeAssistantMessageIds.has(part.messageID)) {
+            if (openCodePartMessageRole === "assistant") {
               emitOpenCodeImagePart(part);
             }
             continue;
@@ -22939,7 +24281,7 @@ export function createAgentChatService(args: {
             continue;
           }
           if (response.decision === "decline" || response.decision === "cancel") {
-            await runtime.handle.v2Client.question.reject({
+            await runtime.handle.client.question.reject({
               requestID: questionRequest.id,
               directory: runtime.handle.directory,
             }, { throwOnError: true });
@@ -22950,7 +24292,7 @@ export function createAgentChatService(args: {
             if (answers.length > 0) return answers;
             return response.responseText?.trim() ? [response.responseText.trim()] : [];
           });
-          await runtime.handle.v2Client.question.reply({
+          await runtime.handle.client.question.reply({
             requestID: questionRequest.id,
             directory: runtime.handle.directory,
             answers: answerList,
@@ -23006,8 +24348,9 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        if (event.type === "permission.updated") {
-          const permission = event.properties;
+        const legacyPermissionUpdated = asLegacyOpenCodePermissionUpdated(event);
+        if (legacyPermissionUpdated) {
+          const permission = legacyPermissionUpdated.properties;
           const normalizedType = permission.type.trim().toLowerCase();
           const description = permission.title.trim() || normalizedType || "Approval required";
           const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
@@ -23074,8 +24417,13 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "todo_update",
             items: event.properties.todos
-              .map((todo: { id: string; content: string; status: string }) => ({
-                id: todo.id,
+              .map((todo, index) => ({
+                // OpenCode's todo entries carry no id — the field the legacy SDK
+                // types advertised does not exist on the wire, so every item was
+                // emitted with `id: undefined` and the renderer keyed them all
+                // alike. Fall back to the list position, matching how the Claude
+                // todo mapper above already derives a stable id.
+                id: openCodeTodoId(todo, index),
                 description: todo.content,
                 status: todo.status === "completed"
                   ? "completed"
@@ -24080,6 +25428,7 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
     });
     persistChatState(managed);
+    settleCodexTurnSideEffects(managed, runtime, interruptedTurnId, "interrupted");
   };
 
   const emitClaudeSubagentStarted = (
@@ -24221,7 +25570,21 @@ export function createAgentChatService(args: {
     await closeOpenClaudeBackgroundTasks(managed, runtime, "stopped", turnId);
 
     const activeSubagents = [...runtime.activeSubagents.values()];
-    if (activeSubagents.length === 0) return;
+    if (activeSubagents.length === 0) {
+      syncClaudeBackgroundWorkAnchor(runtime);
+      return;
+    }
+
+    // Everything below is being settled as stopped, so none of it may keep
+    // exempting the runtime from idle-TTL teardown or budget eviction. The
+    // background-shell ids were dropped by `closeOpenClaudeBackgroundTasks`;
+    // native background subagents only ever left `activeSubagents`, which is
+    // how a stopped session could still hold a warm SDK process forever.
+    for (const subagent of activeSubagents) {
+      runtime.liveBackgroundTaskIds.delete(subagent.taskId);
+      runtime.backgroundTaskTypeById.delete(subagent.taskId);
+    }
+    syncClaudeBackgroundWorkAnchor(runtime);
 
     const control = getClaudeQueryControl(runtime.query);
     await Promise.all(activeSubagents.map(async (subagent) => {
@@ -24558,12 +25921,18 @@ export function createAgentChatService(args: {
         if (!latest) return;
         const metadata = normalizeCodexSubagentThreadMetadata(response, latest);
         const previousLabel = latest.label;
+        const previousModel = latest.model;
+        const previousEffort = latest.reasoningEffort;
         latest.metadata = metadata;
         latest.label = metadata.label ?? latest.label;
         latest.parentThreadId = metadata.parentThreadId ?? latest.parentThreadId;
         latest.model = metadata.model ?? latest.model;
         latest.reasoningEffort = metadata.reasoningEffort ?? latest.reasoningEffort;
-        if (latest.label !== previousLabel) {
+        if (
+          latest.label !== previousLabel
+          || latest.model !== previousModel
+          || latest.reasoningEffort !== previousEffort
+        ) {
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId: threadId,
@@ -24573,6 +25942,7 @@ export function createAgentChatService(args: {
             description: latest.prompt ?? latest.label,
             summary: metadata.preview ?? metadata.prompt ?? latest.label,
             turnId: latest.parentTurnId ?? undefined,
+            ...optionalSubagentModelFields(latest.model, latest.reasoningEffort),
           });
         }
         logger.debug("agent_chat.codex_subagent_metadata_loaded", {
@@ -25189,6 +26559,175 @@ export function createAgentChatService(args: {
     evictOldestEntries(runtime.acceptedSteersByTurnId, 64);
   };
 
+  const emitCodexCompactionEvent = (
+    managed: ManagedChatSession,
+    payload: {
+      itemId: string;
+      turnId?: string;
+      trigger: "manual" | "auto";
+      state: "started" | "completed" | "failed";
+      failReason?: CodexCompactionFailReason;
+    },
+  ): void => {
+    emitChatEvent(managed, {
+      type: "codex_context_compaction",
+      turnId: payload.turnId ?? "",
+      trigger: payload.trigger,
+      state: payload.state,
+      compactionId: payload.itemId,
+      ...(payload.failReason ? { failReason: payload.failReason } : {}),
+    });
+  };
+
+  const failOpenCodexCompaction = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    reason: CodexCompactionFailReason,
+  ): void => {
+    const tracked = runtime.activeCompactions.get(itemId);
+    if (!tracked) return;
+    if (tracked.timer) clearTimeout(tracked.timer);
+    runtime.activeCompactions.delete(itemId);
+    emitCodexCompactionEvent(managed, {
+      itemId,
+      turnId: tracked.turnId,
+      trigger: tracked.trigger,
+      state: "failed",
+      failReason: reason,
+    });
+  };
+
+  const failOpenCodexCompactions = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    reason: CodexCompactionFailReason,
+  ): void => {
+    for (const itemId of [...runtime.activeCompactions.keys()]) {
+      failOpenCodexCompaction(managed, runtime, itemId, reason);
+    }
+  };
+
+  const armCodexCompactionStallTimer = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+  ): void => {
+    const tracked = runtime.activeCompactions.get(itemId);
+    if (!tracked) return;
+    if (tracked.timer) clearTimeout(tracked.timer);
+    tracked.timer = setTimeout(() => {
+      if (runtime.activeCompactions.get(itemId)?.timer !== tracked.timer) return;
+      failOpenCodexCompaction(managed, runtime, itemId, "timed_out");
+    }, CODEX_COMPACTION_STALL_MS);
+    tracked.timer.unref?.();
+  };
+
+  const readCodexQueueSubmissionId = (result: unknown): string | null => {
+    const record = asRecord(result);
+    if (!record) return null;
+    const queued = asRecord(record.queuedSubmission) ?? asRecord(record.submission);
+    return stringOrNull(queued?.id) ?? stringOrNull(record.id);
+  };
+
+  const startCodexQueuedFollowUp = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<void> => {
+    if (!codexServerSupportsThreadQueue(runtime.serverVersion)) return;
+    if (isCodexCompactionActive(runtime) || isCodexReviewTurnActive(runtime)) return;
+    if (runtime.activeTurnId) return;
+    const threadId = managed.session.threadId;
+    if (!threadId) return;
+    try {
+      await runtime.request("thread/queue/start", { threadId });
+    } catch (error) {
+      logger.debug("codex.queue.start_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const emitCodexBackgroundTaskUpdate = (
+    managed: ManagedChatSession,
+    processId: string,
+    status: Extract<AgentChatEvent, { type: "scheduled_work_update" }>["status"],
+    terminal: { command: string; cwd: string | null },
+  ): void => {
+    emitChatEvent(managed, {
+      type: "scheduled_work_update",
+      id: `background:${processId}`,
+      kind: "background_task",
+      status,
+      origin: "background_task",
+      title: terminal.command,
+      summary: terminal.cwd ? `cwd ${terminal.cwd}` : undefined,
+      sourceTaskId: processId,
+    });
+  };
+
+  const refreshCodexBackgroundTerminals = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<void> => {
+    if (!codexServerSupportsBackgroundTerminals(runtime.serverVersion)) return;
+    const threadId = managed.session.threadId;
+    if (!threadId) return;
+    try {
+      const result = await runtime.request<{
+        terminals?: Array<{
+          processId?: string;
+          command?: string;
+          cwd?: string | null;
+          itemId?: string | null;
+        }>;
+      }>("thread/backgroundTerminals/list", { threadId });
+      const previous = runtime.backgroundTerminalsByProcessId;
+      const next = new Map<string, { command: string; cwd: string | null; itemId: string | null }>();
+      for (const terminal of result.terminals ?? []) {
+        const processId = String(terminal.processId ?? "").trim();
+        if (!processId) continue;
+        const itemId = typeof terminal.itemId === "string" ? terminal.itemId : null;
+        if (itemId && runtime.userShellItemIds.has(itemId)) continue;
+        next.set(processId, {
+          command: String(terminal.command ?? "").trim() || processId,
+          cwd: typeof terminal.cwd === "string" ? terminal.cwd : null,
+          itemId,
+        });
+      }
+      runtime.backgroundTerminalsByProcessId = next;
+      for (const [processId, terminal] of next) {
+        emitCodexBackgroundTaskUpdate(managed, processId, "running", terminal);
+      }
+      for (const [processId, terminal] of previous) {
+        if (next.has(processId)) continue;
+        emitCodexBackgroundTaskUpdate(managed, processId, "stopped", terminal);
+      }
+    } catch (error) {
+      logger.warn("codex.background_terminals.list_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const settleCodexTurnSideEffects = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+    status: "completed" | "failed" | "interrupted" | string,
+  ): void => {
+    if (turnId) runtime.reviewTurnIds.delete(turnId);
+    if (status !== "completed") {
+      failOpenCodexCompactions(managed, runtime, "interrupted");
+    }
+    void refreshCodexBackgroundTerminals(managed, runtime);
+    if (status !== "completed" || !isCodexCompactionActive(runtime)) {
+      void startCodexQueuedFollowUp(managed, runtime);
+    }
+  };
+
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -25200,7 +26739,10 @@ export function createAgentChatService(args: {
     const itemType = String(item.type ?? "");
     const explicitTurnId = turnIdHint ?? extractCodexTurnId(item);
     const trackedTurnId = runtime.itemTurnIdByItemId.get(itemId) ?? null;
-    if (isInterruptedCodexTurn(runtime, explicitTurnId ?? trackedTurnId)) {
+    if (
+      isInterruptedCodexTurn(runtime, explicitTurnId ?? trackedTurnId)
+      && itemType !== "contextCompaction"
+    ) {
       return;
     }
     const turnId = (() => {
@@ -25235,27 +26777,43 @@ export function createAgentChatService(args: {
           runtime.manualCompactionPending = false;
         }
         const trigger = runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto";
-        emitChatEvent(managed, {
-          type: "codex_context_compaction",
-          state: "started",
+        runtime.activeCompactions.set(itemId, {
+          itemId,
           trigger,
           turnId: compactionTurnId,
-          compactionId: itemId,
+          startedAt: Date.now(),
+          timer: null,
+        });
+        armCodexCompactionStallTimer(managed, runtime, itemId);
+        emitCodexCompactionEvent(managed, {
+          itemId,
+          turnId: compactionTurnId,
+          trigger,
+          state: "started",
         });
         return;
       }
       if (eventKind === "completed") {
-        const trigger = runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto";
-        emitChatEvent(managed, {
-          type: "codex_context_compaction",
-          state: "completed",
+        const tracked = runtime.activeCompactions.get(itemId);
+        if (tracked?.timer) clearTimeout(tracked.timer);
+        runtime.activeCompactions.delete(itemId);
+        const trigger = tracked?.trigger
+          ?? (runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto");
+        emitCodexCompactionEvent(managed, {
+          itemId,
+          turnId: compactionTurnId || tracked?.turnId,
           trigger,
-          turnId: compactionTurnId,
-          compactionId: itemId,
+          state: "completed",
         });
         runtime.manualCompactionItemIds.delete(itemId);
+        void startCodexQueuedFollowUp(managed, runtime);
       }
       return;
+    }
+
+    if (itemType === "review") {
+      const reviewTurnId = turnId ?? runtime.activeTurnId ?? runtime.startedTurnId;
+      if (reviewTurnId) runtime.reviewTurnIds.add(reviewTurnId);
     }
 
     if (itemType === "plan") {
@@ -25297,6 +26855,8 @@ export function createAgentChatService(args: {
       const output = String(item.aggregatedOutput ?? runtime.commandOutputByItemId.get(itemId) ?? "");
       runtime.commandOutputByItemId.set(itemId, output);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      const commandSource = item.source === "userShell" ? "userShell" as const : undefined;
+      if (commandSource === "userShell") runtime.userShellItemIds.add(itemId);
       emitChatEvent(managed, {
         type: "command",
         command: String(item.command ?? "command"),
@@ -25306,11 +26866,15 @@ export function createAgentChatService(args: {
         turnId,
         exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
         durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
-        status
+        status,
+        ...(commandSource ? { source: commandSource } : {}),
       });
       if (eventKind === "completed") {
         runtime.commandOutputByItemId.delete(itemId);
         runtime.commandOutputStorageClosedItemIds.delete(itemId);
+      }
+      if (commandSource !== "userShell") {
+        void refreshCodexBackgroundTerminals(managed, runtime);
       }
       return;
     }
@@ -25438,6 +27002,10 @@ export function createAgentChatService(args: {
           description: String(item.description ?? item.title ?? "Delegated task"),
           background: isBackgroundTask(item as Record<string, unknown>),
           turnId,
+          ...optionalSubagentModelFields(
+            stringOrNull(item.model),
+            stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
+          ),
         });
       }
       if (eventKind === "completed") {
@@ -25467,6 +27035,8 @@ export function createAgentChatService(args: {
         background: existing?.background ?? false,
         label,
         status: kind === "interrupted" ? "stopped" : "running",
+        model: stringOrNull(item.model),
+        reasoningEffort: stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
       });
       refreshCodexSubagentThreadMetadata(managed, runtime, threadState.threadId);
       if (kind === "started") {
@@ -25492,6 +27062,7 @@ export function createAgentChatService(args: {
           description: existing?.description ?? label,
           background: existing?.background ?? false,
           turnId,
+          ...optionalSubagentModelFields(threadState.model, threadState.reasoningEffort),
         });
         return;
       }
@@ -25521,6 +27092,7 @@ export function createAgentChatService(args: {
         description: existing?.description ?? label,
         summary: kind === "interacted" ? "Agent received input" : "Agent active",
         turnId,
+        ...optionalSubagentModelFields(threadState.model, threadState.reasoningEffort),
       });
       return;
     }
@@ -26354,6 +27926,7 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
     }
     persistChatState(managed);
+    settleCodexTurnSideEffects(managed, runtime, turnId, status);
     if (runtime.pendingSteers.length && managed.runtime === runtime) {
       await deliverNextQueuedSteer(managed, runtime);
     }
@@ -26596,6 +28169,32 @@ export function createAgentChatService(args: {
         adoptRuntimeSessionTitle(managed, params, `codex_${method.replace(/[^\w]+/g, "_")}`);
         return;
       }
+    }
+
+    if (method === "thread/queue/changed") {
+      if (!codexServerSupportsThreadQueue(runtime.serverVersion)) return;
+      const threadId = managed.session.threadId;
+      if (!threadId) return;
+      try {
+        const listed = await runtime.request<{
+          queuedSubmissions?: Array<{ id?: string; clientUserMessageId?: string }>;
+        }>("thread/queue/list", { threadId });
+        const liveIds = new Set(
+          (listed.queuedSubmissions ?? [])
+            .map((submission) => String(submission.id ?? "").trim())
+            .filter(Boolean),
+        );
+        for (const [steerId, submissionId] of [...runtime.queuedSubmissionBySteerId]) {
+          if (liveIds.has(submissionId)) continue;
+          runtime.queuedSubmissionBySteerId.delete(steerId);
+        }
+      } catch (error) {
+        logger.debug("codex.queue.list_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
     }
 
     if (method === "thread/deleted") {
@@ -26860,6 +28459,7 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
+      settleCodexTurnSideEffects(managed, runtime, turnId, status);
       if (runtime.pendingSteers.length && managed.runtime === runtime) {
         await deliverNextQueuedSteer(managed, runtime);
       }
@@ -27125,6 +28725,7 @@ export function createAgentChatService(args: {
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       });
       persistChatState(managed);
+      settleCodexTurnSideEffects(managed, runtime, turnId, "interrupted");
       if (runtime.pendingSteers.length && managed.runtime === runtime) {
         await deliverNextQueuedSteer(managed, runtime);
       }
@@ -27415,17 +29016,10 @@ export function createAgentChatService(args: {
       });
       throw error;
     }
+    // Reasoning effort travels with the thread (codexThreadConfigArgs), never on
+    // the process: `-c` outranks the user's config.toml and would apply to every
+    // thread on this app-server, not just this chat.
     const appServerArgs = ["app-server"];
-    if (sessionSupportsReasoning(managed.session)) {
-      const descriptor = resolveSessionModelDescriptor(managed.session);
-      const reasoningEffort = resolveCodexReasoningEffortForRuntime(
-        managed.session.reasoningEffort,
-        null,
-        descriptor,
-      );
-      managed.session.reasoningEffort = reasoningEffort;
-      appServerArgs.push("-c", `model_reasoning_effort="${reasoningEffort}"`);
-    }
     const invocation = resolveCliSpawnInvocation(codexExecutable, appServerArgs);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: managed.laneWorktreePath,
@@ -27463,6 +29057,14 @@ export function createAgentChatService(args: {
       planTextByItemId: new Map<string, string>(),
       manualCompactionItemIds: new Set<string>(),
       manualCompactionPending: false,
+      activeCompactions: new Map(),
+      reviewTurnIds: new Set<string>(),
+      lastQueuedCheckIn: null,
+      queuedSubmissionBySteerId: new Map<string, string>(),
+      backgroundTerminalsByProcessId: new Map(),
+      userShellItemIds: new Set<string>(),
+      memoryMode: null,
+      historyPaginated: false,
       webSearchActionsByItemId: new Map<string, CodexWebSearchAction[]>(),
       planningApprovalGuardByTurnId: new Map<string, boolean>(),
       pendingTurnPlanningApprovalGuarded: null,
@@ -27738,12 +29340,7 @@ export function createAgentChatService(args: {
 
   const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
     if (managed.runtime?.kind === "codex") return managed.runtime;
-    // Evict least-recent runtime if at capacity
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
     const runtime = await startCodexRuntime(managed);
     managed.runtime = runtime;
     managed.runtimeInvalidated = false;
@@ -27871,6 +29468,9 @@ export function createAgentChatService(args: {
       ...codexPolicyArgs(codexPolicy),
       ...(dynamicTools.length ? { dynamicTools } : {}),
       experimentalRawEvents: false,
+      ...(codexServerSupportsPaginatedHistory(runtime.serverVersion)
+        ? { historyMode: "paginated" as const }
+        : {}),
     });
     applyCodexEffectiveThreadState(managed, startResponse, {
       requestedReasoningEffort: reasoningEffort,
@@ -27882,6 +29482,7 @@ export function createAgentChatService(args: {
       }),
     });
     adoptRuntimeSessionTitle(managed, startResponse, "codex_thread_start");
+    runtime.historyPaginated = codexServerSupportsPaginatedHistory(runtime.serverVersion);
     const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
     if (newThreadId) {
       managed.session.threadId = newThreadId;
@@ -27958,12 +29559,14 @@ export function createAgentChatService(args: {
           async (input: HookInput) => {
             if (input.hook_event_name === "SubagentStart") {
               const taskId = input.agent_id;
+              const model = stringOrNull((input as unknown as Record<string, unknown>).model);
               runtime.activeSubagents.set(taskId, {
                 taskId,
                 description: input.agent_type,
                 parentToolUseId: null,
                 agentId: input.agent_id,
                 agentType: input.agent_type,
+                ...(model ? { model } : {}),
               });
             }
             return { continue: true };
@@ -28115,14 +29718,15 @@ export function createAgentChatService(args: {
   /**
    * Build stable Agent SDK query options from the managed session state.
    */
-  const resolveManagedClaudeOutputStyle = (managed: ManagedChatSession): string => {
-    const requested = normalizePersistedOutputStyle(managed.session.claudeOutputStyle)
-      ?? readClaudeOutputStyleSelection(managed.laneWorktreePath);
-    const resolved = resolveClaudeOutputStyle(managed.laneWorktreePath, requested)
-      ?? resolveClaudeOutputStyle(managed.laneWorktreePath, "Default");
-    const outputStyle = resolved?.name ?? "Default";
-    managed.session.claudeOutputStyle = outputStyle;
-    return outputStyle;
+  const resolveManagedClaudeOutputStyle = (managed: ManagedChatSession): string | null => {
+    // Settings files first, session cache second: the cache is a display value we
+    // wrote ourselves last run, so consulting it first would pin whatever it holds
+    // and make an unset lane permanently ignore the user's global selection.
+    const requested = readClaudeOutputStyleSelection(managed.laneWorktreePath)
+      ?? normalizePersistedOutputStyle(managed.session.claudeOutputStyle);
+    const resolved = requested ? resolveClaudeOutputStyle(managed.laneWorktreePath, requested) : null;
+    managed.session.claudeOutputStyle = resolved?.name ?? null;
+    return resolved?.name ?? null;
   };
 
   const buildClaudeQueryOptions = (
@@ -28147,6 +29751,10 @@ export function createAgentChatService(args: {
     };
     const claudeExecutable = resolveClaudeCodeExecutable({ env: claudeEnv });
     const outputStyle = resolveManagedClaudeOutputStyle(managed);
+    // ADE's preferred default, supplied only when no settings file states one.
+    const workflowSizeGuideline = readClaudeWorkflowSizeGuideline(managed.laneWorktreePath)
+      ? undefined
+      : "medium";
     const bundledPluginPaths = claudeAgentSkillPluginRoots(claudeEnv);
     const pluginPaths = personalSession
       ? []
@@ -28173,11 +29781,16 @@ export function createAgentChatService(args: {
       // back. Workers/validators do real work and keep user MCP. strictMcpConfig still
       // permits the programmatic orchestration MCP server added below for bundled leads.
       ...((lightweight || isOrchestrationLeadSession(managed.session)) ? { strictMcpConfig: true } : {}),
+      // ADE's settings land at flag tier, above every settings.json the SDK reads.
+      // Only name a key ADE actually owns; anything else must stay absent so the
+      // SDK's own local > project > user precedence resolves it. `enabledPlugins`
+      // is safe to always send because the CLI merges it per plugin key rather
+      // than replacing the map.
       settings: {
-        outputStyle,
+        ...(outputStyle ? { outputStyle } : {}),
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
         fastMode: sessionEffectiveFastMode(managed.session),
-        workflowSizeGuideline: "medium",
+        ...(workflowSizeGuideline ? { workflowSizeGuideline } : {}),
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       permissionMode: claudePermissionMode as any,
@@ -28486,9 +30099,24 @@ export function createAgentChatService(args: {
 
   const cancelQueuedSteers = (
     managed: ManagedChatSession,
-    runtime: Pick<ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime, "pendingSteers" | "activeTurnId">,
+    runtime: Pick<ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime, "pendingSteers" | "activeTurnId">
+      & { preserveQueuedSteersOnInterrupt?: boolean },
     reason: "interrupted" | "failed" | "disposed",
   ): void => {
+    // "Interrupt & continue" stops the run only so the redirect can be resent
+    // on the same thread. The user's other queued messages are not part of
+    // that stop, so they ride through and are delivered once the redirect turn
+    // finishes. Every other interrupt still clears them.
+    //
+    // Consume-once, and consumed on ANY terminal cancel: the flag covers
+    // exactly the one cancel the redirect's own stop produces, however long the
+    // turn takes to settle. Clearing it even when the turn ends as "failed"
+    // (the interrupt landed, but the turn tail reported a failure instead)
+    // stops a stale flag from silently preserving the queue on the user's next,
+    // unrelated Stop.
+    const preserveQueuedSteers = runtime.preserveQueuedSteersOnInterrupt === true;
+    runtime.preserveQueuedSteersOnInterrupt = false;
+    if (reason === "interrupted" && preserveQueuedSteers) return;
     const cancelled = runtime.pendingSteers.splice(0);
     if (!cancelled.length) return;
 
@@ -28500,6 +30128,7 @@ export function createAgentChatService(args: {
     const message = cancelReasons[reason];
 
     for (const steer of cancelled) {
+      if (!claimSteerSettlement(managed, steer.steerId)) continue;
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -28573,6 +30202,10 @@ export function createAgentChatService(args: {
     const existingSteerIds = new Set(runtime.pendingSteers.map((steer) => steer.steerId));
     const restored = recovery.steers.filter((steer) => !existingSteerIds.has(steer.steerId));
     runtime.pendingSteers.push(...restored);
+    // Back on the queue means settleable again: without this the next terminal
+    // event's cancel would claim-fail and emit nothing, dropping the message
+    // silently and leaving the chip staged (queue_recovery does not clear it).
+    for (const steer of restored) reopenSteerSettlement(managed, steer.steerId);
     emitChatEvent(managed, {
       type: "queue_recovery",
       recoveryId,
@@ -28849,7 +30482,10 @@ export function createAgentChatService(args: {
     // message is being built. Do not auto-deliver another row at the parent
     // turn boundary; the idle reader will consume the explicit dispatch, then
     // remaining staged rows can proceed in order.
-    if (runtime.kind === "claude" && runtime.dispatchingSteerIds.size > 0) return false;
+    if (
+      (runtime.kind === "claude" || runtime.kind === "cursor")
+      && runtime.dispatchingSteerIds.size > 0
+    ) return false;
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
@@ -28861,6 +30497,7 @@ export function createAgentChatService(args: {
     }
     const displayText = nextSteer.displayText?.trim().length ? nextSteer.displayText.trim() : trimmed;
 
+    claimSteerSettlement(managed, nextSteer.steerId);
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
@@ -28937,7 +30574,7 @@ export function createAgentChatService(args: {
         laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
       });
     } else if (runtime.kind === "cursor") {
-      await runCursorTurn(managed, {
+      await runCursorSdkTurn(managed, {
         promptText,
         userText: trimmed,
         displayText,
@@ -29365,12 +31002,7 @@ export function createAgentChatService(args: {
 
   const ensureClaudeSessionRuntime = (managed: ManagedChatSession): ClaudeRuntime => {
     if (managed.runtime?.kind === "claude") return managed.runtime;
-    // Evict least-recent runtime if at capacity
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
     const persisted = readPersistedState(managed.session.id);
     const currentLaneDirectiveKey = buildLaneDirectiveKey({
       laneId: resolveManagedExecutionLaneId(managed),
@@ -29407,6 +31039,7 @@ export function createAgentChatService(args: {
       emittedTextByAssistantMessage: new Map(),
       liveBackgroundTaskIds: new Set(),
       backgroundTaskTypeById: new Map(),
+      backgroundWorkStartedAt: null,
       backgroundTasksLevelObserved: false,
       seenBackgroundTaskIds: new Set(),
       stoppingBackgroundTaskIds: new Map(),
@@ -29496,6 +31129,7 @@ export function createAgentChatService(args: {
       bufferedReasoning: null,
       ctoSessionStartedAt: null,
       pendingReconstructionContext: null,
+      pendingTranscriptReplay: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -29510,6 +31144,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
       codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
@@ -29694,11 +31329,9 @@ export function createAgentChatService(args: {
 
   /**
    * Child chat sessions spawned with a parent lineage. The relationship lives
-   * on the persisted child session, while parent-dispatch causality lives on
-   * the child's persisted user-message metadata — per turn for the turn that
-   * was dispatched, and across turns as mission ownership. Completion deliveries
-   * carry the child turn id in the parent transcript, providing durable dedupe
-   * without a process-local spawn tracker.
+   * on the persisted child session. Wake vs quiet is the child's `spawnKind`.
+   * Completion deliveries carry the child turn id in the parent transcript,
+   * providing durable dedupe without a process-local spawn tracker.
    */
   const spawnCompletionDeliveriesInFlight = new Set<string>();
 
@@ -29739,7 +31372,128 @@ export function createAgentChatService(args: {
       background: false,
       taskType: "subagent",
       spawnKind,
+      ...optionalSubagentModelFields(child.session.model),
     });
+  };
+
+  const parentChatStillExists = (parentSessionId: string): boolean => {
+    const live = managedSessions.get(parentSessionId);
+    if (live && !live.deleted) return true;
+    const row = sessionService.get(parentSessionId);
+    return Boolean(row && isChatToolType(row.toolType));
+  };
+
+  const emitSpawnKindMeta = (managed: ManagedChatSession): void => {
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      ...(managed.session.spawnKind ? { spawnKind: managed.session.spawnKind } : {}),
+      subagentTakeoverPromptShownAt: managed.session.subagentTakeoverPromptShownAt ?? null,
+    });
+  };
+
+  const postSpawnTakeoverNote = (child: ManagedChatSession, parentSessionId: string): void => {
+    const childTitle = sessionService.get(child.session.id)?.title?.trim()
+      || defaultChatSessionTitle(child.session.provider);
+    try {
+      const parent = ensureManagedSession(parentSessionId);
+      if (parent.deleted) return;
+      emitChatEvent(parent, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_takeover",
+        message: `The user took over "${childTitle}" — reports stop here.`,
+        detail: {
+          spawnTakeover: {
+            childSessionId: child.session.id,
+            childTitle,
+          },
+        },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.spawn_takeover_note_failed", {
+        childSessionId: child.session.id,
+        parentSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const applySpawnKindChange = ({
+    sessionId,
+    spawnKind,
+    source,
+  }: {
+    sessionId: string;
+    spawnKind: AgentChatSpawnKind;
+    source: "takeover" | "promote" | "parent_dispatch" | "orphan";
+  }): AgentChatSession => {
+    const managed = ensureManagedSession(sessionId);
+    const parentSessionId = managed.session.orchestrationParentSessionId?.trim() || "";
+    if (!parentSessionId || parentSessionId === sessionId) {
+      throw new Error("This chat is not a child of another chat.");
+    }
+    if (spawnKind === "subagent" && source !== "parent_dispatch" && !parentChatStillExists(parentSessionId)) {
+      throw new Error("The parent chat is gone, so this chat cannot report back.");
+    }
+    const previous = managed.session.spawnKind;
+    if (source === "takeover" || source === "orphan") {
+      managed.session.subagentTakeoverPromptShownAt = managed.session.subagentTakeoverPromptShownAt ?? nowIso();
+    }
+    managed.session.spawnKind = spawnKind;
+    persistChatState(managed);
+    emitSpawnKindMeta(managed);
+    logger.info("agent_chat.spawn_kind_changed", {
+      sessionId,
+      parentSessionId,
+      previousSpawnKind: previous ?? null,
+      spawnKind,
+      source,
+    });
+    if (spawnKind === "peer" && previous !== "peer" && source === "takeover") {
+      if (parentChatStillExists(parentSessionId)) {
+        postSpawnTakeoverNote(managed, parentSessionId);
+      }
+    }
+    return managed.session;
+  };
+
+  const reconcileOrphanedSubagent = (managed: ManagedChatSession): void => {
+    const parentSessionId = managed.session.orchestrationParentSessionId?.trim() || "";
+    if (!parentSessionId || parentSessionId === managed.session.id) return;
+    if (managed.session.spawnKind !== "subagent") return;
+    if (parentChatStillExists(parentSessionId)) return;
+    applySpawnKindChange({
+      sessionId: managed.session.id,
+      spawnKind: "peer",
+      source: "orphan",
+    });
+  };
+
+  const setSpawnKind = ({ sessionId, spawnKind }: AgentChatSetSpawnKindArgs): AgentChatSession => {
+    if (spawnKind !== "subagent" && spawnKind !== "peer") {
+      throw new Error("Spawn type must be subagent or peer.");
+    }
+    return applySpawnKindChange({
+      sessionId,
+      spawnKind,
+      source: spawnKind === "peer" ? "takeover" : "promote",
+    });
+  };
+
+  const dismissSubagentTakeoverPrompt = (
+    { sessionId }: AgentChatDismissSubagentTakeoverPromptArgs,
+  ): AgentChatSession => {
+    const managed = ensureManagedSession(sessionId);
+    if (!managed.session.orchestrationParentSessionId?.trim()) {
+      return managed.session;
+    }
+    if (managed.session.subagentTakeoverPromptShownAt) return managed.session;
+    reconcileOrphanedSubagent(managed);
+    if (managed.session.spawnKind !== "subagent") return managed.session;
+    managed.session.subagentTakeoverPromptShownAt = nowIso();
+    persistChatState(managed);
+    emitSpawnKindMeta(managed);
+    return managed.session;
   };
 
   const reportChildSpawnEnded = (
@@ -29761,18 +31515,20 @@ export function createAgentChatService(args: {
     const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
 
-    // Wake decision lives in `spawnMissionOwnership` so the policy — which
-    // inputs count as a directive — is stated and tested in one place. Peers
-    // never wake, so they never pay for the transcript read. Read once, before
-    // the delivery retries: a retry must not re-decide ownership.
-    const parentShouldWake = spawnKind === "subagent" && parentShouldWakeForChildTurn({
-      history: mergeEnvelopeStreams(
-        readTranscriptEnvelopes(child),
-        eventHistoryBySession.get(childSessionId) ?? [],
-      ),
-      parentSessionId,
-      turnId: resolvedTurnId,
-    });
+    // Subagent completions always wake the parent. Human messages no longer
+    // steal that channel — only an explicit demote to peer does. Peers skip
+    // the transcript read because they never wake.
+    const parentShouldWake = spawnKind === "subagent";
+    const humanMessageCount = parentShouldWake
+      ? countHumanChildMessagesForTurn(
+          mergeEnvelopeStreams(
+            readTranscriptEnvelopes(child),
+            eventHistoryBySession.get(childSessionId) ?? [],
+          ),
+          resolvedTurnId,
+        )
+      : 0;
+    const humanAnnotation = formatHumanChildMessageAnnotation(humanMessageCount);
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
     const assistantSummary = [...child.recentConversationEntries]
       .reverse()
@@ -29780,15 +31536,19 @@ export function createAgentChatService(args: {
       ?.text
       .replace(/\s+/g, " ")
       .trim();
-    const summary = resultStatus === "completed" && assistantSummary
-      ? assistantSummary.length > 1_200
+    let baseSummary: string;
+    if (resultStatus === "completed" && assistantSummary) {
+      baseSummary = assistantSummary.length > 1_200
         ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
-        : assistantSummary
-      : resultStatus === "completed"
-        ? spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished."
-      : resultStatus === "stopped"
-        ? "Stopped before finishing."
-        : "Turn failed.";
+        : assistantSummary;
+    } else if (resultStatus === "completed") {
+      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished.";
+    } else if (resultStatus === "stopped") {
+      baseSummary = "Stopped before finishing.";
+    } else {
+      baseSummary = "Turn failed.";
+    }
+    const summary = humanAnnotation ? `${baseSummary}\n${humanAnnotation}` : baseSummary;
     const childTitle = sessionService.get(childSessionId)?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
@@ -29798,6 +31558,7 @@ export function createAgentChatService(args: {
       childTurnId: resolvedTurnId,
       status: resultStatus,
       summary,
+      ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
     };
 
     const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
@@ -29850,7 +31611,7 @@ export function createAgentChatService(args: {
               type: "system_notice",
               noticeKind: "info",
               status: "spawn_completed",
-              message: `${spawnKind === "subagent" ? "Subagent" : "Peer"} "${childTitle}" turn finished`,
+              message: `Peer "${childTitle}" turn finished`,
               detail: { spawnCompletion },
             });
           }
@@ -29941,6 +31702,7 @@ export function createAgentChatService(args: {
     runtimeMode,
     goal: requestedGoal,
     recoveredFromSessionId,
+    sessionId: requestedSessionId,
     orchestrationRunId: requestedOrchestrationRunId,
     orchestrationRole: requestedOrchestrationRole,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
@@ -29971,9 +31733,11 @@ export function createAgentChatService(args: {
     if (normalizedIdempotencyKey.length > 256 || normalizedIdempotencyKey.includes("\0")) {
       throw new Error("Invalid chat idempotency key.");
     }
-    const sessionId = normalizedIdempotencyKey
-      ? deterministicChatSessionId(normalizedIdempotencyKey)
-      : randomUUID();
+    const requestedSessionIdTrimmed = typeof requestedSessionId === "string" ? requestedSessionId.trim() : "";
+    const sessionId = requestedSessionIdTrimmed
+      || (normalizedIdempotencyKey
+        ? deterministicChatSessionId(normalizedIdempotencyKey)
+        : randomUUID());
     const startedAt = nowIso();
     const transcriptPath = path.join(transcriptsDir, `${sessionId}.chat.jsonl`);
     const metadataPath = metadataPathFor(sessionId);
@@ -30070,11 +31834,10 @@ export function createAgentChatService(args: {
           rawEffort,
           resolvedDescriptor,
         );
-    const initialFastMode = requestedFastMode === true
-      && (
-        effectiveProvider !== "claude"
-        || (resolvedDescriptor ? modelSupportsFastMode(resolvedDescriptor) : true)
-      );
+    // Fast mode is a user setting, not a model-selection side effect. Keep the
+    // raw preference on the session even when the selected runtime cannot use
+    // a fast service tier; runtime request builders decide whether to send it.
+    const initialFastMode = requestedFastMode === true;
     const normalizedCursorModeId = typeof requestedCursorModeId === "string"
       ? (requestedCursorModeId.trim() || null)
       : requestedCursorModeId === null
@@ -30164,10 +31927,13 @@ export function createAgentChatService(args: {
           interactionMode: effectiveInteractionMode === "plan" || effectivePermissionMode === "plan"
             ? "plan" as const
             : "default" as const,
+          // No fallback: a substituted mode here is persisted and then read back
+          // as a real selection, which is what kept the inheritance path dead.
+          // The desktop composer always sends one; a launch that sends nothing
+          // is saying nothing, and Droid resolves it from settings.json.
           droidPermissionMode: requestedDroidPermissionMode
             ?? legacyPermissionModeToDroidPermissionMode(effectivePermissionMode)
-            ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode)
-            ?? "auto-low",
+            ?? legacyOpenCodePermissionModeToDroidPermissionMode(requestedOpenCodePermissionMode),
         };
       }
       if (effectiveProvider === "pi") {
@@ -30182,7 +31948,8 @@ export function createAgentChatService(args: {
       };
       })();
       const initialClaudeOutputStyle = effectiveProvider === "claude"
-        ? normalizePersistedOutputStyle(requestedClaudeOutputStyle) ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
+        ? normalizePersistedOutputStyle(requestedClaudeOutputStyle)
+          ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
         : null;
 
     const normalizedGoal = typeof requestedGoal === "string" && requestedGoal.trim().length
@@ -30282,6 +32049,7 @@ export function createAgentChatService(args: {
       deleted: false,
       ctoSessionStartedAt: identityKey === "cto" ? startedAt : null,
       pendingReconstructionContext: null,
+      pendingTranscriptReplay: null,
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
@@ -30296,6 +32064,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: null,
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
+      claudeSessionQuotaSnapshot: null,
       codexTerminalTurnIds: new Set<string>(),
       codexAutomaticRecoveryAttempted: false,
       unprocessedMessageResolutionReceipts: new Map(),
@@ -30426,24 +32195,24 @@ export function createAgentChatService(args: {
     }
     const targetLaneId = resolvedTargetLaneId;
     const sourceProvider = managed.session.provider;
-    if (handoffMode === "fork") {
-      if (!providerSupportsHandoffFork(sourceProvider)) {
-        const label = handoffProviderLabel(sourceProvider);
-        throw new Error(`Full-history fork isn't available for ${label} chats. Use a brief handoff instead.`);
-      }
-      if (targetProvider !== sourceProvider) {
-        throw new Error(FORK_SAME_PROVIDER_MESSAGE);
-      }
-    }
-    const sourceClaudeRuntime = handoffMode === "fork" && managed.session.provider === "claude"
+    const nativeFork = handoffMode === "fork"
+      && providerSupportsHandoffFork(sourceProvider)
+      && targetProvider === sourceProvider;
+    // Cursor's "native" fork is native only in the sense that it stays on the
+    // same provider — there is no SDK fork API, so the new chat starts on a
+    // fresh agent and needs the same full transcript replay a cross-provider
+    // fork gets.
+    const cursorReplayFork = nativeFork && sourceProvider === "cursor";
+    const replayFork = handoffMode === "fork" && (!nativeFork || cursorReplayFork);
+    const sourceClaudeRuntime = nativeFork && managed.session.provider === "claude"
       ? ensureClaudeSessionRuntime(managed)
       : null;
     const sourceSdkSessionId = sourceClaudeRuntime?.sdkSessionId ?? null;
-    if (handoffMode === "fork" && managed.session.provider === "claude" && !sourceSdkSessionId) {
+    if (nativeFork && managed.session.provider === "claude" && !sourceSdkSessionId) {
       throw new Error("Full-history fork requires a Claude session id. Send a Claude message first, then try Fork again.");
     }
     let sourceCodexForkThreadId: string | null = null;
-    if (handoffMode === "fork" && managed.session.provider === "codex") {
+    if (nativeFork && managed.session.provider === "codex") {
       const sourceThreadId = managed.session.threadId?.trim()
         || readPersistedState(sourceId)?.threadId?.trim()
         || "";
@@ -30451,9 +32220,22 @@ export function createAgentChatService(args: {
         throw new Error("Full-history fork requires a Codex thread id. Send a Codex message first, then try Fork again.");
       }
       const runtime = await ensureCodexSessionRuntime(managed);
+      try {
+        await runtime.request("thread/goal/clear", {
+          threadId: sourceThreadId,
+        }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+      } catch (error) {
+        logger.warn("agent_chat.codex_goal_clear_before_fork_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
         threadId: sourceThreadId,
         excludeTurns: true,
+        ...(codexServerSupportsDeferGoalContinuation(runtime.serverVersion)
+          ? { deferGoalContinuation: true }
+          : {}),
       }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
       const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
       if (!forkedThreadId) {
@@ -30462,7 +32244,7 @@ export function createAgentChatService(args: {
       sourceCodexForkThreadId = forkedThreadId;
     }
     let sourceOpenCodeForkSessionId: string | null = null;
-    if (handoffMode === "fork" && sourceProvider === "opencode") {
+    if (nativeFork && sourceProvider === "opencode") {
       if (managed.runtime?.kind !== "opencode") {
         try {
           await startOpenCodeSessionRuntime(managed);
@@ -30474,11 +32256,10 @@ export function createAgentChatService(args: {
         throw new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
       }
       const handle = managed.runtime.handle;
-      const forkResponse = await handle.client.session.fork({
-        path: { id: handle.sessionId },
-        query: { directory: handle.directory },
-        throwOnError: true,
-      });
+      const forkResponse = await handle.client.session.fork(
+        { sessionID: handle.sessionId, directory: handle.directory },
+        { throwOnError: true },
+      );
       const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
       if (!forkedId) {
         throw new Error(`OpenCode session fork did not return a new session id for '${handle.sessionId}'.`);
@@ -30486,7 +32267,7 @@ export function createAgentChatService(args: {
       sourceOpenCodeForkSessionId = forkedId;
     }
     let sourceDroidForkSessionId: string | null = null;
-    if (handoffMode === "fork" && sourceProvider === "droid") {
+    if (nativeFork && sourceProvider === "droid") {
       let droidRuntime: DroidRuntime;
       try {
         droidRuntime = await ensureDroidRuntime(managed);
@@ -30534,9 +32315,7 @@ export function createAgentChatService(args: {
       modelId: targetDescriptor.id,
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
-      fastMode: modelSupportsFastMode(targetDescriptor)
-        ? args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true
-        : undefined,
+      fastMode: args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true,
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
       codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
       codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
@@ -30553,7 +32332,7 @@ export function createAgentChatService(args: {
 
     const createdManaged = ensureManagedSession(created.id);
     createdManaged.session.executionMode = managed.session.executionMode ?? sourceSession.executionMode ?? null;
-    if (handoffMode === "fork") {
+    if (nativeFork) {
       if (createdManaged.session.provider === "claude" && sourceSdkSessionId) {
         createdManaged.claudeBackgroundResumeSessionId = sourceSdkSessionId;
         mirrorClaudeSessionPointer(createdManaged, sourceSdkSessionId);
@@ -30578,6 +32357,12 @@ export function createAgentChatService(args: {
       if (createdManaged.session.provider === "droid" && sourceDroidForkSessionId) {
         seedForkedProviderPointer(createdManaged, { droidSdkSessionId: sourceDroidForkSessionId });
         sessionService.setResumeCommand(created.id, `chat:droid:${created.id}`);
+      }
+      if (createdManaged.session.provider === "cursor") {
+        // No provider-side pointer to seed: a Cursor thread cannot be resumed
+        // twice, so the fork starts on a fresh agent and the source
+        // conversation reaches it as a full transcript replay.
+        stageCursorSdkForkContinuity(managed, createdManaged);
       }
     }
     const inheritedGoal = trimLine(sourceSession.goal)
@@ -30626,6 +32411,24 @@ export function createAgentChatService(args: {
       if (sourceEnvelopes.length) await appendImportedChatEvents(createdManaged, sourceEnvelopes);
     }
 
+    let replayForkDisclosure: AgentChatReplayForkDisclosure | undefined;
+    if (replayFork) {
+      const fit = buildFittedTranscriptReplay(
+        readTranscriptEnvelopes(managed, { includeBuffered: true }),
+        targetDescriptor.contextWindow,
+      );
+      createdManaged.pendingTranscriptReplay = fit.text;
+      persistChatState(createdManaged);
+      replayForkDisclosure = toReplayForkDisclosure(fit);
+      if (fit.truncated) {
+        emitChatEvent(createdManaged, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: `Forked with a full transcript replay. Oldest ${fit.truncatedTurnCount} turn${fit.truncatedTurnCount === 1 ? " was" : "s were"} dropped to fit the target context window.`,
+        });
+      }
+    }
+
     if (handoffMode === "brief" || handoffNote) {
       await sendMessage({
         sessionId: created.id,
@@ -30643,6 +32446,7 @@ export function createAgentChatService(args: {
     return {
       session: createdManaged.session,
       usedFallbackSummary: handoffMode === "brief" ? usedFallbackSummary : false,
+      ...(replayForkDisclosure ? { replayFork: replayForkDisclosure } : {}),
     };
   };
 
@@ -31156,6 +32960,11 @@ export function createAgentChatService(args: {
         if (managed.session.provider === "droid") {
           throw new Error(DROID_FORK_NOT_PORTABLE_MESSAGE);
         }
+        // Cursor forks locally, so "can't fork history" would contradict the
+        // Fork tab the user just used.
+        if (providerForkReplaysTranscript(managed.session.provider)) {
+          throw new Error("Cursor forks can't move between machines. Use a brief handoff instead.");
+        }
         throw new Error("This chat's provider can't fork history. Use a brief handoff instead.");
       }
       if (targetProvider !== managed.session.provider) {
@@ -31523,7 +33332,9 @@ export function createAgentChatService(args: {
           reason: sourceProvider === "droid"
             ? DROID_FORK_NOT_PORTABLE_REASON
             : sourceProvider === "cursor"
-              ? "Cursor chats can't fork history."
+              // Cursor forks locally by re-seeding context, which produces no
+              // transportable provider artifact to hand another machine.
+              ? "Cursor forks can't move between machines."
               : "This chat's provider can't fork history.",
         };
       } else {
@@ -31880,11 +33691,10 @@ export function createAgentChatService(args: {
         throw new Error("Unable to start the OpenCode runtime for the imported fork.");
       }
       const handle = args.managed.runtime.handle;
-      const forkResponse = await handle.client.session.fork({
-        path: { id: importedId },
-        query: { directory: handle.directory },
-        throwOnError: true,
-      });
+      const forkResponse = await handle.client.session.fork(
+        { sessionID: importedId, directory: handle.directory },
+        { throwOnError: true },
+      );
       const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
       if (!forkedId) throw new Error("OpenCode session fork did not return a new session id.");
       handle.sessionId = forkedId;
@@ -32040,7 +33850,7 @@ export function createAgentChatService(args: {
         title: capsule.source.title ? `Handoff · ${capsule.source.title}` : `Handoff · ${capsule.source.laneName}`,
         sessionProfile: "workflow",
         reasoningEffort: pickHandoffReasoningEffort(targetDescriptor, capsule.target.reasoningEffort),
-        fastMode: modelSupportsFastMode(targetDescriptor) ? capsule.target.fastMode : undefined,
+        fastMode: capsule.target.fastMode,
         claudePermissionMode: capsule.target.claudePermissionMode,
         codexApprovalPolicy: capsule.target.codexApprovalPolicy,
         codexSandbox: capsule.target.codexSandbox,
@@ -32390,6 +34200,67 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  const noteClaudeSessionQuota = (
+    managed: ManagedChatSession,
+    snapshot: ClaudeSessionQuotaSnapshot,
+    turnId?: string | null,
+  ): void => {
+    managed.claudeSessionQuotaSnapshot = mergeClaudeSessionQuotaSnapshot(
+      managed.claudeSessionQuotaSnapshot,
+      snapshot,
+    );
+    managed.claudeQuotaCardWasLive = true;
+    managed.claudeQuotaCardLiveChecked = true;
+    void emitAdeCard({
+      sessionId: managed.session.id,
+      card: buildClaudeSessionQuotaCard({
+        sessionId: managed.session.id,
+        turnId,
+        snapshot: managed.claudeSessionQuotaSnapshot,
+      }),
+    }).catch((error) => {
+      logger.warn("agent_chat.claude_session_quota_card_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  const latestQuotaCardIsLive = (managed: ManagedChatSession): boolean => {
+    if (managed.claudeSessionQuotaSnapshot) return true;
+    if (managed.claudeQuotaCardLiveChecked) return managed.claudeQuotaCardWasLive === true;
+    managed.claudeQuotaCardLiveChecked = true;
+    const cardId = claudeSessionQuotaCardId(managed.session.id);
+    let live = false;
+    for (const entry of readTranscriptEnvelopes(managed)) {
+      if (entry.event.type !== "ade_card" || entry.event.cardId !== cardId) continue;
+      live = entry.event.state === "live";
+    }
+    managed.claudeQuotaCardWasLive = live;
+    return live;
+  };
+
+  const dismissClaudeSessionQuota = (managed: ManagedChatSession): void => {
+    if (!latestQuotaCardIsLive(managed)) return;
+    const snapshot = managed.claudeSessionQuotaSnapshot ?? { utilizationPct: null, resetsAtMs: null };
+    managed.claudeSessionQuotaSnapshot = null;
+    managed.claudeQuotaCardWasLive = false;
+    managed.claudeQuotaCardLiveChecked = true;
+    void emitAdeCard({
+      sessionId: managed.session.id,
+      card: buildClaudeSessionQuotaCard({
+        sessionId: managed.session.id,
+        snapshot,
+        dismissed: true,
+      }),
+    }).catch((error) => {
+      logger.warn("agent_chat.claude_session_quota_dismiss_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   type ExternalChatImportErrorCode =
     | "EXTERNAL_CHAT_SESSION_NOT_FOUND"
     | "EXTERNAL_CHAT_SESSION_INVALID_ARGS"
@@ -32499,20 +34370,22 @@ export function createAgentChatService(args: {
 
   const persistedImportedChatResult = async (
     managed: ManagedChatSession,
-    provider: AgentChatImportProvider,
+    provider: string,
     providerTargetId: string,
+    replayFork?: AgentChatReplayForkDisclosure,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const summaryRow = sessionService.get(managed.session.id);
     if (!summaryRow) {
       throw externalChatImportError(
         "EXTERNAL_CHAT_SESSION_READ_FAILED",
-        `Imported ${provider === "claude" ? "Claude" : "Codex"} chat was not persisted.`,
+        `Imported ${provider} chat was not persisted.`,
       );
     }
     return {
       chatSessionId: managed.session.id,
       chatSummary: await summarizeSessionRow(summaryRow),
       providerTargetId,
+      ...(replayFork ? { replayFork } : {}),
     };
   };
 
@@ -32520,6 +34393,7 @@ export function createAgentChatService(args: {
     args: AgentChatImportExternalSessionArgs,
     laneWorktreePath: string,
     importedAt: number,
+    targetDescriptor?: ReturnType<typeof getModelById>,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalSessionId = args.externalSessionId.trim();
     if (hasPathSeparator(externalSessionId)) {
@@ -32576,7 +34450,10 @@ export function createAgentChatService(args: {
       const created = await createSession({
         laneId: args.laneId,
         provider: "claude",
-        model: DEFAULT_CLAUDE_MODEL,
+        model: targetDescriptor
+          ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
+          : DEFAULT_CLAUDE_MODEL,
+        ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
       createdSessionId = created.id;
@@ -32652,6 +34529,7 @@ export function createAgentChatService(args: {
   const importCodexExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
     importedAt: number,
+    targetDescriptor?: ReturnType<typeof getModelById>,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalThreadId = args.externalSessionId.trim();
     let createdSessionId: string | null = null;
@@ -32700,7 +34578,10 @@ export function createAgentChatService(args: {
       const created = await createSession({
         laneId: args.laneId,
         provider: "codex",
-        model: DEFAULT_CODEX_MODEL,
+        model: targetDescriptor
+          ? (targetDescriptor.isCliWrapped ? targetDescriptor.providerModelId : targetDescriptor.id)
+          : DEFAULT_CODEX_MODEL,
+        ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
       createdSessionId = created.id;
@@ -32789,6 +34670,141 @@ export function createAgentChatService(args: {
     }
   };
 
+  const importExternalChatSessionViaReplay = async (
+    args: AgentChatImportExternalSessionArgs,
+    options: {
+      targetProvider: AgentChatProvider;
+      targetDescriptor: NonNullable<ReturnType<typeof getModelById>>;
+      laneWorktreePath: string;
+      importedAt: number;
+    },
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const externalSessionId = args.externalSessionId.trim();
+    let envelopes: AgentChatEventEnvelope[] = [];
+    if (args.provider === "claude") {
+      if (hasPathSeparator(externalSessionId)) {
+        throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
+      }
+      const source = findClaudeSessionTranscript(externalSessionId, args.cwd);
+      if (!source) {
+        throw externalChatImportError(
+          "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+          `External Claude session '${externalSessionId}' was not found.`,
+        );
+      }
+      const sourceRead = readTailLines(source.transcriptPath, MAX_IMPORT_TRANSCRIPT_BYTES);
+      envelopes = claudeJsonlToChatEvents(sourceRead.lines, {
+        sessionId: "import-preview",
+        provider: "claude",
+        externalSessionId,
+        importedAt: options.importedAt,
+        laneId: args.laneId,
+        transcriptBytesTruncated: sourceRead.truncated,
+        transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
+      });
+    } else if (args.provider === "codex") {
+      let readerSessionId: string | null = null;
+      try {
+        const reader = await createSession({
+          laneId: args.laneId,
+          provider: "codex",
+          model: DEFAULT_CODEX_MODEL,
+        });
+        readerSessionId = reader.id;
+        const readerManaged = ensureManagedSession(reader.id);
+        const runtime = await ensureCodexSessionRuntime(readerManaged);
+        const readResponse = await runtime.request<unknown>("thread/read", {
+          threadId: externalSessionId,
+          includeTurns: true,
+        });
+        const sourceThread = extractCodexThreadTurns(readResponse, externalSessionId);
+        if (!sourceThread.foundThread) {
+          throw externalChatImportError(
+            "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+            `External Codex thread '${externalSessionId}' was not found by thread/read.`,
+          );
+        }
+        envelopes = codexTurnsToChatEvents(sourceThread.turns, {
+          sessionId: "import-preview",
+          provider: "codex",
+          externalSessionId,
+          importedAt: options.importedAt,
+          laneId: args.laneId,
+        });
+      } finally {
+        if (readerSessionId) {
+          await deleteSession({ sessionId: readerSessionId }).catch((cleanupError) => {
+            logger.warn("agent_chat.external_import_codex_replay_reader_cleanup_failed", {
+              sessionId: readerSessionId,
+              error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+            });
+          });
+        }
+      }
+    } else {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `Cross-provider replay import from ${args.provider} is not available yet; import as ${args.provider} first, then fork to the target model.`,
+      );
+    }
+
+    // A replay import with nothing to replay would create an empty chat and
+    // stage a blank prefix; discovery already hides empty transcripts, so fail
+    // loudly instead of importing a shell. Every import carries an "imported
+    // from" notice, so emptiness is judged by what the replay would render.
+    if (!buildTranscriptReplayDocument(envelopes).turnCount) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+        `External ${args.provider} session '${externalSessionId}' has no messages to replay.`,
+      );
+    }
+
+    const targetModel = options.targetDescriptor.isCliWrapped
+      ? options.targetDescriptor.providerModelId
+      : options.targetDescriptor.id;
+    let createdSessionId: string | null = null;
+    try {
+      const created = await createSession({
+        laneId: args.laneId,
+        provider: options.targetProvider,
+        model: targetModel,
+        modelId: options.targetDescriptor.id,
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      createdSessionId = created.id;
+      const managed = ensureManagedSession(created.id);
+      const seeded = envelopes.map((envelope) => ({
+        ...envelope,
+        sessionId: created.id,
+        provenance: {
+          ...(envelope.provenance ?? {}),
+          providerOrigin: "handoff_fork",
+          sourceSessionId: externalSessionId,
+        },
+      }));
+      applyImportedChatMetadata(managed, args, seeded, options.importedAt);
+      persistChatState(managed);
+      if (seeded.length) await appendImportedChatEvents(managed, seeded);
+      const replayFork = stageTranscriptReplayOnSession(
+        managed,
+        seeded,
+        options.targetDescriptor.contextWindow,
+      );
+      persistChatState(managed);
+      return await persistedImportedChatResult(managed, options.targetProvider, externalSessionId, replayFork);
+    } catch (error) {
+      if (createdSessionId) {
+        await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_cleanup_failed", {
+            sessionId: createdSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+  };
+
   const importExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
   ): Promise<AgentChatImportExternalSessionResult> => {
@@ -32804,6 +34820,14 @@ export function createAgentChatService(args: {
     if (!laneId) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "laneId is required.");
     }
+    const requestedModelId = typeof args.model === "string" ? args.model.trim() : "";
+    const targetDescriptor = requestedModelId
+      ? getModelById(requestedModelId) ?? resolveModelAlias(requestedModelId)
+      : null;
+    if (requestedModelId && (!targetDescriptor || targetDescriptor.deprecated)) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unknown model '${requestedModelId}'.`);
+    }
+    const targetProvider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : provider;
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
@@ -32818,12 +34842,21 @@ export function createAgentChatService(args: {
       cwd: typeof args.cwd === "string" && args.cwd.trim().length ? args.cwd.trim() : null,
       fork: args.fork === true,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      ...(requestedModelId ? { model: requestedModelId } : {}),
     };
     const importedAt = Date.now();
-    if (provider === "claude") {
-      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt);
+    if (targetProvider !== provider) {
+      return importExternalChatSessionViaReplay(normalizedArgs, {
+        targetProvider,
+        targetDescriptor: targetDescriptor!,
+        laneWorktreePath: launchContext.laneWorktreePath,
+        importedAt,
+      });
     }
-    return importCodexExternalChatSession(normalizedArgs, importedAt);
+    if (provider === "claude") {
+      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, targetDescriptor ?? undefined);
+    }
+    return importCodexExternalChatSession(normalizedArgs, importedAt, targetDescriptor ?? undefined);
   };
 
   const prepareSendMessage = ({
@@ -32847,6 +34880,18 @@ export function createAgentChatService(args: {
     allowPendingInput?: boolean;
   }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
+    const dispatchParentId = metadata?.spawnDispatch?.parentSessionId?.trim();
+    if (
+      dispatchParentId
+      && managed.session.spawnKind === "peer"
+      && managed.session.orchestrationParentSessionId?.trim() === dispatchParentId
+    ) {
+      applySpawnKindChange({
+        sessionId,
+        spawnKind: "subagent",
+        source: "parent_dispatch",
+      });
+    }
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
     const trimmedText = text.trim();
     const trimmed = trimmedText.length
@@ -32946,6 +34991,10 @@ export function createAgentChatService(args: {
       (managed.session.provider === "cursor" || managed.session.provider === "droid")
       && managed.session.status === "active"
       && !allowActiveSession
+      // Settlement left a one-shot expiry for the next Cursor send. The
+      // abandoned execute may still read as active until it finishes, and
+      // that send must go through rather than bounce as busy.
+      && !(managed.session.provider === "cursor" && managed.cursorSdkForceExpireNextSend === true)
     ) {
       throw new Error("Turn is already active.");
     }
@@ -33271,6 +35320,8 @@ export function createAgentChatService(args: {
   };
 
   const emitDispatchedSendFailure = (prepared: PreparedSendMessage, error: unknown): void => {
+    // The provider path already emitted this turn's error/failed/done set.
+    if (isCursorTurnAlreadyReported(error)) return;
     emitManagedSendFailure(prepared.managed, error, prepared.turnId);
   };
 
@@ -33289,7 +35340,7 @@ export function createAgentChatService(args: {
     policy.chatMode,
     policy.approvalPolicy,
     policy.orchestrationLead ? "lead-gated" : "unrestricted",
-    policy.force ? "force" : "guarded",
+    policy.fullAuto ? "full-auto" : "guarded",
     buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
@@ -33388,28 +35439,10 @@ export function createAgentChatService(args: {
     return built.text;
   };
 
-  const buildCursorSdkModeDirective = (policy: CursorSdkPermissionPolicy): string | null => {
-    if (policy.chatMode === "ask") {
-      return [
-        "System context: Cursor Ask mode is active.",
-        "Answer from inspection only. Do not modify files.",
-        "Do not run shell commands unless ADE explicitly allows a read-only inspection.",
-        cursorSdkAdeControlDirective(),
-      ].join(" ");
-    }
-    if (policy.chatMode === "plan") {
-      return [
-        "System context: Cursor Plan mode is active.",
-        "Produce a concrete implementation plan before changing files.",
-        "Do not modify files or run side-effecting shell commands until the user switches mode or grants approval.",
-        cursorSdkAdeControlDirective(),
-      ].join(" ");
-    }
-    if (policy.approvalPolicy === "never") {
-      return `System context: Cursor Full auto is active. Continue autonomously inside the active lane while respecting ADE hard safety guards. ${cursorSdkAdeControlDirective()}`;
-    }
-    return `System context: Cursor Agent mode is active. Use ADE approval outcomes from approval messages. ${cursorSdkAdeControlDirective()}`;
-  };
+  // Permission mode is enforced by SDK AgentOptions (tools / autoReview /
+  // sandboxOptions) plus ADE hook path guards. This injects only the ADE
+  // control-protocol reminder — never advisory "you are in Ask/Plan" text.
+  const buildCursorSdkModeDirective = (): string => cursorSdkAdeControlDirective();
 
   const buildCursorSdkPendingInputRequest = (
     itemId: string,
@@ -33536,12 +35569,23 @@ export function createAgentChatService(args: {
     void (async () => {
       const ready = await waitForCursorControlFollowupSlot(managed, runtime);
       if (!ready || managed.closed || managed.runtime !== runtime) return;
-      await runCursorTurn(managed, {
+      // A synthetic follow-up with no user bubble: it opts out of the turn-start
+      // block and emits its own working indicator, the same way the optimistic
+      // send path does — including the turnId, so the indicator is scoped to
+      // this turn rather than floating free.
+      const followupTurnId = randomUUID();
+      emitChatEvent(managed, {
+        type: "activity",
+        ...initialTurnActivity(managed.session),
+        turnId: followupTurnId,
+      });
+      await runCursorSdkTurn(managed, {
         promptText: text,
         displayText: "",
         attachments: [],
         contextAttachments: [],
         resolvedAttachments: [],
+        turnId: followupTurnId,
         optimisticCursorTurnStart: true,
       });
     })().catch((error) => {
@@ -33732,7 +35776,7 @@ export function createAgentChatService(args: {
         reason,
         mode: runtime.currentModeId,
         approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
-        force: policy.force,
+        fullAuto: policy.fullAuto,
       });
     } catch (error) {
       logger.warn("agent_chat.cursor_sdk_policy_update_failed", {
@@ -33928,21 +35972,38 @@ export function createAgentChatService(args: {
     // AGI (orchestrator) is a Droid-specific permission mode, not part of the
     // generic interaction-mode enum — resolve it from droidPermissionMode and
     // let it win over the plan→spec mapping.
-    const interactionMode: DroidSdkSessionSettings["interactionMode"] =
-      resolveSessionDroidPermissionMode(managed.session, "auto-low") === "agi"
-        ? "agi"
-        : resolveDroidSdkInteractionMode(managed.session);
+    const chosenMode = resolveSessionDroidPermissionModeOrNull(managed.session);
+    const planRequested = resolveDroidSdkInteractionMode(managed.session) === "spec";
+    // Mirrors the terminal path: droidSettingsJson omits sessionDefaultSettings
+    // when permissionMode is null, letting the user's settings.json decide.
+    const stated: Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> | null =
+      chosenMode !== null || planRequested || isOrchestrationLeadSession(managed.session)
+        ? ((): Pick<DroidSdkSessionSettings, "autonomyLevel" | "interactionMode"> => {
+            const interactionMode = chosenMode === "agi"
+              ? "agi" as const
+              : resolveDroidSdkInteractionMode(managed.session);
+            return {
+              // Spec collapses Droid's compound autonomyMode to "spec" and reads
+              // back as level "off", so pairing it with anything else is a claim
+              // Droid discards. droidSettingsJson already sends "off" for plan on
+              // the terminal path; state the same thing here.
+              autonomyLevel: interactionMode === "spec"
+                ? "off"
+                : resolveDroidSdkAutonomyLevel(chosenMode ?? "auto-low"),
+              interactionMode,
+            };
+          })()
+        : null;
     return {
       modelId,
-      autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
-      interactionMode,
+      ...stated,
       // Droid's own editor/terminal tools live outside ADE's toolset, so a lead
       // has to have them withheld natively as well.
       ...(isOrchestrationLeadSession(managed.session)
         ? { disabledToolCategories: ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES }
         : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
-      ...(interactionMode === "spec"
+      ...(stated?.interactionMode === "spec"
         ? {
             specModeModelId: modelId,
             ...(reasoningEffort ? { specModeReasoningEffort: reasoningEffort } : {}),
@@ -34239,11 +36300,20 @@ export function createAgentChatService(args: {
       runtime.sdkControlBuffer = null;
       runtime.sdkAgentId = event.agentId;
       runtime.sdkRunId = event.runId;
+      // Scope the in-flight turn's watchdog to this run so a previously
+      // abandoned run's late events cannot disarm it.
+      if (runtime.sdkSilenceWatch && runtime.sdkSilenceWatch.runId === null) {
+        runtime.sdkSilenceWatch.runId = event.runId;
+      }
       runtime.currentModelId = event.modelSdkId ?? runtime.currentModelId;
       if (event.modelSdkId) syncCursorSessionDescriptor(managed, event.modelSdkId);
       persistChatState(managed);
     };
     runtime.sdk.bridge.onRunResult = (_result, meta) => {
+      // Deliberately does not touch the silence watch: `run_result` is the run
+      // ending, not progress. Disarming here made the transport-error result
+      // branch unreachable, because the watch was always "seen" by the time the
+      // send settled. The send settling clears the watch on its own.
       if (meta?.errorCode) {
         logger.warn("agent_chat.cursor_sdk_run_error", {
           sessionId: managed.session.id,
@@ -34271,6 +36341,8 @@ export function createAgentChatService(args: {
     };
     runtime.sdk.bridge.onRunStatus = (event, meta) => {
       if (!managed.runtime || managed.runtime !== runtime) return;
+      // Cloud-only by construction: the worker posts `run_status` from the
+      // cloud run's status subscription and nowhere else.
       if (meta?.runtime !== "cloud") return;
       const cloudStatus = (() => {
         const lower = event.status.toLowerCase();
@@ -34280,6 +36352,7 @@ export function createAgentChatService(args: {
         return null;
       })();
       if (!cloudStatus) return;
+      if (cloudStatus === "creating" || cloudStatus === "running" || cloudStatus === "finished") return;
       const turnId = runtime.cloudRuns.get(event.runId)?.turnId
         ?? runtime.activeTurnId
         ?? "";
@@ -34296,9 +36369,31 @@ export function createAgentChatService(args: {
     runtime.sdk.bridge.onEvent = (event, meta) => {
       if (!managed.runtime || managed.runtime !== runtime) return;
       const isCloud = meta?.runtime === "cloud";
+      if (!isCloud && !isCursorSdkTerminalErrorEvent(event)) {
+        noteCursorSdkStreamActivity(runtime, runtime.activeTurnId, meta?.runId ?? null);
+      }
       const turnId = isCloud
         ? (runtime.cloudRuns.get(meta?.runId ?? "")?.turnId ?? runtime.activeTurnId ?? "")
         : (runtime.activeTurnId ?? "");
+      // An expired access token is ADE's problem, not the user's: swallow the
+      // raw "Cursor run failed: Authentication error …" card here and let the
+      // turn body either recover silently or surface the plain-English copy
+      // once. Recorded rather than dropped, because the settled run result does
+      // not always carry the same detail.
+      const staleTokenFailure = !isCloud && turnId && isCursorSdkTerminalErrorEvent(event)
+        ? readCursorSdkStaleTokenFailure(event, turnId)
+        : null;
+      if (staleTokenFailure) {
+        runtime.sdkStaleTokenFailure = staleTokenFailure;
+        logger.warn("agent_chat.cursor_sdk_stale_token_detected", {
+          sessionId: managed.session.id,
+          turnId,
+          agentId: runtime.sdkAgentId,
+          runId: meta?.runId ?? null,
+          requestId: staleTokenFailure.requestId ?? null,
+        });
+        return;
+      }
       const events = mapCursorSdkMessageToChatEvents(event, {
         turnId,
         cwd: managed.laneWorktreePath,
@@ -34306,10 +36401,14 @@ export function createAgentChatService(args: {
         ...(meta?.runId ? { runId: meta.runId } : {}),
       });
       for (const ev of events) {
+        if (!isCloud && turnId) noteCursorSdkVisibleOutput(runtime, turnId, meta?.runId ?? null, ev.type);
         emitCursorSdkMappedEvent(managed, runtime, ev);
       }
     };
     runtime.sdk.bridge.onHookRequest = async (req) => {
+      // A tool-approval request can sit unanswered for minutes, but it is proof
+      // the agent thread is alive — the watchdog must not rotate underneath it.
+      noteCursorSdkStreamActivity(runtime, runtime.activeTurnId, null);
       if (!managed.runtime || managed.runtime !== runtime) {
         return denyCursorHook("Cursor tool approval is no longer active.");
       }
@@ -34395,11 +36494,7 @@ export function createAgentChatService(args: {
       teardownRuntime(managed, "handle_close");
     }
 
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
 
     const apiKey = getCursorSdkApiKey();
     if (!apiKey) {
@@ -34431,6 +36526,20 @@ export function createAgentChatService(args: {
       persisted?.cursorSdkAgentProtocolVersion === CURSOR_SDK_AGENT_PROTOCOL_VERSION
         ? persisted.cursorSdkAgentId ?? null
         : null;
+    // Read but do not consume: if `acquireCursorSdkConnection` throws, the
+    // rotation intent must survive, or the next send resumes the wedged agent
+    // and stalls for another full watchdog period. The durable mirror covers
+    // the restart case, where the WeakMap is gone but the wedged agent id was
+    // persisted by the recycle's teardown.
+    const persistedRotationPreviousAgentId =
+      managed.cursorSdkPendingRotationPreviousAgentId
+      ?? persisted?.cursorSdkPendingRotationPreviousAgentId
+      ?? null;
+    const forcedAgentRotation = cursorSdkForcedAgentRotation.get(managed)
+      ?? (persistedRotationPreviousAgentId ? { previousAgentId: persistedRotationPreviousAgentId } : null);
+    // A forced rotation is the whole point of the recovery: resuming the
+    // persisted id would land back in the wedged thread.
+    const resumeCursorSdkAgentId = forcedAgentRotation ? null : persistedCursorSdkAgentId;
     throwIfCursorSetupInterrupted();
     let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>> | null = null;
     let released = false;
@@ -34444,7 +36553,7 @@ export function createAgentChatService(args: {
       modelSdkId: launchModelSdkId,
       ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
       apiKey,
-      agentId: persistedCursorSdkAgentId,
+      agentId: resumeCursorSdkAgentId,
       agentName: manualSessionTitleForRuntime(managed),
       sessionId: managed.session.id,
       policy,
@@ -34455,8 +36564,8 @@ export function createAgentChatService(args: {
       try {
         acquired = await acquireCursorSdkConnection(acquireArgs);
       } catch (error) {
-        if (!persistedCursorSdkAgentId || !isCursorSdkAgentNotFoundError(error)) throw error;
-        recoveredMissingCursorSdkAgentId = persistedCursorSdkAgentId;
+        if (!resumeCursorSdkAgentId || !isCursorSdkAgentNotFoundError(error)) throw error;
+        recoveredMissingCursorSdkAgentId = resumeCursorSdkAgentId;
         logger.warn("agent_chat.cursor_sdk_resume_agent_missing_recovering", {
           sessionId: managed.session.id,
           previousAgentId: persistedCursorSdkAgentId,
@@ -34494,9 +36603,25 @@ export function createAgentChatService(args: {
       closeHttpMcpServers(managed);
       throw error;
     }
+    // The rotation took effect — only now is the intent spent.
+    if (forcedAgentRotation) {
+      cursorSdkForcedAgentRotation.delete(managed);
+      delete managed.cursorSdkPendingRotationPreviousAgentId;
+      // A rotation opens a brand-new agent, which by definition holds no stale
+      // run: the pending expiry dies with the agent it referred to.
+      managed.cursorSdkForceExpireNextSend = false;
+    }
     const pooled = acquired.pooled;
     const nextCursorSdkAgentId = pooled.agentId?.trim() || null;
-    if (recoveredMissingCursorSdkAgentId && nextCursorSdkAgentId) {
+    if (forcedAgentRotation && nextCursorSdkAgentId) {
+      const previousAgentId = forcedAgentRotation.previousAgentId ?? persistedCursorSdkAgentId;
+      stageCursorSdkAgentRotationRecovery(managed, previousAgentId ?? "(unknown)", nextCursorSdkAgentId);
+      logger.warn("agent_chat.cursor_sdk_agent_recreated_after_forced_rotation", {
+        sessionId: managed.session.id,
+        previousAgentId: previousAgentId ?? null,
+        nextAgentId: nextCursorSdkAgentId,
+      });
+    } else if (recoveredMissingCursorSdkAgentId && nextCursorSdkAgentId) {
       stageCursorSdkAgentRotationRecovery(managed, recoveredMissingCursorSdkAgentId, nextCursorSdkAgentId);
       logger.warn("agent_chat.cursor_sdk_agent_recreated_after_missing_resume", {
         sessionId: managed.session.id,
@@ -34532,6 +36657,7 @@ export function createAgentChatService(args: {
       modelConfigId: null,
       currentModelId: launchModelSdkId,
       availableModelIds: [launchModelSdkId],
+      dispatchingSteerIds: new Set(),
       pendingSteers: [],
       permissionWaiters: new Map(),
       modeConfigId: null,
@@ -34541,6 +36667,7 @@ export function createAgentChatService(args: {
       configOptions: [],
       cloudRuns: new Map(),
       activeCloudRunId: null,
+      sdkSilenceWatch: null,
     };
     throwIfCursorSetupInterrupted();
     managed.runtime = rt;
@@ -34558,25 +36685,212 @@ export function createAgentChatService(args: {
     return rt;
   };
 
-  const ensureCursorRuntime = ensureCursorSdkRuntime;
-
-  const runCursorSdkTurn = async (
+  /**
+   * Recycle a wedged Cursor agent thread: stop whatever is still nominally
+   * running, evict the pooled worker (its process is alive but useless), drop
+   * the live runtime, and arm a forced rotation so the next
+   * `ensureCursorSdkRuntime` opens a brand-new agent seeded with the full
+   * transcript replay via `stageCursorSdkAgentRotationRecovery`.
+   *
+   * Silence-watch teardown and pending-approval cancellation are left to
+   * `teardownRuntime`'s cursor branch rather than duplicated here.
+   *
+   * @param options.preserveAgentId keep the current `cursorSdkAgentId` so the
+   * fresh worker resumes the same thread instead of rotating to a new agent.
+   * Only correct when the thread itself is healthy and the worker is not — the
+   * expired-access-token case.
+   *
+   * @returns the queued steers lifted off the dying runtime. They are attached
+   * to nothing once this resolves, so the caller must settle every one of them
+   * — re-queue onto a live runtime, or cancel with a notice.
+   */
+  const recycleCursorSdkAgentThread = async (
     managed: ManagedChatSession,
-    args: {
-      promptText: string;
-      userText?: string;
-      displayText: string;
-      attachments: AgentChatFileRef[];
-      contextAttachments: AgentChatContextAttachment[];
-      resolvedAttachments: ResolvedAgentChatFileRef[];
-      metadata?: AgentChatEventMetadata | null | undefined;
-      laneDirectiveKey?: string | null;
-      turnId?: string;
-      optimisticCursorTurnStart?: boolean;
-      onDispatched?: () => void;
-      onBackendDispatched?: () => void;
+    runtime: CursorRuntime,
+    reason: CursorSdkRecycleReason,
+    options: { preserveAgentId?: boolean } = {},
+  ): Promise<QueuedSteer[]> => {
+    // Bounded: the pool's `request()` only rejects once the worker is disposed,
+    // which happens below — an unbounded await here would hang in exactly the
+    // situation this path exists to unstick.
+    await Promise.race([
+      runtime.sdk.cancel().catch(() => {
+        // The thread is already unresponsive; the dispose below is the real stop.
+      }),
+      sleepMs(CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS),
+    ]);
+    // Poison BEFORE teardown: teardown only releases this session's lease, and
+    // a refcount decrement would leave the poisoned worker alive for a sibling
+    // lease on the same pool key.
+    const poisoned = poisonCursorSdkConnection(runtime.poolKey, runtime.poolGeneration);
+    logger.warn("agent_chat.cursor_sdk_worker_poisoned", {
+      sessionId: managed.session.id,
+      poolKey: runtime.poolKey,
+      reason,
+      previousAgentId: runtime.sdkAgentId,
+      // False when the entry was already gone or had been replaced by a newer
+      // generation — the teardown below is then the only thing left to do.
+      poisoned,
+    });
+    if (managed.runtime !== runtime) return [];
+    // Arm the rotation only on the branch that actually tears the runtime down.
+    // Otherwise the flag would sit unconsumed and later rotate a healthy agent
+    // out from under an unrelated turn, with a bogus recovery preamble.
+    //
+    // `preserveAgentId` skips it entirely: an expired access token kills the
+    // worker, not the thread, so the fresh worker resumes the same agent id and
+    // the conversation survives intact — no rotation, no continuity preamble.
+    if (options.preserveAgentId !== true) {
+      cursorSdkForcedAgentRotation.set(managed, { previousAgentId: runtime.sdkAgentId });
+      if (runtime.sdkAgentId) managed.cursorSdkPendingRotationPreviousAgentId = runtime.sdkAgentId;
+    }
+    // Cursor steers live only on the runtime object and are not persisted, so
+    // the rebuilt runtime starts empty. Lift them off before teardown and hand
+    // them back, so a message the user typed during the outage is re-queued on
+    // the fresh runtime rather than dropped with its chip stuck on "queued".
+    const carriedSteers = runtime.pendingSteers.splice(0);
+    teardownRuntime(managed, "pool_compaction", {
+      cursorPermissionWaiterReason:
+        "Cursor tool approval was cancelled because the Cursor thread was recycled.",
+    });
+    return carriedSteers;
+  };
+
+  /**
+   * Last resort for steers lifted off a recycled runtime that will never be
+   * delivered — the re-send was interrupted or could not start. They are
+   * already detached from every runtime, so this only has to clear the chip
+   * and say something true about why.
+   */
+  const cancelCarriedCursorSteers = (
+    managed: ManagedChatSession,
+    turnId: string,
+    steers: QueuedSteer[],
+  ): void => {
+    for (const steer of steers) {
+      if (!claimSteerSettlement(managed, steer.steerId)) continue;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId: steer.steerId,
+        message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+        turnId,
+      });
+    }
+  };
+
+  type CursorSdkTurnArgs = {
+    promptText: string;
+    userText?: string;
+    displayText: string;
+    attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[];
+    resolvedAttachments: ResolvedAgentChatFileRef[];
+    metadata?: AgentChatEventMetadata | null | undefined;
+    laneDirectiveKey?: string | null;
+    turnId?: string;
+    optimisticCursorTurnStart?: boolean;
+    onDispatched?: () => void;
+    onBackendDispatched?: () => void;
+  };
+
+  /**
+   * Returned instead of recursing when an attempt decides the Cursor thread is
+   * unusable. Carries everything the wrapper needs to recycle and re-send, and
+   * — critically — is produced *before* any error/status/done emission, so the
+   * turn is reported exactly once no matter which attempt settles it.
+   */
+  type CursorSdkTurnOutcome =
+    | { kind: "settled" }
+    | {
+        kind: "recover";
+        reason: CursorSdkRecycleReason;
+        runtime: CursorRuntime;
+        turn: CursorTurnRef;
+        consumedTurnContext: ConsumedTurnContextPrefix | null;
+        resolveDispatch: (() => void) | null;
+        /**
+         * True when the failed attempt had already emitted visible output —
+         * assistant text, reasoning, a tool call — not merely any stream frame.
+         * Only `stale_token` can reach recovery in that state (a token can
+         * expire an hour into a working turn), and it changes what the re-send
+         * says: pick up where the run was cut off rather than repeat the whole
+         * prompt. Asking a run that produced nothing to "continue" would name a
+         * last completed step that does not exist.
+         */
+        sawVisibleOutput: boolean;
+      };
+
+  /** Identity of one Cursor turn, for the terminal-event emitters. */
+  type CursorTurnRef = { turnId: string; turnModel: string; turnModelId: string | undefined };
+  type CursorChatErrorClassification = ReturnType<typeof classifyCursorSdkChatError>;
+
+  /**
+   * Classifies a failed Cursor turn, overriding the generic classifier for the
+   * silent-run sentinel (whose message is ADE's own copy, not the SDK's).
+   */
+  const classifyCursorTurnFailure = (
+    managed: ManagedChatSession,
+    error: unknown,
+  ): CursorChatErrorClassification => {
+    const modelDisplayName =
+      resolveSessionModelDescriptor(managed.session)?.displayName ?? managed.session.model;
+    if (isCursorSdkSilentRunError(error)) {
+      return {
+        message: CURSOR_SDK_SILENT_RUN_MESSAGE,
+        errorInfo: { category: "network", provider: "Cursor", model: modelDisplayName },
+      };
+    }
+    return classifyCursorSdkChatError(error, { modelDisplayName });
+  };
+
+  /** The failed terminal triple, shared by the wrapper and the attempt body. */
+  const emitCursorTurnFailed = (
+    managed: ManagedChatSession,
+    turn: CursorTurnRef,
+    classified: CursorChatErrorClassification,
+  ): void => {
+    emitChatEvent(managed, {
+      type: "error",
+      message: classified.message,
+      ...(classified.detail ? { detail: classified.detail } : {}),
+      errorInfo: classified.errorInfo,
+      turnId: turn.turnId,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId: turn.turnId });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId: turn.turnId,
+      status: "failed",
+      model: turn.turnModel,
+      ...(turn.turnModelId ? { modelId: turn.turnModelId } : {}),
+    });
+  };
+
+  /** The interrupted terminal pair, shared by the wrapper and the attempt body. */
+  const emitCursorTurnInterrupted = (managed: ManagedChatSession, turn: CursorTurnRef): void => {
+    emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId: turn.turnId });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId: turn.turnId,
+      status: "interrupted",
+      model: turn.turnModel,
+      ...(turn.turnModelId ? { modelId: turn.turnModelId } : {}),
+    });
+  };
+
+  const runCursorSdkTurnOnce = async (
+    managed: ManagedChatSession,
+    args: CursorSdkTurnArgs & {
+      /**
+       * Set on the single automatic re-send after a thread recycle. Caps
+       * recovery at one attempt per user turn — a second failure surfaces to
+       * the user instead of looping.
+       */
+      cursorRecoveryAttempt?: boolean;
+
     },
-  ): Promise<void> => {
+  ): Promise<CursorSdkTurnOutcome> => {
     const runtime = await ensureCursorSdkRuntime(managed);
     const validation = validateSessionReadyForTurn(managed);
     if (!validation.ready) {
@@ -34588,6 +36902,8 @@ export function createAgentChatService(args: {
     const turnModelId = managed.session.modelId;
     runtime.interrupted = false;
     runtime.busy = true;
+    // Never let a previous turn's swallowed auth failure decide this one.
+    runtime.sdkStaleTokenFailure = null;
     runtime.activeTurnId = turnId;
     runtime.sdkPolicy = resolveCursorSdkPolicy(managed.session);
     setSessionActive(managed);
@@ -34607,28 +36923,32 @@ export function createAgentChatService(args: {
       });
       emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
       captureTurnBeforeSha(managed);
+      // Callers that pre-render the turn start emit their own activity; a
+      // second one here double-rendered the indicator and, on the recovery
+      // re-send, restarted it mid-turn.
+      emitChatEvent(managed, {
+        type: "activity",
+        ...initialTurnActivity(managed.session),
+        turnId,
+      });
     }
-    emitChatEvent(managed, {
-      type: "activity",
-      ...initialTurnActivity(managed.session),
-      turnId,
-    });
 
     let shouldDeliverQueuedSteer = false;
+    // Kept so a thread recycle can restage each consumed bucket on the rotated
+    // agent instead of flattening replay + continuity into one string.
+    let consumedTurnContext: ConsumedTurnContextPrefix | null = null;
     try {
       let composed = args.promptText;
-      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-      if (reconstructionContext.length) {
-        composed = [
-          "System context (ADE continuity, do not echo verbatim):",
-          reconstructionContext,
-          "",
-          composed,
-        ].join("\n");
-        managed.pendingReconstructionContext = null;
+      // Consumes the pending transcript replay and the continuity context in
+      // one shot; the parts are kept so a thread recycle can restage each
+      // bucket rather than losing them with the abandoned prompt.
+      const pendingTurnContext = consumePendingTurnContextPrefix(managed, false);
+      consumedTurnContext = pendingTurnContext;
+      if (pendingTurnContext?.composed) {
+        composed = `${pendingTurnContext.composed}\n\n${composed}`;
       }
       const policy = runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session);
-      const modeDirective = buildCursorSdkModeDirective(policy);
+      const modeDirective = buildCursorSdkModeDirective();
       if (modeDirective) {
         composed = `${modeDirective}\n\n${composed}`;
       }
@@ -34665,7 +36985,7 @@ export function createAgentChatService(args: {
         ...(modelParams?.length ? { modelParams: cursorModelParamsForLog(modelParams) } : {}),
         mode: resolveCursorDisplayModeId(managed.session, policy),
         approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
-        force: policy.force,
+        fullAuto: policy.fullAuto,
         transport: "sdk",
       });
 
@@ -34678,15 +36998,121 @@ export function createAgentChatService(args: {
         args.onBackendDispatched = undefined;
       }
 
-      const result = await runtime.sdk.sendPrompt({
+      // At most one automatic recovery per user turn — attempt 2 runs with this
+      // flag set, so a second failure surfaces to the user.
+      const canRecoverCursorThread = (): boolean =>
+        args.cursorRecoveryAttempt !== true
+        && !managed.closed
+        && !runtime.interrupted
+        && managed.runtime === runtime;
+      const cursorRecoverySentinel = (
+        reason: CursorSdkRecycleReason,
+        sawVisibleOutput = false,
+      ): CursorSdkTurnOutcome => {
+        const pendingAck = runtime.pendingDispatchAck?.turnId === turnId ? runtime.pendingDispatchAck : null;
+        if (pendingAck) runtime.pendingDispatchAck = undefined;
+        return {
+          kind: "recover",
+          reason,
+          sawVisibleOutput,
+          runtime,
+          turn: { turnId, turnModel, turnModelId },
+          consumedTurnContext,
+          resolveDispatch: pendingAck?.resolve ?? null,
+        };
+      };
+
+      // Consume the one-shot expiry flag before dispatch so it cannot survive a
+      // failed send into the turn after it. The durable copy is cleared with it.
+      const forceExpireActiveRun =
+        args.cursorRecoveryAttempt === true || managed.cursorSdkForceExpireNextSend === true;
+      if (managed.cursorSdkForceExpireNextSend) {
+        managed.cursorSdkForceExpireNextSend = false;
+        persistChatState(managed);
+      }
+
+      const { watch: silenceWatch, guard: silenceGuard } = armCursorSdkSilenceWatch(runtime, turnId);
+      const sendPromise = runtime.sdk.sendPrompt({
         promptText,
         images,
         modelSdkId: runtime.modelSdkId,
         ...(modelParams?.length ? { modelParams } : {}),
-        force: policy.force,
-        idempotencyKey: cursorLocalIdempotencyKey(managed, turnId),
+        // Set only when ADE deliberately abandoned the previous run (recovery
+        // re-send, or a send after settlement dismissal). A normal send must
+        // never do this — it would discard a turn still genuinely working.
+        ...(forceExpireActiveRun ? { forceExpireActiveRun: true } : {}),
+        // The recovery re-send is a distinct message to Cursor: on the
+        // stale-token path it lands on the *same* resumed agent, where reusing
+        // the first attempt's key could be deduped away into a silent no-op.
+        //
+        // Accepted trade-off of that distinctness: when the token died BEFORE
+        // any visible output, attempt 2 re-sends the prompt verbatim onto the
+        // resumed thread. `forceExpireActiveRun` expires the wedged run but
+        // does not unregister the message the first run already recorded in the
+        // SDK's local agent store, so the thread can hold the user prompt
+        // twice. Silent, correct recovery is worth one duplicated prompt line;
+        // the alternative (deduping) is the silent no-op that leaves the user
+        // with no answer at all.
+        idempotencyKey: args.cursorRecoveryAttempt === true
+          ? `${cursorLocalIdempotencyKey(managed, turnId)}:recovery`
+          : cursorLocalIdempotencyKey(managed, turnId),
         mode: cursorSdkModeForPolicy(policy),
       });
+      let result: unknown;
+      try {
+        result = await Promise.race([sendPromise, silenceGuard]);
+      } catch (error) {
+        clearCursorSdkSilenceWatch(runtime, turnId);
+        const silent = isCursorSdkSilentRunError(error);
+        // The abandoned send rejects once the worker is disposed; swallow it so
+        // it never lands as an unhandled rejection.
+        if (silent) void sendPromise.catch(() => {});
+        // Unlike the transport branch, a stale token recovers even after the
+        // run streamed output: the token ages out roughly an hour in, so the
+        // common shape is a turn cut off mid-work. Checked before `transport`
+        // because the two signatures are disjoint by construction (this text
+        // classifies as `auth`, never `network`) and this one is the narrower.
+        const staleToken = !silent && isCursorSdkStaleTokenError(error);
+        const transport = !silent && !staleToken && !silenceWatch.seen && isCursorSdkTransportError(error);
+        if ((silent || transport || staleToken) && canRecoverCursorThread()) {
+          return cursorRecoverySentinel(
+            silent ? "silent_run" : staleToken ? "stale_token" : "transport_error",
+            silenceWatch.sawVisibleOutput,
+          );
+        }
+        if (silent) {
+          // Terminal silence: the rotated agent stopped answering too. Recycle
+          // it without re-sending, so the user's next send genuinely starts on
+          // a fresh thread — which is what the error copy promises.
+          const recycledSteers = await recycleCursorSdkAgentThread(managed, runtime, "silent_run");
+          // The recycle detached these, so the catch below drains an empty queue
+          // and teardown never sees them. Settling them all is safe: the claim
+          // guard makes any later attempt on the same ids a no-op.
+          if (recycledSteers.length) cancelCarriedCursorSteers(managed, turnId, recycledSteers);
+        }
+        throw error;
+      }
+      clearCursorSdkSilenceWatch(runtime, turnId);
+      // An expired token usually arrives as the run's own terminal error rather
+      // than a thrown send: the bridge swallowed the raw card and parked the
+      // detail here, and the settled result echoes it. Either way the worker is
+      // now permanently unauthenticated, so the turn cannot continue on it.
+      const staleTokenFailure = takeCursorSdkStaleTokenFailure(runtime, turnId);
+      if (staleTokenFailure || isCursorSdkStaleTokenResult(result)) {
+        if (canRecoverCursorThread()) return cursorRecoverySentinel("stale_token", silenceWatch.sawVisibleOutput);
+        // Recovery already spent (or the session went away): surface it once,
+        // in plain English, through the shared failure classifier.
+        throw cursorSdkStaleTokenError(staleTokenFailure ?? {
+          turnId,
+          message: readErrorMessage(asRecord(result)?.error)
+            || CURSOR_SDK_STALE_ACCESS_TOKEN_TEXT,
+        });
+      }
+      if (!silenceWatch.seen && isCursorSdkTransportErrorResult(result) && canRecoverCursorThread()) {
+        // The run failed on the wire before emitting anything: recycling and
+        // re-sending cannot duplicate visible output.
+        return cursorRecoverySentinel("transport_error");
+      }
       if (runtime.pendingDispatchAck?.turnId === turnId) {
         const pendingDispatchAck = runtime.pendingDispatchAck;
         runtime.pendingDispatchAck = undefined;
@@ -34699,11 +37125,21 @@ export function createAgentChatService(args: {
       const resultRecord = asRecord(result);
       const resultStatus = typeof resultRecord?.status === "string" ? resultRecord.status : "";
       adoptRuntimeSessionTitle(managed, resultRecord, "cursor_sdk_run_result");
-      const doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
+      let doneEvent = mapCursorSdkRunResultToDoneEvent(result, {
         turnId,
         model: turnModel,
         ...(turnModelId ? { modelId: turnModelId } : {}),
       });
+      const localAgentId = runtime.sdkAgentId;
+      if (localAgentId) {
+        doneEvent = await fetchAndApplyCursorUsage({
+          managed,
+          agentId: localAgentId,
+          turnId,
+          runtime: "local",
+          done: doneEvent,
+        });
+      }
       if (runtime.interrupted || resultStatus === "cancelled") {
         markSessionIdleWithFreshCache(managed);
         cancelQueuedSteers(managed, runtime, "interrupted");
@@ -34724,7 +37160,11 @@ export function createAgentChatService(args: {
       appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
-      const failedBeforeDispatch = runtime.pendingDispatchAck?.turnId === turnId;
+      // `args.onBackendDispatched` is cleared the moment the ack is registered,
+      // so the second disjunct covers exactly the pre-registration window — a
+      // throw from prompt composition or the send call itself.
+      const failedBeforeDispatch =
+        runtime.pendingDispatchAck?.turnId === turnId || args.onBackendDispatched != null;
       if (failedBeforeDispatch) runtime.pendingDispatchAck = undefined;
       markSessionIdleWithFreshCache(managed);
       for (const [, w] of runtime.permissionWaiters) {
@@ -34735,39 +37175,21 @@ export function createAgentChatService(args: {
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
-        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
-        emitChatEvent(managed, {
-          type: "done",
-          turnId,
-          status: "interrupted",
-          model: turnModel,
-          ...(turnModelId ? { modelId: turnModelId } : {}),
-        });
+        emitCursorTurnInterrupted(managed, { turnId, turnModel, turnModelId });
       } else {
-        const classified = classifyCursorSdkChatError(error, {
-          modelDisplayName: resolveSessionModelDescriptor(managed.session)?.displayName ?? managed.session.model,
-        });
-        const msg = classified.message;
-        emitChatEvent(managed, {
-          type: "error",
-          message: msg,
-          ...(classified.detail ? { detail: classified.detail } : {}),
-          errorInfo: classified.errorInfo,
-          turnId,
-        });
-        emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
-        emitChatEvent(managed, {
-          type: "done",
-          turnId,
-          status: "failed",
-          model: turnModel,
-          ...(turnModelId ? { modelId: turnModelId } : {}),
-        });
-        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${msg}` });
+        const classified = classifyCursorTurnFailure(managed, error);
+        emitCursorTurnFailed(managed, { turnId, turnModel, turnModelId }, classified);
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${classified.message}` });
       }
       persistChatState(managed);
-      if (failedBeforeDispatch) throw error;
+      // The terminal set for this turn has now been emitted; the tag stops the
+      // dispatch-failure path from reporting the same turn a second time.
+      if (failedBeforeDispatch) {
+        markCursorTurnReported(error);
+        throw error;
+      }
     } finally {
+      clearCursorSdkSilenceWatch(runtime, turnId);
       const pendingModelSwitchReset = runtime.pendingModelSwitchReset === true;
       runtime.pendingModelSwitchReset = false;
       runtime.busy = false;
@@ -34796,13 +37218,195 @@ export function createAgentChatService(args: {
         });
       }
     }
+    return { kind: "settled" };
   };
 
-  const runCursorTurn = async (
+  /**
+   * True when the user asked to stop while ADE was recycling a wedged Cursor
+   * thread. The old runtime object is not enough: `interrupt()` writes to
+   * whatever `managed.runtime` currently is, and during the recycle window that
+   * is either the (already detached) previous runtime or nothing at all — in
+   * which case the interrupt lands on the session-scoped setup marker instead.
+   */
+  const cursorRecycleInterrupted = (
     managed: ManagedChatSession,
-    args: Parameters<typeof runCursorSdkTurn>[1],
+    previousRuntime: CursorRuntime,
+  ): boolean =>
+    managed.closed
+    || previousRuntime.interrupted
+    || cursorRuntimeSetupInterruptRequested.get(managed) === true;
+
+  /**
+   * One user turn, with at most one automatic recovery attempt.
+   *
+   * Attempt 1 runs to completion — including its `finally` — before any
+   * recovery work starts, and it yields a sentinel rather than emitting
+   * anything when it wants to be retried. That ordering is what guarantees a
+   * single set of error/status/done events per turn: the previous shape
+   * recursed from inside attempt 1's `try`, so a failing re-send emitted a
+   * terminal set, then attempt 1's own `catch` emitted a second set for the
+   * same turnId and swallowed the rethrow — leaving `awaitBackendDispatch`
+   * callers (cross-machine handoff, steer replay) waiting forever.
+   */
+  const runCursorSdkTurn = async (
+    managed: ManagedChatSession,
+    args: CursorSdkTurnArgs,
   ): Promise<void> => {
-    await runCursorSdkTurn(managed, args);
+    const first = await runCursorSdkTurnOnce(managed, args);
+    if (first.kind === "settled") return;
+
+    const { runtime, turn } = first;
+    const { turnId } = turn;
+    // The expired-token recovery keeps the thread: same agent id, resumed in a
+    // fresh worker. `resumedMidTurn` is the sub-case where the token died after
+    // real output — the prompt was delivered and partly executed, so attempt 2
+    // asks Cursor to continue rather than replaying the whole request.
+    const staleToken = first.reason === "stale_token";
+    const resumedMidTurn = staleToken && first.sawVisibleOutput;
+    logger.warn("agent_chat.cursor_sdk_thread_recycling", {
+      sessionId: managed.session.id,
+      turnId,
+      reason: first.reason,
+      previousAgentId: runtime.sdkAgentId,
+      preservedAgentId: staleToken,
+      resumedMidTurn,
+      watchdogMs: CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
+    });
+    // Restage each consumed bucket on the rotated agent. Flattening both into
+    // pendingReconstructionContext would wrap the verbatim replay in a
+    // continuity header and double-wrap the continuity half on the next consume.
+    //
+    // Skipped for a mid-turn token refresh: the thread is resumed intact and the
+    // model already received this context, so restaging would replay it twice.
+    if (first.consumedTurnContext && !resumedMidTurn) {
+      if (first.consumedTurnContext.replay && !managed.pendingTranscriptReplay) {
+        managed.pendingTranscriptReplay = first.consumedTurnContext.replay;
+      }
+      if (first.consumedTurnContext.reconstruction && !managed.pendingReconstructionContext) {
+        managed.pendingReconstructionContext = first.consumedTurnContext.reconstruction;
+      }
+      persistChatState(managed);
+    }
+
+    const carriedSteers = await recycleCursorSdkAgentThread(managed, runtime, first.reason, {
+      preserveAgentId: staleToken,
+    });
+
+    // Re-checked after the recycle, not before it: cancelling the wedged run
+    // and tearing the worker down is exactly when a user is most likely to hit
+    // Stop, and a re-send then would resurrect a turn they abandoned.
+    if (cursorRecycleInterrupted(managed, runtime)) {
+      cursorRuntimeSetupInterruptRequested.delete(managed);
+      markSessionIdleWithFreshCache(managed);
+      cancelCarriedCursorSteers(managed, turnId, carriedSteers);
+      emitCursorTurnInterrupted(managed, turn);
+      persistChatState(managed);
+      // The prompt did reach the backend on attempt 1, so callers waiting on
+      // dispatch are released rather than left hanging.
+      first.resolveDispatch?.();
+      return;
+    }
+
+    // Emitted only once the re-send is actually going to happen — announcing it
+    // before the interrupt re-check promised a resend that never came.
+    //
+    // A token refresh caught before any output is invisible by design: nothing
+    // reached the user, so there is nothing to explain. Only the mid-turn case
+    // says anything, because the reply visibly stopped and then continues.
+    if (staleToken) {
+      logger.info("agent_chat.cursor_sdk_stale_token_recovered", {
+        sessionId: managed.session.id,
+        turnId,
+        agentId: runtime.sdkAgentId,
+        resumedMidTurn,
+      });
+      if (resumedMidTurn) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: "Reconnected to Cursor and continued.",
+          turnId,
+        });
+      }
+    } else {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: first.reason === "silent_run"
+          ? "Cursor stopped responding. ADE opened a fresh Cursor thread and is resending your message."
+          : "Cursor's connection dropped. ADE opened a fresh Cursor thread and is resending your message.",
+        turnId,
+      });
+    }
+
+    const { onDispatched: _dispatchedOnAttemptOne, onBackendDispatched: _ackOnAttemptOne, ...retryArgs } = args;
+    let requeuedOn: CursorRuntime | null = null;
+    try {
+      if (carriedSteers.length) {
+        // Re-queue before attempt 2 runs, so its own tail sees a non-empty
+        // queue and delivers them exactly the way an uninterrupted turn would.
+        const rebuilt = await ensureCursorSdkRuntime(managed);
+        rebuilt.pendingSteers.push(...carriedSteers);
+        requeuedOn = rebuilt;
+      }
+      await runCursorSdkTurnOnce(managed, {
+        ...retryArgs,
+        // Mid-turn token refresh: the resumed thread already holds the prompt
+        // and everything the model did with it, so re-sending it verbatim would
+        // make Cursor start the same work twice. Attachments rode along with
+        // the original message and are dropped for the same reason.
+        ...(resumedMidTurn
+          ? {
+              promptText: CURSOR_SDK_STALE_TOKEN_CONTINUATION,
+              displayText: CURSOR_SDK_STALE_TOKEN_CONTINUATION,
+              userText: CURSOR_SDK_STALE_TOKEN_CONTINUATION,
+              attachments: [],
+              contextAttachments: [],
+              resolvedAttachments: [],
+            }
+          : {}),
+        turnId,
+        // The user bubble, turn-started status, activity and before-SHA all
+        // landed on attempt 1; the re-send must not duplicate them.
+        optimisticCursorTurnStart: true,
+        cursorRecoveryAttempt: true,
+        ...(first.resolveDispatch ? { onBackendDispatched: first.resolveDispatch } : {}),
+      });
+    } catch (error) {
+      // Attempt 2 can fail before its own try block — `ensureCursorSdkRuntime`
+      // forks a brand-new worker here, so a fork/auth failure lands exactly
+      // now. Callers differ in what they do with the rejection (only the
+      // prepared-send path reports it; steer delivery and control followups
+      // just log), so the terminal set is guaranteed here instead.
+      if (!isCursorTurnAlreadyReported(error)) {
+        markSessionIdleWithFreshCache(managed);
+        emitCursorTurnFailed(managed, turn, classifyCursorTurnFailure(managed, error));
+        persistChatState(managed);
+        markCursorTurnReported(error);
+      }
+      // Deliberately not resolved here: the only caller that plumbs a dispatch
+      // acknowledgement (the prepared-send path) rejects it from this rethrow,
+      // and resolving first would latch it as success. Steer delivery and
+      // control followups pass no acknowledgement at all, so the terminal set
+      // above is the whole contract for them.
+      throw error;
+    } finally {
+      // Settle the carried steers unless they are still sitting on the
+      // session's live runtime, where the attempt's own paths own them (deliver
+      // on success, cancel on failure). A recycle or a failed re-acquire
+      // detaches that runtime, which is exactly when nothing else can reach
+      // them. In `finally` rather than `catch` because an attempt that reports
+      // its own failure resolves instead of rethrowing whenever the caller
+      // plumbed no backend acknowledgement.
+      //
+      // The identity check also fires on benign runtime swaps — a deferred
+      // model-switch teardown, a nested turn recycling — where these steers
+      // were already delivered or already settled. Per-steerId idempotency
+      // makes that a no-op rather than a contradictory second notice.
+      if (carriedSteers.length && (!requeuedOn || managed.runtime !== requeuedOn)) {
+        cancelCarriedCursorSteers(managed, turnId, carriedSteers);
+      }
+    }
   };
 
   const CURSOR_CLOUD_ARTIFACT_MAX_BYTES = 10 * 1024 * 1024;
@@ -34973,6 +37577,70 @@ export function createAgentChatService(args: {
     await emitProofCard("terminal");
   };
 
+  const CURSOR_GET_USAGE_TIMEOUT_MS = 12_000;
+
+  const fetchAndApplyCursorUsage = async (args: {
+    managed: ManagedChatSession;
+    agentId: string;
+    runId?: string | null;
+    turnId: string;
+    runtime: "local" | "cloud";
+    done: Extract<AgentChatEvent, { type: "done" }>;
+  }): Promise<Extract<AgentChatEvent, { type: "done" }>> => {
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) return args.done;
+    try {
+      const raw = await Promise.race([
+        runCursorSdkCloudRequest({
+          projectRoot,
+          workspacePath: args.managed.laneWorktreePath || projectRoot,
+          apiKey,
+          type: "agent.getUsage",
+          payload: {
+            agentId: args.agentId,
+            ...(args.runtime === "cloud" && args.runId?.trim() ? { runId: args.runId.trim() } : {}),
+          },
+          logger,
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Cursor getUsage timed out.")), CURSOR_GET_USAGE_TIMEOUT_MS);
+        }),
+      ]);
+      const snapshot = selectCursorAgentTurnUsage(raw, {
+        agentId: args.agentId,
+        runId: args.runtime === "cloud" ? args.runId : null,
+      });
+      const tokensEvent = mapCursorAgentUsageToTokensEvent(snapshot, {
+        turnId: args.turnId,
+        runtime: args.runtime,
+        ...(snapshot.runId || args.runId ? { itemId: snapshot.runId ?? args.runId ?? undefined } : {}),
+      });
+      if (tokensEvent) emitChatEvent(args.managed, tokensEvent);
+      if (db) {
+        const billed = mapCursorAgentUsageToTokenEntry(snapshot, { projectPath: projectRoot });
+        if (billed) recordCursorBilledUsage(db, billed);
+      }
+      const usage = {
+        ...(snapshot.inputTokens != null ? { inputTokens: snapshot.inputTokens } : {}),
+        ...(snapshot.outputTokens != null ? { outputTokens: snapshot.outputTokens } : {}),
+        ...(snapshot.cacheReadTokens != null ? { cacheReadTokens: snapshot.cacheReadTokens } : {}),
+        ...(snapshot.cacheWriteTokens != null ? { cacheCreationTokens: snapshot.cacheWriteTokens } : {}),
+        ...(snapshot.reasoningTokens != null ? { reasoningTokens: snapshot.reasoningTokens } : {}),
+      };
+      if (Object.keys(usage).length === 0) return args.done;
+      return { ...args.done, usage: { ...args.done.usage, ...usage } };
+    } catch (error) {
+      logger.warn("agent_chat.cursor_get_usage_failed", {
+        sessionId: args.managed.session.id,
+        agentId: args.agentId,
+        runId: args.runId ?? null,
+        runtime: args.runtime,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return args.done;
+    }
+  };
+
   const resolveCloudRepoUrl = async (
     managed: ManagedChatSession,
     overrides: AgentChatCloudOverrides | undefined,
@@ -35039,13 +37707,14 @@ export function createAgentChatService(args: {
       });
       emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
       captureTurnBeforeSha(managed);
+      // Callers that pre-render the turn start emit their own activity.
+      emitChatEvent(managed, {
+        type: "activity",
+        ...initialTurnActivity(managed.session),
+        turnId,
+        runtime: "cloud",
+      });
     }
-    emitChatEvent(managed, {
-      type: "activity",
-      ...initialTurnActivity(managed.session),
-      turnId,
-      runtime: "cloud",
-    });
 
     const isFollowUp = Boolean(managed.session.cursorCloudAgentId);
     let cloudComposed = args.promptText;
@@ -35116,12 +37785,44 @@ export function createAgentChatService(args: {
         const modelParams = runtime.modelSdkId
           ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
           : undefined;
+        let linearIssueId = args.cloudOverrides?.linearIssueId?.trim() || null;
+        if (!linearIssueId) {
+          try {
+            const summary = await laneService.getSummary(managed.session.laneId);
+            linearIssueId = summary?.linearIssue?.identifier?.trim() || null;
+          } catch {
+            linearIssueId = null;
+          }
+        }
+        if (!linearIssueId) {
+          try {
+            const links = laneService.listLinearIssuesForSession?.({ chatSessionId: managed.session.id }) ?? [];
+            linearIssueId = links[0]?.issue?.identifier?.trim() || null;
+          } catch {
+            linearIssueId = null;
+          }
+        }
+        const launch = resolveCursorCloudCreateCloudExtras({
+          projectRoot,
+          db: db ? { get: db.get, all: db.all } : null,
+          projectConfigService,
+          sessionId: managed.session.id,
+          laneId: managed.session.laneId,
+          linearIssueId,
+          secretNames: args.cloudOverrides?.secretNames,
+          rememberSecretNames: args.cloudOverrides?.rememberSecretNames === true,
+        });
         const payload: CursorSdkCloudSendStreamPayload = {
           apiKey,
           promptText,
           repoUrl,
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "create"),
           mode: sdkMode,
+          sessionId: launch.sessionId,
+          laneId: launch.laneId,
+          projectId: launch.projectId,
+          linearIssueId: launch.linearIssueId,
+          ...(Object.keys(launch.envVars).length > 0 ? { envVars: launch.envVars } : {}),
           ...(manualAgentName ? { agentName: manualAgentName } : {}),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
@@ -35172,9 +37873,19 @@ export function createAgentChatService(args: {
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         runtime: "cloud",
       });
-      const doneEventTagged: Extract<AgentChatEvent, { type: "done" }> = {
+      let doneEventTagged: Extract<AgentChatEvent, { type: "done" }> = {
         ...doneEvent,
       };
+      if (runStartedAgentId) {
+        doneEventTagged = await fetchAndApplyCursorUsage({
+          managed,
+          agentId: runStartedAgentId,
+          runId: runStartedRunId,
+          turnId,
+          runtime: "cloud",
+          done: doneEventTagged,
+        });
+      }
 
       if (runtime.interrupted || resultStatus === "cancelled") {
         markSessionIdleWithFreshCache(managed);
@@ -35326,84 +38037,284 @@ export function createAgentChatService(args: {
     return { runId: last ?? "", status: "running" };
   };
 
+  const handleCursorCloudStatusChange = async (
+    record: CursorCloudIngressEventRecord,
+  ): Promise<void> => {
+    const agentId = record.agentId.trim();
+    if (!agentId) return;
+    const statusUpper = record.status.trim().toUpperCase();
+    const cloudStatus = ((): AgentChatCloudRunStatus | null => {
+      const lower = record.status.trim().toLowerCase();
+      if (
+        lower === "creating"
+        || lower === "running"
+        || lower === "finished"
+        || lower === "error"
+        || lower === "cancelled"
+        || lower === "expired"
+      ) {
+        return lower;
+      }
+      return null;
+    })();
+
+    let managed: ManagedChatSession | null = null;
+    for (const candidate of managedSessions.values()) {
+      if (candidate.session.cursorCloudAgentId === agentId) {
+        managed = candidate;
+        break;
+      }
+    }
+    if (!managed) {
+      const rows = sessionService.list({ toolTypes: ["cursor"], limit: 500 });
+      for (const row of rows) {
+        if (!isChatToolType(row.toolType)) continue;
+        const persisted = readPersistedState(row.id);
+        if (persisted?.cursorCloudAgentId !== agentId) continue;
+        try {
+          managed = ensureManagedSession(row.id);
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_session_wake_failed", {
+            sessionId: row.id,
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        break;
+      }
+    }
+    if (!managed) {
+      logger.info("agent_chat.cursor_cloud_status_unmatched", {
+        agentId,
+        status: record.status,
+        eventId: record.eventId,
+      });
+      return;
+    }
+
+    const turnId = managed.session.cursorPromotedTurnId
+      ?? (managed.runtime?.kind === "cursor" ? managed.runtime.activeTurnId : null)
+      ?? "";
+    let runId = managed.runtime?.kind === "cursor" ? (managed.runtime.activeCloudRunId ?? "") : "";
+    const apiKey = getCursorSdkApiKey();
+    if (!runId && apiKey) {
+      try {
+        const runs = await runCursorSdkCloudRequest<{
+          items?: Array<{ runId?: string; id?: string }>;
+        }>({
+          projectRoot,
+          workspacePath: managed.laneWorktreePath || projectRoot,
+          apiKey,
+          type: "cloud.runs.list",
+          payload: { agentId, limit: 1 },
+          logger,
+        });
+        const latest = Array.isArray(runs?.items) ? runs.items[0] : null;
+        runId = typeof latest?.runId === "string" && latest.runId.trim()
+          ? latest.runId.trim()
+          : typeof latest?.id === "string" && latest.id.trim()
+            ? latest.id.trim()
+            : "";
+      } catch (error) {
+        logger.warn("agent_chat.cursor_cloud_runs_list_failed", {
+          sessionId: managed.session.id,
+          agentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    if (cloudStatus && (cloudStatus === "error" || cloudStatus === "cancelled" || cloudStatus === "expired" || record.prUrl)) {
+      emitChatEvent(managed, {
+        type: "cloud_status",
+        turnId,
+        runId: runId || record.eventId,
+        status: cloudStatus,
+        detail: record.summary,
+        ...(record.branchName ? { gitBranch: record.branchName } : {}),
+        ...(record.prUrl ? { prUrl: record.prUrl } : {}),
+      });
+    }
+
+    if (statusUpper === "FINISHED" && apiKey && runId) {
+      void attachAndHydrateCursorCloudChat({
+        managed,
+        agentId,
+        workspacePath: managed.laneWorktreePath || projectRoot,
+        apiKey,
+      }).catch(() => undefined);
+      void materializeCloudArtifacts(managed, {
+        agentId,
+        runId,
+        turnId,
+        apiKey,
+      }).catch(() => undefined);
+      void fetchAndApplyCursorUsage({
+        managed,
+        agentId,
+        runId,
+        turnId,
+        runtime: "cloud",
+        done: {
+          type: "done",
+          turnId,
+          status: "completed",
+          model: managed.session.model,
+          ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          runtime: "cloud",
+        },
+      }).catch(() => undefined);
+    }
+
+    if (statusUpper !== "FINISHED") {
+      persistChatState(managed);
+      return;
+    }
+
+    const laneId = managed.session.laneId?.trim() || "";
+    const worktree = managed.laneWorktreePath?.trim() || "";
+    const branchName = record.branchName?.replace(/^refs\/heads\//, "").trim() || "";
+    if (!laneId) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        reason: "no_lane",
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!worktree) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        reason: "no_worktree",
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!branchName) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        reason: "no_branch",
+      });
+      persistChatState(managed);
+      return;
+    }
+    const checked = await runGit(["check-ref-format", "--branch", branchName], {
+      cwd: worktree,
+      timeoutMs: 8_000,
+    });
+    if (checked.exitCode !== 0) {
+      logger.info("agent_chat.cursor_cloud_fetch_skipped", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        branchName,
+        reason: "invalid_branch",
+      });
+      persistChatState(managed);
+      return;
+    }
+    const fetch = await runGit(["fetch", "origin", branchName], {
+      cwd: worktree,
+      timeoutMs: 60_000,
+    });
+    if (fetch.exitCode !== 0) {
+      logger.warn("agent_chat.cursor_cloud_fetch_failed", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        branchName,
+        error: fetch.stderr.trim() || "unknown Git error",
+      });
+    } else {
+      logger.info("agent_chat.cursor_cloud_branch_fetched", {
+        sessionId: managed.session.id,
+        agentId,
+        laneId,
+        branchName,
+      });
+    }
+    persistChatState(managed);
+  };
+
   /**
    * Hydrate a freshly-created session's chat-event store from a cloud
    * agent's prior conversation. Each emitted event is tagged
    * `runtime: "cloud"` so the renderer knows it came from cloud.
+   *
+   * SDK 1.0.27 returns `{ type: "agentConversationTurn", turn: { userMessage, steps } }`
+   * (and `shellConversationTurn`). Older flattened `{ type: "agent" | "shell" }`
+   * payloads are still accepted.
    */
-  // Walk a Cursor SDK `run.conversation()` result. The SDK returns a discriminated
-  // union of `ConversationTurn`s ({ type: "agent" | "shell", ... }) — NOT a flat
-  // messages array. Each agent turn may carry an optional `userMessage` followed
-  // by typed `steps` (assistantMessage / toolCall / thinking). Shell turns are
-  // standalone command/output records.
   const hydrateCursorCloudConversationEvents = (
     managed: ManagedChatSession,
     conversation: unknown,
     meta: { turnId: string },
-  ): void => {
+  ): boolean => {
     const turns = flattenCloudConversationMessages(conversation);
-    if (!turns.length) return;
+    if (!turns.length) return false;
+    const existingFingerprints = transcriptCloudFingerprints([
+      ...(eventHistoryBySession.get(managed.session.id) ?? []),
+      ...readTranscriptEnvelopes(managed),
+    ]);
     let turnCounter = 0;
     const nextTurnId = () => `${meta.turnId}-t${++turnCounter}`;
+    let emittedVisible = false;
 
     for (const rawTurn of turns) {
-      const turn = asRecord(rawTurn);
-      if (!turn) continue;
+      const unwrapped = unwrapCloudConversationTurn(rawTurn);
+      if (!unwrapped) continue;
+      const fingerprint = cloudTurnFingerprint(unwrapped);
+      if (fingerprint && fingerprintAlreadyHydrated(existingFingerprints, fingerprint)) continue;
+      if (fingerprint) existingFingerprints.add(fingerprint);
       const turnId = nextTurnId();
-      const turnType = typeof turn.type === "string" ? turn.type : "";
 
-      if (turnType === "shell") {
-        const args = asRecord(turn.command) ?? turn;
-        const command = typeof args.command === "string" ? args.command : "";
-        const output = asRecord(turn.output);
-        const exitCode = typeof output?.exitCode === "number" ? output.exitCode : null;
-        const stdout = typeof output?.stdout === "string" ? output.stdout : "";
-        const stderr = typeof output?.stderr === "string" ? output.stderr : "";
-        const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
-        if (!command) continue;
+      if (unwrapped.kind === "shell") {
+        emittedVisible = true;
+        const combined = [unwrapped.stdout, unwrapped.stderr].filter(Boolean).join("\n").trim();
         emitChatEvent(managed, {
           type: "command",
-          command,
-          cwd: managed.laneWorktreePath,
+          command: unwrapped.command,
+          cwd: unwrapped.cwd ?? managed.laneWorktreePath,
           output: combined,
           itemId: `cursor-cloud-shell-${turnCounter}`,
           turnId,
-          status: exitCode == null ? "running" : exitCode === 0 ? "completed" : "failed",
-          ...(exitCode != null ? { exitCode } : {}),
+          status: unwrapped.exitCode == null ? "running" : unwrapped.exitCode === 0 ? "completed" : "failed",
+          ...(unwrapped.exitCode != null ? { exitCode: unwrapped.exitCode } : {}),
           runtime: "cloud",
         });
         continue;
       }
 
-      // agent turn (or unknown — best-effort)
-      const userMessage = asRecord(turn.userMessage);
-      const userText = typeof userMessage?.text === "string" ? userMessage.text.trim() : "";
-      if (userText) {
+      if (unwrapped.userText) {
+        emittedVisible = true;
         emitChatEvent(managed, {
           type: "user_message",
-          text: userText,
+          text: unwrapped.userText,
           turnId,
           runtime: "cloud",
         });
       }
 
-      const steps = Array.isArray(turn.steps) ? turn.steps : [];
-      for (const rawStep of steps) {
+      for (const rawStep of unwrapped.steps) {
         const step = asRecord(rawStep);
         if (!step) continue;
         const stepType = typeof step.type === "string" ? step.type : "";
 
         if (stepType === "assistantMessage") {
-          const message = asRecord(step.message);
-          const text = typeof message?.text === "string" ? message.text : "";
+          const text = readCloudTextField(step.message);
           if (!text) continue;
+          emittedVisible = true;
           emitChatEvent(managed, { type: "text", text, turnId, runtime: "cloud" });
           continue;
         }
 
-        if (stepType === "thinking") {
-          const message = asRecord(step.message);
-          const text = typeof message?.text === "string" ? message.text : "";
+        if (stepType === "thinkingMessage" || stepType === "thinking") {
+          const text = readCloudTextField(step.message);
           if (!text) continue;
           emitChatEvent(managed, { type: "reasoning", text, turnId, runtime: "cloud" });
           continue;
@@ -35417,7 +38328,6 @@ export function createAgentChatService(args: {
           const status = typeof result?.status === "string" ? result.status : "running";
           const itemId = typeof step.id === "string" ? step.id : `cursor-cloud-tool-${turnCounter}-${stepType}`;
 
-          // Shell tool calls collapse cleanly into the chat's command block UI.
           if (toolType === "shell") {
             const argsRecord = asRecord(toolArgs);
             const command = typeof argsRecord?.command === "string" ? argsRecord.command : "";
@@ -35463,11 +38373,259 @@ export function createAgentChatService(args: {
         }
       }
     }
+
+    if (!emittedVisible) {
+      logger.warn("agent_chat.cursor_cloud_hydrate_empty", {
+        sessionId: managed.session.id,
+        turnCount: turns.length,
+        sampleTypes: turns.slice(0, 4).map((raw) => {
+          const record = asRecord(raw);
+          return typeof record?.type === "string" ? record.type : typeof raw;
+        }),
+      });
+    }
+    return emittedVisible;
   };
+
+  const cursorCloudHydrateInFlight = new Set<string>();
+  const cursorCloudHydratedRunIds = new Map<string, Set<string>>();
+
+  type CursorCloudLatestRun = {
+    runId: string;
+    status: string;
+    modelSdkId: string | null;
+  };
+
+  const readCursorCloudRuns = async (args: {
+    agentId: string;
+    workspacePath: string;
+    apiKey: string;
+    limit?: number;
+  }): Promise<CursorCloudLatestRun[]> => {
+    const runs = await runCursorSdkCloudRequest<unknown>({
+      projectRoot,
+      workspacePath: args.workspacePath,
+      apiKey: args.apiKey,
+      type: "cloud.runs.list",
+      payload: { agentId: args.agentId, limit: args.limit ?? 8 },
+      logger,
+    });
+    return cloudRunsFromList(runs);
+  };
+
+  const fetchCursorCloudRunConversation = async (args: {
+    agentId: string;
+    runId: string;
+    workspacePath: string;
+    apiKey: string;
+  }): Promise<unknown> => runCursorSdkCloudRequest<unknown>({
+    projectRoot,
+    workspacePath: args.workspacePath,
+    apiKey: args.apiKey,
+    type: "cloud.run.conversation",
+    payload: { agentId: args.agentId, runId: args.runId },
+    logger,
+  });
+
+  const attachAndHydrateCursorCloudChat = async (args: {
+    managed: ManagedChatSession;
+    agentId: string;
+    workspacePath: string;
+    apiKey: string;
+  }): Promise<boolean> => {
+    const { managed, agentId, workspacePath, apiKey } = args;
+    if (cursorCloudHydrateInFlight.has(managed.session.id)) return false;
+    cursorCloudHydrateInFlight.add(managed.session.id);
+    const hydrateTurnId = randomUUID();
+    let emittedVisible = false;
+    try {
+      let runs: CursorCloudLatestRun[] = [];
+      const conversationByRunId = new Map<string, unknown>();
+      for (let attempt = 0; attempt < CURSOR_CLOUD_CONVERSATION_RETRY_ATTEMPTS; attempt += 1) {
+        try {
+          runs = await readCursorCloudRuns({ agentId, workspacePath, apiKey });
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_open_chat_runs_failed", {
+            sessionId: managed.session.id,
+            agentId,
+            attempt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        const hydrated = cursorCloudHydratedRunIds.get(managed.session.id) ?? new Set<string>();
+        const runsToFetch = runs.filter((run) => (
+          isCloudRunStillLive(run.status) || !hydrated.has(run.runId)
+        ));
+        for (const run of runsToFetch) {
+          try {
+            conversationByRunId.set(
+              run.runId,
+              await fetchCursorCloudRunConversation({
+                agentId,
+                runId: run.runId,
+                workspacePath,
+                apiKey,
+              }),
+            );
+          } catch (error) {
+            logger.warn("agent_chat.cursor_cloud_open_chat_conversation_failed", {
+              sessionId: managed.session.id,
+              agentId,
+              runId: run.runId,
+              attempt,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        const latestRun = runs[0] ?? null;
+        const latestConversation = latestRun ? conversationByRunId.get(latestRun.runId) : null;
+        if (cloudConversationHasTurns(latestConversation) || !isCloudRunStillLive(latestRun?.status)) {
+          break;
+        }
+        await sleepMs(CURSOR_CLOUD_CONVERSATION_RETRY_MS);
+      }
+
+      const latestRun = runs[0] ?? null;
+      if (latestRun?.modelSdkId) {
+        syncCursorSessionDescriptor(managed, latestRun.modelSdkId);
+      }
+
+      const hydrated = cursorCloudHydratedRunIds.get(managed.session.id) ?? new Set<string>();
+      for (const run of [...runs].reverse()) {
+        const conversation = conversationByRunId.get(run.runId);
+        if (!conversation) continue;
+        if (hydrateCursorCloudConversationEvents(managed, conversation, { turnId: hydrateTurnId })) {
+          emittedVisible = true;
+        }
+        if (!isCloudRunStillLive(run.status)) hydrated.add(run.runId);
+      }
+      cursorCloudHydratedRunIds.set(managed.session.id, hydrated);
+
+      if (emittedVisible) {
+        flushBufferedReasoning(managed);
+        flushBufferedText(managed);
+        if (!isCloudRunStillLive(latestRun?.status)) {
+          emitChatEvent(managed, {
+            type: "done",
+            turnId: hydrateTurnId,
+            status: "completed",
+            runtime: "cloud",
+            ...(managed.session.model ? { model: managed.session.model } : {}),
+            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          });
+        }
+        persistChatState(managed);
+      }
+
+      const existingRuntime = managed.runtime?.kind === "cursor" ? managed.runtime : null;
+      const alreadyAttached = Boolean(
+        latestRun?.runId
+        && existingRuntime?.activeCloudRunId === latestRun.runId
+        && existingRuntime.cloudRuns.has(latestRun.runId),
+      );
+      if (managed && latestRun?.runId && isCloudRunStillLive(latestRun.status) && !alreadyAttached) {
+        try {
+          const runtime = await ensureCursorSdkRuntime(managed);
+          runtime.cloudRuns.set(latestRun.runId, {
+            agentId,
+            runId: latestRun.runId,
+            turnId: hydrateTurnId,
+            modelSdkId: latestRun.modelSdkId ?? null,
+          });
+          runtime.activeCloudRunId = latestRun.runId;
+          runtime.activeTurnId = hydrateTurnId;
+          void runtime.sdk.request("cloud.run.attach", {
+            apiKey,
+            agentId,
+            runId: latestRun.runId,
+          }).catch((error) => {
+            logger.warn("agent_chat.cursor_cloud_attach_failed", {
+              sessionId: managed.session.id,
+              agentId,
+              runId: latestRun.runId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            if (managed.runtime?.kind !== "cursor") return;
+            releaseCursorCloudAttachLease(managed.runtime, {
+              runId: latestRun.runId,
+              turnId: hydrateTurnId,
+            });
+          });
+        } catch (error) {
+          logger.warn("agent_chat.cursor_cloud_open_chat_attach_setup_failed", {
+            sessionId: managed.session.id,
+            agentId,
+            runId: latestRun.runId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      if (latestRun?.runId) {
+        void materializeCloudArtifacts(managed, {
+          agentId,
+          runId: latestRun.runId,
+          turnId: hydrateTurnId,
+          apiKey,
+        }).catch(() => undefined);
+      }
+      return emittedVisible;
+    } finally {
+      cursorCloudHydrateInFlight.delete(managed.session.id);
+    }
+  };
+
+  const resolveManagedCursorCloudSession = (sessionId: string): ManagedChatSession | null => {
+    const existing = managedSessions.get(sessionId);
+    if (existing) return existing;
+    try {
+      return sessionService.get(sessionId) ? ensureManagedSession(sessionId) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const refreshWatchedCursorCloudMirror = async (
+    sessionId: string,
+  ): Promise<CursorCloudMirrorRefreshResult> => {
+    const managed = resolveManagedCursorCloudSession(sessionId);
+    if (!managed) return "skipped";
+    const agentId = managed.session.cursorCloudAgentId?.trim();
+    if (!agentId) return "skipped";
+    if (cursorCloudHydrateInFlight.has(managed.session.id)) return "skipped";
+    if (managed.runtime?.kind === "cursor" && managed.runtime.activeCloudRunId) return "skipped";
+    const apiKey = getCursorSdkApiKey();
+    if (!apiKey) return "skipped";
+    try {
+      const emitted = await attachAndHydrateCursorCloudChat({
+        managed,
+        agentId,
+        workspacePath: managed.laneWorktreePath || projectRoot,
+        apiKey,
+      });
+      return emitted ? "new" : "unchanged";
+    } catch (error) {
+      logger.warn("agent_chat.cursor_cloud_mirror_watch_failed", {
+        sessionId: managed.session.id,
+        agentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "skipped";
+    }
+  };
+
+  const cursorCloudMirror = createCursorCloudMirrorWatch({
+    refresh: refreshWatchedCursorCloudMirror,
+  });
+  const watchCursorCloudMirror = cursorCloudMirror.watch;
+  const clearCursorCloudMirrorWatches = cursorCloudMirror.clearAll;
 
   const openCursorCloudChat = async (args: {
     cloudAgentId: string;
     laneId: string;
+    agentName?: string | null;
+    sessionId?: string | null;
+    modelId?: string | null;
   }): Promise<{ sessionId: string; session: AgentChatSession }> => {
     const trimmedAgent = args.cloudAgentId.trim();
     const trimmedLane = args.laneId.trim();
@@ -35487,139 +38645,65 @@ export function createAgentChatService(args: {
     if (!laneInfo) throw new Error(`Lane '${trimmedLane}' was not found.`);
     const laneRoot = laneInfo.worktreePath;
 
-    // 1. Pull the latest run summary for the agent so we know which run's
-    //    conversation to hydrate and (if it's still RUNNING) which run to
-    //    attach to. We use the cloud-oneshot path because the per-session
-    //    worker isn't booted yet.
-    let runs: { items: Array<{ runId?: string; id?: string; status?: string; model?: { id?: string } | null; modelId?: string }> };
-    try {
-      runs = await runCursorSdkCloudRequest<{ items: Array<{ runId?: string; id?: string; status?: string; model?: { id?: string } | null; modelId?: string }> }>({
-        projectRoot,
-        workspacePath: laneRoot,
-        apiKey,
-        type: "cloud.runs.list",
-        payload: { agentId: trimmedAgent, limit: 1 },
-        logger,
-      });
-    } catch (error) {
-      throw new Error(
-        `Could not load Cursor Cloud agent '${trimmedAgent}': ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-    const rawLatestRun = Array.isArray(runs?.items) ? runs.items[0] : null;
-    const latestRun = rawLatestRun ? {
-      runId: typeof rawLatestRun.runId === "string" ? rawLatestRun.runId : (typeof rawLatestRun.id === "string" ? rawLatestRun.id : ""),
-      status: typeof rawLatestRun.status === "string" ? rawLatestRun.status : "",
-      modelSdkId:
-        (typeof rawLatestRun.model?.id === "string" && rawLatestRun.model.id.trim())
-          ? rawLatestRun.model.id.trim()
-          : (typeof rawLatestRun.modelId === "string" && rawLatestRun.modelId.trim())
-            ? rawLatestRun.modelId.trim()
-            : null,
-    } : null;
-
-    // 2. Pull the existing run conversation. We map turns to chat events so the
-    //    user sees the back-and-forth, rather than a flat transcript blob.
-    let conversation: unknown = null;
-    if (latestRun?.runId) {
+    const requestedId = args.sessionId?.trim() || "";
+    let managed: ManagedChatSession | null = null;
+    if (requestedId) {
       try {
-        conversation = await runCursorSdkCloudRequest<unknown>({
-          projectRoot,
-          workspacePath: laneRoot,
-          apiKey,
-          type: "cloud.run.conversation",
-          payload: { agentId: trimmedAgent, runId: latestRun.runId },
-          logger,
-        });
-      } catch (error) {
-        logger.warn("agent_chat.cursor_cloud_open_chat_conversation_failed", {
-          agentId: trimmedAgent,
-          runId: latestRun?.runId ?? null,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        managed = managedSessions.get(requestedId)
+          ?? (sessionService.get(requestedId) ? ensureManagedSession(requestedId) : null);
+      } catch {
+        managed = null;
+      }
+    }
+    if (!managed) {
+      for (const candidate of managedSessions.values()) {
+        if (candidate.session.cursorCloudAgentId === trimmedAgent) {
+          managed = candidate;
+          break;
+        }
       }
     }
 
-    // 3. Resolve a Cursor model id from the latest run, falling back to the
-    //    SDK default. createSession requires a known cursor/<id> descriptor.
-    const sdkId = latestRun?.modelSdkId ?? "composer-2";
-    const resolvedModelId = `cursor/${sdkId}`;
-
-    // 4. Create the new ADE session bound to this cloud agent.
-    const synthPromotedTurnId = randomUUID();
-    const created = await createSession({
-      laneId: trimmedLane,
-      provider: "cursor",
-      model: sdkId,
-      modelId: resolvedModelId,
-    });
-    const managed = managedSessions.get(created.id);
-    if (managed) {
-      managed.session.cursorCloudAgentId = trimmedAgent;
-      managed.session.cursorRuntime = "cloud";
-      managed.session.cursorPromotedTurnId = synthPromotedTurnId;
-
-      // 5. Hydrate the chat events store from the cloud conversation. Each
-      //    event is tagged runtime: "cloud" so the renderer treats it as
-      //    cloud-sourced. We mirror the existing event mapper output.
-      const hydratedTurnId = synthPromotedTurnId;
-      hydrateCursorCloudConversationEvents(managed, conversation, {
-        turnId: hydratedTurnId,
+    if (!managed) {
+      const requestedModel = typeof args.modelId === "string" ? args.modelId.trim() : "";
+      const sdkId = requestedModel.replace(/^cursor\//, "") || "composer-2";
+      const created = await createSession({
+        laneId: trimmedLane,
+        provider: "cursor",
+        model: sdkId,
+        modelId: `cursor/${sdkId}`,
+        ...(requestedId ? { sessionId: requestedId } : {}),
       });
-      persistChatState(managed);
+      managed = managedSessions.get(created.id) ?? null;
     }
+    if (!managed) throw new Error("Could not open a Cursor Cloud chat session.");
 
-    // 6. If the existing run is still live, attach to its stream so events
-    //    flow into the new session as they arrive. We boot the per-session
-    //    worker (ensureCursorSdkRuntime wires the bridge) and dispatch a
-    //    cloud.run.attach request — same `streamCloudRun` helper as
-    //    cloud.send.stream/cloud.followup, just without sending a prompt.
-    if (managed && latestRun?.runId && isCloudRunStillLive(latestRun.status)) {
-      try {
-        const runtime = await ensureCursorSdkRuntime(managed);
-        runtime.cloudRuns.set(latestRun.runId, {
-          agentId: trimmedAgent,
-          runId: latestRun.runId,
-          turnId: synthPromotedTurnId,
-          modelSdkId: latestRun.modelSdkId ?? null,
-        });
-        runtime.activeCloudRunId = latestRun.runId;
-        runtime.activeTurnId = synthPromotedTurnId;
-        // Fire-and-forget: streamCloudRun runs in the worker until the run
-        // completes; we don't await so this call returns promptly.
-        void runtime.sdk.request("cloud.run.attach", {
-          apiKey,
-          agentId: trimmedAgent,
-          runId: latestRun.runId,
-        }).catch((error) => {
-          logger.warn("agent_chat.cursor_cloud_attach_failed", {
-            sessionId: managed.session.id,
-            agentId: trimmedAgent,
-            runId: latestRun.runId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      } catch (error) {
-        logger.warn("agent_chat.cursor_cloud_open_chat_attach_setup_failed", {
-          sessionId: managed.session.id,
-          agentId: trimmedAgent,
-          runId: latestRun.runId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+    managed.session.cursorCloudAgentId = trimmedAgent;
+    managed.session.cursorRuntime = "cloud";
+    if (typeof args.agentName === "string" && args.agentName.trim()) {
+      adoptRuntimeSessionTitle(managed, args.agentName.trim(), "cursor_cloud_agent");
     }
+    persistChatState(managed);
 
-    // 7. Materialize artifacts from the existing run so the file tray works.
-    if (managed && latestRun?.runId) {
-      void materializeCloudArtifacts(managed, {
+    // New launches return the ADE session immediately so the renderer can
+    // leave the draft pane. Reopening an existing empty cloud chat waits for
+    // hydrate so Retry/backfill does not time out on a fire-and-forget fetch.
+    const hydratePromise = attachAndHydrateCursorCloudChat({
+      managed,
+      agentId: trimmedAgent,
+      workspacePath: laneRoot,
+      apiKey,
+    }).catch((error) => {
+      logger.warn("agent_chat.cursor_cloud_open_chat_hydrate_failed", {
+        sessionId: managed.session.id,
         agentId: trimmedAgent,
-        runId: latestRun.runId,
-        turnId: synthPromotedTurnId,
-        apiKey,
-      }).catch(() => undefined);
-    }
+        error: error instanceof Error ? error.message : String(error),
+      });
+      if (requestedId) throw error;
+    });
+    if (requestedId) await hydratePromise;
 
-    return { sessionId: created.id, session: created };
+    return { sessionId: managed.session.id, session: managed.session };
   };
 
   const droidPoolKeyFor = (managed: ManagedChatSession): string => [
@@ -35659,11 +38743,7 @@ export function createAgentChatService(args: {
       teardownRuntime(managed, "handle_close");
     }
 
-    {
-      let activeCount = 0;
-      for (const [, s] of managedSessions) { if (s.runtime) activeCount++; }
-      if (activeCount >= MAX_CONCURRENT_ACTIVE_RUNTIMES) evictLeastRecentRuntime(managed.session.id);
-    }
+    runtimeBudget.enforce(managed.session.id);
 
     const throwIfDroidSetupInterrupted = (): void => {
       if (!droidRuntimeSetupInterruptRequested.get(managed)) return;
@@ -35823,15 +38903,9 @@ export function createAgentChatService(args: {
     let shouldDeliverQueuedSteer = false;
     try {
       let composed = args.promptText;
-      const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
-      if (reconstructionContext.length) {
-        composed = [
-          "System context (CTO reconstruction, do not echo verbatim):",
-          reconstructionContext,
-          "",
-          composed,
-        ].join("\n");
-        managed.pendingReconstructionContext = null;
+      const reconstructionContext = consumePendingTurnContextPrefix(managed, false)?.composed;
+      if (reconstructionContext) {
+        composed = `${reconstructionContext}\n\n${composed}`;
       }
       if (runtime.interrupted) {
         setSessionIdle(managed);
@@ -36056,6 +39130,7 @@ export function createAgentChatService(args: {
     } = prepared;
 
     recordLinearIssueContextForLane(managed, contextAttachments);
+    recordGitHubIssueContextForLane(managed, contextAttachments);
 
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {
@@ -36132,7 +39207,7 @@ export function createAgentChatService(args: {
         });
         return;
       }
-      await runCursorTurn(managed, {
+      await runCursorSdkTurn(managed, {
         promptText,
         userText: submittedText,
         displayText: visibleText,
@@ -36800,7 +39875,7 @@ export function createAgentChatService(args: {
       dispatchMode,
     } = expandedArgs;
     if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
-      throw new Error(`Unsupported Claude steer dispatch mode: ${String(dispatchMode)}`);
+      throw new Error(`Unsupported steer dispatch mode: ${String(dispatchMode)}`);
     }
     const trimmed = text.trim();
     const steerId = randomUUID();
@@ -36812,8 +39887,10 @@ export function createAgentChatService(args: {
 
     const managed = ensureManagedSession(sessionId);
     assertContinuityDispatchAllowed(managed);
-    if (dispatchMode && managed.session.provider !== "claude") {
-      throw new Error("Atomic steer dispatch modes are only supported on Claude sessions.");
+    // One guard against the canonical per-provider table, rather than the rules
+    // restated here. Reject rather than silently downgrading the user's choice.
+    if (dispatchMode && !supportsActiveTurnDispatchMode(managed.session.provider, dispatchMode)) {
+      throw new Error(unsupportedActiveTurnDispatchModeMessage(managed.session.provider, dispatchMode));
     }
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !options?.allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
@@ -36923,6 +40000,26 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "cursor") {
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) {
         const rt = managed.runtime;
+        // Interrupt & continue: stop the live run, wait for it to settle, then
+        // resend on the same agent. Nothing is staged, so this never enters the
+        // pending-steer queue.
+        if (dispatchMode === "interrupt") {
+          await interruptAndContinueTurn(managed, {
+            sessionId,
+            text: trimmed,
+            ...(displayText != null && displayText !== trimmed ? { displayText } : {}),
+            attachments,
+            contextAttachments,
+            metadata,
+            // Per-message overrides ride the redirect, exactly as they would on
+            // a staged steer delivered at the turn boundary.
+            reasoningEffort,
+            executionMode,
+            interactionMode,
+            mentionsAlreadyExpanded: true,
+          });
+          return { steerId, queued: false };
+        }
         const preparedSteer = prepareSendMessage({
           sessionId,
           text: trimmed,
@@ -37097,6 +40194,78 @@ export function createAgentChatService(args: {
         return { steerId, queued: false };
       }
 
+      const composerText = preparedSteer.visibleText;
+      const steeredUserShell = parseCodexUserShellDraft(composerText) ?? parseCodexShellSlashCommand(composerText);
+      if (steeredUserShell) {
+        if (!codexServerSupportsUserShell(runtime.serverVersion)) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "This Codex app-server cannot run unsandboxed user shell commands.",
+            turnId: runtime.activeTurnId,
+          });
+          return { steerId, queued: false };
+        }
+        await runtime.request("thread/shellCommand", {
+          threadId: managed.session.threadId,
+          command: steeredUserShell.command,
+        });
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: composerText,
+          steerId,
+          turnId: runtime.activeTurnId,
+          deliveryState: "delivered",
+        });
+        persistChatState(managed);
+        return { steerId, queued: false };
+      }
+      const steeredMemory = parseCodexMemorySlashCommand(composerText);
+      if (steeredMemory) {
+        const notice = async (message: string) => {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return { steerId, queued: false as const };
+        };
+        if (steeredMemory.kind === "invalid") return notice(steeredMemory.message);
+        if (steeredMemory.kind === "reset") {
+          if (!steeredMemory.confirm) {
+            return notice("Reset Codex memory? Confirm with /memory-reset confirm. This deletes every memory file under this Codex home, not just this chat.");
+          }
+          if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+            return notice("This Codex app-server cannot reset memory.");
+          }
+          await runtime.request("memory/reset", {});
+          return notice(CODEX_MEMORY_RESET_RECEIPT);
+        }
+        if (steeredMemory.kind === "status") {
+          const mode = runtime.memoryMode ?? "unknown";
+          return notice(
+            mode === "enabled"
+              ? "Codex memory is on for this thread."
+              : mode === "disabled"
+                ? "Codex memory is off for this thread."
+                : "Codex memory status is unknown for this thread.",
+          );
+        }
+        if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+          return notice("This Codex app-server cannot change memory mode.");
+        }
+        await runtime.request("thread/memoryMode/set", {
+          threadId: managed.session.threadId,
+          mode: steeredMemory.enabled ? "enabled" : "disabled",
+        });
+        runtime.memoryMode = steeredMemory.enabled ? "enabled" : "disabled";
+        return notice(
+          steeredMemory.enabled ? "Codex memory is on for this thread." : "Codex memory is off for this thread.",
+        );
+      }
+
       const input: Array<Record<string, unknown>> = [
         {
           type: "text",
@@ -37127,6 +40296,54 @@ export function createAgentChatService(args: {
       }
 
       let deliveredTurnId = runtime.activeTurnId;
+      if (codexTurnRejectsSteer(runtime)) {
+        if (!codexServerSupportsThreadQueue(runtime.serverVersion)) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: isCodexCompactionActive(runtime)
+              ? "Codex is compacting context. Wait until it finishes — this server cannot queue a follow-up."
+              : "Codex is in a review turn. Wait until it finishes — this server cannot queue a follow-up.",
+            turnId: deliveredTurnId,
+          });
+          return { steerId, queued: false };
+        }
+        const nowMs = Date.now();
+        if (shouldCoalesceCodexCheckIn({
+          previousText: runtime.lastQueuedCheckIn?.text,
+          previousAtMs: runtime.lastQueuedCheckIn?.atMs,
+          nextText: preparedSteer.visibleText,
+          nowMs,
+        })) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Duplicate check-in ignored.",
+            turnId: deliveredTurnId,
+          });
+          return { steerId, queued: true };
+        }
+        const queued = await runtime.request("thread/queue/add", {
+          threadId: managed.session.threadId,
+          input,
+          clientUserMessageId: steerId,
+        });
+        const submissionId = readCodexQueueSubmissionId(queued);
+        if (submissionId) runtime.queuedSubmissionBySteerId.set(steerId, submissionId);
+        runtime.lastQueuedCheckIn = { text: preparedSteer.visibleText, atMs: nowMs };
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
+          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          steerId,
+          turnId: deliveredTurnId,
+          deliveryState: "queued",
+        });
+        persistChatState(managed);
+        return { steerId, queued: true };
+      }
       const steerActiveTurn = async (expectedTurnId: string): Promise<void> => {
         await runtime.request("turn/steer", {
           threadId: managed.session.threadId,
@@ -37292,6 +40509,88 @@ export function createAgentChatService(args: {
     return result;
   };
 
+  /**
+   * Mid-turn redirect for the providers that have no inline steer channel
+   * (Cursor, Droid). The Cursor SDK exposes no way to push a message into a
+   * live run, so "interrupt & continue" is cancel + resend on the same agent:
+   * the SDK's local agent store keeps the thread, so the resend continues the
+   * same conversation with no context injection.
+   *
+   * Only Cursor's redirect softens the stop. Cursor uses `stop_only` and arms
+   * `preserveQueuedSteersOnInterrupt`, so anything the user had already queued
+   * survives and is delivered after the redirect turn completes. Every other
+   * provider keeps the pre-existing `stop_and_clear` contract for
+   * `interrupt-replace`, which clears the queue.
+   */
+  const interruptAndContinueTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      sessionId: string;
+      text: string;
+      displayText?: string;
+      attachments?: AgentChatFileRef[];
+      contextAttachments?: AgentChatContextAttachment[];
+      metadata?: AgentChatEventMetadata | null | undefined;
+      reasoningEffort?: string | null;
+      executionMode?: AgentChatExecutionMode | null;
+      interactionMode?: AgentChatInteractionMode | null;
+      /**
+       * Set by callers that already ran `applyChatMentionExpansion` on `text`
+       * (steerWithOptions, and the staged rows dispatchSteer promotes). Without
+       * it `sendMessage` expands a second time, and expanded file content that
+       * itself contains chip syntax would be expanded again.
+       */
+      mentionsAlreadyExpanded?: boolean;
+    },
+  ): Promise<void> => {
+    const runtime = managed.runtime;
+    const preserveQueuedSteers = managed.session.provider === "cursor";
+    const queueOwner = preserveQueuedSteers && runtime?.kind === "cursor" ? runtime : null;
+    // Armed until consumed, not for the duration of this call: the cancel this
+    // protects against happens later, inside the interrupted turn's own tail
+    // (`cancelQueuedSteers`), not inside `interrupt()` — which is why it is a
+    // runtime flag rather than an `interrupt()` parameter. A blanket `finally`
+    // would disarm it while the turn is still stopping (the settle wait can
+    // time out with the run still live) and the user's other queued messages
+    // would then be wiped by exactly the stop this call issued.
+    const armedHere = Boolean(queueOwner && !queueOwner.preserveQueuedSteersOnInterrupt);
+    if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = true;
+    try {
+      await interrupt({ sessionId: args.sessionId, mode: preserveQueuedSteers ? "stop_only" : "stop_and_clear" });
+    } catch (error) {
+      // The stop never reached the runtime, so no cancel will come for it.
+      // Disarm rather than leaving the flag to swallow an unrelated interrupt's
+      // cancel later.
+      if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = false;
+      throw error;
+    }
+    await waitForCursorDroidTurnToSettleAfterInterrupt(managed, args.sessionId);
+    // Settled, so the turn's tail has already run `cancelQueuedSteers` and
+    // consumed the flag; this is the no-op that closes the case where it did
+    // not (nothing queued, or a runtime that never reached its tail).
+    if (armedHere && queueOwner) queueOwner.preserveQueuedSteersOnInterrupt = false;
+    logger.info("agent_chat.interrupt_and_continue", {
+      sessionId: args.sessionId,
+      provider: managed.session.provider,
+      preservedQueuedSteers: queueOwner?.pendingSteers.length ?? 0,
+    });
+    const sendArgs: AgentChatSendArgs = {
+      sessionId: args.sessionId,
+      text: args.text,
+      ...(args.displayText != null ? { displayText: args.displayText } : {}),
+      attachments: args.attachments ?? [],
+      contextAttachments: args.contextAttachments ?? [],
+      metadata: args.metadata,
+      ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
+      ...(args.executionMode !== undefined ? { executionMode: args.executionMode } : {}),
+      ...(args.interactionMode !== undefined ? { interactionMode: args.interactionMode } : {}),
+    };
+    await sendMessage(
+      args.mentionsAlreadyExpanded ? markChatMentionsExpanded(sendArgs) : sendArgs,
+      { awaitDispatch: false },
+    );
+  };
+
   const normalizeMessageSessionKind = (
     kind: AgentChatMessageSessionArgs["kind"],
   ): AgentChatMessageSessionKind => {
@@ -37414,18 +40713,13 @@ export function createAgentChatService(args: {
 
     if (normalizedKind === "interrupt-replace") {
       if (managed.session.provider !== "claude") {
-        await interrupt({ sessionId });
-        await waitForCursorDroidTurnToSettleAfterInterrupt(managed, sessionId);
-        await sendMessage(
-          {
-            sessionId,
-            text,
-            attachments,
-            contextAttachments,
-            metadata,
-          },
-          { awaitDispatch: false },
-        );
+        await interruptAndContinueTurn(managed, {
+          sessionId,
+          text,
+          attachments,
+          contextAttachments,
+          metadata,
+        });
       } else if (statusBefore === "active") {
         await steer({
           sessionId,
@@ -37480,13 +40774,49 @@ export function createAgentChatService(args: {
   const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
-    if (!runtime || runtime.kind === "codex") {
+    if (runtime?.kind === "codex") {
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
+      if (!submissionId) {
+        if (requireQueued) throw new Error("This message is no longer queued.");
+        return;
+      }
+      const threadId = managed.session.threadId;
+      if (threadId) {
+        try {
+          await runtime.request("thread/queue/delete", { threadId, id: submissionId });
+        } catch (error) {
+          if (requireQueued) throw error;
+          logger.warn("codex.queue.delete_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      runtime.queuedSubmissionBySteerId.delete(steerId);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Queued message cancelled.",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!runtime) {
       if (requireQueued) throw new Error("This message is no longer queued.");
       return;
     }
 
     const queue = runtime.pendingSteers;
-    if (requireQueued && runtime.kind === "claude" && runtime.dispatchingSteerIds.has(steerId)) {
+    // Both runtimes that track in-flight dispatches splice the row out of the
+    // queue before the dispatch completes, so without this the user would be
+    // told the message is "no longer queued" while it is in fact being sent.
+    if (
+      requireQueued
+      && (runtime.kind === "claude" || runtime.kind === "cursor")
+      && runtime.dispatchingSteerIds.has(steerId)
+    ) {
       throw new Error("This message is already being dispatched.");
     }
     const idx = queue.findIndex((s) => s.steerId === steerId);
@@ -37499,6 +40829,7 @@ export function createAgentChatService(args: {
     // Always emit the cancelled notice — even when the steer already left the
     // server-side queue (e.g. dispatched inline before this call landed) — so
     // the client display clears the staged chip on the delete-button path.
+    claimSteerSettlement(managed, steerId);
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
@@ -37513,7 +40844,31 @@ export function createAgentChatService(args: {
     const trimmed = text.trim();
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
-    if (!runtime || runtime.kind === "codex") return;
+    if (runtime?.kind === "codex") {
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
+      if (!submissionId) return;
+      const threadId = managed.session.threadId;
+      if (!threadId) return;
+      if (!trimmed.length) {
+        await cancelSteer({ sessionId, steerId, requireQueued: true });
+        return;
+      }
+      await runtime.request("thread/queue/update", {
+        threadId,
+        id: submissionId,
+        input: [{ type: "text", text: trimmed, text_elements: [] }],
+      });
+      emitChatEvent(managed, {
+        type: "user_message",
+        text: trimmed,
+        steerId,
+        turnId: runtime.activeTurnId ?? undefined,
+        deliveryState: "queued",
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!runtime) return;
 
     const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
     if (idx === -1) return;
@@ -37521,6 +40876,7 @@ export function createAgentChatService(args: {
     if (!trimmed.length) {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
       if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
+      claimSteerSettlement(managed, steerId);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -37551,18 +40907,93 @@ export function createAgentChatService(args: {
     mode,
   }: AgentChatDispatchSteerArgs): Promise<AgentChatDispatchSteerResult> => {
     if (mode !== "inline" && mode !== "interrupt") {
-      throw new Error(`Unsupported Claude steer dispatch mode: ${String(mode)}`);
+      throw new Error(`Unsupported steer dispatch mode: ${String(mode)}`);
     }
     const managed = ensureManagedSession(sessionId);
     assertContinuityDispatchAllowed(managed);
-    if (managed.session.provider === "codex") {
-      throw new Error("dispatchSteer is not supported on Codex sessions.");
+    // One guard against the canonical per-provider table (shared/types/chat.ts)
+    // instead of a per-provider ladder: Codex and every other queue-only
+    // provider reject here, and Cursor rejects "inline".
+    if (!supportsActiveTurnDispatchMode(managed.session.provider, mode)) {
+      throw new Error(unsupportedActiveTurnDispatchModeMessage(managed.session.provider, mode));
     }
     if (hasLivePendingInput(managed)) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const runtime = managed.runtime;
     if (!runtime) return { dispatchedAt: null };
+    // Cursor: a staged row can be promoted to the interrupt-and-continue
+    // redirect. There is no inline channel to promote it into.
+    if (runtime.kind === "cursor") {
+      const cursorQueue = runtime.pendingSteers;
+      const cursorIdx = cursorQueue.findIndex((s) => s.steerId === steerId);
+      if (cursorIdx === -1) return { dispatchedAt: null };
+      const [promoted] = cursorQueue.splice(cursorIdx, 1);
+      claimSteerSettlement(managed, steerId);
+      // The staged row is resolved by this notice; without it the chip would
+      // stay parked in the composer's staging area after the redirect.
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Delivering your queued message...",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      // Held across the whole redirect: the parent turn can complete on its own
+      // while the interrupt is settling, and its tail must not shift the NEXT
+      // staged row off the queue into a turn this redirect then cancels.
+      runtime.dispatchingSteerIds.add(steerId);
+      try {
+        await interruptAndContinueTurn(managed, {
+          sessionId,
+          text: promoted.text,
+          ...(promoted.displayText != null && promoted.displayText !== promoted.text
+            ? { displayText: promoted.displayText }
+            : {}),
+          attachments: promoted.attachments,
+          contextAttachments: promoted.contextAttachments,
+          ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
+          // The staged row's per-message overrides, the same ones
+          // deliverNextQueuedSteer would apply at the turn boundary.
+          reasoningEffort: promoted.reasoningEffort,
+          executionMode: promoted.executionMode,
+          interactionMode: promoted.interactionMode,
+          // Staged text was expanded when it entered the queue.
+          mentionsAlreadyExpanded: true,
+        });
+      } catch (error) {
+        // Put the row back so the user's message is never silently lost.
+        if (!cursorQueue.some((entry) => entry.steerId === steerId)) {
+          cursorQueue.splice(Math.min(cursorIdx, cursorQueue.length), 0, promoted);
+          reopenSteerSettlement(managed, steerId);
+          emitChatEvent(managed, {
+            type: "user_message",
+            text: promoted.text,
+            ...(promoted.displayText && promoted.displayText !== promoted.text
+              ? { displayText: promoted.displayText }
+              : {}),
+            ...(promoted.attachments.length ? { attachments: promoted.attachments } : {}),
+            ...(promoted.contextAttachments.length ? { contextAttachments: promoted.contextAttachments } : {}),
+            ...(promoted.metadata ? { metadata: promoted.metadata } : {}),
+            steerId,
+            deliveryState: "queued",
+          });
+          persistChatState(managed);
+        }
+        logger.warn("agent_chat.dispatch_steer_failed", {
+          sessionId,
+          steerId,
+          mode,
+          provider: "cursor",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      } finally {
+        runtime.dispatchingSteerIds.delete(steerId);
+      }
+      return { dispatchedAt: Date.now() };
+    }
     if (runtime.kind !== "claude") {
       throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);
     }
@@ -37601,6 +41032,7 @@ export function createAgentChatService(args: {
       if (!prepared) return { dispatchedAt: null };
 
       queue.splice(idx, 1);
+      claimSteerSettlement(managed, steerId);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -37613,6 +41045,7 @@ export function createAgentChatService(args: {
       } catch (error) {
         if (!queue.some((entry) => entry.steerId === steerId)) {
           queue.splice(Math.min(idx, queue.length), 0, steer);
+          reopenSteerSettlement(managed, steerId);
           emitChatEvent(managed, {
             type: "user_message",
             text: steer.text,
@@ -37717,20 +41150,22 @@ export function createAgentChatService(args: {
       managed.runtime.eventAbortController?.abort();
       try {
         await managed.runtime.handle.client.session.abort({
-          path: { id: managed.runtime.handle.sessionId },
-          query: { directory: managed.runtime.handle.directory },
+          sessionID: managed.runtime.handle.sessionId,
+          directory: managed.runtime.handle.directory,
         });
       } catch {
         // Ignore provider abort failures; SSE cancellation still tears the turn down.
       }
-      cancelQueuedSteers(managed, managed.runtime, "interrupted");
+      // `stop_only` exists so settle teardown can stop a turn WITHOUT
+      // discarding the user's queued follow-ups. Only the Claude path honoured
+      // it, so a settle on these providers silently deleted queued prompts —
+      // unrecoverable, and the opposite of the rule that losing a settle costs
+      // one click while losing the user's work does not. Default is
+      // `stop_and_clear`, so the Stop button is unaffected.
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
       for (const pending of managed.runtime.pendingApprovals.values()) {
-        managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
-          path: { id: managed.runtime.handle.sessionId, permissionID: pending.permissionId },
-          query: { directory: managed.runtime.handle.directory },
-          body: { response: "reject" },
-        }).catch(() => {});
+        rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
       return result;
@@ -37739,6 +41174,9 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
       rt.interrupted = true;
+      // An interrupted turn is not a wedged thread: disarm before cancelling so
+      // the watchdog cannot rotate the agent out from under the user.
+      clearCursorSdkSilenceWatch(rt);
       const activeCloudRunId = rt.activeCloudRunId;
       if (activeCloudRunId && managed.session.cursorCloudAgentId) {
         const apiKey = getCursorSdkApiKey();
@@ -37769,7 +41207,7 @@ export function createAgentChatService(args: {
         cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      cancelQueuedSteers(managed, rt, "interrupted");
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
@@ -37782,7 +41220,7 @@ export function createAgentChatService(args: {
       } catch {
         // ignore
       }
-      cancelQueuedSteers(managed, rt, "interrupted");
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
       cancelPendingPiInputs(managed);
       persistChatState(managed);
       return result;
@@ -37790,7 +41228,9 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "pi") {
       piRuntimeSetupInterruptRequested.set(managed, true);
-      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      if (mode === "stop_and_clear") {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
       setSessionIdle(managed);
       persistChatState(managed);
       return result;
@@ -37808,20 +41248,24 @@ export function createAgentChatService(args: {
         cancelDroidPermissionWaiter(w, "Droid tool approval was cancelled because the turn was interrupted.");
       }
       rt.permissionWaiters.clear();
-      cancelQueuedSteers(managed, rt, "interrupted");
+      if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
       return result;
     }
 
     if (managed.session.provider === "droid") {
       droidRuntimeSetupInterruptRequested.set(managed, true);
-      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      if (mode === "stop_and_clear") {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
       persistChatState(managed);
       return result;
     }
 
     if (managed.session.provider === "cursor") {
       cursorRuntimeSetupInterruptRequested.set(managed, true);
-      cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      if (mode === "stop_and_clear") {
+        cancelQueuedSteers(managed, { pendingSteers: [], activeTurnId: null }, "interrupted");
+      }
       persistChatState(managed);
       return result;
     }
@@ -37832,6 +41276,8 @@ export function createAgentChatService(args: {
       if (!managed.session.threadId) return result;
       if (!runtime.activeTurnId) {
         await interruptActiveCodexSubagentTurns(managed, runtime);
+        failOpenCodexCompactions(managed, runtime, "interrupted");
+        void startCodexQueuedFollowUp(managed, runtime);
         return result;
       }
       let interruptedTurnId = runtime.activeTurnId;
@@ -37889,6 +41335,8 @@ export function createAgentChatService(args: {
         }
       }
       await interruptActiveCodexSubagentTurns(managed, runtime);
+      failOpenCodexCompactions(managed, runtime, "interrupted");
+      void startCodexQueuedFollowUp(managed, runtime);
       return result;
     }
 
@@ -38158,7 +41606,7 @@ export function createAgentChatService(args: {
       enforceManagedLocalHarnessPermissionMode(managed);
       sessionService.setResumeCommand(sessionId, `chat:pi:${sessionId}`);
     } else if (managed.session.provider === "cursor") {
-      await ensureCursorRuntime(managed);
+      await ensureCursorSdkRuntime(managed);
       managed.session.opencodePermissionMode = persisted?.opencodePermissionMode ?? managed.session.opencodePermissionMode;
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
       enforceManagedLocalHarnessPermissionMode(managed);
@@ -39048,7 +42496,25 @@ export function createAgentChatService(args: {
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
   ): Promise<AgentChatSessionSummary> => {
     const persisted = readPersistedState(row.id);
-    const liveManaged = managedSessions.get(row.id) ?? null;
+    const liveManagedInitial = managedSessions.get(row.id) ?? null;
+    if (liveManagedInitial) {
+      reconcileOrphanedSubagent(liveManagedInitial);
+    } else {
+      const persistedParent = persisted?.orchestrationParentSessionId?.trim() || "";
+      if (
+        persisted?.spawnKind === "subagent"
+        && persistedParent
+        && persistedParent !== row.id
+        && !parentChatStillExists(persistedParent)
+      ) {
+        try {
+          reconcileOrphanedSubagent(ensureManagedSession(row.id));
+        } catch {
+          // Listing must not fail because an orphaned child cannot be loaded.
+        }
+      }
+    }
+    const liveManaged = managedSessions.get(row.id) ?? liveManagedInitial;
     const liveSession = liveManaged?.session ?? null;
     const provider = liveSession?.provider ?? persisted?.provider ?? providerFromToolType(row.toolType);
     const fallbackModel = liveSession?.model ?? persisted?.model ?? fallbackModelForProvider(provider);
@@ -39092,6 +42558,13 @@ export function createAgentChatService(args: {
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
+    const backgroundWorkSince = runtimeBackgroundWorkSince(liveManaged?.runtime ?? null);
+    // Reported even when nothing is live in the runtime's own bookkeeping: a
+    // session holding an SDK process with no background work is exactly the
+    // state that used to be invisible everywhere except `ps`.
+    const runtimeProcesses = claudeSubprocessReaper
+      .recordsForSession(row.id)
+      .map((record): RuntimeProcessSummary => ({ pid: record.pid, startedAt: record.createdAt }));
     let nextWakeAt: string | null = null;
     let scheduledWorkPaused = false;
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
@@ -39212,6 +42685,8 @@ export function createAgentChatService(args: {
       // zero record carries no information and would ride along on every
       // summary read for every session.
       ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
+      ...(activeBackgroundTaskCount > 0 && backgroundWorkSince ? { backgroundWorkSince } : {}),
+      ...(runtimeProcesses.length ? { runtimeProcesses } : {}),
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
@@ -39228,7 +42703,12 @@ export function createAgentChatService(args: {
       ...(liveSession?.requestedCwd != null || persisted?.requestedCwd != null
         ? { requestedCwd: liveSession?.requestedCwd ?? persisted?.requestedCwd ?? null }
         : {}),
-      ...collectOrchestrationFields(liveSession, persisted)
+      ...collectOrchestrationFields(liveSession, persisted),
+      ...(() => {
+        const parentId = (liveSession?.orchestrationParentSessionId ?? persisted?.orchestrationParentSessionId)?.trim();
+        if (!parentId) return {};
+        return { orchestrationParentReachable: parentChatStillExists(parentId) };
+      })(),
     } satisfies AgentChatSessionSummary;
   };
 
@@ -40131,8 +43611,18 @@ export function createAgentChatService(args: {
         cancelCursorPermissionWaiter(waiter, "Cursor input was dismissed because the session was settled.");
       }
       runtime.permissionWaiters.clear();
+      clearCursorSdkSilenceWatch(runtime);
+      // The interrupt above is best-effort and its failure is only logged, so
+      // clearing `busy` here can leave a run still registered as active on the
+      // Cursor agent. Always arm the one-shot expiry: interrupt may already
+      // have dropped ADE's busy flag while the agent-side run is still live,
+      // and the next send must expire that run rather than bounce as busy.
+      // Settlement is a deliberate abandonment, unlike a normal send, which
+      // must never kill a turn that is genuinely still working.
+      managed.cursorSdkForceExpireNextSend = true;
       runtime.busy = false;
       runtime.activeTurnId = null;
+      runtime.activeCloudRunId = null;
     } else if (runtime?.kind === "droid") {
       for (const waiter of runtime.permissionWaiters.values()) {
         cancelDroidPermissionWaiter(waiter, "Droid input was dismissed because the session was settled.");
@@ -40369,27 +43859,7 @@ export function createAgentChatService(args: {
         : resolvedDecision === "accept"
           ? "once"
           : "reject";
-      if (pending.protocol === "v2") {
-        await managed.runtime.handle.v2Client.permission.reply({
-          requestID: pending.permissionId,
-          directory: managed.runtime.handle.directory,
-          reply,
-        }, { throwOnError: true });
-      } else {
-        await managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
-          path: {
-            id: managed.runtime.handle.sessionId,
-            permissionID: pending.permissionId,
-          },
-          query: {
-            directory: managed.runtime.handle.directory,
-          },
-          throwOnError: true,
-          body: {
-            response: reply,
-          },
-        });
-      }
+      await replyToOpenCodePendingApproval(managed.runtime.handle, pending, reply);
       emitPendingInputResolved(managed, {
         itemId,
         decision: resolvedDecision,
@@ -40989,7 +44459,6 @@ export function createAgentChatService(args: {
       });
       return peeked ?? {
         modelIds: [] as string[],
-        catalogModelIds: [] as string[],
         providers: [],
         error: null as string | null,
       };
@@ -41036,12 +44505,22 @@ export function createAgentChatService(args: {
       }
     }
 
-    const availableOpenCodeIds = new Set(opencodeInventory.modelIds);
-    for (const id of opencodeInventory.catalogModelIds) {
+    // Only models from connected providers enter the catalog. The full OpenCode
+    // directory is models.dev in its entirety — 195 providers / ~7.2k models — and
+    // emitting it made the synced catalog 4.85 MB, which stalled or killed the iOS
+    // model picker. OpenCode's own clients do the same: verified against
+    // sst/opencode@dev, its TUI model dialog reads the connected-only
+    // `/config/providers` store while the full `/provider` payload (which carries a
+    // `connected: string[]`) feeds only the provider-connect dialog; the desktop app
+    // and `opencode models` CLI likewise list connected providers only.
+    // `opencodeInventory.providers` still carries every
+    // provider (id/name/connected/modelCount), so browsing survives without the bulk,
+    // and ids still resolve through the dynamic descriptor registry that
+    // openCodeInventory populates from every catalog entry.
+    for (const id of opencodeInventory.modelIds) {
       const descriptor = getModelById(id);
       if (!descriptor) continue;
       descriptors.push(descriptor);
-      if (!availableOpenCodeIds.has(id)) continue;
       const groupKey =
         descriptor.providerRoute === "opencode" && (descriptor.family === "ollama" || descriptor.family === "lmstudio")
           ? descriptor.family
@@ -41422,6 +44901,7 @@ export function createAgentChatService(args: {
     }
 
     sessionService.deleteSession(trimmedSessionId);
+    notifyChatSessionEnded(trimmedSessionId);
   };
 
   const archiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
@@ -41450,6 +44930,7 @@ export function createAgentChatService(args: {
       );
     }
     sessionService.archiveSession(trimmedSessionId);
+    notifyChatSessionEnded(trimmedSessionId);
   };
 
   const unarchiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
@@ -41462,7 +44943,16 @@ export function createAgentChatService(args: {
   };
 
   const disposeAll = async (): Promise<void> => {
+    // First, before anything that can throw. The dispose tail is wrapped in a
+    // swallow by both hosts, so a rejection further down would leave this
+    // service registered — and a half-disposed service keeps counting runtimes
+    // that no longer exist, permanently shrinking the process budget.
+    runtimeBudget.unregister(runtimeBudgetParticipant);
+    hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    clearCursorCloudMirrorWatches();
+    cursorCloudHydrateInFlight.clear();
+    cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
@@ -41478,7 +44968,16 @@ export function createAgentChatService(args: {
   };
 
   const forceDisposeAll = (): void => {
+    // First, before anything that can throw. The dispose tail is wrapped in a
+    // swallow by both hosts, so a rejection further down would leave this
+    // service registered — and a half-disposed service keeps counting runtimes
+    // that no longer exist, permanently shrinking the process budget.
+    runtimeBudget.unregister(runtimeBudgetParticipant);
+    hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    clearCursorCloudMirrorWatches();
+    cursorCloudHydrateInFlight.clear();
+    cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
@@ -41510,44 +45009,116 @@ export function createAgentChatService(args: {
     claudeSubprocessReaper.reapAll("force_dispose_all");
   };
 
+  /**
+   * Report the one teardown that overrides a workload the runtime still claims.
+   *
+   * Both the idle sweep and budget eviction can take this branch, and both owe
+   * the same two things: a log line an operator can find after the fact, and a
+   * sentence in the chat. Every other teardown either follows something the
+   * user did or leaves the work running; this one ends background work the
+   * session was still reporting, and stopped rows with no reason attached read
+   * as a bug rather than a decision.
+   *
+   * The duration in the copy is derived, not written, so the constant and the
+   * message cannot drift apart.
+   */
+  const announceExpiredWorkloadExemption = (managed: ManagedChatSession, silentForMs: number): void => {
+    logger.warn("agent_chat.runtime_workload_exemption_expired", {
+      sessionId: managed.session.id,
+      provider: managed.session.provider,
+      silentForMs,
+      liveBackgroundTaskCount: managed.runtime?.kind === "claude"
+        ? managed.runtime.liveBackgroundTaskIds.size
+        : 0,
+      activeSubagentCount: managed.runtime?.kind === "claude"
+        ? managed.runtime.activeSubagents.size
+        : 0,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: `Background work here hadn't reported anything for ${formatWorkingDuration(RUNTIME_WORKLOAD_EXEMPTION_MAX_SILENCE_MS)}, so ADE stopped it and released the agent. Ask for a re-run if it's still needed.`,
+    });
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
     for (const [, managed] of managedSessions) {
-      if (
-        managed.runtime
-        && !managed.closed
-        && managed.session.status === "idle"
-        && !hasLivePendingInput(managed)
-        && !hasRuntimeActiveWorkload(managed.runtime)
-        && now - managed.lastActivityTimestamp > getSessionInactivityTimeoutMs(managed)
-      ) {
-        teardownRuntime(managed, "idle_ttl");
-      }
+      if (!managed.runtime || managed.closed) continue;
+      if (managed.session.status !== "idle") continue;
+      if (hasLivePendingInput(managed)) continue;
+      const silentForMs = now - managed.lastActivityTimestamp;
+      if (silentForMs <= getSessionInactivityTimeoutMs(managed)) continue;
+      // Only meaningful when the runtime is actually claiming work — otherwise
+      // this is the ordinary idle path and there is nothing to override.
+      const claimsWorkload = hasRuntimeActiveWorkload(managed.runtime);
+      const exemptionStale = claimsWorkload
+        && isRuntimeWorkloadExemptionStale(managed.runtime, silentForMs);
+      if (claimsWorkload && !exemptionStale) continue;
+      if (exemptionStale) announceExpiredWorkloadExemption(managed, silentForMs);
+      teardownRuntime(managed, "idle_ttl");
     }
   }, SESSION_CLEANUP_INTERVAL_MS);
   // Allow the process to exit even if the timer is still scheduled
   if (sessionCleanupTimer.unref) sessionCleanupTimer.unref();
 
-  // --- Max concurrent active runtimes eviction ---
-  const evictLeastRecentRuntime = (excludeSessionId: string): void => {
-    let oldest: ManagedChatSession | null = null;
-    let oldestTimestamp = Infinity;
+  // --- Warm-runtime budget participation ---
+  /**
+   * Every runtime this service would agree to release right now, unordered —
+   * the shared budget picks which one, so its choice can span projects.
+   */
+  const listEvictableRuntimes = (excludeSessionId: string): EvictableRuntime[] => {
+    const now = Date.now();
+    const evictable: EvictableRuntime[] = [];
     for (const [id, managed] of managedSessions) {
       if (id === excludeSessionId) continue;
       if (!managed.runtime) continue;
       if (managed.session.status !== "idle") continue;
       if (hasLivePendingInput(managed)) continue;
-      if (hasRuntimeActiveWorkload(managed.runtime)) continue;
-      if (managed.lastActivityTimestamp < oldestTimestamp) {
-        oldestTimestamp = managed.lastActivityTimestamp;
-        oldest = managed;
-      }
+      // A stale background-work exemption must not shield a runtime from the
+      // budget either — that is the same self-sealing flag, and letting it veto
+      // eviction is how the cap silently stopped applying at all.
+      const claimsWorkload = hasRuntimeActiveWorkload(managed.runtime);
+      const exemptionStale = claimsWorkload
+        && isRuntimeWorkloadExemptionStale(managed.runtime, now - managed.lastActivityTimestamp);
+      if (claimsWorkload && !exemptionStale) continue;
+      evictable.push({
+        lastActivityTimestamp: managed.lastActivityTimestamp,
+        evict: () => {
+          // Recomputed rather than closed over: `evict` is a public callback on
+          // `EvictableRuntime`, so the day the budget gains an await between
+          // building the list and calling this, a captured verdict would
+          // announce an override for a runtime that has since reported
+          // activity. Same rule as the idle sweep otherwise — whichever path
+          // ends work the session still claimed has to say so.
+          const silentNowMs = Date.now() - managed.lastActivityTimestamp;
+          if (
+            hasRuntimeActiveWorkload(managed.runtime)
+            && isRuntimeWorkloadExemptionStale(managed.runtime, silentNowMs)
+          ) {
+            announceExpiredWorkloadExemption(managed, silentNowMs);
+          }
+          teardownRuntime(managed, "budget_eviction");
+        },
+      });
     }
-    if (oldest) {
-      teardownRuntime(oldest, "budget_eviction");
-    }
+    return evictable;
   };
+
+  const countActiveRuntimes = (): number => {
+    let count = 0;
+    for (const [, managed] of managedSessions) if (managed.runtime) count++;
+    return count;
+  };
+
+  /** This service's half of the shared budget. See `chatRuntimeBudget.ts`. */
+  const runtimeBudgetParticipant: RuntimeBudgetParticipant = {
+    countActiveRuntimes,
+    listEvictableRuntimes,
+  };
+  runtimeBudget.register(runtimeBudgetParticipant);
+
 
   const updateSession = async ({
     sessionId,
@@ -41568,6 +45139,8 @@ export function createAgentChatService(args: {
     cursorModeId,
     cursorConfigValues,
     permissionMode,
+    spawnKind: requestedSpawnKind,
+    subagentTakeoverPromptShown,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
@@ -41586,6 +45159,17 @@ export function createAgentChatService(args: {
     const prevClaudeFastModeSetting = managed.session.provider === "claude"
       ? sessionEffectiveFastMode(managed.session)
       : false;
+    const hasExplicitNativeModeUpdate =
+      permissionMode !== undefined
+      || interactionMode !== undefined
+      || claudePermissionMode !== undefined
+      || codexApprovalPolicy !== undefined
+      || codexSandbox !== undefined
+      || codexConfigSource !== undefined
+      || opencodePermissionMode !== undefined
+      || droidPermissionMode !== undefined
+      || cursorModeId !== undefined
+      || cursorConfigValues !== undefined;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -41613,7 +45197,14 @@ export function createAgentChatService(args: {
         || managed.session.modelId !== descriptor.id
         || managed.session.model !== nextModel;
 
-      if (managed.runtime && modelChanged) {
+      const previousCodexRuntime = managed.runtime?.kind === "codex" ? managed.runtime : null;
+      const liveCodexSettings = previousProvider === "codex"
+        && nextProvider === "codex"
+        && Boolean(previousCodexRuntime)
+        && Boolean(managed.session.threadId)
+        && codexServerSupportsThreadSettings(previousCodexRuntime?.serverVersion ?? null);
+
+      if (managed.runtime && modelChanged && !liveCodexSettings) {
         if (managed.runtime.kind === "cursor" && managed.runtime.busy) {
           managed.runtime.pendingModelSwitchReset = true;
         } else {
@@ -41648,11 +45239,17 @@ export function createAgentChatService(args: {
         delete managed.session.piSessionId;
         delete managed.session.piSessionFile;
       }
-      if (nextProvider === "claude" && !modelSupportsFastMode(descriptor)) {
-        delete managed.session.fastMode;
-      }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
-      if (previousProvider !== nextProvider || previousProvider === "codex") {
+      if (previousProvider !== nextProvider) {
+        delete managed.session.threadId;
+        managed.runtimeInvalidated = true;
+        clearLaneDirectiveKey(managed);
+        stageTranscriptReplayOnSession(
+          managed,
+          readTranscriptEnvelopes(managed, { includeBuffered: true }),
+          descriptor.contextWindow,
+        );
+      } else if (previousProvider === "codex" && !liveCodexSettings) {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         clearLaneDirectiveKey(managed);
@@ -41676,8 +45273,16 @@ export function createAgentChatService(args: {
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
-      enforceManagedLocalHarnessPermissionMode(managed, descriptor);
-      normalizeSessionNativePermissionControls(managed.session, chatConfig);
+      // A model/provider choice is independent from the access settings. Keep
+      // the raw settings untouched for a model-only update; the runtime
+      // resolves provider-specific fallbacks at launch. Explicit mode fields
+      // still take the normal policy-normalization path below.
+      if (hasExplicitNativeModeUpdate) {
+        enforceManagedLocalHarnessPermissionMode(managed, descriptor);
+        normalizeSessionNativePermissionControls(managed.session, chatConfig);
+      } else {
+        enforceManagedLocalHarnessPermissionMode(managed, descriptor);
+      }
 
       // Apply reasoningEffort BEFORE pre-warming so the query is created
       // with the correct thinking configuration.
@@ -41688,12 +45293,6 @@ export function createAgentChatService(args: {
           : nextProvider === "claude"
             ? validateReasoningEffortForDescriptor("claude", requested, descriptor)
             : validateRuntimeReasoningEffortForDescriptor(requested, descriptor);
-      } else if (modelChanged && nextProvider === "codex") {
-        managed.session.reasoningEffort = validateReasoningEffortForDescriptor(
-          "codex",
-          managed.session.reasoningEffort,
-          descriptor,
-        ) ?? resolveCodexReasoningEffortForRuntime(null, null, descriptor);
       }
 
       // Pre-warm the Claude query when the user selects an Anthropic model.
@@ -41723,7 +45322,32 @@ export function createAgentChatService(args: {
       if (managed.session.identityKey === "cto" && (modelChanged || reasoningEffort !== undefined)) {
         persistCtoModelPreference(managed, descriptor.id);
       }
-      if (reasoningEffort !== undefined && managed.runtime?.kind === "codex") {
+      if (
+        (modelChanged || reasoningEffort !== undefined)
+        && liveCodexSettings
+        && previousCodexRuntime
+        && managed.session.threadId
+      ) {
+        try {
+          await previousCodexRuntime.request("thread/settings/update", {
+            threadId: managed.session.threadId,
+            ...(modelChanged ? { model: nextModel } : {}),
+            ...(managed.session.reasoningEffort && (reasoningEffort !== undefined || modelChanged)
+              ? { effort: managed.session.reasoningEffort }
+              : {}),
+          });
+        } catch (error) {
+          logger.warn("agent_chat.codex_thread_settings_update_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          delete managed.session.threadId;
+          managed.runtimeInvalidated = true;
+          clearLaneDirectiveKey(managed);
+          teardownRuntime(managed, "model_switch");
+          refreshReconstructionContext(managed);
+        }
+      } else if (reasoningEffort !== undefined && managed.runtime?.kind === "codex") {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
       }
@@ -41760,8 +45384,27 @@ export function createAgentChatService(args: {
         }
       }
       if (prev !== next && managed.runtime?.kind === "codex") {
-        managed.runtime.threadResumed = false;
-        managed.runtime.canAttachResumedTurnStart = false;
+        if (
+          managed.session.threadId
+          && codexServerSupportsThreadSettings(managed.runtime.serverVersion)
+        ) {
+          try {
+            await managed.runtime.request("thread/settings/update", {
+              threadId: managed.session.threadId,
+              ...(next ? { effort: next } : {}),
+            });
+          } catch (error) {
+            logger.warn("agent_chat.codex_thread_settings_update_failed", {
+              sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            managed.runtime.threadResumed = false;
+            managed.runtime.canAttachResumedTurnStart = false;
+          }
+        } else {
+          managed.runtime.threadResumed = false;
+          managed.runtime.canAttachResumedTurnStart = false;
+        }
       }
       if (prev !== next && managed.runtime?.kind === "pi" && next) {
         await managed.runtime.sdk.setThinking(next).catch((error) => {
@@ -41825,14 +45468,6 @@ export function createAgentChatService(args: {
         delete managed.session.fastMode;
       }
     }
-    if (
-      managed.session.provider === "claude"
-      && managed.session.fastMode === true
-      && !sessionSupportsFastMode(managed.session)
-    ) {
-      delete managed.session.fastMode;
-    }
-
     const nextClaudeFastModeSetting = managed.session.provider === "claude"
       ? sessionEffectiveFastMode(managed.session)
       : false;
@@ -41861,17 +45496,7 @@ export function createAgentChatService(args: {
       }
     }
 
-    const modeFieldsTouched =
-      permissionMode !== undefined
-      || interactionMode !== undefined
-      || claudePermissionMode !== undefined
-      || codexApprovalPolicy !== undefined
-      || codexSandbox !== undefined
-      || codexConfigSource !== undefined
-      || opencodePermissionMode !== undefined
-      || droidPermissionMode !== undefined
-      || cursorModeId !== undefined
-      || cursorConfigValues !== undefined;
+    const modeFieldsTouched = hasExplicitNativeModeUpdate;
     if (modeFieldsTouched) {
       enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
@@ -42031,6 +45656,17 @@ export function createAgentChatService(args: {
       if (manuallyNamed) managed.runtimeTitleAdopted = false;
     }
 
+    if (requestedSpawnKind === "subagent" || requestedSpawnKind === "peer") {
+      applySpawnKindChange({
+        sessionId,
+        spawnKind: requestedSpawnKind,
+        source: requestedSpawnKind === "peer" ? "takeover" : "promote",
+      });
+    }
+    if (subagentTakeoverPromptShown === true) {
+      dismissSubagentTakeoverPrompt({ sessionId });
+    }
+
     persistChatState(managed);
     return managed.session;
   };
@@ -42066,7 +45702,7 @@ export function createAgentChatService(args: {
       if (managed.session.status === "active") return;
       if (managed.runtime && managed.runtime.kind !== "cursor") return;
       if (managed.runtime?.kind === "cursor" && managed.runtime.busy) return;
-      await ensureCursorRuntime(managed);
+      await ensureCursorSdkRuntime(managed);
       persistChatState(managed);
       return;
     }
@@ -43001,8 +46637,8 @@ export function createAgentChatService(args: {
     if (runtimeKind === "opencode" && managed?.runtime?.kind === "opencode") {
       try {
         const response = await managed.runtime.handle.client.session.messages({
-          path: { id: normalizedAgentId },
-          query: { directory: managed.runtime.handle.directory },
+          sessionID: normalizedAgentId,
+          directory: managed.runtime.handle.directory,
         });
         const rows = (response as { data?: Array<{ info: unknown; parts: unknown }> }).data
           ?? (response as unknown as Array<{ info: unknown; parts: unknown }>);
@@ -43544,13 +47180,19 @@ export function createAgentChatService(args: {
       const requestedStyle = match[1]?.trim() ?? "";
       managed.session.lastActivityAt = nowIso();
       if (!requestedStyle.length) {
-        managed.session.claudeOutputStyle = managed.session.claudeOutputStyle ?? readClaudeOutputStyleSelection(managed.laneWorktreePath);
+        // Display only. Writing the resolved name back would persist "Default"
+        // as though the user had picked it, and ADE would then send it at flag
+        // tier and suppress Claude's own resolution — the override this branch
+        // exists to stop. Read the files first so a newer selection wins.
+        const listedStyle = readClaudeOutputStyleSelection(managed.laneWorktreePath)
+          ?? normalizePersistedOutputStyle(managed.session.claudeOutputStyle)
+          ?? "Default";
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
           message: renderClaudeOutputStyleList(
             discoverClaudeOutputStyles(managed.laneWorktreePath),
-            managed.session.claudeOutputStyle,
+            listedStyle,
           ),
         });
         persistChatState(managed);
@@ -43636,19 +47278,52 @@ export function createAgentChatService(args: {
 
       const runtime = await ensureCodexSessionRuntime(managed);
       const threadId = await ensureCodexControlThread(managed, runtime, "rewind");
-      const useForkBeforeTurn = codexServerSupportsForkBeforeTurn(runtime.serverVersion) && plan.targetTurnId != null;
+      const canRevert = codexServerSupportsThreadRevert(runtime.serverVersion) && plan.targetTurnId != null;
+      const canForkBeforeTurn = codexServerSupportsForkBeforeTurn(runtime.serverVersion)
+        && plan.targetTurnId != null;
       // thread/rollback is deprecated upstream; retain it for <=0.144 servers and turns without a usable id.
-      const lifecycleResponse = useForkBeforeTurn
-        ? await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+      // thread/revert is paginated-only (0.148+); fall back to fork, then rollback, when the server rejects it.
+      let lifecycleResponse: CodexThreadLifecycleResponse | null = null;
+      let rewindMethod: "revert" | "fork_before_turn" | "rollback" = "rollback";
+      if (canRevert) {
+        try {
+          const reverted = await runtime.request<CodexThreadLifecycleResponse>("thread/revert", {
             threadId,
             beforeTurnId: plan.targetTurnId,
-          }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS })
-        : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
-            threadId,
-            numTurns: 1,
           }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+          if (typeof reverted.thread?.id === "string" && reverted.thread.id.trim()) {
+            lifecycleResponse = reverted;
+            rewindMethod = "revert";
+          }
+        } catch (error) {
+          logger.warn("agent_chat.codex_thread_revert_failed", {
+            sessionId: managed.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (!lifecycleResponse) {
+        rewindMethod = canForkBeforeTurn ? "fork_before_turn" : "rollback";
+        lifecycleResponse = canForkBeforeTurn
+          ? await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+              threadId,
+              beforeTurnId: plan.targetTurnId,
+            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS })
+          : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
+              threadId,
+              numTurns: 1,
+            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+      }
       applyCodexEffectiveThreadState(managed, lifecycleResponse);
-      adoptRuntimeSessionTitle(managed, lifecycleResponse, useForkBeforeTurn ? "codex_thread_fork_before_turn" : "codex_thread_rollback");
+      adoptRuntimeSessionTitle(
+        managed,
+        lifecycleResponse,
+        rewindMethod === "revert"
+          ? "codex_thread_revert"
+          : rewindMethod === "fork_before_turn"
+            ? "codex_thread_fork_before_turn"
+            : "codex_thread_rollback",
+      );
       const rolledBackThreadId = typeof lifecycleResponse.thread?.id === "string"
         ? lifecycleResponse.thread.id
         : threadId;
@@ -44060,6 +47735,7 @@ export function createAgentChatService(args: {
       orchestrationRole?: "lead" | "worker" | "validator" | null;
       orchestrationParentSessionId?: string | null;
       spawnKind?: AgentChatSession["spawnKind"] | null;
+      subagentTakeoverPromptShownAt?: string | null;
       orchestrationTag?: string | null;
       orchestrationStepId?: string | null;
       orchestrationBundlePath?: string | null;
@@ -44362,6 +48038,55 @@ export function createAgentChatService(args: {
     return null;
   };
 
+  const resetCodexMemory = async ({
+    sessionId,
+  }: AgentChatCodexResetMemoryArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.provider !== "codex") {
+      throw new Error("Memory reset is only available for Codex chats.");
+    }
+    const runtime = await ensureCodexSessionRuntime(managed);
+    if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+      throw new Error("This Codex app-server cannot reset memory.");
+    }
+    await runtime.request("memory/reset", {}, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: CODEX_MEMORY_RESET_RECEIPT,
+    });
+    persistChatState(managed);
+  };
+
+  const terminateCodexBackgroundTerminal = async ({
+    sessionId,
+    processId,
+  }: AgentChatCodexTerminateBackgroundTerminalArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.provider !== "codex") {
+      throw new Error("Background terminal stop is only available for Codex chats.");
+    }
+    const runtime = await ensureCodexSessionRuntime(managed);
+    if (!codexServerSupportsBackgroundTerminals(runtime.serverVersion)) {
+      throw new Error("This Codex app-server cannot terminate background terminals.");
+    }
+    const threadId = managed.session.threadId;
+    if (!threadId) throw new Error("This Codex chat has no thread to stop a background terminal on.");
+    const normalizedProcessId = processId.trim();
+    if (!normalizedProcessId) throw new Error("A processId is required to stop a Codex background terminal.");
+    await runtime.request("thread/backgroundTerminals/terminate", {
+      threadId,
+      processId: normalizedProcessId,
+    }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    const previous = runtime.backgroundTerminalsByProcessId.get(normalizedProcessId);
+    runtime.backgroundTerminalsByProcessId.delete(normalizedProcessId);
+    if (previous) {
+      emitCodexBackgroundTaskUpdate(managed, normalizedProcessId, "stopped", previous);
+    }
+    await refreshCodexBackgroundTerminals(managed, runtime);
+    persistChatState(managed);
+  };
+
   let fallbackScheduledWorkState: unknown = null;
   scheduledWorkScheduler = createScheduledWorkScheduler({
     loadState: () => db?.getJson(scheduledWorkStateKey) ?? fallbackScheduledWorkState,
@@ -44581,6 +48306,8 @@ export function createAgentChatService(args: {
     setCodexGoal,
     setCodexGoalStatus,
     clearCodexGoal,
+    resetCodexMemory,
+    terminateCodexBackgroundTerminal,
     runSessionTurn,
     steer,
     steerUserMessage,
@@ -44589,6 +48316,34 @@ export function createAgentChatService(args: {
     dispatchSteer,
     cancelDispatchedSteer,
     interrupt,
+    /**
+     * Is a persisted Claude `--bg` job actually still running?
+     *
+     * `claudeBackgroundJobShort` is a RECORD, not a liveness signal — it stays
+     * on the session after the job finishes or is stopped. Settle teardown has
+     * to distinguish the two: counting a finished job as work makes every later
+     * settle spend the confirmation budget and then report residue that does
+     * not exist.
+     */
+    hasLiveClaudeBackgroundJob: async (
+      short: string | null | undefined,
+    ): Promise<"alive" | "gone" | "unknown"> => {
+      const normalized = normalizeClaudeBackgroundShort(short);
+      if (!normalized) return "gone";
+      const socketPath = await resolveClaudeDaemonControlSocket();
+      // No daemon socket, or a request that failed: we do not KNOW the job is
+      // gone. Collapsing that to "gone" is how a settle confirms a clean
+      // teardown over a job that is still running — the same mistake as
+      // treating a timed-out liveness read as an idle session.
+      if (!socketPath) return "unknown";
+      try {
+        const response = await sendClaudeDaemonRequest(socketPath, { op: "has", short: normalized });
+        if (response.ok !== true) return "unknown";
+        return response.alive === true || response.present === true ? "alive" : "gone";
+      } catch {
+        return "unknown";
+      }
+    },
     restoreCancelledQueue,
     recoverTurn,
     recoverCodexTurn,
@@ -44601,6 +48356,10 @@ export function createAgentChatService(args: {
     ensureSessionSurface,
     hasActiveWorkloads,
     hasRetainableSessions,
+    residentChatEventHistorySessionCount: () => eventHistoryBySession.size,
+    seedLiveChatEventHistory(envelopes: AgentChatEventEnvelope[]): void {
+      for (const envelope of envelopes) recordChatEventInHistory(envelope);
+    },
     countActiveForLane,
     disposeForLane,
     getChatTranscript,
@@ -44637,6 +48396,8 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession,
+    setSpawnKind,
+    dismissSubagentTakeoverPrompt,
     reconcileThreadPointerFromRedundantSources,
     isTranscriptPathActive,
     warmupModel,
@@ -44650,7 +48411,9 @@ export function createAgentChatService(args: {
     previewSessionToolNames,
     cancelCursorCloudRun,
     cursorCloudFollowUp,
+    handleCursorCloudStatusChange,
     openCursorCloudChat,
+    watchCursorCloudMirror,
     subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
       eventSubscribers.add(callback);
       return () => {
@@ -44706,6 +48469,16 @@ export function createAgentChatService(args: {
       const orchestrationService = getOrchestrationService?.() ?? null;
       if (!orchestrationService) return;
       ensureOrchestrationDrainerRegistered(orchestrationService);
+    },
+    /**
+     * Subscribe to "this chat is over" (deleted or archived). Returns an
+     * unsubscribe function.
+     */
+    registerChatSessionEndedListener(listener: (sessionId: string) => void): () => void {
+      chatSessionEndedListeners.add(listener);
+      return () => {
+        chatSessionEndedListeners.delete(listener);
+      };
     },
   };
 }

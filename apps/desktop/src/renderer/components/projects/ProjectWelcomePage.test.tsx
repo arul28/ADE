@@ -450,11 +450,52 @@ describe("ProjectWelcomePage multi-machine recents", () => {
 
     renderWelcome();
 
-    await screen.findByText("Also on Mac Studio");
+    await screen.findByText("Mac Studio", { exact: true });
     expect(
       document.querySelectorAll('[data-tour="project.recentProject"]'),
     ).toHaveLength(1);
     expect(screen.getAllByText("ADE")).toHaveLength(1);
+  });
+
+  it("uses the newest activity and any available project logo across machines", async () => {
+    const projectIcon = "data:image/png;base64,project-icon";
+    listRecent.mockResolvedValueOnce([
+      {
+        rootPath: "/Users/arul/ADE",
+        displayName: "ADE",
+        lastOpenedAt: "2026-07-28T11:00:00.000Z",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: "git@github.com:arul28/ADE.git",
+      },
+      {
+        rootPath: "/Users/studio/ADE",
+        displayName: "ADE",
+        lastOpenedAt: "2026-07-28T12:00:00.000Z",
+        exists: true,
+        kind: "remote",
+        gitOriginUrl: "https://github.com/arul28/ADE",
+        remote: {
+          targetId: "studio",
+          projectId: "ade",
+          runtimeName: "Mac Studio",
+          hostname: "studio.local",
+          gitOriginUrl: "https://github.com/arul28/ADE",
+          iconDataUrl: projectIcon,
+        },
+      },
+    ]);
+
+    renderWelcome();
+
+    await screen.findByText("This machine", { exact: true });
+    expect(document.querySelector(`img[src="${projectIcon}"]`)).toBeTruthy();
+    expect(screen.queryByText("Last active")).toBeNull();
+    expect(screen.queryByText(/on Mac Studio/)).toBeNull();
+    expect(screen.queryByText(/Also on/)).toBeNull();
+    expect(
+      document.querySelector('[data-ade-project-machines="true"]')?.querySelectorAll("svg"),
+    ).toHaveLength(0);
   });
 });
 

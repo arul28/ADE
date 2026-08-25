@@ -7,7 +7,7 @@ import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { parseCodedErrorMessage } from "../lib/codedError";
-import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
+import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
 import { listInstalledPlugins, type InstalledPlugin } from "../lib/pluginRuntimeBridge";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
@@ -1094,6 +1094,12 @@ export type ProjectTransitionError = {
   code?: string;
   detail?: string;
   rootPath?: string;
+  /**
+   * The project the failed transition was heading to, for the banner's
+   * "Try again". Separate from `rootPath`, which together with `code` selects
+   * the full-screen recovery flow.
+   */
+  retryRootPath?: string;
 };
 
 /**
@@ -1494,6 +1500,39 @@ function withPreservedLaneStatus(
     : lane;
 }
 
+/**
+ * What to say instead of the brain's own words, per coded failure.
+ *
+ * A code is listed here only when this screen can say something the brain's
+ * message does not — a libuv errno, a socket path, a migration state. Anything
+ * NOT listed keeps the brain's own sentence as the headline, because the brain
+ * is the only party that knows the specifics: `storage_read_failed` is built by
+ * `storageUnreadableMessage`, which names the file that could not be read and
+ * tells the user to move it out of iCloud Drive/Dropbox/OneDrive, and a generic
+ * paraphrase here would push that into the collapsed details fold.
+ *
+ * So the rule is exactly three cases:
+ *  - listed code            → this file's line, brain's message kept as `detail`
+ *  - unlisted code, message → the brain's message, verbatim, with no `detail`
+ *  - unlisted code, NO message → `GENERIC_RECOVERY_MESSAGE`, the only case where
+ *                                a bare code would otherwise leave a blank screen
+ * No code at all falls through to the brain's message as well.
+ */
+const RECOVERY_MESSAGE_BY_CODE: Partial<Record<AdeRecoveryErrorCode, string>> = {
+  disk_full:
+    "Your computer ran out of storage while ADE was saving project data. Free up space, then try again.",
+  brain_crash_looping: "ADE's background service needs a repair before this project can open.",
+  migration_incomplete: "ADE's background service needs a repair before this project can open.",
+  migration_unknown_state: "ADE's background service needs a repair before this project can open.",
+  insufficient_headroom: "ADE's background service could not open this project.",
+  db_integrity: "ADE's background service could not open this project.",
+  brain_not_installed: "ADE's background service could not open this project.",
+  socket_stale_no_owner: "ADE's background service could not open this project.",
+  socket_owned_by_other: "ADE's background service could not open this project.",
+};
+
+const GENERIC_RECOVERY_MESSAGE = "ADE ran into a problem with this project.";
+
 function formatProjectTransitionError(
   kind: "opening" | "switching" | "closing",
   error: unknown,
@@ -1501,30 +1540,30 @@ function formatProjectTransitionError(
   const parsed = parseCodedErrorMessage(error);
   const raw = parsed.message;
   if (/timed out after 30000ms/i.test(raw)) {
+    // The main process is not cancelled when the renderer stops waiting (the
+    // call is raced against a timer), so the work really is still running.
+    // Saying so is the difference between "it failed" and "give it a moment".
     if (kind === "opening") {
-      return { message: "Opening this project took longer than 30 seconds, so ADE stopped waiting." };
+      return {
+        message:
+          "Opening this project took longer than 30 seconds, so ADE stopped waiting. It's still working on it in the background — you can try again now.",
+      };
     }
     if (kind === "switching") {
-      return { message: "Switching projects took longer than 30 seconds, so ADE kept the current project active." };
+      return {
+        message:
+          "Switching projects took longer than 30 seconds, so ADE kept the current project open. It's still working on it in the background — you can try again now.",
+      };
     }
-    return { message: "Closing the current project took longer than 30 seconds." };
+    return {
+      message:
+        "Closing the current project took longer than 30 seconds. ADE is still finishing in the background.",
+    };
   }
   const code = toAdeRecoveryErrorCode(parsed.code);
-  const recoveryMessage = code === "disk_full"
-    ? "Your computer ran out of storage while ADE was saving project data. Free up space, then try again."
-    : code === "brain_crash_looping" || code === "migration_incomplete" || code === "migration_unknown_state"
-      ? "ADE's background service needs a repair before this project can open."
-      : code && [
-          "insufficient_headroom",
-          "db_integrity",
-          "brain_not_installed",
-          "socket_stale_no_owner",
-          "socket_owned_by_other",
-        ].includes(code)
-        ? "ADE's background service could not open this project."
-        : code
-          ? "ADE ran into a problem with this project."
-          : null;
+  const recoveryMessage = code
+    ? RECOVERY_MESSAGE_BY_CODE[code] ?? (raw ? null : GENERIC_RECOVERY_MESSAGE)
+    : null;
   const fallback = raw.length > 0 ? raw : "Project action failed.";
   return {
     message: recoveryMessage ?? fallback,
@@ -2800,7 +2839,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         lanesLoading: false,
         projectTransitionError: projectTransitionError.code
           ? { ...projectTransitionError, rootPath }
-          : projectTransitionError,
+          : { ...projectTransitionError, retryRootPath: rootPath },
       });
       throw error;
     }

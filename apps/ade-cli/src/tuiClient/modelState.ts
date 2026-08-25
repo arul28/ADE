@@ -19,6 +19,7 @@ import { DEFAULT_CODEX_REASONING_EFFORT, type CliTerminalProvider } from "./adeA
 import { theme } from "./theme";
 import type { AdeCodeInterfaceMode, AdeCodeModelState, AdeCodeProvider, SetupPaneRow, SetupPaneRowKind } from "./types";
 import { normalizeProvider, providerLabel } from "./providerMetadata";
+import type { AdeCodeModelMemory, AdeCodeProviderSettingsMemory } from "./state";
 
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultra"];
 export const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-toml"] as const;
@@ -52,6 +53,94 @@ export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): Ade
   };
 }
 
+/**
+ * Project-scoped model memory (state.ts) ↔ live model state.
+ *
+ * The persisted shape stores every mode as a bare string so a value written by
+ * a newer build survives an older one untouched; these two helpers are the ONE
+ * place that crosses between that and the typed unions.
+ */
+export function modelMemoryFromState(state: AdeCodeModelState): AdeCodeModelMemory {
+  return {
+    provider: state.provider,
+    modelId: state.modelId,
+    model: state.model,
+    displayName: state.displayName,
+    ...providerSettingsMemoryFromState(state),
+  };
+}
+
+export function providerSettingsMemoryFromState(state: AdeCodeModelState): AdeCodeProviderSettingsMemory {
+  return {
+    reasoningEffort: state.reasoningEffort,
+    fastMode: state.fastMode,
+    interfaceMode: state.interfaceMode,
+    permissionMode: state.permissionMode,
+    interactionMode: state.interactionMode,
+    claudePermissionMode: state.claudePermissionMode,
+    codexApprovalPolicy: state.codexApprovalPolicy,
+    codexSandbox: state.codexSandbox,
+    codexConfigSource: state.codexConfigSource,
+    opencodePermissionMode: state.opencodePermissionMode,
+    droidPermissionMode: state.droidPermissionMode,
+    cursorModeId: state.cursorModeId,
+  };
+}
+
+/**
+ * Settings-only patch for persisted state. Live provider/model selection must
+ * not use this helper: every composer setting is independent of that choice.
+ */
+export function providerSettingsPatchFromMemory(
+  memory: AdeCodeProviderSettingsMemory,
+): Partial<AdeCodeModelState> {
+  return {
+    reasoningEffort: memory.reasoningEffort,
+    fastMode: memory.fastMode,
+    permissionMode: memory.permissionMode as AdeCodeModelState["permissionMode"],
+    interactionMode: memory.interactionMode as AdeCodeModelState["interactionMode"],
+    claudePermissionMode: memory.claudePermissionMode as AdeCodeModelState["claudePermissionMode"],
+    codexApprovalPolicy: memory.codexApprovalPolicy as AdeCodeModelState["codexApprovalPolicy"],
+    codexSandbox: memory.codexSandbox as AdeCodeModelState["codexSandbox"],
+    codexConfigSource: memory.codexConfigSource as AdeCodeModelState["codexConfigSource"],
+    opencodePermissionMode: memory.opencodePermissionMode as AdeCodeModelState["opencodePermissionMode"],
+    droidPermissionMode: memory.droidPermissionMode as AdeCodeModelState["droidPermissionMode"],
+    cursorModeId: memory.cursorModeId,
+  };
+}
+
+/**
+ * Full patch (model identity + settings) used to seed a project's next chat.
+ * A memory whose model identity is blank (written by a build that only knew the
+ * provider) still contributes its settings — the registry default supplies the
+ * model.
+ */
+export function modelStatePatchFromMemory(memory: AdeCodeModelMemory): Partial<AdeCodeModelState> {
+  const provider = normalizeProvider(memory.provider);
+  const hasModelIdentity = Boolean(memory.modelId?.trim() || memory.model.trim());
+  return {
+    ...providerSettingsPatchFromMemory(memory),
+    provider,
+    interfaceMode: memory.interfaceMode,
+    ...(hasModelIdentity
+      ? {
+          modelId: memory.modelId,
+          model: memory.model,
+          displayName: memory.displayName || memory.model,
+        }
+      : fallbackModelStatePatch(provider)),
+  };
+}
+
+/** Apply a project's remembered model to a freshly built model state. */
+export function seedModelStateFromMemory(
+  base: AdeCodeModelState,
+  memory: AdeCodeModelMemory | null | undefined,
+): AdeCodeModelState {
+  if (!memory) return base;
+  return { ...base, ...modelStatePatchFromMemory(memory) };
+}
+
 export function runtimeProviderForUiProvider(provider: AdeCodeProvider): ModelProviderGroup {
   return provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
 }
@@ -76,29 +165,7 @@ export function cliProviderForModelStateProvider(provider: AdeCodeProvider): Cli
     : null;
 }
 
-function firstReasoningEffortForModel(model: AgentChatModelInfo | null | undefined, provider: AdeCodeProvider): string | null {
-  const modelId = `${model?.modelId ?? ""} ${model?.id ?? ""} ${model?.displayName ?? ""}`.toLowerCase();
-  const efforts = model?.reasoningEfforts
-    ?.map((entry) => entry.effort)
-    .filter(Boolean) ?? [];
-  const advertisedDefault = model?.defaultReasoningEffort?.trim().toLowerCase() ?? null;
-  if (modelId.includes("fable") && efforts.includes("high")) return "high";
-  if (advertisedDefault && efforts.includes(advertisedDefault)) return advertisedDefault;
-  if (efforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
-  if (efforts.length) return efforts[0] ?? null;
-  const descriptor = model?.modelId || model?.id ? getModelById(model.modelId ?? model.id) : undefined;
-  const descriptorEfforts = descriptor?.reasoningTiers ?? [];
-  const descriptorId = `${descriptor?.id ?? ""} ${descriptor?.providerModelId ?? ""} ${descriptor?.displayName ?? ""}`.toLowerCase();
-  if (descriptorId.includes("fable") && descriptorEfforts.includes("high")) return "high";
-  if (descriptor?.defaultReasoningEffort && descriptorEfforts.includes(descriptor.defaultReasoningEffort)) {
-    return descriptor.defaultReasoningEffort;
-  }
-  if (descriptorEfforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
-  if (descriptorEfforts.length) return descriptorEfforts[0] ?? null;
-  return provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null;
-}
-
-export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatModelInfo): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
+export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatModelInfo): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName"> {
   const modelId = model.modelId ?? model.id;
   const descriptor = getModelById(modelId);
   const resolvedProvider = descriptor ? normalizeProvider(resolveProviderGroupForModel(descriptor)) : provider;
@@ -108,7 +175,6 @@ export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentC
     model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider) : model.id,
     modelId,
     displayName: model.displayName,
-    reasoningEffort: firstReasoningEffortForModel(model, resolvedProvider),
   };
 }
 
@@ -156,7 +222,7 @@ export function modelCatalogRefreshCacheKey(
   return provider === "cursor" ? `cursor:${cursorSource ?? "sdk"}` : provider;
 }
 
-export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
+export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName"> {
   const registryProvider = provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
   const descriptor = getDefaultModelDescriptor(registryProvider)
     ?? listModelDescriptorsForProvider(registryProvider)[0]
@@ -166,11 +232,6 @@ export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCode
     model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.6-sol",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? providerLabel(provider),
-    reasoningEffort: descriptor?.id.includes("fable") && descriptor.reasoningTiers?.includes("high")
-      ? "high"
-      : descriptor?.defaultReasoningEffort
-        ?? descriptor?.reasoningTiers?.[0]
-        ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
   };
 }
 
@@ -189,14 +250,6 @@ export function registryModelsForProvider(provider: AdeCodeProvider): AgentChatM
   }));
 }
 
-function compatibleCursorModelForInterface(
-  models: readonly AgentChatModelInfo[],
-  interfaceMode: AdeCodeInterfaceMode,
-): AgentChatModelInfo | null {
-  const compatible = models.filter((model) => cursorModelAvailableForInterface(model, interfaceMode));
-  return compatible.find((model) => model.isDefault) ?? compatible[0] ?? null;
-}
-
 function modelInfoMatchesModelState(model: AgentChatModelInfo, state: AdeCodeModelState): boolean {
   const selected = (state.modelId ?? state.model).trim().toLowerCase();
   if (!selected) return false;
@@ -208,60 +261,11 @@ function modelInfoMatchesModelState(model: AgentChatModelInfo, state: AdeCodeMod
 export function reconcileCursorModelStateForInterface(
   state: AdeCodeModelState,
   interfaceMode: AdeCodeInterfaceMode,
-  models: readonly AgentChatModelInfo[],
 ): AdeCodeModelState {
-  if (state.provider !== "cursor") return { ...state, interfaceMode };
-  const currentModel = models.find((model) => modelInfoMatchesModelState(model, state)) ?? null;
-  const descriptor = state.modelId ? getModelById(state.modelId) : undefined;
-  const availability = cursorAvailabilityForModel(currentModel, descriptor);
-  const currentAllowed = availability
-    ? (interfaceMode === "cli" ? availability.cli === true : availability.sdk === true)
-    : false;
-  if (currentAllowed && descriptor?.family === "cursor") {
-    const supportsFast = modelSupportsFastMode(descriptor);
-    return {
-      ...state,
-      interfaceMode,
-      model: interfaceMode === "cli"
-        ? resolveCursorCliModelVariant(descriptor, {
-            reasoningEffort: state.reasoningEffort,
-            fastMode: supportsFast && state.fastMode,
-          })
-        : getRuntimeModelRefForDescriptor(descriptor, "cursor"),
-      fastMode: supportsFast ? state.fastMode : false,
-    };
-  }
-  if (currentAllowed) return { ...state, interfaceMode };
-  const fallback = compatibleCursorModelForInterface(models, interfaceMode);
-  if (!fallback) {
-    return {
-      ...state,
-      interfaceMode,
-      model: "",
-      modelId: null,
-      displayName: providerLabel("cursor"),
-      reasoningEffort: null,
-      fastMode: false,
-    };
-  }
-  const patch = modelStatePatchForModel("cursor", fallback);
-  const fallbackDescriptor = patch.modelId ? getModelById(patch.modelId) : undefined;
-  const launchDescriptor = fallbackDescriptor?.family === "cursor" && fallback.cursorCliVariants?.length
-    ? { ...fallbackDescriptor, cursorCliVariants: fallback.cursorCliVariants }
-    : fallbackDescriptor;
-  const supportsFast = modelInfoSupportsFastMode(fallback);
-  return {
-    ...state,
-    ...patch,
-    interfaceMode,
-    model: interfaceMode === "cli" && launchDescriptor?.family === "cursor"
-      ? resolveCursorCliModelVariant(launchDescriptor, {
-          reasoningEffort: patch.reasoningEffort,
-          fastMode: supportsFast && state.fastMode,
-        })
-      : patch.model,
-    fastMode: supportsFast ? state.fastMode : false,
-  };
+  // Interface is a routing choice. It must not rewrite the selected model or
+  // any model setting; launch validation reports an incompatible Cursor model
+  // at the point where it matters.
+  return { ...state, interfaceMode };
 }
 
 export function resolveCursorCliModelForLaunch(
@@ -475,9 +479,6 @@ export function buildSetupRows(args: {
   models: AgentChatModelInfo[];
   includeRefresh: boolean;
   includeApply: boolean;
-  includeImportSession?: boolean;
-  importSessionEnabled?: boolean;
-  importSessionDetail?: string | null;
   outputStyle?: string | null;
   outputStyleEditable?: boolean;
   /** Draft/next-chat interface (Chat = SDK chat, CLI = tracked terminal). */
@@ -510,15 +511,6 @@ export function buildSetupRows(args: {
       disabled: !args.interfaceEditable,
       cyclable: args.interfaceEditable,
     },
-    ...(args.includeImportSession
-      ? [{
-          kind: "import-session" as const,
-          label: "Import session",
-          value: args.importSessionEnabled === false ? "unavailable" : "open",
-          detail: args.importSessionDetail ?? "external CLI history",
-          disabled: args.importSessionEnabled === false,
-        }]
-      : []),
     {
       kind: "model",
       label: "Model",

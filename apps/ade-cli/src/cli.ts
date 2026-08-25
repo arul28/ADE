@@ -39,6 +39,15 @@ import {
   runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
+import {
+  buildCliDiagnosticReport,
+  buildReportIssuePayload,
+  describeDiagnosticUpload,
+  openDiagnosticIssue,
+  saveDiagnosticReportCopy,
+  sendDiagnosticReport,
+} from "./commands/reportIssue";
+import { redactDiagnosticText } from "./services/diagnostics/diagnosticReport";
 export { readInstalledDesktopVersion };
 import {
   MAX_STATUS_NOTE_CHARACTERS,
@@ -47,13 +56,39 @@ import {
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
+import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
   parseAccountMachine,
 } from "../../desktop/src/shared/accountDirectory";
+import {
+  accountMachinePresence,
+  machineStatusLine,
+} from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import type { AgentChatDispatchSteerMode } from "../../desktop/src/shared/types/chat";
+import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import {
+  formatWorkingDuration,
+  sessionElapsedLabel,
+} from "../../desktop/src/shared/sessionStatusPresentation";
+import {
+  canonicalInputFromSummary,
+  sessionCanonicalUiState,
+  sessionStatusDisplay,
+} from "../../desktop/src/renderer/lib/terminalAttention";
+import { deriveGithubAccountAuthState } from "../../desktop/src/renderer/lib/githubIntegrationStatus";
+import type { GitHubAppUserAuthStatus } from "../../desktop/src/shared/types";
+import {
+  IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
+  IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
+  IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
+  IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
+  IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
+  IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
+} from "../../desktop/src/shared/types/iosSimulator";
 import {
   ADE_USAGE_RANGE_PRESETS,
   ADE_USAGE_SCOPES,
@@ -96,6 +131,7 @@ import {
   startJsonRpcServer,
   type JsonRpcHandler,
   type JsonRpcId,
+  type JsonRpcInternalErrorReport,
   type JsonRpcRequest,
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
@@ -137,8 +173,12 @@ import {
 import {
   isCurrentProcessDescendantOfPid,
   resolveAdeServeCommand,
+  RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
+import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
+import { readBrainStartupState } from "./services/runtime/brainStartupState";
+import { connectWhileServiceStarts } from "./services/runtime/connectWhileServiceStarts";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import {
   isIndefiniteSnooze,
@@ -148,13 +188,17 @@ import {
 import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
 import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
-import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import {
+  EncryptedFileCredentialStore,
+  inspectCredentialStoreHealth,
+} from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import {
   ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE,
   PAIRING_REAUTHENTICATION_REQUIRED_MESSAGE,
 } from "./services/account/accountMachinePublisherService";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
+import type { MachinePairingAutoRecovery } from "./services/account/machinePairingAutoRecovery";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import type { SyncTunnelClientService } from "./services/sync/syncTunnelClientService";
 import type { RelayTunnelAuthorityGate } from "./services/sync/relayTunnelAuthorityGate";
@@ -185,9 +229,11 @@ import { createDiskPressureMonitor } from "../../desktop/src/main/services/stora
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
 import {
+  currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
+import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import { startBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 
 type JsonObject = Record<string, unknown>;
@@ -246,6 +292,7 @@ type InvocationStep = {
 type FormatterId =
   | "status"
   | "doctor"
+  | "brain-status"
   | "auth"
   | "account-auth"
   | "account-token"
@@ -276,6 +323,7 @@ type FormatterId =
   | "ios-sim-status"
   | "ios-sim-devices"
   | "ios-sim-apps"
+  | "ios-sim-launch"
   | "ios-sim-stream"
   | "ios-sim-snapshot"
   | "ios-sim-selection"
@@ -296,6 +344,7 @@ type FormatterId =
   | "history-show"
   | "actions-list"
   | "action-result"
+  | "github-app-auth"
   | "automation-run-detail"
   | "automation-ingress"
   | "automation-linear-ingress"
@@ -349,6 +398,17 @@ type CliPlan =
        * finishing Pi's sign-in and is budgeted well past the CLI default.
        */
       minTimeoutMs?: number;
+      /**
+       * Written to stderr before the plan's blocking call starts.
+       *
+       * `ios-sim launch --follow` uses it. The daemon's launch progress events
+       * are delivered to the desktop drawer over Electron IPC; the only
+       * JSON-RPC notification the CLI socket ever receives is `chat/event`, so
+       * there is no existing stream for the CLI to follow and adding one would
+       * mean new daemon RPC. `--follow` therefore announces the wait up front
+       * and prints the full launch timeline once the action returns.
+       */
+      progressNotice?: string;
       historyOperationId?: string;
       historyStatusFilter?: string;
       historyListFilters?: {
@@ -389,6 +449,7 @@ type CliPlan =
   | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
+  | { kind: "report-issue"; open: boolean; send: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -689,6 +750,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
+    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -837,7 +899,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Flags:
     --device, --udid <id>  Simulator device to inspect.
-    --project-root <path>  ADE project root to scan for iOS projects.
+    --project-root <path>  Root to scan; defaults to the lane worktree.
+    --lane, --lane-id <id> Lane whose worktree to scan.
     --text                 Compact table with target ids.
 `,
   launch: `${ADE_BANNER}
@@ -857,13 +920,58 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --app-bundle, --app <path>  Install/launch a built .app bundle.
     --project, --xcodeproj <p>  Xcode project path.
     --scheme <name>             Xcode scheme.
-    --project-root <path>       ADE project root.
-    --lane, --lane-id <id>      Lane to bind this simulator session to.
+    --project-root <path>       Build root; defaults to the lane worktree.
+    --lane, --lane-id <id>      Lane to build in and bind the session to.
     --chat-session <id>         Owner chat session for the single-owner lock.
     --no-build                  Skip xcodebuild.
+    --force, -f                 Take over another chat's session; the new target
+                                is validated before the owner is evicted.
     --mode snapshot|live        Inspector launch mode; default live.
-    --background                Leave Simulator.app in the background without parking it under ADE.
+    --foreground                Bring Simulator.app to the front; default is background.
+    --background                Accepted, no-op: background is the default.
+    --open-drawer               Also open the iOS drawer for the user.
+    --follow                    Announce the wait up front; per-step progress is
+                                not streamed, the summary prints at the end.
     --arg KEY=VALUE             Extra service args for advanced launch options.
+`,
+  proof: `${ADE_BANNER}
+  iOS Simulator: proof
+
+  Captures a simulator screenshot and files it in the chat's proof drawer.
+  Alias: promote.
+
+    $ ade --socket ios-sim proof --caption "Settings screen after the fix" --text
+
+  Flags:
+    --caption <text>       Artifact description; also the default title.
+    --title <text>         Artifact title.
+    --out <path>           Screenshot path; relative to the build root.
+    --device, --udid <id>  Simulator device.
+    --project-root <path>  Build root; defaults to the lane worktree.
+`,
+  claim: `${ADE_BANNER}
+  iOS Simulator: claim
+
+  Attributes an already-running simulator session to a lane and chat. This is
+  not a step in a normal launch — "launch" claims the session itself.
+
+  Claim rewrites the owning chat, so it is an ownership call: taking a session
+  another chat owns is refused with IOS_SIMULATOR_OWNED_BY_OTHER_SESSION unless
+  you say you mean it. Re-attributing only the lane never trips the guard.
+
+    $ ade --socket ios-sim claim --lane <lane-id> --text
+    $ ade --socket ios-sim claim --lane <lane-id> --ignore-ownership --text
+
+  Flags:
+    --lane, --lane-id <id>   Required; defaults to $ADE_LANE_ID.
+    --chat-session <id>      Owner chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --ignore-ownership       Take a session another chat owns, deliberately. No
+                             teardown: the session, its idb companions and the
+                             launch lock all stay up, only the owner changes.
+    --force, -f              Same bypass, spelled the way launch/shutdown spell
+                             it. Unlike "shutdown --force" it resets nothing.
+    --arg ignoreOwnership=true
+                             The generic escape hatch; equivalent to the flags.
 `,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
@@ -871,12 +979,23 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Stops live view state, releases the drawer session, and clears related simulator work.
   Aliases: stop, teardown, end, end-session.
 
+  Shutdown carries the caller's chat session ($ADE_CHAT_SESSION_ID or
+  --chat-session). Releasing a session owned by a different chat is refused.
+  The check is cooperative — it stops accidents, not determined callers:
+  --force gets through, so does --ignore-ownership (the bypass without the
+  hard reset), and so does naming the owner's own chat session id, which
+  "ios-sim status" reports to anyone who asks. Ask before evicting another chat.
+
     $ ade --socket ios-sim shutdown --text
     $ ade --socket ios-sim shutdown --force --text
+    $ ade --socket ios-sim shutdown --ignore-ownership --text
 
   Flags:
-    --force, -f            Release a session owned by another chat.
-    --device, --udid <id>  Optional device context for cleanup.
+    --force, -f            Release a session owned by another chat, and hard-reset
+                           the launch lock and tracked idb companions with it.
+    --ignore-ownership     Release a session owned by another chat without the
+                           hard reset: no companion sweep, no launch-lock reset.
+    --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
 `,
   actions: `${ADE_BANNER}
   iOS Simulator: actions
@@ -891,11 +1010,14 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   iOS Simulator: screenshot
 
   Captures a one-shot PNG from the simulator via simctl. Alias: capture.
+  Prints the written file path; read that file instead of the data URL.
 
-    $ ade --socket ios-sim screenshot --device <udid> --text
+    $ ade --socket ios-sim screenshot --out shot.png --text
 
   Flags:
+    --out <path>           Where to write the PNG; relative to the build root.
     --device, --udid <id>  Simulator device; defaults to the active session or booted device.
+    --project-root <path>  Build root; defaults to the lane worktree.
 `,
   snapshot: `${ADE_BANNER}
   iOS Simulator: snapshot
@@ -1056,6 +1178,8 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --device, --udid <id>  Simulator device.
     --fps <n>              Target fps.
+    --backend <name>       auto or simulator-window-capture; default
+                           simulator-window-capture.
 `,
   "stream-status": `${ADE_BANNER}
   iOS Simulator: stream-status
@@ -1097,7 +1221,6 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --x <n> --y <n>        Required point coordinates.
     --device, --udid <id>  Simulator device.
-    --project-root <path>  Project root.
 `,
   drag: `${ADE_BANNER}
   iOS Simulator: drag / swipe
@@ -1112,7 +1235,6 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --end-x <n> --end-y <n>     Required end coordinates.
     --duration-ms <n>           Swipe duration in milliseconds.
     --device, --udid <id>       Simulator device.
-    --project-root <path>       Project root.
 `,
   type: `${ADE_BANNER}
   iOS Simulator: type
@@ -1127,7 +1249,6 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
                            compatibility, but --text by itself controls ADE's
                            human-readable output mode.
     --device, --udid <id>  Simulator device.
-    --project-root <path>  Project root.
 `,
 };
 
@@ -1143,6 +1264,7 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   end: "shutdown",
   "end-session": "shutdown",
   capture: "screenshot",
+  promote: "proof",
   screen: "snapshot",
   elements: "snapshot",
   "hit-test": "inspect",
@@ -1338,7 +1460,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   store. The token itself is never printed.
 
     $ ade --role cto github app-auth login     Start device flow and wait for approval
-    $ ade github app-auth status --text        Show whether a token is stored (login, expiry)
+    $ ade github app-auth status --text        Show the credential state, login, and expiry
     $ ade --role cto github app-auth clear      Remove the stored authorization
     $ ade github actions --text                 List raw github service actions
     $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
@@ -1353,6 +1475,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
       GitHub CLI, then a stored PAT. Writes skip the read-only GitHub App.
       Authentication failures and rate limits can fall through to the next
       healthy credential while the failed source is in cooldown.
+    - Read "state" from app-auth status, not "access token expires". An access
+      token lives 8 hours and renews on use, so a lapsed expiry with state
+      "authorized" is healthy. State "blocked" means ADE paused its own retries
+      until "retry after" — wait, do not re-authorize. Only "needs_reauth" and
+      "missing" call for login.
 
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
@@ -1880,7 +2007,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   way to quiet a row you are waiting on — it hides the row without claiming
   the work is done, and a hand-raise wakes it early.
 
-    $ ade session show <id> --text                  Print settle/snooze state and the wake reason
+    $ ade session show <id> --text                  Print what the session is doing (status + elapsed), the agent
+                                                    processes it is holding open, settle/snooze state, and the wake reason
     $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
     $ ade session snooze <id> --until 2026-07-26T18:00:00Z
                                                     Snooze until an explicit ISO-8601 deadline
@@ -1930,6 +2058,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
+    $ ade chat steer <session> --text "context" --dispatch interrupt
+                                                    Deliver into the running turn: inline | interrupt.
+                                                    Omit --dispatch to stage for the next turn.
+                                                    Claude takes inline and interrupt; Cursor takes
+                                                    interrupt (cancel + resend on the same thread).
+                                                    Other providers reject the flag outright and nothing
+                                                    is sent; omit --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
@@ -1947,7 +2082,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
     $ ade chat fork <session> --model openai/gpt-5.6-sol
-                                                    Fork full provider history into a new chat
+                                                    Carry this conversation into a new chat (same provider)
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
@@ -1970,6 +2105,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Detach one issue (or all) from a session
     $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
+    $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
+    $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
@@ -1991,9 +2129,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             Create the chat without a parent link.
-    --type <subagent|peer>  Required with a parent. subagent wakes the parent
-                            after every turn while the parent owns the mission;
-                            peer leaves quiet notes.
+    --type <subagent|peer>  Required with a parent. subagent always wakes the
+                            parent after every turn; peer leaves quiet notes.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -2008,6 +2145,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
     config-toml is only meaningful for Codex/OpenCode provider-native config.
     Use ade actions run chat.modelCatalog --json to inspect model-specific
     reasoning tiers and fast-mode support.
+
+  Handoff notes:
+    fork stays on the source provider and in the source lane; brief summarizes
+    the chat, can switch provider, and accepts --target-lane.
+    Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
+    Cursor has no fork surface, so ADE forks it by replaying this conversation
+    into a fresh Cursor agent instead of copying a provider thread; the oldest
+    turns drop if the transcript exceeds the target model's context window.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same
@@ -2047,9 +2192,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
     --no-parent             Create the chat without a parent link.
-    --type <subagent|peer>  Required with a parent. subagent wakes the parent
-                            after every turn while the parent owns the mission;
-                            peer leaves quiet notes.
+    --type <subagent|peer>  Required with a parent. subagent always wakes the
+                            parent after every turn; peer leaves quiet notes.
 
   Permission mapping highlights:
     codex full-auto   -> codexSandbox=danger-full-access, codexApprovalPolicy=never.
@@ -2183,29 +2327,39 @@ const HELP_BY_COMMAND: Record<string, string> = {
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
   surface. For drawer/shared session state, prefer attached runtime mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
-  Launch opens Simulator by default and ADE shows it in the drawer. Optional
-  simulator control tools enable tap, drag, type, and inspect actions.
+  Launch keeps Simulator.app in the background; pass --foreground to raise it,
+  or --open-drawer when the user should see the iOS drawer. Optional simulator
+  control tools enable tap, drag, type, and inspect actions.
+
+  Every rooted subcommand builds and captures in the lane worktree: an explicit
+  --project-root wins, else --lane/ADE_LANE_ID, else the worktree the shell is
+  in. Pass --project-root to target the primary checkout from inside a lane.
 
   A launched simulator session belongs to one chat at a time. Run
-  "ios-sim shutdown" before launching it from a different chat, or use
-  "shutdown --force" when you intentionally want to take over. Use
-  "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
+  "ios-sim shutdown" from the owning chat before launching it from a different
+  one; shutting down a session another chat owns is refused, and
+  "shutdown --force" or "launch --force" takes it over deliberately. The refusal
+  is a guard rail against accidents, not a lock — see "ios-sim shutdown --help".
+  Use "ios-sim claim --lane <lane-id>" to attach the drawer session to a lane.
 
   Discovery and lifecycle:
     $ ade ios-sim status --text                    Show simulator readiness
     $ ade ios-sim devices --text                   List available simulators
     $ ade ios-sim apps --device <udid> --text      List launchable apps
     $ ade --socket ios-sim launch --target <id>    Build, install, and launch an app
+    $ ade --socket ios-sim launch --follow         Same, announcing the wait before the summary
     $ ade --socket ios-sim claim --lane <lane-id>  Attribute the drawer session to a lane
     $ ade --socket ios-sim launch --bundle-id com.example Launch installed app
     $ ade --socket ios-sim shutdown                Tear down the active simulator session (alias: stop)
     $ ade --socket ios-sim shutdown --force        Force-release a session owned by another chat
+    $ ade --socket ios-sim launch --force          Take the simulator over in one step
     $ ade ios-sim actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
 
   Capture and inspection:
-    $ ade ios-sim screenshot --text                Capture a screenshot
+    $ ade ios-sim screenshot --out shot.png --text Capture a screenshot to a file
+    $ ade ios-sim proof --caption "<what>" --text  Screenshot into the proof drawer
     $ ade ios-sim snapshot --text                  Capture selectable UI context
     $ ade ios-sim inspector --text                 Show current inspector data
     $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
@@ -3466,6 +3620,28 @@ function normalizeChatMessageKind(value: string | null): "auto" | "queue" | "wak
   throw new CliUsageError(
     "chat message --kind must be auto, queue, wake, or interrupt-replace.",
   );
+}
+
+/**
+ * `chat steer --dispatch` asks for atomic delivery into the turn that is
+ * already running instead of staging the message for the next one. Which
+ * providers honor which mode is the host's call — the canonical table lives in
+ * desktop `shared/types/chat.ts` (`ACTIVE_TURN_DISPATCH_MODES`) and the chat
+ * service rejects an unsupported mode with a templated message — so the CLI
+ * only validates the shape and never restates the per-provider rules.
+ */
+function normalizeChatSteerDispatchMode(value: string | null): AgentChatDispatchSteerMode | null {
+  if (value == null) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length === 0) return null;
+  if (normalized === "inline" || normalized === "now" || normalized === "send") return "inline";
+  if (normalized === "interrupt" || normalized === "replace") return "interrupt";
+  if (normalized === "queue" || normalized === "stage" || normalized === "next") {
+    throw new CliUsageError(
+      "chat steer stages the message for the next turn by default; omit --dispatch instead of passing 'queue'.",
+    );
+  }
+  throw new CliUsageError("chat steer --dispatch must be inline or interrupt.");
 }
 
 function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
@@ -7647,6 +7823,9 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "steer") {
     const imageUrl = readValue(args, ["--image-url"]);
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const steerText = requireValue(
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
@@ -7662,6 +7841,7 @@ function buildChatPlan(args: string[]): CliPlan {
           withSession({
             sessionId: requireValue(sessionId, "sessionId"),
             text: steerText,
+            ...(dispatchMode ? { dispatchMode } : {}),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
           }),
         ),
@@ -8095,6 +8275,65 @@ function buildChatPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "demote") {
+    return {
+      kind: "execute",
+      label: "chat demote",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "setSpawnKind",
+          withSession({
+            sessionId: requireValue(
+              sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID),
+              "sessionId",
+            ),
+            spawnKind: "peer",
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "promote") {
+    return {
+      kind: "execute",
+      label: "chat promote",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "setSpawnKind",
+          withSession({
+            sessionId: requireValue(
+              sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID),
+              "sessionId",
+            ),
+            spawnKind: "subagent",
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "keep-reporting" || sub === "dismiss-takeover") {
+    return {
+      kind: "execute",
+      label: "chat keep-reporting",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "dismissSubagentTakeoverPrompt",
+          withSession({
+            sessionId: requireValue(
+              sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID),
+              "sessionId",
+            ),
+          }),
+        ),
+      ],
+    };
+  }
   return {
     kind: "execute",
     label: `chat ${sub}`,
@@ -8282,6 +8521,9 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
   if (sub === "steer") {
+    const dispatchMode = normalizeChatSteerDispatchMode(
+      readValue(args, ["--dispatch", "--dispatch-mode"]),
+    );
     const text = requireValue(readValue(args, ["--text", "--message"]) ?? args.join(" "), "message text");
     const imageUrl = readValue(args, ["--image-url"]);
     return {
@@ -8290,6 +8532,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("steer", collectGenericObjectArgs(args, {
         sessionId,
         text,
+        ...(dispatchMode ? { dispatchMode } : {}),
         ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
       }))],
     };
@@ -9084,10 +9327,139 @@ function buildProofPlan(args: string[]): CliPlan {
   };
 }
 
-function buildIosSimulatorPlan(args: string[]): CliPlan {
+/**
+ * Workspace root of the shell that invoked the CLI. Mirrors `resolveRoots`
+ * minus the global-option layer, which plan builders do not receive: inside a
+ * lane worktree (`.ade/worktrees/<lane>`) this is the worktree, everywhere else
+ * it is the project root — so it is a safe default even outside a lane.
+ */
+function callerWorkspaceRoot(): string {
+  const fromEnv = process.env.ADE_WORKSPACE_ROOT?.trim();
+  if (fromEnv) return path.resolve(fromEnv);
+  return findProjectRoots(process.cwd()).workspaceRoot;
+}
+
+/**
+ * Root/lane defaults every rooted `ios-sim` subcommand shares.
+ *
+ * Precedence: a subcommand `--project-root`/`--root` wins; then the global
+ * `ade --project-root` prefix, which `parseCliArgs` consumes before the
+ * subcommand ever sees it — without it `ade --project-root /repo ios-sim apps`
+ * run from elsewhere silently scanned the caller's cwd instead; then a known
+ * lane, which the service resolves to that lane's worktree; otherwise the
+ * caller's own workspace root, which covers a plain shell sitting in a lane
+ * worktree with no `ADE_LANE_ID`. Without this an agent working in a lane
+ * built, screenshotted, and inspected the primary checkout instead of its own
+ * code.
+ */
+function iosSimulatorRootArgs(
+  args: string[],
+  laneId: string | null,
+  globalProjectRoot: string | null,
+): JsonObject {
+  const explicitRoot =
+    readValue(args, ["--project-root", "--root"]) ?? globalProjectRoot;
+  if (explicitRoot) {
+    return { projectRoot: path.resolve(explicitRoot), ...(laneId ? { laneId } : {}) };
+  }
+  if (laneId) return { laneId };
+  return { projectRoot: callerWorkspaceRoot() };
+}
+
+/**
+ * The one home for "what command do I run next" on iOS simulator failures.
+ *
+ * Service messages state the fact and the code and stop there — they are shared
+ * by the drawer, the daemon, and this CLI, and only this layer knows the user
+ * is at a terminal. The daemon reports these as plain action errors, so the code
+ * prefix in the message is the only thing the CLI can key on. The message
+ * already carries the launch id, owner, and lane; the hint does not restate them.
+ *
+ * One code can arrive from subcommands whose right answer differs, so the hint
+ * also takes the `ios-sim` subcommand that produced it (null for every other
+ * command). `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` is the case: from `launch`
+ * or `shutdown` the escape hatch really is a forced teardown, but a refused
+ * `claim` only wanted to re-attribute a session, and pointing that caller at
+ * `shutdown --force` would tear down the owner's session, stop its idb
+ * companions, and clear the launch lock to do a job `--ignore-ownership` does
+ * with none of that.
+ */
+function iosSimulatorErrorHint(
+  message: string,
+  subcommand: string | null = null,
+): string | null {
+  if (message.includes(IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE)) {
+    return "This target belongs to a different checkout — re-run: ade ios-sim apps";
+  }
+  if (message.includes(IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE)) {
+    return "A launch is already running — wait for it, or run: ade ios-sim shutdown --force";
+  }
+  if (message.includes(IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE)) {
+    return "No buildable app under that root. The message above names the root and any targets found — check --project-root/--lane, or pass --target-id/--bundle-id to run an installed app.";
+  }
+  if (message.includes(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE)) {
+    return subcommand === "claim"
+      ? "Another chat owns the simulator — wait for it to finish, or re-run this claim with --ignore-ownership to take it over without tearing the session down"
+      : "Another chat owns the simulator — wait for it to finish, or take it over with: ade ios-sim shutdown --force";
+  }
+  if (message.includes(IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE)) {
+    return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
+  }
+  if (message.includes(IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE)) {
+    return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a path under that root.";
+  }
+  return null;
+}
+
+/**
+ * The canonical `ios-sim` subcommand behind an invocation, for the hint above.
+ *
+ * The failure is reported from `main`, which only ever sees raw argv, so the
+ * subcommand is recovered the same way the plan builder resolves it: strip the
+ * global prefix with the real parser (global flags carry values, so scanning
+ * for "the first token without a dash" would mistake `--project-root <path>`
+ * for the command), then take the first positional and resolve its alias.
+ * Anything that is not an `ios-sim` invocation answers null.
+ */
+function iosSimulatorSubcommandFromArgv(argv: string[]): string | null {
+  let command: string[];
+  try {
+    command = parseCliArgs(argv).command;
+  } catch {
+    return null;
+  }
+  const primary = command[0]?.toLowerCase();
+  if (primary !== "ios-sim" && primary !== "ios" && primary !== "simulator") {
+    return null;
+  }
+  const sub = peekFirstPositional(command.slice(1))?.toLowerCase() ?? "status";
+  return IOS_SIMULATOR_HELP_ALIASES[sub] ?? sub;
+}
+
+/**
+ * `--out <path>` for the capture subcommands. A relative path resolves against
+ * the build root service-side, so the CLI forwards it verbatim.
+ */
+function readIosSimulatorOutPath(args: string[]): JsonObject {
+  const outPath = readValue(args, ["--out", "--out-path", "--output"]);
+  return outPath ? { outPath } : {};
+}
+
+function buildIosSimulatorPlan(
+  args: string[],
+  globalProjectRoot: string | null = null,
+): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help")
     return { kind: "help", text: buildIosSimulatorHelp(args) };
+  // `claim` reads its own (required) lane/chat-session args in its branch; for
+  // every other subcommand the claim args are consumed once here so the lane
+  // is available to the shared root defaults below without double-reading the
+  // flags out of `args`.
+  const claimArgs: ToolClaimArgs = sub === "claim" ? {} : readToolClaimArgs(args);
+  const laneId = asString(claimArgs.laneId);
+  const rootArgs = (): JsonObject =>
+    iosSimulatorRootArgs(args, laneId, globalProjectRoot);
   const numericPositionals = () =>
     args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
@@ -9131,6 +9503,17 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     };
   if (sub === "claim") {
     const claimArgs = readRequiredToolClaimArgs(args, "iOS simulator");
+    // `claim` rewrites the owning chat, so it is an ownership call and carries
+    // the same guard — and therefore has to accept the same bypass spellings —
+    // as `launch`/`shutdown`. Parsed here rather than left to `--arg` because
+    // an unparsed `--force` is not an error: collectGenericObjectArgs ignores
+    // bare flags, so `claim --lane X --force` was silently refused as if the
+    // caller had never said it.
+    const ignoreOwnership = readFlag(args, [
+      "--ignore-ownership",
+      "--ignore-owner",
+    ]);
+    const force = readFlag(args, ["--force", "-f"]);
     return {
       kind: "execute",
       label: "iOS simulator claim",
@@ -9139,7 +9522,11 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "result",
           "ios_simulator",
           "claim",
-          collectGenericObjectArgs(args, claimArgs),
+          collectGenericObjectArgs(args, {
+            ...claimArgs,
+            ...(force ? { force: true } : {}),
+            ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+          }),
         ),
       ],
     };
@@ -9160,20 +9547,29 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "listLaunchTargets",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
           }),
         ),
       ],
     };
   }
   if (sub === "launch" || sub === "open") {
-    const claimArgs = readToolClaimArgs(args);
-    const keepSimulatorInBackground = readFlag(args, ["--background", "--keep-background"]);
-    const openSimulator = readFlag(args, ["--foreground", "--open-simulator"]);
+    // Agent launches must not steal the user's screen, so the CLI parks
+    // Simulator.app in the background unless asked otherwise. `--background`
+    // stays accepted as a no-op alias for callers written against the old
+    // opt-in behaviour.
+    const foreground = readFlag(args, ["--foreground", "--open-simulator"]);
+    readFlag(args, ["--background", "--keep-background"]);
+    const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
+    const follow = readFlag(args, ["--follow"]);
+    // Takeover of another chat's simulator session. The service validates the
+    // new device/target before it evicts the owner, so this is the documented
+    // escape hatch from IOS_SIMULATOR_OWNED_BY_OTHER_SESSION — without parsing
+    // it here the flag was silently dropped and the retry failed identically.
+    const force = readFlag(args, ["--force", "-f"]);
     const launchArgs: JsonObject = {
       deviceUdid: readValue(args, ["--device", "--udid"]),
-      projectRoot: readValue(args, ["--project-root", "--root"]),
-      laneId: claimArgs.laneId,
+      ...rootArgs(),
       targetId: readValue(args, ["--target", "--target-id"]),
       bundleId: readValue(args, ["--bundle-id", "--bundle"]),
       appBundlePath: readValue(args, ["--app-bundle", "--app"]),
@@ -9182,15 +9578,24 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
       chatSessionId: claimArgs.chatSessionId,
       build: !readFlag(args, ["--no-build"]),
       mode: readValue(args, ["--mode"]) ?? "live",
+      keepSimulatorInBackground: !foreground,
+      ...(openDrawer ? { openDrawer: true } : {}),
+      ...(force ? { force: true } : {}),
     };
-    if (keepSimulatorInBackground) {
-      launchArgs.keepSimulatorInBackground = true;
-    } else if (openSimulator) {
-      launchArgs.keepSimulatorInBackground = false;
-    }
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs(
+      "ios_simulator.launch",
+    );
     return {
       kind: "execute",
       label: "iOS simulator launch",
+      formatter: "ios-sim-launch",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      ...(follow
+        ? {
+            progressNotice:
+              "ios-sim launch: building and installing… step progress is not streamed to the CLI; the timeline prints when the launch returns.",
+          }
+        : {}),
       steps: [
         actionStep(
           "result",
@@ -9212,8 +9617,65 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "screenshot",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
+            ...rootArgs(),
+            ...readIosSimulatorOutPath(args),
           }),
         ),
+      ],
+    };
+  }
+  if (sub === "proof" || sub === "promote") {
+    const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const title =
+      readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
+    const ownerBase = readProofOwnerBase(args);
+    const screenshotArgs = collectGenericObjectArgs(args, {
+      deviceUdid: readValue(args, ["--device", "--udid"]),
+      ...rootArgs(),
+      ...readIosSimulatorOutPath(args),
+    });
+    return {
+      kind: "execute",
+      label: "iOS simulator proof",
+      steps: [
+        actionStep("screenshot", "ios_simulator", "screenshot", screenshotArgs),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          params: (values) => {
+            // `ade/actions/call` answers with the `{domain, action, result}`
+            // envelope, so the screenshot record has to be unwrapped before
+            // its written path is readable.
+            const screenshot = unwrapActionEnvelope(values.screenshot);
+            const filePath = isRecord(screenshot)
+              ? asString(screenshot.filePath)
+              : null;
+            if (!filePath) {
+              throw new CliUsageError(
+                "iOS simulator proof could not find the captured screenshot path.",
+              );
+            }
+            return {
+              name: "ingest_computer_use_artifacts",
+              arguments: {
+                backendStyle: "manual",
+                backendName: "ade-ios-simulator",
+                toolName: "ios-sim proof",
+                callerRoot: process.cwd(),
+                ...ownerBase,
+                inputs: [
+                  {
+                    kind: "screenshot",
+                    title,
+                    ...(caption ? { description: caption } : {}),
+                    path: filePath,
+                  },
+                ],
+              },
+            };
+          },
+        },
       ],
     };
   }
@@ -9243,7 +9705,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "getPreviewCapability",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
           }),
@@ -9261,7 +9723,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "listPreviewTargets",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
           }),
@@ -9283,7 +9745,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "resolvePreviewMatch",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
             elementLabel: readValue(args, ["--label"]),
@@ -9307,7 +9769,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "ensurePreviewWorkspace",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
             openIfNeeded: readFlag(args, ["--no-open"]) ? false : undefined,
@@ -9331,7 +9793,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "renderPreview",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFilePath: requireValue(
               readValue(args, ["--source", "--file"]),
               "sourceFilePath",
@@ -9364,7 +9826,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "renderCurrentPreview",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
             elementLabel: readValue(args, ["--label"]),
@@ -9390,7 +9852,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "ios_simulator",
           "openPreviewWorkspace",
           collectGenericObjectArgs(args, {
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
           }),
         ),
       ],
@@ -9407,7 +9869,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "getScreenSnapshot",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
           }),
         ),
       ],
@@ -9424,7 +9886,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "inspectPoint",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
             includeScreenshot: readFlag(args, [
@@ -9451,7 +9913,11 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
   ) {
     const backendFlag = readValue(args, ["--backend"]);
     if (backendFlag && backendFlag !== "auto" && backendFlag !== "simulator-window-capture") {
-      throw new Error("ios-sim live-start received an unsupported live view option.");
+      // A typo in a flag is a usage error, not a crash: CliUsageError exits 2
+      // with the message alone, where a bare Error prints a stack trace.
+      throw new CliUsageError(
+        `ios-sim ${sub}: unknown --backend '${backendFlag}'. Valid values: auto, simulator-window-capture.`,
+      );
     }
     const requestedBackend = backendFlag ?? "simulator-window-capture";
     return {
@@ -9515,9 +9981,11 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "result",
           "ios_simulator",
           "tap",
+          // No build root here: tap/drag/type act on whatever is already on the
+          // device, so the service takes no root and sending one only invents a
+          // contract the CLI cannot keep.
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
           }),
@@ -9536,7 +10004,6 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           sub,
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
             startX: readCoordinate("--start-x", 0),
             startY: readCoordinate("--start-y", 1),
             endX: readCoordinate("--end-x", 2),
@@ -9558,7 +10025,7 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "selectPoint",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
+            ...rootArgs(),
             x: readCoordinate("--x", 0),
             y: readCoordinate("--y", 1),
           }),
@@ -9577,7 +10044,6 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "typeText",
           collectGenericObjectArgs(args, {
             deviceUdid: readValue(args, ["--device", "--udid"]),
-            projectRoot: readValue(args, ["--project-root", "--root"]),
             text: requireValue(
               readValue(args, ["--value", "--message", "--input-text"]) ??
                 readCommandTextValue(args, ["--text"]) ??
@@ -9604,9 +10070,20 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
           "result",
           "ios_simulator",
           "shutdown",
+          // The caller's chat session is what makes the single-owner guard
+          // enforceable: without it every shutdown looks anonymous and the
+          // service can only choose between evicting everyone or no one.
+          // `launch` sends it the same way.
           collectGenericObjectArgs(args, {
-            deviceUdid: readValue(args, ["--device", "--udid"]),
-            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+            chatSessionId: claimArgs.chatSessionId,
+            // Same spread as `claim`: a missing flag must omit the key.
+            ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+            // Parsed for the same reason `claim` parses it: the help and the
+            // docs name this flag, and a spelling we accept but drop is how a
+            // caller ends up reaching for `--force` instead.
+            ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
+              ? { ignoreOwnership: true }
+              : {}),
           }),
         ),
       ],
@@ -10584,8 +11061,10 @@ function buildBrowserPlan(args: string[]): CliPlan {
           method: "ade/actions/call",
           unwrapToolResult: true,
           params: (values) => {
-            const observation = isRecord(values.observation) ? values.observation : {};
-            const filePath = asString(observation.filePath);
+            // ade/actions/call answers with an {domain, action, result} envelope;
+            // the observation record lives under result.
+            const observation = unwrapActionEnvelope(values.observation);
+            const filePath = isRecord(observation) ? asString(observation.filePath) : null;
             if (!filePath) {
               throw new CliUsageError("Browser proof could not find an observation file path.");
             }
@@ -12160,6 +12639,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--depth",
   "--desc",
   "--device",
+  "--dispatch",
+  "--dispatch-mode",
   "--disk",
   "--disk-size",
   "--display",
@@ -12346,7 +12827,10 @@ function hasHelpFlag(args: string[]): boolean {
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath"> = { socketPath: null },
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> = {
+    socketPath: null,
+    projectRoot: null,
+  },
 ): CliPlan {
   const args = [...command];
   if (args[0] === "--version" || args[0] === "-v") {
@@ -12599,6 +13083,13 @@ function buildCliPlan(
       online: readFlag(args, ["--online"]),
     };
   }
+  if (primary === "report-issue") {
+    return {
+      kind: "report-issue",
+      open: readFlag(args, ["--open"]),
+      send: readFlag(args, ["--send"]),
+    };
+  }
   if (primary === "auth") {
     const sub = firstPositional(args) ?? "status";
     if (sub !== "status")
@@ -12683,7 +13174,7 @@ function buildCliPlan(
     return buildProofPlan(args);
   }
   if (primary === "ios-sim" || primary === "ios" || primary === "simulator")
-    return buildIosSimulatorPlan(args);
+    return buildIosSimulatorPlan(args, options.projectRoot ?? null);
   if (
     primary === "app-control" ||
     primary === "app" ||
@@ -12799,6 +13290,7 @@ function buildGithubPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "github app-auth status",
+        formatter: "github-app-auth",
         steps: [actionStep("result", "github", "getAppUserAuthStatus")],
       };
     }
@@ -12813,6 +13305,7 @@ function buildGithubPlan(args: string[]): CliPlan {
       return {
         kind: "execute",
         label: "github app-auth clear",
+        formatter: "github-app-auth",
         steps: [actionStep("result", "github", "clearAppUserAuth")],
       };
     }
@@ -14151,14 +14644,90 @@ function reportContainedJsonRpcError(
   }
 }
 
+/**
+ * The full text behind a redacted `internalError` reply. It lands on stderr,
+ * which for the installed brain is `launchd.err.log` — one of the logs
+ * `ade report-issue` tails — so the `ref` the user was shown is searchable.
+ */
+function reportInternalJsonRpcError(report: JsonRpcInternalErrorReport): void {
+  try {
+    process.stderr.write(
+      `ade jsonrpc internal error ref=${report.errorId} method=${report.method}: ${formatDiagnosticError(report.error)}\n`,
+    );
+  } catch {
+    // Stderr may be gone during shutdown; contained errors should stay contained.
+  }
+}
+
+/**
+ * One thrown value must not be able to bury a log the user is asked to send:
+ * a rejected fetch can carry a whole response body.
+ */
+const DIAGNOSTIC_ERROR_MAX_CHARS = 4_000;
+
+/** Fields worth printing off a thrown non-Error: they describe, never carry. */
+const DIAGNOSTIC_ERROR_SAFE_FIELDS = [
+  "name",
+  "message",
+  "code",
+  "errno",
+  "syscall",
+  "status",
+  "statusCode",
+] as const;
+
+/**
+ * Renders a thrown value for stderr — which for the installed brain is
+ * `launchd.err.log`, a file `ade report-issue` tails into a report the user is
+ * told to paste into a public issue. So this is a redaction boundary, not a
+ * formatter: everything it returns goes through the same pass the report body
+ * gets, and a thrown non-Error is described rather than serialized. Dumping
+ * such a value with `JSON.stringify` would print whatever an upstream caller
+ * attached to it — `sync.connectToBrain` carries `draft.token`, and a rejected
+ * request object would have shipped it verbatim.
+ */
 function formatDiagnosticError(error: unknown): string {
+  return capDiagnosticText(redactDiagnosticText(describeDiagnosticError(error)));
+}
+
+function capDiagnosticText(text: string): string {
+  if (text.length <= DIAGNOSTIC_ERROR_MAX_CHARS) return text;
+  return `${text.slice(0, DIAGNOSTIC_ERROR_MAX_CHARS)}… (${text.length - DIAGNOSTIC_ERROR_MAX_CHARS} more characters truncated)`;
+}
+
+function describeDiagnosticError(error: unknown): string {
   if (error instanceof Error) return error.stack || error.message;
   if (typeof error === "string") return error;
+  if (error === null || error === undefined) return String(error);
+  if (typeof error !== "object") return String(error);
+
+  // A thrown object: name the shape and the diagnostic fields, then list the
+  // remaining keys by name only. Key names locate the throw site; their values
+  // are exactly what must not reach a log the user may hand over.
+  const record = error as Record<string, unknown>;
+  const described: string[] = [];
+  let label = "Object";
   try {
-    return JSON.stringify(error);
+    for (const field of DIAGNOSTIC_ERROR_SAFE_FIELDS) {
+      const value = record[field];
+      if (value === undefined || value === null) continue;
+      if (typeof value === "object" || typeof value === "function") continue;
+      described.push(`${field}=${String(value)}`);
+    }
+    const otherKeys = Object.keys(record).filter(
+      (key) => !(DIAGNOSTIC_ERROR_SAFE_FIELDS as readonly string[]).includes(key),
+    );
+    if (otherKeys.length > 0) {
+      described.push(`otherKeys=[${otherKeys.slice(0, 20).join(", ")}]`);
+    }
+    label = Array.isArray(error) ? "Array" : (record.constructor?.name ?? "Object");
   } catch {
-    return String(error);
+    // Getters and proxy traps run arbitrary code and can throw; a value we
+    // cannot describe still must not take the error boundary down with it.
   }
+  return described.length > 0
+    ? `[thrown ${label}] ${described.join(" ")}`
+    : `[thrown ${label}]`;
 }
 
 function installRuntimeProcessErrorBoundary(label: string): () => void {
@@ -14234,6 +14803,7 @@ function createHeadlessRpcServer(
     const stop = startJsonRpcServer(handler, transport, {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     (handler as NotifiableJsonRpcHandler).setNotifier?.((method, params) =>
       stop.notify(method, params),
@@ -15321,7 +15891,6 @@ function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): b
 }
 
 class RuntimeSelfShutdownBlockedError extends Error {}
-class RuntimeServiceRecoveryOwnedError extends Error {}
 
 function isLocalRuntimeSocketPath(socketPath: string): boolean {
   return !socketPath.startsWith("tcp://");
@@ -15396,6 +15965,32 @@ function isServiceManagedMachineRuntimeSocket(socketPath: string): boolean {
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
+/**
+ * Whether a silent socket earns the `brain_starting` probe.
+ *
+ * Two vetoes, both about not making a bad situation worse:
+ *
+ * - Supervisor and handover probes run `ade runtime status` as a CHILD process
+ *   with `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`. Probing the service manager
+ *   from inside such a child is recursive on Windows: the status probe asks the
+ *   service manager, which spawns another `ade runtime status`, which fails on
+ *   the same silent pipe and probes again. Windows has no process groups, so
+ *   the spawn timeout kills only the leader and leaks every descendant.
+ * - A `--socket` override points at a different runtime entirely. The default
+ *   machine service's youth says nothing about it, and "still starting, nothing
+ *   to repair" would bury that runtime's real connect error.
+ */
+export function shouldProbeBrainStartupState(args: {
+  socketOverride: string | null;
+  socketPath: string;
+  machineSocketPath: string;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  const env = args.env ?? process.env;
+  if (env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1") return false;
+  return !args.socketOverride || args.socketPath === args.machineSocketPath;
+}
+
 export function shouldBlockManualMachineRuntimeSpawn(
   socketPath: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -15431,17 +16026,22 @@ async function repairMachineRuntimeServiceConnection(args: {
     );
     if (!result.ok) {
       if (serviceManagerOwnsRuntimeRecovery(result)) {
-        throw new RuntimeServiceRecoveryOwnedError(
-          `${result.message} The registered service still owns recovery for this endpoint, so ADE did not start a competing manual brain.`,
-        );
+        throw new RuntimeServiceStillStartingError({
+          kind: "recovery_owned",
+          installMessage: result.message,
+        });
       }
       return null;
     }
-    client = await SocketJsonRpcClient.connect(
-      args.socketPath,
-      args.options.timeoutMs,
-      "ADE runtime endpoint",
-    );
+    client = await connectWhileServiceStarts({
+      install: result,
+      socketPath: args.socketPath,
+      connect: () => SocketJsonRpcClient.connect(
+        args.socketPath,
+        args.options.timeoutMs,
+        "ADE runtime endpoint",
+      ),
+    });
     const runtimeInfo = await initializeMachineRuntimeDaemon(
       client,
       args.options,
@@ -15467,7 +16067,7 @@ async function repairMachineRuntimeServiceConnection(args: {
   } catch (error) {
     if (
       error instanceof RuntimeSelfShutdownBlockedError
-      || error instanceof RuntimeServiceRecoveryOwnedError
+      || error instanceof RuntimeServiceStillStartingError
     ) throw error;
     return null;
   } finally {
@@ -15758,11 +16358,30 @@ async function runRuntimeCommand(
         client.close();
       }
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      // Not answering is not the same as broken. When the service is
+      // registered and the brain behind it is alive and young, it is still
+      // coming up — the same verdict the desktop calls `brain_starting`.
+      // Callers keep waiting for the endpoint instead of restarting it.
+      const starting = shouldProbeBrainStartupState({
+        socketOverride,
+        socketPath,
+        machineSocketPath: resolveMachineAdeLayout().socketPath,
+      })
+        ? (await readBrainStartupState()).starting
+        : false;
       return {
         ok: false,
         running: false,
+        starting,
         socketPath,
-        message: error instanceof Error ? error.message : String(error),
+        // `detail` is the raw connect error on both branches, so it is always
+        // present: a caller reading it should never have to know which verdict
+        // produced the message above it.
+        detail,
+        message: starting
+          ? `ADE brain is still starting; it has not answered on ${socketPath} yet. Keep waiting — there is nothing to repair.`
+          : detail,
       };
     }
   }
@@ -16013,6 +16632,34 @@ async function runSetupCli(
         return { ok: true, detail: names.join(", ") };
       },
       getAccountStatus: () => readSetupAccountStatus(options),
+      // The installer has just registered the brain service. A brain that is
+      // registered and alive but not answering yet is *starting*, not broken,
+      // so this waits for its endpoint instead of letting the account step run
+      // against a socket that was never given time to open.
+      awaitRuntimeService: async ({ budgetMs, onStarting }) => {
+        const socketPath = await resolveMachineRuntimeSocketPath(options.socketPath);
+        return await awaitRuntimeServiceEndpoint({
+          budgetMs,
+          onStarting,
+          probe: async () => {
+            try {
+              const client = await SocketJsonRpcClient.connect(
+                socketPath,
+                options.timeoutMs,
+                "ADE runtime endpoint",
+              );
+              client.close();
+              return true;
+            } catch {
+              return false;
+            }
+          },
+          installService: async () => {
+            const { installRuntimeService } = await import("./serviceManager");
+            return await withAdeDefaultRole("cto", () => installRuntimeService());
+          },
+        });
+      },
       // Delegates to the same `ade connect` implementation so the OAuth flow,
       // the service step and the machine-directory wait stay in one place.
       runConnect: async () => {
@@ -16170,6 +16817,7 @@ async function runConnectCli(
           ok: install.ok,
           message: install.message,
           selfMutationBlocked: install.selfMutationBlocked,
+          starting: install.starting,
         };
       },
       getMachineKey: () => machineKey,
@@ -16265,8 +16913,13 @@ async function runBrainCommand(
     // serve path clears it on a successful listen. Surface it as a plain
     // one-liner so `ade brain status --text` matches the Desktop recovery screen.
     const lastFailure = readLastFailure({ kind: "machine" });
+    // Mirrors `ade runtime status`: a registered service whose young brain has
+    // not bound the socket yet is starting, not broken, so `ade brain status`
+    // does not read as a failure that wants repairing.
+    const starting = isRecord(runtime) && runtime.starting === true;
     return {
       ok: service.ok && (!isRecord(runtime) || runtime.ok !== false),
+      starting,
       service,
       runtime,
       sync,
@@ -16310,7 +16963,12 @@ async function runBrainCommand(
       message: !stopped.ok
         ? `ADE brain restart attempted after stop warning: ${stopped.message}`
         : started.ok
-          ? "ADE brain restarted."
+          // `starting` means the replacement is alive but has not answered on
+          // the socket yet. Claiming "restarted." there reads as "ready now"
+          // and sends callers into a connect that is not due to succeed yet.
+          ? started.starting
+            ? started.message
+            : "ADE brain restarted."
           : started.message,
     };
   }
@@ -16327,8 +16985,35 @@ async function runBrainCommand(
     }
   }
 
+  // Deliberately local and brain-free: the state this repairs is precisely the
+  // one that keeps the brain from starting, so routing it through the brain
+  // would make it unavailable exactly when it is needed. The desktop's Repair
+  // control runs the same `repairSync()` through `account.repairSession`.
+  if (sub === "repair-credentials") {
+    const { secretsDir } = resolveMachineAdeLayout();
+    const report = new EncryptedFileCredentialStore({ secretsDir }).repairSync();
+    const readable = report.state !== "unreadable";
+    return {
+      ok: readable,
+      action: "repair-credentials",
+      state: report.state,
+      reason: report.reason,
+      recoveredKeys: report.recoveredKeys,
+      quarantined: report.quarantine
+        ? { at: report.quarantine.at, recoverable: report.quarantine.recoverable }
+        : null,
+      message: !readable
+        ? "ADE could not read the stored credentials on this computer. Sign in again in the ADE app."
+        : report.recoveredKeys > 0
+          ? `Restored ${report.recoveredKeys} stored credential${report.recoveredKeys === 1 ? "" : "s"}. Run \`ade brain restart\` so the brain picks them up.`
+          : report.quarantine?.recoverable === false
+            ? "An unreadable credential file was set aside earlier. Sign in again in the ADE app."
+            : "Stored credentials are readable; nothing needed repairing.",
+    };
+  }
+
   throw new CliUsageError(
-    "brain supports status, show, start, stop, restart, update, or pin.",
+    "brain supports status, show, start, stop, restart, update, repair-credentials, or pin.",
   );
 }
 
@@ -16509,6 +17194,7 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
     stop = startJsonRpcServer(handler, createStdioTransport(), {
       nonFatal: true,
       onError: reportContainedJsonRpcError,
+      onInternalError: reportInternalJsonRpcError,
     });
     unsubscribeNotifications = client.onAnyNotification((method, params) =>
       stop?.notify(method, params),
@@ -16553,6 +17239,64 @@ export function includeHostProjectInCatalog<T extends { projectId: string }>(
   return [...recentProjects, hostProject];
 }
 
+/**
+ * One line of honest cause for the crash-loop backoff notice.
+ *
+ * `code` is a coarse bucket and is `unknown` whenever the classifier has no
+ * pattern for the error — the credential-store decrypt failure that took a
+ * user's machine down for an evening logged exactly that. The recorded detail
+ * is the error's own message, so prefer it and keep the bucket alongside.
+ */
+export function describeLastFailureForStartupLog(
+  report: { code: string; detail?: string; message?: string },
+  maxLength = 200,
+): string {
+  const detail = (report.detail ?? report.message ?? "").split("\n")[0]?.trim() ?? "";
+  const bounded = detail.length > maxLength ? `${detail.slice(0, maxLength - 1)}…` : detail;
+  return bounded ? `${report.code} · ${bounded}` : report.code;
+}
+
+/**
+ * Says, once per brain start, whether this process can read the shared
+ * credential store — and if not, why, in `launchd.err.log` where the person
+ * debugging a dead brain is already looking.
+ *
+ * Purely diagnostic: the store itself no longer fails a startup over an
+ * unreadable file, so this must not either.
+ */
+function reportBrainCredentialStoreHealth(secretsDir: string, logger: Logger): void {
+  try {
+    const health = inspectCredentialStoreHealth({
+      credentialsPath: path.join(secretsDir, "credentials.json.enc"),
+      machineKeyPath: path.join(secretsDir, ".machine-key"),
+      // No key-material read at all on the startup path. Even the read-only
+      // accessor is a `security` call on macOS and a synchronous PowerShell
+      // unprotect budgeted at 30 s on Windows, and delaying every brain start
+      // to decorate a log line is not a trade worth making. The brain is the
+      // process without OS material by definition, so what it reports here is
+      // what its own credential reads will find anyway.
+      keyMaterial: { read: () => null, peerMayHoldMaterial: true },
+    });
+    if (health.state !== "unreadable" && !health.quarantine) return;
+    const summary = health.state === "unreadable"
+      ? `ADE brain cannot read the stored account credentials (${health.reason}).`
+      : "ADE brain set aside an unreadable credential file earlier.";
+    const nextStep = health.quarantine?.recoverable === true
+      ? " Opening the ADE app on this computer restores it; no sign-in needed."
+      : " Sign in again in the ADE app.";
+    process.stderr.write(`${summary}${nextStep}\n`);
+    logger.warn("brain.credential_store_unreadable", {
+      state: health.state,
+      reason: health.reason,
+      declaredBinding: health.declaredBinding,
+      quarantined: health.quarantine?.file ?? null,
+      quarantineRecoverable: health.quarantine?.recoverable ?? null,
+    });
+  } catch {
+    // A diagnostic must never be the thing that stops the brain starting.
+  }
+}
+
 async function runServe(
   rest: string[],
   options: GlobalOptions,
@@ -16576,8 +17320,12 @@ async function runServe(
   const previousFailure = readLastFailure({ kind: "machine" });
   const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now());
   if (startupBackoffMs > 0 && previousFailure) {
+    // The bare `code` alone printed "unknown" for every failure the classifier
+    // had no pattern for — which is exactly the class you need the reason for.
+    // Lead with the recorded detail so the log says what actually broke.
+    const reason = describeLastFailureForStartupLog(previousFailure);
     process.stderr.write(
-      `ADE brain delaying startup ${startupBackoffMs / 1_000}s after repeated failures: ${previousFailure.code}\n`,
+      `ADE brain delaying startup ${startupBackoffMs / 1_000}s after repeated failures: ${reason}\n`,
     );
     await new Promise<void>((resolve) => setTimeout(resolve, startupBackoffMs));
   }
@@ -16585,12 +17333,16 @@ async function runServe(
   let stopBrainLoopWatchdog: (() => void) | null = null;
   let stopBrainHeartbeat: (() => void) | null = null;
   let stopBrainFreshnessMonitor: (() => void) | null = null;
+  // Built much later than the watchdog that feeds it: the memory mitigation may
+  // only restart a brain the service manager owns, and whether this one is that
+  // brain is not known until the service command has been resolved.
+  let brainMemoryRestartGuard: BrainMemoryRestartGuard | null = null;
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
     { resolveMachineAdeLayout },
     { ProjectRegistry },
-    { ProjectScopeRegistry },
+    { ProjectScopeRegistry, SYNC_HOST_ADOPT_TIMEOUT_MS },
     {
       createMultiProjectRpcRequestHandler,
       createPersonalChatScope,
@@ -16625,6 +17377,7 @@ async function runServe(
   const headlessProjectLogger: Logger = createBrainLogger(
     path.join(layout.runtimeDir, "brain.jsonl"),
   );
+  reportBrainCredentialStoreHealth(layout.secretsDir, headlessProjectLogger);
   const {
     createProductAnalyticsService,
     defaultProductAnalyticsStateFile,
@@ -16640,9 +17393,21 @@ async function runServe(
       runtimeMode: "brain",
     }),
   );
+  /**
+   * The brain's half of automatic diagnostics. It shares the desktop's consent
+   * flag and daily budget on disk, and reads the machine's credential store, so
+   * a report from a headless box lands attributed to the account.
+   */
+  const { createBrainAutoDiagnostics } = await import("./services/diagnostics/autoDiagnosticsSender");
+  const brainAutoDiagnostics = createBrainAutoDiagnostics({
+    cliVersion: VERSION,
+    logger: headlessProjectLogger,
+    capture: (input) => brainProductAnalytics.capture(input),
+  });
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    info: (event, meta) => headlessProjectLogger.info(event, meta),
     onRecovered: (breadcrumb) => {
       brainProductAnalytics.captureInternal({
         event: "ade_brain_recovered",
@@ -16655,6 +17420,9 @@ async function runServe(
         minimumIntervalMs: 24 * 60 * 60 * 1_000,
       });
     },
+    onMemoryPressure: (sample) => {
+      void brainMemoryRestartGuard?.handle(sample);
+    },
   });
   // The loop watchdog above lives inside the process it guards, so it cannot
   // report a brain whose whole runtime is stuck. This heartbeat is the same
@@ -16665,6 +17433,7 @@ async function runServe(
   stopBrainHeartbeat = startBrainHeartbeat({
     runtimeDir: layout.runtimeDir,
     warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    info: (event, meta) => headlessProjectLogger.info(event, meta),
   });
   const rawSocketPath =
     readValue(args, ["--socket"]) ??
@@ -17019,8 +17788,16 @@ async function runServe(
   const machineCloudRelayFilePath = path.join(layout.secretsDir, "sync-cloud-relay.json");
   const machineCloudRelayStore = createSyncCloudRelayStore({
     filePath: machineCloudRelayFilePath,
+    // Every mint, rotation, and backup recovery of this machine's identity is
+    // logged here. A machine key that changes silently is how a live computer
+    // became a phantom row its owner deleted.
+    logger: headlessProjectLogger,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // Turns the "Reconnect this computer" button into something the machine can
+  // press for itself when the directory refuses it. Built below, next to the
+  // publisher it watches.
+  let machinePairingAutoRecovery: MachinePairingAutoRecovery | null = null;
   // Held only while this brain hosts phone sync WITHOUT a project scope (a
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
@@ -17033,9 +17810,58 @@ async function runServe(
   let releaseAccountPublisherAuthoritySubscription: (() => void) | null = null;
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
     accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
-      "sync_disabled",
+      "sync_not_started",
       "Account-directory publishing has not started.",
     );
+  /**
+   * The desktop's OS-level suspend/resume beat, arriving over RPC.
+   *
+   * The brain has no `powerMonitor` of its own — its native signal is the
+   * heartbeat gap, which is only observable AFTER the machine is back. This is
+   * the hop that makes "asleep" a stated fact: the shared monitor records the
+   * announcement (which the chat service and the publisher both read), and the
+   * suspend half then publishes it to the account directory inside a hard
+   * budget, because the window before the OS takes the machine down is short
+   * and nothing here may delay it.
+   *
+   * The answer is only `accepted` when there was a publisher to carry the
+   * announcement to the account directory. A brain whose publisher has not been
+   * built yet (or was released with its sync scope) still records the local
+   * announcement — the chat service reads it — but nothing reached the
+   * directory, and saying "accepted" for that is what let the desktop count an
+   * unpersisted beat as landed and skip its resume retry. It reuses the same
+   * `unsupported` reason the RPC already returns for an unwired brain rather
+   * than inventing a second vocabulary for "nowhere to publish".
+   */
+  const reportDesktopMachinePowerTransition = async (
+    input: { kind: "suspend" | "resume"; budgetMs?: number },
+  ): Promise<{ accepted: boolean; reason?: string }> => {
+    const { getSharedMachinePowerMonitor } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
+    const monitor = getSharedMachinePowerMonitor();
+    // Read once: the publisher can be released between the announcement and the
+    // write, and a null-check that disagrees with the call it guards is how a
+    // "published" answer gets returned for a publish that never ran.
+    const publisher = accountMachinePublisher;
+    if (input.kind === "resume") {
+      // A wake has all the time in the world, so it rides the publisher's own
+      // subscription (which republishes "awake" at once) rather than blocking
+      // the caller on a write.
+      monitor.noteAnnouncedResume();
+      // Retrying this is worth it: the publisher is built lazily when a sync
+      // scope appears, so a wake that lands a beat too early can still be
+      // delivered by the desktop's next attempt.
+      return publisher ? { accepted: true } : { accepted: false, reason: "unsupported" };
+    }
+    monitor.noteAnnouncedSuspend();
+    if (!publisher) return { accepted: false, reason: "unsupported" };
+    // The announcement above already asks the publisher for the pre-suspend
+    // write; awaiting the same coalesced attempt is what gives the desktop
+    // something real to bound its beat on instead of a fire-and-forget void.
+    await publisher.publishPowerStateNow(input.budgetMs);
+    return { accepted: true };
+  };
   // What this machine looks like when no project scope owns sync. Hosting is
   // the projectless lease AND a bound shared listener; the builder reports the
   // honest all-down shape otherwise.
@@ -17217,6 +18043,7 @@ async function runServe(
         logger: headlessProjectLogger,
         requestRestart: requestBrainServiceRestartFromServe,
       }),
+      reportMachinePowerTransition: reportDesktopMachinePowerTransition,
       getRuntimeStatus: () => {
         const publishHealth = getAccountDirectoryHealth();
         return {
@@ -17280,6 +18107,15 @@ async function runServe(
     } else {
       activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
+    if (!activeScope && scopeRegistry.getRequestedSyncHostProjectId()) {
+      // A null here can mean "superseded" rather than "no host"; adopt the
+      // switch that overtook ours instead of clobbering it with the
+      // projectless lease. See `adoptRequestedSyncHost`.
+      activeScope = await scopeRegistry.adoptRequestedSyncHost(SYNC_HOST_ADOPT_TIMEOUT_MS);
+      if (!activeScope) {
+        throw new Error("Sync host switch superseded by a concurrent project switch; retrying.");
+      }
+    }
     if (!activeScope && sharedSyncListener) {
       // Binding the shared listener IS hosting phone sync, even with no project
       // scope to attach to it. Take the machine-wide lease first so this path
@@ -17319,6 +18155,8 @@ async function runServe(
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
+    machinePairingAutoRecovery?.stop();
+    machinePairingAutoRecovery = null;
     accountMachinePublisher?.dispose();
     accountMachinePublisher = null;
     brainRelayTunnelGate?.dispose();
@@ -17421,58 +18259,123 @@ async function runServe(
     }
   }
 
-  if (syncEnabled) {
+  // The mobile sync host is started AFTER the RPC socket is bound (see
+  // `startSyncHostInBackground` below). It used to be awaited here, before the
+  // bind, which coupled every desktop connection to phone-sync hosting: a
+  // project scope that was slow to open, a sync port band that was busy, a
+  // stale lease from a just-killed predecessor — anything the startup loop
+  // retried — kept `ade.sock` unpublished, and the desktop's service handover
+  // budget expired against a brain that was alive and healthy. Nothing about
+  // serving desktop RPC needs the sync host up first.
+  let syncHostStartupFailure: unknown = null;
+  const startSyncHostInBackground = async (): Promise<void> => {
+    if (!syncEnabled) {
+      // Deliberately NOT clearing the machine failure record. The bind above
+      // already cleared every non-`sync_host` failure, and a `--no-sync` brain
+      // proves nothing about whether the sync host can start. The record is
+      // keyed by ADE_HOME, not by socket path, so the two brains that run with
+      // `--no-sync` — an ephemeral runtime socket and the desktop's isolated
+      // runtime, both spawned precisely BECAUSE the real brain is unhealthy —
+      // would otherwise erase the crash-loop streak that the installer's
+      // young-brain veto and the `brain_crash_looping` diagnosis depend on.
+      return;
+    }
     try {
       const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
         import("./services/sync/syncHostStartupLoop"),
         import("./serviceManager"),
       ]);
+      // This loop no longer needs a socket-liveness abort. That abort guarded
+      // against a rival brain taking the RPC socket while this one waited for
+      // sync (PR #949's zombies). The socket is bound before this loop runs
+      // now, so a rival that dials it finds a live owner and refuses; the bind
+      // itself is the claim. The one remaining way to lose the path — a rival
+      // unlinking a socket it proved stale, which a bound socket never is —
+      // is caught by `monitorBrainSocketOwnership`.
       await runSyncHostStartupLoop({
         startSyncHost,
         isDone: () => done,
         log: (message) => process.stderr.write(`${message}\n`),
+        // The same failures as structured facts. Without this the most frequent
+        // brain failure there is lived only as untimestamped free text in
+        // `launchd.err.log` — never in `brain.jsonl`, so no report section and
+        // no telemetry ever saw it.
+        logEvent: (event, meta) => headlessProjectLogger.warn(event, meta),
+        // The machine-scoped last-failure record: the same file the recovery
+        // screen, `ade doctor`, and the diagnostic report already read.
+        recordStorageFault: (fault, detail) => {
+          recordLastFailure({ kind: "machine" }, {
+            code: fault.code,
+            message: fault.message,
+            detail,
+            component: "sync_host",
+          });
+        },
         getServiceMainPid: getRuntimeServiceMainPid,
-        // The pre-loop claim above only sees a socket that ALREADY existed. Two
-        // brains started together on a fresh path both pass it, then one wins
-        // the lease and binds while the loser waits here forever — never
-        // reaching its own bind check. Re-check while we wait, and only for a
-        // provably live owner so a probe hiccup can't make a brain quit on
-        // itself.
-        abortIf: async () => {
-          if (!isAdeRuntimeNamedPipePath(socketPath) && !fs.existsSync(socketPath)) return false;
-          return await probeLocalSocketForLiveness(socketPath) === "live";
+        // Auto-diagnostics driven off the FAILURE rather than off the account
+        // publisher. The publisher only exists once this brain holds the
+        // sync-host lease, which it only takes once the sync host starts — so
+        // the machine that cannot start one could never send a report about it.
+        //
+        // The fault's own words are already in the report: `recordStorageFault`
+        // writes the classified code, message and raw detail to the machine
+        // last-failure record before this fires, and that record is a section of
+        // every report. The headline stays the plain sentence.
+        onSustainedStorageFault: ({ fault }) => {
+          // `report` is documented never to reject; the catch is what keeps a
+          // silent-by-design path from becoming an unhandled rejection.
+          void brainAutoDiagnostics
+            .report({
+              failureCode: fault.code,
+              surface: "sync_host_storage",
+              headline: "This computer could not read its own data",
+            })
+            .catch(() => undefined);
         },
       });
+      // A recorded sync-host failure is cleared only once the sync host is
+      // really up; clearing it on the bind would reset the crash-loop counter
+      // on every restart of a brain that keeps dying right here.
+      if (!done) clearLastFailure({ kind: "machine" });
     } catch (error: unknown) {
+      if (done) return;
       // Cross-channel conflict (another build's live brain owns mobile sync):
-      // real builds never run sync-less, so fail before publishing ade.sock.
-      const [{ SyncHostSingletonConflictError }, { SyncHostStartupAbortedError }] = await Promise.all([
-        import("./services/sync/syncHostSingleton"),
-        import("./services/sync/syncHostStartupLoop"),
-      ]);
+      // real builds never run sync-less, so the brain still refuses to keep
+      // running. The RPC socket is already published by now; closing it is
+      // what `finish()` does, and the recorded failure carries the same code
+      // project recovery keyed on before.
       const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof SyncHostStartupAbortedError) {
-        await disposeServeResources();
-        throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-          socketPath,
-          cause: "Another ADE brain took this socket while this one waited for mobile sync.",
-          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-        }), { code: "socket_owned_by_other" as const });
+      // The conflict class is loaded to classify the failure, and that import
+      // can itself reject (a torn install, a disk error). Letting it escape
+      // would skip `finish()` — the brain would keep serving a socket it has
+      // already decided to give up, and the rejection would surface as an
+      // unhandled one. An unclassifiable failure is still a failure.
+      let conflict = false;
+      try {
+        const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+        conflict = error instanceof SyncHostSingletonConflictError;
+      } catch (importError: unknown) {
+        const importMessage = importError instanceof Error
+          ? importError.message
+          : String(importError);
+        process.stderr.write(`ADE brain could not classify its sync host failure: ${importMessage}\n`);
+        headlessProjectLogger.warn("sync.host_failure_unclassifiable", { error: importMessage });
       }
-      if (error instanceof SyncHostSingletonConflictError) {
-        await disposeServeResources();
-        throw new CliExecutionError("ADE brain refusing to run without mobile sync.", {
+      if (conflict) {
+        syncHostStartupFailure = new CliExecutionError("ADE brain refusing to run without mobile sync.", {
           cause: message,
           socketPath,
           nextAction:
             "Stop the other ADE brain that owns mobile sync, then start this build again.",
         });
+      } else {
+        process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+        headlessProjectLogger.error("sync.host_startup_loop_failed", { error: message });
+        syncHostStartupFailure = error;
       }
-      process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
-      await disposeServeResources();
-      throw error;
+      finish();
     }
-  }
+  };
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
   if (isAdeRuntimeNamedPipePath(socketPath)) {
@@ -17535,6 +18438,9 @@ async function runServe(
     const { createBrainAccountMachinePublisherService } = await import(
       "./services/account/accountMachinePublisherService"
     );
+    const { borrowSharedMachinePowerSource } = await import(
+      "./services/power/sharedMachinePowerMonitor"
+    );
     // Match the active sync-host/desktop project priority so a project Clerk
     // issuer cannot send the brain to a different directory Worker.
     const accountProjectRoots = () => {
@@ -17557,6 +18463,12 @@ async function runServe(
       accountMachinePublisher = createBrainAccountMachinePublisherService({
         secretsDir: layout.secretsDir,
         projectRoots: accountProjectRoots,
+        // The one monitor this brain has, shared with the chat service and with
+        // the desktop's forwarded suspend beat. Borrowed rather than owned: the
+        // publisher is rebuilt on every sync-host handoff, and disposing the
+        // machine's power tracking along with it would leave chats blind to
+        // sleep until the next one started.
+        powerSource: borrowSharedMachinePowerSource(),
         isSyncEnabled: () => syncEnabled,
         logger: headlessProjectLogger,
         getSnapshot: async () => {
@@ -17575,9 +18487,36 @@ async function runServe(
           return brainSyncHostLease ? projectlessSyncSnapshot() : null;
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
+        // The SAME store instance the machine key above comes from, so a
+        // `supersededMachineKeys` answer is checked against the keys this brain
+        // actually retired. The publisher used to build a private second store
+        // over the same file, which is one identity guarded by two independent
+        // readers for no benefit at all.
+        confirmSupersededMachineKeys: (keys) => {
+          try {
+            return machineCloudRelayStore.confirmSupersededMachineKeys(keys);
+          } catch {
+            return [];
+          }
+        },
         directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
         captureAnalytics: (input) => {
           brainProductAnalytics.captureInternal(input);
+        },
+        // A machine that has been unable to publish for minutes has silently
+        // dropped out of the account directory, and on a headless box there is
+        // nobody to press "Report issue" about it.
+        onSustainedFailure: ({ code }) => {
+          // `report` is documented never to reject; the catch is what keeps a
+          // silent-by-design path from ever becoming an unhandled rejection
+          // that takes the brain down.
+          void brainAutoDiagnostics
+            .report({
+              failureCode: code,
+              surface: "account_publisher",
+              headline: "This computer could not publish to your account",
+            })
+            .catch(() => undefined);
         },
       });
       accountMachinePublisher.start();
@@ -17624,13 +18563,66 @@ async function runServe(
         reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
       });
     }
+    // A directory refusal used to dead-end: heartbeats stopped and the machine
+    // waited for a human to click "Reconnect this computer", which nobody ever
+    // sees on a headless box. This runs the identical repair on a slow, budgeted
+    // schedule. It reads the publisher through `getPublisher` rather than
+    // capturing it, because the publisher is destroyed and rebuilt whenever the
+    // sync host lease moves.
+    const { createMachinePairingAutoRecovery } = await import(
+      "./services/account/machinePairingAutoRecovery"
+    );
+    machinePairingAutoRecovery = createMachinePairingAutoRecovery({
+      getPublisher: () => accountMachinePublisher,
+      runRepair: () => repairMachinePairing(),
+      hasAccountSession: () => {
+        try {
+          return brainAccountAuthService.getStatus().signedIn === true;
+        } catch {
+          return false;
+        }
+      },
+      budget: machineCloudRelayStore,
+      logger: headlessProjectLogger,
+      // The loop has stopped arguing and this computer is still disconnected.
+      onGaveUp: ({ code }) => {
+        void brainAutoDiagnostics
+          .report({
+            failureCode: code,
+            surface: "machine_pairing_recovery",
+            headline: "This computer could not reconnect to your account",
+          })
+          .catch(() => undefined);
+      },
+    });
+    machinePairingAutoRecovery.start();
   }
 
   process.stderr.write(
     `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
-  clearLastFailure({ kind: "machine" });
+  // The same fact in `brain.jsonl`. The human line above stays: it is what a
+  // person reads when they run the brain in a terminal, and it is what the
+  // desktop's handover waits to see. But a report that carries a launchd stderr
+  // tail full of untimestamped lines and a `brain.jsonl` that never mentions
+  // the brain starting cannot place ANY of them in time.
+  headlessProjectLogger.info("brain.listening", {
+    socketPath,
+    tcpUrl: tcpUrl ?? null,
+  });
   serveStarted = true;
+  // The RPC socket is up: any recorded startup failure that was NOT about the
+  // sync host is over. Sync-host failures stay recorded until the sync host
+  // actually comes up (below), so a brain that binds and then dies on a
+  // cross-channel conflict every time still accumulates a crash-loop count.
+  if (readLastFailure({ kind: "machine" })?.component !== "sync_host") {
+    clearLastFailure({ kind: "machine" });
+  }
+  // Started after the account-publisher subscription above so the lease the
+  // sync host takes is what starts the publisher, and after the socket is
+  // published so a desktop can already reach this brain while phone sync
+  // hosting is still coming up (or still retrying).
+  void startSyncHostInBackground();
 
   // Pinned agent tools are fetched, not bundled — roughly 600 MB across the
   // three of them. A source checkout still resolves all three out of the repo's
@@ -17666,48 +18658,94 @@ async function runServe(
     && socketPath === layout.socketPath
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   if (isPrimaryBrain && preparedServiceCommand.filePath) {
-    const [{ createBrainFreshnessMonitor }, { requestBrainServiceRestart }] = await Promise.all([
+    const [
+      { createBrainFreshnessMonitor },
+      { requestBrainServiceRestart },
+      { createSingleFlightBrainRestart },
+    ] = await Promise.all([
       import("./services/runtime/brainFreshnessMonitor"),
       import("./commands/brainUpdate"),
+      import("./services/runtime/singleFlightBrainRestart"),
     ]);
+    // Hoisted so the freshness monitor and the memory mitigation restart this
+    // brain the same way. Two spellings of "restart the service" would be two
+    // things to keep in step.
+    const isBrainIdle = async (): Promise<boolean> => (
+      await readMachineRuntimeActivitySummary({
+        projectRegistry,
+        scopeRegistry,
+        personalChatScope,
+      })
+    ).idle;
+    // Single-flighted: the freshness monitor and the memory guard each
+    // serialize only their own attempts, so without a shared latch both can
+    // request a restart of this service at the same time. The second caller
+    // joins the restart already running and sees its outcome.
+    const restartBrainService = createSingleFlightBrainRestart((failureEvent: string): void => {
+      const result = requestBrainServiceRestart({
+        command: serviceCommand.command,
+        commandArgs: preparedServiceCommand.args,
+        env: {
+          ...process.env,
+          ...(serviceCommand.env ?? {}),
+        },
+      });
+      if (result.status !== 0) {
+        headlessProjectLogger.error(failureEvent, {
+          status: result.status,
+          error: result.stderr || result.stdout || "service restart failed",
+        });
+        throw new Error(result.stderr || result.stdout || "service restart failed");
+      }
+    }, {
+      onCoalesced: (failureEvent) => {
+        headlessProjectLogger.info("brain.restart_coalesced", { failureEvent });
+      },
+    });
     const freshnessMonitor = createBrainFreshnessMonitor({
       filePath: preparedServiceCommand.filePath,
       runningHash:
         process.env.ADE_RUNTIME_BUILD_HASH?.trim()
         || preparedServiceCommand.buildHash,
-      isIdle: async () => (
-        await readMachineRuntimeActivitySummary({
-          projectRegistry,
-          scopeRegistry,
-          personalChatScope,
-        })
-      ).idle,
+      isIdle: isBrainIdle,
       logger: {
         warn: (event, fields) =>
           headlessProjectLogger.warn(event, fields),
       },
-      restart: () => {
-        const result = requestBrainServiceRestart({
-          command: serviceCommand.command,
-          commandArgs: preparedServiceCommand.args,
-          env: {
-            ...process.env,
-            ...(serviceCommand.env ?? {}),
-          },
-        });
-        if (result.status !== 0) {
-          headlessProjectLogger.error("brain.freshness_restart_failed", {
-            status: result.status,
-            error: result.stderr || result.stdout || "service restart failed",
-          });
-          throw new Error(result.stderr || result.stdout || "service restart failed");
-        }
-      },
+      restart: () => restartBrainService("brain.freshness_restart_failed"),
     });
     freshnessMonitor.start();
     stopBrainFreshnessMonitor = () => freshnessMonitor.stop();
+    const { createBrainMemoryRestartGuard } = await import(
+      "./services/runtime/brainMemoryRestart"
+    );
+    brainMemoryRestartGuard = createBrainMemoryRestartGuard({
+      // Three separate ways for this brain to be busy, and all of them have to
+      // be quiet: a tracked command in flight, a chat or agent run in the
+      // activity summary, or an attached client.
+      isIdle: async () => (
+        currentBrainLoopWatchdogCommand() === "idle" && await isBrainIdle()
+      ),
+      isQuiet: () => !hasActiveHeadlessConnections(states),
+      logger: {
+        warn: (event, fields) => headlessProjectLogger.warn(event, fields),
+      },
+      restart: () => restartBrainService("brain.memory_restart_command_failed"),
+    });
   }
 
+  // Remembered so the shutdown below removes only the socket file this brain
+  // bound. If a rival rebinds the path, the inode there is theirs.
+  const boundSocketInode = readRuntimeSocketInode(socketPath);
+  let ownsSocketPath = !isAdeRuntimeNamedPipePath(socketPath);
+  const stopSocketOwnershipMonitor = monitorBrainSocketOwnership(socketPath, (reason) => {
+    // "replaced" means someone else's socket is at the path now; "removed"
+    // means there is nothing left to clean up. Either way this brain is no
+    // longer the owner and must not unlink on the way out.
+    ownsSocketPath = false;
+    headlessProjectLogger.warn("brain.socket_ownership_lost", { socketPath, reason });
+    finish();
+  });
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
   try {
@@ -17732,16 +18770,33 @@ async function runServe(
   } finally {
     stopParentMonitor();
     stopIdleMonitor();
+    stopSocketOwnershipMonitor();
   }
 
   for (const state of states) {
     stopHeadlessRpcServer(state);
   }
   await disposeServeResources();
-  if (!isAdeRuntimeNamedPipePath(socketPath)) {
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {}
+  if (ownsSocketPath) {
+    const outcome = unlinkOwnedRuntimeSocket(socketPath, boundSocketInode);
+    if (outcome === "not_owned") {
+      headlessProjectLogger.warn("brain.socket_unlink_skipped", {
+        socketPath,
+        reason: "Another process rebound this path; removing it would delete their socket.",
+      });
+    } else if (outcome === "failed") {
+      headlessProjectLogger.warn("brain.socket_unlink_failed", {
+        socketPath,
+        reason: "The socket file is still ours and still present; the next brain will probe it as stale.",
+      });
+    }
+  }
+  if (syncHostStartupFailure != null) {
+    // A sync-host startup failure ends the brain even though the socket was
+    // already published; record it like any other startup failure so project
+    // recovery diagnoses the conflict instead of an unexplained exit.
+    serveStarted = false;
+    throw syncHostStartupFailure;
   }
   return null;
   } finally {
@@ -17786,6 +18841,7 @@ async function runServe(
     throw error;
   } finally {
     stopBrainFreshnessMonitor?.();
+    brainMemoryRestartGuard?.stop();
     stopBrainHeartbeat?.();
     stopBrainLoopWatchdog?.();
   }
@@ -17805,6 +18861,111 @@ function isPidAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** How often a bound brain re-checks that it still owns its socket path. */
+const BRAIN_SOCKET_OWNERSHIP_POLL_MS = 5_000;
+
+/** Inode of a socket path, or null when it is gone or unreadable. */
+export function readRuntimeSocketInode(target: string): bigint | null {
+  try {
+    return fs.statSync(target, { bigint: true }).ino;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Removes this brain's own socket file — and only its own.
+ *
+ * The shutdown path used to unlink unconditionally. When the ownership monitor
+ * fires with "replaced" a rival has already rebound the path, so that unlink
+ * deleted the *winner's* socket and left the machine with a live brain nothing
+ * could reach. Compare the inode against the one we bound before removing it.
+ *
+ * With no inode recorded at bind time (a filesystem that reports none) the old
+ * unconditional behaviour stands: leaking a stale socket file is worse than the
+ * race it would avoid.
+ */
+export function unlinkOwnedRuntimeSocket(
+  socketPath: string,
+  ownInode: bigint | null,
+  deps: {
+    readInode?: (target: string) => bigint | null;
+    unlink?: (target: string) => void;
+  } = {},
+): "unlinked" | "not_owned" | "absent" | "failed" {
+  if (isAdeRuntimeNamedPipePath(socketPath)) return "not_owned";
+  const readInode = deps.readInode ?? readRuntimeSocketInode;
+  const unlink = deps.unlink ?? ((target: string) => fs.unlinkSync(target));
+  const current = readInode(socketPath);
+  if (current == null) return "absent";
+  if (ownInode != null && current !== ownInode) return "not_owned";
+  try {
+    unlink(socketPath);
+  } catch (error) {
+    // ENOENT means someone else removed it between our stat and our unlink:
+    // the path is gone, which is the outcome "absent" describes and the
+    // outcome we wanted. Reporting it as "failed" would send the caller
+    // looking for a stale socket that does not exist.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return "absent";
+    // Distinct from "absent": the socket file is still there and still ours,
+    // so the next brain to start will probe a stale path we failed to clean up.
+    return "failed";
+  }
+  return "unlinked";
+}
+
+/**
+ * A unix-domain brain can lose its own endpoint AFTER a successful `listen()`.
+ * The bind is preceded by a check, not a lock: `existsSync` -> await
+ * `assertBrainSocketUnowned` -> `unlink` -> `listen`. Two brains that both
+ * probe the same *stale* socket file race across that await — the first
+ * unlinks and binds inode X, the second (whose probe predates that bind) then
+ * unlinks the path->X link and binds a fresh inode Y. Neither sees
+ * `EADDRINUSE`, so the guard around `listen` never fires, and the first brain
+ * lives on listening to an inode nothing can reach: the PR #949 zombie.
+ *
+ * The sync-host loop's socket-liveness abort used to catch this incidentally,
+ * because the loser was still inside that loop when the socket went live.
+ * Binding before the sync host removed that accident, so make the check
+ * explicit: remember the inode we bound and end the brain if the path stops
+ * pointing at it. The supervisor then restarts us, and the restarted brain
+ * finds the rival's live socket and reports `socket_owned_by_other` instead of
+ * squatting silently.
+ *
+ * Windows named pipes are exempt: a pipe name is a kernel object with no
+ * directory entry to steal, and a bound pipe can never be probed as stale.
+ */
+export function monitorBrainSocketOwnership(
+  socketPath: string,
+  onLost: (reason: "removed" | "replaced") => void,
+  options: {
+    intervalMs?: number;
+    readInode?: (target: string) => bigint | null;
+  } = {},
+): () => void {
+  if (isAdeRuntimeNamedPipePath(socketPath)) return () => {};
+  const readInode = options.readInode ?? readRuntimeSocketInode;
+  const ownInode = readInode(socketPath);
+  // No inode to compare against (a platform or filesystem that does not report
+  // one) means this guard cannot run. Fail open: a brain with no watchdog is
+  // strictly better than one that ends itself on an unreadable stat.
+  if (ownInode == null) return () => {};
+  let done = false;
+  const timer = setInterval(() => {
+    if (done) return;
+    const current = readInode(socketPath);
+    if (current === ownInode) return;
+    done = true;
+    clearInterval(timer);
+    onLost(current == null ? "removed" : "replaced");
+  }, Math.max(250, options.intervalMs ?? BRAIN_SOCKET_OWNERSHIP_POLL_MS));
+  timer.unref?.();
+  return () => {
+    done = true;
+    clearInterval(timer);
+  };
 }
 
 function monitorRuntimeParentProcess(onGone: () => void): () => void {
@@ -19272,11 +20433,14 @@ function formatSessionLifecycle(value: unknown): string {
   const snoozed = Number.isFinite(snoozedUntilMs) && snoozedUntilMs > now;
   const wakeLabel = snoozed ? snoozeWakeLabel(snoozedUntil, now) : null;
   const indefinite = isIndefiniteSnooze(snoozedUntil, now);
+
   return renderKeyValues("ADE session lifecycle", [
     ["session", record.sessionId ?? record.id],
     ["title", record.title],
     ["lane", record.laneId],
+    ["status", sessionStatusLine(record, now, snoozed)],
     ["runtime state", record.runtimeState],
+    ["agent processes", sessionRuntimeProcessLine(record, now)],
     ["settled at", record.settledAt],
     ["settle override", record.settleOverride],
     ["status note", record.statusNote],
@@ -19290,6 +20454,61 @@ function formatSessionLifecycle(value: unknown): string {
     ["woke reason", record.wokeReason ?? record.reason],
     ["ok", record.ok],
   ]);
+}
+
+/**
+ * What `ade session show` says a session is DOING, as opposed to which columns
+ * it has. `runtime state` alone reads `idle` for a chat that is holding a warm
+ * agent process and two background jobs open — the state people were dropping
+ * to `ps` to diagnose.
+ *
+ * The word, its elapsed, and the snooze overlay all come from the shared
+ * presentation helpers the Work rows and `ade code` use, so this line and the
+ * `snoozed` / `wakes` lines below it cannot tell two different stories.
+ * Undefined for the mutation acks that share this formatter — they carry no
+ * `status`, and `renderKeyValues` drops the row.
+ */
+function sessionStatusLine(record: JsonObject, now: number, snoozed: boolean): string | undefined {
+  // `session.get` answers with a TerminalSessionSummary. The formatter takes an
+  // opaque record because it also renders acks, and `status` is what tells the
+  // two apart.
+  if (!asString(record.status)) return undefined;
+  const summary = record as unknown as TerminalSessionSummary;
+  const input = { ...canonicalInputFromSummary(summary), nowMs: now };
+  const canonical = sessionCanonicalUiState(input);
+  // Deliberately no `snoozeWakeLabel`: the shared module would then make the
+  // return ticket the whole status ("in 40 minutes"), which reads as a status
+  // nowhere else and duplicates the `wakes` line three rows down. The bare word
+  // is the status; the timing already has its own line.
+  const presentation = sessionStatusDisplay(input, { snoozed });
+  if (!presentation) return undefined;
+  const elapsed = sessionElapsedLabel(summary, presentation, canonical.phase, canonical.liveness, now);
+  return elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+}
+
+/**
+ * The agent SDK processes a session is holding open, with their ages.
+ *
+ * Reads the raw record rather than the summary type: these entries arrive as
+ * JSON over the action boundary, so their shape is a claim to check, not one to
+ * assert. A pid we cannot read is dropped rather than printed as `pid undefined`.
+ */
+function sessionRuntimeProcessLine(record: JsonObject, now: number): string | undefined {
+  const entries = Array.isArray(record.runtimeProcesses) ? record.runtimeProcesses : [];
+  const rendered = entries
+    .map((entry) => {
+      const info = isRecord(entry) ? entry : null;
+      const pid = typeof info?.pid === "number" && Number.isInteger(info.pid) ? info.pid : null;
+      if (pid == null) return null;
+      const startedMs = Date.parse(asString(info?.startedAt) ?? "");
+      const age = Number.isFinite(startedMs)
+        ? formatWorkingDuration(Math.max(0, now - startedMs))
+        : null;
+      return age ? `pid ${pid} (${age})` : `pid ${pid}`;
+    })
+    .filter((entry): entry is string => entry !== null)
+    .join(", ");
+  return rendered || undefined;
 }
 
 /**
@@ -19443,6 +20662,56 @@ function formatIosSimApps(value: unknown): string {
   );
 }
 
+function formatIosSimLaunch(value: unknown): string {
+  const session = isRecord(value) ? value : {};
+  const capabilities = isRecord(session.capabilities) ? session.capabilities : {};
+  const capabilityLabel = (key: string): string =>
+    capabilities[key] === true ? "yes" : "no";
+  // Four segments, not the shared default of two: a CLI status line has the
+  // width for it, and lane worktrees nest four deep (`<repo>/.ade/worktrees/<lane>`).
+  const buildRootPath = asString(session.buildRoot);
+  const buildRootLabel = buildRootPath
+    ? abbreviatePathTail(buildRootPath, 4)
+    : "unknown";
+  const lines = [
+    renderKeyValues("ADE iOS simulator launch", [
+      ["app", session.appName ?? session.bundleId],
+      ["bundle", session.bundleId],
+      [
+        "device",
+        session.deviceName
+          ? `${session.deviceName} (${session.deviceUdid})`
+          : session.deviceUdid,
+      ],
+      ["target", session.targetId],
+      ["lane", session.laneId],
+      ["mode", session.mode],
+      [
+        "simulator",
+        session.keepSimulatorInBackground === false ? "foreground" : "background",
+      ],
+      ["session", session.id],
+      ["started", session.startedAt],
+      [
+        "tap/type/drag/inspect",
+        [
+          capabilityLabel("canTap"),
+          capabilityLabel("canType"),
+          capabilityLabel("canDrag"),
+          capabilityLabel("canInspect"),
+        ].join("/"),
+      ],
+    ]),
+    `build root: ${buildRootLabel}`,
+  ];
+  if (session.usedInstalledBinary === true) {
+    lines.push(
+      "warning: launched a prebuilt binary — current changes not included.",
+    );
+  }
+  return lines.join("\n");
+}
+
 function formatIosSimStream(value: unknown): string {
   const status = isRecord(value) ? value : {};
   return renderKeyValues("ADE iOS simulator live view", [
@@ -19493,6 +20762,9 @@ function formatIosSimSnapshot(value: unknown): string {
       ["elements", elements.length],
       ["providers", providerSummary],
     ]),
+    // Printed raw rather than as a table cell: agents Read this path back,
+    // and the key/value renderer truncates long values.
+    asString(screenshot.filePath) ? `file: ${asString(screenshot.filePath)}` : "",
     elements.length ? "" : "",
     elements.length
       ? renderTable(
@@ -20201,8 +21473,16 @@ function formatAccountMachines(value: unknown): string {
         return machine ? [machine] : [];
       })
     : [];
+  // `status` answers "can this be dialled"; `presence` answers "is it awake,
+  // and on what power" — the same second line the desktop machine row and the
+  // iOS roster render, from the same shared helper, so the three cannot
+  // disagree about whether a Mac with a shut lid is asleep or merely quiet.
+  // `connected` is deliberately not passed: this table marks no row as holding
+  // a live channel, and a surface that renders no such mark must not claim one.
+  let anyAsleep = false;
   const rows = machines.map((machine) => {
     const connectionState = accountMachineConnectionState(machine);
+    if (accountMachinePresence(machine) === "asleep") anyAsleep = true;
     const lastSeenAt = typeof machine.lastSeenAt === "number" && Number.isFinite(machine.lastSeenAt)
       ? new Date(machine.lastSeenAt).toLocaleString()
       : "never";
@@ -20210,18 +21490,129 @@ function formatAccountMachines(value: unknown): string {
       asString(machine.machineKey) ?? "—",
       accountMachineDisplayName(machine) ?? asString(machine.deviceId) ?? "Unnamed machine",
       connectionState,
+      machineStatusLine(machine) ?? "—",
       lastSeenAt,
     ];
   });
   return [
     renderTable(
-      ["machine key", "name", "status", "last seen"],
+      ["machine key", "name", "status", "presence", "last seen"],
       rows,
       "No machines are registered to this ADE account.",
     ),
     "",
     "Connect with: ade machines connect <machine-key>",
+    // Connecting IS what wakes a sleeping machine — the same thing the desktop
+    // row and the phone say by labelling the button "Wake". Stated only when a
+    // machine on this account is actually asleep, so the hint never becomes
+    // noise on a list of awake machines.
+    ...(anyAsleep ? ["A machine listed asleep wakes when you connect to it."] : []),
   ].join("\n");
+}
+
+/**
+ * `ade brain status` and `ade runtime status` in --text mode.
+ *
+ * `starting` — the CLI's read of the desktop's `brain_starting` state — only
+ * means something if a human can see it, so it is printed here with the same
+ * wording as the `ade doctor` Brain row, next to the last-failure line it has
+ * to be read against. Accepts both shapes: `ade brain status` wraps the runtime
+ * result, `ade runtime status` is that result.
+ */
+function brainStatusFormatter(rest: string[]): FormatterId | undefined {
+  const sub = rest.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? "status";
+  return sub === "status" || sub === "show" ? "brain-status" : undefined;
+}
+
+export function formatBrainStatus(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const runtime = isRecord(result.runtime) ? result.runtime : result;
+  const service = isRecord(result.service) ? result.service : null;
+  const starting = result.starting === true || runtime.starting === true;
+  return renderKeyValues("ADE brain", [
+    ["ok", result.ok],
+    ["endpoint", runtime.running === true ? "running" : "not responding"],
+    ["socket", runtime.socketPath],
+    ["version", runtime.version],
+    ["pid", runtime.pid],
+    [
+      "starting",
+      starting
+        ? "yes \u00b7 the background service is up and its brain is coming up; nothing to repair"
+        : null,
+    ],
+    ["channel", runtime.packageChannel],
+    ["build", runtime.buildHash],
+    ["role", runtime.defaultRole],
+    ["project", runtime.projectRoot],
+    ["service", service ? service.message : null],
+    ["port", result.port],
+    ["connected peers", result.connectedPeers],
+    ["last failure", result.lastFailure],
+    ["message", starting ? null : result.message],
+  ]);
+}
+
+/**
+ * `ade github app-auth status | clear | login` in --text mode.
+ *
+ * An agent reads this to answer one question: re-authorize now, or wait? Only
+ * `credentialState` answers it. A stored token whose 8-hour access token has
+ * lapsed is still `authorized` — it renews on use — so `expiresAt` alone reads
+ * as broken when nothing is. `blocked` means ADE has paused its own retries
+ * until `refreshBlockedUntil` and re-authorizing cannot help; `needs_reauth` is
+ * the only state that asks for a login. The generic record renderer prints
+ * `lastRefreshError` as JSON truncated at 96 columns, which cuts the reason in
+ * half, so the reason gets its own block here.
+ */
+export function formatGithubAppUserAuth(value: unknown): string {
+  if (!isRecord(value)) return "The GitHub App authorization status is not available.";
+  const credentialState = asString(value.credentialState);
+  const userLogin = asString(value.userLogin);
+  const refreshBlockedUntil = asString(value.refreshBlockedUntil);
+  const lastRefreshError = isRecord(value.lastRefreshError) ? value.lastRefreshError : null;
+  // One module answers "how is this credential judged" for every surface. It
+  // also carries the legacy fallback: an older host sends no credentialState,
+  // and the refresh token — never the 8-hour access token — decides the truth.
+  const accountState = deriveGithubAccountAuthState(value as unknown as GitHubAppUserAuthStatus);
+  const headline = ((): string => {
+    if (value.configured !== true) {
+      return "The ADE GitHub App is not configured on this machine.";
+    }
+    if (accountState === "valid") {
+      return `Authorized${userLogin ? ` as ${userLogin}` : ""}. ADE renews this credential on its own.`;
+    }
+    if (accountState === "blocked") {
+      return "Authorized, but renewal is paused after a transient failure. ADE retries on its own — do not re-authorize.";
+    }
+    if (accountState === "needs_reauth") {
+      return "Re-authorization is needed. Run `ade --role cto github app-auth login`.";
+    }
+    return "Not authorized. Run `ade --role cto github app-auth login`.";
+  })();
+  const rows: Array<[string, unknown]> = [
+    ["state", credentialState],
+    ["account", userLogin],
+    ["token", value.tokenStored === true ? "stored" : "not stored"],
+    ["access token expires", value.expiresAt],
+    ["refresh token expires", value.refreshTokenExpiresAt],
+    ["retry after", refreshBlockedUntil],
+    ["checked", value.checkedAt],
+    ["error", value.error],
+  ];
+  const sections = [headline, "", renderKeyValues("GitHub App authorization", rows)];
+  if (lastRefreshError) {
+    const kind = asString(lastRefreshError.kind) ?? "unknown";
+    const status = typeof lastRefreshError.status === "number" ? ` (HTTP ${lastRefreshError.status})` : "";
+    const at = asString(lastRefreshError.at);
+    sections.push(
+      "",
+      "Last renewal failure",
+      `  ${kind}${status}${at ? ` at ${at}` : ""}`,
+      `  ${asString(lastRefreshError.message) ?? "No detail was reported."}`,
+    );
+  }
+  return sections.join("\n");
 }
 
 function formatTextOutput(
@@ -20244,12 +21635,14 @@ function formatTextOutput(
         ["workspace", isRecord(value) ? value.workspaceRoot : null],
         ["socket", isRecord(value) ? value.socketPath : null],
       ]);
+    case "brain-status":
+      return formatBrainStatus(value);
     case "doctor": {
       const doctorRows = isRecord(value) && Array.isArray(value.rows)
         ? value.rows.filter(isRecord)
         : [];
       if (doctorRows.length > 0) {
-        return renderTable(
+        const table = renderTable(
           ["check", "status", "detail"],
           doctorRows.map((row) => [
             asString(row.label) ?? asString(row.key) ?? "Unknown",
@@ -20262,6 +21655,11 @@ function formatTextOutput(
           ]),
           "No health checks were returned.",
         );
+        // A failing row that these checks cannot explain is the case
+        // `ade report-issue` exists for: it reads local files only, so it still
+        // works on the machine where the brain will not come up.
+        if (!doctorRows.some((row) => row.status === "fail")) return table;
+        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue\` and file the printed report.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
@@ -20471,6 +21869,8 @@ function formatTextOutput(
       return formatIosSimDevices(value);
     case "ios-sim-apps":
       return formatIosSimApps(value);
+    case "ios-sim-launch":
+      return formatIosSimLaunch(value);
     case "ios-sim-stream":
       return formatIosSimStream(value);
     case "ios-sim-snapshot":
@@ -20539,6 +21939,8 @@ function formatTextOutput(
       return formatStorageMaintenance(value);
     case "update-status":
       return formatUpdateStatus(value);
+    case "github-app-auth":
+      return formatGithubAppUserAuth(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -20581,6 +21983,7 @@ function inferFormatter(
   if (label === "ios simulator status") return "ios-sim-status";
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";
+  if (label === "ios simulator launch") return "ios-sim-launch";
   if (
     label === "ios simulator live view start" ||
     label === "ios simulator live view status" ||
@@ -21297,6 +22700,7 @@ async function runGithubAppLogin(
           output: formatOutput(
             { ...status, status: "expired", error: "timed_out" },
             options,
+            "github-app-auth",
           ),
           exitCode: 1,
         };
@@ -21309,10 +22713,15 @@ async function runGithubAppLogin(
       );
       const poll = await runGithubAction("pollAppUserDeviceAuth", { sessionId });
       const status = asString(poll.status);
-      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
+      // The typed printer reads an auth status. When the host returned none,
+      // `authStatus` is the poll envelope instead, and printing that as an auth
+      // status would report "not configured" for a machine that is configured.
+      const polledAuthStatus = isRecord(poll.authStatus) ? poll.authStatus : null;
+      const authStatus = polledAuthStatus ?? poll;
+      const authFormatter: FormatterId | undefined = polledAuthStatus ? "github-app-auth" : undefined;
       if (status === "authorized") {
         process.stderr.write("GitHub App authorized.\n");
-        return { output: formatOutput(authStatus, options), exitCode: 0 };
+        return { output: formatOutput(authStatus, options, authFormatter), exitCode: 0 };
       }
       if (status === "pending" || status === "slow_down") {
         if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
@@ -21325,7 +22734,7 @@ async function runGithubAppLogin(
         asString(poll.message) ??
         `GitHub device authorization ${status ?? "failed"}.`;
       process.stderr.write(`${message}\n`);
-      return { output: formatOutput(authStatus, options), exitCode: 1 };
+      return { output: formatOutput(authStatus, options, authFormatter), exitCode: 1 };
     }
   } finally {
     await connection.close();
@@ -21765,6 +23174,9 @@ async function runCli(
     const notice = detectUnmergedLaneCreateNudge(plan.laneCreationNudge);
     if (notice) process.stderr.write(`${notice}\n`);
   }
+  if (plan.kind === "execute" && plan.progressNotice) {
+    process.stderr.write(`${plan.progressNotice}\n`);
+  }
   if (
     plan.kind === "execute"
     && plan.machineOnly
@@ -21901,6 +23313,42 @@ async function runCli(
         throw error;
       }
     }
+    if (plan.kind === "report-issue") {
+      const { projectRoot } = resolveRoots(parsed.options);
+      const built = buildCliDiagnosticReport({
+        surface: "cli",
+        projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
+        cliVersion: VERSION,
+      });
+      // Copy-then-open, the same order the desktop button uses: the issue
+      // template asks the user to paste the report from their clipboard, so
+      // opening it without copying first sends them to a form with nothing to
+      // paste. Both steps are best effort and the report is printed regardless.
+      const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
+      // Saved BEFORE the upload is attempted, so the path printed under a
+      // failure is a file that already exists rather than one written after we
+      // knew we needed it.
+      const savedPath = plan.send ? saveDiagnosticReportCopy(built, { surface: "cli" }) : null;
+      // Sending is opt-in and never blocks the printed report: a failed upload
+      // still leaves the user holding everything they need to file by hand.
+      const sent = plan.send ? await sendDiagnosticReport(built) : null;
+      if (parsed.options.text) {
+        const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
+        const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
+        return {
+          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
+          exitCode: 0,
+        };
+      }
+      return {
+        output: formatOutput(
+          buildReportIssuePayload(built, openedIssue, sent, savedPath),
+          parsed.options,
+          undefined,
+        ),
+        exitCode: 0,
+      };
+    }
     if (plan.kind === "doctor") {
       const result = await runDoctorCommand(plan.online, parsed.options, {
         resolveMachineRuntimeSocketPath,
@@ -21926,14 +23374,14 @@ async function runCli(
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);
       return {
-        output: formatOutput(result, parsed.options, undefined),
+        output: formatOutput(result, parsed.options, brainStatusFormatter(plan.rest)),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
     }
     if (plan.kind === "brain") {
       const result = await runBrainCommand(plan.rest, parsed.options);
       return {
-        output: formatOutput(result, parsed.options, undefined),
+        output: formatOutput(result, parsed.options, brainStatusFormatter(plan.rest)),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,
       };
     }
@@ -22065,6 +23513,11 @@ async function main(): Promise<void> {
     }
     if (error instanceof CliToolError) {
       await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
+      const iosHint = iosSimulatorErrorHint(
+        error.message,
+        iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
+      );
+      if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
       if (error.details !== undefined) {
         await writeProcessOutput(
           process.stderr,
@@ -22113,9 +23566,12 @@ export {
   checkLinearReadiness,
   detectUnmergedLaneCreateNudge,
   findProjectRoots,
+  formatDiagnosticError,
   formatOutput,
   graphWaitState,
   inferFormatter,
+  iosSimulatorErrorHint,
+  iosSimulatorSubcommandFromArgv,
   applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,

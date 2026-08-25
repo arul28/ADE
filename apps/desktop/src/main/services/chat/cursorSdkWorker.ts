@@ -27,12 +27,15 @@ import {
 } from "./cursorSdkProtocol";
 import {
   cursorSdkResultWithStreamFailure,
+  isCursorSdkSandboxUnsupportedError,
   readCursorSdkRunFailureDetail,
   sdkErrorCode,
   sdkErrorDetail,
 } from "./cursorSdkErrors";
 import {
   allowCursorHook,
+  buildCursorSdkLocalRunOptions,
+  cursorSdkLocalAgentMode,
   cursorSdkSettingSources,
   denyCursorHook,
   evaluateCursorSdkHook,
@@ -40,6 +43,7 @@ import {
 } from "./cursorSdkPolicy";
 import { ensureCursorSdkUserHook } from "./cursorSdkHooks";
 import { loadCursorSdk } from "../ai/cursorSdkLoader";
+import { buildCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
@@ -72,6 +76,8 @@ const CLOUD_MODEL_VALIDATION_TTL_MS = 120_000;
 const activeRequests = new Map<string, CursorSdkWorkerRequest["type"]>();
 const reportedRequests = new Set<string>();
 let unhandledExitScheduled = false;
+let sandboxSupported = true;
+let lastLocalPermissionFingerprint: string | null = null;
 
 function asCursorSdkRunStoreLike(store: unknown): CursorSdkRunStoreLike | null {
   return store && typeof store === "object" ? store as CursorSdkRunStoreLike : null;
@@ -216,8 +222,75 @@ function shouldUseHttp1ForAgent(env: NodeJS.ProcessEnv = process.env): boolean {
   return envFlag(env.ADE_CURSOR_SDK_USE_HTTP1_FOR_AGENT) ?? true;
 }
 
-function cursorSdkAgentMode(policy: CursorSdkPermissionPolicy): CursorSdkAgentMode {
-  return policy.chatMode === "agent" ? "agent" : "plan";
+function localPermissionFingerprint(policy: CursorSdkPermissionPolicy): string {
+  const local = buildCursorSdkLocalRunOptions(policy, { sandboxSupported });
+  return JSON.stringify({
+    mode: local.mode,
+    tools: local.tools ?? null,
+    disallowedTools: local.disallowedTools ?? null,
+    autoReview: local.autoReview,
+    sandboxDirective: local.sandboxDirective,
+  });
+}
+
+function buildLocalAgentOptions(init: CursorSdkWorkerInit): AgentOptionsWithAdeMode {
+  const local = buildCursorSdkLocalRunOptions(init.policy, { sandboxSupported });
+  return {
+    apiKey: init.apiKey?.trim() || undefined,
+    model: buildCursorModelSelection(init.modelSdkId, init.modelParams),
+    mode: local.mode,
+    name: init.agentName ?? undefined,
+    ...(local.tools ? { tools: local.tools as AgentOptions["tools"] } : {}),
+    ...(local.disallowedTools ? { disallowedTools: local.disallowedTools as AgentOptions["disallowedTools"] } : {}),
+    local: {
+      cwd: init.laneRoot,
+      settingSources: cursorSdkSettingSources(init.policy),
+      // See CursorSdkSandboxDirective: absent is a third state, not a falsy off.
+      ...(local.sandboxDirective === "inherit"
+        ? {}
+        : { sandboxOptions: { enabled: local.sandboxDirective === "enable" } }),
+      autoReview: local.autoReview,
+      enableAgentRetries: true,
+    },
+    ...(init.mcpServers ? { mcpServers: init.mcpServers as AgentOptions["mcpServers"] } : {}),
+  };
+}
+
+async function createOrResumeLocalAgent(options: AgentOptionsWithAdeMode): Promise<SdkAgent> {
+  if (!localAgentPlatform || !initState) {
+    throw new Error("Cursor SDK worker is not initialized.");
+  }
+  const existingId = agent?.agentId?.trim() || initState.agentId?.trim() || "";
+  return existingId
+    ? await localAgentPlatform.resumeAgent(existingId, options)
+    : await localAgentPlatform.createAgent(options);
+}
+
+async function applyLocalAgentOptions(): Promise<AgentOptionsWithAdeMode> {
+  if (!initState) throw new Error("Cursor SDK worker is not initialized.");
+  const fingerprint = localPermissionFingerprint(initState.policy);
+  let options = buildLocalAgentOptions(initState);
+  if (agent && fingerprint === lastLocalPermissionFingerprint) return options;
+  try {
+    agent = await createOrResumeLocalAgent(options);
+    lastLocalPermissionFingerprint = fingerprint;
+    return options;
+  } catch (error) {
+    if (!isCursorSdkSandboxUnsupportedError(error) || !sandboxSupported) {
+      throw error;
+    }
+    sandboxSupported = false;
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK sandbox is unavailable in this environment; continuing with ADE hook denials.",
+      detail: { error: errorMessage(error) },
+    });
+    options = buildLocalAgentOptions(initState);
+    agent = await createOrResumeLocalAgent(options);
+    lastLocalPermissionFingerprint = localPermissionFingerprint(initState.policy);
+    return options;
+  }
 }
 
 
@@ -420,25 +493,11 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   localAgentPlatform = await sdk.createAgentPlatform(platformOptions);
   localAgentStore = asCursorSdkRunStoreLike(localAgentPlatform.store);
   const useHttp1ForAgent = shouldUseHttp1ForAgent();
-  // Keep these fields aligned with Cursor's TypeScript SDK docs:
-  // local.cwd selects the workspace, the platform isolates durable ADE state,
-  // sandboxOptions is terminal policy, and hooks gate tool execution.
-  const agentOptions: AgentOptionsWithAdeMode = {
-    apiKey: init.apiKey?.trim() || undefined,
-    model: buildCursorModelSelection(init.modelSdkId, init.modelParams),
-    mode: cursorSdkAgentMode(init.policy),
-    name: init.agentName ?? undefined,
-    local: {
-      cwd: init.laneRoot,
-      settingSources: cursorSdkSettingSources(init.policy),
-      sandboxOptions: { enabled: false },
-      enableAgentRetries: true,
-    },
-    ...(init.mcpServers ? { mcpServers: init.mcpServers as AgentOptions["mcpServers"] } : {}),
-  };
-  agent = init.agentId?.trim()
-    ? await localAgentPlatform.resumeAgent(init.agentId.trim(), agentOptions)
-    : await localAgentPlatform.createAgent(agentOptions);
+  // Local-only: tools/disallowedTools/autoReview/sandboxOptions live on this
+  // create/resume path. The SDK does not persist tools — pass them again on
+  // resume. Never put tools on cloud create (ConfigurationError).
+  const agentOptions = await applyLocalAgentOptions();
+  if (!agent) throw new Error("Cursor SDK worker failed to create a local agent.");
   post({
     type: "log",
     level: "debug",
@@ -452,6 +511,10 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       localStore: "platform",
       useHttp1ForAgent,
       mode: agentOptions.mode ?? null,
+      autoReview: agentOptions.local?.autoReview === true,
+      sandboxDirective: buildCursorSdkLocalRunOptions(init.policy, { sandboxSupported }).sandboxDirective,
+      tools: agentOptions.tools ?? null,
+      disallowedTools: agentOptions.disallowedTools ?? null,
     },
   });
   post({ type: "ready", agentId: agent.agentId, modelSdkId: init.modelSdkId, transport: "sdk" });
@@ -463,21 +526,36 @@ async function sendPrompt(payload: {
   images?: Array<{ data: string; mimeType: string }>;
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
-  force?: boolean;
+  forceExpireActiveRun?: boolean;
   idempotencyKey?: string | null;
   mode?: CursorSdkAgentMode;
 }): Promise<unknown> {
   if (!agent || !initState) throw new Error("Cursor SDK worker is not initialized.");
+  try {
+    await applyLocalAgentOptions();
+  } catch (error) {
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK local permission options could not be reapplied; continuing with ADE hooks.",
+      detail: { error: errorMessage(error) },
+    });
+  }
+  if (!agent) throw new Error("Cursor SDK worker is not initialized.");
   const message = payload.images?.length
     ? { text: payload.promptText, images: payload.images }
     : payload.promptText;
-  const mode = payload.mode ?? cursorSdkAgentMode(initState.policy);
+  const mode = payload.mode ?? cursorSdkLocalAgentMode(initState.policy);
   const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
   const sendOptions: SendOptionsWithAdeMode = {
     model: buildCursorModelSelection(payload.modelSdkId, payload.modelParams),
     mode,
     ...(idempotencyKey ? { idempotencyKey } : {}),
-    local: { force: payload.force === true },
+    // `local.force` expires a stuck active persisted run before starting this
+    // message as a new follow-up. Only ADE's recovery re-send sets it, after a
+    // run went silent or died on the wire. A normal send must never expire an
+    // active run — that would discard a turn that is genuinely still working.
+    local: { force: payload.forceExpireActiveRun === true },
   };
   currentRun = await agent.send(message, sendOptions);
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
@@ -604,6 +682,17 @@ async function updatePolicy(policy: CursorSdkPermissionPolicy): Promise<void> {
   if (!initState) throw new Error("Cursor SDK worker is not initialized.");
   initState.policy = policy;
   ensureCursorSdkUserHook({ userHomeDir: initState.userHomeDir });
+  if (currentRun) return;
+  try {
+    await applyLocalAgentOptions();
+  } catch (error) {
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK policy updated hooks but local agent options could not be reapplied.",
+      detail: { error: errorMessage(error) },
+    });
+  }
 }
 
 async function dispose(): Promise<void> {
@@ -637,6 +726,8 @@ async function dispose(): Promise<void> {
   agent = null;
   localAgentPlatform = null;
   localAgentStore = null;
+  sandboxSupported = true;
+  lastLocalPermissionFingerprint = null;
   if (hookServer) {
     await new Promise<void>((resolve) => hookServer!.close(() => resolve())).catch(() => {});
     hookServer = null;
@@ -659,11 +750,16 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
   if (payload.startingRef?.trim()) repo.startingRef = payload.startingRef.trim();
   if (payload.prUrl?.trim()) repo.prUrl = payload.prUrl.trim();
 
+  const extras = buildCursorCloudCreateCloudExtras({
+    envVars: payload.envVars,
+  });
+
   const cloud: NonNullable<AgentOptions["cloud"]> = {
     repos: [repo],
     workOnCurrentBranch: payload.workOnCurrentBranch,
     autoCreatePR: payload.autoCreatePR === true,
     skipReviewerRequest: payload.skipReviewerRequest !== false,
+    ...extras,
   };
   if (payload.envType) {
     cloud.env = payload.envName?.trim()
@@ -1032,11 +1128,22 @@ async function dispatch(req: CursorSdkWorkerRequest): Promise<unknown> {
     case "cloud.artifacts.list":
     case "cloud.artifacts.download":
       return handleCloudRequest(req);
+    case "agent.getUsage": {
+      const { Agent } = await getSdk();
+      return Agent.getUsage(req.payload.agentId, {
+        apiKey: req.payload.apiKey?.trim() || undefined,
+        ...(req.payload.runId?.trim() ? { runId: req.payload.runId.trim() } : {}),
+      });
+    }
     case "hook_response": {
       const resolve = hookWaiters.get(req.requestId);
       hookWaiters.delete(req.requestId);
       resolve?.(req.payload);
       return {};
+    }
+    default: {
+      const _exhaustive: never = req;
+      throw new Error(`Unsupported Cursor SDK worker request ${(_exhaustive as { type: string }).type}`);
     }
   }
 }

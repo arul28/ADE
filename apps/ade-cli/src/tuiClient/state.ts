@@ -4,6 +4,40 @@ import path from "node:path";
 
 export type AdeCodeDraftKind = "chat" | "cli";
 
+/**
+ * Provider-scoped chat settings remembered per project. New chats and the
+ * /model wizard's settings step pre-fill from the last time that provider was
+ * used *in this project*, so switching provider restores the permission /
+ * effort / fast / interface combination the user last chose for it instead of
+ * resetting to registry defaults.
+ *
+ * Every field is a plain string/boolean (never a union imported from the chat
+ * types) so a value written by a newer build round-trips through an older one
+ * unchanged, and normalization never has to drop an unknown mode.
+ */
+export type AdeCodeProviderSettingsMemory = {
+  reasoningEffort: string | null;
+  fastMode: boolean;
+  interfaceMode: AdeCodeDraftKind;
+  permissionMode: string;
+  interactionMode: string;
+  claudePermissionMode: string;
+  codexApprovalPolicy: string;
+  codexSandbox: string;
+  codexConfigSource: string;
+  opencodePermissionMode: string;
+  droidPermissionMode: string;
+  cursorModeId: string | null;
+};
+
+/** Last model + settings actually used for a chat in a project. */
+export type AdeCodeModelMemory = AdeCodeProviderSettingsMemory & {
+  provider: string;
+  modelId: string | null;
+  model: string;
+  displayName: string;
+};
+
 export type AdeCodeState = {
   lastChatByLane: Record<string, string>;
   lastChatByProjectLane: Record<string, Record<string, string>>;
@@ -11,6 +45,10 @@ export type AdeCodeState = {
   lastLaneByProject: Record<string, string>;
   draftKind: AdeCodeDraftKind;
   draftKindByProject: Record<string, AdeCodeDraftKind>;
+  /** projectRoot → last model + settings used to start a chat. */
+  lastModelByProject: Record<string, AdeCodeModelMemory>;
+  /** projectRoot → provider → last settings used for that provider. */
+  providerSettingsByProject: Record<string, Record<string, AdeCodeProviderSettingsMemory>>;
 };
 
 const STATE_DIR = path.join(os.homedir(), ".ade");
@@ -102,6 +140,70 @@ export function saveAdeCodeProjectStateAsync(
   }));
 }
 
+/** Last model + settings used to start a chat in this project (null when none). */
+export function scopedAdeCodeModelMemory(
+  state: AdeCodeState,
+  projectRoot: string,
+): AdeCodeModelMemory | null {
+  // Defensive: callers (and test doubles) can hand us a state object written by
+  // an older build that predates these maps.
+  return state.lastModelByProject?.[normalizeProjectKey(projectRoot)] ?? null;
+}
+
+/** Last settings used for one provider in this project (null when none). */
+export function scopedAdeCodeProviderSettings(
+  state: AdeCodeState,
+  projectRoot: string,
+  provider: string,
+): AdeCodeProviderSettingsMemory | null {
+  return state.providerSettingsByProject?.[normalizeProjectKey(projectRoot)]?.[provider] ?? null;
+}
+
+/**
+ * Record the model + settings a chat was started (or retargeted) with. Writes
+ * both the project's "last model" and the per-provider settings slot, under the
+ * same cross-process lock the lane/chat memory uses.
+ */
+export function saveAdeCodeModelMemory(projectRoot: string, memory: AdeCodeModelMemory): void {
+  void saveAdeCodeModelMemoryAsync(projectRoot, memory);
+}
+
+export function saveAdeCodeModelMemoryAsync(
+  projectRoot: string,
+  memory: AdeCodeModelMemory,
+): Promise<void> {
+  return enqueueStateWrite(() => withStateLock(async () => {
+    const current = await readAdeCodeStateUnlocked();
+    const projectKey = normalizeProjectKey(projectRoot);
+    const normalized = normalizeModelMemory(memory);
+    if (!normalized) return;
+    current.lastModelByProject[projectKey] = normalized;
+    const byProvider = current.providerSettingsByProject[projectKey] ?? {};
+    byProvider[normalized.provider] = providerSettingsFromModelMemory(normalized);
+    current.providerSettingsByProject[projectKey] = byProvider;
+    await writeAdeCodeStateUnlocked(current);
+  }));
+}
+
+export function providerSettingsFromModelMemory(
+  memory: AdeCodeModelMemory | AdeCodeProviderSettingsMemory,
+): AdeCodeProviderSettingsMemory {
+  return {
+    reasoningEffort: memory.reasoningEffort,
+    fastMode: memory.fastMode,
+    interfaceMode: memory.interfaceMode,
+    permissionMode: memory.permissionMode,
+    interactionMode: memory.interactionMode,
+    claudePermissionMode: memory.claudePermissionMode,
+    codexApprovalPolicy: memory.codexApprovalPolicy,
+    codexSandbox: memory.codexSandbox,
+    codexConfigSource: memory.codexConfigSource,
+    opencodePermissionMode: memory.opencodePermissionMode,
+    droidPermissionMode: memory.droidPermissionMode,
+    cursorModeId: memory.cursorModeId,
+  };
+}
+
 export function flushAdeCodeStateWrites(): Promise<void> {
   return stateWriteQueue;
 }
@@ -117,6 +219,8 @@ export function normalizeAdeCodeState(value: unknown): AdeCodeState {
     lastLaneByProject: normalizeStringRecord(parsed.lastLaneByProject),
     draftKind: normalizeDraftKind(parsed.draftKind),
     draftKindByProject: normalizeDraftKindRecord(parsed.draftKindByProject),
+    lastModelByProject: normalizeModelMemoryRecord(parsed.lastModelByProject),
+    providerSettingsByProject: normalizeProviderSettingsRecord(parsed.providerSettingsByProject),
   };
 }
 
@@ -128,6 +232,8 @@ function emptyAdeCodeState(): AdeCodeState {
     lastLaneByProject: {},
     draftKind: "chat",
     draftKindByProject: {},
+    lastModelByProject: {},
+    providerSettingsByProject: {},
   };
 }
 
@@ -231,6 +337,75 @@ function normalizeNestedStringRecord(value: unknown): Record<string, Record<stri
 
 function normalizeDraftKind(value: unknown): AdeCodeDraftKind {
   return value === "cli" ? "cli" : "chat";
+}
+
+function optionalString(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim().length > 0 ? value : fallback;
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function normalizeProviderSettings(value: unknown): AdeCodeProviderSettingsMemory | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const parsed = value as Partial<AdeCodeProviderSettingsMemory>;
+  return {
+    reasoningEffort: nullableString(parsed.reasoningEffort),
+    fastMode: parsed.fastMode === true,
+    interfaceMode: normalizeDraftKind(parsed.interfaceMode),
+    permissionMode: optionalString(parsed.permissionMode, "default"),
+    interactionMode: optionalString(parsed.interactionMode, "default"),
+    claudePermissionMode: optionalString(parsed.claudePermissionMode, "default"),
+    codexApprovalPolicy: optionalString(parsed.codexApprovalPolicy, "on-request"),
+    codexSandbox: optionalString(parsed.codexSandbox, "workspace-write"),
+    codexConfigSource: optionalString(parsed.codexConfigSource, "flags"),
+    opencodePermissionMode: optionalString(parsed.opencodePermissionMode, "edit"),
+    droidPermissionMode: optionalString(parsed.droidPermissionMode, "auto-low"),
+    cursorModeId: nullableString(parsed.cursorModeId),
+  };
+}
+
+function normalizeModelMemory(value: unknown): AdeCodeModelMemory | null {
+  const settings = normalizeProviderSettings(value);
+  if (!settings) return null;
+  const parsed = value as Partial<AdeCodeModelMemory>;
+  const provider = typeof parsed.provider === "string" ? parsed.provider.trim() : "";
+  if (!provider) return null;
+  return {
+    ...settings,
+    provider,
+    modelId: nullableString(parsed.modelId),
+    model: optionalString(parsed.model, ""),
+    displayName: optionalString(parsed.displayName, ""),
+  };
+}
+
+function normalizeModelMemoryRecord(value: unknown): Record<string, AdeCodeModelMemory> {
+  const normalized: Record<string, AdeCodeModelMemory> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  for (const [key, entry] of Object.entries(value)) {
+    const memory = normalizeModelMemory(entry);
+    if (memory) normalized[key] = memory;
+  }
+  return normalized;
+}
+
+function normalizeProviderSettingsRecord(
+  value: unknown,
+): Record<string, Record<string, AdeCodeProviderSettingsMemory>> {
+  const normalized: Record<string, Record<string, AdeCodeProviderSettingsMemory>> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  for (const [projectKey, providers] of Object.entries(value)) {
+    if (!providers || typeof providers !== "object" || Array.isArray(providers)) continue;
+    const child: Record<string, AdeCodeProviderSettingsMemory> = {};
+    for (const [provider, settings] of Object.entries(providers)) {
+      const parsed = normalizeProviderSettings(settings);
+      if (parsed) child[provider] = parsed;
+    }
+    if (Object.keys(child).length > 0) normalized[projectKey] = child;
+  }
+  return normalized;
 }
 
 function normalizeDraftKindRecord(value: unknown): Record<string, AdeCodeDraftKind> {

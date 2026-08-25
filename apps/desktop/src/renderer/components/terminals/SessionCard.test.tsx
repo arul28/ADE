@@ -679,6 +679,52 @@ describe("SessionCard status slot", () => {
     expect(screen.getByTestId("session-snooze-button")).toBeTruthy();
   });
 
+  it("offers settle on a row that is only running because of background work", () => {
+    // A background-promoted row is not mid-turn — its turn already ended. Settle
+    // is the one control that stops that work, so hiding it left a session
+    // holding a warm agent open with an honest label and no way to act on it.
+    render(
+      <SessionCard
+        session={makeSession({
+          status: "running",
+          runtimeState: "idle",
+          toolType: "claude-chat",
+          activeBackgroundTaskCount: 2,
+          backgroundWork: { workingCount: 2, monitoringCount: 0 },
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("session-settle-button")).toBeTruthy();
+  });
+
+  it("still hides settle while a turn is genuinely mid-flight", () => {
+    // The other half of the same predicate: exposing Settle on a background-
+    // promoted row must not expose it on a live turn, where filing the row as
+    // done claims an outcome that has not happened.
+    render(
+      <SessionCard
+        session={makeSession({
+          status: "running",
+          runtimeState: "running",
+          toolType: "claude-chat",
+          activeBackgroundTaskCount: 2,
+          backgroundWork: { workingCount: 2, monitoringCount: 0 },
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId("session-settle-button")).toBeNull();
+  });
+
   it("offers un-settle on an already settled row and shows its timestamp instead of a status", () => {
     const unsettle = vi.fn().mockResolvedValue(undefined);
     (window as unknown as { ade: unknown }).ade = {
@@ -2022,5 +2068,38 @@ describe("SessionCard hover detail card", () => {
     } finally {
       window.removeEventListener("ade:work:select-session", handler);
     }
+  });
+});
+
+describe("SessionCard Cursor Cloud link", () => {
+  it("puts a cloud glyph left of the provider logo and opens cursor.com without selecting the row", () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    (window as unknown as { ade: { app: { openExternal: typeof openExternal } } }).ade = {
+      app: { openExternal },
+    };
+    const onSelect = vi.fn();
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "cursor",
+          cursorCloudAgentId: "bc-749a9047-4f2a-470c-8425-5087b725ba65",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={onSelect}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const link = screen.getByTestId("session-cursor-cloud-link");
+    const logo = screen.getByTestId("tool-logo");
+    expect(link.nextElementSibling).toBe(logo);
+
+    fireEvent.click(link);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(openExternal).toHaveBeenCalledWith(
+      "https://cursor.com/agents?id=bc-749a9047-4f2a-470c-8425-5087b725ba65",
+    );
+    expect(container.textContent).not.toContain("Live view");
   });
 });

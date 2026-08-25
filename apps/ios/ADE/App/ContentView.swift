@@ -173,6 +173,23 @@ struct ContentView: View {
       } message: { refusal in
         Text("\(refusal.pluginLabel) isn't on your computer, so this link has nothing to open.")
       }
+      .sheet(isPresented: $syncService.cursorCloudPanePresented) {
+        CursorCloudPaneSheet(syncService: syncService)
+          .environmentObject(syncService)
+      }
+      // Presented rather than bound to the request itself: the card's stage
+      // changes under a stable id as the wake runs, and `sheet(item:)` would
+      // keep rendering the state the card was opened with.
+      .sheet(isPresented: Binding(
+        get: { syncService.pendingMachineWake != nil },
+        set: { presented in
+          guard !presented else { return }
+          syncService.cancelPendingMachineWake()
+        }
+      )) {
+        MachineWakeCard()
+          .environmentObject(syncService)
+      }
       .alert("Share anonymous product usage?", isPresented: $analyticsConsentPresented) {
         Button("Don't share", role: .cancel) {
           ProductAnalytics.shared.setEnabled(false)
@@ -395,9 +412,12 @@ private struct WorkSessionNavigationModifier: ViewModifier {
     // changes; onChange alone misses the initial value before this root mounts.
     content.task(id: syncService.requestedWorkSessionNavigation?.id) {
       guard let request = syncService.requestedWorkSessionNavigation else { return }
-      guard await syncService.ensureAccountMachineForNavigation(
-        request.accountMachineKey
-      ),
+      // The session id is what lets the guard recover the owning machine of a
+      // link that names none — every widget link minted by an already-installed
+      // build is one of those. Only an externally-minted request offers it:
+      // this task also runs for the cold-launch restore, and resolving an owner
+      // there would turn a plain launch into a machine transition.
+      guard await syncService.ensureAccountMachineForNavigation(for: request),
       syncService.requestedWorkSessionNavigation?.id == request.id else { return }
       // A scoped or roster-resolved session may belong to any project. Keep
       // the machine-wide Hub mounted so it can activate and hydrate the target.

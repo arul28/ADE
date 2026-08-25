@@ -5,6 +5,7 @@ import {
   isWindowsAbsolutePath,
   isWindowsDrivePath,
   isWindowsUncPath,
+  joinParentAndName,
   normalizePath,
   normalizePathForComparison,
   normalizePathForWorkspaceComparison,
@@ -82,5 +83,12 @@ describe("Windows path predicates", () => {
     expect(isWindowsAbsolutePath("/unix/path")).toBe(false);
     expect(isWindowsAbsolutePath("relative/path")).toBe(false);
     expect(isWindowsAbsolutePath("")).toBe(false);
+  });
+
+  it("joins a parent folder and project name without duplicate slashes", () => {
+    expect(joinParentAndName("/tmp/Projects/", "demo")).toBe("/tmp/Projects/demo");
+    expect(joinParentAndName("C:\\Users\\me\\Projects", "demo")).toBe(
+      "C:/Users/me/Projects/demo",
+    );
   });
 });

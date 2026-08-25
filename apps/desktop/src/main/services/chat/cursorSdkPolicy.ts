@@ -8,6 +8,7 @@ import {
   ORCHESTRATION_LEAD_CURSOR_SETTING_SOURCES,
 } from "../../../shared/orchestrationRuntimePolicy";
 import type {
+  CursorSdkAgentMode,
   CursorSdkApprovalPolicy,
   CursorSdkChatMode,
   CursorSdkHookDecision,
@@ -50,6 +51,76 @@ const SHELL_TOOL_NAMES = new Set(["shell", "bash", "terminal", "run_command", "c
 const TASK_TOOL_NAMES = new Set(["task", "subagent", "spawn_agent"]);
 const NETWORK_TOOL_NAMES = new Set(["mcp", "fetch", "web", "web_search"]);
 
+/**
+ * SDK public tool names for ADE ask/plan (read-only). Passed as `AgentOptions.tools`
+ * on local create/resume only. `"task"` is omitted so subagents cannot pick up a
+ * write-capable toolset of their own.
+ */
+export const CURSOR_SDK_READONLY_TOOLS = ["read", "grep", "glob", "ls"] as const;
+
+export type CursorSdkReadonlyTool = (typeof CURSOR_SDK_READONLY_TOOLS)[number];
+
+/**
+ * What ADE has to say about the Cursor sandbox, which is not a boolean.
+ *
+ * The SDK treats an explicit `false` and an absent key differently: `false`
+ * returns `insecure_none` without ever reading the user's ~/.cursor/sandbox.json,
+ * while absent lets that file decide. So ADE needs three states, not two.
+ *
+ * When ADE does ask for a sandbox ("enable"), a user policy still wins over
+ * ADE's own — the SDK only falls back to its workspace_readwrite default when
+ * the user has written no policy at all.
+ *
+ * "disable" also covers the retry after a ConfigurationError, where the
+ * environment cannot sandbox at all and the alternative is a hard failure.
+ *
+ * See services/shared/providerConfigHomes.ts for the rule this follows.
+ */
+export type CursorSdkSandboxDirective = "enable" | "disable" | "inherit";
+
+export type CursorSdkLocalRunOptions = {
+  mode: CursorSdkAgentMode;
+  tools?: string[];
+  disallowedTools?: string[];
+  autoReview: boolean;
+  sandboxDirective: CursorSdkSandboxDirective;
+};
+
+/**
+ * SDK `AgentOptions.mode` for a policy. Cursor only accepts `"agent"` | `"plan"`.
+ * ADE `ask` maps to SDK `plan` plus the read-only tool allowlist. Never `"auto"`.
+ */
+export function cursorSdkLocalAgentMode(
+  policy: Pick<CursorSdkPermissionPolicy, "chatMode">,
+): CursorSdkAgentMode {
+  return policy.chatMode === "agent" ? "agent" : "plan";
+}
+
+/**
+ * Local create/resume permission fields. `sandboxSupported: false` keeps hook
+ * denials while disabling `sandboxOptions.enabled` after a ConfigurationError.
+ */
+export function buildCursorSdkLocalRunOptions(
+  policy: CursorSdkPermissionPolicy,
+  args?: { sandboxSupported?: boolean },
+): CursorSdkLocalRunOptions {
+  const sandboxSupported = args?.sandboxSupported !== false;
+  const sandboxDirective: CursorSdkSandboxDirective = !sandboxSupported
+    ? "disable"
+    : policy.sandbox === "cursor-native"
+      ? "enable"
+      : policy.sandbox === "off"
+        ? "disable"
+        : "inherit";
+  return {
+    mode: cursorSdkLocalAgentMode(policy),
+    ...(policy.tools?.length ? { tools: [...policy.tools] } : {}),
+    ...(policy.disallowedTools?.length ? { disallowedTools: [...policy.disallowedTools] } : {}),
+    autoReview: policy.autoReview,
+    sandboxDirective,
+  };
+}
+
 export function resolveCursorSdkChatMode(session: CursorSessionModeInput): CursorSdkChatMode {
   const explicit = typeof session.cursorModeId === "string" ? session.cursorModeId.trim().toLowerCase() : "";
   if (explicit === "ask" || explicit === "plan") return explicit;
@@ -78,9 +149,10 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
       chatMode: "agent",
       approvalPolicy: "never",
       sandbox: "off",
-      force: true,
+      fullAuto: true,
       hardGuards: true,
       orchestrationLead,
+      autoReview: false,
     };
   }
 
@@ -89,10 +161,12 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     return {
       chatMode,
       approvalPolicy: "read-only",
-      sandbox: "ade",
-      force: false,
+      sandbox: "cursor-native",
+      fullAuto: false,
       hardGuards: true,
       orchestrationLead,
+      autoReview: false,
+      tools: CURSOR_SDK_READONLY_TOOLS,
     };
   }
 
@@ -100,9 +174,10 @@ export function resolveCursorSdkPolicy(session: CursorSessionModeInput): CursorS
     chatMode: "agent",
     approvalPolicy: "on-request",
     sandbox: "ade",
-    force: false,
+    fullAuto: false,
     hardGuards: true,
     orchestrationLead,
+    autoReview: true,
   };
 }
 

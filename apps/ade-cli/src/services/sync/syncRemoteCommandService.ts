@@ -81,6 +81,8 @@ import type {
   AgentChatRecoverTurnArgs,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatUpdateSessionArgs,
+  AgentChatSetSpawnKindArgs,
+  AgentChatDismissSubagentTakeoverPromptArgs,
   AddGitHubPrStackPullRequestsArgs,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
@@ -125,12 +127,14 @@ import type {
   GitRevertArgs,
   GitGetUserIdentityArgs,
   GitHubRepoRef,
+  GitHubRequestBudget,
   GitHubStatus,
   GitStashPushArgs,
   GitStashRefArgs,
   GitSyncArgs,
   ImportBranchLaneArgs,
   LandPrArgs,
+  LaneGitHubIssue,
   LinearConnectionStatus,
   PersonalChatScopeContract,
   PrGithubCoords,
@@ -261,7 +265,13 @@ import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAtta
 import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } from "../../../../desktop/src/main/services/ai/aiSettingsStatus";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
+import {
+  createPromptStash,
+  deletePromptStash,
+  listPromptStashes,
+} from "../../../../desktop/src/main/services/chat/promptStashService";
 import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
 import { mergeAiConfig } from "../../../../desktop/src/main/services/config/projectConfigService";
 import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
@@ -349,6 +359,7 @@ type SyncRemoteCommandServiceArgs = {
   operationService?: ReturnType<typeof createOperationService> | null;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -766,6 +777,65 @@ function parsePublishCurrentProjectArgs(value: Record<string, unknown>): Publish
     name: requireString(value.name, "github.publishCurrentProject requires name."),
     ...(description ? { description } : {}),
     isPrivate: asOptionalBoolean(value.isPrivate) ?? true,
+  };
+}
+
+function parseGitHubRepoIssueListArgs(value: Record<string, unknown>): {
+  owner: string;
+  name: string;
+  state: "open" | "closed" | "all";
+} {
+  const state = value.state;
+  return {
+    owner: requireString(value.owner, "github.listRepoIssues requires owner."),
+    name: requireString(value.name, "github.listRepoIssues requires name."),
+    state: state === "open" || state === "closed" || state === "all" ? state : "open",
+  };
+}
+
+function parseGitHubGetIssueArgs(value: Record<string, unknown>): {
+  owner: string;
+  name: string;
+  number: number;
+} {
+  const number = typeof value.number === "number" ? value.number : Number(value.number);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error("github.getIssue requires a positive integer number.");
+  }
+  return {
+    owner: requireString(value.owner, "github.getIssue requires owner."),
+    name: requireString(value.name, "github.getIssue requires name."),
+    number,
+  };
+}
+
+function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issues: LaneGitHubIssue[];
+} {
+  if (!Array.isArray(value.issues)) {
+    throw new Error("lanes.attachGitHubIssueToSession requires an issues array.");
+  }
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.attachGitHubIssueToSession requires chatSessionId.",
+    ),
+    issues: value.issues as LaneGitHubIssue[],
+  };
+}
+
+function parseDetachGitHubIssueFromSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issueId?: string;
+} {
+  const issueId = asTrimmedString(value.issueId);
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.detachGitHubIssueFromSession requires chatSessionId.",
+    ),
+    ...(issueId ? { issueId } : {}),
   };
 }
 
@@ -2438,6 +2508,7 @@ function parseAgentChatListArgs(value: Record<string, unknown>): AgentChatListAr
     ...(asTrimmedString(value.laneId) ? { laneId: asTrimmedString(value.laneId)! } : {}),
     includeAutomation: asOptionalBoolean(value.includeAutomation),
     includeArchived: asOptionalBoolean(value.includeArchived),
+    includeIdentity: asOptionalBoolean(value.includeIdentity),
   };
 }
 
@@ -2674,7 +2745,32 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
     parsed.cursorConfigValues = parseCursorConfigValues(value.cursorConfigValues);
   }
   if ("manuallyNamed" in value) parsed.manuallyNamed = value.manuallyNamed === true;
+  if (value.spawnKind === "subagent" || value.spawnKind === "peer") {
+    parsed.spawnKind = value.spawnKind;
+  }
+  if (value.subagentTakeoverPromptShown === true) {
+    parsed.subagentTakeoverPromptShown = true;
+  }
   return parsed;
+}
+
+function parseAgentChatSetSpawnKindArgs(value: Record<string, unknown>): AgentChatSetSpawnKindArgs {
+  const spawnKind = requireString(value.spawnKind, "chat.setSpawnKind requires spawnKind.");
+  if (spawnKind !== "subagent" && spawnKind !== "peer") {
+    throw new Error("chat.setSpawnKind requires spawnKind to be subagent or peer.");
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.setSpawnKind requires sessionId."),
+    spawnKind,
+  };
+}
+
+function parseAgentChatDismissSubagentTakeoverPromptArgs(
+  value: Record<string, unknown>,
+): AgentChatDismissSubagentTakeoverPromptArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.dismissSubagentTakeoverPrompt requires sessionId."),
+  };
 }
 
 function parseAgentChatCodexGetGoalArgs(value: Record<string, unknown>): AgentChatCodexGetGoalArgs {
@@ -4059,6 +4155,21 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.getStackChain(requireString(payload.laneId, "lanes.getStackChain requires laneId.")));
   register("lanes.getChildren", { viewerAllowed: true }, async (payload) =>
     args.laneService.getChildren(requireString(payload.laneId, "lanes.getChildren requires laneId.")));
+  register("lanes.attachGitHubIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.attachGitHubIssueToSession(parseAttachGitHubIssueToSessionArgs(payload)));
+  register("lanes.detachGitHubIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.detachGitHubIssueFromSession(parseDetachGitHubIssueFromSessionArgs(payload)));
+  register("lanes.listGitHubIssuesForSession", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listGitHubIssuesForSession({
+      chatSessionId: requireString(
+        payload.chatSessionId,
+        "lanes.listGitHubIssuesForSession requires chatSessionId.",
+      ),
+    }));
+  register("lanes.listGitHubIssuesForLaneSessions", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listGitHubIssuesForLaneSessions({
+      laneId: requireString(payload.laneId, "lanes.listGitHubIssuesForLaneSessions requires laneId."),
+    }));
   register("lanes.rebaseStart", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseStart(parseRebaseStartArgs(payload)));
   register("lanes.rebasePush", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebasePush(parseRebasePushArgs(payload)));
   register("lanes.rebaseRollback", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseRollback(parseRunIdArgs(payload, "lanes.rebaseRollback")));
@@ -4482,6 +4593,15 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.getTurnFileDiff", { viewerAllowed: true }, async (payload) => getRemoteTurnFileDiff(args, payload));
   register("chat.saveTempAttachment", { viewerAllowed: true }, async (payload) =>
     saveAgentChatTempAttachment(args, payload));
+  register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
+    listPromptStashes(requireService(args.db, "Database not available.")));
+  register("chat.createPromptStash", { viewerAllowed: true }, async (payload) =>
+    createPromptStash(requireService(args.db, "Database not available."), payload));
+  register("chat.deletePromptStash", { viewerAllowed: true }, async (payload) => {
+    const id = typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!id) throw new Error("Missing prompt stash id.");
+    return deletePromptStash(requireService(args.db, "Database not available."), id);
+  });
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
   register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
@@ -4516,6 +4636,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     return agentChatService.listSessions(parsed.laneId, {
       includeAutomation: parsed.includeAutomation,
       includeArchived: parsed.includeArchived,
+      includeIdentity: parsed.includeIdentity,
     });
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
@@ -4765,6 +4886,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("chat.updateSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
+  register("chat.setSpawnKind", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").setSpawnKind(parseAgentChatSetSpawnKindArgs(payload)));
+  register("chat.dismissSubagentTakeoverPrompt", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").dismissSubagentTakeoverPrompt(
+      parseAgentChatDismissSubagentTakeoverPromptArgs(payload),
+    ));
   register("chat.getCodexGoal", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getCodexGoal(parseAgentChatCodexGetGoalArgs(payload)));
   register("chat.setCodexGoal", { viewerAllowed: true, queueable: false }, async (payload) =>
@@ -5395,6 +5522,29 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("github.getRemoteStatus", { viewerAllowed: true, observesAbort: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
     requireService(args.githubService, "GitHub service not available.").getRemoteStatus());
+  // The web client's PR timers run in the browser but spend THIS machine's
+  // quota. Without this registration its adapter falls back to an all-null
+  // budget and its 5-second checks loop never sees the reserve.
+  register("github.getRequestBudget", { viewerAllowed: true, observesAbort: true }, async (): Promise<GitHubRequestBudget> =>
+    requireService(args.githubService, "GitHub service not available.").getRequestBudget());
+  register("github.detectRepo", { viewerAllowed: true, observesAbort: true }, async (): Promise<GitHubRepoRef | null> =>
+    requireService(args.githubService, "GitHub service not available.").detectRepo());
+  register("github.listRepoIssues", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubRepoIssueListArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").listRepoIssues(
+      parsed.owner,
+      parsed.name,
+      { state: parsed.state },
+    );
+  });
+  register("github.getIssue", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").getIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+    );
+  });
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
     const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
     return await requireService(args.githubService, "GitHub service not available.").publishCurrentProject({
@@ -5462,6 +5612,57 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       // ignore
     }
     return { ok: true };
+  });
+  register("ai.openCursorCloudChat", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const agentName = asTrimmedString(payload.agentName);
+    const sessionId = asTrimmedString(payload.sessionId);
+    const modelId = asTrimmedString(payload.modelId);
+    return requireService(args.agentChatService, "Agent chat service not available.").openCursorCloudChat({
+      cloudAgentId: requireString(payload.cloudAgentId, "ai.openCursorCloudChat requires cloudAgentId."),
+      laneId: requireString(payload.laneId, "ai.openCursorCloudChat requires laneId."),
+      ...(agentName ? { agentName } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(modelId ? { modelId } : {}),
+    });
+  });
+  register("ai.watchCursorCloudMirror", { viewerAllowed: true, queueable: false }, async (payload) => {
+    if (typeof payload.watching !== "boolean") {
+      throw new Error("ai.watchCursorCloudMirror requires watching to be a boolean.");
+    }
+    requireService(args.agentChatService, "Agent chat service not available.").watchCursorCloudMirror({
+      sessionId: requireString(payload.sessionId, "ai.watchCursorCloudMirror requires sessionId."),
+      watching: payload.watching,
+    });
+  });
+  register("ai.cursorCloudFleet", { viewerAllowed: true }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.getFleet({
+      includeArchived: payload.includeArchived !== false,
+      limit: typeof payload.limit === "number" ? payload.limit : undefined,
+    });
+  });
+  // Lane resolution can import a new lane (host state mutation), so like
+  // pull it is refused for read-only viewers.
+  register("ai.cursorCloudResolveLane", { viewerAllowed: false }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.resolveLaneForAgent(
+      requireString(payload.agentId, "ai.cursorCloudResolveLane requires agentId."),
+    );
+  });
+  // Pull mutates host lane worktrees (fetch + merge), so like chat.launchCli
+  // it is refused for read-only viewers and never queued — it must run now,
+  // against lane state as it exists at request time.
+  register("ai.cursorCloudPullIntoLane", { viewerAllowed: false }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.pullIntoLane(
+      requireString(payload.agentId, "ai.cursorCloudPullIntoLane requires agentId."),
+    );
+  });
+  register("ai.cursorCloudStopRun", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const fleetService = requireService(args.cursorCloudFleetService, "Cursor Cloud fleet not available.");
+    return fleetService.stopAgentRun(
+      requireString(payload.agentId, "ai.cursorCloudStopRun requires agentId."),
+    );
   });
   register("orchestration.runCreate", { viewerAllowed: true }, async (payload) => {
     const orchestrationService = requireService(args.orchestrationService, "Orchestration service not available.");

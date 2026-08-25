@@ -56,8 +56,12 @@ and in tests.
   `readTranscriptSnapshot` for authoritative logical-offset hydration, and
   `readTranscriptRange({ sessionId, startOffset, endOffset })` for mobile
   scrollback/delta resume across rollover,
+  `readScreenSnapshot(sessionId)` for current-screen SerializeAddon CSI
+  (alt-screen TUIs cannot be rebuilt from a log tail),
   offset-stamped PTY data batches, desktop-size restore after
-  mobile-driven resizes, agent CLI input protocol (bracketed paste,
+  mobile-driven resizes (desktop fit-resizes remember lastDesktop* but
+  skip live `pty.resize` while a subscribed phone/web viewport owns the
+  size), agent CLI input protocol (bracketed paste,
   chunked writes, provider-specific submit delays), process tree
   termination (`terminatePtyProcessTree` walks descendant PIDs via
   `pgrep` and escalates to `SIGKILL` after a grace timer), live session
@@ -217,25 +221,31 @@ and in tests.
   boundary its colocated test can enforce by scanning the rest of the tree.
   `sessionService` holds the only instance; every settle, unsettle, override,
   and activity-clear path routes through it. The revision detects changes made
-  by THIS host — a sibling ADE process or a paired desktop peer's CRR write is
-  outside its scope, which
-  [settle-teardown-design.md](settle-teardown-design.md) §3a states precisely.
+  by THIS host; a peer's replicated settle-tuple write reaches it because the
+  changeset apply layer re-asserts the merged value through the chokepoint, so
+  an in-flight settle sees the world move and abandons — see
+  [settle-teardown-design.md](settle-teardown-design.md) §3a and §6d.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
   single settlement transaction shared by direct IPC and the ADE action
-  registry. Settle writes lifecycle state only — it deliberately does NOT stop
-  the session's background work. That was attempted and removed: teardown is
-  async, and `settled_at` is written and cleared from seven places, so a
-  teardown-then-write settle races real activity (a user starting a turn during
-  a provider stop call gets their background work stopped AND no settle), and
-  every guard tried against it either read a column that turn-start never
-  updates or had to be repeated at each of the settle entry points. Making
-  settle stop work needs a synchronous lifecycle revision that teardown can be
-  serialized against; it is not a wrapper around the existing write. The approved
-  plan for doing it is
-  [settle-teardown-design.md](settle-teardown-design.md); its step 0
-  precondition — `settled_at` becoming host-authoritative, so a phone replica
-  cannot defeat the coming revision guard by CRDT merge — has landed. Archive is
-  the one lifecycle path that does stop processes — see
+  registry. Settle now DOES stop the session's outstanding work, through
+  `sessionSettleTeardown.ts`: it interrupts the active turn and its background
+  work, confirms the session went quiet, and records what it could not confirm.
+  **Terminals are never touched** — a settle files a session as done, it does
+  not take the user's shell away.
+
+  Getting there needed the whole of
+  [settle-teardown-design.md](settle-teardown-design.md), because the obvious
+  version was built and cut in #1059 after producing a P1 in each of six review
+  rounds. Teardown is async and the settle tuple is written and cleared from ten
+  places, so a teardown-then-write settle races real activity, and every guard
+  tried against it either read a column that turn-start never updates or had to
+  be repeated at each entry point. What made it work was doing it in order: the
+  tuple became host-authoritative (§3c-i), then one chokepoint owned every
+  mutation and moved a revision (§3a), then a settling window made teardown
+  visible, exclusive and abortable (§3b) — and only then could teardown be
+  awaited inside that window (§6). An unconfirmed stop still settles, with
+  recorded residue rather than silence (§3d option 3). Archive remains a
+  different, heavier path: it disposes sessions outright — see
   `laneService.archive`, where the ordering is load-bearing.
   `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked
@@ -270,11 +280,15 @@ and in tests.
   already-imported detection, active-session hints, CLI import into tracked
   PTYs, chat import delegation, cwd checks, and provider-specific resume/fork
   commands. The per-provider discovery modules scan Claude JSONL transcripts
-  under `~/.claude/projects`, Codex threads from the `~/.codex/state_5.sqlite`
+  under `<claudeConfigHome>/projects`, Codex threads from the `<codexConfigHome>/state_5.sqlite`
   thread store (falling back to the `sessions/` rollout tree only when that
   database is unusable), Cursor artifacts under `~/.cursor/chats` and
-  `~/.cursor/projects`, Droid sessions under `~/.factory/sessions`, and
-  OpenCode through `opencode session list`.
+  `~/.cursor/projects`, Droid sessions under `<factoryConfigHome>/sessions`, and
+  OpenCode through `opencode session list`. The Claude/Codex/Droid roots come
+  from `services/shared/providerConfigHomes.ts` so `CLAUDE_CONFIG_DIR`,
+  `CODEX_HOME`, and `FACTORY_HOME_OVERRIDE` are honoured — and honoured with
+  their differing shapes; see
+  [Provider config homes](../chat/agent-routing.md#provider-config-homes).
   `claudeSessionTransplant.ts` performs the non-destructive Claude JSONL copy
   used when forking or importing a Claude session into a different lane cwd;
   `claudeLiveSessions.ts` reads Claude's own `sessions/<pid>.json` registry to
@@ -327,7 +341,27 @@ Shared types and IPC:
   SDK renames a type. Liveness is in-memory and deliberately empty after a
   restart — orphaned background work is not live work — and it sits BELOW
   failure, stopped, settled and stale in the precedence order, so a lingering
-  "Working" can never mask a failed session.
+  "Working" can never mask a failed session. The summary also carries
+  `backgroundWorkSince`, the instant the live set last went from empty to
+  non-empty, so the promoted row's elapsed counts from when the work started
+  rather than from a `lastActivityAt` that every provider frame refreshes. See
+  [ui-surfaces](ui-surfaces.md) for the three anchors and the shared
+  `sessionElapsedAnchor` helper. The promotion does not make the runtime behind
+  it immortal: once a background-only Claude runtime has been silent for
+  `SESSION_STALE_AFTER_MS` — the same threshold at which this module stops
+  calling the session live and starts calling it `stale` — the idle sweep
+  reclaims it anyway. The backstop reuses this constant on purpose so the two
+  cannot be set to different bars (each still reads its own clock: this module
+  the persisted `lastActivityAt`, the sweep the runtime's in-memory activity
+  stamp). See [chat](../chat/README.md).
+  Separately, `runtimeProcesses` (`RuntimeProcessSummary[]` — `pid` plus the ISO
+  `startedAt`) reports the agent SDK processes a session currently owns, sourced
+  from `claudeSubprocessReaper.recordsForSession` and projected by
+  `chatSessionProjection`. It is in-memory and host-local — empty after a
+  restart, never a liveness claim about work that escaped ADE's process tree —
+  and it carries no command lines or environments. `ade session show` is its
+  consumer; it exists so "this chat is holding a warm agent process open" is
+  answerable without dropping to `ps`.
   The **settle override** (`terminal_sessions.settle_override`,
   `null | "settled" | "active"`) is consulted at the declared-settle tier, i.e.
   `"settled"` behaves like a declared settle, and `"active"` is an explicit
@@ -509,7 +543,8 @@ Shared types and IPC:
   `terminal_exit`, `terminal_input`, `terminal_input_ack`,
   `terminal_resize`) for iOS/web Work surfaces, including logical transcript
   offsets, `sinceOffset` delta resume, authoritative full snapshots,
-  input-id dedupe/ack metadata, `live` backing-PTY status, and
+  optional `screen` current-screen CSI on replacing hydrates, input-id
+  dedupe/ack metadata, `live` backing-PTY status, and
   pull-to-load-older history pages, plus
   the mobile CLI launcher payload
   (`SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
@@ -522,12 +557,17 @@ Shared types and IPC:
   `adapter/sessionsPty.ts` — hosted-web terminal watermark/recovery state and
   the `window.ade` PTY bridge. Duplicate/overlapping live ranges are dropped or
   UTF-8-trimmed, one gap resubscribe requests the missing suffix, and an
-  authoritative full snapshot is surfaced as `PtyDataEvent.replace`.
+  authoritative full snapshot is surfaced as `PtyDataEvent.replace`. Replacing
+  hydrates prefer `screen.serialized` and stamp `screen: true` so TerminalView
+  writes CSI verbatim instead of running transcript-grid normalization.
 - `apps/ade-cli/src/services/sync/syncHostService.ts` — remote terminal
   subscription barrier and input boundary. It installs the barrier before
   reading a logical transcript snapshot, queues concurrent data/exit events
   within 256 events / 2 MB, trims snapshot overlap, and recaptures up to four
-  times rather than exposing a gap. Its terminal-input ledger deduplicates
+  times rather than exposing a gap. Catch-up overflow fails the barrier and
+  still answers `terminal_snapshot` (with current-screen CSI when available);
+  it does not close the controller websocket. Its terminal-input ledger
+  deduplicates
   stable input ids before PTY write and acknowledges success/duplicate/failure
   to ACK-capable web/iOS clients.
 - `apps/desktop/src/shared/ipc.ts` — channels `ade.sessions.*`,
@@ -656,8 +696,8 @@ Renderer surfaces:
   same iOS / Electron Control / browser / attachment / draft
   payloads formatted into prompt text by
   `apps/desktop/src/renderer/lib/visualContextFormatting.ts` and
-  written into the PTY through `window.ade.pty.write` as a
-  bracketed-paste envelope. After each PTY insertion the sidebar
+  written into the PTY through `window.ade.terminal.write(..., runtimePin)`
+  as a bracketed-paste envelope. After each PTY insertion the sidebar
   dispatches `ADE_WORK_PTY_CONTEXT_INSERTED_EVENT`
   (`apps/desktop/src/renderer/lib/workPtyContextEvents.ts`) so the
   matching `TerminalView` can briefly highlight the new content. When
@@ -669,6 +709,33 @@ Renderer surfaces:
   current chat, draft, or CLI target. The tab strip must stay reachable
   when the Work pane is narrow: labels collapse to accessible icon
   buttons while preserving stable hit targets and tooltips.
+
+  The pane follows the **chat's** machine, not the tab's. `runtimePin`
+  (supplied by `TerminalsPage` from `activeWorkSessionRuntimePin`) names the
+  machine the active Work session runs on; `null` means the tab's bound
+  machine. A chat on another machine gets that machine's git, terminals, and
+  files. Lanes resolve against `useLanesForPin(runtimePin)` — the pinned
+  machine's slice of the cross-machine lane union — because a foreign chat's
+  lane is absent from the tab-bound `lanes` array, which left the worktree
+  path (and therefore the iOS / App Control project root) null; the same
+  scoped list feeds lane-mismatch messages. Each panel gets a machine-keyed
+  React `key` (`work-git:<pinKey>:<laneId>`, `work-terminal:…`,
+  `work-files:…`, `work-ios:…`, `work-appcontrol:…`, `work-browser:…`) so a
+  foreign machine's state cannot paint into the machine you just switched to,
+  and diff selection resets on a pin change as well as a lane change. Pinned
+  calls have no local fallback, so a pinned machine that is known offline
+  (`useMachineEntryForBinding`) gets one plain line naming it
+  ("<machine> is offline.", via `machineNameForBinding`) on the git and
+  terminal tabs and skipped App Control / iOS status probes, instead of a
+  wall of rejected IPC. Terminal ownership is resolved from the active
+  session itself — any chat session, or any running agent-CLI session with a
+  `ptyId` and an insertable tool type, including one on another machine —
+  falling back to the `contextTarget` sessionId only when no session is
+  active. Context insertion into a PTY is machine-addressed and works
+  cross-machine; only **chat** insertion fails closed for a foreign machine
+  ("Tool context insertion is not available for chats on another machine."),
+  because it travels as a DOM window event the chat pane consumes and that
+  path carries no machine.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter, and two quiet tails: Snoozed and
@@ -1172,13 +1239,20 @@ Renderer surfaces:
   it waits for Cursor's interactive prompt and submits the ADE guidance
   plus user text through PTY input instead of argv. Droid materializes a
   temp `--settings` JSON keyed off the active
-  permission mode, and OpenCode passes its inline permission policy
-  through the `OPENCODE_CONFIG_CONTENT` env var. ADE session guidance is
+   permission mode, and OpenCode passes its inline permission policy
+   through the `OPENCODE_CONFIG_CONTENT` env var and always launches the
+   root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — tracked
+   launches have no `run --interactive` branch and no reasoning/fast
+   variant flag (the root command silently drops unknown args), so
+   variants remain a chat-runtime feature. ADE session guidance is
   injected on every launch with skill roots resolved from the active
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
-  through `--append-system-prompt`; Codex, Droid, and OpenCode receive
+  through `--append-system-prompt`; Codex and Droid receive
   a leading prompt from `buildAdeCliInlineGuidance(...)`; Cursor receives
-  that prompt only when there is an initial user message. Launch env also
+  that prompt only when there is an initial user message. **OpenCode does
+  not**: it receives the same slim ADE base prompt the OpenCode chat
+  runtime sends, through OpenCode's own additive system channel. See
+  [OpenCode CLI instructions](#opencode-cli-ade-instructions). Launch env also
   carries `ADE_AGENT_SKILLS_DIRS` when skill roots are known, including
   lane/user `.claude`, `.agents`, `.ade`, `.codex` skill dirs plus
   bundled ADE resources.
@@ -1211,7 +1285,8 @@ Renderer surfaces:
   for providers other than Codex and OpenCode. A launch that passes an
   `initialPrompt` embeds it into the provider launch itself for
   argv-oriented runtimes (Claude/Codex legacy prompt models/Droid,
-  OpenCode `--prompt`), while Codex interactive launches and Cursor use
+  OpenCode `--prompt` — which carries the user's text and nothing else),
+  while Codex interactive launches and Cursor use
   `initialInput` after PTY readiness so the first user message is
   submitted as the provider's real first turn instead of becoming a
   half-typed shell line.
@@ -1311,7 +1386,10 @@ Renderer surfaces:
   them, and invalidation removes in-flight entries so a post-mutation refresh
   cannot reuse a pre-mutation snapshot. Promise identity guards prevent a
   superseded response from repopulating the cache.
-- `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers
+- `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers,
+  `isChatToolType`, and `isPtyContextInsertableToolType` (claude / codex /
+  cursor-cli / droid / opencode; shells host terminals but are not a
+  context-insertion target), shared by `TerminalsPage` and `WorkSidebar`,
   plus `getStaleRunningCliSessionAgeHours`, a separate process-cleanup
   heuristic that returns a rounded age when a non-run, non-chat session
   has been `running` without output for at least
@@ -1384,7 +1462,10 @@ iOS Work surfaces:
   surface for CLI sessions. It subscribes with `sinceOffset`, applies
   offset-stamped `terminal_data`, recovers gaps with a guarded delta/full
   resubscribe, pages older retained transcript bytes via `terminal_history`,
-  sends ordered `terminal_input` through `SyncTerminalInputQueue`, reports viewport
+  paints replacing hydrates from `screen.serialized` when present (Claude
+  Code alt-screen cannot be rebuilt from the 512 KB log tail), shows a
+  loading/error overlay until the first paint, sends ordered `terminal_input`
+  through `SyncTerminalInputQueue`, reports viewport
   changes as `terminal_resize`, and unsubscribes on disappear.
 - `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
   terminal artifact/output views and inline preview cards; the older
@@ -1848,6 +1929,63 @@ terminal even though no agent runtime spawned it. The headless ADE
 runtime and agent chat runtime both layer the same identity envs
 (plus `ADE_WORKSPACE_ROOT`) on top through `buildAgentRuntimeEnv`.
 
+## OpenCode CLI ADE instructions
+
+A tracked OpenCode CLI gets the same slim ADE base prompt the OpenCode chat
+runtime sends — the one `buildCodingAgentSystemPrompt({ runtime: "opencode" })`
+builds — but not through the same transport, because a CLI launch has no
+per-request system channel.
+
+- **Not `--prompt`.** OpenCode submits that value as a real user message and
+  renders it in the TUI. Prepending ADE's instructions to the user's text
+  therefore displayed them verbatim on every launch (the reported "OpenCode
+  echoes ADE's system prompt") and delivered them as user content rather than as
+  system instructions. `--prompt` now carries the user's own text and nothing
+  else.
+- **Not `agent.<name>.prompt`.** OpenCode's request builder reads
+  `agent.prompt ? [agent.prompt] : SystemPrompt.provider(model)` — an agent
+  prompt *replaces* the provider base prompt, which would delete OpenCode's own
+  tool instructions.
+- **`instructions` in `OPENCODE_CONFIG_CONTENT`.** This is the additive channel:
+  entries land in the same assembled system block as `AGENTS.md`, after the base
+  prompt, and never appear in the transcript. Config layers union this key rather
+  than overwrite it, so ADE's entry is appended to the user's own instruction
+  files instead of replacing them (verified against opencode 1.18.21).
+
+`openCodeAdeInstructions.ts` writes the file to `.ade/cache/opencode-instructions/`
+keyed by lane worktree. Two other placements are wrong: the lane worktree is the
+user's repository, so an ADE-authored prompt would show up in their `git status`;
+and the system temp directory is world-writable on Linux, where a deliberately
+stable, publicly derivable path can be pre-created as a symlink and turn the
+launch into a write through it.
+
+The file is keyed by lane **and permission mode**: two tracked terminals can run
+on one lane under different modes at once, and OpenCode re-reads its instruction
+files every turn, so a single per-lane path let the second launch hand its mode
+to the first mid-conversation. `config-toml` is its own key rather than folded
+into edit — it means "use my own OpenCode configuration", ADE deliberately sends
+no permission block for it, and the instructions say so instead of asserting a
+tier ADE never set.
+
+`ptyService.create` is the single place the file is written, which is what makes
+a resumed session carry the same contract as a fresh one; a resume reads its
+permission mode from the session's own resume metadata, so a plan-mode session is
+not told it is in edit mode while the CLI runs `--agent plan`. The path is added
+to **both** the launch `env` and the inline `OPENCODE_CONFIG_CONTENT=…` assignment
+on the startup command — a shell assignment on the command line overrides the
+process environment, so patching only `env` would drop the instructions on every
+launch that goes through the typed-command fallback instead of a direct spawn.
+
+The merge happens immediately before spawn, not when the launch args are first
+materialized, because `startupCommand` is still being rewritten in between:
+resume-target backfill replaces it wholesale with the session's persisted
+`resumeCommand`, which carries its own assignment and no instructions. For the
+same reason the existing config is read from that command line first and the
+environment second — the persisted command holds its `permission` policy there
+while the launch environment has no such key, so rebuilding from `env` alone
+erased the policy. A missing file is skipped by OpenCode, so a write failure
+degrades to "no ADE prompt" rather than a failed launch.
+
 ## Gotchas
 
 - **Snooze must never reach `canonicalSessionState()`.** The moment a phase is
@@ -1907,6 +2045,17 @@ runtime and agent chat runtime both layer the same identity envs
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
+- **Mobile/web replacing hydrates cannot replay a transcript tail for an
+  alt-screen TUI.** Desktop keeps a headless xterm and hydrates from
+  SerializeAddon current-screen CSI. A days-long Claude Code session's last
+  512 KB is CUP/EL at the desktop width with the DECSET long gone, so iOS
+  used to paint black. `terminal_snapshot.screen` carries that serialize
+  (`scrollback: 0`, omit if over 256k chars — never slice CSI). Deltas stay
+  transcript-only. Clients that do not know the field keep the old tail
+  replay. While a phone/web peer is subscribed, desktop fit-resizes remember
+  lastDesktop* but must not call live `pty.resize`; restore on last
+  unsubscribe. Catch-up overflow must not `ws.close(4001)` — that blanked
+  every other iOS surface on the same socket.
 - `reconcileStaleRunningSessions` accepts `excludeToolTypes` but desktop and
   brain startup no longer exclude chat tool types — stale
   `running` chat rows are swept to `detached` like any other orphaned

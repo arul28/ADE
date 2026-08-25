@@ -181,6 +181,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   /// that want a human stand out with no banner at all.
   let isProminent: Bool
   let model: String?
+  let isSubagent: Bool
   let showsLaneIdentity: Bool
   let settledAt: String?
   let statusNote: String?
@@ -271,6 +272,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.isProminent = row.status?.prominent ?? false
     self.statusTone = row.status?.tone
     self.model = chatSummary?.model
+    self.isSubagent = chatSummary?.spawnKind == .subagent
     self.showsLaneIdentity = showsLaneIdentity
     self.settledAt = session.settledAt
     self.statusNote = session.statusNote
@@ -385,6 +387,14 @@ struct WorkSessionRow: View, Equatable {
         size: 20
       )
 
+      if showsSubagentIdentity {
+        Image(systemName: "person.2.fill")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+          .fixedSize()
+          .accessibilityHidden(true)
+      }
+
       Text(chatSummary?.title ?? session.title)
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
@@ -441,23 +451,12 @@ struct WorkSessionRow: View, Equatable {
   }
 
   /// Leading chrome glyphs, the lane and its git state (headerless rows only),
-  /// the floor, then the one status slot hard against the trailing edge.
+  /// subagent identity, then the one status slot hard against the trailing edge.
   ///
-  /// **Layout contract.** Exactly two children claim width: the lane chip when
-  /// it is present, and the floor label's flexible frame. Everything else —
-  /// including the status slot — is `.fixedSize()`, and an inflexible child is
-  /// sized before a flexible one. THAT is what guarantees the invariant that
-  /// matters: the status slot never truncates, never drops, and never degrades
-  /// to a glyph. (Note the floor label is `.fixedSize()` AND flexible-framed: it
-  /// takes its ideal width and the frame only holds the remaining space open, so
-  /// it pushes the slot to the trailing edge without ever competing for it.)
-  ///
-  /// Do not "fix" this by adding `layoutPriority` to the lane chip: a
-  /// higher-priority child is offered the entire remaining width first, which
-  /// would let a long lane name starve the status word. Do not reach for
-  /// `ViewThatFits` either — a candidate containing a `Spacer` reports an ideal
-  /// width that always fits, so the ladder would never advance past its first
-  /// rung.
+  /// The leading identity cluster is the only flexible child. Its lane text
+  /// tail-truncates inside the width left after the fixed git/subagent/status
+  /// affordances are measured, so the lane remains readable without allowing a
+  /// long name to starve the status word.
   private var lineOne: some View {
     HStack(spacing: 5) {
       if session.pinned {
@@ -474,24 +473,28 @@ struct WorkSessionRow: View, Equatable {
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize()
       }
-      if showsLaneIdentity {
-        laneChip
-        laneGitState
+      HStack(spacing: 5) {
+        if showsLaneIdentity {
+          laneChip
+          laneGitState
+        }
+        if showsSubagentIdentity {
+          Image(systemName: "person.2.fill")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .fixedSize()
+            .accessibilityHidden(true)
+        }
       }
-      // Always rendered, even when empty: its flexible frame is what holds the
-      // status slot against the trailing edge. `.lineLimit` / `.truncationMode`
-      // are deliberately absent — `.fixedSize()` gives this label its ideal
-      // width, so there is nothing left for them to do.
-      Text(rowFloorLabel)
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
-        .fixedSize()
-        .frame(maxWidth: .infinity, alignment: .leading)
-      Spacer(minLength: 4)
+      .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       statusSlot(wraps: false)
       // Plugin badges close the trailing cluster, after every product signal.
       PluginRowBadgeCluster(pluginBadges)
     }
+  }
+
+  private var showsSubagentIdentity: Bool {
+    renderSignature.isSubagent
   }
 
   private var lineTwo: some View {
@@ -579,6 +582,13 @@ struct WorkSessionRow: View, Equatable {
           previewView(lineLimit: 2)
         }
 
+        if showsSubagentIdentity {
+          Image(systemName: "person.2.fill")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .accessibilityHidden(true)
+        }
+
         if showsLaneIdentity {
           laneChip
           laneGitState
@@ -654,6 +664,7 @@ struct WorkSessionRow: View, Equatable {
         .lineLimit(1)
         .truncationMode(.tail)
     }
+    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
   }
 
   /// Dirty / ahead / behind for the lane, on `showsLaneIdentity` rows only.
@@ -668,7 +679,7 @@ struct WorkSessionRow: View, Equatable {
   /// and this can never print on every row of a lane again.
   ///
   /// Muted and `.fixedSize()`: this is context, not a call to action, and line 1
-  /// still owes its elastic width to the floor label alone. Nothing is drawn
+  /// still owes its elastic width to the leading identity cluster. Nothing is drawn
   /// when the worktree is clean and level — an always-present "0 ahead, 0
   /// behind" would be chrome. Colour never carries the meaning: the dot is
   /// accompanied by the arrow counts, and VoiceOver gets the words.
@@ -735,19 +746,6 @@ struct WorkSessionRow: View, Equatable {
   /// `manuallyNamed`, so there is nothing to fall back to.
   private var flashesOnRename: Bool {
     session.manuallyNamed != true
-  }
-
-  /// Line 1 is never allowed to be empty — an empty leading edge reads as a
-  /// half-loaded row. The model comes first because on a phone it is the only
-  /// thing that distinguishes two rows on the same provider; the compact
-  /// timestamp is the fallback.
-  private var rowFloorLabel: String {
-    let model = shortModelLabel(renderSignature.model)
-    if !model.isEmpty { return model }
-    // With no status word the slot itself renders the timestamp, so repeating it
-    // here would print the same "12m" twice on one line.
-    if renderSignature.statusLabel == nil { return "" }
-    return relativeTimestampCompact(renderSignature.activityTimestamp)
   }
 
   /// The row's ONE status slot. When there is no status word — settled, and only
@@ -870,6 +868,9 @@ struct WorkSessionRow: View, Equatable {
     var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(for: status)]
     if let statusLabel = renderSignature.statusLabel {
       parts.append(statusLabel)
+    }
+    if renderSignature.isSubagent {
+      parts.append("subagent")
     }
     if let model = renderSignature.model, !model.isEmpty {
       parts.append(shortModelLabel(model))
@@ -1004,7 +1005,13 @@ private struct WorkSessionRowTitle: View {
 /// row redraws a single `Text` each second instead of invalidating every visible
 /// row — which is why the elapsed VALUE is deliberately absent from
 /// `WorkSessionRowRenderSignature` while `showsElapsed` is present.
-private struct WorkSessionRowStatusSlot: View {
+/// The one status slot, shared with the Activity drawer.
+///
+/// Internal rather than private on purpose: the Activity rows render the same
+/// anatomy as a Work session card, and a lookalike slot built next to this one
+/// is precisely how the two surfaces came to describe one session with
+/// different words, weights and tick behaviour.
+struct WorkSessionRowStatusSlot: View {
   let label: String
   let tone: ActivityTone
   let glyph: ActivityGlyph?

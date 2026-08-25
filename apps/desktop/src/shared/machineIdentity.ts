@@ -18,6 +18,8 @@
  * base-branch source ("Use fetched upstream").
  */
 
+import type { OpenProjectBinding } from "./types/core";
+
 /** Stable id for the machine ADE itself is running on. */
 export const THIS_MACHINE_ID = "this-mac";
 
@@ -40,4 +42,19 @@ export function machineDisplayName(
 ): string {
   if (isThisMachineId(machineId)) return THIS_MACHINE_NAME;
   return remoteName?.trim() || machineId?.trim() || THIS_MACHINE_NAME;
+}
+
+/**
+ * The absolute name of the machine a call-routing binding targets.
+ *
+ * A null binding is the tab's own machine — which, for a chat, is reached by
+ * the unpinned path — so it names This computer, exactly like a local binding.
+ * Remote bindings prefer the runtime's own name and fall back to the project
+ * tab's display name; neither is ever the word "remote".
+ */
+export function machineNameForBinding(
+  binding: OpenProjectBinding | null | undefined,
+): string {
+  if (binding?.kind !== "remote") return THIS_MACHINE_NAME;
+  return binding.runtimeName?.trim() || binding.displayName?.trim() || THIS_MACHINE_NAME;
 }

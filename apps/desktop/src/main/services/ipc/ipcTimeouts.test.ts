@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { IPC } from "../../../shared/ipc";
-import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
+import { ipcInvokeTimeoutMs, readRuntimeActionRequest } from "./ipcTimeouts";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
@@ -14,6 +14,10 @@ import {
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   longRunningLocalRuntimeActionTimeoutMs,
   USAGE_REFRESH_HISTORY_TIMEOUT_MS,
+  IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
+  IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
+  IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
+  IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { PLUGIN_COMPOSER_ACTION_INVOKE_TIMEOUT_MS } from "../../../shared/plugins/sockets";
@@ -128,6 +132,10 @@ describe("ipcInvokeTimeoutMs", () => {
     // if either grows, this expectation is the thing that should be revisited.
     const WORST_CASE_MS = 60_000 + 60_000 + 20_000 + 20_000;
     expect(ipcInvokeTimeoutMs(IPC.appRestartBackgroundService)).toBeGreaterThanOrEqual(WORST_CASE_MS);
+    // Repairing the stored sign-in finishes with that same restart, so it needs
+    // the same budget — on the default the renderer reports "Repair failed" for
+    // a repair that is still running.
+    expect(ipcInvokeTimeoutMs(IPC.accountRepairSession)).toBeGreaterThanOrEqual(WORST_CASE_MS);
   });
 
   it("gives retryable remote runtime actions enough time to reconnect", () => {
@@ -171,7 +179,59 @@ describe("ipcInvokeTimeoutMs", () => {
   });
 
   it("keeps iOS launch on its extended timeout", () => {
-    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorLaunch)).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorLaunch)).toBe(17 * 60_000);
+  });
+
+  // The brain daemon — not Electron main — owns `ios_simulator.launch` in
+  // production, so a cold launch reaches it through localRuntimeCallAction.
+  // Without a long-running entry that path fell through to the 30s default and
+  // reported "Remote ADE service timed out" while xcodebuild kept building.
+  it("gives a runtime-backed iOS launch room for a cold xcodebuild", () => {
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "ios_simulator", action: "launch", args: {} },
+    }])).toBe(1_305_000);
+    // A remote runtime runs the same xcodebuild. Before `launch` was mapped in
+    // RUNTIME_ACTION_CHANNEL this fell through to the 30s remote default and
+    // reported a timeout while the build was still going. The service's own
+    // inner budgets sum to ~930s worst case, so the IPC timer must exceed it.
+    const remoteLaunchTimeoutMs = ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "launch", args: {} },
+    }]);
+    expect(remoteLaunchTimeoutMs).toBe(17 * 60_000);
+    expect(remoteLaunchTimeoutMs).toBeGreaterThan(930_000);
+  });
+
+  // The IPC timer above only bounds renderer→main. The RPC transport it wraps
+  // has its own budget, and without an entry in remoteConnectionPool's map a
+  // launch fell back to RuntimeRpcClient's 600s default — shorter than
+  // xcodebuild's own 600s allowance — so a remote cold launch failed with
+  // "Remote ADE service timed out" while the build was still running.
+  it("keeps the remote iOS transport budget under its IPC budget", () => {
+    expect(IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS).toBeGreaterThan(930_000);
+    expect(IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS).toBeLessThan(
+      IOS_SIMULATOR_LAUNCH_TIMEOUT_MS,
+    );
+    expect(IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS).toBeLessThan(
+      IOS_SIMULATOR_PREVIEW_TIMEOUT_MS,
+    );
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "launch", args: {} },
+    }])).toBeGreaterThan(IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS);
+    for (const action of [
+      "renderPreview",
+      "renderCurrentPreview",
+      "ensurePreviewWorkspace",
+    ] as const) {
+      expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+        id: "target-1",
+        projectId: "project-1",
+        request: { domain: "ios_simulator", action, args: {} },
+      }])).toBeGreaterThan(IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS);
+    }
   });
 
   it("gives a plugin install its clone budget and an invoke its child budget, on every transport", () => {
@@ -243,19 +303,43 @@ describe("ipcInvokeTimeoutMs", () => {
 
   it("extends iOS Preview Lab matching and workspace readiness timeouts", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorResolvePreviewMatch)).toBe(2 * 60_000);
-    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(2 * 60_000);
-    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderCurrentPreview)).toBe(2 * 60_000);
+    // The three compiling channels carry the same 10 minute budget the local
+    // runtime map gives them, so the remote path that routes through them via
+    // RUNTIME_ACTION_CHANNEL no longer cuts a build short.
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderCurrentPreview)).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderPreview)).toBe(10 * 60_000);
+    // Preview Lab compiles the target before it can render a frame, so the
+    // runtime-backed path composes project-setup margin with a 10 minute
+    // action budget rather than the 30s default it used to fall through to.
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "ensurePreviewWorkspace", args: {} },
-    }])).toBe(315_000);
+    }])).toBe(885_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "renderCurrentPreview", args: {} },
-    }])).toBe(315_000);
+    }])).toBe(885_000);
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
       projectId: "project-1",
       request: { domain: "ios_simulator", action: "resolvePreviewMatch", args: {} },
     }])).toBe(2 * 60_000);
+    // renderPreview compiles the same target as renderCurrentPreview, so the
+    // remote path gets the same budget instead of the 30s default.
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "renderPreview", args: {} },
+    }])).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "ensurePreviewWorkspace", args: {} },
+    }])).toBe(10 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "renderCurrentPreview", args: {} },
+    }])).toBe(10 * 60_000);
   });
 
   // ADE-122 regression: a handoff (AI brief + session creation + first-message
@@ -335,5 +419,41 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "chat", action: "suggestLaneNameFromPrompt", args: {} },
     }])).toBe(405_000);
+  });
+});
+
+describe("readRuntimeActionRequest", () => {
+  it("reads the domain and action the renderer already sent", () => {
+    expect(readRuntimeActionRequest([{
+      rootPath: "/Users/alice/secret-project",
+      request: { domain: " lane ", action: " create ", args: {} },
+    }])).toEqual({ domain: "lane", action: "create" });
+  });
+
+  it("keeps a domain-only request, which is enough to attribute a failure", () => {
+    expect(readRuntimeActionRequest([{ request: { domain: "lane" } }])).toEqual({ domain: "lane" });
+    expect(readRuntimeActionRequest([{ request: { domain: "lane", action: "  " } }]))
+      .toEqual({ domain: "lane" });
+    expect(readRuntimeActionRequest([{ request: { domain: "lane", action: 7 } }]))
+      .toEqual({ domain: "lane" });
+  });
+
+  it("returns null for anything malformed rather than guessing", () => {
+    for (
+      const args of [
+        [],
+        [null],
+        ["not-an-object"],
+        [[{ request: { domain: "lane" } }]],
+        [{}],
+        [{ request: null }],
+        [{ request: [] }],
+        [{ request: { action: "create" } }],
+        [{ request: { domain: "   " } }],
+        [{ request: { domain: 7 } }],
+      ]
+    ) {
+      expect(readRuntimeActionRequest(args)).toBeNull();
+    }
   });
 });

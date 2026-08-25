@@ -269,7 +269,17 @@ struct FilesDetailScreen: View {
         .padding(16)
       }
     } else {
-      if let limit = filesTextPreviewLimit(blob: blob) {
+      if let limit = filesPartialPreviewLimit(blob: blob, focusLine: focusLine) {
+        // Takes precedence over the generic size cap: "we only got the start"
+        // is the honest reason, and it is the one that explains a line number
+        // that goes nowhere.
+        FilesContentFallback(
+          symbol: "doc.text.magnifyingglass",
+          title: limit.title,
+          message: limit.message
+        )
+        .padding(16)
+      } else if let limit = filesTextPreviewLimit(blob: blob) {
         FilesContentFallback(
           symbol: "doc.text.magnifyingglass",
           title: limit.title,

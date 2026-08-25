@@ -1,5 +1,12 @@
+export type FailureLogMeta = Record<string, unknown>;
+
 export type FailureLogDeduper = {
-  note: (signature: string, message: string) => void;
+  /**
+   * `meta` travels with the message to the `log` callback, so a caller that
+   * emits a structured event beside the human line does not need a mutable
+   * side channel to keep the two halves describing the same failure.
+   */
+  note: (signature: string, message: string, meta?: FailureLogMeta) => void;
   clear: (signature: string) => void;
 };
 
@@ -10,7 +17,7 @@ type FailureLogState = {
 };
 
 export function createFailureLogDeduper(options: {
-  log: (message: string) => void;
+  log: (message: string, meta?: FailureLogMeta) => void;
   now?: () => number;
   summaryIntervalMs?: number;
 }): FailureLogDeduper {
@@ -18,18 +25,21 @@ export function createFailureLogDeduper(options: {
   const summaryIntervalMs = options.summaryIntervalMs ?? 60_000;
   const failures = new Map<string, FailureLogState>();
   return {
-    note(signature, message) {
+    note(signature, message, meta) {
       const at = now();
       const existing = failures.get(signature);
       if (!existing) {
         failures.set(signature, { occurrences: 1, lastSummaryAt: at, message });
-        options.log(message);
+        options.log(message, meta);
         return;
       }
       existing.occurrences += 1;
       existing.message = message;
       if (at - existing.lastSummaryAt >= summaryIntervalMs) {
-        options.log(`ADE brain sync host still failing (${existing.occurrences} occurrences): ${message}`);
+        options.log(
+          `ADE brain sync host still failing (${existing.occurrences} occurrences): ${message}`,
+          meta,
+        );
         existing.lastSummaryAt = at;
       }
     },

@@ -1,5 +1,6 @@
 export declare const REQUIRED_SECRETS: readonly string[];
 export declare const REQUIRED_VARS: readonly string[];
+export declare const DEFAULTED_VARS: readonly { name: string; codeDefault: string }[];
 export declare const ENVIRONMENTS: readonly string[];
 
 export declare class DeploymentConfigError extends Error {}
@@ -10,7 +11,7 @@ export declare function verifyDirectoryDeploymentConfig(args: {
   environments?: readonly string[];
   listSecretNames: (environment: string) => Iterable<string>;
   readConfig: () => unknown;
-}): void;
+}): { warnings: string[] };
 
 export declare function wranglerSecretListInvocation(
   environment: string,

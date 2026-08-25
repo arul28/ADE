@@ -19,13 +19,15 @@ import {
 } from "../../../shared/types/orchestration";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
 import {
   modelSupportsFastMode,
   resolveModelDescriptor,
   resolveProviderGroupForModel,
   type ProviderFamily,
 } from "../../../shared/modelRegistry";
-import type { AgentChatProvider } from "../../../shared/types";
+import type { AgentChatProvider, OpenProjectBinding } from "../../../shared/types";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { cn } from "../ui/cn";
 
@@ -38,6 +40,14 @@ export type ChatModelSelectionPendingCardProps = {
   availableModelIds?: string[];
   /** Auth status fan-out for the picker rail. */
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
+  /**
+   * The machine this chat runs on. The model chosen here runs there, so picker
+   * rows and thinking levels come from that machine's runtime catalog — including
+   * when it equals the global project tab.
+   */
+  runtimePin?: OpenProjectBinding | null;
+  /** Catalog bucket matching {@link runtimePin}; empty only when no machine is known. */
+  catalogScopeKey?: string;
   /** Disable while a response is in flight. */
   responding: boolean;
   onConfirm: (selection: ModelSelection) => void;
@@ -83,6 +93,8 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
   metadata,
   availableModelIds,
   providerAuthStatus,
+  runtimePin = null,
+  catalogScopeKey,
   responding,
   onConfirm,
   onCancel,
@@ -102,8 +114,10 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
     filesHint: metadata?.filesHint ?? [],
     dependsOn: metadata?.dependsOn ?? [],
   });
-
-  const descriptor = resolveModelDescriptor(modelId);
+  const descriptor = resolveModelDescriptorWithRuntimeCatalog(
+    modelId,
+    catalogScopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
+  ) ?? resolveModelDescriptor(modelId);
   const fastModeSupported = modelSupportsFastMode(descriptor);
 
   useEffect(() => {
@@ -112,12 +126,6 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
     setReasoningEffort(null);
     setFastMode(false);
   }, [fallbackProvider, requestKey]);
-
-  // Clear fast mode when the picked model doesn't support it, so a stale toggle
-  // can't be submitted after switching to an unsupported model.
-  useEffect(() => {
-    if (!fastModeSupported && fastMode) setFastMode(false);
-  }, [fastModeSupported, fastMode]);
 
   // When the user picks a different model, infer the new provider from the
   // model registry or runtime-catalog prefix so the dispatched ModelSelection
@@ -134,7 +142,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
       provider,
       modelId,
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-      ...(fastMode && fastModeSupported ? { fastMode: true } : {}),
+      ...(fastMode ? { fastMode: true } : {}),
     };
     onConfirm(selection);
   }, [provider, modelId, reasoningEffort, fastMode, fastModeSupported, onConfirm]);
@@ -230,6 +238,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
           surfaceKey="orchestration-model-selection-pending"
           {...(availableModelIds ? { availableModelIds } : {})}
           {...(providerAuthStatus ? { providerAuthStatus } : {})}
+          runtimePin={runtimePin}
           disabled={responding}
           hidePermissionRail
           compact
@@ -243,6 +252,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
           onChange={setReasoningEffort}
           disabled={responding}
           compact
+          {...(catalogScopeKey ? { catalogScopeKey } : {})}
         />
       </div>
 

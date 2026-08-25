@@ -37,7 +37,14 @@ resolution ladder" below.
 
 Links minted from an Activity item additionally carry **ownership** —
 `accountMachineKey` and `projectId` — so a receiver can route to the machine that
-owns the work instead of guessing. Two rules govern what goes in `projectId`:
+owns the work instead of guessing. On iOS this is also what makes a link
+openable against a sleeping Mac: the phone reads `accountMachineKey`, sees the
+machine announced sleep, and offers to wake it rather than failing the open (see
+[iOS companion → Waking a sleeping Mac](../sync-and-multi-device/ios-companion.md#waking-a-sleeping-mac)).
+A link that arrives without the key can have its owner recovered from local
+attention/workspace snapshots, but only when the link came from **outside** the
+app — resolving an owner during cold-launch restore would turn a plain relaunch
+into a machine transition. Two rules govern what goes in `projectId`:
 
 - Prefer the project's machine-independent canonical id
   (`deriveProjectId(rootPath)`, the `project_<hash>` form), because a link is
@@ -131,7 +138,11 @@ Desktop main process — protocol handler:
   caller-supplied dispatcher. `main.ts` wires the dispatcher to focus the
   most-suitable `BrowserWindow` and `webContents.send(IPC.appNavigate, …)`.
   `handleDeeplinkUrl` is also re-used by the iOS Send-to-Mac sync command
-  (`syncRemoteCommandService.ts`'s `deeplinks.open`).
+  (`syncRemoteCommandService.ts`'s `deeplinks.open`). Its `log` hook is wired
+  to the machine logger (`~/.ade/runtime/desktop-main.jsonl`), not a project
+  one — all of this happens before a project can be open — and the branch that
+  loses the single-instance lock and quits calls `flushLog` first, so
+  `deeplink.single_instance.lock_lost` survives the exit.
 - `apps/desktop/src/main/services/deeplinks/projectNavigationWindowSelection.ts`
   — pure selection helper for project-scoped navigation. It first prefers a
   window whose active project already matches the target root, then a window

@@ -9,6 +9,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import {
   buildOpenCodePromptParts,
+  openCodeEventStream,
   resolveOpenCodeExecutablePath,
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
@@ -104,6 +105,11 @@ const mockState = vi.hoisted(() => ({
   cursorSdkCloudResponses: new Map<string, unknown>(),
   cursorSendPromptGate: null as Promise<void> | null,
   cursorSendPromptError: null as unknown,
+  cursorSendPromptResult: null as unknown,
+  onCursorSendPrompt: null as ((pooled: any) => void) | null,
+  cursorAcquireErrorOnCall: null as number | null,
+  cursorSdkPoisonCalls: [] as string[],
+  onCursorCancel: null as (() => void) | null,
   droidAcquireCalls: [] as Array<Record<string, unknown>>,
   droidNewSessionCalls: [] as Array<Record<string, unknown>>,
   droidPromptCalls: [] as Array<Record<string, unknown>>,
@@ -190,6 +196,38 @@ vi.mock("node:child_process", () => ({
             result = { skills: [] };
           } else if (payload.method === "account/rateLimits/read") {
             result = { rateLimits: { remaining: 10, limit: 100, resetAt: null } };
+          } else if (payload.method === "thread/queue/add") {
+            const params = payload.params as { clientUserMessageId?: unknown } | undefined;
+            result = {
+              queuedSubmission: {
+                id: `queued-${mockState.codexRequestPayloads.length}`,
+                clientUserMessageId: typeof params?.clientUserMessageId === "string"
+                  ? params.clientUserMessageId
+                  : "queued-client",
+              },
+            };
+          } else if (payload.method === "thread/queue/list") {
+            result = { queuedSubmissions: [] };
+          } else if (
+            payload.method === "thread/queue/delete"
+            || payload.method === "thread/queue/update"
+            || payload.method === "thread/queue/start"
+            || payload.method === "thread/settings/update"
+            || payload.method === "memory/reset"
+            || payload.method === "thread/memoryMode/set"
+            || payload.method === "thread/backgroundTerminals/terminate"
+          ) {
+            result = {};
+          } else if (payload.method === "thread/revert") {
+            const params = payload.params as { threadId?: unknown } | undefined;
+            result = {
+              thread: { id: typeof params?.threadId === "string" ? params.threadId : "reverted-thread" },
+            };
+          } else if (payload.method === "thread/shellCommand") {
+            mockState.codexTurnCounter += 1;
+            result = { turn: { id: `turn-${mockState.codexTurnCounter}` } };
+          } else if (payload.method === "thread/backgroundTerminals/list") {
+            result = { terminals: [] };
           }
 
           const emitResponse = () => {
@@ -302,6 +340,13 @@ vi.mock("../opencode/openCodeRuntime", async () => {
     typeof import("../../../shared/orchestrationRuntimePolicy")
   >("../../../shared/orchestrationRuntimePolicy");
   return {
+  // Real implementation, not a stub: it decides whether an incremental text
+  // delta rode along on `message.part.updated`, and stubbing it to a constant
+  // would silently change how the transcript is reassembled.
+  openCodePartUpdatedDelta: (properties: unknown): string | undefined => {
+    const candidate = (properties as { delta?: unknown } | null | undefined)?.delta;
+    return typeof candidate === "string" ? candidate : undefined;
+  },
   buildOpenCodePromptParts: vi.fn(({ prompt, files = [] }: { prompt: string; files?: Array<Record<string, unknown>> }) => [
     { type: "text", text: prompt },
     ...files,
@@ -373,13 +418,16 @@ vi.mock("../opencode/openCodeRuntime", async () => {
     const client = {
       __sessionId: sessionId,
       session: {
-        fork: vi.fn(async ({ path }: { path: { id: string } }) => {
-          const forkedId = `${path.id}-fork`;
-          mockState.openCodeForkCalls.push({ id: path.id });
+        fork: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          const forkedId = `${sessionID}-fork`;
+          mockState.openCodeForkCalls.push({ id: sessionID });
           return { data: { id: forkedId } };
         }),
-        promptAsync: vi.fn(async ({ body }: { body?: any } = {}) => {
-          state.promptBodies.push(body ?? {});
+        // The v2 client takes one flat parameters object; there is no `body`
+        // envelope. Everything ADE sends (agent/model/system/tools/parts) now
+        // arrives alongside sessionID and directory.
+        promptAsync: vi.fn(async (params: any = {}) => {
+          state.promptBodies.push(params ?? {});
           void (async () => {
             if (mockState.openCodeTitleForNextPrompt) {
               pushEvent({
@@ -409,6 +457,13 @@ vi.mock("../opencode/openCodeRuntime", async () => {
             const result = streamText({} as any) as {
               fullStream?: AsyncIterable<Record<string, unknown>>;
             };
+            // Mirror the real wire order: OpenCode announces every message
+            // (with its role) before its parts arrive.
+            const assistantMessageId = `message-${sessionId}`;
+            pushEvent({
+              type: "message.updated",
+              properties: { info: { id: assistantMessageId, role: "assistant", sessionID: sessionId } },
+            });
             let text = "";
             for await (const part of result.fullStream ?? []) {
               if (state.aborted) break;
@@ -417,7 +472,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                   type: "message.part.updated",
                   properties: {
                     part: { id: `step-${sessionId}`, sessionID: sessionId, type: "step-start" },
-                    delta: "",
                   },
                 });
                 continue;
@@ -427,8 +481,7 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                 pushEvent({
                   type: "message.part.updated",
                   properties: {
-                    part: { id: `text-${sessionId}`, sessionID: sessionId, type: "text", text },
-                    delta: String(part.textDelta ?? ""),
+                    part: { id: `text-${sessionId}`, type: "text", text, messageID: assistantMessageId, sessionID: sessionId },
                   },
                 });
                 continue;
@@ -445,7 +498,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                       tool: String(part.toolName ?? "tool"),
                       state: { status: "running", input: part.input ?? {} },
                     },
-                    delta: "",
                   },
                 });
                 continue;
@@ -462,7 +514,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                       tool: String(part.toolName ?? "tool"),
                       state: { status: "completed", input: {}, output: part.result ?? part.output ?? {} },
                     },
-                    delta: "",
                   },
                 });
                 continue;
@@ -482,7 +533,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                         cache: { read: 0, write: 0 },
                       },
                     },
-                    delta: "",
                   },
                 });
                 break;
@@ -494,8 +544,8 @@ vi.mock("../opencode/openCodeRuntime", async () => {
             });
           })();
         }),
-        abort: vi.fn(async ({ path }: { path: { id: string } }) => {
-          if (path.id !== sessionId) return;
+        abort: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          if (sessionID !== sessionId) return;
           state.aborted = true;
           pushEvent({
             type: "session.idle",
@@ -503,24 +553,27 @@ vi.mock("../opencode/openCodeRuntime", async () => {
           });
         }),
       },
-      postSessionIdPermissionsPermissionId: vi.fn(async ({ path, body }: { path: { id: string; permissionID: string }; body: { response: string } }) => {
-        pushEvent({
-          type: "permission.replied",
-          properties: {
-            sessionID: path.id,
-            permissionID: path.permissionID,
-            response: body.response,
-          },
-        });
-      }),
-      v2Client: {
-        question: {
-          reply: state.questionReply,
-          reject: state.questionReject,
-        },
-        permission: {
-          reply: state.permissionReply,
-        },
+      question: {
+        reply: state.questionReply,
+        reject: state.questionReject,
+      },
+      permission: {
+        reply: state.permissionReply,
+        // The deprecated session-scoped route, still how ADE answers the
+        // pre-`permission.asked` event an older user-installed OpenCode emits.
+        respond: vi.fn(async (
+          { sessionID, permissionID, response }:
+            { sessionID: string; permissionID: string; response: string },
+        ) => {
+          pushEvent({
+            type: "permission.replied",
+            properties: {
+              sessionID,
+              permissionID,
+              response,
+            },
+          });
+        }),
       },
     };
 
@@ -536,7 +589,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
       setBusy: vi.fn(),
       setEvictionHandler: vi.fn(),
       client,
-      v2Client: client.v2Client,
     };
   }),
   openCodeEventStream: vi.fn(async ({ client }: { client: { __sessionId?: string } }) => {
@@ -564,7 +616,6 @@ vi.mock("../opencode/openCodeInventory", () => ({
   peekOpenCodeInventoryCache: vi.fn(() => null),
   probeOpenCodeProviderInventory: vi.fn(async () => ({
     modelIds: ["opencode/openai/gpt-5.4"],
-    catalogModelIds: ["opencode/openai/gpt-5.4"],
     providers: [],
     error: null,
     descriptors: [],
@@ -711,6 +762,9 @@ vi.mock("./cursorSdkPool", () => ({
   ),
   acquireCursorSdkConnection: vi.fn(async (args: Record<string, unknown>) => {
     mockState.cursorSdkAcquireCalls.push(args);
+    if (mockState.cursorAcquireErrorOnCall === mockState.cursorSdkAcquireCalls.length) {
+      throw new Error("Cursor SDK worker failed to start.");
+    }
     const agentId = mockState.cursorSdkAgentIdForNextAcquire ?? "cursor-sdk-agent-1";
     mockState.cursorSdkAgentIdForNextAcquire = null;
     const pooled: any = {
@@ -763,20 +817,28 @@ vi.mock("./cursorSdkPool", () => ({
       }),
       sendPrompt: vi.fn(async (payload: Record<string, unknown>) => {
         mockState.cursorSdkSendCalls.push(payload);
+        mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
         if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
+        if (mockState.cursorSendPromptResult) return mockState.cursorSendPromptResult;
         return { id: "cursor-sdk-run-1", status: "finished" };
       }),
       updatePolicy: vi.fn(async (policy: Record<string, unknown>) => {
         mockState.cursorSdkPolicyUpdates.push(policy);
       }),
-      cancel: vi.fn(async () => {}),
+      cancel: vi.fn(async () => {
+        mockState.onCursorCancel?.();
+      }),
       dispose: vi.fn(),
     };
     mockState.cursorSdkPooled = pooled;
     return { generation: 1, pooled };
   }),
   releaseCursorSdkConnection: vi.fn(),
+  poisonCursorSdkConnection: vi.fn((poolKey: string) => {
+    mockState.cursorSdkPoisonCalls.push(poolKey);
+    return true;
+  }),
   resolveCursorSdkUserHome: vi.fn(() => "/Users/admin"),
   runCursorSdkCatalogRequest: vi.fn(async () => []),
   runCursorSdkCloudRequest: vi.fn(async (args: { type: string; payload: Record<string, unknown> }) => {
@@ -864,8 +926,11 @@ import {
   parseCodexServerVersion,
   writeSessionLinearIssueContextFile,
   createAgentChatService,
+  CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
 } from "./agentChatService";
+import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
+import { SESSION_STALE_AFTER_MS } from "../../../shared/sessionCanonicalState";
 import {
   subscribeToPluginRuntimeHooks,
   type PluginRuntimeHookEmission,
@@ -884,6 +949,7 @@ import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { ChatScheduledWorkRecord, ChatScheduledWorkState } from "./chatScheduledWorkScheduler";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
+import { CROSS_PROVIDER_REPLAY_HEADER } from "./crossProviderReplayFork";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
 import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
@@ -2065,6 +2131,11 @@ beforeEach(() => {
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
   mockState.cursorSendPromptGate = null;
   mockState.cursorSendPromptError = null;
+  mockState.cursorSendPromptResult = null;
+  mockState.onCursorSendPrompt = null;
+  mockState.cursorAcquireErrorOnCall = null;
+  mockState.cursorSdkPoisonCalls = [];
+  mockState.onCursorCancel = null;
   mockState.droidAcquireCalls = [];
   mockState.droidNewSessionCalls = [];
   mockState.droidPromptCalls = [];
@@ -2102,7 +2173,6 @@ beforeEach(() => {
   vi.mocked(probeOpenCodeProviderInventory).mockReset();
   vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
     modelIds: ["opencode/openai/gpt-5.4"],
-    catalogModelIds: ["opencode/openai/gpt-5.4"],
     providers: [],
     error: null,
     descriptors: [],
@@ -2111,6 +2181,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Never-resolving send gates from a timed-out Cursor recycle test must not
+  // keep a real watchdog alive into the next case. Resolve whatever we can
+  // and drop the hook before restoring the clock.
+  mockState.onCursorSendPrompt = null;
+  mockState.onCursorCancel = null;
+  mockState.cursorSendPromptError = null;
+  mockState.droidPromptError = null;
   vi.useRealTimers();
   vi.restoreAllMocks();
   if (ORIGINAL_CURSOR_API_KEY === undefined) {
@@ -2345,6 +2422,29 @@ describe("buildLinearSessionDirective", () => {
 // ============================================================================
 // createAgentChatService factory
 // ============================================================================
+
+/** Just past the real watchdog budget, derived rather than mirrored. */
+const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
+
+/**
+ * Real async setup work still needs event-loop turns while the clock is faked,
+ * so pump the fake clock instead of assuming a fixed number of ticks.
+ *
+ * Do not trip the silence watchdog while flushing that setup. On a slow
+ * runner, jumping 90s during `first cursor send` recycled the turn before
+ * the test queued its steer, and the later recovery wait timed out.
+ */
+const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => {
+  // A silence-watchdog recycle can arm the next attempt's timer after the
+  // first 90s jump, so keep extra trips in the budget once setup has flushed.
+  for (let tick = 0; tick < 800 && !ready(); tick += 1) {
+    const tripWatchdog = tick >= 300 && tick % 50 === 0;
+    await vi.advanceTimersByTimeAsync(tripWatchdog
+      ? CURSOR_SILENCE_WATCHDOG_TRIP_MS
+      : 1);
+  }
+  if (!ready()) throw new Error(`pumpUntil timed out waiting for: ${label}`);
+};
 
 describe("createAgentChatService", () => {
   it("uses the injected GitHub service to enrich smart-link previews", async () => {
@@ -2677,6 +2777,31 @@ describe("createAgentChatService", () => {
           sessionId: externalSessionId,
         },
       });
+    });
+
+    it("regression: rejects a cross-provider replay import whose transcript has no messages", async () => {
+      const externalSessionId = "99999999-8888-7777-6666-555555555555";
+      const claudeConfigRoot = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(tmpHomeRoot, ".claude");
+      const claudeProjectDir = path.join(
+        claudeConfigRoot,
+        "projects",
+        tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
+      );
+      fs.mkdirSync(claudeProjectDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeProjectDir, `${externalSessionId}.jsonl`), "\n", "utf8");
+
+      const { service, sessionService } = createService();
+
+      await expect(service.importExternalChatSession({
+        provider: "claude",
+        externalSessionId,
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: false,
+        model: "openai/gpt-5.5",
+      })).rejects.toThrow(/has no messages to replay/i);
+
+      expect(sessionService.get("test-uuid-1")).toBeNull();
     });
 
     it("forks a same-cwd Claude chat import into a new SDK session id", async () => {
@@ -3443,8 +3568,13 @@ describe("createAgentChatService", () => {
       ]));
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);
+      // No settings file names a style here, so ADE must not name one either:
+      // its settings land at flag tier, above every file the SDK reads, so an
+      // "outputStyle" key would override the user's global selection.
+      expect(opts?.settings).not.toHaveProperty("outputStyle");
       expect(opts?.settings).toEqual(expect.objectContaining({
-        outputStyle: "Default",
+        // ADE's own default, which applies only while no settings file states one.
+        workflowSizeGuideline: "medium",
         fastMode: false,
         enabledPlugins: expect.objectContaining({
           "learning-output-style@claude-code-plugins": false,
@@ -3453,6 +3583,52 @@ describe("createAgentChatService", () => {
           "explanatory-output-style@claude-plugins-official": false,
         }),
       }));
+    });
+
+    it("passes the user's global output style through instead of pinning Default", async () => {
+      // The regression this guards: ADE substituted "Default" for "nothing is
+      // set" and passed it at flag tier, so a style configured in the user's
+      // settings.json never took effect in any ADE chat.
+      const userClaudeDir = path.join(tmpRoot, "user-claude-config");
+      fs.mkdirSync(path.join(userClaudeDir, "output-styles"), { recursive: true });
+      fs.writeFileSync(
+        path.join(userClaudeDir, "output-styles", "asd-ste100.md"),
+        ["---", "name: ASD-STE100", "description: Simplified Technical English", "---", "", "Write short sentences.", ""].join("\n"),
+      );
+      fs.writeFileSync(
+        path.join(userClaudeDir, "settings.json"),
+        JSON.stringify({ outputStyle: "ASD-STE100", workflowSizeGuideline: "large" }),
+      );
+      const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_CONFIG_DIR = userClaudeDir;
+
+      try {
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send: vi.fn(),
+          stream: vi.fn(async function* () {
+            return;
+          }),
+          close: vi.fn(),
+          sessionId: "sdk-session-user-output-style",
+        } as any);
+
+        const { service } = createService();
+        await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+        await vi.waitFor(() => {
+          expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+        });
+
+        const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+          settings?: { outputStyle?: string; workflowSizeGuideline?: string };
+        } | undefined;
+        expect(opts?.settings?.outputStyle).toBe("ASD-STE100");
+        // A user-stated guideline replaces ADE's default rather than losing to it.
+        expect(opts?.settings).not.toHaveProperty("workflowSizeGuideline");
+      } finally {
+        if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+      }
     });
 
     it("passes Claude fast mode through SDK flag settings for Opus sessions", async () => {
@@ -3550,13 +3726,14 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // Sonnet 5 has no "fast" service tier, so the toggle must be dropped.
+      // The raw preference survives the model switch; runtime capability gates
+      // whether the current provider can use it.
       await service.updateSession({
         sessionId: session.id,
         modelId: "anthropic/claude-sonnet-5",
       });
 
-      expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
     });
 
     it("handles Claude /fast commands inline and persists the ADE fast setting", async () => {
@@ -4828,6 +5005,12 @@ describe("createAgentChatService", () => {
       const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
       expect(handoffPayloads).toEqual(expect.arrayContaining([
         expect.objectContaining({
+          method: "thread/goal/clear",
+          params: expect.objectContaining({
+            threadId: "source-thread-1",
+          }),
+        }),
+        expect.objectContaining({
           method: "thread/fork",
           params: expect.objectContaining({
             threadId: "source-thread-1",
@@ -5020,7 +5203,8 @@ describe("createAgentChatService", () => {
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
     });
 
-    it("rejects a Cursor fork with a brief-suggesting message", async () => {
+    it("forks a Cursor chat onto a fresh agent replaying the full source transcript", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service, aiIntegrationService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
@@ -5028,14 +5212,272 @@ describe("createAgentChatService", () => {
         model: "composer-2",
         modelId: "cursor/composer-2",
       });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Investigate the flaky migration test.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+      const sourcePersisted = readPersistedChatState(source.id);
+      expect(sourcePersisted.cursorSdkAgentId).toBe("cursor-sdk-agent-1");
 
-      await expect(service.handoffSession({
+      const result = await service.handoffSession({
         sourceSessionId: source.id,
         targetModelId: "cursor/composer-2",
         mode: "fork",
-      })).rejects.toThrow("Full-history fork isn't available for Cursor");
-      expect(mockState.sessions.size).toBe(1);
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.session.provider).toBe("cursor");
+      expect(result.session.id).not.toBe(source.id);
+      // Cursor threads cannot be resumed twice: the fork must start agentless.
+      expect(persisted.cursorSdkAgentId).toBeUndefined();
+      expect(sourcePersisted.recentConversationEntries?.length).toBeGreaterThan(0);
+      // The tail is rebuilt by the shared fork path's transcript import, so the
+      // Cursor seeding must not copy the entries as well — that doubled it.
+      expect(persisted.recentConversationEntries ?? []).toEqual([]);
+      // Cursor has no fork API, so the fork carries the whole conversation as a
+      // verbatim transcript replay rather than a 20-line tail.
+      expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
+      expect(persisted.pendingTranscriptReplay).toContain("Investigate the flaky migration test.");
+      expect(result.replayFork).toBeUndefined();
+      // No brief was generated — fork carries the conversation, not a summary.
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("forks a Cursor chat onto another provider by replaying the full transcript", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Keep the banner aligned with the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.session.provider).toBe("codex");
+      expect(persisted.pendingTranscriptReplay).toContain("Keep the banner aligned with the composer.");
+      expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("forks a Claude chat onto a Codex model with a full transcript replay", async () => {
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Replay this turn across providers.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      const persisted = readPersistedChatState(result.session.id);
+
+      expect(result.session.provider).toBe("codex");
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.replayFork).toBeUndefined();
+      expect(persisted.pendingTranscriptReplay).toContain("Replay this turn across providers.");
+      expect(persisted.pendingTranscriptReplay).not.toMatch(/This is a brief/i);
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("gives a forked Cursor chat's first send the source conversation as context", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Investigate the flaky migration test.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "cursor/composer-2",
+        mode: "fork",
+      });
+      mockState.cursorSdkSendCalls = [];
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: "Keep going.",
+      }, { awaitDispatch: true });
+
+      const forkedPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(forkedPrompt).toContain("Forked Cursor chat");
+      expect(forkedPrompt).toContain("verbatim replay");
+      expect(forkedPrompt).toContain("Keep going.");
+      // Exactly once: the replay and the seeding header must not both carry the
+      // conversation, or every line of it shows up twice.
+      expect(forkedPrompt.split("Investigate the flaky migration test.").length - 1).toBe(1);
+      // The fresh agent is created rather than resumed.
+      expect(mockState.cursorSdkAcquireCalls.at(-1)?.agentId).toBeNull();
+    });
+
+    it("regression: replays a forked Cursor transcript exactly once, across a restart", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Replay this Cursor transcript exactly once.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "cursor/composer-2",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("Replay this Cursor transcript exactly once.");
+
+      mockState.cursorSdkSendCalls = [];
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: "Continue from there.",
+      }, { awaitDispatch: true });
+      expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
+        .toContain("Replay this Cursor transcript exactly once.");
+      // Consumption must be durable, not just in memory.
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
+
+      const restarted = createService().service;
+      mockState.cursorSdkSendCalls = [];
+      await restarted.sendMessage({
+        sessionId: result.session.id,
+        text: "Keep going.",
+      }, { awaitDispatch: true });
+      const secondPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(secondPrompt).not.toContain("verbatim replay");
+      expect(secondPrompt).not.toContain("Replay this Cursor transcript exactly once.");
+    });
+
+    it("discloses truncation when a forked Cursor transcript exceeds the context window", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      for (let index = 0; index < 6; index += 1) {
+        await service.sendMessage({
+          sessionId: source.id,
+          text: `Turn ${index}: ${"x".repeat(220_000)}`,
+        }, { awaitDispatch: true });
+        await vi.waitFor(() => {
+          expect(source.status).toBe("idle");
+        });
+      }
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "cursor/composer-2",
+        mode: "fork",
+      });
+
+      expect(result.replayFork?.truncated).toBe(true);
+      expect(result.replayFork?.truncatedTurnCount).toBeGreaterThan(0);
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("verbatim replay");
+    });
+
+    it("regression: does not replay the forked transcript again after a restart", async () => {
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: source.id,
+        text: "Replay this transcript exactly once.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(source.status).toBe("idle");
+      });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay)
+        .toContain("Replay this transcript exactly once.");
+
+      const turnInputSince = async (start: number): Promise<string> => {
+        const request = await vi.waitFor(() => {
+          const found = mockState.codexRequestPayloads
+            .slice(start)
+            .find((payload) => payload.method === "turn/start") as {
+              params?: { input?: Array<{ text?: unknown }> };
+            } | undefined;
+          expect(found).toBeTruthy();
+          return found!;
+        });
+        return request.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      };
+
+      const firstStart = mockState.codexRequestPayloads.length;
+      await service.sendMessage({
+        sessionId: result.session.id,
+        text: "Continue from there.",
+      }, { awaitDispatch: true });
+      expect(await turnInputSince(firstStart)).toContain("Replay this transcript exactly once.");
+      // Consumption must be durable, not just in memory.
+      expect(readPersistedChatState(result.session.id).pendingTranscriptReplay).toBeNull();
+
+      const restarted = createService().service;
+      const secondStart = mockState.codexRequestPayloads.length;
+      await restarted.sendMessage({
+        sessionId: result.session.id,
+        text: "Keep going.",
+      }, { awaitDispatch: true });
+      const secondInput = await turnInputSince(secondStart);
+      expect(secondInput).not.toContain("verbatim replay");
+      expect(secondInput).not.toContain("Replay this transcript exactly once.");
     });
 
     it("sends only the user note when forking with a handoff note", async () => {
@@ -5088,10 +5530,17 @@ describe("createAgentChatService", () => {
         targetTurnId: undefined,
         expectedMethod: "thread/rollback",
       },
+      {
+        name: "reverts paginated history on Codex 0.149.1",
+        userAgent: "codex/0.149.1",
+        targetTurnId: "turn-target",
+        expectedMethod: "thread/revert",
+      },
     ])("$name", async ({ userAgent, targetTurnId, expectedMethod }) => {
       mockState.codexResponseOverrides.set("initialize", { userAgent });
       mockState.codexResponseOverrides.set("thread/rollback", { thread: { id: "rewound-thread" } });
       mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-before-turn" } });
+      mockState.codexResponseOverrides.set("thread/revert", { thread: { id: "reverted-thread" } });
       const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
@@ -5129,13 +5578,62 @@ describe("createAgentChatService", () => {
           beforeTurnId: "turn-target",
         });
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(false);
+      } else if (expectedMethod === "thread/revert") {
+        expect(lifecycleRequest?.params).toEqual({
+          threadId: "source-thread-1",
+          beforeTurnId: "turn-target",
+        });
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(false);
       } else {
         expect(lifecycleRequest?.params).toEqual({
           threadId: "source-thread-1",
           numTurns: 1,
         });
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(false);
       }
+    });
+
+    it("falls back to fork when thread/revert is rejected", async () => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
+      mockState.codexResponseOverrides.set("thread/revert", {
+        error: { code: -32601, message: "Method not found" },
+      });
+      mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-after-revert" } });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      expect(transcriptPath).toBeTruthy();
+      const rewindEnvelopes: AgentChatEventEnvelope[] = [{
+        sessionId: source.id,
+        timestamp: "2026-07-07T20:00:00.000Z",
+        event: {
+          type: "user_message",
+          messageId: "user-1",
+          text: "rewind this turn",
+          turnId: "turn-target",
+        },
+      } as AgentChatEventEnvelope];
+      fs.writeFileSync(String(transcriptPath), `${JSON.stringify(rewindEnvelopes[0])}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(rewindEnvelopes);
+
+      await service.rewindFiles({
+        sessionId: source.id,
+        userMessageId: "user-1",
+      });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
     });
 
     it("does not delete files during Codex rewind when git cannot prove the path was absent", async () => {
@@ -5611,6 +6109,76 @@ describe("createAgentChatService", () => {
           capsule: briefWithTranscript,
           capsuleFingerprint: createHash("sha256").update(stableStringify(briefWithTranscript)).digest("hex"),
         })).rejects.toThrow("transcript history without fork mode");
+      });
+
+      it("derives Droid autonomy from ADE's own permission chip", async () => {
+        // ADE always carries a generic permissionMode, and it maps onto a Droid
+        // mode — so ADE does state autonomy here, deliberately. This is the
+        // ADE-owned half of the rule: there IS a control for it, so ADE's value
+        // wins. The omission path exists for launches that carry no permission
+        // mode at all (programmatic/mobile), not for this one.
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "hello" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.autonomyLevel).toBe("low");
+        expect(settings.interactionMode).toBe("auto");
+        // Never null: an explicit null wedges the Droid RPC for 30 seconds.
+        expect(settings.autonomyLevel).not.toBeNull();
+        expect(settings.interactionMode).not.toBeNull();
+      });
+
+      it("states the Droid autonomy the user picked explicitly", async () => {
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+          droidPermissionMode: "auto-high",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "hello" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.autonomyLevel).toBe("high");
+        expect(settings.interactionMode).toBe("auto");
+        expect(settings).not.toHaveProperty("specModeModelId");
+      });
+
+      it("maps a Droid plan session onto spec mode with autonomy off", async () => {
+        // Plan must stay read-only. Spec dominates Droid's compound autonomyMode,
+        // and the spec-mode model fields have to ride along with it — they are
+        // gated on the stated interaction mode, so they cannot be emitted for a
+        // session that stated none.
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "droid",
+          model: "claude-opus-4-6",
+          modelId: "droid/claude-opus-4-6",
+          interactionMode: "plan",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "plan this" });
+
+        await vi.waitFor(() => {
+          expect(mockState.droidAcquireCalls.length).toBeGreaterThan(0);
+        });
+        const settings = mockState.droidAcquireCalls[0]?.settings as Record<string, unknown>;
+        expect(settings.interactionMode).toBe("spec");
+        expect(settings.autonomyLevel).toBe("off");
+        expect(settings.specModeModelId).toBeTruthy();
       });
 
       it("refuses a cross-machine Droid fork with the portability message", async () => {
@@ -6197,7 +6765,7 @@ describe("createAgentChatService", () => {
           mode: "fork",
           sourceProvider: "cursor",
         })).resolves.toMatchObject({
-          forkHandoffSupport: { supported: false, reason: "Cursor chats can't fork history." },
+          forkHandoffSupport: { supported: false, reason: "Cursor forks can't move between machines." },
         });
         const brief = await service.preflightCrossMachineDestination(baseArgs);
         expect(brief).not.toHaveProperty("forkHandoffSupport");
@@ -7366,7 +7934,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("passes the selected Codex reasoning effort into app-server config", async () => {
+    it("passes the selected Codex reasoning effort per thread, not on the process", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");
       fs.mkdirSync(laneRootPath, { recursive: true });
 
@@ -7387,11 +7955,13 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
       });
 
-      expect(spawn).toHaveBeenCalledWith(
-        "codex",
-        ["app-server", "-c", "model_reasoning_effort=\"low\""],
-        expect.any(Object),
-      );
+      // Reasoning effort is a per-chat choice, so it must ride the thread and
+      // never the process: `-c` is the highest config layer (above the user's
+      // ~/.codex/config.toml and their per-project .codex/config.toml) and a
+      // spawn arg would apply to every thread on this app-server.
+      expect(spawn).toHaveBeenCalledWith("codex", ["app-server"], expect.any(Object));
+      const spawnArgs = vi.mocked(spawn).mock.calls[0]?.[1] as string[] | undefined;
+      expect(spawnArgs?.join(" ")).not.toContain("model_reasoning_effort");
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
       const startParams = startPayload?.params as {
@@ -7486,7 +8056,7 @@ describe("createAgentChatService", () => {
       expect(getAdeCliAgentEnv).toHaveBeenCalled();
       expect(spawn).toHaveBeenCalledWith(
         "codex",
-        ["app-server", "-c", "model_reasoning_effort=\"medium\""],
+        ["app-server"],
         expect.objectContaining({
           env: expect.objectContaining({
             PATH: "/tmp/ade-cli/bin",
@@ -8891,6 +9461,109 @@ describe("createAgentChatService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("emits a sticky session-quota card and reaps so the next send resumes the same UUID", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+        if (streamCall === 2) {
+          yield {
+            type: "rate_limit_event",
+            session_id: "sdk-session-quota",
+            rate_limit_info: {
+              status: "rejected",
+              utilization: 1,
+              resetsAt: 1_770_000_000,
+            },
+          };
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-quota",
+            message: {
+              content: [{ type: "text", text: "You've hit your session limit · resets 7pm (America/New_York)" }],
+            },
+          };
+          yield {
+            type: "result",
+            is_error: true,
+            errors: ["You've hit your session limit · resets 7pm (America/New_York)"],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-quota",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-quota",
+      } as any);
+
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "keep going",
+        timeoutMs: 15_000,
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "continue after limit",
+        timeoutMs: 15_000,
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "resumed after reset",
+        timeoutMs: 15_000,
+      });
+
+      const quotaCards = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "ade_card" && env.event.variant === "claude_session_quota")
+        .map((env: any) => env.event);
+      expect(quotaCards.length).toBeGreaterThan(1);
+      expect(quotaCards[0]).toMatchObject({
+        variant: "claude_session_quota",
+        state: "live",
+      });
+      expect(quotaCards[0].actions).toEqual([
+        { id: "fork-local", label: "Fork in this lane", kind: "primary" },
+      ]);
+      expect(quotaCards.at(-1)).toMatchObject({
+        variant: "claude_session_quota",
+        state: "terminal",
+        title: "Claude session resumed",
+      });
+      const limitNotices = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "system_notice" && env.event.noticeKind === "rate_limit" && env.event.severity === "error");
+      expect(limitNotices).toHaveLength(0);
+      expect(close.mock.calls.length).toBeGreaterThan(0);
     });
 
     it("surfaces Claude SDK retry, refusal fallback, informational, memory, notification, mirror, and denial events", async () => {
@@ -10380,7 +11053,7 @@ describe("createAgentChatService", () => {
       const child = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
-        model: "sonnet",
+        model: "opus",
         title: "Fix flaky tests",
         orchestrationParentSessionId: parent.id,
         spawnKind: "subagent",
@@ -10402,6 +11075,8 @@ describe("createAgentChatService", () => {
       expect((row!.event as any).agentId).toBe(child.id);
       expect((row!.event as any).description).toBe("Fix flaky tests");
       expect((row!.event as any).spawnKind).toBe("subagent");
+      expect((row!.event as any).model).toBe(child.model);
+      expect(child.model).toBe("claude-opus-5");
 
       expect(child.orchestrationParentSessionId).toBe(parent.id);
       expect(child.spawnKind).toBe("subagent");
@@ -10498,10 +11173,18 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("leaves a quiet completion note when a human dispatches the child's first turn", async () => {
+    it("wakes the parent when a human messages a subagent, and names that human message in the report", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-human", slash_commands: [] };
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-human-summary",
+            content: [{ type: "text", text: "Adjusted the retry." }],
+            usage: { input_tokens: 1, output_tokens: 4 },
+          },
+        };
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -10528,15 +11211,24 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.sessionId === parent.id
-          && event.event.type === "system_notice"
-          && event.event.status === "spawn_completed"
-          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
         )).toBe(true);
       });
-      expect(events.some((event) =>
+      const wake = events.find((event) =>
         event.sessionId === parent.id
         && event.event.type === "user_message"
         && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+      );
+      expect(wake?.event.type === "user_message" && wake.event.metadata?.spawnCompletion?.humanMessageCount).toBe(1);
+      expect(wake?.event.type === "user_message" && wake.event.metadata?.spawnCompletion?.summary).toContain(
+        "The user also sent 1 message to this chat.",
+      );
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_completed"
+        && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
       )).toBe(false);
     });
 
@@ -10619,7 +11311,7 @@ describe("createAgentChatService", () => {
         .not.toBe((dispatchedWake!.event as any).metadata.spawnCompletion.childTurnId);
     });
 
-    it("leaves a quiet note for a scheduled turn after a human takes over the mission", async () => {
+    it("keeps waking the parent after a human messages a subagent, including later scheduled turns", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-handover", slash_commands: [] };
@@ -10665,7 +11357,10 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => expect(parentWakes()).toHaveLength(1));
 
       await service.sendMessage({ sessionId: child.id, text: "Actually, hold on — do this instead." });
-      await vi.waitFor(() => expect(quietNotices()).toHaveLength(1));
+      await vi.waitFor(() => expect(parentWakes()).toHaveLength(2));
+      const secondWake = parentWakes()[1];
+      expect(secondWake?.event.type === "user_message"
+        && secondWake.event.metadata?.spawnCompletion?.humanMessageCount).toBe(1);
 
       await service.messageSession({
         sessionId: child.id,
@@ -10681,8 +11376,8 @@ describe("createAgentChatService", () => {
         },
       });
 
-      await vi.waitFor(() => expect(quietNotices()).toHaveLength(2));
-      expect(parentWakes()).toHaveLength(1);
+      await vi.waitFor(() => expect(parentWakes()).toHaveLength(3));
+      expect(quietNotices()).toHaveLength(0);
     });
 
     it("emits a quiet completion notice without a wake when a peer finishes", async () => {
@@ -10733,6 +11428,228 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
+    it("demotes a subagent to a peer, notes the parent, and keeps later turns quiet", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-demote", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-demote",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Review child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+
+      const demoted = service.setSpawnKind({ sessionId: child.id, spawnKind: "peer" });
+      expect(demoted.spawnKind).toBe("peer");
+      expect(demoted.subagentTakeoverPromptShownAt).toBeTruthy();
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_takeover"
+          && (event.event.detail as any)?.spawnTakeover?.childSessionId === child.id
+        )).toBe(true);
+      });
+      const takeover = events.find((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_takeover"
+      );
+      expect(takeover?.event.type === "system_notice" && takeover.event.message).toBe(
+        'The user took over "Review child" — reports stop here.',
+      );
+
+      await service.sendMessage({ sessionId: child.id, text: "Keep going without the parent." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_completed"
+          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+        )).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+      )).toBe(false);
+    });
+
+    it("promotes a peer back to a subagent when the parent still exists", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-promote", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-promote",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Promoted child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "peer",
+      });
+
+      expect(service.setSpawnKind({ sessionId: child.id, spawnKind: "subagent" }).spawnKind).toBe("subagent");
+      await service.sendMessage({ sessionId: child.id, text: "Report back." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+        )).toBe(true);
+      });
+    });
+
+    it("refuses to promote when the parent chat is gone", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Orphaned child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "peer",
+      });
+      await service.deleteSession({ sessionId: parent.id });
+      expect(() => service.setSpawnKind({ sessionId: child.id, spawnKind: "subagent" })).toThrow(
+        /parent chat is gone/i,
+      );
+    });
+
+    it("auto-promotes a peer back to a subagent when the parent dispatches again", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-autoped", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-autoped",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Reclaimed child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "peer",
+      });
+
+      await service.messageSession({
+        sessionId: child.id,
+        text: "Do this next.",
+        metadata: {
+          spawnDispatch: { parentSessionId: parent.id, dispatchedAt: "2026-08-12T00:00:00.000Z" },
+        },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+        )).toBe(true);
+      });
+      expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("subagent");
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_takeover"
+      )).toBe(false);
+    });
+
+    it("persists the takeover prompt as shown without changing spawn kind", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      const dismissed = service.dismissSubagentTakeoverPrompt({ sessionId: child.id });
+      expect(dismissed.spawnKind).toBe("subagent");
+      expect(dismissed.subagentTakeoverPromptShownAt).toBeTruthy();
+      expect((await service.getSessionSummary(child.id))?.subagentTakeoverPromptShownAt).toBe(
+        dismissed.subagentTakeoverPromptShownAt,
+      );
+    });
+
+    it("converts an orphaned subagent to a peer when the parent is gone", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      await service.deleteSession({ sessionId: parent.id });
+
+      const summary = await service.getSessionSummary(child.id);
+      expect(summary?.spawnKind).toBe("peer");
+      expect(summary?.orchestrationParentReachable).toBe(false);
+      expect(summary?.subagentTakeoverPromptShownAt).toBeTruthy();
+
+      const takeover = await service.updateSession({ sessionId: child.id, spawnKind: "peer" });
+      expect(takeover.spawnKind).toBe("peer");
+      expect(takeover.subagentTakeoverPromptShownAt).toBeTruthy();
+      expect((await service.getSessionSummary(child.id))?.spawnKind).toBe("peer");
+    });
+
+    it("dismissing takeover on an orphan converts ownership and stays dismissed", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      await service.deleteSession({ sessionId: parent.id });
+
+      const dismissed = service.dismissSubagentTakeoverPrompt({ sessionId: child.id });
+      expect(dismissed.spawnKind).toBe("peer");
+      expect(dismissed.subagentTakeoverPromptShownAt).toBeTruthy();
+      const again = service.dismissSubagentTakeoverPrompt({ sessionId: child.id });
+      expect(again.spawnKind).toBe("peer");
+      expect(again.subagentTakeoverPromptShownAt).toBe(dismissed.subagentTakeoverPromptShownAt);
+    });
+
     it("reports a stopped completion before deleting an unfinished child", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
@@ -10751,12 +11668,11 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         const completion = events.find((event) =>
           event.sessionId === parent.id
-          && event.event.type === "system_notice"
-          && event.event.status === "spawn_completed"
-          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
         );
         expect(completion).toBeTruthy();
-        expect((completion!.event as any).detail.spawnCompletion).toMatchObject({
+        expect(completion!.event.type === "user_message" && completion!.event.metadata?.spawnCompletion).toMatchObject({
           childSessionId: child.id,
           childTitle: "Deleted child",
           spawnKind: "subagent",
@@ -10970,6 +11886,106 @@ describe("createAgentChatService", () => {
       expect((progressEnvelope?.event as any)?.agentType).toBe("code-reviewer");
       expect((resultEnvelope?.event as any)?.agentType).toBe("code-reviewer");
       expect((startEnvelope?.event as any)?.parentToolUseId).toBe("toolu_task_1");
+      expect((startEnvelope?.event as any)?.model).toBeUndefined();
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it("attaches the Task tool model override to subagent_started, not the parent session model", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-model-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-model-1",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_task_model_1",
+                name: "Task",
+                input: {
+                  subagent_type: "Explore",
+                  description: "Scan the repo",
+                  prompt: "Find the auth module.",
+                  model: "opus",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-model-1",
+          parent_tool_use_id: "toolu_task_model_1",
+          description: "Scan the repo",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-model-1",
+          parent_tool_use_id: "toolu_task_model_1",
+          status: "completed",
+          summary: "Found auth.ts",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-model-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn an Explore subagent on opus.",
+      });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "task-model-1",
+      );
+
+      const startEnvelope = events.find(
+        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === "task-model-1",
+      );
+      expect((startEnvelope?.event as any)?.agentType).toBe("Explore");
+      expect((startEnvelope?.event as any)?.model).toBe("opus");
+      expect((startEnvelope?.event as any)?.model).not.toBe("sonnet");
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -11068,6 +12084,7 @@ describe("createAgentChatService", () => {
       // No agentType is fine — the renderer falls back to description.
       expect((startEnvelope?.event as any)?.agentType).toBeUndefined();
       expect((startEnvelope?.event as any)?.description).toBe("Audit something");
+      expect((startEnvelope?.event as any)?.model).toBeUndefined();
 
       turnDone!();
       await expect(sendPromise).resolves.toBeUndefined();
@@ -12001,6 +13018,196 @@ describe("createAgentChatService", () => {
       expect(drained?.backgroundWork).toBeUndefined();
     });
 
+    /**
+     * The background-task exemption is what keeps a query alive past the
+     * 5-minute idle window "until the work actually ends". These three cases pin
+     * the second half of that promise, which nothing used to enforce:
+     * `liveBackgroundTaskIds` was cleared only by teardown, and the flag itself
+     * blocked teardown, so one task whose completion edge never arrived pinned
+     * the SDK process (and its MCP children) for the life of the app.
+     */
+    const runBackgroundExemptionCase = async (args: {
+      /** Extra levels the SDK publishes after the turn, released by the test. */
+      laterLevels: unknown[][];
+    }) => {
+      const close = vi.fn();
+      let streamCall = 0;
+      const gates: Array<{ promise: Promise<void>; release: () => void }> = args.laterLevels.map(() => {
+        let release!: () => void;
+        const promise = new Promise<void>((resolve) => { release = resolve; });
+        return { promise, release };
+      });
+      let holdRelease!: () => void;
+      const held = new Promise<void>((resolve) => { holdRelease = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "bg-1", task_type: "local_bash", description: "npm run build" }],
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        for (const [index, tasks] of args.laterLevels.entries()) {
+          await gates[index]!.promise;
+          yield { type: "system", subtype: "background_tasks_changed", tasks };
+        }
+        // Keep the idle reader attached: ending it would run the query-ended
+        // teardown, which clears the level set and hides the very state under
+        // test.
+        await held;
+      })());
+      const sdk = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close,
+        sessionId: "sdk-bg-exemption",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdk as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdk as any);
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const turn = service.runSessionTurn({ sessionId: session.id, text: "start background work", timeoutMs: 15_000 });
+      // Buffered-text and transcript flushes are timer-driven, so the turn only
+      // settles once the fake clock is allowed to run.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await turn;
+      const publishNextLevel = async (index: number) => {
+        gates[index]!.release();
+        await vi.advanceTimersByTimeAsync(0);
+      };
+      return { close, events, publishNextLevel, release: holdRelease };
+    };
+
+    it("applies the warm-runtime budget across every chat service in the process", async () => {
+      // The brain builds one agentChatService per open project scope, and the
+      // cap used to be applied inside each one — so "at most 5 warm agent
+      // runtimes" was really 5 x however many projects were open. Memory is
+      // owned by the process, not by a project.
+      const close = vi.fn();
+      let holdRelease!: () => void;
+      const held = new Promise<void>((resolve) => { holdRelease = resolve; });
+      // One SDK object per acquire, so each session's warmup/turn stream has its
+      // own call counter. The idle reader is held open afterwards: a query that
+      // ends closes itself, and this test is about what the BUDGET closes.
+      const makeSdk = () => {
+        let streamCall = 0;
+        return {
+          send: vi.fn().mockResolvedValue(undefined),
+          stream: vi.fn(() => (async function* () {
+            streamCall += 1;
+            yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+            if (streamCall > 1) await held;
+          })()),
+          close,
+          sessionId: "sdk-budget",
+          setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        };
+      };
+      vi.mocked(claudeSdkCreateSessionCompat).mockImplementation(makeSdk as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockImplementation(makeSdk as any);
+
+      // Exactly what a host does: one budget, handed to every project scope.
+      const runtimeBudget = createChatRuntimeBudget();
+      const first = createService({ runtimeBudget });
+      const secondRoot = fs.mkdtempSync(path.join(tmpHomeRoot, "second-project-"));
+      const second = createService({ runtimeBudget, projectRoot: secondRoot });
+      try {
+        const warm = async (service: ReturnType<typeof createService>["service"], text: string) => {
+          const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+          await service.runSessionTurn({ sessionId: session.id, text, timeoutMs: 15_000 });
+        };
+
+        // Fill the budget inside the first service. Nothing is evicted: the cap
+        // is only consulted before a runtime is added, so the fifth still fits.
+        for (let index = 0; index < 5; index += 1) {
+          await warm(first.service, `warm ${index}`);
+        }
+        expect(close).not.toHaveBeenCalled();
+
+        // A sixth runtime in a DIFFERENT project must still cost something.
+        await warm(second.service, "warm across projects");
+        expect(close).toHaveBeenCalled();
+      } finally {
+        holdRelease();
+        await first.service.disposeAll();
+        await second.service.disposeAll();
+      }
+    });
+
+    it("keeps a background-only runtime warm past the idle window, then reclaims it once the session reads Stale", async () => {
+      vi.useFakeTimers();
+      const { close, events, release } = await runBackgroundExemptionCase({ laterLevels: [] });
+      try {
+        // Well past SESSION_INACTIVITY_TIMEOUT_MS: the exemption is doing its job.
+        await vi.advanceTimersByTimeAsync(30 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+
+        // But it is no longer unbounded. Past SESSION_STALE_AFTER_MS every ADE
+        // surface already calls this session Stale rather than Working, so the
+        // warm process is reclaimed too.
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS);
+        expect(close).toHaveBeenCalled();
+
+        // And the user is told why. This is the one teardown that ends work the
+        // session still claimed; stopped rows with no reason attached read as a
+        // bug rather than a decision.
+        const notice = events.find((envelope) =>
+          envelope.event.type === "system_notice"
+          && typeof (envelope.event as { message?: unknown }).message === "string"
+          && (envelope.event as { message: string }).message.includes("released the agent"));
+        expect(notice).toBeDefined();
+      } finally {
+        release();
+      }
+    });
+
+    it("does not reclaim a background-only runtime that is still reporting real changes", async () => {
+      vi.useFakeTimers();
+      const { close, publishNextLevel, release } = await runBackgroundExemptionCase({
+        laterLevels: [[
+          { task_id: "bg-1", task_type: "local_bash", description: "npm run build" },
+          { task_id: "bg-2", task_type: "local_agent", description: "Implement the feature" },
+        ]],
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS - 10 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+
+        // A real membership change is the session doing something, so the
+        // silence clock restarts from here.
+        await publishNextLevel(0);
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS - 10 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+      } finally {
+        release();
+      }
+    });
+
+    it("treats a re-sent identical background level as silence, not activity", async () => {
+      vi.useFakeTimers();
+      // `background_tasks_changed` is level-triggered, so an unchanged set is
+      // the SDK repeating itself. Counting it as activity reset the idle clock
+      // on every frame and made the runtime immortal by construction.
+      const { close, publishNextLevel, release } = await runBackgroundExemptionCase({
+        laterLevels: [[{ task_id: "bg-1", task_type: "local_bash", description: "npm run build" }]],
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(SESSION_STALE_AFTER_MS - 10 * 60_000);
+        expect(close).not.toHaveBeenCalled();
+        await publishNextLevel(0);
+        await vi.advanceTimersByTimeAsync(20 * 60_000);
+        expect(close).toHaveBeenCalled();
+      } finally {
+        release();
+      }
+    });
+
     it("uses the SDK background level to distinguish background and foreground local_bash tasks", async () => {
       // `local_bash` is the implementation kind for both foreground and
       // background Bash. Only the SDK's authoritative membership level makes
@@ -12653,6 +13860,9 @@ describe("createAgentChatService", () => {
 
       expect(names).toContain("/permissions");
       expect(names).toContain("/review");
+      expect(names).toContain("/shell");
+      expect(names).toContain("/memory");
+      expect(names).toContain("/memory-reset");
       expect(commands).toEqual(expect.arrayContaining([
         expect.objectContaining({
           name: "/audit",
@@ -13555,6 +14765,355 @@ describe("createAgentChatService", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
+  describe("Codex 0.149 app-server composer commands", () => {
+    const pin149 = () => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
+    };
+
+    it("sends ! and /shell drafts through thread/shellCommand", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!git status --short",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/shellCommand")).toBe(true);
+      });
+      const shell = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/shellCommand");
+      expect(shell?.params).toEqual(expect.objectContaining({
+        command: "git status --short",
+      }));
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("adopts the thread/shellCommand turn so the composer can settle", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", { turn: { id: "shell-turn-1" } });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "shell-turn-1", status: "completed" } },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "done"
+          && event.event.turnId === "shell-turn-1",
+        )).toBe(true);
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the shell command.",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
+    it("settles idle user shell when thread/shellCommand has no turn id", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", {});
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the shell command.",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
+    it("does not reset memory until /memory-reset confirm", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/memory-reset",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "memory/reset")).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && String(event.event.message).includes("/memory-reset confirm"),
+      )).toBe(true);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/memory-reset confirm",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "memory/reset")).toBe(true);
+    });
+
+    it("sets memory mode with /memory on", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/memory on",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "thread/memoryMode/set"
+        && (payload.params as { mode?: string }).mode === "enabled",
+      )).toBe(true);
+    });
+
+    it("queues a follow-up during compaction instead of steering", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: { id: "compact-1", type: "contextCompaction" },
+        },
+      });
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "are u still alive",
+      });
+      expect(queued.queued).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/queue/add")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+
+      const coalesced = await service.steer({
+        sessionId: session.id,
+        text: "are u still alive",
+      });
+      expect(coalesced.queued).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Duplicate check-in ignored.",
+      )).toBe(true);
+    });
+
+    it("runs mid-turn ! commands as user shell instead of steer", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+
+      await service.steer({
+        sessionId: session.id,
+        text: "!pwd",
+      });
+
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "thread/shellCommand"
+        && (payload.params as { command?: string }).command === "pwd",
+      )).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+    });
+
+    it("keeps the parent turn active when a mid-turn user shell fails", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", {
+        error: { code: -32000, message: "shell failed" },
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && String(event.event.message).includes("user shell failed"),
+      )).toBe(true);
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "Continue the original turn.",
+      }, { awaitDispatch: true })).rejects.toThrow(/turn is already active/i);
+    });
+
+    it("sends revalidated effort when switching Codex models on a live thread", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "high",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this thread live.",
+      }, { awaitDispatch: true });
+
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "openai/gpt-5.6-sol",
+      });
+      const settings = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/settings/update");
+      expect(settings?.params).toEqual(expect.objectContaining({
+        effort: expect.any(String),
+      }));
+    });
+
+    it("fail-opens compaction when the turn is interrupted", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: { id: "compact-stall", type: "contextCompaction" },
+        },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+          && event.event.state === "started",
+        )).toBe(true);
+      });
+
+      await service.interrupt({ sessionId: session.id });
+      expect(events.some((event) =>
+        (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+        && event.event.state === "failed"
+        && event.event.failReason === "interrupted",
+      )).toBe(true);
+    });
+
+    it("fail-opens compaction after a stall", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      vi.useFakeTimers();
+      try {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "item/started",
+          params: {
+            turnId: "turn-1",
+            item: { id: "compact-timeout", type: "contextCompaction" },
+          },
+        });
+        let started = false;
+        for (let i = 0; i < 20 && !started; i += 1) {
+          await Promise.resolve();
+          started = events.some((event) =>
+            (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+            && event.event.state === "started"
+            && event.event.compactionId === "compact-timeout",
+          );
+        }
+        expect(started).toBe(true);
+        await vi.advanceTimersByTimeAsync(180_000);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(events.some((event) =>
+        (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+        && event.event.compactionId === "compact-timeout"
+        && event.event.state === "failed"
+        && event.event.failReason === "timed_out",
+      )).toBe(true);
+    });
+  });
+
   describe("runtime-native chat titles", () => {
     it("adopts Codex app-server thread names from lifecycle responses", async () => {
       mockState.codexResponseOverrides.set("thread/start", () => ({
@@ -13677,6 +15236,65 @@ describe("createAgentChatService", () => {
           event.type === "session_meta_updated");
       expect(metaEvent).toBeDefined();
       expect(metaEvent?.opencodePermissionMode).toBe("plan");
+    });
+
+    it("replays the full transcript when switching to an out-of-family model", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Seamless replay-fork on model change.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(session.status).toBe("idle");
+      });
+
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        modelId: "openai/gpt-5.5",
+      });
+      const persisted = readPersistedChatState(updated.id);
+
+      expect(updated.provider).toBe("codex");
+      expect(persisted.pendingTranscriptReplay).toContain("Seamless replay-fork on model change.");
+      expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
+    });
+
+    it("changes only the model when switching models with independent settings selected", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "high",
+        fastMode: true,
+        permissionMode: "plan",
+        codexApprovalPolicy: "on-failure",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      });
+      const before = {
+        reasoningEffort: session.reasoningEffort,
+        fastMode: session.fastMode,
+        permissionMode: session.permissionMode,
+        codexApprovalPolicy: session.codexApprovalPolicy,
+        codexSandbox: session.codexSandbox,
+        codexConfigSource: session.codexConfigSource,
+      };
+
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-sonnet-5",
+      });
+
+      expect(updated.provider).toBe("claude");
+      expect(updated.modelId).toBe("anthropic/claude-sonnet-5");
+      expect(updated).toMatchObject(before);
     });
 
     it("does not broadcast mode fields when no mode field is updated", async () => {
@@ -14285,6 +15903,1598 @@ describe("createAgentChatService", () => {
       expect(errorEvent.event.detail).toContain("req-cursor-network");
     });
 
+    it("never expires an active Cursor run on a normal full-auto send", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        permissionMode: "full-auto",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Full-auto Cursor turn.",
+      }, { awaitDispatch: true });
+
+      // The ADE full-auto permission mode must not reach the SDK's
+      // `local.force`; only the recovery re-send may expire a run.
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      expect(mockState.cursorSdkSendCalls[0]).not.toHaveProperty("force");
+      expect(mockState.cursorSdkSendCalls[0]?.forceExpireActiveRun).toBeUndefined();
+    });
+
+    it("explains a Cursor agent_busy rejection instead of leaking the raw error", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // Reachable when a concurrent send lands on an agent whose previous run
+      // is still registered active (e.g. after settle clears ADE's own busy
+      // flag). Without local.force on normal sends the SDK reports it.
+      mockState.cursorSendPromptError = Object.assign(
+        new Error("Cursor SDK send failed: agent_busy"),
+        { code: "agent_busy" },
+      );
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Send while the previous run is still active.",
+      }, { awaitDispatch: true });
+
+      const errorEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+          event.event.type === "error" && event.sessionId === session.id,
+      );
+      expect(errorEvent.event.message).toBe(
+        "Cursor is already running this chat. Wait for the active turn to finish or cancel it before sending another message.",
+      );
+      expect(errorEvent.event.errorInfo).toMatchObject({ category: "busy", provider: "Cursor" });
+      // A busy rejection is not a transport failure: no rotation, no poison.
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+    });
+
+    it("expires the abandoned run on the first Cursor send after settlement, and only that one", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      let releaseStuckTurn = () => {};
+      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseStuckTurn = resolve; });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      try {
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Turn that will be abandoned.",
+        });
+        await vi.waitFor(() => {
+          expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+        });
+
+        // Settle force-clears busy/activeTurnId after a best-effort cancel, so
+        // the run may still be registered active on the Cursor agent.
+        await service.dismissPendingInputForSettlement({ sessionId: session.id });
+        // Later sends must not queue behind the abandoned turn.
+        mockState.cursorSendPromptGate = null;
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "First send after settling.",
+        }, { awaitDispatch: true });
+        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+        expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
+        // awaitDispatch can resolve before the turn's finally clears busy.
+        // The one-shot expiry is already consumed; wait until this send is
+        // idle so the next one is a true follow-up, not an overlap bounce.
+        await vi.waitFor(() => {
+          expect(service.hasActiveWorkloads()).toBe(false);
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Second send after settling.",
+        }, { awaitDispatch: true });
+        expect(mockState.cursorSdkSendCalls).toHaveLength(3);
+        // One-shot: the flag must not persist into the next turn.
+        expect(mockState.cursorSdkSendCalls[2]?.forceExpireActiveRun).toBeUndefined();
+        // And the original send never carried it.
+        expect(mockState.cursorSdkSendCalls[0]?.forceExpireActiveRun).toBeUndefined();
+      } finally {
+        releaseStuckTurn();
+      }
+    });
+
+    it("recovers once when the first Cursor send throws write ECANCELED", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // The 2026-08-11 incident shape: a transport write cancellation that
+      // poisons the agent thread before anything streams.
+      mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      void service.sendMessage({
+        sessionId: session.id,
+        text: "Send that dies on the wire.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "error")).toBe(true);
+      });
+
+      // One automatic recycle + re-send, then the failure surfaces once.
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
+      expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
+      expect(events.filter((event) =>
+        event.sessionId === session.id && event.event.type === "error",
+      )).toHaveLength(1);
+    });
+
+    it("restages a verbatim transcript replay into its own bucket across a Cursor thread recycle", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep the banner aligned with the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(session.status).toBe("idle");
+      });
+
+      // Out-of-family model switch stages both buckets: the verbatim replay
+      // and the ADE continuity reconstruction rebuilt from the conversation.
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "cursor/composer-2",
+      });
+      expect(readPersistedChatState(session.id).pendingTranscriptReplay)
+        .toContain("Keep the banner aligned with the composer.");
+
+      mockState.cursorSdkSendCalls = [];
+      mockState.onCursorSendPrompt = () => {
+        mockState.cursorSendPromptError = mockState.cursorSdkSendCalls.length === 1
+          ? new Error("Cursor SDK send failed: [internal] write ECANCELED")
+          : null;
+      };
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the recycle.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+
+      const continuityHeader = "System context (ADE continuity, do not echo verbatim):";
+      const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(retryPrompt.split(continuityHeader).length - 1).toBe(1);
+      expect(retryPrompt).toContain(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(retryPrompt).toContain("Keep the banner aligned with the composer.");
+
+      const headerIndex = retryPrompt.indexOf(continuityHeader);
+      const replayIndex = retryPrompt.indexOf(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(replayIndex).toBeGreaterThanOrEqual(0);
+      expect(replayIndex).toBeLessThan(headerIndex);
+      expect(retryPrompt.slice(headerIndex)).not.toContain(CROSS_PROVIDER_REPLAY_HEADER);
+      expect(readPersistedChatState(session.id).pendingTranscriptReplay).toBeNull();
+    });
+
+    it("recovers once when a Cursor run returns a transport error with no stream events", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // The true production shape: cursorSdkWorker posts a synthetic terminal
+      // `status: ERROR` sdk_event immediately before run_result. Counting that
+      // as stream activity is what made this branch dead in the field while a
+      // test that emitted nothing still passed.
+      mockState.cursorSendPromptResult = {
+        id: "cursor-sdk-run-1",
+        status: "error",
+        error: { message: "[internal] write ECANCELED", code: "stream_error" },
+      };
+      mockState.onCursorSendPrompt = (pooled) => {
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          message: "[internal] write ECANCELED",
+          adeErrorCode: "[internal] write ECANCELED",
+          adeErrorDetail: { message: "[internal] write ECANCELED" },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      void service.sendMessage({
+        sessionId: session.id,
+        text: "Run that returns a transport error.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
+      expect(mockState.cursorSdkAcquireCalls.at(-1)?.agentId).toBeNull();
+      expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
+    });
+
+    it("does not recover a Cursor transport error that arrived after real output", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // Same terminal error, but the run streamed first — recycling would throw
+      // away work the user can already see, so it must not fire.
+      mockState.cursorSendPromptResult = {
+        id: "cursor-sdk-run-1",
+        status: "error",
+        error: { message: "[internal] write ECANCELED", code: "stream_error" },
+      };
+      mockState.onCursorSendPrompt = (pooled) => {
+        pooled.bridge.onEvent?.(
+          { type: "assistant", message: { content: [{ type: "text", text: "Partial answer." }] } },
+          { runtime: "local", runId: "cursor-sdk-run-1" },
+        );
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: "[internal] write ECANCELED",
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run that streams then dies.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
+    });
+
+    it("recovers a Cursor stale access token on the same agent thread, invisibly, before any output", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // The SDK exchanges the API key for a short-lived access token once per
+      // worker and never refreshes it, so ~60 min in every send dies instantly
+      // with this exact text. The key is fine; only the worker is spent.
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.onCursorSendPrompt = (pooled) => {
+        if (mockState.cursorSdkSendCalls.length > 1) {
+          mockState.cursorSendPromptResult = null;
+          return;
+        }
+        mockState.cursorSendPromptResult = {
+          id: "cursor-sdk-run-1",
+          status: "error",
+          error: { message: staleTokenMessage, code: staleTokenMessage },
+        };
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage, requestId: "req-stale-1" },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Send whose token just expired.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      // Exactly one recycle and one re-send...
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
+      // ...onto the SAME agent id, so the whole conversation survives. This is
+      // what separates it from the transport recycle, which rotates to a new
+      // agent and re-seeds it with a continuity summary.
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
+      expect(mockState.cursorSdkAcquireCalls[1]?.agentId).toBe("cursor-sdk-agent-1");
+      expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
+      // Nothing had streamed yet, so the original prompt is re-sent verbatim —
+      // byte-identical to attempt 1, not a "continue" instruction. Accepted
+      // trade-off: `forceExpireActiveRun` expires the wedged run but does not
+      // unregister the message it already recorded, so the resumed thread can
+      // hold this prompt twice. A silent, correct answer beats a deduped no-op.
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Send whose token just expired.");
+      expect(mockState.cursorSdkSendCalls[1]?.promptText)
+        .toBe(mockState.cursorSdkSendCalls[0]?.promptText);
+      // And the user sees none of it: no error card, no notice.
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+      expect(events.filter((event) => event.event.type === "system_notice")).toHaveLength(0);
+      expect(events.filter((event) => event.event.type === "done").at(-1)?.event)
+        .toMatchObject({ status: "completed" });
+    });
+
+    it("ignores visible output from an abandoned run when deciding to resume mid-turn", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // Same stale-token recovery, but the only "real output" belongs to a run
+      // this turn already walked away from. Crediting it would tell Cursor to
+      // continue from work that never happened on this turn, so the retry must
+      // be the verbatim replay instead.
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.onCursorSendPrompt = (pooled) => {
+        if (mockState.cursorSdkSendCalls.length > 1) {
+          mockState.cursorSendPromptResult = null;
+          return;
+        }
+        mockState.cursorSendPromptResult = {
+          id: "cursor-sdk-run-1",
+          status: "error",
+          error: { message: staleTokenMessage, code: staleTokenMessage },
+        };
+        // This turn's run, which scopes the watchdog...
+        pooled.bridge.onRunStarted?.({
+          agentId: "cursor-sdk-agent-1",
+          runId: "cursor-sdk-run-1",
+          modelSdkId: "composer-2",
+        }, { runtime: "local" });
+        // ...and a late frame from the previous, abandoned one.
+        pooled.bridge.onEvent?.(
+          { type: "assistant", message: { content: [{ type: "text", text: "Output from the old run." }] } },
+          { runtime: "local", runId: "cursor-sdk-run-0" },
+        );
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Refactor the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(retryPrompt).not.toContain("Continue where you left off");
+      expect(retryPrompt).toBe(String(mockState.cursorSdkSendCalls[0]?.promptText ?? ""));
+      // Nothing visible happened on this turn, so the recovery stays silent.
+      expect(events.filter((event) => event.event.type === "system_notice")).toHaveLength(0);
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+    });
+
+    it("continues the resumed Cursor thread when the access token expires mid-turn", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.onCursorSendPrompt = (pooled) => {
+        if (mockState.cursorSdkSendCalls.length > 1) {
+          mockState.cursorSendPromptResult = null;
+          return;
+        }
+        mockState.cursorSendPromptResult = {
+          id: "cursor-sdk-run-1",
+          status: "error",
+          error: { message: staleTokenMessage, code: staleTokenMessage },
+        };
+        // Real output first: the token ages out an hour into a working turn.
+        pooled.bridge.onEvent?.(
+          { type: "assistant", message: { content: [{ type: "text", text: "Started the refactor." }] } },
+          { runtime: "local", runId: "cursor-sdk-run-1" },
+        );
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Refactor the composer.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "done")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      expect(mockState.cursorSdkAcquireCalls[1]?.agentId).toBe("cursor-sdk-agent-1");
+      // The thread was resumed, so re-sending the original prompt would restart
+      // work Cursor had already done — it is asked to continue instead.
+      const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(retryPrompt).toContain("Continue where you left off");
+      expect(retryPrompt).not.toContain("Refactor the composer.");
+      // The reply visibly stopped, so this one case says something — quietly.
+      const notices = events.filter((event) => event.event.type === "system_notice");
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.event).toMatchObject({
+        noticeKind: "info",
+        message: "Reconnected to Cursor and continued.",
+      });
+      expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
+    });
+
+    it("surfaces the Cursor stale-token failure once when the recovery re-send fails the same way", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const staleTokenMessage = "Authentication error If you are logged in, try logging out and back in.";
+      mockState.cursorSendPromptResult = {
+        id: "cursor-sdk-run-1",
+        status: "error",
+        error: { message: staleTokenMessage, code: staleTokenMessage },
+      };
+      mockState.onCursorSendPrompt = (pooled) => {
+        pooled.bridge.onEvent?.({
+          type: "status",
+          status: "ERROR",
+          adeErrorCode: staleTokenMessage,
+          adeErrorDetail: { message: staleTokenMessage, requestId: "req-stale-2" },
+        }, { runtime: "local", runId: "cursor-sdk-run-1" });
+      };
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Send that stays unauthenticated.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "error")).toBe(true);
+      });
+
+      // One recovery, no loop.
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      const errorEvents = events.filter((event) => event.event.type === "error");
+      expect(errorEvents).toHaveLength(1);
+      expect(errorEvents[0]?.event).toMatchObject({
+        message: "Cursor's session expired. ADE reconnected and retried, but Cursor rejected the request "
+          + "again — sign in to Cursor again in Settings, then resend.",
+        errorInfo: { category: "auth", provider: "Cursor" },
+      });
+      // The raw SDK text never reaches the transcript, but the request id does.
+      expect(String((errorEvents[0]?.event as { detail?: string }).detail ?? ""))
+        .toContain("req-stale-2");
+    });
+
+    it("does not recycle the Cursor worker for a genuinely bad API key", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // A fresh worker would fail identically: this is the user's problem to
+      // fix, so it must surface immediately rather than burn a recovery.
+      mockState.cursorSendPromptError = new Error("Authentication failed: Invalid API key");
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Send with a bad key.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.event.type === "error")).toBe(true);
+      });
+
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
+      const errorEvents = events.filter((event) => event.event.type === "error");
+      expect(errorEvents).toHaveLength(1);
+      expect(String((errorEvents[0]?.event as { message?: string }).message ?? ""))
+        .toContain("Check your Cursor credentials");
+    });
+
+    it("carries a queued Cursor steer across a thread recycle and delivers it after recovery", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      vi.useFakeTimers();
+      try {
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Turn that goes silent.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+
+        // The user types again during the silent window: cursor queues it as a
+        // steer, on a runtime the recycle is about to destroy.
+        await service.steer({ sessionId: session.id, text: "Also check the migration." });
+        await pumpUntil("queued steer", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        mockState.cursorSendPromptGate = null;
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        // Re-send, then the carried steer delivered as its own turn.
+        await pumpUntil("steer delivered after recovery", () => mockState.cursorSdkSendCalls.length >= 3);
+
+        // The message the user typed during the outage is not lost.
+        expect(String(mockState.cursorSdkSendCalls[2]?.promptText ?? "")).toContain("Also check the migration.");
+        // ...and it is not cancelled behind their back.
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("cancelled"))).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    /**
+     * Cursor "interrupt & continue". The Cursor SDK has no mid-run message
+     * API, so the redirect can only be cancel + resend on the same agent —
+     * these cover that the cancel happens, the resend lands on the same
+     * thread, and nothing the user already queued is thrown away.
+     */
+    const startBusyCursorSession = async (events: AgentChatEventEnvelope[]) => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      let releaseTurn: (() => void) | null = null;
+      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      void service.sendMessage({
+        sessionId: session.id,
+        text: "Original turn.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
+      });
+      // The worker's cancel is what actually settles the in-flight run.
+      mockState.onCursorCancel = () => {
+        mockState.onCursorCancel = null;
+        mockState.cursorSendPromptGate = null;
+        releaseTurn?.();
+      };
+      return { service, session };
+    };
+
+    it("dispatches a Cursor steer with dispatchMode interrupt by cancelling the run and resending on the same agent", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Actually, do the migration first.",
+        dispatchMode: "interrupt",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Actually, do the migration first.");
+      // The previous turn is reported as interrupted, not failed.
+      expect(events.some((event) =>
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+      // Same agent, same thread: no rotation and no new worker.
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
+      expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
+    });
+
+    it("keeps already-queued Cursor steers across an interrupt-and-continue", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({ sessionId: session.id, text: "Then update the docs." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Actually, do the migration first.",
+        dispatchMode: "interrupt",
+      });
+
+      // Redirect turn, then the message the user had already staged.
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(3);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Actually, do the migration first.");
+      expect(String(mockState.cursorSdkSendCalls[2]?.promptText ?? ""))
+        .toContain("Then update the docs.");
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && typeof event.event.steerId === "string"
+        && event.event.message.includes("cancelled"))).toBe(false);
+    });
+
+    it("routes messageSession kind interrupt-replace on Cursor through interrupt-and-continue", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Stop and take this instead.",
+        kind: "interrupt-replace",
+      });
+
+      expect(result.routedAction).toBe("interrupt-replace");
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
+        .toContain("Stop and take this instead.");
+      expect(events.some((event) =>
+        event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+      expect(readPersistedChatState(session.id).cursorSdkAgentId).toBe("cursor-sdk-agent-1");
+    });
+
+    it("still clears queued Droid steers on interrupt-replace, unlike Cursor", async () => {
+      // The Cursor redirect softens the stop to `stop_only` so the user's other
+      // queued messages ride through. That is Cursor-only: every other provider
+      // keeps the pre-existing `interrupt-replace` contract, which clears.
+      const events: AgentChatEventEnvelope[] = [];
+      let finishTurn = () => {};
+      mockState.droidPromptGate = new Promise<void>((resolve) => { finishTurn = resolve; });
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "droid",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+      });
+      try {
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Original Droid turn.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await vi.waitFor(() => {
+          expect(mockState.droidPromptCalls.length).toBeGreaterThanOrEqual(1);
+        });
+        // The cancel is what settles the in-flight prompt, as on the real SDK.
+        mockState.droidPooled?.cancel.mockImplementation(async () => {
+          mockState.droidPromptGate = null;
+          finishTurn();
+        });
+
+        await service.steer({ sessionId: session.id, text: "Then update the docs." });
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+        });
+
+        await service.messageSession({
+          sessionId: session.id,
+          text: "Stop and take this instead.",
+          kind: "interrupt-replace",
+        });
+
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "system_notice"
+            && typeof event.event.steerId === "string"
+            && event.event.message.includes("cancelled"))).toBe(true);
+        });
+        await vi.waitFor(() => {
+          expect(mockState.droidPromptCalls.some((call) =>
+            String(call.prompt ?? call.promptText ?? "").includes("Stop and take this instead."))).toBe(true);
+        });
+      } finally {
+        mockState.droidPromptGate = null;
+        finishTurn();
+      }
+    });
+
+    it("promotes a staged Cursor steer to interrupt-and-continue through dispatchSteer", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({ sessionId: session.id, text: "Run this one instead." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      await expect(service.dispatchSteer({
+        sessionId: session.id,
+        steerId: staged.steerId,
+        mode: "inline",
+      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Run this one instead.");
+      // The staged chip has to be resolved, or it stays parked in the composer.
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.steerId === staged.steerId
+        && event.event.message.includes("Delivering"))).toBe(true);
+    });
+
+    it("rejects an inline steer dispatch on Cursor instead of silently downgrading it", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService({ onEvent: () => {} });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await expect(service.steer({
+        sessionId: session.id,
+        text: "Fold this into the live run.",
+        dispatchMode: "inline",
+      })).rejects.toThrow(/only the "interrupt" active-turn dispatch mode/);
+    });
+
+    // Regression (quality A2): the redirect rebuilds the send from scratch, so
+    // the per-message overrides the user picked for THIS message have to be
+    // carried across it. Before the fix they were dropped and the redirect ran
+    // on whatever the session already had.
+    it("carries per-message reasoning and execution overrides through the Cursor interrupt redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+      const before = await service.getSessionSummary(session.id);
+      expect(before?.reasoningEffort ?? null).toBeNull();
+      expect(before?.executionMode).toBe("focused");
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Actually, do the migration first.",
+        dispatchMode: "interrupt",
+        reasoningEffort: "high",
+        executionMode: "parallel",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const after = await service.getSessionSummary(session.id);
+      expect(after?.reasoningEffort).toBe("high");
+      expect(after?.executionMode).toBe("parallel");
+      expect(readPersistedChatState(session.id).reasoningEffort).toBe("high");
+    });
+
+    // Regression (quality A2): the same three overrides ride the staged row
+    // when the user promotes it, exactly as `deliverNextQueuedSteer` applies
+    // them at a natural turn boundary.
+    it("carries a staged Cursor steer's overrides through the promotion redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({
+        sessionId: session.id,
+        text: "Run this one instead.",
+        reasoningEffort: "high",
+        executionMode: "subagents",
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+      // Staging must not apply them: they belong to the message, not the session.
+      expect((await service.getSessionSummary(session.id))?.executionMode).toBe("focused");
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const after = await service.getSessionSummary(session.id);
+      expect(after?.reasoningEffort).toBe("high");
+      expect(after?.executionMode).toBe("subagents");
+    });
+
+    // Regression (quality A8): `steerWithOptions` already expanded the chips,
+    // so the redirect's `sendMessage` must not expand them a second time —
+    // expanded file content can itself contain chip syntax.
+    it("expands @-mention chips exactly once on the Cursor interrupt redirect", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({
+        sessionId: session.id,
+        text: "apply the fix from @chat:other-session-id",
+        dispatchMode: "interrupt",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      const promptText = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
+      expect(promptText).toContain("<ade-mention");
+      expect(promptText.match(/<ade-mention/g) ?? []).toHaveLength(1);
+      expect(promptText).toContain("other-session-id");
+    });
+
+    // Regression (quality A4/B7): the settle wait can time out with the run
+    // still live. The old blanket `finally` disarmed the preserve flag on the
+    // way out, so the late cancel — issued by exactly the stop this redirect
+    // asked for — wiped the messages the user had already queued.
+    it("keeps queued Cursor steers when the interrupt's settle wait times out", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      await service.steer({ sessionId: session.id, text: "Then update the docs." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      // The stop reaches the worker, but the run does not settle: the redirect
+      // gives up after its 30 s wait and reports that, instead of hanging.
+      const releaseTurn = mockState.onCursorCancel;
+      mockState.onCursorCancel = () => {};
+      vi.useFakeTimers();
+      try {
+        const redirect = service.steer({
+          sessionId: session.id,
+          text: "Actually, do the migration first.",
+          dispatchMode: "interrupt",
+        }).then(() => "resolved", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+        await vi.advanceTimersByTimeAsync(31_000);
+        await expect(redirect).resolves.toMatch(/still stopping/);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      // The run settles late, and its tail runs the cancel the stop earned.
+      // The flag is still armed, so the user's other message survives it.
+      releaseTurn?.();
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted")).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && typeof event.event.steerId === "string"
+        && event.event.message.includes("cancelled"))).toBe(false);
+    });
+
+    // Regression (quality R6): the promotion splices the row out of the queue
+    // before the redirect completes, so a cancel arriving in that window must
+    // say the message is going out, not that it was never queued.
+    it("tells the user a promoted Cursor steer is already being dispatched, not that it is gone", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, session } = await startBusyCursorSession(events);
+
+      const staged = await service.steer({ sessionId: session.id, text: "Run this one instead." });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
+      });
+
+      // The worker's cancel runs inside the redirect, while the row is spliced
+      // out but the dispatch has not landed yet.
+      let cancelDuringDispatch: Promise<unknown> | null = null;
+      const releaseTurn = mockState.onCursorCancel;
+      mockState.onCursorCancel = () => {
+        cancelDuringDispatch = service
+          .cancelSteer({ sessionId: session.id, steerId: staged.steerId, requireQueued: true })
+          .then(() => "resolved", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+        releaseTurn?.();
+      };
+
+      await service.dispatchSteer({ sessionId: session.id, steerId: staged.steerId, mode: "interrupt" });
+
+      expect(cancelDuringDispatch, "the cancel must land inside the dispatch window").toBeTruthy();
+      await expect(cancelDuringDispatch!).resolves.toBe("This message is already being dispatched.");
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(2);
+      });
+      expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Run this one instead.");
+    });
+
+    it("settles a re-queued Cursor steer exactly once when the recovery re-send also goes silent", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      vi.useFakeTimers();
+      try {
+        // Neither attempt ever answers, so the steer is carried onto attempt 2's
+        // runtime and then abandoned again when that one is recycled too.
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Both attempts go silent.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+
+        await service.steer({ sessionId: session.id, text: "Queued during the outage." });
+        await pumpUntil("queued steer", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
+
+        // Settled, and settled once: the attempt body and the wrapper cover
+        // disjoint windows, so the chip clears without a duplicate notice.
+        // Only one steer exists in this test, so any steer-scoped cancellation
+        // notice belongs to it.
+        const cancelNotices = events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("cancelled"));
+        expect(cancelNotices).toHaveLength(1);
+        expect(cancelNotices[0]?.event).toMatchObject({
+          message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+        });
+        // The steer was never delivered as a turn of its own.
+        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("settles a queued Cursor steer when the user stops a silent run", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      vi.useFakeTimers();
+      try {
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Silent run the user stops.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+
+        await service.steer({ sessionId: session.id, text: "Queued before the stop." });
+        await pumpUntil("queued steer", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        // Stop lands while the run is still silent; a plain stop does not clear
+        // the queue, so the recycle is what strands the steer.
+        mockState.onCursorCancel = () => {
+          mockState.onCursorCancel = null;
+          void service.interrupt({ sessionId: session.id });
+        };
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("turn settled", () => events.some((event) => event.event.type === "done"));
+
+        const cancelNotices = events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("cancelled"));
+        // Not silently dropped, and not double-noticed.
+        expect(cancelNotices).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("settles a Cursor steer queued during the recovery re-send when that attempt also goes silent", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      vi.useFakeTimers();
+      try {
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Both attempts go silent.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+
+        // Queued during attempt 1 — carried across the recycle by the wrapper.
+        await service.steer({ sessionId: session.id, text: "Carried across the recycle." });
+        await pumpUntil("carried steer queued", () => events.filter((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 1);
+
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
+
+        // Queued during attempt 2 — lands on the rebuilt runtime, which the
+        // wrapper does not track. Only the attempt itself can settle it.
+        await service.steer({ sessionId: session.id, text: "Queued during the re-send." });
+        await pumpUntil("second steer queued", () => events.filter((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 2);
+
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
+
+        const cancelNotices = events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("cancelled"));
+        // Both steers settled, neither twice.
+        expect(cancelNotices).toHaveLength(2);
+        const noticedIds = cancelNotices.map((event) =>
+          event.event.type === "system_notice" ? event.event.steerId : null);
+        expect(new Set(noticedIds).size).toBe(2);
+        // Neither was delivered as a turn of its own.
+        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not cancel a delivered Cursor steer when a later recycle swaps the runtime", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      vi.useFakeTimers();
+      try {
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        // Send 3 is the delivered steer's own turn: it goes silent too, so its
+        // nested recycle detaches managed.runtime while the outer wrapper is
+        // still holding the carried steer — the false-cancel window.
+        mockState.onCursorSendPrompt = () => {
+          if (mockState.cursorSdkSendCalls.length !== 3) return;
+          mockState.cursorSendPromptGate = new Promise<void>(() => {});
+          // The gate is read synchronously right after this hook, so clearing
+          // it on a microtask stalls only send 3 and lets its re-send run free.
+          queueMicrotask(() => { mockState.cursorSendPromptGate = null; });
+        };
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Turn that goes silent.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+
+        await service.steer({ sessionId: session.id, text: "Carried, then delivered." });
+        await pumpUntil("queued steer", () => events.some((event) =>
+          event.event.type === "user_message" && event.event.deliveryState === "queued"));
+
+        // Attempt 2 succeeds and delivers the carried steer.
+        mockState.cursorSendPromptGate = null;
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("steer delivered", () => mockState.cursorSdkSendCalls.length >= 3);
+        // The delivered steer's turn is silent in turn; its recovery re-send
+        // (send 4) succeeds and leaves a different runtime on the session.
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("nested recovery", () => mockState.cursorSdkSendCalls.length >= 4);
+        // Let the nested chain unwind fully, so the outer wrapper's finally
+        // runs while the session is on a different runtime than it re-queued on.
+        await pumpUntil("both turns settled", () => events.filter((event) =>
+          event.event.type === "done").length >= 2);
+
+        // The steer really was delivered...
+        expect(String(mockState.cursorSdkSendCalls[2]?.promptText ?? ""))
+          .toContain("Carried, then delivered.");
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("Delivering"))).toBe(true);
+        // ...so the runtime swap must not retroactively cancel it.
+        expect(events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.steerId === "string"
+          && event.event.message.includes("cancelled"))).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels a carried Cursor steer with recycle copy when the re-send cannot start", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
+      // Attempt 2 cannot rebuild a runtime, so the carried steer can never be
+      // delivered — the chip must still clear, with an honest reason.
+      mockState.cursorAcquireErrorOnCall = 2;
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      let releaseTurn = () => {};
+      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      void service.sendMessage({
+        sessionId: session.id,
+        text: "Turn that dies.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(mockState.cursorSdkSendCalls.length).toBeGreaterThanOrEqual(1);
+        expect(String(mockState.cursorSdkSendCalls[0]?.promptText ?? "")).toContain("Turn that dies.");
+      });
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      await service.steer({ sessionId: session.id, text: "Queued during the outage." });
+      releaseTurn();
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === session.id && event.event.type === "done")).toBe(true);
+      });
+
+      const cancelNotices = events.filter((event) =>
+        event.event.type === "system_notice"
+        && typeof event.event.steerId === "string"
+        && event.event.message.includes("cancelled"));
+      expect(cancelNotices).toHaveLength(1);
+      expect(cancelNotices[0]?.event).toMatchObject({
+        type: "system_notice",
+        message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+      });
+    });
+
+    it("rotates onto a fresh Cursor agent after a restart when the previous thread was abandoned", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      vi.useFakeTimers();
+      try {
+        // Both attempts go silent, so the terminal path recycles the rotated
+        // agent too and arms a rotation for whatever comes next.
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Both attempts go silent.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("terminal failure", () => mockState.cursorSdkPoisonCalls.length >= 2);
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const persisted = readPersistedChatState(session.id);
+      // The wedged agent id is still on disk (teardown preserves it), so the
+      // rotation intent has to be durable too or a restart resumes it.
+      expect(persisted.cursorSdkAgentId).toBe("cursor-sdk-agent-1");
+      expect(persisted.cursorSdkPendingRotationPreviousAgentId).toBe("cursor-sdk-agent-1");
+
+      // Simulate the restart: a brand-new service reads the same session dir,
+      // so the in-memory WeakMap is gone and only the persisted field remains.
+      mockState.cursorSendPromptGate = null;
+      mockState.cursorSdkAcquireCalls = [];
+      mockState.cursorSdkSendCalls = [];
+      const { service: restarted } = createService();
+      await restarted.sendMessage({
+        sessionId: session.id,
+        text: "Send after restart.",
+      }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(1);
+      expect(mockState.cursorSdkAcquireCalls[0]?.agentId).toBeNull();
+      // The fresh agent is seeded with the conversation rather than starting cold.
+      expect(String(mockState.cursorSdkSendCalls[0]?.promptText ?? ""))
+        .toContain("Cursor SDK continuity recovery");
+      // One-shot: spent by the rotation it caused.
+      expect(readPersistedChatState(session.id).cursorSdkPendingRotationPreviousAgentId).toBeUndefined();
+    });
+
+    it("reports the turn once when the Cursor recovery re-send cannot start a runtime", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      // Attempt 2 forks a brand-new worker, so a fork/auth failure lands before
+      // its own try block — the wrapper owns the terminal set for that path.
+      mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
+      mockState.cursorAcquireErrorOnCall = 2;
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      const dispatch = service.sendMessage({
+        sessionId: session.id,
+        text: "Recovery whose runtime will not start.",
+      }, { awaitBackendDispatch: true }).then(() => "resolved", () => "rejected");
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === session.id && event.event.type === "done")).toBe(true);
+      });
+      // The dispatch acknowledgement always settles — no caller is left hanging.
+      await expect(dispatch).resolves.toBeDefined();
+
+      // Exactly one terminal set, even though no attempt ever reported one itself.
+      expect(events.filter((e) => e.sessionId === session.id && e.event.type === "error")).toHaveLength(1);
+      expect(events.filter((e) => e.sessionId === session.id && e.event.type === "done")).toHaveLength(1);
+      expect(events.filter((e) =>
+        e.sessionId === session.id && e.event.type === "status" && e.event.turnStatus === "failed",
+      )).toHaveLength(1);
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+    });
+
+    it("surfaces the failure once when the Cursor recovery re-send fails during a handoff send", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const terminalCounts = (events: AgentChatEventEnvelope[], sessionId: string) => ({
+        errors: events.filter((e) => e.sessionId === sessionId && e.event.type === "error").length,
+        done: events.filter((e) => e.sessionId === sessionId && e.event.type === "done").length,
+        failed: events.filter((e) =>
+          e.sessionId === sessionId && e.event.type === "status" && e.event.turnStatus === "failed").length,
+      });
+      const runFailingHandoffSend = async (error: Error) => {
+        mockState.cursorSendPromptError = error;
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "cursor",
+          model: "composer-2",
+          modelId: "cursor/composer-2",
+        });
+        // awaitBackendDispatch is the stronger acknowledgement cross-machine
+        // handoff and steer replay use: it resolves only from the provider
+        // path, so a recovery that swallowed the rethrow left it pending.
+        const dispatch = service.sendMessage({
+          sessionId: session.id,
+          text: "Handoff send.",
+        }, { awaitBackendDispatch: true }).then(() => "resolved", () => "rejected");
+        await vi.waitFor(() => {
+          expect(events.some((e) => e.sessionId === session.id && e.event.type === "done")).toBe(true);
+        });
+        return { dispatch, counts: terminalCounts(events, session.id) };
+      };
+
+      // Baseline: an auth failure is never recoverable, so this is one attempt.
+      const baseline = await runFailingHandoffSend(
+        Object.assign(new Error("Cursor SDK send failed: unauthorized"), { status: 401 }),
+      );
+      await expect(baseline.dispatch).resolves.toBe("rejected");
+      const baselineSends = mockState.cursorSdkSendCalls.length;
+
+      mockState.cursorSdkSendCalls = [];
+      mockState.cursorSdkPoisonCalls = [];
+      // Both attempts die on the wire, so the automatic re-send fails too.
+      const recovered = await runFailingHandoffSend(
+        new Error("Cursor SDK send failed: [internal] write ECANCELED"),
+      );
+
+      // It settles rather than hanging — the contract handoff/steer replay need.
+      await expect(recovered.dispatch).resolves.toBe("rejected");
+      // One recycle and one automatic re-send really did happen...
+      expect(baselineSends).toBe(1);
+      expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
+      // ...yet the user is told about the failure exactly as many times as if
+      // there had been no recovery at all. Two attempts, one report.
+      expect(recovered.counts).toEqual(baseline.counts);
+    });
+
+    it("still expires the abandoned run when the runtime is evicted between settle and the next send", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      let releaseStuckTurn = () => {};
+      mockState.cursorSendPromptGate = new Promise<void>((resolve) => { releaseStuckTurn = resolve; });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        permissionMode: "edit",
+      });
+
+      try {
+        void service.sendMessage({ sessionId: session.id, text: "Turn to abandon." });
+        await vi.waitFor(() => {
+          expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+        });
+        await service.dismissPendingInputForSettlement({ sessionId: session.id });
+        mockState.cursorSendPromptGate = null;
+        // The pending expiry is durable, not just runtime-scoped...
+        expect(readPersistedChatState(session.id).cursorSdkForceExpireNextSend).toBe(true);
+
+        // ...which matters because the runtime that observed the abandonment
+        // can be torn down (here: a policy change repools it; in the field,
+        // idle TTL or budget eviction) while cursorSdkAgentId survives and
+        // resumes the very agent still holding the stale run.
+        await service.updateSession({ sessionId: session.id, permissionMode: "full-auto" });
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Send after eviction.",
+        }, { awaitDispatch: true });
+
+        expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
+        expect(mockState.cursorSdkAcquireCalls[1]?.poolKey).not.toBe(mockState.cursorSdkAcquireCalls[0]?.poolKey);
+        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+        expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
+        // One-shot: consumed on the send that used it.
+        expect(readPersistedChatState(session.id).cursorSdkForceExpireNextSend).toBeUndefined();
+      } finally {
+        releaseStuckTurn();
+      }
+    });
+
+    it("does not resend after the user interrupts during a Cursor thread recycle", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      // Stop lands while the wedged worker is being cancelled and disposed.
+      // One-shot: interrupt() itself cancels, so re-entering would recurse.
+      mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
+      mockState.onCursorCancel = () => {
+        mockState.onCursorCancel = null;
+        void service.interrupt({ sessionId: session.id });
+      };
+
+      void service.sendMessage({
+        sessionId: session.id,
+        text: "Interrupted while recycling.",
+      }, { awaitDispatch: true }).catch(() => undefined);
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "done" && event.sessionId === session.id,
+        )).toBe(true);
+      });
+
+      // The recycle happened, but the re-send did not.
+      expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
+      expect(mockState.cursorSdkSendCalls).toHaveLength(1);
+      const done = events.filter((event) =>
+        event.sessionId === session.id && event.event.type === "done",
+      );
+      expect(done).toHaveLength(1);
+      expect(done[0]?.event).toMatchObject({ type: "done", status: "interrupted" });
+    });
+
+    it("rotates onto a fresh Cursor agent and resends once when a run goes silent", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "First Cursor turn.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(session.status).toBe("idle");
+      });
+      const acquiresBefore = mockState.cursorSdkAcquireCalls.length;
+      const poisonedPooled = mockState.cursorSdkPooled;
+
+      vi.useFakeTimers();
+      try {
+        // The wedged thread: the send never settles and no worker event lands.
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Second Cursor turn.",
+        }, { awaitDispatch: true });
+        await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
+        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+        // The retry must run against a healthy worker.
+        mockState.cursorSendPromptGate = null;
+
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 3);
+
+        expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
+        expect(poisonedPooled.cancel).toHaveBeenCalled();
+        expect(mockState.cursorSdkAcquireCalls).toHaveLength(acquiresBefore + 1);
+        // A fresh agent, not a resume of the wedged one.
+        expect(mockState.cursorSdkAcquireCalls.at(-1)?.agentId).toBeNull();
+        const resent = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+        expect(resent).toContain("Cursor SDK continuity recovery");
+        expect(resent).toContain("Second Cursor turn.");
+        // Only the recovery re-send may expire a stuck active run.
+        expect(mockState.cursorSdkSendCalls.at(-1)?.forceExpireActiveRun).toBe(true);
+        expect(mockState.cursorSdkSendCalls[0]?.forceExpireActiveRun).toBeUndefined();
+        expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBeUndefined();
+        // The retry must not duplicate the user bubble.
+        expect(events.filter((event) =>
+          event.sessionId === session.id
+          && event.event.type === "user_message",
+        )).toHaveLength(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("fails the turn with a fresh-thread message when the rotated Cursor agent is also silent", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      vi.useFakeTimers();
+      try {
+        mockState.cursorSendPromptGate = new Promise<void>(() => {});
+        void service.sendMessage({
+          sessionId: session.id,
+          text: "Both attempts go silent.",
+        }, { awaitDispatch: true }).catch(() => undefined);
+        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
+
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("terminal error event", () => events.some((event) => event.event.type === "error"));
+
+        const errorEvent = events.find((event) =>
+          event.sessionId === session.id && event.event.type === "error",
+        );
+        expect(errorEvent?.event).toMatchObject({
+          type: "error",
+          message: "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.",
+          errorInfo: { category: "network" },
+        });
+        // Exactly one automatic re-send: two sends, no third.
+        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+        // Both wedged threads are recycled — the second without a re-send — so
+        // the next user send starts fresh, as the error copy promises.
+        expect(mockState.cursorSdkPoisonCalls).toHaveLength(2);
+        // Exactly one terminal report for the turn.
+        expect(events.filter((event) =>
+          event.sessionId === session.id && event.event.type === "error",
+        )).toHaveLength(1);
+        expect(events.filter((event) =>
+          event.sessionId === session.id && event.event.type === "done",
+        )).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("reacquires Cursor SDK workers that exited before a follow-up turn", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service } = createService();
@@ -14345,7 +17555,7 @@ describe("createAgentChatService", () => {
       expect(secondAcquire.stateKey).toBe(firstAcquire.stateKey);
     });
 
-    it("injects recent ADE context when Cursor SDK resume opens a new agent", async () => {
+    it("replays the full transcript when Cursor SDK resume opens a new agent", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service } = createService();
       const session = await service.createSession({
@@ -14376,8 +17586,11 @@ describe("createAgentChatService", () => {
       expect(promptText).toContain("Cursor SDK continuity recovery");
       expect(promptText).toContain("cursor-sdk-agent-1");
       expect(promptText).toContain("cursor-sdk-agent-2");
-      expect(promptText).toContain("Recent Conversation Tail");
-      expect(promptText).toContain("User: Inspect the mobile files tab parity work.");
+      // The rotated agent gets the whole conversation replayed verbatim, not a
+      // 20-line tail.
+      expect(promptText).toContain("verbatim replay");
+      expect(promptText).not.toContain("Recent Conversation Tail");
+      expect(promptText).toContain("Inspect the mobile files tab parity work.");
       expect(promptText).toContain("Did you finish the prior work?");
       // Prompts are prepared before the runtime is acquired, so the rotation
       // turn itself stays deduped — but the rotated agent is brand new, so the
@@ -14390,6 +17603,10 @@ describe("createAgentChatService", () => {
       });
       const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
       expect(postRotationPrompt).toContain("[ADE launch directive]");
+      // One staged replay, consumed exactly once: the rotation stage is durable,
+      // so a turn that did not trigger a rotation must not replay it again.
+      expect(postRotationPrompt).not.toContain("verbatim replay");
+      expect(postRotationPrompt).not.toContain("Cursor SDK continuity recovery");
     });
 
     it("recreates the Cursor SDK agent with recovery context when resume state is missing", async () => {
@@ -14440,8 +17657,9 @@ describe("createAgentChatService", () => {
       expect(promptText).toContain("Cursor SDK continuity recovery");
       expect(promptText).toContain("cursor-sdk-agent-1");
       expect(promptText).toContain("cursor-sdk-agent-2");
-      expect(promptText).toContain("Recent Conversation Tail");
-      expect(promptText).toContain("User: Inspect the runtime compaction lane crash.");
+      expect(promptText).toContain("verbatim replay");
+      expect(promptText).not.toContain("Recent Conversation Tail");
+      expect(promptText).toContain("Inspect the runtime compaction lane crash.");
       expect(promptText).toContain("Did the SDK resume bug come back?");
     });
 
@@ -17758,7 +20976,7 @@ describe("createAgentChatService", () => {
 
         expect(spawn).toHaveBeenCalledWith(
           "codex",
-          ["app-server", "-c", "model_reasoning_effort=\"medium\""],
+          ["app-server"],
           expect.objectContaining({ detached: process.platform !== "win32" }),
         );
         expect(processKillSpy).toHaveBeenCalledWith(-99999, "SIGTERM");
@@ -23890,6 +27108,53 @@ describe("createAgentChatService", () => {
       )).toEqual(["persisted-1", "persisted-2"]);
     });
 
+    it("does not copy transcript hydration into the live event ring", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const afterCreate = service.residentChatEventHistorySessionCount();
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-08-12T18:00:00.000Z",
+        event: { type: "text", text: "hydrated-from-disk" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+
+      const history = await service.getChatEventHistory(session.id);
+      expect(history.events.map((entry) =>
+        entry.event.type === "text" ? entry.event.text : "",
+      )).toContain("hydrated-from-disk");
+      expect(service.residentChatEventHistorySessionCount()).toBe(afterCreate);
+    });
+
+    it("does not retain a live ring for every hydrated chat", async () => {
+      const { service } = createService();
+      for (let index = 0; index < 12; index += 1) {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        const envelope: AgentChatEventEnvelope = {
+          sessionId: session.id,
+          timestamp: "2026-08-12T18:00:00.000Z",
+          event: { type: "text", text: `hydrated-${index}` },
+          sequence: 1,
+        };
+        const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+        fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+        vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+        await service.getChatEventHistory(session.id);
+      }
+      expect(service.residentChatEventHistorySessionCount()).toBe(0);
+    });
+
     it("hydrates through the async path without synchronous realpath or transcript flushing", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -24576,6 +27841,7 @@ describe("createAgentChatService", () => {
         fs.writeFileSync(transcriptFile, `${seeded.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
         vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
           raw.includes("ring-seed") ? seeded : []);
+        service.seedLiveChatEventHistory(seeded);
         expect((await service.getChatEventHistory(sessionId)).events).toHaveLength(seeded.length);
       };
 
@@ -25169,6 +28435,201 @@ describe("createAgentChatService", () => {
       expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
         variant: "fast",
       }));
+    });
+
+    it("streams OpenCode assistant text from part deltas, without doubling it at the end", async () => {
+      // OpenCode's processor calls updatePartDelta for every text-delta and
+      // only calls updatePart at text-start and text-end. Ignoring
+      // `message.part.delta` therefore meant nothing rendered until the turn
+      // finished and the whole answer appeared in one jump. The closing
+      // full-part update must not then re-emit the text a second time.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Stream something." });
+      const started = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      const pushEvents = (...next: any[]): void => {
+        state.events.push(...next);
+        const waiters = [...state.waiters];
+        state.waiters.length = 0;
+        waiters.forEach((waiter) => waiter());
+      };
+
+      const sessionID = "opencode-session-1";
+      const renderedText = (): string => events
+        .filter((event) => event.event.type === "text")
+        .map((event) => (event.event as { text: string }).text)
+        .join("");
+
+      pushEvents(
+        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
+        // text-start: the part exists but is still empty.
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Hello" } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: " world" } },
+      );
+
+      // The turn is still open and no closing full-part update has arrived, so
+      // anything rendered here came from the deltas alone. This is the assertion
+      // that fails when `message.part.delta` is ignored.
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "text");
+      await vi.waitFor(() => { expect(renderedText()).toBe("Hello world"); });
+
+      pushEvents(
+        // text-end: the full accumulated part.
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "Hello world", messageID: "msg-a", sessionID } } },
+        { type: "session.idle", properties: { sessionID } },
+      );
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === started.event.turnId,
+      );
+
+      // The closing full-part update must diff to nothing, not repeat the answer.
+      expect(renderedText()).toBe("Hello world");
+
+      releaseStream();
+      await sendPromise;
+    });
+
+    it("ignores part deltas that belong to a user message", async () => {
+      // The delta stream carries no role, so the same assistant-role gate that
+      // protects `message.part.updated` has to protect this one — otherwise the
+      // user's own prompt echoes back as agent output.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Echo check." });
+      const started = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      const sessionID = "opencode-session-1";
+      state.events.push(
+        { type: "message.updated", properties: { info: { id: "msg-u", role: "user", sessionID } } } as any,
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-u", partID: "prt-u", field: "text", delta: "Echo check." } } as any,
+        // A delta whose message was never announced stays unrendered too.
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-unknown", partID: "prt-x", field: "text", delta: "orphan" } } as any,
+        { type: "session.idle", properties: { sessionID } } as any,
+      );
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === started.event.turnId,
+      );
+
+      const text = events
+        .filter((event) => event.event.type === "text")
+        .map((event) => (event.event as { text: string }).text)
+        .join("");
+      expect(text).not.toContain("Echo check.");
+      expect(text).not.toContain("orphan");
+      expect(text).toBe("");
+
+      releaseStream();
+      await sendPromise;
+    });
+
+    it("keeps ADE instructions in the system channel on every turn, never in user text", async () => {
+      // The prompt boundary, asserted on the wire ADE actually sends:
+      //  - ADE's instructions ride the first-class `system` field, so OpenCode
+      //    never renders them as a user message (the reported prompt echo);
+      //  - a second turn carries the same contract rather than re-appending the
+      //    instructions to the user's text (the reported reprint);
+      //  - the user's own words stay in `parts` and out of `system`, so nothing
+      //    the user typed can be promoted into privileged instructions.
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      // runSessionTurn awaits completion, so the second turn is a genuine
+      // follow-up rather than a steer queued onto an active one.
+      await service.runSessionTurn({ sessionId: session.id, text: "First request." });
+      await service.runSessionTurn({ sessionId: session.id, text: "Second request." });
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      await vi.waitFor(() => {
+        expect(openCodeState.promptBodies.length).toBe(2);
+      });
+
+      const partsText = (body: any): string => (body.parts ?? [])
+        .map((part: any) => String(part?.text ?? ""))
+        .join("\n");
+
+      // `buildCodingAgentSystemPrompt` is mocked to this sentinel at the top of
+      // the file; what matters is which channel carries its output.
+      for (const body of openCodeState.promptBodies) {
+        expect(typeof body.system).toBe("string");
+        expect(body.system).toContain("system prompt");
+        // The instructions must not also be pasted into the visible message.
+        expect(partsText(body)).not.toContain("system prompt");
+      }
+
+      const [first, second] = openCodeState.promptBodies;
+      expect(second.system).toBe(first.system);
+      expect(partsText(first)).toContain("First request.");
+      expect(partsText(second)).toContain("Second request.");
+      expect(second.system).not.toContain("Second request.");
+      expect(second.system).not.toContain("First request.");
     });
   });
 
@@ -25976,7 +29437,55 @@ describe("createAgentChatService", () => {
       }));
     });
 
-    it("explicitly clears Codex service tier when fast mode is off", async () => {
+    it("keeps unconnected OpenCode providers out of the model catalog", async () => {
+      // The OpenCode directory is models.dev in its entirety (195 providers / ~7.2k
+      // models). Emitting all of it made the synced catalog 4.85 MB and stalled or
+      // killed the iOS model picker. Only connected providers may reach the catalog.
+      replaceDynamicOpenCodeModelDescriptors([
+        createDynamicOpenCodeModelDescriptor("", {
+          displayName: "GPT 5.4",
+          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+        }),
+        createDynamicOpenCodeModelDescriptor("", {
+          displayName: "Nano Model",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          openCodeProviderId: "nano-gpt",
+          openCodeModelId: "nano-model",
+        }),
+      ]);
+      vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
+        modelIds: ["opencode/openai/gpt-5.4"],
+        providers: [
+          { id: "openai", name: "OpenAI", connected: true, modelCount: 1, availableModelCount: 1 },
+          { id: "nano-gpt", name: "nano-gpt", connected: false, modelCount: 1, availableModelCount: 0 },
+        ],
+        error: null,
+        descriptors: [],
+      });
+
+      const { service } = createService();
+      const catalog = await service.getModelCatalog({ mode: "force", refreshProvider: "opencode" });
+
+      const openCodeGroup = catalog.groups.find((group) => group.key === "opencode");
+      const modelIds = openCodeGroup?.providers.flatMap((provider) =>
+        provider.subsections.flatMap((subsection) => subsection.models.map((model) => model.id)),
+      ) ?? [];
+
+      expect(modelIds).toContain("opencode/openai/gpt-5.4");
+      expect(modelIds).not.toContain("opencode/nano-gpt/nano-model");
+      // The unconnected provider still appears, but as an empty block — that is the
+      // connect affordance, and it costs one small object instead of its whole model
+      // list. This mirrors OpenCode's own clients, which list every provider in the
+      // connect dialog and render model rows only for connected ones.
+      const nanoGpt = openCodeGroup?.providers.find((provider) => provider.key === "nano-gpt");
+      expect(nanoGpt).toBeDefined();
+      expect(nanoGpt?.modelCount).toBe(0);
+      expect(nanoGpt?.subsections).toEqual([]);
+    });
+
+    it("omits Codex service tier when fast mode was never turned on", async () => {
       mockState.codexResponseOverrides.set("thread/start", (payload) => ({
         thread: { id: "thread-default" },
         serviceTier: (payload.params as { serviceTier?: unknown } | undefined)?.serviceTier ?? null,
@@ -25997,17 +29506,20 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
       });
 
+      // Verified against a live app-server: omitting inherits the user's
+      // config.toml service_tier, while an explicit null forces "default".
+      // ADE has no service-tier UI, so it must not name the key at all.
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.fastMode).toBe(false);
       expect(summary?.codexServiceTier).toBeNull();
       expect(readPersistedChatState(session.id).codexServiceTier).toBeNull();
     });
 
-    it("preserves fast mode selection on unsupported Codex models while sending standard tier", async () => {
+    it("preserves fast mode selection on unsupported Codex models without naming a tier", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -26026,9 +29538,9 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(threadStartRequest?.params).not.toHaveProperty("serviceTier");
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
-      expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
+      expect(turnStartRequest?.params).not.toHaveProperty("serviceTier");
       expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
     });
 
@@ -29708,7 +33220,7 @@ describe("createAgentChatService", () => {
       expect(afterMessages.length).toBe(beforeNoticeCount + 1);
     });
 
-    it("clears fast mode when switching a session away from Codex", async () => {
+    it("preserves fast mode when switching a session away from Codex", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -29723,9 +33235,9 @@ describe("createAgentChatService", () => {
       });
 
       expect(updated.provider).toBe("claude");
-      expect(updated.fastMode).toBeUndefined();
-      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(false);
-      expect(readPersistedChatState(session.id).fastMode).toBeUndefined();
+      expect(updated.fastMode).toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).toBe(true);
     });
 
     it("re-resumes Codex threads when fast mode changes mid-session", async () => {
@@ -31937,6 +35449,87 @@ describe("createAgentChatService", () => {
       await turnPromise;
     });
 
+    it("re-settles a restored queued message when the next terminal event cancels it again", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let releaseTurn!: () => void;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const request = vi.fn(async () => ({ response: { still_queued: [], cancelled: [] } }));
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-restore-resettle",
+            slash_commands: [],
+            capabilities: ["interrupt_cancel_queued_v1"],
+          };
+          if (streamCall === 1) return;
+          yield {
+            type: "assistant",
+            message: {
+              id: "restore-resettle-assistant",
+              content: [{ type: "text", text: "Still working." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          await turnGate;
+        })()),
+        close: vi.fn(() => releaseTurn()),
+        request,
+        sessionId: "sdk-restore-resettle",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      const turnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      });
+      await waitForEvent(events, (entry): entry is AgentChatEventEnvelope => entry.event.type === "text");
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Cancel me, restore me, cancel me again.",
+      });
+
+      const steerNotices = () => events.filter((entry) =>
+        entry.event.type === "system_notice" && entry.event.steerId === queued.steerId);
+
+      const interrupted = await service.interrupt({ sessionId: session.id, mode: "stop_and_clear" });
+      expect(steerNotices().map((entry) =>
+        entry.event.type === "system_notice" ? entry.event.message : "")).toEqual([
+        "Queued message cancelled because the current turn was interrupted.",
+      ]);
+
+      await expect(service.restoreCancelledQueue({
+        sessionId: session.id,
+        recoveryId: interrupted.recoveryId!,
+      })).resolves.toEqual({ restored: true, restoredCount: 1 });
+
+      // Undo puts it back on the queue, so the next terminal event has to be
+      // able to settle it again — otherwise the message is dropped in silence
+      // and its chip stays staged forever (queue_recovery does not clear it).
+      releaseTurn();
+      await turnPromise;
+      await service.dispose({ sessionId: session.id });
+
+      expect(steerNotices().map((entry) =>
+        entry.event.type === "system_notice" ? entry.event.message : "")).toEqual([
+        "Queued message cancelled because the current turn was interrupted.",
+        "Queued message cancelled because the session was closed.",
+      ]);
+    });
+
     it.each([
       { providerFirst: true, expectedOrder: ["interrupt_receipt", "done"] },
       { providerFirst: false, expectedOrder: ["done", "interrupt_receipt"] },
@@ -33854,9 +37447,11 @@ describe("createAgentChatService", () => {
       const { service } = createService({ onEvent: () => {} });
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5-codex" });
 
+      // Rejection now comes from the canonical per-provider table, so the copy
+      // names the provider and the mode instead of the method.
       await expect(
         service.dispatchSteer({ sessionId: session.id, steerId: "any", mode: "inline" }),
-      ).rejects.toThrow(/not supported on Codex/i);
+      ).rejects.toThrow(/Codex sessions don't support the "inline" active-turn dispatch mode/i);
     });
 
     it("cancelDispatchedSteer cancels an SDK-queued Claude steer by its command UUID", async () => {
@@ -34467,6 +38062,7 @@ describe("createAgentChatService", () => {
             id: "opencode-child-1",
             parentID: "opencode-session-1",
             title: "Repository explorer",
+            model: { providerID: "anthropic", modelID: "claude-sonnet-5" },
           },
         },
       },
@@ -34481,6 +38077,10 @@ describe("createAgentChatService", () => {
       (event): event is AgentChatEventEnvelope =>
         event.event.type === "subagent_started" && event.event.taskId === "opencode-child-1",
     );
+    const startedEnvelope = events.find(
+      (event) => event.event.type === "subagent_started" && event.event.taskId === "opencode-child-1",
+    );
+    expect((startedEnvelope?.event as { model?: string }).model).toBe("opencode/anthropic/claude-sonnet-5");
     expect(events.some((event) =>
       event.event.type === "done" && event.event.turnId === started.event.turnId
     )).toBe(false);
@@ -34530,7 +38130,233 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
-  it("fails a cleanly ended OpenCode event stream and clears active child sessions", async () => {
+  it("never renders OpenCode user-message parts as assistant output", async () => {
+    // Regression: `message.part.updated` carries user-message parts too (the
+    // prompt echo, and historically the synthetic system-prompt part). Without
+    // an assistant-role gate, whatever rode in the user message echoed into the
+    // transcript as a left-side agent bubble before the agent answered.
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Resolve the failing test.",
+    });
+    const started = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    pushEvents(
+      // The user message echo: role announced first, then its plain text part
+      // with no synthetic/ignored flags — exactly what OpenCode streams.
+      { type: "message.updated", properties: { info: { id: "msg-user-1", role: "user", sessionID: "opencode-session-1" } } },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "prt-user-1",
+            type: "text",
+            text: "Resolve the failing test.",
+            messageID: "msg-user-1",
+            sessionID: "opencode-session-1",
+          },
+        },
+      },
+      // A part whose message role is not yet known must stay unrendered too.
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "prt-unknown-1",
+            type: "text",
+            text: "orphan part before its message.updated",
+            messageID: "msg-unannounced",
+            sessionID: "opencode-session-1",
+          },
+        },
+      },
+      // The real answer.
+      { type: "message.updated", properties: { info: { id: "msg-asst-1", role: "assistant", sessionID: "opencode-session-1" } } },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "prt-asst-1",
+            type: "text",
+            text: "Fixed it.",
+            messageID: "msg-asst-1",
+            sessionID: "opencode-session-1",
+          },
+        },
+      },
+      { type: "session.idle", properties: { sessionID: "opencode-session-1" } },
+    );
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "done" && event.event.turnId === started.event.turnId,
+    );
+
+    const textPayloads = events
+      .filter((event) => event.event.type === "text")
+      .map((event) => (event.event as { text: string }).text)
+      .join("");
+    expect(textPayloads).toContain("Fixed it.");
+    expect(textPayloads).not.toContain("Resolve the failing test.");
+    expect(textPayloads).not.toContain("orphan part");
+
+    releaseStream();
+    await sendPromise;
+  });
+
+  it("does not adopt OpenCode placeholder session titles", async () => {
+    // OpenCode mints "New session - <ISO>" (and child variants) until its own
+    // titler runs; adopting one would flash timestamp soup as the chat title
+    // and block auto-titling.
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Name this thread properly.",
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    pushEvents(
+      {
+        type: "session.created",
+        properties: { info: { id: "opencode-session-1", title: "New session - 2026-08-22T15:25:28.226Z" } },
+      },
+      {
+        type: "session.updated",
+        properties: { info: { id: "opencode-session-1", title: "Child session - 2026-08-22T15:26:00.000Z" } },
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const placeholderAdoptions = events.filter(
+      (event) =>
+        event.event.type === "session_meta_updated"
+        && /[12]:\d{2}:\d{2}\.\d{3}Z$/.test((event.event as { title?: string }).title ?? ""),
+    );
+    expect(placeholderAdoptions).toEqual([]);
+
+    pushEvents({
+      type: "session.updated",
+      properties: { info: { id: "opencode-session-1", title: "Lane status sweep" } },
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope &
+        { event: Extract<AgentChatEventEnvelope["event"], { type: "session_meta_updated" }> } =>
+        event.event.type === "session_meta_updated" && event.event.title === "Lane status sweep",
+    );
+
+    releaseStream();
+    await sendPromise;
+  });
+
+    it("subscribes to the OpenCode event stream before dispatching the prompt", async () => {
+    // The SSE stream is live-only. Dispatching first races the subscription:
+    // if the server publishes the assistant message.updated before /event is
+    // connected, the role announcement is lost and the role gate would drop
+    // every part of that message.
+    const observations: string[] = [];
+    vi.mocked(streamText).mockReturnValue({
+      fullStream: (async function* () {})(),
+    } as any);
+    vi.mocked(openCodeEventStream).mockImplementationOnce((async () => {
+      // Snapshot how many prompts have been dispatched at subscribe time.
+      const state = [...mockState.openCodeSessions.values()][0];
+      observations.push(`promptBodiesAtSubscribe=${state ? state.promptBodies.length : -1}`);
+      // Ends immediately: the turn fails cleanly, which is all this test needs.
+      return (async function* () {})() as AsyncGenerator<never>;
+    }) as unknown as typeof openCodeEventStream);
+
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Check dispatch order.",
+    });
+    // The turn dispatches asynchronously; wait for the subscription snapshot.
+    await vi.waitFor(() => {
+      expect(observations.length).toBeGreaterThan(0);
+    });
+    // Zero means the SSE subscription was live before any prompt was dispatched.
+    expect(observations).toEqual(["promptBodiesAtSubscribe=0"]);
+    // Let the failed turn settle (its failure is emitted as an error event).
+    await sendPromise.catch(() => undefined);
+  });
+
+it("fails a cleanly ended OpenCode event stream and clears active child sessions", async () => {
     const events: AgentChatEventEnvelope[] = [];
     let releaseStream!: () => void;
     const streamGate = new Promise<void>((resolve) => {
@@ -34649,7 +38475,6 @@ describe("createAgentChatService", () => {
             filename: "reference.png",
             url: "file:///tmp/reference.png",
           },
-          delta: "",
         },
       },
       {
@@ -34668,7 +38493,6 @@ describe("createAgentChatService", () => {
             filename: "diagram.png",
             url: "file:///tmp/diagram.png",
           },
-          delta: "",
         },
       },
       {
@@ -34699,7 +38523,6 @@ describe("createAgentChatService", () => {
               }],
             },
           },
-          delta: "",
         },
       },
     );
@@ -34795,14 +38618,12 @@ describe("createAgentChatService", () => {
         type: "message.part.updated",
         properties: {
           part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
-          delta: "",
         },
       },
       {
         type: "message.part.updated",
         properties: {
           part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
-          delta: "",
         },
       },
       {
@@ -37615,7 +41436,7 @@ describe("createAgentChatService", () => {
       expect(mockState.cursorSdkPolicyUpdates.at(-1)).toMatchObject({
         chatMode: "agent",
         approvalPolicy: "never",
-        force: true,
+        fullAuto: true,
       });
     } finally {
       releaseGate();
@@ -39636,5 +43457,259 @@ describe("orchestrator-lead MCP isolation", () => {
     } finally {
       await orchestrationService.dispose();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host sleep
+//
+// The incident: a MacBook slept mid-turn, the in-flight API call died, and the
+// transcript reported `Claude API retry 1/10: unknown` — while ADE already knew
+// the machine was suspending. These cover the three things that must now hold:
+// one chip per sleep that resolves itself, retries held rather than burned, and
+// a genuine API failure left completely alone.
+// ---------------------------------------------------------------------------
+describe("host sleep narration", () => {
+  /** A power source the test drives by hand, standing in for Electron's. */
+  function fakeHostPowerSource() {
+    const listeners = new Set<(event: any) => void>();
+    let sleepState: "awake" | "asleep" = "awake";
+    // Stamped from the same clock the tracker reads, exactly as a real monitor
+    // does: `asleep` is age-bounded against this, and a stamp frozen at a fake
+    // epoch would read as a stuck, long-stale announcement.
+    let sleepStateAt = Date.now();
+    return {
+      source: {
+        getPower: () => null,
+        getSleepState: () => sleepState,
+        getSleepStateAt: () => sleepStateAt,
+        getSuspendGapMs: () => null,
+        subscribe: (listener: (event: any) => void) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      } as any,
+      suspend(at = 1_000, stateAt = Date.now()) {
+        sleepState = "asleep";
+        sleepStateAt = stateAt;
+        for (const listener of [...listeners]) listener({ kind: "suspend", at, announced: true });
+      },
+      resume(at = 241_000, gapMs: number | null = 240_000, stateAt = Date.now()) {
+        sleepState = "awake";
+        sleepStateAt = stateAt;
+        for (const listener of [...listeners]) listener({ kind: "resume", at, gapMs, announced: true });
+      },
+    };
+  }
+
+  /**
+   * A Claude stream that parks mid-turn so the test can suspend the host at a
+   * moment when a turn is genuinely in flight, then parks again so it can wake
+   * it before the turn finishes.
+   */
+  function installParkedClaudeStream(retry: Record<string, unknown>) {
+    let releaseBeforeRetry = (): void => {};
+    let releaseBeforeResult = (): void => {};
+    const beforeRetry = new Promise<void>((resolve) => {
+      releaseBeforeRetry = resolve;
+    });
+    const beforeResult = new Promise<void>((resolve) => {
+      releaseBeforeResult = resolve;
+    });
+    const reached = { retry: false, result: false };
+
+    const send = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn();
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        return;
+      }
+      yield {
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "Running tests…" }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      };
+      await beforeRetry;
+      yield { type: "system", subtype: "api_retry", session_id: "sdk-session-sleep", ...retry };
+      reached.retry = true;
+      await beforeResult;
+      reached.result = true;
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close,
+      sessionId: "sdk-session-sleep",
+    } as any);
+    vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close,
+      sessionId: "sdk-session-sleep",
+    } as any);
+
+    return { releaseBeforeRetry, releaseBeforeResult, reached };
+  }
+
+  const noticesOf = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
+    .map((call) => call[0])
+    .filter((envelope: any) => envelope?.event?.type === "system_notice")
+    .map((envelope: any) => envelope.event);
+
+  const turnStarted = (onEvent: ReturnType<typeof vi.fn>) => onEvent.mock.calls
+    .some((call) => {
+      const event = (call[0] as any)?.event;
+      return event?.type === "status" && event.turnStatus === "started";
+    });
+
+  it("shows one chip that resolves in place, and holds the retry the sleep caused", async () => {
+    const power = fakeHostPowerSource();
+    const parked = installParkedClaudeStream({
+      error: "unknown",
+      attempt: 1,
+      max_retries: 10,
+    });
+
+    const onEvent = vi.fn();
+    const { service, logger } = createService({ onEvent, hostPowerSource: power.source });
+    try {
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "run the tests",
+        timeoutMs: 15_000,
+      });
+      await waitFor(() => turnStarted(onEvent));
+
+      power.suspend();
+      const paused = noticesOf(onEvent).filter((event: any) => event.status === "host_asleep");
+      expect(paused).toHaveLength(1);
+      expect(paused[0].message).toBe("Paused — computer asleep");
+
+      // Let the suspend-caused retry arrive while the machine is down.
+      parked.releaseBeforeRetry();
+      await waitFor(() => parked.reached.retry);
+
+      expect(noticesOf(onEvent).filter((event: any) =>
+        typeof event.message === "string" && event.message.startsWith("Claude API retry"),
+      )).toHaveLength(0);
+      expect(onEvent.mock.calls.filter((call) => (call[0] as any)?.event?.type === "api_retry"))
+        .toHaveLength(0);
+      // The retry really did arrive and really was held — without this the
+      // two assertions above would also pass on a stream that never retried.
+      expect(logger.info).toHaveBeenCalledWith(
+        "agent_chat.api_retry_held_for_host_suspend",
+        expect.objectContaining({ providerCause: "unknown", sleepState: "asleep" }),
+      );
+      // Still ONE chip — the held retry must not add a second artifact.
+      expect(noticesOf(onEvent).filter((event: any) => event.status === "host_asleep")).toHaveLength(1);
+
+      power.resume();
+      parked.releaseBeforeResult();
+      await turn;
+
+      const asleep = noticesOf(onEvent).filter((event: any) => event.status === "host_asleep");
+      const awake = noticesOf(onEvent).filter((event: any) => event.status === "host_awake");
+      expect(asleep).toHaveLength(1);
+      expect(awake).toHaveLength(1);
+      expect(awake[0].message).toBe("Resumed · paused 4m");
+      // Same identity is what folds the two halves onto one transcript row.
+      expect(awake[0].detail.hostSleep.sleepId).toBe(asleep[0].detail.hostSleep.sleepId);
+      // And the turn itself still finished after the wake.
+      expect(onEvent.mock.calls.some((call) => (call[0] as any)?.event?.type === "done")).toBe(true);
+    } finally {
+      await service.disposeAll();
+    }
+  });
+
+  it("leaves a genuine API failure retrying and reporting its real cause", async () => {
+    const power = fakeHostPowerSource();
+    const parked = installParkedClaudeStream({
+      error: "overloaded",
+      error_status: 529,
+      attempt: 1,
+      max_retries: 10,
+      retry_delay_ms: 2_000,
+    });
+
+    const onEvent = vi.fn();
+    const { service } = createService({ onEvent, hostPowerSource: power.source });
+    try {
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const turn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "run the tests",
+        timeoutMs: 15_000,
+      });
+      await waitFor(() => turnStarted(onEvent));
+
+      // Even with the host asleep, an error the API itself named is the truth.
+      power.suspend();
+      parked.releaseBeforeRetry();
+      await waitFor(() => parked.reached.retry);
+      parked.releaseBeforeResult();
+      await turn;
+
+      expect(noticesOf(onEvent).some((event: any) =>
+        event.message === "Claude API retry 1/10: overloaded" && event.status === "overloaded",
+      )).toBe(true);
+      expect(onEvent.mock.calls.filter((call) => (call[0] as any)?.event?.type === "api_retry"))
+        .toHaveLength(1);
+    } finally {
+      await service.disposeAll();
+    }
+  });
+
+  it("leaves an idle chat alone when the machine sleeps", async () => {
+    const power = fakeHostPowerSource();
+    const onEvent = vi.fn();
+    const { service } = createService({ onEvent, hostPowerSource: power.source });
+    try {
+      await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      power.suspend();
+      power.resume();
+      expect(noticesOf(onEvent).filter((event: any) =>
+        event.status === "host_asleep" || event.status === "host_awake",
+      )).toHaveLength(0);
+    } finally {
+      await service.disposeAll();
+    }
+  });
+});
+
+describe("claude output style listing", () => {
+  it("does not persist an output style just because the list was shown", async () => {
+    // Listing styles used to write the resolved name onto the session and
+    // persist it. Every later option build then treated that cache as a real
+    // selection, so ADE sent outputStyle at flag tier and suppressed Claude's
+    // own resolution — the override this branch exists to stop.
+    const { service } = createService();
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+    });
+
+    await service.sendMessage({ sessionId: session.id, text: "/output-style" });
+
+    expect(readPersistedChatState(session.id).claudeOutputStyle ?? null).toBeNull();
+    expect((await service.getSessionSummary(session.id))?.claudeOutputStyle ?? null).toBeNull();
   });
 });

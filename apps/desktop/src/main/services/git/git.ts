@@ -41,7 +41,7 @@ export function shouldProbeLoginShellForGit(
     || (platform === "darwin" && selectedExecutable === "/usr/bin/git");
 }
 
-async function resolveGitExecutable(): Promise<string> {
+export async function resolveGitExecutable(): Promise<string> {
   if (cachedGitExecutable) return cachedGitExecutable;
   if (gitExecutableResolution) return await gitExecutableResolution;
   gitExecutableResolution = resolveGitExecutableUncached();

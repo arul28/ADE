@@ -316,7 +316,8 @@ that cannot encode a JSON null (iOS) must still be able to express "clear".
   `preflightCrossMachineDestination`,
   `fastForwardCrossMachineHandoffLane`, `acceptCrossMachineHandoff`,
   `markCrossMachineHandoff`,
-  `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `getImageDataUrl`
+  `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`,
+  `listPromptStashes`, `createPromptStash`, `deletePromptStash`, `getImageDataUrl`
 
 `chat.getTranscript` supports cursor pagination: responses carry an
 opaque `nextCursor`, and requests can pass `cursor` to page strictly-older
@@ -381,13 +382,20 @@ the background. The brain returns the full provider-grouped catalog used
 by the desktop and TUI ModelPickers and the iOS Work model sheet; only
 explicit `force` / `refresh-stale` calls trigger a runtime probe.
 
-`chat.dispatchSteer` (Claude SDK only) takes
-`{ sessionId, steerId, mode: "inline" | "interrupt" }` and pushes the staged
-message through Claude's live input stream with `priority: "next" | "now"`
-and `shouldQuery: true`; it returns `{ ok, dispatchedAt }`. Interrupt mode
-redirects the current model request without closing the query or stopping its
-background work. The queued row is removed only after the input pump accepts
-the message.
+`chat.dispatchSteer` takes `{ sessionId, steerId, mode: "inline" | "interrupt" }`
+and returns `{ ok, dispatchedAt }`. Which modes a session accepts comes from the
+canonical `ACTIVE_TURN_DISPATCH_MODES` table in
+`apps/desktop/src/shared/types/chat.ts` (Claude: `inline` + `interrupt`; Cursor:
+`interrupt` only; every other provider: neither), and a mode the provider cannot
+honor is rejected with the shared `unsupportedActiveTurnDispatchModeMessage`
+text rather than silently downgraded. On Claude the staged message is pushed
+through the live input stream with `priority: "next" | "now"` and
+`shouldQuery: true`; interrupt mode redirects the current model request without
+closing the query or stopping its background work, and the queued row is removed
+only after the input pump accepts the message. On Cursor there is no live input
+stream, so `"interrupt"` promotes the staged row to the interrupt-and-continue
+redirect — stop the run, wait for it to settle, resend on the same agent
+thread — and the row is restored to the queue if that redirect throws.
 `chat.cancelDispatchedSteer` returns `{ ok, cancelled }`; the current public
 SDK cannot cancel an already pushed priority message, so `cancelled` is false.
 The iOS companion uses
@@ -491,6 +499,14 @@ a boolean.
 
 **GitHub** (`github.*`)
 - `getStatus`, `getRemoteStatus`, `publishCurrentProject`
+- `getRequestBudget` — the host's zero-network GitHub request budget (quota
+  reserve pause, worst recent failure kind, retry instant). `viewerAllowed`,
+  because it only reports how hard the caller may poll. Registered for the
+  hosted web client specifically: its PR timers run in the browser but their
+  GitHub requests are spent from *this* machine's quota, so without the
+  registration its adapter falls back to an all-null budget and its 5-second
+  checks loop never sees the reserve. See
+  [pull requests](../pull-requests/README.md#keeping-automatic-github-reads-inside-the-quota).
 
 **Project config** (`projectConfig.*`)
 - `get`, `save`

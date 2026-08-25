@@ -61,6 +61,7 @@ import {
   githubCredentialRepositoryAccess,
   recordGithubCredentialFailure,
 } from "./githubCredentialHealth";
+import { makeStoredAppUserToken } from "./githubAppUserAuth.testFixtures";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -98,6 +99,8 @@ afterAll(() => {
   }
 });
 
+let memoryCredentialStoreCounter = 0;
+
 class MemoryCredentialStore {
   values = new Map<string, string>();
 
@@ -124,6 +127,51 @@ class MemoryCredentialStore {
   deleteSync(key: string): void {
     this.values.delete(key);
   }
+
+  /**
+   * The atomic single-key update the shipped store provides, and the one the
+   * refresh ledger actually writes through. Without it these tests exercised
+   * the read-modify-write fallback instead of the production path.
+   */
+  updateKeySync(
+    key: string,
+    mutator: (current: string | null) => string | null | undefined,
+  ): void {
+    const next = mutator(this.values.get(key) ?? null);
+    if (next === undefined) return;
+    if (next === null) this.values.delete(key);
+    else this.values.set(key, next);
+  }
+
+  /**
+   * Distinct per instance: the refresh coordinator is keyed on this, and two
+   * unrelated stores in one suite must not share one.
+   */
+  credentialStoreIdentity(): string {
+    return `memory-credential-store-${this.storeId}`;
+  }
+
+  private readonly storeId = (memoryCredentialStoreCounter += 1);
+}
+
+/**
+ * A store whose ciphertext will not decrypt. It reports the truth the way the
+ * real file store does — an EMPTY view plus `getLastReadState() === "unreadable"`
+ * — rather than by throwing, which is precisely how "corrupted" used to reach
+ * the UI wearing "never connected".
+ */
+class UnreadableCredentialStore extends MemoryCredentialStore {
+  override getSync(_key: string): string | null {
+    return null;
+  }
+
+  getLastReadState(): "available" | "missing" | "unreadable" {
+    return "unreadable";
+  }
+
+  getLastReadFailureReason(): "decrypt_failure" {
+    return "decrypt_failure";
+  }
 }
 
 function makeService(options: {
@@ -133,6 +181,7 @@ function makeService(options: {
     | Promise<{ token: string | null; ghCliPath: string | null; ghAuthError: string | null }>;
   githubRelaySecretReader?: (ref: string) => string | null;
   getAccountAccessToken?: () => Promise<string | null>;
+  onAppUserAuthChanged?: () => void;
 } = {}) {
   return createGithubService({
     logger: makeLogger(),
@@ -142,6 +191,7 @@ function makeService(options: {
     ghAuthTokenProvider: options.ghAuthTokenProvider,
     githubRelaySecretReader: options.githubRelaySecretReader,
     getAccountAccessToken: options.getAccountAccessToken,
+    onAppUserAuthChanged: options.onAppUserAuthChanged,
   });
 }
 
@@ -1362,6 +1412,55 @@ describe("githubService.getStatus", () => {
     });
   }
 
+  // Regression: an undecryptable credential store used to emit a status that was
+  // byte-identical to a fresh install (tokenStored:false, connected:false,
+  // authFailure:null), so the UI told users GitHub had never been connected and
+  // invited them to reconnect over credentials that were still on disk.
+  it("reports an undecryptable credential store instead of a fresh-install status", async () => {
+    stubOriginRemote();
+    const status = await makeService({
+      credentialStore: new UnreadableCredentialStore(),
+    }).getStatus();
+
+    expect(status.credentialStoreUnreadable).toBe(true);
+    expect(status.tokenStored).toBe(false);
+    expect(status.connected).toBe(false);
+    // The distinct state must not be reachable by inspecting the token fields:
+    // that is exactly the conflation this field exists to break.
+    expect(status.tokenDecryptionFailed).toBe(true);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not claim an unreadable store when the store is merely empty", async () => {
+    stubOriginRemote();
+    const status = await makeService({
+      credentialStore: new MemoryCredentialStore(),
+    }).getStatus();
+
+    expect(status.credentialStoreUnreadable).toBe(false);
+    expect(status.tokenStored).toBe(false);
+    expect(status.connected).toBe(false);
+  });
+
+  it("keeps the unreadable flag off a status a working gh credential produced", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+    const status = await makeService({
+      credentialStore: new MemoryCredentialStore(),
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    }).getStatus();
+
+    expect(status.connected).toBe(true);
+    expect(status.credentialStoreUnreadable).toBe(false);
+  });
+
   it("keeps repo-capable classic tokens connected while withholding write access", async () => {
     stubOriginRemote();
     process.env.GITHUB_TOKEN = "ghp_classic";
@@ -1469,21 +1568,68 @@ describe("githubService.getStatus", () => {
     );
   });
 
+  it("reports a throttled GitHub App refresh as rate limited with the retry time", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(429, { error: "too_many_requests" }, { "retry-after": "120" }));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status.authFailure?.kind).toBe("rate_limited");
+    // The deadline is ADE's own backoff, which is what actually gates the next
+    // attempt — a cosmetic retryAt would tell the user to wait for nothing.
+    const retryAtMs = Date.parse(status.authFailure?.retryAt ?? "");
+    expect(retryAtMs).toBeGreaterThan(Date.now());
+    expect(retryAtMs).toBeLessThanOrEqual(Date.now() + 121_000);
+  });
+
+  // GitHub answers a secondary rate limit with a bare 403 and no body at all.
+  // The refresh path reads that as a pause; re-deriving the kind from the error
+  // it throws reads the same 403 as "permission denied" — an accusation against
+  // the account, with a Fix-GitHub-auth button attached to it.
+  it("keeps a bare-403 refresh a rate limit rather than a permission problem", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(403, {}));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status.authFailure?.kind).toBe("rate_limited");
+    expect(status.credentialStates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "app",
+        failure: expect.objectContaining({ kind: "rate_limited" }),
+      }),
+    ]));
+  });
+
+  it("reports a refresh that never reached GitHub as a network failure", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
+    mockFetch.mockRejectedValueOnce(new Error("fetch failed"));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status.authFailure?.kind).toBe("network");
+  });
+
   it("reports a GitHub App refresh failure instead of treating authorization as missing", async () => {
     stubOriginRemote();
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
-    mockFetch.mockResolvedValueOnce(jsonResponse(400, {
-      error: "bad_verification_code",
+    // GitHub's real answer for a rejected refresh token: HTTP 200 with an error
+    // body. Only a definitive code like this one may write the credential off.
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, {
+      error: "bad_refresh_token",
       error_description: "Bad credentials",
     }));
 
@@ -1495,7 +1641,10 @@ describe("githubService.getStatus", () => {
       connected: false,
       authFailure: {
         kind: "invalid_token",
-        message: "Bad credentials",
+        // GitHub's own wording ("Bad credentials") is kept for the log and the
+        // stored refresh ledger; what reaches a status surface is the sentence
+        // that says what to do about it.
+        message: "ADE GitHub App authorization expired. Re-authorize ADE with GitHub.",
         retryAt: null,
       },
       credentialStates: expect.arrayContaining([
@@ -1513,19 +1662,16 @@ describe("githubService.getStatus", () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({
       accessToken: "ghu_expiring_app_token",
-      tokenType: "bearer",
-      scope: null,
       expiresAt: new Date(Date.now() + 10_000).toISOString(),
       refreshToken: "ghr_refresh_token",
       refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
       userLogin: "alice",
-      updatedAt: new Date().toISOString(),
     }));
     mockFetch
-      .mockResolvedValueOnce(jsonResponse(400, {
-        error: "bad_verification_code",
+      .mockResolvedValueOnce(jsonResponse(200, {
+        error: "bad_refresh_token",
         error_description: "Bad credentials",
       }))
       .mockResolvedValueOnce(
@@ -2847,6 +2993,24 @@ describe("githubService.getAppInstallationStatus", () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it("names the account problem instead of the relay's 401 when authorization is paused", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", makeStoredAppUserToken({ userLogin: "alice" }));
+    // GitHub throttles the refresh, then the relay answers the token-less status
+    // request with its own "GitHub auth token is required".
+    mockFetch.mockResolvedValueOnce(jsonResponse(429, { error: "too_many_requests" }, { "retry-after": "120" }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(401, { ok: false, error: "GitHub auth token is required" }));
+
+    const status = await makeService({
+      credentialStore,
+      getAccountAccessToken: async () => "clerk-account-token",
+    }).getAppInstallationStatus({ owner: "acme", name: "repo" });
+
+    expect(status.state).toBe("error");
+    expect(status.error).not.toBe("GitHub auth token is required");
+    expect(status.error).toContain("Waiting on GitHub authorization");
+  });
+
   it("does not use the user's existing GitHub token for hosted relay checks", async () => {
     process.env.ADE_GITHUB_TOKEN = "ghp_user_token";
 
@@ -3007,6 +3171,53 @@ describe("githubService.getAppInstallationStatus", () => {
 describe("githubService GitHub App user authorization", () => {
   beforeEach(() => {
     resetMocks();
+  });
+
+  // The relay ingress loop stops asking for a credential it found broken, and
+  // that cooldown outlives the repair. Without this signal the user finishes
+  // the device flow and then waits out the remainder of it before anything
+  // reconnects.
+  it("announces every change of the App credential to its owner", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const onAppUserAuthChanged = vi.fn();
+    const service = makeService({ credentialStore, onAppUserAuthChanged });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, {
+        device_code: "device-code",
+        user_code: "ADE-CODE",
+        verification_uri: "https://github.com/login/device",
+        expires_in: 900,
+        interval: 1,
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        access_token: "ghu_app_user_token",
+        token_type: "bearer",
+        expires_in: 28_800,
+        refresh_token: "ghr_refresh_token",
+        refresh_token_expires_in: 15_552_000,
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { login: "octocat" }));
+
+    const start = await service.startAppUserDeviceAuth();
+    expect(onAppUserAuthChanged).not.toHaveBeenCalled();
+
+    await service.pollAppUserDeviceAuth({ sessionId: start.sessionId });
+    expect(onAppUserAuthChanged).toHaveBeenCalledTimes(1);
+
+    service.clearAppUserAuth();
+    expect(onAppUserAuthChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a failing owner break the device flow", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const service = makeService({
+      credentialStore,
+      onAppUserAuthChanged: () => {
+        throw new Error("ingress service is gone");
+      },
+    });
+
+    expect(() => service.clearAppUserAuth()).not.toThrow();
   });
 
   it("stores the GitHub App user token returned by device flow polling", async () => {

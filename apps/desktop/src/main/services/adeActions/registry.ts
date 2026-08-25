@@ -18,6 +18,13 @@ import {
   startPiLogin,
   submitPiLoginPrompt,
 } from "../ai/piAuthService";
+import {
+  addCursorSdkAuthStatusListener,
+  cancelCursorSdkLogin,
+  getCursorSdkAuthStatus,
+  loginCursorSdk,
+  logoutCursorSdk,
+} from "../ai/cursorSdkAuth";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
@@ -38,6 +45,10 @@ import type {
   AttentionPresence,
 } from "../../../shared/types/attention";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
+import {
+  loadExternalSessionDetail,
+  normalizeExternalSessionDetailArgs,
+} from "../externalSessions/externalSessionDetail";
 import type {
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
@@ -138,61 +149,14 @@ import { PLUGIN_DOMAIN_ACTIONS } from "../../../shared/plugins/sdk";
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 
-export const ADE_ACTION_DOMAIN_NAMES = [
-  "account",
-  "attention",
-  "lane",
-  "git",
-  "diff",
-  "conflicts",
-  "pr",
-  "tests",
-  "chat",
-  "keybindings",
-  "ai",
-  "onboarding",
-  "automation_planner",
-  "cto_state",
-  "cto_memory",
-  "session",
-  "operation",
-  "ade_project",
-  "project_config",
-  "project_secret",
-  "linear_credentials",
-  "linear_oauth",
-  "linear_issue_tracker",
-  "github",
-  "feedback",
-  "usage",
-  "analytics",
-  "storage",
-  "budget",
-  "update",
-  "file",
-  "pty",
-  "terminal",
-  "layout",
-  "tiling_tree",
-  "graph_state",
-  "computer_use_artifacts",
-  "ios_simulator",
-  "app_control",
-  "built_in_browser",
-  "automations",
-  "review",
-  "issue",
-  "orchestration",
-  "search",
-  "external-sessions",
-  // ONE domain for every plugin. The envelope's `domain` enum is closed at the
-  // RPC schema (adeRpcServer.ts) and again in iOS's compile-time action
-  // allowlist, so a per-plugin domain could never reach the dispatcher —
-  // `{pluginId, action}` travels inside the args instead.
-  "plugin",
-] as const;
+// The names themselves live in `./domains`, which has no imports, so consumers
+// that need only the vocabulary (the analytics policy) do not have to load this
+// module's whole service graph to get it. Re-exported here because this is
+// where every existing caller looks for them.
+import type { AdeActionDomain } from "./domains";
 
-export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
+export { ADE_ACTION_DOMAIN_NAMES } from "./domains";
+export type { AdeActionDomain } from "./domains";
 
 export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "evaluator";
 
@@ -246,7 +210,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
-  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel"],
+  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
@@ -385,6 +349,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "archive",
     "archiveAndReclaim",
     "attachLinearIssueToSession",
+    "attachGitHubIssueToSession",
     "cancelDelete",
     "create",
     "createChild",
@@ -393,6 +358,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "delete",
     "deleteTemplate",
     "detachLinearIssueFromSession",
+    "detachGitHubIssueFromSession",
     "diagnosticsActivateFallback",
     "diagnosticsDeactivateFallback",
     "diagnosticsGetLaneHealth",
@@ -421,6 +387,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listTemplates",
     "listLinearIssuesForLaneSessions",
     "listLinearIssuesForSession",
+    "listGitHubIssuesForLaneSessions",
+    "listGitHubIssuesForSession",
     "linkLinearIssues",
     "oauthDecodeState",
     "oauthEncodeState",
@@ -651,6 +619,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setCodexGoalStatus",
     "clearCodexGoal",
     "getCodexGoal",
+    "resetCodexMemory",
+    "terminateCodexBackgroundTerminal",
     "listClaudeOutputStyles",
     "getSessionCapabilities",
     "getSessionSummary",
@@ -707,6 +677,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "generateAutoLaneIdentity",
     "unarchiveSession",
     "updateSession",
+    "setSpawnKind",
+    "dismissSubagentTakeoverPrompt",
     "warmupModel",
   ],
   keybindings: ["get", "set"],
@@ -729,10 +701,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "piLoginStart",
     "piLoginSubmit",
     "piLoginCancel",
+    "cursorAuthStatus",
+    "cursorAuthLogin",
+    "cursorAuthLogout",
+    "cursorAuthCancel",
     "listCursorCloudRepositories",
     "listCursorCloudAgents",
     "listCursorCloudRuns",
     "createCursorCloudRun",
+    "getCursorCloudLaneSecretNames",
     "archiveCursorCloudAgent",
     "unarchiveCursorCloudAgent",
     "deleteCursorCloudAgent",
@@ -743,6 +720,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "cancelCursorCloudRun",
     "cursorCloudFollowUp",
     "openCursorCloudChat",
+    "watchCursorCloudMirror",
+    "getCursorCloudFleet",
+    "resolveCursorCloudAgentLane",
+    "pullCursorCloudAgentIntoLane",
+    "stopCursorCloudAgentRun",
   ],
   onboarding: [
     "complete",
@@ -773,6 +755,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "get",
     "getDelta",
     "getLifecycleSettings",
+    "getSettleResidue",
     "list",
     "readTranscriptTail",
     "requestSessionAttention",
@@ -838,10 +821,13 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getRepoOrThrow",
     "getRemoteStatus",
     "getRepoStarState",
+    "getRequestBudget",
     "getStatus",
     "createRepoAutolink",
     "listRepoAutolinks",
     "listRepoCollaborators",
+    "listRepoIssues",
+    "getIssue",
     "listRepoLabels",
     "pollAppUserDeviceAuth",
     "publishCurrentProject",
@@ -962,7 +948,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unsubscribe",
   ],
   search: ["query", "indexStatus", "rebuildIndex"],
-  "external-sessions": ["list", "import"],
+  // No `watchDetail`/`unwatchDetail`: live detail watching pushes updates over a
+  // per-sender Electron IPC channel, which has no remote-runtime equivalent, so
+  // it stays local IPC only (`IPC.externalSessions{Watch,Unwatch}Detail`).
+  // Exposing them here would hand remote callers a snapshot that never updates.
+  "external-sessions": ["list", "import", "getDetail"],
   plugin: [...PLUGIN_DOMAIN_ACTIONS],
 };
 
@@ -1230,6 +1220,16 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "object { sessionId: string, mode: \"retry_original\" | \"recover_from_history\" | \"start_new_chat\" }",
       example: "ade actions run chat.recoverContinuity --input-json '{\"sessionId\":\"chat-123\",\"mode\":\"retry_original\"}'",
     },
+    setSpawnKind: {
+      description: "Demote a subagent chat to a peer (reports stop) or promote a peer back to a subagent (reports resume). Taking over posts a quiet note on the parent.",
+      input: "object { sessionId: string, spawnKind: \"subagent\" | \"peer\" }",
+      example: "ade actions run chat.setSpawnKind --input-json '{\"sessionId\":\"chat-123\",\"spawnKind\":\"peer\"}' --text",
+    },
+    dismissSubagentTakeoverPrompt: {
+      description: "Record that the subagent takeover banner was shown and answered or dismissed, so it does not reappear.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.dismissSubagentTakeoverPrompt --input-json '{\"sessionId\":\"chat-123\"}' --text",
+    },
   },
   "external-sessions": {
     list: {
@@ -1241,6 +1241,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Import an outside provider CLI session into an ADE lane as a CLI terminal or chat.",
       input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode? }",
       example: "ade actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
+    },
+    getDetail: {
+      description: "Re-parse one outside session file and return a generous transcript tail.",
+      input: "object { provider, sessionId }",
+      example: "ade actions run external-sessions.getDetail --input-json '{\"provider\":\"claude\",\"sessionId\":\"session-id\"}' --text",
     },
   },
   plugin: {
@@ -2332,6 +2337,20 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       sessionService.unsettleSessions(sessionIds);
       return { ok: true };
     },
+    /**
+     * Work a settle could not confirm it stopped (design 3d option 3).
+     *
+     * Read-only, and the reason it exists: option 3 was signed off on the
+     * condition that the residue stay DISCOVERABLE rather than merely recorded.
+     * Without a read path, "settled" would quietly mean "and something may still
+     * be running" — the exact outcome the option was chosen to avoid.
+     */
+    getSettleResidue: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.getSettleResidue");
+      const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
+      if (!sessionId) throw new Error("session.getSettleResidue requires sessionId.");
+      return sessionService.getSettleResidue(sessionId) ?? { recordedAt: null, items: [] };
+    },
     // -----------------------------------------------------------------------
     // Snooze / wake / settle-override. Snooze is a synced VISIBILITY overlay:
     // it hides a row until its deadline without touching lifecycle columns, so
@@ -2907,10 +2926,12 @@ function ensureAuthStatusRelayBridges(runtime: AdeRuntime): void {
   };
   const unsubscribeOpenCode = addOpenCodeOAuthStatusListener((event) => push("opencodeOAuthStatus", event));
   const unsubscribePi = addPiAuthStatusListener((event) => push("piAuthStatus", event));
+  const unsubscribeCursor = addCursorSdkAuthStatusListener((event) => push("cursorAuthStatus", event));
   const dispose = runtime.dispose;
   runtime.dispose = () => {
     unsubscribeOpenCode();
     unsubscribePi();
+    unsubscribeCursor();
     dispose();
   };
 }
@@ -2977,6 +2998,34 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     piLoginCancel: (args?: { providerId?: string }) => {
       cancelPiLogin({ providerId: requireNonEmptyString(args?.providerId, "providerId") });
     },
+    cursorAuthStatus: () => getCursorSdkAuthStatus(),
+    cursorAuthLogin: async () => {
+      const result = await loginCursorSdk();
+      if (result.ok) {
+        try {
+          aiIntegrationService.invalidateProviderReadinessCaches();
+        } catch (error) {
+          runtime.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return result;
+    },
+    cursorAuthLogout: async () => {
+      const result = await logoutCursorSdk();
+      try {
+        aiIntegrationService.invalidateProviderReadinessCaches();
+      } catch (error) {
+        runtime.logger.warn("ai.cursor_auth_cache_invalidation_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return result;
+    },
+    cursorAuthCancel: () => {
+      cancelCursorSdkLogin();
+    },
     refreshModelsDev: async () => {
       try {
         await refreshModelsDevNow();
@@ -3026,6 +3075,8 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       }),
     createCursorCloudRun: (args: Parameters<typeof aiIntegrationService.createCursorCloudRun>[0]) =>
       aiIntegrationService.createCursorCloudRun(args),
+    getCursorCloudLaneSecretNames: (args?: { laneId?: string }) =>
+      aiIntegrationService.getCursorCloudLaneSecretNames(requireNonEmptyString(args?.laneId, "laneId")),
     archiveCursorCloudAgent: (args?: { agentId?: string }) =>
       aiIntegrationService.archiveCursorCloudAgent(requireNonEmptyString(args?.agentId, "agentId")),
     unarchiveCursorCloudAgent: (args?: { agentId?: string }) =>
@@ -3064,11 +3115,46 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         prompt: requireNonEmptyString(args?.prompt, "prompt"),
         ...(args?.modelId !== undefined ? { modelId: args.modelId } : {}),
       }),
-    openCursorCloudChat: (args?: { cloudAgentId?: string; laneId?: string }) =>
+    openCursorCloudChat: (args?: {
+      cloudAgentId?: string;
+      laneId?: string;
+      agentName?: string;
+      sessionId?: string;
+      modelId?: string;
+    }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").openCursorCloudChat({
         cloudAgentId: requireNonEmptyString(args?.cloudAgentId, "cloudAgentId"),
         laneId: requireNonEmptyString(args?.laneId, "laneId"),
+        ...(args?.agentName ? { agentName: args.agentName } : {}),
+        ...(args?.sessionId ? { sessionId: args.sessionId } : {}),
+        ...(args?.modelId ? { modelId: args.modelId } : {}),
       }),
+    watchCursorCloudMirror: (args?: { sessionId?: string; watching?: boolean }) => {
+      if (typeof args?.watching !== "boolean") {
+        throw new Error("Expected 'watching' to be a boolean.");
+      }
+      requireService(runtime.agentChatService, "Agent chat service not available.").watchCursorCloudMirror({
+        sessionId: requireNonEmptyString(args?.sessionId, "sessionId"),
+        watching: args.watching,
+      });
+    },
+    getCursorCloudFleet: (args?: { includeArchived?: boolean; limit?: number }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").getFleet({
+        includeArchived: args?.includeArchived !== false,
+        ...(args?.limit !== undefined ? { limit: args.limit } : {}),
+      }),
+    resolveCursorCloudAgentLane: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").resolveLaneForAgent(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
+    pullCursorCloudAgentIntoLane: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").pullIntoLane(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
+    stopCursorCloudAgentRun: (args?: { agentId?: string }) =>
+      requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").stopAgentRun(
+        requireNonEmptyString(args?.agentId, "agentId"),
+      ),
   };
 }
 
@@ -3832,6 +3918,31 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         starred,
       );
     },
+    async listRepoIssues(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const state = actionArgs.state;
+      return githubService.listRepoIssues(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        {
+          state: state === "open" || state === "closed" || state === "all" ? state : "open",
+        },
+      );
+    },
+    async getIssue(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      const number = typeof actionArgs.number === "number"
+        ? actionArgs.number
+        : Number(actionArgs.number);
+      if (!Number.isInteger(number) || number <= 0) {
+        throw new Error("Expected 'number' to be a positive integer.");
+      }
+      return githubService.getIssue(
+        requireNonEmptyString(actionArgs.owner, "owner"),
+        requireNonEmptyString(actionArgs.name, "name"),
+        number,
+      );
+    },
     async publishCurrentProject(args?: unknown) {
       const actionArgs = asActionRecord(args);
       const isPrivate = actionArgs.isPrivate;
@@ -4175,6 +4286,13 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
         (args ?? {}) as Parameters<typeof externalSessionsService.importExternalSession>[0],
       );
     },
+    getDetail(args: unknown) {
+      return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(args ?? {}));
+    },
+    // `watchDetail`/`unwatchDetail` are deliberately absent: the watch pushes
+    // updates on a per-sender Electron IPC channel this action domain cannot
+    // reach, so the desktop bridge keeps them on local IPC. A no-op here would
+    // have told a remote caller it was watching when nothing would ever arrive.
   } as OpaqueService;
 }
 

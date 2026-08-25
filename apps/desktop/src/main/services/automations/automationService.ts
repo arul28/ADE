@@ -1092,6 +1092,7 @@ export function createAutomationService({
   adeActionRegistry,
   pluginAvailability,
   linearIngressAvailable,
+  cursorCloudIngressAvailable,
   githubPollingAvailable,
   onEvent,
   cronScheduler = cron,
@@ -1132,6 +1133,8 @@ export function createAutomationService({
   pluginAvailability?: { unavailableReason(pluginId: string): string | null } | null;
   /** True when Linear event ingress is connected and able to deliver events. */
   linearIngressAvailable?: () => boolean;
+  /** True when Cursor Cloud webhook ingress is connected and able to deliver events. */
+  cursorCloudIngressAvailable?: () => boolean;
   /** True when direct GitHub polling can resolve a configured repository. */
   githubPollingAvailable?: () => boolean;
   /** Injectable only for deterministic scheduler tests. */
@@ -1151,6 +1154,7 @@ export function createAutomationService({
   let budgetCapServiceRef = budgetCapService;
   let adeActionRegistryRef: AutomationAdeActionRegistry | null = adeActionRegistry ?? null;
   let linearIngressAvailableRef = linearIngressAvailable ?? (() => false);
+  let cursorCloudIngressAvailableRef = cursorCloudIngressAvailable ?? (() => false);
   let githubPollingAvailableRef = githubPollingAvailable ?? (() => hasConfiguredGitHubOrigin(projectRoot));
   const readWebhookGatewayPublicUrl = (): string | null => {
     try {
@@ -1598,6 +1602,7 @@ export function createAutomationService({
       && (ingressStatusRef.githubRelay.status === "polling" || ingressStatusRef.githubRelay.status === "ready");
     const pollingAvailable = capabilityAvailable(githubPollingAvailableRef);
     const linearAvailable = capabilityAvailable(linearIngressAvailableRef);
+    const cursorAvailable = capabilityAvailable(cursorCloudIngressAvailableRef);
     const localWebhookAvailable = ingressStatusRef.localWebhook.listening && ingressStatusRef.localWebhook.healthy;
     const publicGatewayAvailable = ingressStatusRef.webhookGateway.ready;
 
@@ -1649,6 +1654,11 @@ export function createAutomationService({
         ready: linearAvailable,
         via: linearAvailable ? "linear-relay" : null,
         setupError: linearAvailable ? null : "Connect Linear events in Automations settings.",
+      },
+      cursor: {
+        ready: cursorAvailable,
+        via: cursorAvailable ? "cursor-relay" : null,
+        setupError: cursorAvailable ? null : "Cursor Cloud webhook ingress is not configured.",
       },
     };
   };
@@ -3905,6 +3915,10 @@ export function createAutomationService({
       linearIngressAvailableRef = check;
     },
 
+    setCursorCloudIngressAvailable(check: () => boolean) {
+      cursorCloudIngressAvailableRef = check;
+    },
+
     setGithubPollingAvailable(check: () => boolean) {
       githubPollingAvailableRef = check;
     },
@@ -3920,6 +3934,13 @@ export function createAutomationService({
       return listRules().some((rule) =>
         rule.enabled
         && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type).startsWith("linear."))
+      );
+    },
+
+    hasEnabledCursorCloudRules(): boolean {
+      return listRules().some((rule) =>
+        rule.enabled
+        && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type).startsWith("cursor."))
       );
     },
 

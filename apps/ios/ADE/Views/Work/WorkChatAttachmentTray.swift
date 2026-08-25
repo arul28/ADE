@@ -350,6 +350,69 @@ func workChatSaveInputAttachments(
   return refs
 }
 
+@MainActor
+func workChatInputAttachments(
+  from refs: [AgentChatFileRef],
+  syncService: SyncService,
+  chatSessionId: String?,
+  projectId: String?,
+  projectRootPath: String?
+) async throws -> [WorkChatInputAttachment] {
+  var restored: [WorkChatInputAttachment] = []
+  for ref in refs {
+    if ref.type == "image-url", let urlString = ref.url ?? Optional(ref.path),
+       let url = URL(string: urlString),
+       let scheme = url.scheme?.lowercased(),
+       scheme == "http" || scheme == "https" {
+      let data = try await workChatRemoteImageData(from: url)
+      guard let image = WorkChatAttachmentImagePreview.downsampledImage(
+              data: data,
+              maxPixelSize: 2400
+            ),
+            let attachment = workChatInputAttachment(
+              from: image,
+              filename: workChatAttachmentDisplayName(ref)
+            ) else {
+        throw workChatStashImageRestoreError
+      }
+      restored.append(attachment)
+      continue
+    }
+    guard ref.type == "image" else { continue }
+    let dataUrl: String
+    if let chatSessionId, !chatSessionId.isEmpty {
+      dataUrl = try await syncService.chatImageDataUrlForChat(sessionId: chatSessionId, path: ref.path)
+    } else if syncService.canInvokeRemoteAction("chat.getImageDataUrl") {
+      dataUrl = try await syncService.chatImageDataUrl(
+        path: ref.path,
+        targetProjectId: projectId,
+        targetProjectRootPath: projectRootPath
+      )
+    } else {
+      throw workChatStashImageRestoreError
+    }
+    guard let image = WorkChatAttachmentImagePreview.image(
+            fromDataUrl: dataUrl,
+            maxPixelSize: 2400,
+            maxBytes: workChatInputAttachmentMaxBytes
+          ),
+          let attachment = workChatInputAttachment(
+            from: image,
+            filename: workChatAttachmentDisplayName(ref)
+          ) else {
+      throw workChatStashImageRestoreError
+    }
+    restored.append(attachment)
+  }
+  return restored
+}
+
+private let workChatStashImageRestoreError = NSError(
+  domain: "ADE",
+  code: 28,
+  userInfo: [NSLocalizedDescriptionKey: "Could not restore a stashed image. The prompt is still in your stash."]
+)
+
 private func workChatJPEGDataForUpload(_ image: UIImage) -> (image: UIImage, data: Data)? {
   var maxDimension = min(
     workChatInputAttachmentInitialMaxDimension,
@@ -391,35 +454,6 @@ private func workChatRenderedJPEGImage(_ image: UIImage, maxDimension: CGFloat) 
     UIColor.white.setFill()
     context.fill(CGRect(origin: .zero, size: targetSize))
     image.draw(in: CGRect(origin: .zero, size: targetSize))
-  }
-}
-
-struct WorkChatAttachmentAddButton: View {
-  @Binding var pickerPresented: Bool
-  let attachmentCount: Int
-  var disabled = false
-
-  private var isDisabled: Bool {
-    disabled || attachmentCount >= workChatInputAttachmentLimit
-  }
-
-  var body: some View {
-    Button {
-      pickerPresented = true
-    } label: {
-      Image(systemName: "plus")
-        .font(.system(size: 14, weight: .bold))
-        .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.35) : ADEColor.textPrimary)
-        .frame(width: 28, height: 28)
-        .background(ADEColor.surfaceBackground.opacity(isDisabled ? 0.18 : 0.38), in: Circle())
-        .overlay(Circle().stroke(ADEColor.border.opacity(isDisabled ? 0.16 : 0.28), lineWidth: 0.6))
-        .frame(width: 44, height: 44)
-        .contentShape(Circle())
-    }
-    .buttonStyle(.plain)
-    .disabled(isDisabled)
-    .accessibilityLabel("Attach from camera roll")
-    .accessibilityHint("Opens the photo picker.")
   }
 }
 
@@ -1068,10 +1102,14 @@ enum WorkChatAttachmentImagePreview {
     return UIImage(cgImage: cgImage)
   }
 
-  static func image(fromDataUrl dataUrl: String, maxPixelSize: CGFloat) -> UIImage? {
+  static func image(
+    fromDataUrl dataUrl: String,
+    maxPixelSize: CGFloat,
+    maxBytes: Int = workChatRemoteImageMaxBytes
+  ) -> UIImage? {
     guard let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
     let base64 = String(dataUrl[dataUrl.index(after: commaIndex)...])
-    guard let data = base64DecodedImageData(base64, maxBytes: workChatRemoteImageMaxBytes) else { return nil }
+    guard let data = base64DecodedImageData(base64, maxBytes: maxBytes) else { return nil }
     return downsampledImage(data: data, maxPixelSize: maxPixelSize)
   }
 }

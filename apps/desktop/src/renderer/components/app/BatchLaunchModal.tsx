@@ -20,9 +20,6 @@ import {
   type SessionLaunchModelConfig,
 } from "../shared/SessionLaunchModelControls";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
-import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
-import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
-import { getModelById } from "../../../shared/modelRegistry";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 
@@ -293,17 +290,6 @@ export function BatchLaunchModal({
     }));
   }, []);
 
-  const { getReasoningForFamily } = useReasoningByFamily();
-
-  const resolveDisplayedReasoning = useCallback(
-    (explicit: string | null, modelId: string): string | null => {
-      if (explicit) return explicit;
-      const desc = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
-      return desc?.family ? getReasoningForFamily(desc.family) : null;
-    },
-    [getReasoningForFamily],
-  );
-
   const applyDefaultField = useCallback(
     <K extends keyof PerIssueState>(key: K, value: PerIssueState[K]) => {
       setPerIssue((current) => {
@@ -380,12 +366,10 @@ export function BatchLaunchModal({
       const existingLaneId =
         !laneOnly && laneTarget === "existing" ? state.existingLaneId?.trim() || null : null;
       if (!laneOnly && laneTarget === "existing" && !existingLaneId) continue;
-      const reasoningEffort = resolveDisplayedReasoning(config.reasoningEffort, config.modelId);
       entries.push({
         issue,
         config: {
           ...config,
-          reasoningEffort,
           existingLaneId,
           laneOnly,
           nativeControls,
@@ -394,7 +378,7 @@ export function BatchLaunchModal({
     }
     if (!entries.length) return;
     onLaunch(entries);
-  }, [issues, perIssue, onLaunch, laneOnly, resolveDisplayedReasoning, multiIssue, defaultConfig]);
+  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig]);
 
   if (!issues.length) return null;
 

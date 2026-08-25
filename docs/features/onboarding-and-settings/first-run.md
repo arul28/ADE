@@ -1,27 +1,24 @@
 # First-Run Setup
 
-The first-run setup page turns a freshly opened project into something usable
-without forcing a step-by-step flow. It is a status-card dashboard for checking
-local tooling, AI runtimes, optional GitHub / Linear connections, suggested
-project config, and existing branch import.
+Opening or creating a project goes straight to Work. There is no blocking
+project-setup dashboard. `.ade` layout and `ade.db` are created as soon as ADE
+knows the folder (create/clone scaffold, then the normal project bind).
+
+AI runtimes, GitHub, and Linear stay in Settings. A new local repo can stay
+unpublished; the header Publish pill appears until `origin` exists.
 
 The canonical backend is
-`apps/desktop/src/main/services/onboarding/onboardingService.ts`. The setup UI is
-`apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`.
+`apps/desktop/src/main/services/onboarding/onboardingService.ts`
+(status, suggested config, glossary help). `/onboarding` redirects to `/work`.
 
-## Setup surfaces
+## Surfaces
 
 | Surface | Component | Purpose |
 |---|---|---|
-| Project header | `ProjectSetupPage.tsx` | Shows project identity, setup state, Finish / Skip actions, and repair affordances. |
-| Developer tools | `DevToolsRow.tsx` | Checks `git`, the user-facing `ade` CLI install, and terminal readiness. |
-| AI runtimes | `AiRuntimesBand.tsx` | Detects Claude, Codex, Cursor, Factory Droid, and OpenCode readiness; surfaces install/sign-in helpers and model picker entry points. |
-| GitHub | `GitHubCard.tsx` | Guides repository auth and PR capability setup. |
-| Linear | `LinearCard.tsx` | Guides Linear OAuth / API-key auth and optional workflow sync. |
-
-The dashboard can be finished even when optional integrations are incomplete.
-Users can return to the same setup surface later, and long-lived preferences
-live in Settings.
+| Create project | `CreateProjectForm.tsx` | Name + first-class location; create opens Work. |
+| Work | Work tab / new chat | Default landing for new, existing, and first-open projects. |
+| Publish | header Publish pill | Optional GitHub repo creation when there is no `origin`. |
+| Settings | Agents, Integrations | AI runtimes, GitHub, Linear. |
 
 ## Onboarding service API
 
@@ -37,10 +34,9 @@ getHelpState(): OnboardingHelpState
 markGlossaryTermSeen(termId: string): OnboardingHelpState
 ```
 
-The first six methods power project setup. `getHelpState` and
-`markGlossaryTermSeen` support passive glossary/help chips; guided tours,
-per-tab walkthroughs, and the old welcome wizard are no longer part of the
-renderer contract.
+The first six methods remain for suggested config and status storage. The
+desktop shell no longer redirects on `freshProject`. `getHelpState` and
+`markGlossaryTermSeen` support passive glossary/help chips.
 
 ### Detection
 
@@ -82,38 +78,20 @@ It also seeds:
 `applySuggestedConfig(suggestedConfig)` merges this partial config into the
 shared YAML via `projectConfigService.save`.
 
-## ProjectSetupPage wiring
-
-The page is stateful and reacts to:
-
-- `window.ade.onboarding.getStatus()` on mount
-- provider/tool readiness reads for the AI runtimes and developer-tool rows
-- `detectDefaults()` when the user scans
-
-Clicking Finish calls `window.ade.onboarding.complete()` and publishes an
-`onboardingStatusUpdated` renderer event via `publishOnboardingStatusUpdated` so
-other surfaces refresh.
-
-Dismiss calls `setDismissed(true)` without stamping `completedAt`, leaving setup
-available through explicit re-entry.
-
 ## UX contract
 
-- Do not block on optional integrations. GitHub and Linear are skippable.
-- Keep setup responsive. Model detection, CLI probes, and lane detection run
-  concurrently where possible.
-- Show the fastest path first. For Linear that means personal API keys, with
-  OAuth available but secondary.
-- Defer heavy work to the feature surface that owns it.
+- Never intercept project open with a setup route. Work is the landing.
+- Do not block chatting on GitHub, Linear, or an initial commit.
+- Create shows the default location clearly; changing it is a first-class control.
 
 ## Gotchas
 
-- `freshProject` is computed at `createOnboardingService` construction and is
-  the signal for "this project has never been set up." Passing the wrong value
-  reopens first-run setup on a mature repo.
+- `freshProject` is still computed at `createOnboardingService` construction
+  from missing `.ade/ade.db`. Create/clone now warm that database so first open
+  is not a special UI state. Do not reintroduce a shell redirect on the flag.
 - Existing-lane import runs `git rev-list --left-right --count` per candidate
-  branch, capped at 200. Large repos can still see noticeable latency, so the UI
-  shows an explicit loading state.
+  branch, capped at 200. Large repos can still see noticeable latency on the
+  Lanes tab, not on Work paint.
 - Workflow command parsing keeps only single-line steps; multi-line `run: |`
   blocks are skipped. Teams with complex CI flows should curate imported
   commands manually in `ade.yaml`.
