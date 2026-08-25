@@ -14,6 +14,7 @@
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
+  CHAT_MENTION_MAX_RESULTS,
   appendChatMentionBlocks,
   collectChatMentionTargets,
   rankChatMentionSuggestions,
@@ -251,15 +252,16 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
   };
 
   /**
-   * Menu-time suggestions. Always all three kinds, ranked per kind and capped
-   * per kind so one noisy kind can never crowd the others out of the sectioned
-   * menu. The renderer decides which sections to show.
+   * Menu-time suggestions. All three kinds are collected, then ranked as one
+   * list by match quality (not by kind). Each source is still capped before
+   * the mix so a huge chat roster cannot starve lanes/terminals of candidates;
+   * the visible order is best-match only.
    */
   const listChatMentionSuggestions = async (
     args: ChatMentionSuggestArgs = {},
   ): Promise<ChatMentionSuggestResult> => {
     const query = typeof args.query === "string" ? args.query : "";
-    const suggestions: ChatMentionSuggestion[] = [];
+    const pool: ChatMentionSuggestion[] = [];
     for (const kind of CHAT_MENTION_KINDS) {
       let candidates: ChatMentionSuggestion[] = [];
       try {
@@ -269,11 +271,9 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         deps.logger?.warn?.("chat mention suggestions failed for kind", { kind, error });
         continue;
       }
-      suggestions.push(
-        ...rankChatMentionSuggestions(candidates, query, CHAT_MENTION_MAX_PER_KIND),
-      );
+      pool.push(...rankChatMentionSuggestions(candidates, query, CHAT_MENTION_MAX_PER_KIND));
     }
-    return { suggestions };
+    return { suggestions: rankChatMentionSuggestions(pool, query, CHAT_MENTION_MAX_RESULTS) };
   };
 
   // -------------------------------------------------------------------------

@@ -964,30 +964,37 @@ describe("AgentChatComposer", () => {
     view.rerender(<AgentChatComposer {...props} draft="@a b c" />);
 
     await waitFor(() => expect(onSearchMentions).toHaveBeenCalledWith("a b c"));
-    fireEvent.click(await screen.findByText("a b c"));
+    fireEvent.click(await waitFor(() => {
+      const row = document.querySelector<HTMLElement>("[data-menu-index='0']");
+      expect(row?.textContent).toContain("a b c");
+      return row!;
+    }));
 
     expect(props.onDraftChange).toHaveBeenLastCalledWith("@chat:chat-1 ");
-    view.rerender(<AgentChatComposer {...props} draft="@chat:chat-1 " />);
+    view.rerender(<AgentChatComposer {...props} draft="@chat:chat-1 " mentionLabels={{ "@chat:chat-1": "a b c" }} />);
 
-    const chip = await screen.findByText("a b c");
-    expect(chip.textContent).toBe("a b c");
-    expect(chip.closest("[aria-hidden]")).not.toBeNull();
-    expect(view.container.querySelector("[data-composer-mention-layout]")?.textContent).toBe("@chat:chat-1");
-    expect(view.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+    const chip = await waitFor(() => {
+      const node = view.container.querySelector<HTMLElement>("[data-composer-chip='mention']");
+      expect(node?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
+      return node!;
+    });
+    expect(chip.dataset.composerChipKind).toBe("chat");
+    expect(chip.className).toContain("max-w-[10.5rem]");
+    expect(chip.querySelector("[data-composer-chip-icon]")).not.toBeNull();
   });
 
-  it("restores persisted mention titles after a plain composer remount", () => {
+  it("restores persisted mention titles after a composer remount", () => {
     const props = buildComposerProps({
       turnActive: false,
       draft: "@chat:chat-1 ",
       mentionLabels: { "@chat:chat-1": "a b c" },
     });
     const first = render(<AgentChatComposer {...props} />);
-    expect(first.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+    expect(first.container.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
 
     first.unmount();
     const second = render(<AgentChatComposer {...props} />);
-    expect(second.container.querySelector("[data-composer-mention-display]")?.textContent).toBe("a b c");
+    expect(second.container.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
   });
 
   it("restores persisted mention titles after a rich composer remount", () => {
@@ -1008,11 +1015,11 @@ describe("AgentChatComposer", () => {
       iosElementContextItems: [iosContext],
     });
     const first = render(<AgentChatComposer {...props} />);
-    expect(first.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
+    expect(first.container.querySelector("[data-composer-chip='mention']")?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
 
     first.unmount();
     const second = render(<AgentChatComposer {...props} />);
-    expect(second.container.querySelector("[data-composer-chip='mention']")?.textContent).toBe("a b c");
+    expect(second.container.querySelector("[data-composer-chip='mention']")?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
   });
 
   it("falls back to the canonical mention token when a persisted rich mention label is cleared", () => {
@@ -1025,10 +1032,10 @@ describe("AgentChatComposer", () => {
     const view = render(<AgentChatComposer {...props} />);
     const chip = () => view.container.querySelector<HTMLElement>("[data-composer-chip='mention']");
 
-    expect(chip()?.textContent).toBe("a b c");
+    expect(chip()?.querySelector("[data-composer-chip-label]")?.textContent).toBe("a b c");
     view.rerender(<AgentChatComposer {...props} mentionLabels={{}} />);
 
-    expect(chip()?.textContent).toBe("@chat:chat-1");
+    expect(chip()?.querySelector("[data-composer-chip-label]")?.textContent).toBe("@chat:chat-1");
     expect(chip()?.title).toBe("@chat:chat-1");
   });
 
@@ -1052,7 +1059,11 @@ describe("AgentChatComposer", () => {
     });
     view.rerender(<AgentChatComposer {...props} draft={draft} />);
 
-    fireEvent.click(await screen.findByText("a b c"));
+    fireEvent.click(await waitFor(() => {
+      const row = document.querySelector<HTMLElement>("[data-menu-index='0']");
+      expect(row?.textContent).toContain("a b c");
+      return row!;
+    }));
 
     expect(props.onDraftChange).toHaveBeenLastCalledWith("ask @chat:chat-1 about this");
   });

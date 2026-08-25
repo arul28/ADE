@@ -282,6 +282,21 @@ describe("AdeCodeApp polling", () => {
       .toEqual(["@commit:abc1234", "@pr:42", "@lane:foo"]);
   });
 
+  it("ranks an exact chat title above a vaguely matching file path", () => {
+    const suggestions: MentionSuggestion[] = [
+      {
+        kind: "file",
+        label: "apps/desktop/src/shared/chatMentions.ts",
+        insertText: "@file:apps/desktop/src/shared/chatMentions.ts",
+        filePath: "apps/desktop/src/shared/chatMentions.ts",
+      },
+      { kind: "chat", label: "chat", insertText: "@chat:c1", detail: "Primary" },
+    ];
+
+    expect(rankMentionSuggestions(suggestions, "chat").map((suggestion) => suggestion.kind))
+      .toEqual(["chat", "file"]);
+  });
+
   it("polls summary refreshes without hydrating chat history", async () => {
     const instance = await renderApp(<AdeCodeApp project={project} />);
 

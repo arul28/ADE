@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createChatMentionService, type ChatMentionServiceDeps } from "./chatMentionService";
-import { renderChatMentionBlock } from "../../../shared/chatMentions";
+import { CHAT_MENTION_MAX_RESULTS, renderChatMentionBlock } from "../../../shared/chatMentions";
 import type { AgentChatSessionSummary } from "../../../shared/types/chat";
 import type { LaneStatus, LaneSummary } from "../../../shared/types/lanes";
 import type { ChatTerminalSession } from "../../../shared/types/sessions";
@@ -88,7 +88,7 @@ function makeService(over: Partial<ChatMentionServiceDeps> = {}) {
 }
 
 describe("listChatMentionSuggestions", () => {
-  it("returns most-recent-first per kind for an empty query", async () => {
+  it("returns most-recent-first across kinds for an empty query", async () => {
     const { service } = makeService();
     const { suggestions } = await service.listChatMentionSuggestions({ query: "" });
     const chats = suggestions.filter((s) => s.kind === "chat");
@@ -130,15 +130,44 @@ describe("listChatMentionSuggestions", () => {
     expect(suggestions.filter((s) => s.kind === "lane").map((s) => s.id)).toEqual(["l-live"]);
   });
 
-  it("caps results per kind so one kind cannot crowd out the others", async () => {
+  it("caps the mixed list so a huge roster cannot unbounded-grow the menu", async () => {
     const { service } = makeService({
       listChatSessions: async () =>
         Array.from({ length: 30 }, (_, i) =>
           session({ sessionId: `s${i}`, title: `Chat ${i}` })),
+      listLanes: async () =>
+        Array.from({ length: 30 }, (_, i) =>
+          lane({ id: `l${i}`, name: `Lane ${i}` })),
+      listTerminals: () =>
+        Array.from({ length: 30 }, (_, i) =>
+          terminal({ terminalId: `t${i}`, title: `Term ${i}` })),
     });
     const { suggestions } = await service.listChatMentionSuggestions({ query: "" });
-    expect(suggestions.filter((s) => s.kind === "chat")).toHaveLength(8);
-    expect(suggestions.filter((s) => s.kind === "lane").length).toBeGreaterThan(0);
+    expect(suggestions).toHaveLength(CHAT_MENTION_MAX_RESULTS);
+  });
+
+  it("ranks a better title match above a more recent weak match across kinds", async () => {
+    const { service } = makeService({
+      listChatSessions: async () => [
+        session({
+          sessionId: "s-weak",
+          title: "Unrelated chore",
+          lastActivityAt: "2026-08-10T00:00:00.000Z",
+        }),
+        session({
+          sessionId: "s-login",
+          title: "Login redirect",
+          lastActivityAt: "2026-08-01T00:00:00.000Z",
+        }),
+      ],
+      listLanes: async () => [
+        lane({ id: "lane-recent", name: "chore", createdAt: "2026-08-11T00:00:00.000Z" }),
+      ],
+    });
+    const { suggestions } = await service.listChatMentionSuggestions({ query: "login" });
+    expect(suggestions[0]?.id).toBe("s-login");
+    expect(suggestions.map((row) => row.id)).not.toContain("s-weak");
+    expect(suggestions.map((row) => row.id)).not.toContain("lane-recent");
   });
 
   // Lanes reach this service without a status probe (includeStatus:false), and

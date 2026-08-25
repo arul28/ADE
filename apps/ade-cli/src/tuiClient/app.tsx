@@ -32,7 +32,7 @@ import {
   type ComposerTokenRange,
   type ComposerTriggerDismissal,
 } from "../../../desktop/src/shared/composerTriggers";
-import { isChatMentionTokenBody } from "../../../desktop/src/shared/chatMentions";
+import { isChatMentionTokenBody, scoreChatMentionCandidate } from "../../../desktop/src/shared/chatMentions";
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
@@ -2705,25 +2705,30 @@ function matchesMentionTarget(target: string, query: string): boolean {
 }
 
 /**
- * Prefer the longest label that is a confirmed prefix of the query. This lets
- * `@Foo Bar please` select `Foo Bar` before a shorter `Foo` lane while keeping
- * the existing source order for unrelated or equally long matches.
+ * Rank @ rows by the same match tiers desktop uses so a better lane/chat is
+ * not stuck behind a vaguely matching file (or the reverse). Source order is
+ * only the tie-break. Unscored rows (commits/PRs the scorer cannot see) stay
+ * last rather than disappearing.
  */
 export function rankMentionSuggestions(
   suggestions: MentionSuggestion[],
   query: string,
 ): MentionSuggestion[] {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) return suggestions;
+  if (!query.trim()) return suggestions;
 
   return suggestions
     .map((suggestion, index) => {
-      const label = suggestion.label.trim().toLowerCase();
-      const isConfirmedPrefix = label.length > 0
-        && (normalizedQuery === label || normalizedQuery.startsWith(`${label} `));
-      return { suggestion, index, prefixLength: isConfirmedPrefix ? label.length : 0 };
+      const match = scoreChatMentionCandidate(
+        { title: suggestion.label, subtitle: suggestion.detail },
+        query,
+      ) ?? { score: 50, titlePrefixLength: 0 };
+      return { suggestion, index, score: match.score, titlePrefixLength: match.titlePrefixLength };
     })
-    .sort((left, right) => right.prefixLength - left.prefixLength || left.index - right.index)
+    .sort((left, right) => (
+      left.score - right.score
+      || right.titlePrefixLength - left.titlePrefixLength
+      || left.index - right.index
+    ))
     .map(({ suggestion }) => suggestion);
 }
 

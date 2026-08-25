@@ -37,6 +37,7 @@ import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import {
   CHAT_MENTION_KINDS,
   CHAT_MENTION_MAX_PER_KIND,
+  CHAT_MENTION_MAX_RESULTS,
   rankChatMentionSuggestions,
 } from "../shared/chatMentions";
 import {
@@ -5099,8 +5100,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           terminal: terminals,
         };
         return {
-          suggestions: CHAT_MENTION_KINDS.flatMap((kind) =>
-            rankChatMentionSuggestions(byKind[kind], query, CHAT_MENTION_MAX_PER_KIND)),
+          suggestions: rankChatMentionSuggestions(
+            CHAT_MENTION_KINDS.flatMap((kind) =>
+              rankChatMentionSuggestions(byKind[kind], query, CHAT_MENTION_MAX_PER_KIND)),
+            query,
+            CHAT_MENTION_MAX_RESULTS,
+          ),
         };
       },
       getTurnFileDiff: resolvedArg(null),
