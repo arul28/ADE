@@ -827,10 +827,17 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  // Only the user's own text rides `--prompt`. OpenCode submits that value as a
+  // real user message and renders it in the TUI, so the ADE preamble that used
+  // to be prepended here was displayed to the user verbatim on every launch —
+  // the reported "OpenCode echoes ADE's system prompt" — and reached the model
+  // as ordinary user text rather than as system instructions. The ADE contract
+  // now travels through `instructions` in OPENCODE_CONFIG_CONTENT instead; see
+  // withOpenCodeAdeInstructions.
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model: args.model,
-    prompt: workTabCliPrompt(initialPrompt, skillRoots),
+    ...(initialPrompt ? { prompt: initialPrompt } : {}),
   });
   const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
   return {
@@ -1148,7 +1155,101 @@ function buildDroidCommandLine(args: {
   ].join(" && ");
 }
 
-const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
+export const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
+
+/**
+ * Add ADE's instruction file to an OpenCode launch environment.
+ *
+ * This is how the tracked CLI gets the same ADE instruction contract the chat
+ * runtime sends through `session.prompt`'s first-class `system` field. OpenCode
+ * gives a CLI launch no per-request system hook, and its two config-level
+ * alternatives are not interchangeable: `agent.<name>.prompt` REPLACES the
+ * provider base prompt (`agent.prompt ? [agent.prompt] : SystemPrompt.provider(model)`
+ * in the server's request builder), which would delete OpenCode's own tool
+ * instructions. `instructions` is the additive one — it lands in the same
+ * assembled system block as AGENTS.md, after the base prompt, and never appears
+ * in the transcript.
+ *
+ * Config layers concatenate this key rather than overwrite it (the loader uses a
+ * union merge for `instructions` specifically), so ADE's entry is added to the
+ * user's own instruction files instead of replacing them. A path that does not
+ * exist is silently skipped by OpenCode, so a stale entry degrades to "no ADE
+ * prompt" rather than a launch failure.
+ */
+export function withOpenCodeAdeInstructions(
+  launch: { env?: Record<string, string> | undefined; startupCommand?: string | undefined },
+  instructionsPath: string | null | undefined,
+): { env?: Record<string, string>; startupCommand?: string } | null {
+  const resolved = instructionsPath?.trim();
+  if (!resolved) return null;
+  let config: Record<string, unknown> = {};
+  // The command line wins over the environment, because that is the precedence
+  // the shell itself applies to a leading `NAME=value` assignment. Reading only
+  // `env` dropped whatever the assignment carried alone — a resumed session's
+  // persisted command holds its `permission` policy there while the launch
+  // environment has no such key, so rebuilding from `env` erased the policy.
+  const existing = readOpenCodeConfigAssignment(launch.startupCommand)
+    ?? launch.env?.[OPENCODE_INLINE_CONFIG_ENV];
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A value ADE cannot parse is not ADE's to extend. Leave it untouched
+      // rather than dropping whatever the caller meant to send.
+      return null;
+    }
+  }
+  const current = Array.isArray(config.instructions)
+    ? config.instructions.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  if (current.includes(resolved)) return null;
+  const nextValue = JSON.stringify({ ...config, instructions: [...current, resolved] });
+  return {
+    env: { ...(launch.env ?? {}), [OPENCODE_INLINE_CONFIG_ENV]: nextValue },
+    // The startup command carries its own inline `OPENCODE_CONFIG_CONTENT=…`
+    // assignment, and a shell assignment on the command line OVERRIDES the
+    // process environment for that child. Updating only `env` would therefore
+    // silently drop the instructions on every launch that goes through the
+    // typed-command fallback rather than a direct spawn. Both spellings are
+    // rebuilt here so they cannot disagree.
+    ...(launch.startupCommand === undefined
+      ? {}
+      : { startupCommand: withOpenCodeConfigAssignment(launch.startupCommand, nextValue) }),
+  };
+}
+
+/** The JSON carried by a command line's leading inline OpenCode config assignment. */
+function readOpenCodeConfigAssignment(startupCommand: string | undefined): string | undefined {
+  if (!startupCommand?.trim()) return undefined;
+  const [first] = parseCommandLine(startupCommand, { platform: "linux" });
+  return first?.startsWith(`${OPENCODE_INLINE_CONFIG_ENV}=`)
+    ? first.slice(`${OPENCODE_INLINE_CONFIG_ENV}=`.length)
+    : undefined;
+}
+
+/** Replace (or insert) the leading inline OpenCode config assignment on a command line. */
+function withOpenCodeConfigAssignment(startupCommand: string, configValue: string): string {
+  if (!startupCommand.trim()) return startupCommand;
+  const tokens = parseCommandLine(startupCommand, { platform: "linux" });
+  if (!tokens.length) return startupCommand;
+  const rest = tokens[0]!.startsWith(`${OPENCODE_INLINE_CONFIG_ENV}=`) ? tokens.slice(1) : tokens;
+  if (!rest.length) return startupCommand;
+  // Only the VALUE is quoted. Quoting `NAME=value` as one word would stop the
+  // shell reading it as an assignment at all and make it the command instead,
+  // so this has to match how openCodeEnvAssignment builds the same prefix. The
+  // remaining arguments round-trip through the quoter that produced them.
+  return [
+    openCodeConfigAssignmentPrefix(configValue),
+    commandArrayToLine(rest, { platform: "linux" }),
+  ].join("");
+}
+
+function openCodeConfigAssignmentPrefix(configValue: string): string {
+  return `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(configValue, { platform: "linux" })} `;
+}
 
 function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
   if (permissionMode == null) return null;
@@ -1166,7 +1267,7 @@ function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | unde
 
 function openCodeEnvAssignment(permissionMode: AgentChatPermissionMode | null | undefined): string {
   const config = openCodeConfigEnv(permissionMode);
-  return config ? `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(config, { platform: "linux" })} ` : "";
+  return config ? openCodeConfigAssignmentPrefix(config) : "";
 }
 
 function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | null | undefined): string[] {

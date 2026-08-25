@@ -1,10 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
+import { parseCommandLine } from "../../../shared/shell";
 import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
 
@@ -1312,6 +1314,130 @@ describe("ptyService", () => {
       expect(mockPty.write).not.toHaveBeenCalled();
     });
 
+    it("hands the ADE instruction file to every tracked OpenCode terminal", async () => {
+      // OpenCode gives a CLI launch no per-request system channel, so ADE's
+      // instructions reach it as a config `instructions` entry. This is the one
+      // place that happens, which is what makes a resumed session carry the same
+      // contract as a fresh one.
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        command: "opencode",
+        args: ["--prompt", "fix the test"],
+        startupCommand: "opencode --prompt 'fix the test'",
+        env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { edit: "allow" } }) },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const config = JSON.parse(opts?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+        instructions?: string[];
+        permission?: Record<string, string>;
+      };
+
+      expect(config.instructions).toHaveLength(1);
+      expect(config.instructions?.[0]).toMatch(/ade-[0-9a-f]{16}\.md$/);
+      expect(fs.existsSync(config.instructions![0]!)).toBe(true);
+      expect(fs.readFileSync(config.instructions![0]!, "utf8"))
+        .toContain("ADE's software engineering agent");
+      // The permission block ADE already sent must survive the merge.
+      expect(config.permission).toEqual({ edit: "allow" });
+    });
+
+    it("resumes an OpenCode session with the permission mode it was launched under", async () => {
+      const { service, loadPty, sessionService } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode plan session",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        command: "opencode",
+        args: ["--agent", "plan"],
+        startupCommand: "opencode --agent plan",
+      });
+      // ptyService derives the session's resume metadata from the launch it
+      // recorded, so the plan mode below comes from the same place a real
+      // resume reads it, not from a hand-planted fixture.
+      const sessionId = sessionService.list()[0]!.id;
+
+      await service.create({
+        sessionId,
+        laneId: "lane-1",
+        title: "OpenCode plan session",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        startupCommand: "opencode --agent plan --session ses_1",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      const config = JSON.parse(opts?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as { instructions?: string[] };
+      const instructions = fs.readFileSync(config.instructions![0]!, "utf8");
+
+      // A resume carried no ADE instructions at all before; now it carries the
+      // same contract, and with the session's real mode rather than the default.
+      expect(instructions).toContain("Plan mode. Stay read-only");
+      expect(instructions).not.toContain("Autonomous mode.");
+    });
+
+    it("keeps ADE instructions after resume-target backfill rewrites the command", async () => {
+      // The backfill replaces startupCommand wholesale with the session's
+      // persisted resumeCommand, which carries its own inline
+      // OPENCODE_CONFIG_CONTENT assignment and no instructions. A command-line
+      // assignment overrides the process environment, so merging before that
+      // point dropped the ADE contract on exactly the resume path this exists
+      // to cover — and the persisted command's own permission policy must
+      // survive the rewrite too.
+      const { service, mockPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "OpenCode resume",
+        cols: 80,
+        rows: 24,
+        toolType: "opencode",
+        tracked: true,
+        startupCommand: `OPENCODE_CONFIG_CONTENT='{"permission":{"edit":"ask"}}' opencode --continue`,
+      });
+
+      const written = String(vi.mocked(mockPty.write).mock.calls.at(-1)?.[0] ?? "");
+      const [assignment] = parseCommandLine(written.replace(/\r$/, ""), { platform: "linux" });
+      const config = JSON.parse(assignment!.slice("OPENCODE_CONFIG_CONTENT=".length)) as {
+        instructions?: string[];
+        permission?: Record<string, string>;
+      };
+
+      expect(config.instructions?.[0]).toMatch(/opencode-instructions[\\/]ade-[0-9a-f]{16}\.md$/);
+      expect(config.permission).toEqual({ edit: "ask" });
+    });
+
+    it("does not add OpenCode instructions to other providers' terminals", async () => {
+      const { service, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex session",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    });
+
     it("uses ADE's bundled OpenCode runtime when typing OpenCode startup commands", async () => {
       mocks.resolveOpenCodeBinaryPath.mockReturnValue("/tmp/ADE Runtime/opencode");
       const { service, mockPty } = createHarness();
@@ -1325,7 +1451,18 @@ describe("ptyService", () => {
         startupCommand: "OPENCODE_CONFIG_CONTENT='{}' opencode --continue",
       });
 
-      expect(mockPty.write).toHaveBeenCalledWith("OPENCODE_CONFIG_CONTENT='{}' '/tmp/ADE Runtime/opencode' --continue\r");
+      // The inline assignment is rebuilt to carry ADE's instruction file: a
+      // shell assignment on the command line overrides the process environment,
+      // so leaving the original `{}` here would drop the instructions on this
+      // path. Only the value is quoted, or the shell would read the whole
+      // NAME=value word as the command to run.
+      const written = String(vi.mocked(mockPty.write).mock.calls.at(-1)?.[0] ?? "");
+      const [assignment, ...rest] = parseCommandLine(written.replace(/\r$/, ""), { platform: "linux" });
+      const value = assignment?.slice("OPENCODE_CONFIG_CONTENT=".length) ?? "";
+      expect(assignment?.startsWith("OPENCODE_CONFIG_CONTENT=")).toBe(true);
+      expect((JSON.parse(value) as { instructions?: string[] }).instructions?.[0])
+        .toMatch(/opencode-instructions[\\/]ade-[0-9a-f]{16}\.md$/);
+      expect(rest).toEqual(["/tmp/ADE Runtime/opencode", "--continue"]);
     });
 
     it("exports ADE chat terminal context to spawned shells", async () => {

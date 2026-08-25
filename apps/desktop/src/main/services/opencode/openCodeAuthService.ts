@@ -11,7 +11,7 @@
 // server the inventory probe uses) — we never spawn our own process.
 // ---------------------------------------------------------------------------
 
-import { createOpencodeClient } from "@opencode-ai/sdk";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "../logging/logger";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type {
@@ -86,7 +86,7 @@ const defaultHooks: OpenCodeAuthHooks = {
   },
   async listConnectedProviders(baseUrl, directory, signal) {
     const client = createOpencodeClient({ baseUrl, directory });
-    const listed = await client.provider.list({ query: { directory }, throwOnError: true, signal });
+    const listed = await client.provider.list({ directory }, { throwOnError: true, signal });
     const data = listed.data as { connected?: string[] } | undefined;
     return Array.isArray(data?.connected) ? data.connected : [];
   },

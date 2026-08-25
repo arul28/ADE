@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const mockState = vi.hoisted(() => {
   let nextSessionId = 1;
@@ -66,7 +69,10 @@ const mockState = vi.hoisted(() => {
   };
 });
 
-vi.mock("@opencode-ai/sdk", () => ({
+// One client, not two. ADE talks to OpenCode exclusively through the v2 client;
+// the legacy `@opencode-ai/sdk` entry point is no longer imported for anything
+// but the `Config` type, so a mock of it would never be consulted.
+vi.mock("@opencode-ai/sdk/v2/client", () => ({
   createOpencodeClient: vi.fn(() => ({
     event: {
       subscribe: mockState.eventSubscribe,
@@ -76,17 +82,13 @@ vi.mock("@opencode-ai/sdk", () => ({
       get: mockState.getSession,
       promptAsync: mockState.promptAsync,
     },
-  })),
-}));
-
-vi.mock("@opencode-ai/sdk/v2/client", () => ({
-  createOpencodeClient: vi.fn(() => ({
     question: {
       reply: vi.fn(),
       reject: vi.fn(),
     },
     permission: {
       reply: vi.fn(),
+      respond: vi.fn(),
     },
   })),
 }));
@@ -126,6 +128,19 @@ import {
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
 } from "./openCodeServerManager";
+import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import {
+  buildOpenCodeAdeInstructions,
+  ensureOpenCodeAdeInstructionsFile,
+  openCodeAdeInstructionsPath,
+} from "./openCodeAdeInstructions";
+
+/** The flat parameters object from the most recent v2 `session.promptAsync`. */
+function openCodePromptParams(): Record<string, unknown> {
+  const call = mockState.promptAsync.mock.calls.at(-1) as unknown as
+    [Record<string, unknown> | undefined] | undefined;
+  return call?.[0] ?? {};
+}
 
 describe("openCodeRuntime", () => {
   afterEach(() => {
@@ -204,9 +219,11 @@ describe("openCodeRuntime", () => {
       ownerKey: "chat:chat-1",
     });
 
-    expect(mockState.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      body: {},
-    }));
+    // v2 takes flat parameters: no title key at all rather than an empty body.
+    expect(mockState.createSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ title: expect.anything() }),
+      expect.objectContaining({ throwOnError: true }),
+    );
   });
 
   it("applies no scoped tool selection to one-shot prompts", async () => {
@@ -226,11 +243,10 @@ describe("openCodeRuntime", () => {
     });
 
     expect(result.text).toBe("pong");
-    expect(mockState.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.not.objectContaining({
-        tools: expect.anything(),
-      }),
-    }));
+    expect(mockState.promptAsync).toHaveBeenCalledWith(
+      expect.not.objectContaining({ tools: expect.anything() }),
+      expect.objectContaining({ throwOnError: true }),
+    );
   });
 
   it("reports OpenCode runtime diagnostics for shared and dedicated sessions", () => {
@@ -241,7 +257,7 @@ describe("openCodeRuntime", () => {
     expect(Object.keys(snapshot).sort()).toEqual(["dedicatedCount", "entries", "sharedCount"]);
   });
 
-  it("sends a provided system prompt through the body system field, not a text part", async () => {
+  it("sends a provided system prompt through the first-class system field, not a text part", async () => {
     await runOpenCodeTextPrompt({
       directory: "/repo",
       title: "System prompt transport",
@@ -258,17 +274,17 @@ describe("openCodeRuntime", () => {
       projectConfig: { ai: {} },
     });
 
-    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
-      [{ body: Record<string, unknown> } | undefined];
-    const body = lastPromptCall?.[0]?.body ?? {};
-    expect(body.system).toBe("You are ADE's naming agent.");
+    const params = openCodePromptParams();
+    expect(params.system).toBe("You are ADE's naming agent.");
     // The synthetic/ignored part injection is gone for good: OpenCode drops
     // `ignored` parts from model context, so that transport never worked.
-    const parts = body.parts as Array<Record<string, unknown>>;
+    const parts = params.parts as Array<Record<string, unknown>>;
     expect(parts.every((part) => !part.synthetic && !part.ignored)).toBe(true);
+    // And it must not have leaked into the user-visible message text either.
+    expect(parts.some((part) => String(part.text ?? "").includes("naming agent"))).toBe(false);
   });
 
-  it("omits the body system field when no system prompt is provided", async () => {
+  it("omits the system field when no system prompt is provided", async () => {
     await runOpenCodeTextPrompt({
       directory: "/repo",
       title: "No system prompt",
@@ -284,10 +300,7 @@ describe("openCodeRuntime", () => {
       projectConfig: { ai: {} },
     });
 
-    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
-      [{ body: Record<string, unknown> } | undefined];
-    const body = lastPromptCall?.[0]?.body ?? {};
-    expect(body).not.toHaveProperty("system");
+    expect(openCodePromptParams()).not.toHaveProperty("system");
   });
 
   it("builds prompt parts from the user text plus file attachments only", () => {
@@ -595,5 +608,118 @@ describe("buildOpenCodeConfig user-owned keys", () => {
     // opencode.json, repointing a configured remote host back at localhost.
     expect(config().provider ?? {}).not.toHaveProperty("ollama");
     expect(config().provider ?? {}).not.toHaveProperty("lmstudio");
+  });
+});
+
+// The other half of the OpenCode prompt contract. The chat runtime above sends
+// ADE's instructions on the prompt's first-class `system` field; a CLI launch has
+// no per-request system channel, so it reads the same text from an instruction
+// file referenced by config. Both live here so the two transports cannot drift.
+describe("ADE instructions for the tracked OpenCode CLI", () => {
+  let projectRoot: string;
+  let lane: string;
+
+  beforeEach(() => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-oc-instr-"));
+    lane = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+  });
+
+  afterEach(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("gives chat and the tracked CLI the same ADE base prompt", () => {
+    // The contract is "one slim ADE base prompt", not "byte-identical
+    // transport": chat sends it through the SDK's `system` field while the CLI
+    // gets it as an instruction file. What must not drift is the instruction
+    // text itself, so the CLI file has to contain exactly what the chat runtime
+    // builds for the same lane and permission mode.
+    const chatPrompt = buildCodingAgentSystemPrompt({
+      cwd: lane,
+      mode: "coding",
+      permissionMode: "edit",
+      interactive: true,
+      runtime: "opencode",
+    });
+
+    expect(buildOpenCodeAdeInstructions({ laneWorktreePath: lane, permissionMode: "edit" }))
+      .toContain(chatPrompt);
+  });
+
+  it("tracks the permission mode the CLI actually launched with", () => {
+    const plan = buildOpenCodeAdeInstructions({ laneWorktreePath: lane, permissionMode: "plan" });
+    const fullAuto = buildOpenCodeAdeInstructions({ laneWorktreePath: lane, permissionMode: "full-auto" });
+
+    expect(plan).toContain("Plan mode. Stay read-only");
+    expect(fullAuto).toContain("Autonomous mode.");
+    expect(plan).not.toContain("Autonomous mode.");
+  });
+
+  it("writes into ADE's own cache, never the lane worktree or a shared temp dir", () => {
+    const written = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "edit" });
+
+    expect(written).not.toBeNull();
+    expect(written?.startsWith(lane)).toBe(false);
+    expect(written?.startsWith(path.join(projectRoot, ".ade", "cache"))).toBe(true);
+    expect(fs.readFileSync(written!, "utf8")).toContain("ADE's software engineering agent");
+    // A predictable path in a world-writable directory is a symlink target.
+    expect(written?.startsWith(os.tmpdir() + path.sep + "ade-opencode")).toBe(false);
+  });
+
+  it("keeps concurrent terminals on the same lane from overwriting each other", () => {
+    // Two tracked terminals can run on one lane under different modes at once,
+    // and OpenCode re-reads its instruction files every turn — a shared path
+    // let the second launch hand its mode to the first mid-conversation.
+    const plan = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "plan" });
+    const fullAuto = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "full-auto" });
+
+    expect(fullAuto).not.toBe(plan);
+    expect(fs.readFileSync(plan!, "utf8")).toContain("Plan mode. Stay read-only");
+    expect(fs.readFileSync(fullAuto!, "utf8")).toContain("Autonomous mode.");
+
+    // Relaunching the same mode reuses its own file rather than accumulating.
+    const first = plan;
+    const second = ensureOpenCodeAdeInstructionsFile({ projectRoot, laneWorktreePath: lane, permissionMode: "plan" });
+    expect(second).toBe(first);
+
+    expect(openCodeAdeInstructionsPath({
+      projectRoot,
+      laneWorktreePath: `${lane}-2`,
+      permissionMode: "full-auto",
+    })).not.toBe(first);
+  });
+
+  it("produces a filename OpenCode's basename glob cannot misread", () => {
+    // OpenCode resolves an absolute `instructions` entry by globbing the
+    // basename inside its parent directory, so a glob metacharacter in the name
+    // would match the wrong file or none.
+    const name = path.basename(openCodeAdeInstructionsPath({
+      projectRoot,
+      laneWorktreePath: "/repo/lane with spaces/*/weird?",
+      permissionMode: "edit",
+    }));
+    expect(name).toMatch(/^ade-[0-9a-f]{16}\.md$/);
+  });
+
+  it("does not claim an ADE permission tier when the user owns the config", () => {
+    // config-toml means "use my own OpenCode configuration", and ADE sends no
+    // permission block for it, so asserting edit mode would state a policy ADE
+    // never set and the user's config may not grant.
+    const text = buildOpenCodeAdeInstructions({ laneWorktreePath: lane, permissionMode: "config-toml" });
+
+    expect(text).toContain("## Permission policy");
+    expect(text).toContain("ADE sets no permission policy");
+    expect(text).toContain("treat it as authoritative wherever it is more restrictive");
+    // And it stays isolated from the edit-mode file rather than sharing it.
+    expect(openCodeAdeInstructionsPath({ projectRoot, laneWorktreePath: lane, permissionMode: "config-toml" }))
+      .not.toBe(openCodeAdeInstructionsPath({ projectRoot, laneWorktreePath: lane, permissionMode: "edit" }));
+  });
+
+  it("returns null instead of failing the launch when there is no lane", () => {
+    expect(ensureOpenCodeAdeInstructionsFile({
+      projectRoot,
+      laneWorktreePath: "  ",
+      permissionMode: "edit",
+    })).toBeNull();
   });
 });

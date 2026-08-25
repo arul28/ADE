@@ -27,6 +27,7 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
+import { ensureOpenCodeAdeInstructionsFile } from "../opencode/openCodeAdeInstructions";
 import {
   acquirePiSessionLease,
   piSessionCreationLeaseTarget,
@@ -110,6 +111,7 @@ import {
   sanitizeTrackedCliPromptSeed,
   shellCommandLineArgIndex,
   trackedCliTitleFromPromptSeed,
+  withOpenCodeAdeInstructions,
   type TrackedCliLaunchCommand,
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
@@ -5969,6 +5971,32 @@ export function createPtyService({
             piSessionLeaseIsCreation = true;
           }
           launchEnv.ADE_PI_SESSION_LEASE_PATH = piSessionLease.lockPath;
+        }
+        // Applied here, not earlier, because `startupCommand` is still being
+        // rewritten above this point — resume-target backfill in particular
+        // replaces it wholesale with the session's persisted `resumeCommand`,
+        // which carries its own inline OPENCODE_CONFIG_CONTENT assignment and
+        // no instructions. Since a command-line assignment overrides the
+        // process environment, merging any earlier meant the restored
+        // assignment silently dropped the ADE contract on exactly the resume
+        // path this exists to cover.
+        if (isOpenCodeToolType(toolTypeHint)) {
+          const instructionsPath = ensureOpenCodeAdeInstructionsFile({
+            projectRoot,
+            laneWorktreePath: worktreePath,
+            permissionMode: args.runtimeCliLaunch?.permissionMode
+              ?? initialResumeMetadata?.launch?.permissionMode
+              ?? existingSession?.resumeMetadata?.launch?.permissionMode
+              ?? null,
+          });
+          const withInstructions = withOpenCodeAdeInstructions(
+            { env: launchEnv as Record<string, string>, startupCommand },
+            instructionsPath,
+          );
+          if (withInstructions?.env) launchEnv = withInstructions.env;
+          if (typeof withInstructions?.startupCommand === "string") {
+            startupCommand = withInstructions.startupCommand;
+          }
         }
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
         if (spawnHelperRepair.status === "chmod_applied") {

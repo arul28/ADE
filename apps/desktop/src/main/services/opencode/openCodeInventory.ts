@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createOpencodeClient } from "@opencode-ai/sdk";
+import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "../logging/logger";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import {
@@ -426,10 +426,10 @@ export async function probeOpenCodeProviderInventory(args: {
         directory: args.projectRoot,
       });
       try {
-        const listed = await client.provider.list({
-          query: { directory: args.projectRoot },
-          throwOnError: true,
-        });
+        const listed = await client.provider.list(
+          { directory: args.projectRoot },
+          { throwOnError: true },
+        );
         const data = listed.data as
           | {
               connected: string[];

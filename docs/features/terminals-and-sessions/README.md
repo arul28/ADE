@@ -1247,9 +1247,12 @@ Renderer surfaces:
    variants remain a chat-runtime feature. ADE session guidance is
   injected on every launch with skill roots resolved from the active
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
-  through `--append-system-prompt`; Codex, Droid, and OpenCode receive
+  through `--append-system-prompt`; Codex and Droid receive
   a leading prompt from `buildAdeCliInlineGuidance(...)`; Cursor receives
-  that prompt only when there is an initial user message. Launch env also
+  that prompt only when there is an initial user message. **OpenCode does
+  not**: it receives the same slim ADE base prompt the OpenCode chat
+  runtime sends, through OpenCode's own additive system channel. See
+  [OpenCode CLI instructions](#opencode-cli-ade-instructions). Launch env also
   carries `ADE_AGENT_SKILLS_DIRS` when skill roots are known, including
   lane/user `.claude`, `.agents`, `.ade`, `.codex` skill dirs plus
   bundled ADE resources.
@@ -1282,7 +1285,8 @@ Renderer surfaces:
   for providers other than Codex and OpenCode. A launch that passes an
   `initialPrompt` embeds it into the provider launch itself for
   argv-oriented runtimes (Claude/Codex legacy prompt models/Droid,
-  OpenCode `--prompt`), while Codex interactive launches and Cursor use
+  OpenCode `--prompt` — which carries the user's text and nothing else),
+  while Codex interactive launches and Cursor use
   `initialInput` after PTY readiness so the first user message is
   submitted as the provider's real first turn instead of becoming a
   half-typed shell line.
@@ -1924,6 +1928,63 @@ plain shell that the user types `ade --socket terminal read --chat-session
 terminal even though no agent runtime spawned it. The headless ADE
 runtime and agent chat runtime both layer the same identity envs
 (plus `ADE_WORKSPACE_ROOT`) on top through `buildAgentRuntimeEnv`.
+
+## OpenCode CLI ADE instructions
+
+A tracked OpenCode CLI gets the same slim ADE base prompt the OpenCode chat
+runtime sends — the one `buildCodingAgentSystemPrompt({ runtime: "opencode" })`
+builds — but not through the same transport, because a CLI launch has no
+per-request system channel.
+
+- **Not `--prompt`.** OpenCode submits that value as a real user message and
+  renders it in the TUI. Prepending ADE's instructions to the user's text
+  therefore displayed them verbatim on every launch (the reported "OpenCode
+  echoes ADE's system prompt") and delivered them as user content rather than as
+  system instructions. `--prompt` now carries the user's own text and nothing
+  else.
+- **Not `agent.<name>.prompt`.** OpenCode's request builder reads
+  `agent.prompt ? [agent.prompt] : SystemPrompt.provider(model)` — an agent
+  prompt *replaces* the provider base prompt, which would delete OpenCode's own
+  tool instructions.
+- **`instructions` in `OPENCODE_CONFIG_CONTENT`.** This is the additive channel:
+  entries land in the same assembled system block as `AGENTS.md`, after the base
+  prompt, and never appear in the transcript. Config layers union this key rather
+  than overwrite it, so ADE's entry is appended to the user's own instruction
+  files instead of replacing them (verified against opencode 1.18.21).
+
+`openCodeAdeInstructions.ts` writes the file to `.ade/cache/opencode-instructions/`
+keyed by lane worktree. Two other placements are wrong: the lane worktree is the
+user's repository, so an ADE-authored prompt would show up in their `git status`;
+and the system temp directory is world-writable on Linux, where a deliberately
+stable, publicly derivable path can be pre-created as a symlink and turn the
+launch into a write through it.
+
+The file is keyed by lane **and permission mode**: two tracked terminals can run
+on one lane under different modes at once, and OpenCode re-reads its instruction
+files every turn, so a single per-lane path let the second launch hand its mode
+to the first mid-conversation. `config-toml` is its own key rather than folded
+into edit — it means "use my own OpenCode configuration", ADE deliberately sends
+no permission block for it, and the instructions say so instead of asserting a
+tier ADE never set.
+
+`ptyService.create` is the single place the file is written, which is what makes
+a resumed session carry the same contract as a fresh one; a resume reads its
+permission mode from the session's own resume metadata, so a plan-mode session is
+not told it is in edit mode while the CLI runs `--agent plan`. The path is added
+to **both** the launch `env` and the inline `OPENCODE_CONFIG_CONTENT=…` assignment
+on the startup command — a shell assignment on the command line overrides the
+process environment, so patching only `env` would drop the instructions on every
+launch that goes through the typed-command fallback instead of a direct spawn.
+
+The merge happens immediately before spawn, not when the launch args are first
+materialized, because `startupCommand` is still being rewritten in between:
+resume-target backfill replaces it wholesale with the session's persisted
+`resumeCommand`, which carries its own assignment and no instructions. For the
+same reason the existing config is read from that command line first and the
+environment second — the persisted command holds its `permission` policy there
+while the launch environment has no such key, so rebuilding from `env` alone
+erased the policy. A missing file is skipped by OpenCode, so a write failure
+degrades to "no ADE prompt" rather than a failed launch.
 
 ## Gotchas
 
