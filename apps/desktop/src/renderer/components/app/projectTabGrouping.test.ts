@@ -315,4 +315,32 @@ describe("groupRecentProjects", () => {
     expect(groups[0].locations[1].recentKey).toBeNull();
     expect(groups[0].locations[1].summary.remote?.projectId).toBe("ade");
   });
+
+  it("includes activity from a newly discovered connected checkout", () => {
+    const groups = groupRecentProjects({
+      recentProjects: [{
+        ...local("/Users/me/ADE", "git@github.com:arul28/ADE.git"),
+        lastOpenedAt: "2026-07-28T10:00:00.000Z",
+      }],
+      remoteSnapshot: {
+        connectedCount: 1,
+        updatedAt: 1,
+        connections: [{
+          target: { id: "studio", name: "Mac Studio", hostname: "studio.local" },
+          state: "connected",
+          projects: [{
+            projectId: "ade",
+            rootPath: "/Users/studio/ADE",
+            displayName: "ADE",
+            gitOriginUrl: "https://github.com/arul28/ADE.git",
+            lastOpenedAt: Date.parse("2026-07-28T12:00:00.000Z"),
+            icon: null,
+          }],
+        }],
+      } as never,
+    });
+
+    expect(groups[0].lastOpenedAt).toBe("2026-07-28T12:00:00.000Z");
+    expect(groups[0].primary.machineName).toBe("Mac Studio");
+  });
 });
