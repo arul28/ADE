@@ -115,6 +115,7 @@ import type {
   GitSyncArgs,
   ImportBranchLaneArgs,
   LandPrArgs,
+  LaneGitHubIssue,
   LinearConnectionStatus,
   PersonalChatScopeContract,
   PrGithubCoords,
@@ -693,6 +694,65 @@ function parsePublishCurrentProjectArgs(value: Record<string, unknown>): Publish
     name: requireString(value.name, "github.publishCurrentProject requires name."),
     ...(description ? { description } : {}),
     isPrivate: asOptionalBoolean(value.isPrivate) ?? true,
+  };
+}
+
+function parseGitHubRepoIssueListArgs(value: Record<string, unknown>): {
+  owner: string;
+  name: string;
+  state: "open" | "closed" | "all";
+} {
+  const state = value.state;
+  return {
+    owner: requireString(value.owner, "github.listRepoIssues requires owner."),
+    name: requireString(value.name, "github.listRepoIssues requires name."),
+    state: state === "open" || state === "closed" || state === "all" ? state : "open",
+  };
+}
+
+function parseGitHubGetIssueArgs(value: Record<string, unknown>): {
+  owner: string;
+  name: string;
+  number: number;
+} {
+  const number = typeof value.number === "number" ? value.number : Number(value.number);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error("github.getIssue requires a positive integer number.");
+  }
+  return {
+    owner: requireString(value.owner, "github.getIssue requires owner."),
+    name: requireString(value.name, "github.getIssue requires name."),
+    number,
+  };
+}
+
+function parseAttachGitHubIssueToSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issues: LaneGitHubIssue[];
+} {
+  if (!Array.isArray(value.issues)) {
+    throw new Error("lanes.attachGitHubIssueToSession requires an issues array.");
+  }
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.attachGitHubIssueToSession requires chatSessionId.",
+    ),
+    issues: value.issues as LaneGitHubIssue[],
+  };
+}
+
+function parseDetachGitHubIssueFromSessionArgs(value: Record<string, unknown>): {
+  chatSessionId: string;
+  issueId?: string;
+} {
+  const issueId = asTrimmedString(value.issueId);
+  return {
+    chatSessionId: requireString(
+      value.chatSessionId,
+      "lanes.detachGitHubIssueFromSession requires chatSessionId.",
+    ),
+    ...(issueId ? { issueId } : {}),
   };
 }
 
@@ -3990,6 +4050,21 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.getStackChain(requireString(payload.laneId, "lanes.getStackChain requires laneId.")));
   register("lanes.getChildren", { viewerAllowed: true }, async (payload) =>
     args.laneService.getChildren(requireString(payload.laneId, "lanes.getChildren requires laneId.")));
+  register("lanes.attachGitHubIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.attachGitHubIssueToSession(parseAttachGitHubIssueToSessionArgs(payload)));
+  register("lanes.detachGitHubIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.detachGitHubIssueFromSession(parseDetachGitHubIssueFromSessionArgs(payload)));
+  register("lanes.listGitHubIssuesForSession", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listGitHubIssuesForSession({
+      chatSessionId: requireString(
+        payload.chatSessionId,
+        "lanes.listGitHubIssuesForSession requires chatSessionId.",
+      ),
+    }));
+  register("lanes.listGitHubIssuesForLaneSessions", { viewerAllowed: true }, async (payload) =>
+    args.laneService.listGitHubIssuesForLaneSessions({
+      laneId: requireString(payload.laneId, "lanes.listGitHubIssuesForLaneSessions requires laneId."),
+    }));
   register("lanes.rebaseStart", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseStart(parseRebaseStartArgs(payload)));
   register("lanes.rebasePush", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebasePush(parseRebasePushArgs(payload)));
   register("lanes.rebaseRollback", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseRollback(parseRunIdArgs(payload, "lanes.rebaseRollback")));
@@ -5346,6 +5421,24 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // budget and its 5-second checks loop never sees the reserve.
   register("github.getRequestBudget", { viewerAllowed: true, observesAbort: true }, async (): Promise<GitHubRequestBudget> =>
     requireService(args.githubService, "GitHub service not available.").getRequestBudget());
+  register("github.detectRepo", { viewerAllowed: true, observesAbort: true }, async (): Promise<GitHubRepoRef | null> =>
+    requireService(args.githubService, "GitHub service not available.").detectRepo());
+  register("github.listRepoIssues", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubRepoIssueListArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").listRepoIssues(
+      parsed.owner,
+      parsed.name,
+      { state: parsed.state },
+    );
+  });
+  register("github.getIssue", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const parsed = parseGitHubGetIssueArgs(payload);
+    return requireService(args.githubService, "GitHub service not available.").getIssue(
+      parsed.owner,
+      parsed.name,
+      parsed.number,
+    );
+  });
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
     const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
     return await requireService(args.githubService, "GitHub service not available.").publishCurrentProject({

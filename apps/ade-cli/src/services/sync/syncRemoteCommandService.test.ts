@@ -241,6 +241,9 @@ describe("createSyncRemoteCommandService", () => {
       "github.getStatus",
       "github.getRemoteStatus",
       "github.getRequestBudget",
+      "github.detectRepo",
+      "github.listRepoIssues",
+      "github.getIssue",
       "ai.getStatus",
       "prs.list",
       "prs.listOpenForRepo",
@@ -2092,7 +2095,14 @@ describe("createSyncRemoteCommandService", () => {
       "github.getStatus",
       "github.getRemoteStatus",
       "github.getRequestBudget",
+      "github.detectRepo",
+      "github.listRepoIssues",
+      "github.getIssue",
       "github.publishCurrentProject",
+      "lanes.attachGitHubIssueToSession",
+      "lanes.detachGitHubIssueFromSession",
+      "lanes.listGitHubIssuesForSession",
+      "lanes.listGitHubIssuesForLaneSessions",
       "projectConfig.get",
       "projectConfig.save",
       "ai.getStatus",
@@ -2405,6 +2415,104 @@ describe("createSyncRemoteCommandService", () => {
       description: "Local-first agent desk",
       isPrivate: true,
     });
+  });
+
+  it("routes GitHub issue picker reads through the GitHub service", async () => {
+    const detectRepo = vi.fn().mockResolvedValue({ owner: "acme", name: "ade" });
+    const listRepoIssues = vi.fn().mockResolvedValue([{ number: 42, title: "Wire attach" }]);
+    const getIssue = vi.fn().mockResolvedValue({ number: 42, title: "Wire attach" });
+    const { service } = createService({
+      githubService: { detectRepo, listRepoIssues, getIssue },
+    });
+
+    expect(service.getSupportedActions()).toEqual(expect.arrayContaining([
+      "github.detectRepo",
+      "github.listRepoIssues",
+      "github.getIssue",
+    ]));
+
+    await expect(service.execute(makePayload("github.detectRepo"))).resolves.toEqual({
+      owner: "acme",
+      name: "ade",
+    });
+    expect(detectRepo).toHaveBeenCalledTimes(1);
+
+    await expect(service.execute(makePayload("github.listRepoIssues", {
+      owner: "acme",
+    }))).rejects.toThrow("github.listRepoIssues requires name.");
+    expect(listRepoIssues).not.toHaveBeenCalled();
+
+    await expect(service.execute(makePayload("github.listRepoIssues", {
+      owner: " acme ",
+      name: " ade ",
+      state: "closed",
+    }))).resolves.toEqual([{ number: 42, title: "Wire attach" }]);
+    expect(listRepoIssues).toHaveBeenCalledWith("acme", "ade", { state: "closed" });
+
+    await expect(service.execute(makePayload("github.getIssue", {
+      owner: "acme",
+      name: "ade",
+      number: 0,
+    }))).rejects.toThrow("github.getIssue requires a positive integer number.");
+
+    await expect(service.execute(makePayload("github.getIssue", {
+      owner: "acme",
+      name: "ade",
+      number: 42,
+    }))).resolves.toEqual({ number: 42, title: "Wire attach" });
+    expect(getIssue).toHaveBeenCalledWith("acme", "ade", 42);
+  });
+
+  it("routes GitHub session attach through the lane service", async () => {
+    const issue = {
+      id: "acme/ade#42",
+      owner: "acme",
+      repo: "ade",
+      number: 42,
+      title: "Wire attach",
+    };
+    const attachGitHubIssueToSession = vi.fn().mockReturnValue([{ issue }]);
+    const detachGitHubIssueFromSession = vi.fn().mockReturnValue(true);
+    const listGitHubIssuesForSession = vi.fn().mockReturnValue([{ issue }]);
+    const listGitHubIssuesForLaneSessions = vi.fn().mockReturnValue([{ issue }]);
+    const { service } = createService({
+      laneService: {
+        attachGitHubIssueToSession,
+        detachGitHubIssueFromSession,
+        listGitHubIssuesForSession,
+        listGitHubIssuesForLaneSessions,
+      },
+    });
+
+    await expect(service.execute(makePayload("lanes.attachGitHubIssueToSession", {
+      issues: [issue],
+    }))).rejects.toThrow("lanes.attachGitHubIssueToSession requires chatSessionId.");
+    expect(attachGitHubIssueToSession).not.toHaveBeenCalled();
+
+    await expect(service.execute(makePayload("lanes.attachGitHubIssueToSession", {
+      chatSessionId: " chat-1 ",
+      issues: [issue],
+    }))).resolves.toEqual([{ issue }]);
+    expect(attachGitHubIssueToSession).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      issues: [issue],
+    });
+
+    await expect(service.execute(makePayload("lanes.detachGitHubIssueFromSession", {
+      chatSessionId: "chat-1",
+      issueId: " acme/ade#42 ",
+    }))).resolves.toBe(true);
+    expect(detachGitHubIssueFromSession).toHaveBeenCalledWith({
+      chatSessionId: "chat-1",
+      issueId: "acme/ade#42",
+    });
+
+    await expect(service.execute(makePayload("lanes.listGitHubIssuesForSession", {
+      chatSessionId: "chat-1",
+    }))).resolves.toEqual([{ issue }]);
+    await expect(service.execute(makePayload("lanes.listGitHubIssuesForLaneSessions", {
+      laneId: "lane-1",
+    }))).resolves.toEqual([{ issue }]);
   });
 });
 
