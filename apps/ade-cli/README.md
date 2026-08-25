@@ -584,8 +584,12 @@ ade proof prune                                      # preview broken records; d
 ade proof prune --broken                             # delete every broken proof record
 ade proof actions --text                             # full computer_use_artifacts action inventory
 ade ios-sim devices --text
+ade --socket ios-sim status --text
 ade --socket ios-sim apps --text
 ade --socket ios-sim launch --target target-id --text
+ade --socket ios-sim screenshot --out .ade/tmp/sim.png --text
+ade --socket ios-sim proof --caption "Settings row renders" --text
+ade --socket ios-sim shutdown --text
 ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
 ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --line 42 --text
 ade --socket ios-sim preview-current --text

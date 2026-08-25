@@ -101,8 +101,9 @@ The resolved root comes back on the launch result and on the session as
 | Path | Role |
 |---|---|
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | Tool readiness, device/target discovery, build/install/launch, screenshots, ADEInspector/accessibility snapshots, Simulator.app live-view status, idb-backed input, Preview Lab, and single-owner session locking. |
+| `apps/desktop/src/main/services/ios/simulatorWindowCapture.ts` | Simulator.app window state, parking, Screen Recording / Automation probes, and System Settings openers. Process-wide follow state lives here so IPC stays handler wiring. |
 | `apps/desktop/src/shared/types/iosSimulator.ts` | Cross-process iOS simulator types. `IosSimulatorStreamBackend` is `simulator-window-capture`. |
-| `apps/desktop/src/main/services/ipc/registerIpc.ts` | IPC handlers plus macOS Simulator.app window state and parking. The owning ADE `BrowserWindow` keeps Simulator.app unminimized and parked behind itself. |
+| `apps/desktop/src/main/services/ipc/registerIpc.ts` | IPC handlers for the simulator domain. Window capture and parking are delegated to `simulatorWindowCapture.ts`. |
 | `apps/desktop/src/renderer/components/chat/ChatIosSimulatorPanel.tsx` | Work drawer UI: setup checklist, device/target pickers, launch progress, live Simulator.app window video, interact/inspect modes, Preview Lab, and context attachment. |
 | `apps/ade-cli/src/cli.ts` | `ade ios-sim` typed commands. `window-start` and `live-start` both start the same Simulator.app window stream. |
 | `apps/ios/ADE/Debug/ADEInspectorKit/ADEInspectable.swift` | DEBUG-only Swift helpers that publish element frames into the app container for accurate inspect/select context. |

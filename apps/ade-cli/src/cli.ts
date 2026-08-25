@@ -948,12 +948,13 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Shutdown carries the caller's chat session ($ADE_CHAT_SESSION_ID or
   --chat-session). Releasing a session owned by a different chat is refused.
   The check is cooperative — it stops accidents, not determined callers:
-  --force gets through, so does --arg ignoreOwnership=true, and so does naming
-  the owner's own chat session id, which "ios-sim status" reports to anyone who
-  asks. Ask before evicting another chat.
+  --force gets through, so does --ignore-ownership (the bypass without the
+  hard reset), and so does naming the owner's own chat session id, which
+  "ios-sim status" reports to anyone who asks. Ask before evicting another chat.
 
     $ ade --socket ios-sim shutdown --text
     $ ade --socket ios-sim shutdown --force --text
+    $ ade --socket ios-sim shutdown --ignore-ownership --text
 
   Flags:
     --force, -f            Release a session owned by another chat, and hard-reset
@@ -9972,11 +9973,14 @@ function buildIosSimulatorPlan(
           // `launch` sends it the same way.
           collectGenericObjectArgs(args, {
             chatSessionId: claimArgs.chatSessionId,
-            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+            // Same spread as `claim`: a missing flag must omit the key.
+            ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
             // Parsed for the same reason `claim` parses it: the help and the
             // docs name this flag, and a spelling we accept but drop is how a
             // caller ends up reaching for `--force` instead.
-            ignoreOwnership: readFlag(args, ["--ignore-ownership", "--ignore-owner"]) ? true : undefined,
+            ...(readFlag(args, ["--ignore-ownership", "--ignore-owner"])
+              ? { ignoreOwnership: true }
+              : {}),
           }),
         ),
       ],

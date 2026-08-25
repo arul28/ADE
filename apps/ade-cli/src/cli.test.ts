@@ -11355,6 +11355,22 @@ describe("ADE CLI", () => {
       });
     });
 
+    // Same silent flag-drop as claim: help and docs name `--ignore-ownership`,
+    // and until it was parsed the documented bypass was a no-op that pushed
+    // callers onto `--force` (the hard reset).
+    it("forwards shutdown --ignore-ownership instead of silently dropping it", () => {
+      expect(launchArgsFor(["ios-sim", "shutdown", "--ignore-ownership"])).toMatchObject({
+        ignoreOwnership: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown", "--ignore-owner"])).toMatchObject({
+        ignoreOwnership: true,
+      });
+      expect(launchArgsFor(["ios-sim", "shutdown"])).not.toHaveProperty("ignoreOwnership");
+      expect(launchArgsFor(["ios-sim", "shutdown", "--force"])).not.toHaveProperty(
+        "ignoreOwnership",
+      );
+    });
+
     it("does not invent a build root for tap, drag, or type", () => {
       // These act on whatever is already on the device; the service takes no
       // root, so sending one advertised a flag that silently did nothing.
