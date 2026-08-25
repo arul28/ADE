@@ -18638,33 +18638,50 @@ export function createAgentChatService(args: {
           threadId: managed.session.threadId,
           command: userShell.command,
         });
-        if (!skipTurnStartForActiveComposerCommand) {
-          const shellTurnId = typeof shellResult.turn?.id === "string" ? shellResult.turn.id : null;
-          if (shellTurnId) {
-            runtime.awaitingTurnStart = false;
-            if (isTerminalCodexTurn(runtime, shellTurnId, managed)) {
-              runtime.activeTurnId = null;
-              runtime.startedTurnId = null;
-            } else {
-              runtime.activeTurnId = shellTurnId;
-              scheduleCodexNoFirstEventWatchdog(managed, runtime, shellTurnId);
-            }
-          }
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "user_message",
+            text: displayText || userText,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
+        const shellTurnId = typeof shellResult.turn?.id === "string" ? shellResult.turn.id : null;
+        if (!shellTurnId) {
+          runtime.awaitingTurnStart = false;
+          completeInlineCodexSlash();
+          return;
+        }
+        runtime.awaitingTurnStart = false;
+        if (isTerminalCodexTurn(runtime, shellTurnId, managed)) {
+          runtime.activeTurnId = null;
+          runtime.startedTurnId = null;
+        } else {
+          runtime.activeTurnId = shellTurnId;
+          scheduleCodexNoFirstEventWatchdog(managed, runtime, shellTurnId);
         }
       } catch (error) {
         runtime.awaitingTurnStart = false;
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: `Unsandboxed user shell failed: ${error instanceof Error ? error.message : String(error)}`,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
         completeFailedInlineCodexSlash("Unsandboxed user shell failed", error);
         return;
       }
       markDispatched();
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
-      if (skipTurnStartForActiveComposerCommand) {
-        emitChatEvent(managed, {
-          type: "user_message",
-          text: displayText || userText,
-          turnId: runtime.activeTurnId ?? undefined,
-        });
-      }
       persistChatState(managed);
       return;
     }
@@ -45070,7 +45087,7 @@ export function createAgentChatService(args: {
           await previousCodexRuntime.request("thread/settings/update", {
             threadId: managed.session.threadId,
             ...(modelChanged ? { model: nextModel } : {}),
-            ...(reasoningEffort !== undefined && managed.session.reasoningEffort
+            ...(managed.session.reasoningEffort && (reasoningEffort !== undefined || modelChanged)
               ? { effort: managed.session.reasoningEffort }
               : {}),
           });

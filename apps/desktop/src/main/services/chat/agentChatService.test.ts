@@ -14696,6 +14696,27 @@ describe("createAgentChatService", () => {
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
     });
 
+    it("settles idle user shell when thread/shellCommand has no turn id", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", {});
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the shell command.",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
     it("does not reset memory until /memory-reset confirm", async () => {
       pin149();
       const events: AgentChatEventEnvelope[] = [];
@@ -14813,6 +14834,64 @@ describe("createAgentChatService", () => {
         && (payload.params as { command?: string }).command === "pwd",
       )).toBe(true);
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+    });
+
+    it("keeps the parent turn active when a mid-turn user shell fails", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", {
+        error: { code: -32000, message: "shell failed" },
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && String(event.event.message).includes("user shell failed"),
+      )).toBe(true);
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "Continue the original turn.",
+      }, { awaitDispatch: true })).rejects.toThrow(/turn is already active/i);
+    });
+
+    it("sends revalidated effort when switching Codex models on a live thread", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "high",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this thread live.",
+      }, { awaitDispatch: true });
+
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "openai/gpt-5.6-sol",
+      });
+      const settings = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/settings/update");
+      expect(settings?.params).toEqual(expect.objectContaining({
+        effort: expect.any(String),
+      }));
     });
 
     it("fail-opens compaction when the turn is interrupted", async () => {
