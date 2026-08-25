@@ -114,7 +114,6 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
     filesHint: metadata?.filesHint ?? [],
     dependsOn: metadata?.dependsOn ?? [],
   });
-
   const descriptor = resolveModelDescriptorWithRuntimeCatalog(
     modelId,
     catalogScopeKey ?? DEFAULT_RUNTIME_CATALOG_SCOPE,
@@ -127,12 +126,6 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
     setReasoningEffort(null);
     setFastMode(false);
   }, [fallbackProvider, requestKey]);
-
-  // Clear fast mode when the picked model doesn't support it, so a stale toggle
-  // can't be submitted after switching to an unsupported model.
-  useEffect(() => {
-    if (!fastModeSupported && fastMode) setFastMode(false);
-  }, [fastModeSupported, fastMode]);
 
   // When the user picks a different model, infer the new provider from the
   // model registry or runtime-catalog prefix so the dispatched ModelSelection
@@ -149,7 +142,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
       provider,
       modelId,
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-      ...(fastMode && fastModeSupported ? { fastMode: true } : {}),
+      ...(fastMode ? { fastMode: true } : {}),
     };
     onConfirm(selection);
   }, [provider, modelId, reasoningEffort, fastMode, fastModeSupported, onConfirm]);

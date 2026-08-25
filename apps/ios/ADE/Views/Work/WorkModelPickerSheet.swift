@@ -630,18 +630,8 @@ struct WorkModelPickerSheet: View {
   private func select(model: WorkModelOption) {
     guard model.isAvailable else { return }
 
-    let changedModel = !workModelIdsEquivalent(model.id, selectedModelId)
     selectedModelId = model.id
     selectedRuntimeProvider = runtimeProvider(for: model)
-    if changedModel {
-      selectedReasoningEffort = defaultReasoningEffort(for: model) ?? ""
-      selectedCodexFastMode = false
-    } else if !modelSupportsReasoningEffort(model, selectedReasoningEffort) {
-      selectedReasoningEffort = defaultReasoningEffort(for: model) ?? ""
-    }
-    if !model.supportsCodexFastMode {
-      selectedCodexFastMode = false
-    }
 
     if commandScope == .project { picker.pushRecent(model.id, syncService: syncService) }
     emitSelection(model)
@@ -652,7 +642,6 @@ struct WorkModelPickerSheet: View {
     if !workModelIdsEquivalent(model.id, selectedModelId) {
       selectedModelId = model.id
       selectedRuntimeProvider = runtimeProvider(for: model)
-      selectedCodexFastMode = false
     }
     selectedReasoningEffort = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     if commandScope == .project { picker.pushRecent(model.id, syncService: syncService) }
@@ -664,9 +653,8 @@ struct WorkModelPickerSheet: View {
     if !workModelIdsEquivalent(model.id, selectedModelId) {
       selectedModelId = model.id
       selectedRuntimeProvider = runtimeProvider(for: model)
-      selectedReasoningEffort = defaultReasoningEffort(for: model) ?? ""
     }
-    selectedCodexFastMode = model.supportsCodexFastMode ? enabled : false
+    selectedCodexFastMode = enabled
     if commandScope == .project { picker.pushRecent(model.id, syncService: syncService) }
     emitSelection(model)
   }
@@ -680,36 +668,8 @@ struct WorkModelPickerSheet: View {
       model,
       effortPayload,
       runtimeProvider(for: model),
-      model.supportsCodexFastMode ? selectedCodexFastMode : false
+      selectedCodexFastMode
     )
-  }
-
-  private func defaultReasoningEffort(for model: WorkModelOption) -> String? {
-    let tiers = supportedReasoningTiers(for: model)
-    guard !tiers.isEmpty else { return nil }
-    let advertisedDefault = model.defaultReasoningEffort?
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased()
-    if let advertisedDefault, tiers.contains(advertisedDefault) {
-      return advertisedDefault
-    }
-    if tiers.contains("medium") { return "medium" }
-    return tiers[tiers.count / 2]
-  }
-
-  private func modelSupportsReasoningEffort(_ model: WorkModelOption, _ effort: String) -> Bool {
-    let normalized = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    guard !normalized.isEmpty else { return false }
-    return supportedReasoningTiers(for: model).contains(normalized)
-  }
-
-  private func supportedReasoningTiers(for model: WorkModelOption) -> [String] {
-    var seen = Set<String>()
-    return model.reasoningEfforts.compactMap { effort in
-      let tier = effort.effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      guard !tier.isEmpty, seen.insert(tier).inserted else { return nil }
-      return tier
-    }
   }
 }
 

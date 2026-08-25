@@ -1976,8 +1976,8 @@ struct WorkChatSessionView: View {
                   await onSelectEffort(nextReasoning)
                 }
                 guard !Task.isCancelled else { return }
-                if option.supportsCodexFastMode || chatSummaryContext.effectiveFastMode != pickedFastMode {
-                  _ = await onSelectCodexFastMode(option.supportsCodexFastMode ? pickedFastMode : false)
+                if chatSummaryContext.effectiveFastMode != pickedFastMode {
+                  _ = await onSelectCodexFastMode(pickedFastMode)
                 }
               }
             }

@@ -6111,7 +6111,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("keeps Auto-create selected while routing Work tools through Primary", async () => {
+  it("keeps Auto-create selected without changing the lane", async () => {
     installAdeMocks({ sessions: [] });
     const onLaneChange = vi.fn();
     renderAutoCreateDraftPane({ onLaneChange });
@@ -6119,7 +6119,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
+    expect(onLaneChange).not.toHaveBeenCalled();
     expect(await screen.findByText("Auto-create lane")).toBeTruthy();
   });
 
@@ -6143,7 +6143,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(list.mock.calls.every(([args]) => args.laneId === "lane-1")).toBe(true);
   });
 
-  it("falls back to the first available Work tools lane when Auto-create has no Primary lane", async () => {
+  it("keeps Auto-create selected when the available lanes have no Primary lane", async () => {
     installAdeMocks({ sessions: [] });
     const onLaneChange = vi.fn();
     renderAutoCreateDraftPane({
@@ -6162,10 +6162,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onLaneChange).toHaveBeenCalledWith("lane-worktree");
+    expect(onLaneChange).not.toHaveBeenCalled();
   });
 
-  it("recovers a bare Auto-create selection from an unavailable persisted machine", async () => {
+  it("keeps machine and lane unchanged for Auto-create on an unavailable machine", async () => {
     installAdeMocks({ sessions: [] });
     const onDraftMachineChange = vi.fn();
     const onLaneChange = vi.fn();
@@ -6178,9 +6178,8 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
 
-    expect(onDraftMachineChange).toHaveBeenCalledWith(null);
-    expect(onLaneChange).toHaveBeenCalledWith("lane-primary");
-    expect(screen.queryByText(/selected machine is not currently available/i)).toBeNull();
+    expect(onDraftMachineChange).not.toHaveBeenCalled();
+    expect(onLaneChange).not.toHaveBeenCalled();
   });
 
   it("auto-creates on this computer from a remote-bound tab without rebinding the project", async () => {

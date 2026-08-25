@@ -495,13 +495,13 @@ struct PersonalChatNewScreen: View {
         lanes: [],
         commandScope: .personal,
         isBusy: busy,
-        onSelect: { option, effort, runtimeProvider, fastMode in
+        onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
           modelId = option.id
           provider = workNormalizedChatProvider(runtimeProvider)
-          reasoningEffort = effort ?? ""
-          codexFastMode = fastMode
-          runtimeMode = workDefaultRuntimeMode(provider: provider)
+          let nextReasoning = pickedReasoning ?? ""
+          if nextReasoning != reasoningEffort { reasoningEffort = nextReasoning }
+          if pickedFastMode != codexFastMode { codexFastMode = pickedFastMode }
           WorkComposerPreferences.save(
             provider: provider,
             modelId: modelId,
@@ -592,7 +592,7 @@ struct PersonalChatNewScreen: View {
         model: modelId,
         kickoffText: prompt,
         reasoningEffort: reasoningEffort.isEmpty ? nil : reasoningEffort,
-        codexFastMode: workComposerSupportsFastMode(modelId: modelId, provider: provider) ? codexFastMode : nil,
+        codexFastMode: codexFastMode,
         piProfileId: piMetadata?.profileId,
         piProviderId: piMetadata?.providerId,
         piModelId: piMetadata?.modelId,

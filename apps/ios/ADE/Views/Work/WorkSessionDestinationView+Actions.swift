@@ -412,19 +412,15 @@ extension WorkSessionDestinationView {
       // Codex model), so re-derive the provider from the picked model rather
       // than persisting the chat's old provider — otherwise restore would seed a
       // mismatched provider/model pair the New Chat init does not reconcile.
-      // When the provider actually changes, the chat's access mode and
-      // sub-settings no longer apply, so reset them to the new provider default.
+      // Keep the independent composer settings when the model changes provider.
       if let summary = chatSummary {
         let resolvedProvider = workComposerRuntimeProvider(forModelId: modelId, currentProvider: summary.provider)
-        let providerChanged = resolvedProvider != summary.provider
         WorkComposerPreferences.save(
           provider: resolvedProvider,
           modelId: modelId,
-          runtimeMode: providerChanged
-            ? workDefaultRuntimeMode(provider: resolvedProvider)
-            : workInitialRuntimeMode(summary),
-          reasoningEffort: providerChanged ? "" : (summary.reasoningEffort ?? ""),
-          codexFastMode: providerChanged ? false : summary.effectiveFastMode
+          runtimeMode: workInitialRuntimeMode(summary),
+          reasoningEffort: summary.reasoningEffort ?? "",
+          codexFastMode: summary.effectiveFastMode
         )
       }
       ADEHaptics.light()

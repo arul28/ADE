@@ -71,11 +71,6 @@ export function WorkStartSurface({
   const boundMachineId = projectBinding?.kind === "remote"
     ? projectBinding.targetId
     : "this-mac";
-  const draftMachinePending = Boolean(
-    draftMachineId
-    && draftMachineId !== boundMachineId
-    && !crossMachineLanesByMachineId[draftMachineId],
-  );
   const laneForMachine = useCallback((machineId: string | null, laneId: string) => {
     const resolvedMachineId = machineId ?? boundMachineId;
     if (resolvedMachineId === boundMachineId) {
@@ -91,10 +86,7 @@ export function WorkStartSurface({
     [draftMachineId, laneForMachine],
   );
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
-    if (isKnownLaneId(draftLaneId)) {
-      return draftLaneId;
-    }
-    if (draftMachinePending && draftLaneId) {
+    if (draftLaneId) {
       return draftLaneId;
     }
     if (isKnownLaneId(globallySelectedLaneId)) {
@@ -105,9 +97,9 @@ export function WorkStartSurface({
   const [launchBusy, setLaunchBusy] = useState(false);
   const selectedLane = useMemo(
     () => laneForMachine(draftMachineId, selectedLaneId)
-      ?? (draftMachinePending ? null : lanes[0])
+      ?? (selectedLaneId ? null : lanes[0])
       ?? null,
-    [draftMachineId, draftMachinePending, laneForMachine, lanes, selectedLaneId],
+    [draftMachineId, laneForMachine, lanes, selectedLaneId],
   );
 
   const setLaneAndSync = useCallback((laneId: string) => {
@@ -123,18 +115,14 @@ export function WorkStartSurface({
       setSelectedLaneId("");
       return;
     }
-    if (draftLaneId && draftLaneId !== selectedLaneId && isKnownLaneId(draftLaneId)) {
+    if (draftLaneId && draftLaneId !== selectedLaneId) {
       setSelectedLaneId(draftLaneId);
       if (!draftMachineId || draftMachineId === boundMachineId) {
         selectLaneGlobal(draftLaneId);
       }
       return;
     }
-    if (draftMachinePending && draftLaneId) {
-      if (selectedLaneId !== draftLaneId) setSelectedLaneId(draftLaneId);
-      return;
-    }
-    if (!selectedLaneId || !isKnownLaneId(selectedLaneId)) {
+    if (!selectedLaneId) {
       const fallbackLaneId =
         draftLaneId && isKnownLaneId(draftLaneId)
           ? draftLaneId
@@ -150,7 +138,6 @@ export function WorkStartSurface({
   }, [
     draftLaneId,
     draftMachineId,
-    draftMachinePending,
     boundMachineId,
     globallySelectedLaneId,
     isKnownLaneId,

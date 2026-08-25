@@ -805,16 +805,6 @@ struct WorkNewChatScreen: View {
       }
     }
     .onAppear {
-      // A restored selection (see init) can carry a model only valid in the mode
-      // it was last used in — e.g. a CLI-only Cursor model. normalizeSelection
-      // only runs on a sessionMode *change*, which never fires for the seeded
-      // initial state, so a model disallowed for the (possibly restored) mode
-      // would otherwise reach Send. Normalize here, but only when the model is
-      // actually disallowed, so a valid restored selection keeps its runtimeMode.
-      let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
-      if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) {
-        normalizeSelection(for: sessionMode)
-      }
       if selectedLaneId.isEmpty {
         selectedLaneId = defaultNewSessionLane?.id ?? ""
       }
@@ -822,33 +812,8 @@ struct WorkNewChatScreen: View {
         runtimeMode = workDefaultRuntimeMode(provider: provider)
       }
     }
-    .onChange(of: provider) { _, newProvider in
-      runtimeMode = workDefaultRuntimeMode(provider: newProvider)
-      if !workNewChatModel(modelId, belongsTo: workNormalizedChatProvider(newProvider)) {
-        modelId = workDefaultNewChatModelId(provider: newProvider)
-      }
-      if !modelSupportsReasoning(modelId: modelId, provider: newProvider) {
-        reasoningEffort = ""
-      }
-      if !fastModeSupported {
-        codexFastMode = false
-      }
-    }
-    .onChange(of: sessionMode) { _, newMode in
-      normalizeSelection(for: newMode)
-    }
-    .onChange(of: modelId) { _, newModel in
-      if !modelSupportsReasoning(modelId: newModel, provider: provider) {
-        reasoningEffort = ""
-      }
-      if !fastModeSupported {
-        codexFastMode = false
-      }
-    }
     .onChange(of: composerSelection) { _, newValue in
-      // Persist every model / access-mode change so the next New Chat restores
-      // it. Captures the full tuple atomically — a single field change here
-      // already reflects any cascading provider/model normalization above.
+      // Persist the full selection without deriving one setting from another.
       WorkComposerPreferences.save(newValue)
     }
     .sheet(isPresented: $modelPickerPresented) {
@@ -866,9 +831,9 @@ struct WorkNewChatScreen: View {
           provider = sessionMode == .chat
             ? workNormalizedChatProvider(runtimeProvider)
             : workResolveCliProvider(for: option.id, provider: runtimeProvider)
-          reasoningEffort = pickedReasoning ?? ""
-          runtimeMode = workDefaultRuntimeMode(provider: provider)
-          codexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
+          let nextReasoning = pickedReasoning ?? ""
+          if nextReasoning != reasoningEffort { reasoningEffort = nextReasoning }
+          if pickedFastMode != codexFastMode { codexFastMode = pickedFastMode }
         }
       )
     }
@@ -1078,6 +1043,13 @@ struct WorkNewChatScreen: View {
     let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
+    let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
+    guard workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) else {
+      errorMessage = sessionMode == .cli
+        ? "This model is available for chat only. Choose a CLI-capable model."
+        : "This model is available for CLI only. Choose a chat-capable model."
+      return false
+    }
     guard readyAttachments.isEmpty || canUploadAttachments else {
       errorMessage = "Reconnect to attach images."
       return false
@@ -1211,10 +1183,9 @@ struct WorkNewChatScreen: View {
         provider: provider,
         model: modelId,
         reasoningEffort: normalizedReasoning.isEmpty ? nil : normalizedReasoning,
-        // Send an explicit true/false when the model supports fast mode so the
-        // user's choice (including an explicit OFF) is honored rather than
-        // falling back to the host default; nil only when fast mode is N/A.
-        codexFastMode: fastModeSupported ? codexFastMode : nil,
+        // Preserve the independent preference. Runtime capability checks
+        // belong at request construction, not in the composer state.
+        codexFastMode: codexFastMode,
         piProfileId: piMetadata?.profileId,
         piProviderId: piMetadata?.providerId,
         piModelId: piMetadata?.modelId,
@@ -1365,50 +1336,6 @@ struct WorkNewChatScreen: View {
     }
   }
 
-  private func normalizeSelection(for mode: WorkNewSessionMode) {
-    let availabilityMode: WorkCursorAvailabilityMode = mode == .cli ? .cli : .chat
-    if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode),
-       let replacement = workDefaultModelIdForAvailabilityMode(preferredProvider: provider, mode: availabilityMode) {
-      modelId = replacement.modelId
-      provider = mode == .chat
-        ? workNormalizedChatProvider(replacement.provider)
-        : workResolveCliProvider(for: replacement.modelId, provider: replacement.provider)
-    } else if mode == .chat {
-      provider = workNormalizedChatProvider(provider)
-      if !workNewChatModel(modelId, belongsTo: provider) {
-        modelId = workDefaultNewChatModelId(provider: provider)
-      }
-    } else {
-      provider = workResolveCliProvider(for: modelId, provider: provider)
-    }
-    runtimeMode = workDefaultRuntimeMode(provider: provider)
-    if !modelSupportsReasoning(modelId: modelId, provider: provider) {
-      reasoningEffort = ""
-    }
-    if !fastModeSupported {
-      codexFastMode = false
-    }
-  }
-}
-
-private func workNewChatModel(_ modelId: String, belongsTo provider: String) -> Bool {
-  let trimmed = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
-  guard !trimmed.isEmpty else { return false }
-  return workModelCatalogGroupKey(for: trimmed, currentProvider: provider) == provider
-}
-
-private func workDefaultNewChatModelId(provider: String) -> String {
-  let family = providerFamilyKey(provider)
-  if let defaultModel = workDefaultCatalogModelId(provider: family) {
-    return defaultModel
-  }
-  switch workNormalizedChatProvider(provider) {
-  case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.6-sol"
-  case "cursor": return "auto"
-  case "opencode": return "opencode/anthropic/claude-sonnet-5"
-  case "pi": return ""
-  default: return "claude-sonnet-5"
-  }
 }
 
 private func workCliSupportsReasoningSelection(provider: String) -> Bool {

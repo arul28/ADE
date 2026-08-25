@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 import type { ModelConfig, ModelProvider, ThinkingLevel } from "../../../shared/types";
-import { getModelById, resolveModelDescriptor, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
+import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
 import { ModelPicker } from "./ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
 
@@ -51,19 +51,12 @@ export function ModelSelector({
   const handleModelChange = useCallback((modelId: string) => {
     const normalizedId = normalizeModelId(modelId);
     const provider = providerFromFamily(normalizedId);
-    const descriptor = getModelById(normalizedId);
-    const tiers = descriptor?.reasoningTiers ?? [];
-    const currentThinking = toThinkingLevel(selectSupportedReasoningEffort({
-      tiers,
-      preferred: value.thinkingLevel,
-      advertisedDefault: descriptor?.defaultReasoningEffort,
-    }));
     onChange({
+      ...value,
       modelId: normalizedId,
-      ...(currentThinking ? { thinkingLevel: currentThinking } : {}),
       ...(provider ? { provider } : {}),
     });
-  }, [onChange, value.thinkingLevel]);
+  }, [onChange, value]);
 
   const handleReasoningChange = useCallback((nextReasoning: string | null) => {
     const provider = providerFromFamily(resolvedModelId);

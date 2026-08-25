@@ -173,11 +173,14 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     setError(null);
     try {
       if (session) {
+        const modelUpdate = selection.modelId === session.modelId
+          ? { reasoningEffort: selection.reasoningEffort }
+          : {};
         const updated = await window.ade.agentChat.updateSession({
           sessionId: session.id,
           modelId: selection.modelId,
-          reasoningEffort: selection.reasoningEffort,
-          fastMode: selection.supportsFastMode && currentFastMode,
+          ...modelUpdate,
+          fastMode: currentFastMode,
         });
         ctoPrimarySession = updated;
         setSession(updated);

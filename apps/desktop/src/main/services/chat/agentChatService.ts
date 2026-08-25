@@ -7390,25 +7390,17 @@ function normalizeSessionNativePermissionControls(
   if (session.provider === "claude") {
     session.interactionMode = resolveSessionClaudeInteractionMode(session);
     session.claudePermissionMode = resolveSessionClaudePermissionMode(session, config.claudePermissionMode);
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.opencodePermissionMode;
-    delete session.droidPermissionMode;
   } else if (session.provider === "codex") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
     session.codexConfigSource = resolveSessionCodexConfigSource(session);
     if (session.codexConfigSource === "config-toml") {
-      delete session.codexApprovalPolicy;
-      delete session.codexSandbox;
+      // Keep the last flag-based values so switching back from config-toml does
+      // not erase the user's independent approval and sandbox choices.
     } else {
       session.codexApprovalPolicy = resolveSessionCodexApprovalPolicy(session, config.codexApprovalPolicy);
       session.codexSandbox = resolveSessionCodexSandbox(session, config.codexSandboxMode);
     }
-    delete session.claudePermissionMode;
-    delete session.opencodePermissionMode;
-    delete session.droidPermissionMode;
   } else if (session.provider === "droid") {
     session.interactionMode = orchestrationMode ?? (session.interactionMode === "plan" || session.permissionMode === "plan"
       ? "plan"
@@ -7419,29 +7411,13 @@ function normalizeSessionNativePermissionControls(
     const chosenDroidMode = resolveSessionDroidPermissionModeOrNull(session);
     if (chosenDroidMode) session.droidPermissionMode = chosenDroidMode;
     else delete session.droidPermissionMode;
-    delete session.claudePermissionMode;
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.opencodePermissionMode;
   } else if (session.provider === "pi") {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
-    delete session.claudePermissionMode;
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.opencodePermissionMode;
-    delete session.droidPermissionMode;
   } else {
     if (orchestrationMode) session.interactionMode = orchestrationMode;
     else delete session.interactionMode;
     session.opencodePermissionMode = resolveSessionOpenCodePermissionMode(session, config.opencodePermissionMode);
-    delete session.claudePermissionMode;
-    delete session.codexApprovalPolicy;
-    delete session.codexSandbox;
-    delete session.codexConfigSource;
-    delete session.droidPermissionMode;
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
@@ -31135,11 +31111,10 @@ export function createAgentChatService(args: {
           rawEffort,
           resolvedDescriptor,
         );
-    const initialFastMode = requestedFastMode === true
-      && (
-        effectiveProvider !== "claude"
-        || (resolvedDescriptor ? modelSupportsFastMode(resolvedDescriptor) : true)
-      );
+    // Fast mode is a user setting, not a model-selection side effect. Keep the
+    // raw preference on the session even when the selected runtime cannot use
+    // a fast service tier; runtime request builders decide whether to send it.
+    const initialFastMode = requestedFastMode === true;
     const normalizedCursorModeId = typeof requestedCursorModeId === "string"
       ? (requestedCursorModeId.trim() || null)
       : requestedCursorModeId === null
@@ -31605,9 +31580,7 @@ export function createAgentChatService(args: {
       modelId: targetDescriptor.id,
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
-      fastMode: modelSupportsFastMode(targetDescriptor)
-        ? args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true
-        : undefined,
+      fastMode: args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true,
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
       codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
       codexSandbox: args.codexSandbox ?? managed.session.codexSandbox,
@@ -33143,7 +33116,7 @@ export function createAgentChatService(args: {
         title: capsule.source.title ? `Handoff · ${capsule.source.title}` : `Handoff · ${capsule.source.laneName}`,
         sessionProfile: "workflow",
         reasoningEffort: pickHandoffReasoningEffort(targetDescriptor, capsule.target.reasoningEffort),
-        fastMode: modelSupportsFastMode(targetDescriptor) ? capsule.target.fastMode : undefined,
+        fastMode: capsule.target.fastMode,
         claudePermissionMode: capsule.target.claudePermissionMode,
         codexApprovalPolicy: capsule.target.codexApprovalPolicy,
         codexSandbox: capsule.target.codexSandbox,
@@ -44191,6 +44164,17 @@ export function createAgentChatService(args: {
     const prevClaudeFastModeSetting = managed.session.provider === "claude"
       ? sessionEffectiveFastMode(managed.session)
       : false;
+    const hasExplicitNativeModeUpdate =
+      permissionMode !== undefined
+      || interactionMode !== undefined
+      || claudePermissionMode !== undefined
+      || codexApprovalPolicy !== undefined
+      || codexSandbox !== undefined
+      || codexConfigSource !== undefined
+      || opencodePermissionMode !== undefined
+      || droidPermissionMode !== undefined
+      || cursorModeId !== undefined
+      || cursorConfigValues !== undefined;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -44253,9 +44237,6 @@ export function createAgentChatService(args: {
         delete managed.session.piSessionId;
         delete managed.session.piSessionFile;
       }
-      if (nextProvider === "claude" && !modelSupportsFastMode(descriptor)) {
-        delete managed.session.fastMode;
-      }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
       if (previousProvider !== nextProvider) {
         delete managed.session.threadId;
@@ -44290,8 +44271,16 @@ export function createAgentChatService(args: {
         );
         applyLegacyPermissionModeToNativeControls(managed.session, managed.session.permissionMode);
       }
-      enforceManagedLocalHarnessPermissionMode(managed, descriptor);
-      normalizeSessionNativePermissionControls(managed.session, chatConfig);
+      // A model/provider choice is independent from the access settings. Keep
+      // the raw settings untouched for a model-only update; the runtime
+      // resolves provider-specific fallbacks at launch. Explicit mode fields
+      // still take the normal policy-normalization path below.
+      if (hasExplicitNativeModeUpdate) {
+        enforceManagedLocalHarnessPermissionMode(managed, descriptor);
+        normalizeSessionNativePermissionControls(managed.session, chatConfig);
+      } else {
+        enforceManagedLocalHarnessPermissionMode(managed, descriptor);
+      }
 
       // Apply reasoningEffort BEFORE pre-warming so the query is created
       // with the correct thinking configuration.
@@ -44302,12 +44291,6 @@ export function createAgentChatService(args: {
           : nextProvider === "claude"
             ? validateReasoningEffortForDescriptor("claude", requested, descriptor)
             : validateRuntimeReasoningEffortForDescriptor(requested, descriptor);
-      } else if (modelChanged && nextProvider === "codex") {
-        managed.session.reasoningEffort = validateReasoningEffortForDescriptor(
-          "codex",
-          managed.session.reasoningEffort,
-          descriptor,
-        ) ?? resolveCodexReasoningEffortForRuntime(null, null, descriptor);
       }
 
       // Pre-warm the Claude query when the user selects an Anthropic model.
@@ -44439,14 +44422,6 @@ export function createAgentChatService(args: {
         delete managed.session.fastMode;
       }
     }
-    if (
-      managed.session.provider === "claude"
-      && managed.session.fastMode === true
-      && !sessionSupportsFastMode(managed.session)
-    ) {
-      delete managed.session.fastMode;
-    }
-
     const nextClaudeFastModeSetting = managed.session.provider === "claude"
       ? sessionEffectiveFastMode(managed.session)
       : false;
@@ -44475,17 +44450,7 @@ export function createAgentChatService(args: {
       }
     }
 
-    const modeFieldsTouched =
-      permissionMode !== undefined
-      || interactionMode !== undefined
-      || claudePermissionMode !== undefined
-      || codexApprovalPolicy !== undefined
-      || codexSandbox !== undefined
-      || codexConfigSource !== undefined
-      || opencodePermissionMode !== undefined
-      || droidPermissionMode !== undefined
-      || cursorModeId !== undefined
-      || cursorConfigValues !== undefined;
+    const modeFieldsTouched = hasExplicitNativeModeUpdate;
     if (modeFieldsTouched) {
       enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);

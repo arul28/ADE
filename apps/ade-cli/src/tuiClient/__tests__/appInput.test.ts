@@ -2173,17 +2173,15 @@ describe("prompt editing helpers", () => {
     expect(cursorSourceForInterfaceMode("chat")).toBe("sdk");
     expect(cursorSourceForInterfaceMode("cli")).toBe("cli");
 
-    const toggled = reconcileCursorModelStateForInterface(
-      cursorModelState(),
-      "cli",
-      [sdkOnly, cliOnly],
-    );
-    expect(toggled).toMatchObject({
-      interfaceMode: "cli",
-      modelId: "cursor/cli-only",
-      model: "cli-only-default",
-      displayName: "CLI only",
+    const before = cursorModelState({
+      reasoningEffort: "high",
+      fastMode: true,
+      permissionMode: "full-auto",
+      interactionMode: "plan",
+      cursorModeId: "ask",
     });
+    const toggled = reconcileCursorModelStateForInterface(before, "cli");
+    expect(toggled).toEqual({ ...before, interfaceMode: "cli" });
 
     expect(() => resolveCursorCliModelForLaunch(cursorModelState(), [sdkOnly]))
       .toThrow(/available for chat only/i);

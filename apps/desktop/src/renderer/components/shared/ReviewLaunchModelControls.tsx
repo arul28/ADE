@@ -1,6 +1,5 @@
 import React from "react";
 import type { AiSettingsStatus } from "../../../shared/types";
-import { resolveModelDescriptor, selectSupportedReasoningEffort } from "../../../shared/modelRegistry";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { ModelPicker } from "./ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
@@ -30,16 +29,8 @@ export function ReviewLaunchModelControls({
   const [availableModelIds, setAvailableModelIds] = React.useState<string[]>([]);
 
   const handleModelChange = React.useCallback((nextModelId: string) => {
-    const descriptor = resolveModelDescriptor(nextModelId);
-    const tiers = descriptor?.reasoningTiers ?? [];
-    const nextReasoning = selectSupportedReasoningEffort({
-      tiers,
-      preferred: reasoningEffort,
-      advertisedDefault: descriptor?.defaultReasoningEffort,
-    }) ?? "";
     onModelChange(nextModelId);
-    if (nextReasoning !== reasoningEffort) onReasoningEffortChange(nextReasoning);
-  }, [onModelChange, onReasoningEffortChange, reasoningEffort]);
+  }, [onModelChange]);
 
   React.useEffect(() => {
     let cancelled = false;

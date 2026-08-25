@@ -88,10 +88,8 @@ export function providerSettingsMemoryFromState(state: AdeCodeModelState): AdeCo
 }
 
 /**
- * Settings-only patch (no model identity): what wizard step 4 pre-fills with
- * when a provider is picked, and what a new chat inherits for that provider.
- * Unknown persisted values are cast rather than dropped — the provider CLIs own
- * the vocabulary and reject anything they do not understand.
+ * Settings-only patch for persisted state. Live provider/model selection must
+ * not use this helper: every composer setting is independent of that choice.
  */
 export function providerSettingsPatchFromMemory(
   memory: AdeCodeProviderSettingsMemory,
@@ -99,7 +97,6 @@ export function providerSettingsPatchFromMemory(
   return {
     reasoningEffort: memory.reasoningEffort,
     fastMode: memory.fastMode,
-    interfaceMode: memory.interfaceMode,
     permissionMode: memory.permissionMode as AdeCodeModelState["permissionMode"],
     interactionMode: memory.interactionMode as AdeCodeModelState["interactionMode"],
     claudePermissionMode: memory.claudePermissionMode as AdeCodeModelState["claudePermissionMode"],
@@ -124,6 +121,7 @@ export function modelStatePatchFromMemory(memory: AdeCodeModelMemory): Partial<A
   return {
     ...providerSettingsPatchFromMemory(memory),
     provider,
+    interfaceMode: memory.interfaceMode,
     ...(hasModelIdentity
       ? {
           modelId: memory.modelId,
@@ -167,29 +165,7 @@ export function cliProviderForModelStateProvider(provider: AdeCodeProvider): Cli
     : null;
 }
 
-function firstReasoningEffortForModel(model: AgentChatModelInfo | null | undefined, provider: AdeCodeProvider): string | null {
-  const modelId = `${model?.modelId ?? ""} ${model?.id ?? ""} ${model?.displayName ?? ""}`.toLowerCase();
-  const efforts = model?.reasoningEfforts
-    ?.map((entry) => entry.effort)
-    .filter(Boolean) ?? [];
-  const advertisedDefault = model?.defaultReasoningEffort?.trim().toLowerCase() ?? null;
-  if (modelId.includes("fable") && efforts.includes("high")) return "high";
-  if (advertisedDefault && efforts.includes(advertisedDefault)) return advertisedDefault;
-  if (efforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
-  if (efforts.length) return efforts[0] ?? null;
-  const descriptor = model?.modelId || model?.id ? getModelById(model.modelId ?? model.id) : undefined;
-  const descriptorEfforts = descriptor?.reasoningTiers ?? [];
-  const descriptorId = `${descriptor?.id ?? ""} ${descriptor?.providerModelId ?? ""} ${descriptor?.displayName ?? ""}`.toLowerCase();
-  if (descriptorId.includes("fable") && descriptorEfforts.includes("high")) return "high";
-  if (descriptor?.defaultReasoningEffort && descriptorEfforts.includes(descriptor.defaultReasoningEffort)) {
-    return descriptor.defaultReasoningEffort;
-  }
-  if (descriptorEfforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
-  if (descriptorEfforts.length) return descriptorEfforts[0] ?? null;
-  return provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null;
-}
-
-export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatModelInfo): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
+export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatModelInfo): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName"> {
   const modelId = model.modelId ?? model.id;
   const descriptor = getModelById(modelId);
   const resolvedProvider = descriptor ? normalizeProvider(resolveProviderGroupForModel(descriptor)) : provider;
@@ -199,7 +175,6 @@ export function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentC
     model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider) : model.id,
     modelId,
     displayName: model.displayName,
-    reasoningEffort: firstReasoningEffortForModel(model, resolvedProvider),
   };
 }
 
@@ -247,7 +222,7 @@ export function modelCatalogRefreshCacheKey(
   return provider === "cursor" ? `cursor:${cursorSource ?? "sdk"}` : provider;
 }
 
-export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
+export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName"> {
   const registryProvider = provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
   const descriptor = getDefaultModelDescriptor(registryProvider)
     ?? listModelDescriptorsForProvider(registryProvider)[0]
@@ -257,11 +232,6 @@ export function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCode
     model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.6-sol",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? providerLabel(provider),
-    reasoningEffort: descriptor?.id.includes("fable") && descriptor.reasoningTiers?.includes("high")
-      ? "high"
-      : descriptor?.defaultReasoningEffort
-        ?? descriptor?.reasoningTiers?.[0]
-        ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
   };
 }
 
@@ -280,14 +250,6 @@ export function registryModelsForProvider(provider: AdeCodeProvider): AgentChatM
   }));
 }
 
-function compatibleCursorModelForInterface(
-  models: readonly AgentChatModelInfo[],
-  interfaceMode: AdeCodeInterfaceMode,
-): AgentChatModelInfo | null {
-  const compatible = models.filter((model) => cursorModelAvailableForInterface(model, interfaceMode));
-  return compatible.find((model) => model.isDefault) ?? compatible[0] ?? null;
-}
-
 function modelInfoMatchesModelState(model: AgentChatModelInfo, state: AdeCodeModelState): boolean {
   const selected = (state.modelId ?? state.model).trim().toLowerCase();
   if (!selected) return false;
@@ -299,60 +261,11 @@ function modelInfoMatchesModelState(model: AgentChatModelInfo, state: AdeCodeMod
 export function reconcileCursorModelStateForInterface(
   state: AdeCodeModelState,
   interfaceMode: AdeCodeInterfaceMode,
-  models: readonly AgentChatModelInfo[],
 ): AdeCodeModelState {
-  if (state.provider !== "cursor") return { ...state, interfaceMode };
-  const currentModel = models.find((model) => modelInfoMatchesModelState(model, state)) ?? null;
-  const descriptor = state.modelId ? getModelById(state.modelId) : undefined;
-  const availability = cursorAvailabilityForModel(currentModel, descriptor);
-  const currentAllowed = availability
-    ? (interfaceMode === "cli" ? availability.cli === true : availability.sdk === true)
-    : false;
-  if (currentAllowed && descriptor?.family === "cursor") {
-    const supportsFast = modelSupportsFastMode(descriptor);
-    return {
-      ...state,
-      interfaceMode,
-      model: interfaceMode === "cli"
-        ? resolveCursorCliModelVariant(descriptor, {
-            reasoningEffort: state.reasoningEffort,
-            fastMode: supportsFast && state.fastMode,
-          })
-        : getRuntimeModelRefForDescriptor(descriptor, "cursor"),
-      fastMode: supportsFast ? state.fastMode : false,
-    };
-  }
-  if (currentAllowed) return { ...state, interfaceMode };
-  const fallback = compatibleCursorModelForInterface(models, interfaceMode);
-  if (!fallback) {
-    return {
-      ...state,
-      interfaceMode,
-      model: "",
-      modelId: null,
-      displayName: providerLabel("cursor"),
-      reasoningEffort: null,
-      fastMode: false,
-    };
-  }
-  const patch = modelStatePatchForModel("cursor", fallback);
-  const fallbackDescriptor = patch.modelId ? getModelById(patch.modelId) : undefined;
-  const launchDescriptor = fallbackDescriptor?.family === "cursor" && fallback.cursorCliVariants?.length
-    ? { ...fallbackDescriptor, cursorCliVariants: fallback.cursorCliVariants }
-    : fallbackDescriptor;
-  const supportsFast = modelInfoSupportsFastMode(fallback);
-  return {
-    ...state,
-    ...patch,
-    interfaceMode,
-    model: interfaceMode === "cli" && launchDescriptor?.family === "cursor"
-      ? resolveCursorCliModelVariant(launchDescriptor, {
-          reasoningEffort: patch.reasoningEffort,
-          fastMode: supportsFast && state.fastMode,
-        })
-      : patch.model,
-    fastMode: supportsFast ? state.fastMode : false,
-  };
+  // Interface is a routing choice. It must not rewrite the selected model or
+  // any model setting; launch validation reports an incompatible Cursor model
+  // at the point where it matters.
+  return { ...state, interfaceMode };
 }
 
 export function resolveCursorCliModelForLaunch(

@@ -801,7 +801,7 @@ describe("ModelPicker", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
   });
 
-  it("clears a stale fast bit when a different model is picked by a plain row click", async () => {
+  it("preserves fast mode when a different model is picked by a plain row click", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     const onFastModeChange = vi.fn();
@@ -823,7 +823,7 @@ describe("ModelPicker", () => {
     await user.click(slowRow);
 
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith(SLOW_GPT.id, { fastMode: false });
+    expect(onChange).toHaveBeenCalledWith(SLOW_GPT.id);
     expect(onFastModeChange).not.toHaveBeenCalled();
   });
 

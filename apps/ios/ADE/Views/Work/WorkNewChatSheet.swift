@@ -37,7 +37,7 @@ struct WorkNewChatSheet: View {
   }
 
   var canStartChat: Bool {
-    !busy && !isDictating && !selectedLaneId.isEmpty && !selectedModelId.isEmpty && !trimmedInitialMessage.isEmpty
+    !busy && !isDictating && !selectedLaneId.isEmpty && selectedModel != nil && !trimmedInitialMessage.isEmpty
   }
 
   var startDisabledReason: String? {
@@ -45,6 +45,7 @@ struct WorkNewChatSheet: View {
     if isDictating { return "Finish dictation before starting." }
     if selectedLaneId.isEmpty { return "Choose a lane." }
     if selectedModelId.isEmpty { return "Choose a model." }
+    if selectedModel == nil { return "The selected model is unavailable for \(providerLabel(provider))." }
     if trimmedInitialMessage.isEmpty { return "Enter an opening prompt." }
     return nil
   }
@@ -406,21 +407,9 @@ struct WorkNewChatSheet: View {
           .disabled(!canStartChat)
         }
       }
-      .onChange(of: selectedModelId) { _, _ in
-        let reasoningEfforts = workVisibleReasoningEfforts(for: selectedModel)
-        if !reasoningEfforts.isEmpty {
-          if !reasoningEfforts.contains(where: { $0.effort == selectedReasoningEffort }) {
-            selectedReasoningEffort = ""
-          }
-        } else {
-          selectedReasoningEffort = ""
-        }
-      }
       .task(id: provider) {
         models = []
-        selectedModelId = ""
-        selectedReasoningEffort = ""
-        await loadModels(resetSelection: true)
+        await loadModels(resetSelection: false)
       }
       .onAppear {
         if selectedLaneId.isEmpty {
@@ -451,7 +440,7 @@ struct WorkNewChatSheet: View {
       let matchingSelection = scopedModels.first {
         workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId)
       }
-      if resetSelection || matchingSelection == nil {
+      if resetSelection || (selectedModelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && matchingSelection == nil) {
         if let preferred = scopedModels.first(where: \.isDefault) ?? scopedModels.first {
           selectedModelId = preferred.id
           selectedReasoningEffort = ""
@@ -461,14 +450,12 @@ struct WorkNewChatSheet: View {
         }
       } else if let matchingSelection, selectedModelId != matchingSelection.id {
         selectedModelId = matchingSelection.id
-        selectedReasoningEffort = ""
       }
       errorMessage = nil
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
       models = []
-      selectedModelId = ""
     }
   }
 
@@ -477,6 +464,10 @@ struct WorkNewChatSheet: View {
     let openingMessage = trimmedInitialMessage
     guard !openingMessage.isEmpty else {
       errorMessage = "Enter an opening message before starting a chat."
+      return
+    }
+    guard selectedModel != nil else {
+      errorMessage = "The selected model is unavailable for \(providerLabel(provider)). Choose a model for this provider."
       return
     }
     do {
@@ -491,11 +482,7 @@ struct WorkNewChatSheet: View {
         laneId: selectedLaneId,
         provider: provider,
         model: selectedModelId,
-        reasoningEffort: {
-          guard !selectedReasoningEffort.isEmpty else { return nil }
-          guard workVisibleReasoningEfforts(for: selectedModel).contains(where: { $0.effort == selectedReasoningEffort }) else { return nil }
-          return selectedReasoningEffort
-        }(),
+        reasoningEffort: selectedReasoningEffort.isEmpty ? nil : selectedReasoningEffort,
         piProfileId: piMetadata?.profileId,
         piProviderId: piMetadata?.providerId,
         piModelId: piMetadata?.modelId

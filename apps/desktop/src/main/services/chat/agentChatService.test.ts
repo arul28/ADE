@@ -3676,13 +3676,14 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // Sonnet 5 has no "fast" service tier, so the toggle must be dropped.
+      // The raw preference survives the model switch; runtime capability gates
+      // whether the current provider can use it.
       await service.updateSession({
         sessionId: session.id,
         modelId: "anthropic/claude-sonnet-5",
       });
 
-      expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
     });
 
     it("handles Claude /fast commands inline and persists the ADE fast setting", async () => {
@@ -14674,6 +14675,39 @@ describe("createAgentChatService", () => {
       expect(updated.provider).toBe("codex");
       expect(persisted.pendingTranscriptReplay).toContain("Seamless replay-fork on model change.");
       expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
+    });
+
+    it("changes only the model when switching models with independent settings selected", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "high",
+        fastMode: true,
+        permissionMode: "plan",
+        codexApprovalPolicy: "on-failure",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      });
+      const before = {
+        reasoningEffort: session.reasoningEffort,
+        fastMode: session.fastMode,
+        permissionMode: session.permissionMode,
+        codexApprovalPolicy: session.codexApprovalPolicy,
+        codexSandbox: session.codexSandbox,
+        codexConfigSource: session.codexConfigSource,
+      };
+
+      const updated = await service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-sonnet-5",
+      });
+
+      expect(updated.provider).toBe("claude");
+      expect(updated.modelId).toBe("anthropic/claude-sonnet-5");
+      expect(updated).toMatchObject(before);
     });
 
     it("does not broadcast mode fields when no mode field is updated", async () => {
@@ -32181,7 +32215,7 @@ describe("createAgentChatService", () => {
       expect(afterMessages.length).toBe(beforeNoticeCount + 1);
     });
 
-    it("clears fast mode when switching a session away from Codex", async () => {
+    it("preserves fast mode when switching a session away from Codex", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -32196,9 +32230,9 @@ describe("createAgentChatService", () => {
       });
 
       expect(updated.provider).toBe("claude");
-      expect(updated.fastMode).toBeUndefined();
-      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(false);
-      expect(readPersistedChatState(session.id).fastMode).toBeUndefined();
+      expect(updated.fastMode).toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).toBe(true);
     });
 
     it("re-resumes Codex threads when fast mode changes mid-session", async () => {
