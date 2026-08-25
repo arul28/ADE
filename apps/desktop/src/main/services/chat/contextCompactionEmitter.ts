@@ -41,7 +41,8 @@ export function buildContextCompactEvent(
   session: AgentChatSession,
   input: {
     trigger: "manual" | "auto" | "ade_fallback";
-    state?: "started" | "completed";
+    state?: "started" | "completed" | "failed";
+    failReason?: "interrupted" | "timed_out" | "teardown";
     turnId?: string;
     compactionId?: string;
     preTokens?: number;
@@ -72,12 +73,15 @@ export function buildContextCompactEvent(
   const startedAt = state.startedAtByKey.get(mergeKey);
   state.startedAtByKey.delete(mergeKey);
   const durationMs = input.durationMs ?? (startedAt != null && now > startedAt ? now - startedAt : undefined);
-  state.sessionCompactionCount += 1;
+  if (lifecycle !== "failed") {
+    state.sessionCompactionCount += 1;
+  }
 
   return {
     type: "context_compact",
     trigger: input.trigger,
-    state: "completed",
+    state: lifecycle,
+    ...(input.failReason ? { failReason: input.failReason } : {}),
     ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(compactionId ? { compactionId } : {}),
     ...(input.preTokens != null ? { preTokens: input.preTokens } : {}),
@@ -85,7 +89,9 @@ export function buildContextCompactEvent(
     ...(input.tokensRemoved != null ? { tokensRemoved: input.tokensRemoved } : {}),
     ...(durationMs != null ? { durationMs } : {}),
     ...(provider ? { provider } : {}),
-    ...(state.sessionCompactionCount >= 2 ? { sessionCompactionCount: state.sessionCompactionCount } : {}),
+    ...(lifecycle !== "failed" && state.sessionCompactionCount >= 2
+      ? { sessionCompactionCount: state.sessionCompactionCount }
+      : {}),
   };
 }
 
@@ -99,6 +105,7 @@ export function mapLegacyCompactionEvent(
     return buildContextCompactEvent(state, session, {
       trigger: event.trigger,
       state: event.state,
+      failReason: event.failReason,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
       preTokens: event.preTokens,
@@ -111,6 +118,7 @@ export function mapLegacyCompactionEvent(
     return buildContextCompactEvent(state, session, {
       trigger: event.trigger,
       state: event.state,
+      failReason: event.failReason,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     });

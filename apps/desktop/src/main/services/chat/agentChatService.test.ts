@@ -189,6 +189,38 @@ vi.mock("node:child_process", () => ({
             result = { skills: [] };
           } else if (payload.method === "account/rateLimits/read") {
             result = { rateLimits: { remaining: 10, limit: 100, resetAt: null } };
+          } else if (payload.method === "thread/queue/add") {
+            const params = payload.params as { clientUserMessageId?: unknown } | undefined;
+            result = {
+              queuedSubmission: {
+                id: `queued-${mockState.codexRequestPayloads.length}`,
+                clientUserMessageId: typeof params?.clientUserMessageId === "string"
+                  ? params.clientUserMessageId
+                  : "queued-client",
+              },
+            };
+          } else if (payload.method === "thread/queue/list") {
+            result = { queuedSubmissions: [] };
+          } else if (
+            payload.method === "thread/queue/delete"
+            || payload.method === "thread/queue/update"
+            || payload.method === "thread/queue/start"
+            || payload.method === "thread/settings/update"
+            || payload.method === "memory/reset"
+            || payload.method === "thread/memoryMode/set"
+            || payload.method === "thread/backgroundTerminals/terminate"
+          ) {
+            result = {};
+          } else if (payload.method === "thread/revert") {
+            const params = payload.params as { threadId?: unknown } | undefined;
+            result = {
+              thread: { id: typeof params?.threadId === "string" ? params.threadId : "reverted-thread" },
+            };
+          } else if (payload.method === "thread/shellCommand") {
+            mockState.codexTurnCounter += 1;
+            result = { turn: { id: `turn-${mockState.codexTurnCounter}` } };
+          } else if (payload.method === "thread/backgroundTerminals/list") {
+            result = { terminals: [] };
           }
 
           const emitResponse = () => {
@@ -4962,6 +4994,12 @@ describe("createAgentChatService", () => {
       const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
       expect(handoffPayloads).toEqual(expect.arrayContaining([
         expect.objectContaining({
+          method: "thread/goal/clear",
+          params: expect.objectContaining({
+            threadId: "source-thread-1",
+          }),
+        }),
+        expect.objectContaining({
           method: "thread/fork",
           params: expect.objectContaining({
             threadId: "source-thread-1",
@@ -5481,10 +5519,17 @@ describe("createAgentChatService", () => {
         targetTurnId: undefined,
         expectedMethod: "thread/rollback",
       },
+      {
+        name: "reverts paginated history on Codex 0.149.1",
+        userAgent: "codex/0.149.1",
+        targetTurnId: "turn-target",
+        expectedMethod: "thread/revert",
+      },
     ])("$name", async ({ userAgent, targetTurnId, expectedMethod }) => {
       mockState.codexResponseOverrides.set("initialize", { userAgent });
       mockState.codexResponseOverrides.set("thread/rollback", { thread: { id: "rewound-thread" } });
       mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-before-turn" } });
+      mockState.codexResponseOverrides.set("thread/revert", { thread: { id: "reverted-thread" } });
       const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
@@ -5522,13 +5567,62 @@ describe("createAgentChatService", () => {
           beforeTurnId: "turn-target",
         });
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(false);
+      } else if (expectedMethod === "thread/revert") {
+        expect(lifecycleRequest?.params).toEqual({
+          threadId: "source-thread-1",
+          beforeTurnId: "turn-target",
+        });
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(false);
       } else {
         expect(lifecycleRequest?.params).toEqual({
           threadId: "source-thread-1",
           numTurns: 1,
         });
         expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(false);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(false);
       }
+    });
+
+    it("falls back to fork when thread/revert is rejected", async () => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
+      mockState.codexResponseOverrides.set("thread/revert", {
+        error: { code: -32601, message: "Method not found" },
+      });
+      mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-after-revert" } });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      expect(transcriptPath).toBeTruthy();
+      const rewindEnvelopes: AgentChatEventEnvelope[] = [{
+        sessionId: source.id,
+        timestamp: "2026-07-07T20:00:00.000Z",
+        event: {
+          type: "user_message",
+          messageId: "user-1",
+          text: "rewind this turn",
+          turnId: "turn-target",
+        },
+      } as AgentChatEventEnvelope];
+      fs.writeFileSync(String(transcriptPath), `${JSON.stringify(rewindEnvelopes[0])}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(rewindEnvelopes);
+
+      await service.rewindFiles({
+        sessionId: source.id,
+        userMessageId: "user-1",
+      });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/revert")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
     });
 
     it("does not delete files during Codex rewind when git cannot prove the path was absent", async () => {
@@ -13755,6 +13849,9 @@ describe("createAgentChatService", () => {
 
       expect(names).toContain("/permissions");
       expect(names).toContain("/review");
+      expect(names).toContain("/shell");
+      expect(names).toContain("/memory");
+      expect(names).toContain("/memory-reset");
       expect(commands).toEqual(expect.arrayContaining([
         expect.objectContaining({
           name: "/audit",
@@ -14532,6 +14629,355 @@ describe("createAgentChatService", () => {
     });
     expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+  });
+
+  describe("Codex 0.149 app-server composer commands", () => {
+    const pin149 = () => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent: "codex/0.149.1" });
+    };
+
+    it("sends ! and /shell drafts through thread/shellCommand", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!git status --short",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/shellCommand")).toBe(true);
+      });
+      const shell = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/shellCommand");
+      expect(shell?.params).toEqual(expect.objectContaining({
+        command: "git status --short",
+      }));
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("adopts the thread/shellCommand turn so the composer can settle", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", { turn: { id: "shell-turn-1" } });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "shell-turn-1", status: "completed" } },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "done"
+          && event.event.turnId === "shell-turn-1",
+        )).toBe(true);
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the shell command.",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
+    it("settles idle user shell when thread/shellCommand has no turn id", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", {});
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue after the shell command.",
+      }, { awaitDispatch: true });
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+    });
+
+    it("does not reset memory until /memory-reset confirm", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/memory-reset",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "memory/reset")).toBe(false);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && String(event.event.message).includes("/memory-reset confirm"),
+      )).toBe(true);
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/memory-reset confirm",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "memory/reset")).toBe(true);
+    });
+
+    it("sets memory mode with /memory on", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/memory on",
+      }, { awaitDispatch: true });
+
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "thread/memoryMode/set"
+        && (payload.params as { mode?: string }).mode === "enabled",
+      )).toBe(true);
+    });
+
+    it("queues a follow-up during compaction instead of steering", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: { id: "compact-1", type: "contextCompaction" },
+        },
+      });
+
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "are u still alive",
+      });
+      expect(queued.queued).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/queue/add")).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+
+      const coalesced = await service.steer({
+        sessionId: session.id,
+        text: "are u still alive",
+      });
+      expect(coalesced.queued).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Duplicate check-in ignored.",
+      )).toBe(true);
+    });
+
+    it("runs mid-turn ! commands as user shell instead of steer", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+
+      await service.steer({
+        sessionId: session.id,
+        text: "!pwd",
+      });
+
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "thread/shellCommand"
+        && (payload.params as { command?: string }).command === "pwd",
+      )).toBe(true);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+    });
+
+    it("keeps the parent turn active when a mid-turn user shell fails", async () => {
+      pin149();
+      mockState.codexResponseOverrides.set("thread/shellCommand", {
+        error: { code: -32000, message: "shell failed" },
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "!pwd",
+      }, { awaitDispatch: true });
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && String(event.event.message).includes("user shell failed"),
+      )).toBe(true);
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "Continue the original turn.",
+      }, { awaitDispatch: true })).rejects.toThrow(/turn is already active/i);
+    });
+
+    it("sends revalidated effort when switching Codex models on a live thread", async () => {
+      pin149();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "high",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this thread live.",
+      }, { awaitDispatch: true });
+
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "openai/gpt-5.6-sol",
+      });
+      const settings = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/settings/update");
+      expect(settings?.params).toEqual(expect.objectContaining({
+        effort: expect.any(String),
+      }));
+    });
+
+    it("fail-opens compaction when the turn is interrupted", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: { id: "compact-stall", type: "contextCompaction" },
+        },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+          && event.event.state === "started",
+        )).toBe(true);
+      });
+
+      await service.interrupt({ sessionId: session.id });
+      expect(events.some((event) =>
+        (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+        && event.event.state === "failed"
+        && event.event.failReason === "interrupted",
+      )).toBe(true);
+    });
+
+    it("fail-opens compaction after a stall", async () => {
+      pin149();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Keep this turn active.",
+      }, { awaitDispatch: true });
+      vi.useFakeTimers();
+      try {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "item/started",
+          params: {
+            turnId: "turn-1",
+            item: { id: "compact-timeout", type: "contextCompaction" },
+          },
+        });
+        let started = false;
+        for (let i = 0; i < 20 && !started; i += 1) {
+          await Promise.resolve();
+          started = events.some((event) =>
+            (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+            && event.event.state === "started"
+            && event.event.compactionId === "compact-timeout",
+          );
+        }
+        expect(started).toBe(true);
+        await vi.advanceTimersByTimeAsync(180_000);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(events.some((event) =>
+        (event.event.type === "context_compact" || event.event.type === "codex_context_compaction")
+        && event.event.compactionId === "compact-timeout"
+        && event.event.state === "failed"
+        && event.event.failReason === "timed_out",
+      )).toBe(true);
+    });
   });
 
   describe("runtime-native chat titles", () => {

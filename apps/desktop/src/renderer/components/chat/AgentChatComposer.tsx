@@ -54,6 +54,7 @@ import {
   type ComposerTrigger,
   type ComposerTriggerDismissal,
 } from "../../../shared/composerTriggers";
+import { codexUserShellChipRange } from "../../../shared/codexComposerCommands";
 import {
   formatChatMentionToken,
   isChatMentionTokenBody,
@@ -2275,17 +2276,46 @@ export function AgentChatComposer({
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
+  const userShellChipRange = sessionProvider === "codex"
+    ? codexUserShellChipRange(draft)
+    : null;
+  const plainUserShellChipRange = useRichComposer ? null : userShellChipRange;
   useLayoutEffect(() => {
-    if (!plainComposerTokens.length) return;
+    if (!plainComposerTokens.length && !plainUserShellChipRange) return;
     setPlainOverlayScrollTop(textareaRef.current?.scrollTop ?? 0);
-  }, [draft, plainComposerTokens.length]);
+  }, [draft, plainComposerTokens.length, plainUserShellChipRange]);
   const plainOverlayContent = useMemo(() => {
-    if (!plainComposerTokens.length) return null;
+    if (!plainComposerTokens.length && !plainUserShellChipRange) return null;
     const segments: React.ReactNode[] = [];
     let pos = 0;
-    plainComposerTokens.forEach((token, index) => {
+    const tokens: Array<{ start: number; end: number; kind: "file" | "command" | "mention" | "shell" }> = [...plainComposerTokens];
+    if (plainUserShellChipRange) {
+      tokens.push({
+        start: plainUserShellChipRange.start,
+        end: plainUserShellChipRange.end,
+        kind: "shell" as const,
+      });
+      tokens.sort((left, right) => left.start - right.start);
+    }
+    tokens.forEach((token, index) => {
       if (token.start > pos) segments.push(draft.slice(pos, token.start));
       const tokenText = draft.slice(token.start, token.end);
+      if (token.kind === "shell") {
+        segments.push(
+          <span
+            key={`chip-${index}-${token.start}`}
+            className="rounded-[4px] bg-cyan-500/16 px-0.5 text-cyan-100/92 shadow-[inset_0_0_0_1px_rgba(103,232,249,0.28)]"
+            title="User shell · unsandboxed"
+          >
+            <span className="relative inline-block align-baseline">
+              <span className="invisible whitespace-pre">{tokenText}</span>
+              <span className="absolute inset-0 overflow-hidden text-ellipsis whitespace-nowrap">$</span>
+            </span>
+          </span>,
+        );
+        pos = token.end;
+        return;
+      }
       const displayText = token.kind === "mention"
         ? mentionLabels?.[tokenText]?.trim() || mentionLabelsRef.current.get(tokenText)?.trim() || tokenText
         : tokenText;
@@ -2318,7 +2348,7 @@ export function AgentChatComposer({
     // measurable so the overlay height matches the textarea's scrollHeight.
     segments.push("​");
     return segments;
-  }, [draft, mentionLabels, plainComposerTokens]);
+  }, [draft, mentionLabels, plainComposerTokens, plainUserShellChipRange]);
 
   // Pre-warm the lane's quick-open file index as soon as the composer is
   // bound to a session so the first "@" query is served from a warm index.
@@ -6056,7 +6086,9 @@ export function AgentChatComposer({
                 rows={1}
                 onInput={resizeTextarea}
                 onScroll={(event) => {
-                  if (plainComposerTokens.length) setPlainOverlayScrollTop(event.currentTarget.scrollTop);
+                  if (plainComposerTokens.length || plainUserShellChipRange) {
+                    setPlainOverlayScrollTop(event.currentTarget.scrollTop);
+                  }
                 }}
                 onCompositionStart={() => {
                   imeComposingRef.current = true;
@@ -6099,6 +6131,20 @@ export function AgentChatComposer({
               />
             </div>
           )}
+          {userShellChipRange && useRichComposer ? (
+            <div
+              className="flex items-center gap-1.5 px-4 pb-1.5 font-mono text-[11px] leading-none text-cyan-200/55"
+              title="User shell · unsandboxed"
+            >
+              <span
+                className="rounded-[4px] bg-cyan-500/16 px-1 py-px text-cyan-100/85 shadow-[inset_0_0_0_1px_rgba(103,232,249,0.28)]"
+                aria-hidden
+              >
+                $
+              </span>
+              <span>User shell</span>
+            </div>
+          ) : null}
           {selectedSmartLinkNode?.isConnected ? (
             <ComposerSmartLinkMenu
               anchor={selectedSmartLinkNode}

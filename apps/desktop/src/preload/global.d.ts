@@ -114,6 +114,8 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexResetMemoryArgs,
+  AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
@@ -2043,6 +2045,14 @@ declare global {
             args: AgentChatCodexClearGoalArgs,
             pin?: OpenProjectBinding | null,
           ) => Promise<CodexThreadGoal | null>;
+          resetMemory: (
+            args: AgentChatCodexResetMemoryArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<void>;
+          terminateBackgroundTerminal: (
+            args: AgentChatCodexTerminateBackgroundTerminalArgs,
+            pin?: OpenProjectBinding | null,
+          ) => Promise<void>;
         };
         readTranscript: (args: {
           sessionId: string;

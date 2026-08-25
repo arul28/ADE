@@ -152,6 +152,8 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("chat", "setCodexGoalStatus")).toBe(true);
     expect(isAllowedAdeAction("chat", "clearCodexGoal")).toBe(true);
     expect(isAllowedAdeAction("chat", "getCodexGoal")).toBe(true);
+    expect(isAllowedAdeAction("chat", "resetCodexMemory")).toBe(true);
+    expect(isAllowedAdeAction("chat", "terminateCodexBackgroundTerminal")).toBe(true);
     expect(isAllowedAdeAction("git", "getCommit")).toBe(true);
   });
 

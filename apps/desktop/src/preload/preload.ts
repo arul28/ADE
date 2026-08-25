@@ -370,6 +370,8 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexResetMemoryArgs,
+  AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCreateArgs,
   AgentChatLaunchArgs,
@@ -1448,6 +1450,8 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "setCodexGoal",
   "setCodexGoalStatus",
   "clearCodexGoal",
+  "resetCodexMemory",
+  "terminateCodexBackgroundTerminal",
   // Private draft state must never fall through to the process-global IPC
   // database while the owning project binding is changing.
   "listPromptStashes",
@@ -7264,6 +7268,22 @@ const adeBridge = {
         );
         agentChatSummaryCache.clear();
         return goal as CodexThreadGoal | null;
+      },
+      resetMemory: async (
+        args: AgentChatCodexResetMemoryArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<void> => {
+        await callPinnedOrBoundRuntimeActionOr(pin, "chat", "resetCodexMemory", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexResetMemory, args),
+        );
+      },
+      terminateBackgroundTerminal: async (
+        args: AgentChatCodexTerminateBackgroundTerminalArgs,
+        pin?: OpenProjectBinding | null,
+      ): Promise<void> => {
+        await callPinnedOrBoundRuntimeActionOr(pin, "chat", "terminateCodexBackgroundTerminal", { args }, () =>
+          ipcRenderer.invoke(IPC.agentChatCodexTerminateBackgroundTerminal, args),
+        );
       },
     },
     readTranscript: (args: {

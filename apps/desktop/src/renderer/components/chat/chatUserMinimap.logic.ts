@@ -30,6 +30,8 @@ const ASSISTANT_PREVIEW_MAX_CHARS = 220;
 
 export type ChatUserMinimapTurnOutcome = "completed" | "interrupted" | "failed";
 
+export type ChatUserMinimapTickKind = "user" | "compact" | "queued";
+
 export type ChatUserMinimapSourceEntry = {
   /** Index in `groupedRows` for this user message. */
   rowIndex: number;
@@ -43,6 +45,8 @@ export type ChatUserMinimapSourceEntry = {
   assistantPreview: string | null;
   /** How this user message's turn ended; `null` while it is still running. */
   turnOutcome: ChatUserMinimapTurnOutcome | null;
+  /** Codex extras are smaller ticks; user ticks stay primary. */
+  kind?: ChatUserMinimapTickKind;
 };
 
 type TimelineUserMessageRow = ChatTranscriptGroupedEnvelope & {
@@ -83,8 +87,43 @@ function settleSpan(span: MinimapSpanAccumulator | null): void {
   span.entry.turnOutcome = span.lastDoneStatus ?? terminalTurnOutcome(span.lastStatusTurnStatus);
 }
 
+function collectCodexMinimapExtra(
+  row: ChatTranscriptGroupedEnvelope,
+  rowIndex: number,
+  fullUserOrdinal: number,
+): ChatUserMinimapSourceEntry | null {
+  const { event } = row;
+  if (event.type === "user_message" && event.deliveryState === "queued" && event.steerId) {
+    const preview = summarizeInlineText(event.displayText?.trim() || event.text || "", PREVIEW_MAX_CHARS);
+    return {
+      rowIndex,
+      key: `${row.key}:queued`,
+      preview: preview.length ? preview : "Queued follow-up",
+      fullUserOrdinal: Math.max(0, fullUserOrdinal - 1),
+      assistantPreview: null,
+      turnOutcome: null,
+      kind: "queued",
+    };
+  }
+  if (event.type === "context_compact" || event.type === "codex_context_compaction") {
+    if (event.state === "started") return null;
+    const failed = event.state === "failed";
+    return {
+      rowIndex,
+      key: `${row.key}:compact`,
+      preview: failed ? "Compaction failed" : "Context compacted",
+      fullUserOrdinal: Math.max(0, fullUserOrdinal - 1),
+      assistantPreview: null,
+      turnOutcome: failed ? "failed" : null,
+      kind: "compact",
+    };
+  }
+  return null;
+}
+
 export function collectUserMessageMinimapSourceEntries(
   groupedRows: readonly ChatTranscriptGroupedEnvelope[],
+  options?: { includeCodexExtras?: boolean },
 ): ChatUserMinimapSourceEntry[] {
   const out: ChatUserMinimapSourceEntry[] = [];
   let fullUserOrdinal = 0;
@@ -108,11 +147,17 @@ export function collectUserMessageMinimapSourceEntries(
         fullUserOrdinal,
         assistantPreview: null,
         turnOutcome: null,
+        kind: "user",
       };
       out.push(entry);
       fullUserOrdinal += 1;
       span = { entry, lastAssistantText: null, lastDoneStatus: null, lastStatusTurnStatus: undefined };
       continue;
+    }
+
+    if (options?.includeCodexExtras) {
+      const extra = collectCodexMinimapExtra(row, rowIndex, fullUserOrdinal);
+      if (extra) out.push(extra);
     }
 
     if (!span) continue;
@@ -208,6 +253,7 @@ export function computeActiveFullUserOrdinal(
     const top = offsets[rowIndex];
     if (top == null) continue;
     if (top <= scrollTop + 1) {
+      if ((fullEntries[i]!.kind ?? "user") !== "user") continue;
       bestOrdinal = fullEntries[i]!.fullUserOrdinal;
     } else {
       break;

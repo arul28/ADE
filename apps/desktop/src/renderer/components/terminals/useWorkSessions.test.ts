@@ -1686,7 +1686,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         status: "running",
       }),
     ]);
-    expect(workState.openItemIds).toContain("new-pty-session");
+    await waitFor(() => {
+      expect(workState.openItemIds).toContain("new-pty-session");
+    });
     expect(workState.activeItemId).toBe("new-pty-session");
   });
 

@@ -585,6 +585,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setCodexGoalStatus",
     "clearCodexGoal",
     "getCodexGoal",
+    "resetCodexMemory",
+    "terminateCodexBackgroundTerminal",
     "listClaudeOutputStyles",
     "getSessionCapabilities",
     "getSessionSummary",

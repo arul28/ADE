@@ -4,9 +4,12 @@ export type ContextCompactProvider = "claude" | "codex" | "opencode" | "cursor" 
 
 export type ContextCompactEvent = Extract<AgentChatEvent, { type: "context_compact" }>;
 
+export type ContextCompactFailReason = "interrupted" | "timed_out" | "teardown";
+
 export type NormalizedContextCompact = {
   trigger: "manual" | "auto" | "ade_fallback";
-  state: "started" | "completed";
+  state: "started" | "completed" | "failed";
+  failReason?: ContextCompactFailReason;
   turnId?: string;
   compactionId?: string;
   preTokens?: number;
@@ -37,6 +40,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
     return {
       trigger: event.trigger,
       state: event.state ?? "completed",
+      failReason: event.failReason,
       turnId: event.turnId,
       compactionId: event.compactionId,
       preTokens: event.preTokens,
@@ -51,6 +55,7 @@ export function normalizeContextCompactEvent(event: AgentChatEvent): NormalizedC
     return {
       trigger: event.trigger,
       state: event.state,
+      failReason: event.failReason,
       turnId: event.turnId,
       compactionId: event.compactionId ?? event.turnId,
     };
@@ -135,6 +140,7 @@ export function mergeNormalizedContextCompact(
     trigger: incoming.trigger ?? previous.trigger,
     turnId: incoming.turnId ?? previous.turnId,
     compactionId: incoming.compactionId ?? previous.compactionId,
+    failReason: incoming.failReason ?? previous.failReason,
     preTokens: incoming.preTokens ?? previous.preTokens,
     postTokens: incoming.postTokens ?? previous.postTokens,
     tokensRemoved: incoming.tokensRemoved ?? previous.tokensRemoved,
@@ -153,6 +159,7 @@ export function toContextCompactChatEvent(
     state: compact.state,
     ...(compact.turnId ? { turnId: compact.turnId } : {}),
     ...(compact.compactionId ? { compactionId: compact.compactionId } : {}),
+    ...(compact.failReason ? { failReason: compact.failReason } : {}),
     ...(compact.preTokens != null ? { preTokens: compact.preTokens } : {}),
     ...(compact.postTokens != null ? { postTokens: compact.postTokens } : {}),
     ...(compact.tokensRemoved != null ? { tokensRemoved: compact.tokensRemoved } : {}),
@@ -166,4 +173,19 @@ export function detectCompactionSignalText(text: string | null | undefined): boo
   if (!text) return false;
   const lower = text.toLowerCase();
   return /\b(compact(ing|ed|ion)?|summariz(e|ing|ed|ation)?|trim(ming|med)?\s+context|context\s+(window\s+)?(trim|compact|summar))\b/.test(lower);
+}
+
+export function compactionFailLabel(reason?: ContextCompactFailReason): string {
+  switch (reason) {
+    case "timed_out":
+      return "Compaction timed out";
+    case "interrupted":
+    case "teardown":
+    case undefined:
+      return "Compaction failed";
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
 }

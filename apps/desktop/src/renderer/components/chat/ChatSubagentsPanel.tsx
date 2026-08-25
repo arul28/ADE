@@ -8,6 +8,7 @@ import {
   CircleHalf,
   Pause,
   Play,
+  Square,
   TreeStructure,
   X,
 } from "@phosphor-icons/react";
@@ -699,7 +700,13 @@ function backgroundDurationLabel(snapshot: ChatScheduledWorkSnapshot, nowMs?: nu
  * command carries a leading `cd <path> &&`. Terminal rows render their final
  * state (the backend now guarantees terminal events arrive).
  */
-function BackgroundCommandRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot }) {
+function BackgroundCommandRow({
+  snapshot,
+  onStop,
+}: {
+  snapshot: ChatScheduledWorkSnapshot;
+  onStop?: (snapshot: ChatScheduledWorkSnapshot) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const rawCommand = (snapshot.title || snapshot.prompt || snapshot.summary || "").trim();
   const label = backgroundCommandLabel(rawCommand) || rawCommand || "Background command";
@@ -717,11 +724,12 @@ function BackgroundCommandRow({ snapshot }: { snapshot: ChatScheduledWorkSnapsho
 
   return (
     <div className="rounded-md transition-colors duration-150 hover:bg-white/[0.035]">
+      <div className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-1 pr-1">
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
-        className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 px-2 py-1.5 text-left"
+        className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 px-2 py-1.5 text-left"
         title={rawCommand || label}
       >
         <span aria-hidden className="shrink-0 text-fg/30">
@@ -746,6 +754,18 @@ function BackgroundCommandRow({ snapshot }: { snapshot: ChatScheduledWorkSnapsho
           </span>
         </span>
       </button>
+      {isRunning && onStop ? (
+        <button
+          type="button"
+          aria-label="Stop background command"
+          title="Stop background command"
+          onClick={() => onStop(snapshot)}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-fg/45 transition-colors hover:bg-rose-500/10 hover:text-rose-200/90"
+        >
+          <Square aria-hidden size={10} weight="fill" />
+        </button>
+      ) : null}
+      </div>
       <AnimatePresence initial={false}>
         {expanded ? (
           <motion.div
@@ -1011,6 +1031,7 @@ export function ChatSubagentsPanel({
   schedulesPaused = false,
   onToggleSchedulesPaused,
   onCancelScheduledWork,
+  onStopBackgroundTask,
   sessionModelLabel = null,
 }: {
   sessionId?: string | null;
@@ -1052,7 +1073,8 @@ export function ChatSubagentsPanel({
   onToggleSchedulesPaused?: () => void;
   /** Cancel one durable schedule. Claude cron jobs are deleted through CronDelete. */
   onCancelScheduledWork?: (snapshot: ChatScheduledWorkSnapshot) => void;
-  /** Parent session model label for inherited roster chips when a child did not report one. */
+  /** Stop a running Codex background terminal via `thread/backgroundTerminals/terminate`. */
+  onStopBackgroundTask?: (snapshot: ChatScheduledWorkSnapshot) => void;
   sessionModelLabel?: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -1491,8 +1513,8 @@ export function ChatSubagentsPanel({
           hint={paneSectionHint({ activeCount: backgroundGroups.active.length, runningCount: backgroundRunningCount, failedCount: backgroundFailedCount })}
           groups={backgroundGroups} capped={cappedBackground} paneUi={paneUi} sticky={stickyHeaders}
           idOf={(item) => item.id}
-          renderActiveRow={(item) => <BackgroundCommandRow snapshot={item} />}
-          renderEarlierRow={(item) => <BackgroundCommandRow snapshot={item} />}
+          renderActiveRow={(item) => <BackgroundCommandRow snapshot={item} onStop={onStopBackgroundTask} />}
+          renderEarlierRow={(item) => <BackgroundCommandRow snapshot={item} onStop={onStopBackgroundTask} />}
           onToggleCollapsed={() => toggleSection("background")} onToggleEarlier={() => toggleEarlier("background")}
           onClear={(ids) => clearEarlier("background", ids)} onRestore={() => restoreCleared("background")}
           onShowAll={() => setShowAll((current) => ({ ...current, background: true }))} showAll={showAll.background === true}

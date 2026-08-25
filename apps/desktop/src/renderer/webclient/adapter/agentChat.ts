@@ -547,6 +547,14 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         guardPin("codex.clearGoal", pin);
         return await call("chat.codex.clearGoal", args, null, false);
       },
+      resetMemory: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("codex.resetMemory", pin);
+        await call("chat.codex.resetMemory", args, undefined, false);
+      },
+      terminateBackgroundTerminal: async (args: unknown, pin?: RuntimePinArg) => {
+        guardPin("codex.terminateBackgroundTerminal", pin);
+        await call("chat.codex.terminateBackgroundTerminal", args, undefined, false);
+      },
     },
   };
 

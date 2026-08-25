@@ -1679,7 +1679,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // project's refresh result. A foreign chat can stay open while the local
     // session list refreshes, so prune against the same combined index used to
     // render tabs instead of silently dropping every foreign tab.
+    // Pending optimistic rows are also live: launchPtySession opens the tab
+    // before React flushes setSessions, and a concurrent refresh can re-render
+    // with a stale sessionsById in between. Dropping those ids makes the new
+    // terminal exist in the roster but never appear as a tab.
     const validIds = new Set(sessionsById.keys());
+    for (const sessionId of pendingOptimisticSessionsRef.current.keys()) {
+      validIds.add(sessionId);
+    }
 
     setProjectViewState((prev) => {
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));

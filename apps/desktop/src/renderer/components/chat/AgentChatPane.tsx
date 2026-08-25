@@ -199,6 +199,7 @@ import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
+import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
@@ -10189,6 +10190,7 @@ export function AgentChatPane({
   }, [invalidateCurrentChatSessionList, refreshSessions]);
 
   const archiveConfirm = useConfirmDialog();
+  const memoryResetConfirm = useConfirmDialog();
   const requestArchiveChat = useCallback(
     async (sessionId: string, title: string) => {
       const ok = await archiveConfirm.confirmAsync({
@@ -10686,6 +10688,35 @@ export function AgentChatPane({
       } catch (outputStyleError) {
         setDraft((current) => (current.trim().length ? current : draft));
         setError(outputStyleError instanceof Error ? outputStyleError.message : String(outputStyleError));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    if (
+      selectedSessionId
+      && sessionProvider === "codex"
+      && isCodexMemoryResetDraft(text)
+      && !attachments.length
+      && !contextAttachmentsSnapshot.length
+      && !visualContextPrefix.length
+    ) {
+      const ok = await memoryResetConfirm.confirmAsync({
+        title: "Reset Codex memory?",
+        message: "Deletes every memory file under this Codex home, not just this chat.",
+        confirmLabel: "Reset memory",
+        danger: true,
+      });
+      if (!ok) return;
+      setBusy(true);
+      setError(null);
+      setDraft("");
+      draftsPerSessionRef.current.delete(selectedSessionId);
+      try {
+        await window.ade.agentChat.codex.resetMemory({ sessionId: selectedSessionId }, chatRuntimePinRef.current);
+      } catch (resetError) {
+        setDraft((current) => (current.trim().length ? current : text));
+        setError(resetError instanceof Error ? resetError.message : String(resetError));
       } finally {
         setBusy(false);
       }
@@ -11827,6 +11858,19 @@ export function AgentChatPane({
           scheduleSessionsRefresh();
         }).catch((cancelError) => {
           setError(cancelError instanceof Error ? cancelError.message : String(cancelError));
+        });
+      } : undefined}
+      onStopBackgroundTask={selectedSessionId && (selectedSession?.provider ?? sessionProvider) === "codex" ? (snapshot) => {
+        const processId = snapshot.sourceTaskId?.trim();
+        if (!processId) {
+          setError("This background command has no process id to stop.");
+          return;
+        }
+        void window.ade.agentChat.codex.terminateBackgroundTerminal({
+          sessionId: selectedSessionId,
+          processId,
+        }, chatRuntimePinRef.current).catch((stopError) => {
+          setError(stopError instanceof Error ? stopError.message : String(stopError));
         });
       } : undefined}
       variant="pane"
@@ -13833,6 +13877,7 @@ export function AgentChatPane({
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
                         sessionEnded={selectedSession?.status === "ended"}
+                        sessionProvider={selectedSession?.provider ?? sessionProvider}
                         runtimePin={chatRuntimePin}
                         className="min-h-0 border-0"
                         surfaceMode={surfaceMode}
@@ -14225,6 +14270,7 @@ export function AgentChatPane({
         />
       ) : null}
       <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
+      <ConfirmDialog state={memoryResetConfirm.state} onClose={memoryResetConfirm.close} />
       {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser
           open={importBrowserOpen}

@@ -77,7 +77,7 @@
     "@factory/droid-sdk": "0.2.0",
     "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.144.5",
+    "@openai/codex": "0.149.1",
     "@opencode-ai/sdk": "1.18.21",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",

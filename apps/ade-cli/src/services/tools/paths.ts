@@ -135,7 +135,7 @@ export function toolsLockRoot(toolsRoot: string): string {
   return path.join(toolsRoot, LOCK_DIR_NAME);
 }
 
-/** `@openai/codex-darwin-arm64@0.144.5-darwin-arm64` -> a single safe filename. */
+/** `@openai/codex-darwin-arm64@0.149.1-darwin-arm64` -> a single safe filename. */
 export function toolSlug(packageName: string, version: string): string {
   return `${packageName.replace(/[@/]/g, "_")}@${version}`.replace(/[^A-Za-z0-9._@-]/g, "_");
 }

@@ -94,6 +94,25 @@ import {
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import {
+  CODEX_COMPACTION_STALL_MS,
+  type CodexCompactionFailReason,
+  codexServerSupportsBackgroundTerminals,
+  codexServerSupportsDeferGoalContinuation,
+  codexServerSupportsMemoryRpc,
+  codexServerSupportsPaginatedHistory,
+  codexServerSupportsThreadQueue,
+  codexServerSupportsThreadRevert,
+  codexServerSupportsThreadSettings,
+  codexServerSupportsUserShell,
+} from "./codexAppServerFeatures";
+import {
+  CODEX_MEMORY_RESET_RECEIPT,
+  parseCodexMemorySlashCommand,
+  parseCodexShellSlashCommand,
+  parseCodexUserShellDraft,
+  shouldCoalesceCodexCheckIn,
+} from "../../../shared/codexComposerCommands";
+import {
   countHumanChildMessagesForTurn,
   formatHumanChildMessageAnnotation,
 } from "./spawnMissionOwnership";
@@ -223,6 +242,8 @@ import type {
   AgentChatCrossMachineForkTransport,
   AgentChatCrossMachineHandoffCapsule,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexResetMemoryArgs,
+  AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexGetGoalArgs,
@@ -1373,6 +1394,20 @@ type CodexRuntime = {
   planTextByItemId: Map<string, string>;
   manualCompactionItemIds: Set<string>;
   manualCompactionPending: boolean;
+  activeCompactions: Map<string, {
+    itemId: string;
+    trigger: "manual" | "auto";
+    turnId: string;
+    startedAt: number;
+    timer: NodeJS.Timeout | null;
+  }>;
+  reviewTurnIds: Set<string>;
+  lastQueuedCheckIn: { text: string; atMs: number } | null;
+  queuedSubmissionBySteerId: Map<string, string>;
+  backgroundTerminalsByProcessId: Map<string, { command: string; cwd: string | null; itemId: string | null }>;
+  userShellItemIds: Set<string>;
+  memoryMode: "enabled" | "disabled" | null;
+  historyPaginated: boolean;
   webSearchActionsByItemId: Map<string, CodexWebSearchAction[]>;
   planningApprovalGuardByTurnId: Map<string, boolean>;
   pendingTurnPlanningApprovalGuarded: boolean | null;
@@ -1725,6 +1760,9 @@ const CODEX_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
   { name: "/init", description: "Generate an AGENTS.md scaffold in the current directory.", source: "sdk" },
   { name: "/goal", description: "Set, show, pause, resume, or clear the chat goal.", source: "local", argumentHint: "[pause|resume|clear|<objective>]" },
   { name: "/inject", description: "Inject context text into Codex thread history.", source: "local", argumentHint: "<context text>" },
+  { name: "/shell", description: "Run an unsandboxed user shell command.", source: "local", argumentHint: "<command>" },
+  { name: "/memory", description: "Show or change this thread's Codex memory eligibility.", source: "local", argumentHint: "[on|off|status]" },
+  { name: "/memory-reset", description: "Clear every memory file under this Codex home.", source: "local" },
   { name: "/logout", description: "Sign out of Codex.", source: "sdk" },
   { name: "/model", description: "Choose the active model and reasoning effort.", source: "sdk" },
   { name: "/fast", description: "Toggle Fast mode for supported models.", source: "local", argumentHint: "[on|off|status]" },
@@ -2429,6 +2467,9 @@ function runtimeBackgroundWork(runtime: ChatRuntime | null): SessionBackgroundWo
       const backgroundTypes: Array<string | null> = [];
       for (const subagent of runtime.activeSubagents.values()) {
         if (subagent.background) backgroundTypes.push(null);
+      }
+      for (const _processId of runtime.backgroundTerminalsByProcessId.keys()) {
+        backgroundTypes.push("background_task");
       }
       return summarizeBackgroundWork(backgroundTypes);
     }
@@ -3902,6 +3943,19 @@ export function codexServerSupportsForkBeforeTurn(version: CodexServerVersion | 
   if (!version) return false;
   if (version.major > 0) return true;
   return version.minor >= 145;
+}
+
+function isCodexCompactionActive(runtime: CodexRuntime): boolean {
+  return runtime.activeCompactions.size > 0;
+}
+
+function isCodexReviewTurnActive(runtime: CodexRuntime): boolean {
+  const turnId = runtime.activeTurnId ?? runtime.startedTurnId;
+  return Boolean(turnId && runtime.reviewTurnIds.has(turnId));
+}
+
+function codexTurnRejectsSteer(runtime: CodexRuntime): boolean {
+  return isCodexCompactionActive(runtime) || isCodexReviewTurnActive(runtime);
 }
 
 function codexTimestampOrNull(value: unknown): string | null {
@@ -17483,6 +17537,7 @@ export function createAgentChatService(args: {
       (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi") && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
+      failOpenCodexCompactions(managed, runtime, "teardown");
       const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
       const shouldMarkInterrupted =
         reasonAllowsPreservation
@@ -18160,7 +18215,7 @@ export function createAgentChatService(args: {
       onDispatched = undefined;
       callback();
     };
-    const slashText = args.promptText.trim();
+    const slashText = (args.userText?.trim() || args.promptText).trim();
 
     const emitCodexGoalNotice = (
       message: string,
@@ -18407,26 +18462,33 @@ export function createAgentChatService(args: {
       return;
     }
 
-    if (runtime.activeTurnId) {
+    const pendingUserShell = parseCodexUserShellDraft(slashText) ?? parseCodexShellSlashCommand(slashText);
+    const pendingMemoryCommand = parseCodexMemorySlashCommand(slashText);
+    if (runtime.activeTurnId && !pendingUserShell && !pendingMemoryCommand) {
       throw new Error("A turn is already active. Use steer or interrupt.");
     }
-    setSessionActive(managed);
-    if (!args.optimisticCodexTurnStart) {
-      emitPreparedUserMessage(managed, {
-        text: userText,
-        displayText,
-        attachments,
-        contextAttachments,
-        metadata: args.metadata,
-        laneDirectiveKey: args.laneDirectiveKey,
-        onDispatched: markDispatched,
-      });
-      emitChatEvent(managed, { type: "status", turnStatus: "started" });
-      captureTurnBeforeSha(managed);
-      emitChatEvent(managed, {
-        type: "activity",
-        ...initialTurnActivity(managed.session),
-      });
+    const skipTurnStartForActiveComposerCommand = Boolean(
+      runtime.activeTurnId && (pendingUserShell || pendingMemoryCommand),
+    );
+    if (!skipTurnStartForActiveComposerCommand) {
+      setSessionActive(managed);
+      if (!args.optimisticCodexTurnStart) {
+        emitPreparedUserMessage(managed, {
+          text: userText,
+          displayText,
+          attachments,
+          contextAttachments,
+          metadata: args.metadata,
+          laneDirectiveKey: args.laneDirectiveKey,
+          onDispatched: markDispatched,
+        });
+        emitChatEvent(managed, { type: "status", turnStatus: "started" });
+        captureTurnBeforeSha(managed);
+        emitChatEvent(managed, {
+          type: "activity",
+          ...initialTurnActivity(managed.session),
+        });
+      }
     }
     const providerSlashCommand = args.providerSlashCommand === true;
     const completeInlineCodexSlash = (
@@ -18538,6 +18600,7 @@ export function createAgentChatService(args: {
       const reviewTurnId = typeof reviewResult.turn?.id === "string" ? reviewResult.turn.id : null;
       if (reviewTurnId) {
         runtime.awaitingTurnStart = false;
+        runtime.reviewTurnIds.add(reviewTurnId);
         if (isTerminalCodexTurn(runtime, reviewTurnId, managed)) {
           runtime.activeTurnId = null;
           runtime.startedTurnId = null;
@@ -18546,6 +18609,157 @@ export function createAgentChatService(args: {
         }
         runtime.activeTurnId = reviewTurnId;
         scheduleCodexNoFirstEventWatchdog(managed, runtime, reviewTurnId);
+      }
+      return;
+    }
+
+    const userShell = pendingUserShell;
+    if (userShell) {
+      if (!codexServerSupportsUserShell(runtime.serverVersion)) {
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "This Codex app-server cannot run unsandboxed user shell commands.",
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
+        runtime.awaitingTurnStart = false;
+        completeInlineCodexSlash("This Codex app-server cannot run unsandboxed user shell commands.");
+        return;
+      }
+      if (!skipTurnStartForActiveComposerCommand) runtime.awaitingTurnStart = true;
+      try {
+        const shellResult = await runtime.request<{ turn?: { id?: string } }>("thread/shellCommand", {
+          threadId: managed.session.threadId,
+          command: userShell.command,
+        });
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "user_message",
+            text: displayText || userText,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
+        const shellTurnId = typeof shellResult.turn?.id === "string" ? shellResult.turn.id : null;
+        if (!shellTurnId) {
+          runtime.awaitingTurnStart = false;
+          completeInlineCodexSlash();
+          return;
+        }
+        runtime.awaitingTurnStart = false;
+        if (isTerminalCodexTurn(runtime, shellTurnId, managed)) {
+          runtime.activeTurnId = null;
+          runtime.startedTurnId = null;
+        } else {
+          runtime.activeTurnId = shellTurnId;
+          scheduleCodexNoFirstEventWatchdog(managed, runtime, shellTurnId);
+        }
+      } catch (error) {
+        runtime.awaitingTurnStart = false;
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: `Unsandboxed user shell failed: ${error instanceof Error ? error.message : String(error)}`,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return;
+        }
+        completeFailedInlineCodexSlash("Unsandboxed user shell failed", error);
+        return;
+      }
+      markDispatched();
+      persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+      persistChatState(managed);
+      return;
+    }
+
+    const memoryCommand = pendingMemoryCommand;
+    if (memoryCommand) {
+      const finishMemory = (message?: string) => {
+        if (skipTurnStartForActiveComposerCommand) {
+          markDispatched();
+          persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
+          if (message) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message,
+              turnId: runtime.activeTurnId ?? undefined,
+            });
+          }
+          persistChatState(managed);
+          return;
+        }
+        completeInlineCodexSlash(message);
+      };
+      if (memoryCommand.kind === "invalid") {
+        finishMemory(memoryCommand.message);
+        return;
+      }
+      if (memoryCommand.kind === "reset") {
+        if (!memoryCommand.confirm) {
+          finishMemory("Reset Codex memory? Confirm with /memory-reset confirm. This deletes every memory file under this Codex home, not just this chat.");
+          return;
+        }
+        if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+          finishMemory("This Codex app-server cannot reset memory.");
+          return;
+        }
+        try {
+          await runtime.request("memory/reset", {});
+          finishMemory(CODEX_MEMORY_RESET_RECEIPT);
+        } catch (error) {
+          if (skipTurnStartForActiveComposerCommand) {
+            finishMemory(`Codex memory reset failed: ${error instanceof Error ? error.message : String(error)}`);
+          } else {
+            completeFailedInlineCodexSlash("Codex memory reset failed", error);
+          }
+        }
+        return;
+      }
+      if (!codexServerSupportsMemoryRpc(runtime.serverVersion) && memoryCommand.kind === "set") {
+        finishMemory("This Codex app-server cannot change memory mode.");
+        return;
+      }
+      if (memoryCommand.kind === "status") {
+        const mode = runtime.memoryMode ?? "unknown";
+        finishMemory(
+          mode === "enabled"
+            ? "Codex memory is on for this thread."
+            : mode === "disabled"
+              ? "Codex memory is off for this thread."
+              : "Codex memory status is unknown for this thread.",
+        );
+        return;
+      }
+      try {
+        await runtime.request("thread/memoryMode/set", {
+          threadId: managed.session.threadId,
+          mode: memoryCommand.enabled ? "enabled" : "disabled",
+        });
+        runtime.memoryMode = memoryCommand.enabled ? "enabled" : "disabled";
+        finishMemory(
+          memoryCommand.enabled ? "Codex memory is on for this thread." : "Codex memory is off for this thread.",
+        );
+      } catch (error) {
+        if (skipTurnStartForActiveComposerCommand) {
+          finishMemory(`Codex memory update failed: ${error instanceof Error ? error.message : String(error)}`);
+        } else {
+          completeFailedInlineCodexSlash("Codex memory update failed", error);
+        }
       }
       return;
     }
@@ -25093,6 +25307,7 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
     });
     persistChatState(managed);
+    settleCodexTurnSideEffects(managed, runtime, interruptedTurnId, "interrupted");
   };
 
   const emitClaudeSubagentStarted = (
@@ -26223,6 +26438,175 @@ export function createAgentChatService(args: {
     evictOldestEntries(runtime.acceptedSteersByTurnId, 64);
   };
 
+  const emitCodexCompactionEvent = (
+    managed: ManagedChatSession,
+    payload: {
+      itemId: string;
+      turnId?: string;
+      trigger: "manual" | "auto";
+      state: "started" | "completed" | "failed";
+      failReason?: CodexCompactionFailReason;
+    },
+  ): void => {
+    emitChatEvent(managed, {
+      type: "codex_context_compaction",
+      turnId: payload.turnId ?? "",
+      trigger: payload.trigger,
+      state: payload.state,
+      compactionId: payload.itemId,
+      ...(payload.failReason ? { failReason: payload.failReason } : {}),
+    });
+  };
+
+  const failOpenCodexCompaction = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    reason: CodexCompactionFailReason,
+  ): void => {
+    const tracked = runtime.activeCompactions.get(itemId);
+    if (!tracked) return;
+    if (tracked.timer) clearTimeout(tracked.timer);
+    runtime.activeCompactions.delete(itemId);
+    emitCodexCompactionEvent(managed, {
+      itemId,
+      turnId: tracked.turnId,
+      trigger: tracked.trigger,
+      state: "failed",
+      failReason: reason,
+    });
+  };
+
+  const failOpenCodexCompactions = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    reason: CodexCompactionFailReason,
+  ): void => {
+    for (const itemId of [...runtime.activeCompactions.keys()]) {
+      failOpenCodexCompaction(managed, runtime, itemId, reason);
+    }
+  };
+
+  const armCodexCompactionStallTimer = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+  ): void => {
+    const tracked = runtime.activeCompactions.get(itemId);
+    if (!tracked) return;
+    if (tracked.timer) clearTimeout(tracked.timer);
+    tracked.timer = setTimeout(() => {
+      if (runtime.activeCompactions.get(itemId)?.timer !== tracked.timer) return;
+      failOpenCodexCompaction(managed, runtime, itemId, "timed_out");
+    }, CODEX_COMPACTION_STALL_MS);
+    tracked.timer.unref?.();
+  };
+
+  const readCodexQueueSubmissionId = (result: unknown): string | null => {
+    const record = asRecord(result);
+    if (!record) return null;
+    const queued = asRecord(record.queuedSubmission) ?? asRecord(record.submission);
+    return stringOrNull(queued?.id) ?? stringOrNull(record.id);
+  };
+
+  const startCodexQueuedFollowUp = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<void> => {
+    if (!codexServerSupportsThreadQueue(runtime.serverVersion)) return;
+    if (isCodexCompactionActive(runtime) || isCodexReviewTurnActive(runtime)) return;
+    if (runtime.activeTurnId) return;
+    const threadId = managed.session.threadId;
+    if (!threadId) return;
+    try {
+      await runtime.request("thread/queue/start", { threadId });
+    } catch (error) {
+      logger.debug("codex.queue.start_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const emitCodexBackgroundTaskUpdate = (
+    managed: ManagedChatSession,
+    processId: string,
+    status: Extract<AgentChatEvent, { type: "scheduled_work_update" }>["status"],
+    terminal: { command: string; cwd: string | null },
+  ): void => {
+    emitChatEvent(managed, {
+      type: "scheduled_work_update",
+      id: `background:${processId}`,
+      kind: "background_task",
+      status,
+      origin: "background_task",
+      title: terminal.command,
+      summary: terminal.cwd ? `cwd ${terminal.cwd}` : undefined,
+      sourceTaskId: processId,
+    });
+  };
+
+  const refreshCodexBackgroundTerminals = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<void> => {
+    if (!codexServerSupportsBackgroundTerminals(runtime.serverVersion)) return;
+    const threadId = managed.session.threadId;
+    if (!threadId) return;
+    try {
+      const result = await runtime.request<{
+        terminals?: Array<{
+          processId?: string;
+          command?: string;
+          cwd?: string | null;
+          itemId?: string | null;
+        }>;
+      }>("thread/backgroundTerminals/list", { threadId });
+      const previous = runtime.backgroundTerminalsByProcessId;
+      const next = new Map<string, { command: string; cwd: string | null; itemId: string | null }>();
+      for (const terminal of result.terminals ?? []) {
+        const processId = String(terminal.processId ?? "").trim();
+        if (!processId) continue;
+        const itemId = typeof terminal.itemId === "string" ? terminal.itemId : null;
+        if (itemId && runtime.userShellItemIds.has(itemId)) continue;
+        next.set(processId, {
+          command: String(terminal.command ?? "").trim() || processId,
+          cwd: typeof terminal.cwd === "string" ? terminal.cwd : null,
+          itemId,
+        });
+      }
+      runtime.backgroundTerminalsByProcessId = next;
+      for (const [processId, terminal] of next) {
+        emitCodexBackgroundTaskUpdate(managed, processId, "running", terminal);
+      }
+      for (const [processId, terminal] of previous) {
+        if (next.has(processId)) continue;
+        emitCodexBackgroundTaskUpdate(managed, processId, "stopped", terminal);
+      }
+    } catch (error) {
+      logger.warn("codex.background_terminals.list_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const settleCodexTurnSideEffects = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+    status: "completed" | "failed" | "interrupted" | string,
+  ): void => {
+    if (turnId) runtime.reviewTurnIds.delete(turnId);
+    if (status !== "completed") {
+      failOpenCodexCompactions(managed, runtime, "interrupted");
+    }
+    void refreshCodexBackgroundTerminals(managed, runtime);
+    if (status !== "completed" || !isCodexCompactionActive(runtime)) {
+      void startCodexQueuedFollowUp(managed, runtime);
+    }
+  };
+
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -26234,7 +26618,10 @@ export function createAgentChatService(args: {
     const itemType = String(item.type ?? "");
     const explicitTurnId = turnIdHint ?? extractCodexTurnId(item);
     const trackedTurnId = runtime.itemTurnIdByItemId.get(itemId) ?? null;
-    if (isInterruptedCodexTurn(runtime, explicitTurnId ?? trackedTurnId)) {
+    if (
+      isInterruptedCodexTurn(runtime, explicitTurnId ?? trackedTurnId)
+      && itemType !== "contextCompaction"
+    ) {
       return;
     }
     const turnId = (() => {
@@ -26269,27 +26656,43 @@ export function createAgentChatService(args: {
           runtime.manualCompactionPending = false;
         }
         const trigger = runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto";
-        emitChatEvent(managed, {
-          type: "codex_context_compaction",
-          state: "started",
+        runtime.activeCompactions.set(itemId, {
+          itemId,
           trigger,
           turnId: compactionTurnId,
-          compactionId: itemId,
+          startedAt: Date.now(),
+          timer: null,
+        });
+        armCodexCompactionStallTimer(managed, runtime, itemId);
+        emitCodexCompactionEvent(managed, {
+          itemId,
+          turnId: compactionTurnId,
+          trigger,
+          state: "started",
         });
         return;
       }
       if (eventKind === "completed") {
-        const trigger = runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto";
-        emitChatEvent(managed, {
-          type: "codex_context_compaction",
-          state: "completed",
+        const tracked = runtime.activeCompactions.get(itemId);
+        if (tracked?.timer) clearTimeout(tracked.timer);
+        runtime.activeCompactions.delete(itemId);
+        const trigger = tracked?.trigger
+          ?? (runtime.manualCompactionItemIds.has(itemId) ? "manual" : "auto");
+        emitCodexCompactionEvent(managed, {
+          itemId,
+          turnId: compactionTurnId || tracked?.turnId,
           trigger,
-          turnId: compactionTurnId,
-          compactionId: itemId,
+          state: "completed",
         });
         runtime.manualCompactionItemIds.delete(itemId);
+        void startCodexQueuedFollowUp(managed, runtime);
       }
       return;
+    }
+
+    if (itemType === "review") {
+      const reviewTurnId = turnId ?? runtime.activeTurnId ?? runtime.startedTurnId;
+      if (reviewTurnId) runtime.reviewTurnIds.add(reviewTurnId);
     }
 
     if (itemType === "plan") {
@@ -26331,6 +26734,8 @@ export function createAgentChatService(args: {
       const output = String(item.aggregatedOutput ?? runtime.commandOutputByItemId.get(itemId) ?? "");
       runtime.commandOutputByItemId.set(itemId, output);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      const commandSource = item.source === "userShell" ? "userShell" as const : undefined;
+      if (commandSource === "userShell") runtime.userShellItemIds.add(itemId);
       emitChatEvent(managed, {
         type: "command",
         command: String(item.command ?? "command"),
@@ -26340,11 +26745,15 @@ export function createAgentChatService(args: {
         turnId,
         exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
         durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
-        status
+        status,
+        ...(commandSource ? { source: commandSource } : {}),
       });
       if (eventKind === "completed") {
         runtime.commandOutputByItemId.delete(itemId);
         runtime.commandOutputStorageClosedItemIds.delete(itemId);
+      }
+      if (commandSource !== "userShell") {
+        void refreshCodexBackgroundTerminals(managed, runtime);
       }
       return;
     }
@@ -27396,6 +27805,7 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
     }
     persistChatState(managed);
+    settleCodexTurnSideEffects(managed, runtime, turnId, status);
     if (runtime.pendingSteers.length && managed.runtime === runtime) {
       await deliverNextQueuedSteer(managed, runtime);
     }
@@ -27638,6 +28048,32 @@ export function createAgentChatService(args: {
         adoptRuntimeSessionTitle(managed, params, `codex_${method.replace(/[^\w]+/g, "_")}`);
         return;
       }
+    }
+
+    if (method === "thread/queue/changed") {
+      if (!codexServerSupportsThreadQueue(runtime.serverVersion)) return;
+      const threadId = managed.session.threadId;
+      if (!threadId) return;
+      try {
+        const listed = await runtime.request<{
+          queuedSubmissions?: Array<{ id?: string; clientUserMessageId?: string }>;
+        }>("thread/queue/list", { threadId });
+        const liveIds = new Set(
+          (listed.queuedSubmissions ?? [])
+            .map((submission) => String(submission.id ?? "").trim())
+            .filter(Boolean),
+        );
+        for (const [steerId, submissionId] of [...runtime.queuedSubmissionBySteerId]) {
+          if (liveIds.has(submissionId)) continue;
+          runtime.queuedSubmissionBySteerId.delete(steerId);
+        }
+      } catch (error) {
+        logger.debug("codex.queue.list_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
     }
 
     if (method === "thread/deleted") {
@@ -27902,6 +28338,7 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
+      settleCodexTurnSideEffects(managed, runtime, turnId, status);
       if (runtime.pendingSteers.length && managed.runtime === runtime) {
         await deliverNextQueuedSteer(managed, runtime);
       }
@@ -28167,6 +28604,7 @@ export function createAgentChatService(args: {
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       });
       persistChatState(managed);
+      settleCodexTurnSideEffects(managed, runtime, turnId, "interrupted");
       if (runtime.pendingSteers.length && managed.runtime === runtime) {
         await deliverNextQueuedSteer(managed, runtime);
       }
@@ -28498,6 +28936,14 @@ export function createAgentChatService(args: {
       planTextByItemId: new Map<string, string>(),
       manualCompactionItemIds: new Set<string>(),
       manualCompactionPending: false,
+      activeCompactions: new Map(),
+      reviewTurnIds: new Set<string>(),
+      lastQueuedCheckIn: null,
+      queuedSubmissionBySteerId: new Map<string, string>(),
+      backgroundTerminalsByProcessId: new Map(),
+      userShellItemIds: new Set<string>(),
+      memoryMode: null,
+      historyPaginated: false,
       webSearchActionsByItemId: new Map<string, CodexWebSearchAction[]>(),
       planningApprovalGuardByTurnId: new Map<string, boolean>(),
       pendingTurnPlanningApprovalGuarded: null,
@@ -28901,6 +29347,9 @@ export function createAgentChatService(args: {
       ...codexPolicyArgs(codexPolicy),
       ...(dynamicTools.length ? { dynamicTools } : {}),
       experimentalRawEvents: false,
+      ...(codexServerSupportsPaginatedHistory(runtime.serverVersion)
+        ? { historyMode: "paginated" as const }
+        : {}),
     });
     applyCodexEffectiveThreadState(managed, startResponse, {
       requestedReasoningEffort: reasoningEffort,
@@ -28912,6 +29361,7 @@ export function createAgentChatService(args: {
       }),
     });
     adoptRuntimeSessionTitle(managed, startResponse, "codex_thread_start");
+    runtime.historyPaginated = codexServerSupportsPaginatedHistory(runtime.serverVersion);
     const newThreadId = typeof startResponse.thread?.id === "string" ? startResponse.thread.id : undefined;
     if (newThreadId) {
       managed.session.threadId = newThreadId;
@@ -31633,9 +32083,22 @@ export function createAgentChatService(args: {
         throw new Error("Full-history fork requires a Codex thread id. Send a Codex message first, then try Fork again.");
       }
       const runtime = await ensureCodexSessionRuntime(managed);
+      try {
+        await runtime.request("thread/goal/clear", {
+          threadId: sourceThreadId,
+        }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+      } catch (error) {
+        logger.warn("agent_chat.codex_goal_clear_before_fork_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
         threadId: sourceThreadId,
         excludeTurns: true,
+        ...(codexServerSupportsDeferGoalContinuation(runtime.serverVersion)
+          ? { deferGoalContinuation: true }
+          : {}),
       }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
       const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
       if (!forkedThreadId) {
@@ -39503,6 +39966,78 @@ export function createAgentChatService(args: {
         return { steerId, queued: false };
       }
 
+      const composerText = preparedSteer.visibleText;
+      const steeredUserShell = parseCodexUserShellDraft(composerText) ?? parseCodexShellSlashCommand(composerText);
+      if (steeredUserShell) {
+        if (!codexServerSupportsUserShell(runtime.serverVersion)) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "This Codex app-server cannot run unsandboxed user shell commands.",
+            turnId: runtime.activeTurnId,
+          });
+          return { steerId, queued: false };
+        }
+        await runtime.request("thread/shellCommand", {
+          threadId: managed.session.threadId,
+          command: steeredUserShell.command,
+        });
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: composerText,
+          steerId,
+          turnId: runtime.activeTurnId,
+          deliveryState: "delivered",
+        });
+        persistChatState(managed);
+        return { steerId, queued: false };
+      }
+      const steeredMemory = parseCodexMemorySlashCommand(composerText);
+      if (steeredMemory) {
+        const notice = async (message: string) => {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message,
+            turnId: runtime.activeTurnId ?? undefined,
+          });
+          persistChatState(managed);
+          return { steerId, queued: false as const };
+        };
+        if (steeredMemory.kind === "invalid") return notice(steeredMemory.message);
+        if (steeredMemory.kind === "reset") {
+          if (!steeredMemory.confirm) {
+            return notice("Reset Codex memory? Confirm with /memory-reset confirm. This deletes every memory file under this Codex home, not just this chat.");
+          }
+          if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+            return notice("This Codex app-server cannot reset memory.");
+          }
+          await runtime.request("memory/reset", {});
+          return notice(CODEX_MEMORY_RESET_RECEIPT);
+        }
+        if (steeredMemory.kind === "status") {
+          const mode = runtime.memoryMode ?? "unknown";
+          return notice(
+            mode === "enabled"
+              ? "Codex memory is on for this thread."
+              : mode === "disabled"
+                ? "Codex memory is off for this thread."
+                : "Codex memory status is unknown for this thread.",
+          );
+        }
+        if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+          return notice("This Codex app-server cannot change memory mode.");
+        }
+        await runtime.request("thread/memoryMode/set", {
+          threadId: managed.session.threadId,
+          mode: steeredMemory.enabled ? "enabled" : "disabled",
+        });
+        runtime.memoryMode = steeredMemory.enabled ? "enabled" : "disabled";
+        return notice(
+          steeredMemory.enabled ? "Codex memory is on for this thread." : "Codex memory is off for this thread.",
+        );
+      }
+
       const input: Array<Record<string, unknown>> = [
         {
           type: "text",
@@ -39533,6 +40068,54 @@ export function createAgentChatService(args: {
       }
 
       let deliveredTurnId = runtime.activeTurnId;
+      if (codexTurnRejectsSteer(runtime)) {
+        if (!codexServerSupportsThreadQueue(runtime.serverVersion)) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: isCodexCompactionActive(runtime)
+              ? "Codex is compacting context. Wait until it finishes — this server cannot queue a follow-up."
+              : "Codex is in a review turn. Wait until it finishes — this server cannot queue a follow-up.",
+            turnId: deliveredTurnId,
+          });
+          return { steerId, queued: false };
+        }
+        const nowMs = Date.now();
+        if (shouldCoalesceCodexCheckIn({
+          previousText: runtime.lastQueuedCheckIn?.text,
+          previousAtMs: runtime.lastQueuedCheckIn?.atMs,
+          nextText: preparedSteer.visibleText,
+          nowMs,
+        })) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: "Duplicate check-in ignored.",
+            turnId: deliveredTurnId,
+          });
+          return { steerId, queued: true };
+        }
+        const queued = await runtime.request("thread/queue/add", {
+          threadId: managed.session.threadId,
+          input,
+          clientUserMessageId: steerId,
+        });
+        const submissionId = readCodexQueueSubmissionId(queued);
+        if (submissionId) runtime.queuedSubmissionBySteerId.set(steerId, submissionId);
+        runtime.lastQueuedCheckIn = { text: preparedSteer.visibleText, atMs: nowMs };
+        emitChatEvent(managed, {
+          type: "user_message",
+          text: preparedSteer.visibleText,
+          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
+          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+          steerId,
+          turnId: deliveredTurnId,
+          deliveryState: "queued",
+        });
+        persistChatState(managed);
+        return { steerId, queued: true };
+      }
       const steerActiveTurn = async (expectedTurnId: string): Promise<void> => {
         await runtime.request("turn/steer", {
           threadId: managed.session.threadId,
@@ -39963,7 +40546,36 @@ export function createAgentChatService(args: {
   const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
-    if (!runtime || runtime.kind === "codex") {
+    if (runtime?.kind === "codex") {
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
+      if (!submissionId) {
+        if (requireQueued) throw new Error("This message is no longer queued.");
+        return;
+      }
+      const threadId = managed.session.threadId;
+      if (threadId) {
+        try {
+          await runtime.request("thread/queue/delete", { threadId, id: submissionId });
+        } catch (error) {
+          if (requireQueued) throw error;
+          logger.warn("codex.queue.delete_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      runtime.queuedSubmissionBySteerId.delete(steerId);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        steerId,
+        message: "Queued message cancelled.",
+        turnId: runtime.activeTurnId ?? undefined,
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!runtime) {
       if (requireQueued) throw new Error("This message is no longer queued.");
       return;
     }
@@ -40004,7 +40616,31 @@ export function createAgentChatService(args: {
     const trimmed = text.trim();
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
-    if (!runtime || runtime.kind === "codex") return;
+    if (runtime?.kind === "codex") {
+      const submissionId = runtime.queuedSubmissionBySteerId.get(steerId);
+      if (!submissionId) return;
+      const threadId = managed.session.threadId;
+      if (!threadId) return;
+      if (!trimmed.length) {
+        await cancelSteer({ sessionId, steerId, requireQueued: true });
+        return;
+      }
+      await runtime.request("thread/queue/update", {
+        threadId,
+        id: submissionId,
+        input: [{ type: "text", text: trimmed, text_elements: [] }],
+      });
+      emitChatEvent(managed, {
+        type: "user_message",
+        text: trimmed,
+        steerId,
+        turnId: runtime.activeTurnId ?? undefined,
+        deliveryState: "queued",
+      });
+      persistChatState(managed);
+      return;
+    }
+    if (!runtime) return;
 
     const idx = runtime.pendingSteers.findIndex((s) => s.steerId === steerId);
     if (idx === -1) return;
@@ -40412,6 +41048,8 @@ export function createAgentChatService(args: {
       if (!managed.session.threadId) return result;
       if (!runtime.activeTurnId) {
         await interruptActiveCodexSubagentTurns(managed, runtime);
+        failOpenCodexCompactions(managed, runtime, "interrupted");
+        void startCodexQueuedFollowUp(managed, runtime);
         return result;
       }
       let interruptedTurnId = runtime.activeTurnId;
@@ -40469,6 +41107,8 @@ export function createAgentChatService(args: {
         }
       }
       await interruptActiveCodexSubagentTurns(managed, runtime);
+      failOpenCodexCompactions(managed, runtime, "interrupted");
+      void startCodexQueuedFollowUp(managed, runtime);
       return result;
     }
 
@@ -44312,7 +44952,14 @@ export function createAgentChatService(args: {
         || managed.session.modelId !== descriptor.id
         || managed.session.model !== nextModel;
 
-      if (managed.runtime && modelChanged) {
+      const previousCodexRuntime = managed.runtime?.kind === "codex" ? managed.runtime : null;
+      const liveCodexSettings = previousProvider === "codex"
+        && nextProvider === "codex"
+        && Boolean(previousCodexRuntime)
+        && Boolean(managed.session.threadId)
+        && codexServerSupportsThreadSettings(previousCodexRuntime?.serverVersion ?? null);
+
+      if (managed.runtime && modelChanged && !liveCodexSettings) {
         if (managed.runtime.kind === "cursor" && managed.runtime.busy) {
           managed.runtime.pendingModelSwitchReset = true;
         } else {
@@ -44357,7 +45004,7 @@ export function createAgentChatService(args: {
           readTranscriptEnvelopes(managed, { includeBuffered: true }),
           descriptor.contextWindow,
         );
-      } else if (previousProvider === "codex") {
+      } else if (previousProvider === "codex" && !liveCodexSettings) {
         delete managed.session.threadId;
         managed.runtimeInvalidated = true;
         clearLaneDirectiveKey(managed);
@@ -44430,7 +45077,32 @@ export function createAgentChatService(args: {
       if (managed.session.identityKey === "cto" && (modelChanged || reasoningEffort !== undefined)) {
         persistCtoModelPreference(managed, descriptor.id);
       }
-      if (reasoningEffort !== undefined && managed.runtime?.kind === "codex") {
+      if (
+        (modelChanged || reasoningEffort !== undefined)
+        && liveCodexSettings
+        && previousCodexRuntime
+        && managed.session.threadId
+      ) {
+        try {
+          await previousCodexRuntime.request("thread/settings/update", {
+            threadId: managed.session.threadId,
+            ...(modelChanged ? { model: nextModel } : {}),
+            ...(managed.session.reasoningEffort && (reasoningEffort !== undefined || modelChanged)
+              ? { effort: managed.session.reasoningEffort }
+              : {}),
+          });
+        } catch (error) {
+          logger.warn("agent_chat.codex_thread_settings_update_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          delete managed.session.threadId;
+          managed.runtimeInvalidated = true;
+          clearLaneDirectiveKey(managed);
+          teardownRuntime(managed, "model_switch");
+          refreshReconstructionContext(managed);
+        }
+      } else if (reasoningEffort !== undefined && managed.runtime?.kind === "codex") {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
       }
@@ -44467,8 +45139,27 @@ export function createAgentChatService(args: {
         }
       }
       if (prev !== next && managed.runtime?.kind === "codex") {
-        managed.runtime.threadResumed = false;
-        managed.runtime.canAttachResumedTurnStart = false;
+        if (
+          managed.session.threadId
+          && codexServerSupportsThreadSettings(managed.runtime.serverVersion)
+        ) {
+          try {
+            await managed.runtime.request("thread/settings/update", {
+              threadId: managed.session.threadId,
+              ...(next ? { effort: next } : {}),
+            });
+          } catch (error) {
+            logger.warn("agent_chat.codex_thread_settings_update_failed", {
+              sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            managed.runtime.threadResumed = false;
+            managed.runtime.canAttachResumedTurnStart = false;
+          }
+        } else {
+          managed.runtime.threadResumed = false;
+          managed.runtime.canAttachResumedTurnStart = false;
+        }
       }
       if (prev !== next && managed.runtime?.kind === "pi" && next) {
         await managed.runtime.sdk.setThinking(next).catch((error) => {
@@ -46298,19 +46989,52 @@ export function createAgentChatService(args: {
 
       const runtime = await ensureCodexSessionRuntime(managed);
       const threadId = await ensureCodexControlThread(managed, runtime, "rewind");
-      const useForkBeforeTurn = codexServerSupportsForkBeforeTurn(runtime.serverVersion) && plan.targetTurnId != null;
+      const canRevert = codexServerSupportsThreadRevert(runtime.serverVersion) && plan.targetTurnId != null;
+      const canForkBeforeTurn = codexServerSupportsForkBeforeTurn(runtime.serverVersion)
+        && plan.targetTurnId != null;
       // thread/rollback is deprecated upstream; retain it for <=0.144 servers and turns without a usable id.
-      const lifecycleResponse = useForkBeforeTurn
-        ? await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+      // thread/revert is paginated-only (0.148+); fall back to fork, then rollback, when the server rejects it.
+      let lifecycleResponse: CodexThreadLifecycleResponse | null = null;
+      let rewindMethod: "revert" | "fork_before_turn" | "rollback" = "rollback";
+      if (canRevert) {
+        try {
+          const reverted = await runtime.request<CodexThreadLifecycleResponse>("thread/revert", {
             threadId,
             beforeTurnId: plan.targetTurnId,
-          }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS })
-        : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
-            threadId,
-            numTurns: 1,
           }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+          if (typeof reverted.thread?.id === "string" && reverted.thread.id.trim()) {
+            lifecycleResponse = reverted;
+            rewindMethod = "revert";
+          }
+        } catch (error) {
+          logger.warn("agent_chat.codex_thread_revert_failed", {
+            sessionId: managed.session.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (!lifecycleResponse) {
+        rewindMethod = canForkBeforeTurn ? "fork_before_turn" : "rollback";
+        lifecycleResponse = canForkBeforeTurn
+          ? await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+              threadId,
+              beforeTurnId: plan.targetTurnId,
+            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS })
+          : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
+              threadId,
+              numTurns: 1,
+            }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+      }
       applyCodexEffectiveThreadState(managed, lifecycleResponse);
-      adoptRuntimeSessionTitle(managed, lifecycleResponse, useForkBeforeTurn ? "codex_thread_fork_before_turn" : "codex_thread_rollback");
+      adoptRuntimeSessionTitle(
+        managed,
+        lifecycleResponse,
+        rewindMethod === "revert"
+          ? "codex_thread_revert"
+          : rewindMethod === "fork_before_turn"
+            ? "codex_thread_fork_before_turn"
+            : "codex_thread_rollback",
+      );
       const rolledBackThreadId = typeof lifecycleResponse.thread?.id === "string"
         ? lifecycleResponse.thread.id
         : threadId;
@@ -47008,6 +47732,55 @@ export function createAgentChatService(args: {
     return null;
   };
 
+  const resetCodexMemory = async ({
+    sessionId,
+  }: AgentChatCodexResetMemoryArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.provider !== "codex") {
+      throw new Error("Memory reset is only available for Codex chats.");
+    }
+    const runtime = await ensureCodexSessionRuntime(managed);
+    if (!codexServerSupportsMemoryRpc(runtime.serverVersion)) {
+      throw new Error("This Codex app-server cannot reset memory.");
+    }
+    await runtime.request("memory/reset", {}, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: CODEX_MEMORY_RESET_RECEIPT,
+    });
+    persistChatState(managed);
+  };
+
+  const terminateCodexBackgroundTerminal = async ({
+    sessionId,
+    processId,
+  }: AgentChatCodexTerminateBackgroundTerminalArgs): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.provider !== "codex") {
+      throw new Error("Background terminal stop is only available for Codex chats.");
+    }
+    const runtime = await ensureCodexSessionRuntime(managed);
+    if (!codexServerSupportsBackgroundTerminals(runtime.serverVersion)) {
+      throw new Error("This Codex app-server cannot terminate background terminals.");
+    }
+    const threadId = managed.session.threadId;
+    if (!threadId) throw new Error("This Codex chat has no thread to stop a background terminal on.");
+    const normalizedProcessId = processId.trim();
+    if (!normalizedProcessId) throw new Error("A processId is required to stop a Codex background terminal.");
+    await runtime.request("thread/backgroundTerminals/terminate", {
+      threadId,
+      processId: normalizedProcessId,
+    }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+    const previous = runtime.backgroundTerminalsByProcessId.get(normalizedProcessId);
+    runtime.backgroundTerminalsByProcessId.delete(normalizedProcessId);
+    if (previous) {
+      emitCodexBackgroundTaskUpdate(managed, normalizedProcessId, "stopped", previous);
+    }
+    await refreshCodexBackgroundTerminals(managed, runtime);
+    persistChatState(managed);
+  };
+
   let fallbackScheduledWorkState: unknown = null;
   scheduledWorkScheduler = createScheduledWorkScheduler({
     loadState: () => db?.getJson(scheduledWorkStateKey) ?? fallbackScheduledWorkState,
@@ -47227,6 +48000,8 @@ export function createAgentChatService(args: {
     setCodexGoal,
     setCodexGoalStatus,
     clearCodexGoal,
+    resetCodexMemory,
+    terminateCodexBackgroundTerminal,
     runSessionTurn,
     steer,
     steerUserMessage,
