@@ -823,7 +823,7 @@ function buildCommandWorkLogEvent(
     entry: withLocalhostUrls({
       id: buildWorkLogEntryId(collapseKey, event),
       createdAt: timestamp,
-      label: "Shell",
+      label: event.source === "userShell" ? "User shell" : "Shell",
       command: event.command,
       output: event.output,
       cwd: event.cwd,
@@ -2309,7 +2309,7 @@ export function appendCollapsedChatTranscriptEvent(
         const existing = normalizeContextCompactEvent(candidateEvent as AgentChatEvent);
         if (!existing) return false;
         if (contextCompactMergeKey(existing) !== mergeKey) return false;
-        return existing.state === "started" || incoming.state === "completed";
+        return existing.state === "started" || incoming.state === "completed" || incoming.state === "failed";
       });
     if (matchIndex >= 0) {
       const actualIndex = rows.length - 1 - matchIndex;

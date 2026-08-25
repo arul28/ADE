@@ -52,6 +52,8 @@ const KNOWN_UNSUPPORTED: Record<string, string> = {
   "chat.codex.getGoal": "codex goal state is local to the app-server connection",
   "chat.codex.setGoal": "codex goal state is local to the app-server connection",
   "chat.codex.setGoalStatus": "codex goal state is local to the app-server connection",
+  "chat.codex.resetMemory": "codex memory RPC is local to the app-server connection",
+  "chat.codex.terminateBackgroundTerminal": "codex background terminals are local to the app-server connection",
   "cto.getLinearProjects": "not exposed remotely yet",
   "attention.acknowledgeMachine": "machine-local attention state",
   "rebase.dismiss": "machine-local rebase suggestion state",

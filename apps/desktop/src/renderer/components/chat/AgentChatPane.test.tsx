@@ -751,6 +751,8 @@ function installAdeMocks(options?: {
         setGoal: setCodexGoal,
         clearGoal: clearCodexGoal,
         setGoalStatus: setCodexGoalStatus,
+        resetMemory: vi.fn().mockResolvedValue(undefined),
+        terminateBackgroundTerminal: vi.fn().mockResolvedValue(undefined),
       },
       fileSearch: vi.fn().mockResolvedValue([]),
       saveTempAttachment,

@@ -174,7 +174,9 @@ export function ChatUserMinimap({
     : null;
   const resolvedPreviewIndex = resolvedHoverIndex ?? resolvedKeyboardIndex;
   const previewEntry = resolvedPreviewIndex === null ? null : (entries[resolvedPreviewIndex] ?? null);
-  const previewOutcomeLabel = turnOutcomeLabel(previewEntry?.turnOutcome ?? null);
+  const previewOutcomeLabel = (previewEntry?.kind ?? "user") === "user"
+    ? turnOutcomeLabel(previewEntry?.turnOutcome ?? null)
+    : null;
 
   // Keep a durable continuation marker when the resident tail has fewer than
   // two user turns. Otherwise the whole rail disappears at the transcript
@@ -275,22 +277,29 @@ export function ChatUserMinimap({
             const lensDistance =
               resolvedPreviewIndex === null ? null : Math.abs(index - resolvedPreviewIndex);
             const outcome = entry.turnOutcome;
+            const kind = entry.kind ?? "user";
+            const isPrimary = kind === "user";
             return (
               <span
                 key={entry.key}
                 aria-hidden="true"
                 data-minimap-tick=""
                 data-outcome={outcome ?? undefined}
+                data-minimap-kind={kind}
                 className={cn(
-                  "pointer-events-none absolute left-0 -translate-y-1/2 rounded-full transition-[background-color,width] duration-150",
-                  // Thickness, not just colour, marks a turn that needs attention.
-                  isAttentionOutcome(outcome) ? "h-1" : "h-0.5",
-                  lensWidthClass(lensDistance),
+                  "pointer-events-none absolute -translate-y-1/2 transition-[background-color,width] duration-150",
+                  kind === "compact" && "left-[2px] h-1.5 w-1.5 rotate-45 rounded-[1px]",
+                  kind === "queued" && "left-[1px] h-1 w-1 rounded-[1px]",
+                  isPrimary && "left-0 rounded-full",
+                  isPrimary && (isAttentionOutcome(outcome) ? "h-1" : "h-0.5"),
+                  isPrimary && lensWidthClass(lensDistance),
                   tickToneClass(
                     outcome,
-                    index === activeIndex || index === resolvedKeyboardIndex,
-                    lensDistance === 0,
+                    isPrimary && (entry.fullUserOrdinal === activeIndex || index === resolvedKeyboardIndex),
+                    isPrimary && lensDistance === 0,
                   ),
+                  kind === "compact" && (outcome === "failed" ? "bg-red-400/80" : "bg-amber-300/70"),
+                  kind === "queued" && "bg-cyan-300/70",
                 )}
                 style={{ top: `${resolveMinimapTopPercent(index, itemCount)}%` }}
               />

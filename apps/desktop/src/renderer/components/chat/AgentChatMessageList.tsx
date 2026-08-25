@@ -5288,6 +5288,7 @@ function AgentChatMessageListMain({
   onRestoreCancelledQueue,
   turnDiffSummaries,
   sessionEnded = false,
+  sessionProvider = null,
   hasOlderHistory = false,
   loadingOlderHistory = false,
   olderHistoryError = null,
@@ -5337,6 +5338,7 @@ function AgentChatMessageListMain({
   /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
   transcriptCollapseCacheKey?: string | null;
   sessionEnded?: boolean;
+  sessionProvider?: string | null;
   /** True when older transcript pages exist above the loaded events. */
   hasOlderHistory?: boolean;
   /** True while an older transcript page is being fetched. */
@@ -6528,8 +6530,10 @@ function AgentChatMessageListMain({
   );
 
   const minimapSourceEntries = useMemo(
-    () => collectUserMessageMinimapSourceEntries(groupedRows),
-    [groupedRows],
+    () => collectUserMessageMinimapSourceEntries(groupedRows, {
+      includeCodexExtras: sessionProvider === "codex",
+    }),
+    [groupedRows, sessionProvider],
   );
 
   const promptHistoryFocusIndex = useMemo(() => {

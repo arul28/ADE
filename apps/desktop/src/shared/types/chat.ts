@@ -693,6 +693,8 @@ export type AgentChatEvent =
       exitCode?: number | null;
       durationMs?: number | null;
       status: "running" | "completed" | "failed";
+      /** Codex `!` / `/shell` runs unsandboxed via `thread/shellCommand`. */
+      source?: "userShell";
       runtime?: AgentChatRuntime;
     }
   | {
@@ -1066,16 +1068,19 @@ export type AgentChatEvent =
       // `compacting` status, OpenCode's compaction part) emit a "started" event when
       // compaction begins and a "completed" event when it ends, so the UI can show a
       // live "compacting…" indicator instead of only the finished result. Omitted by
-      // legacy/completion-only sources (treated as "completed").
-      state?: "started" | "completed";
+      // legacy/completion-only sources (treated as "completed"). "failed" covers
+      // interrupt, teardown, and a wall-clock stall so the divider cannot spin forever.
+      state?: "started" | "completed" | "failed";
+      failReason?: "interrupted" | "timed_out" | "teardown";
       turnId?: string;
     }
   | {
       type: "codex_context_compaction";
       turnId: string;
-      state: "started" | "completed";
+      state: "started" | "completed" | "failed";
       trigger: "manual" | "auto";
       compactionId?: string;
+      failReason?: "interrupted" | "timed_out" | "teardown";
     }
   | {
       type: "codex_safety_buffering";
@@ -2930,6 +2935,15 @@ export type AgentChatCodexSetGoalStatusArgs = {
 
 export type AgentChatCodexClearGoalArgs = {
   sessionId: string;
+};
+
+export type AgentChatCodexResetMemoryArgs = {
+  sessionId: string;
+};
+
+export type AgentChatCodexTerminateBackgroundTerminalArgs = {
+  sessionId: string;
+  processId: string;
 };
 
 export type AgentChatApproveArgs = {

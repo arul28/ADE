@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildContextCompactMetadataChips,
+  compactionFailLabel,
   contextCompactMergeKey,
   detectCompactionSignalText,
   formatCompactDuration,
@@ -75,6 +76,18 @@ describe("contextCompaction", () => {
   it("detects compaction signals in free-form status text", () => {
     expect(detectCompactionSignalText("Summarizing conversation history")).toBe(true);
     expect(detectCompactionSignalText("Running tests")).toBe(false);
+  });
+
+  it("labels failed compaction from failReason", () => {
+    const timedOut = normalizeContextCompactEvent({
+      type: "codex_context_compaction",
+      state: "failed",
+      trigger: "auto",
+      turnId: "turn-1",
+      failReason: "timed_out",
+    })!;
+    expect(compactionFailLabel(timedOut.failReason)).toBe("Compaction timed out");
+    expect(compactionFailLabel("interrupted")).toBe("Compaction failed");
   });
 
   it("uses compactionId as the merge key when present", () => {

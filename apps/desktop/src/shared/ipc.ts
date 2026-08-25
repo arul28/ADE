@@ -341,6 +341,8 @@ export const IPC = {
   agentChatCodexSetGoal: "ade.agentChat.codex.goal.set",
   agentChatCodexSetGoalStatus: "ade.agentChat.codex.goal.setStatus",
   agentChatCodexClearGoal: "ade.agentChat.codex.goal.clear",
+  agentChatCodexResetMemory: "ade.agentChat.codex.memory.reset",
+  agentChatCodexTerminateBackgroundTerminal: "ade.agentChat.codex.backgroundTerminals.terminate",
   orchestrationRunCreate: "ade.orchestration.runCreate",
   orchestrationBundleRead: "ade.orchestration.bundleRead",
   orchestrationManifestReadSection: "ade.orchestration.manifestReadSection",

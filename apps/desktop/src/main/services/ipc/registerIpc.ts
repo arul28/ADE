@@ -369,6 +369,8 @@ import type {
   AgentChatApproveArgs,
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
+  AgentChatCodexResetMemoryArgs,
+  AgentChatCodexTerminateBackgroundTerminalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
@@ -8215,6 +8217,16 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatCodexClearGoal, async (_event, arg: AgentChatCodexClearGoalArgs): Promise<CodexThreadGoal | null> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.clearCodexGoal(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexResetMemory, async (_event, arg: AgentChatCodexResetMemoryArgs): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.resetCodexMemory(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatCodexTerminateBackgroundTerminal, async (_event, arg: AgentChatCodexTerminateBackgroundTerminalArgs): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.terminateCodexBackgroundTerminal(arg);
   });
 
   ipcMain.handle(IPC.agentChatListClaudePlugins, async (_event, arg: AgentChatClaudePluginsArgs = {}): Promise<AgentChatClaudePlugin[]> => {
