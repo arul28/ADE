@@ -958,8 +958,7 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --force, -f            Release a session owned by another chat, and hard-reset
                            the launch lock and tracked idb companions with it.
-    --arg ignoreOwnership=true
-                           Release a session owned by another chat without the
+    --ignore-ownership     Release a session owned by another chat without the
                            hard reset: no companion sweep, no launch-lock reset.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
 `,
@@ -9974,6 +9973,10 @@ function buildIosSimulatorPlan(
           collectGenericObjectArgs(args, {
             chatSessionId: claimArgs.chatSessionId,
             force: readFlag(args, ["--force", "-f"]) ? true : undefined,
+            // Parsed for the same reason `claim` parses it: the help and the
+            // docs name this flag, and a spelling we accept but drop is how a
+            // caller ends up reaching for `--force` instead.
+            ignoreOwnership: readFlag(args, ["--ignore-ownership", "--ignore-owner"]) ? true : undefined,
           }),
         ),
       ],

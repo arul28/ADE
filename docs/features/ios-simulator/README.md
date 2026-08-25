@@ -46,8 +46,8 @@ stating the intent works.
   ADE's lane-scoped drawer uses it: that surface deliberately drives whatever
   session its lane is running and hides the ownership card, so it names itself
   and asks the rule to stand down rather than impersonating the owner. It is
-  reachable from the CLI through the generic `--arg ignoreOwnership=true`
-  escape hatch like any other action argument.
+  reachable from the CLI as `shutdown --ignore-ownership` (and, like any other
+  action argument, through the generic `--arg ignoreOwnership=true`).
 - Naming the owner's own chat session id. `getStatus` is in the agent-allowed
   `ios_simulator` action list and reports `activeSession.chatSessionId`, so any
   caller can read the owner's id and pass it as its own — via `--chat-session`
