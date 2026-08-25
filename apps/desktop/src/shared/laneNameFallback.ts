@@ -177,6 +177,45 @@ export function deriveDeterministicAutoLaneIdentity(prompt: string): {
   };
 }
 
+export function branchFragmentFromLaneTitle(title: string): string {
+  const slug = (String(title ?? "").toLowerCase().match(/[a-z0-9]+/g) ?? [])
+    .join("-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48)
+    .replace(/^-|-$/g, "");
+  return slug.length ? slug : GENERIC_LANE_FALLBACK_NAME;
+}
+
+export function resolveCoherentAutoLaneIdentity(
+  parsed: { laneTitle: string | null; branchFragment: string | null } | null | undefined,
+  fallback: { laneTitle: string; branchFragment: string },
+): { laneTitle: string; branchFragment: string } {
+  const laneTitle = parsed?.laneTitle?.trim() || null;
+  const branchFragment = parsed?.branchFragment?.trim().toLowerCase() || null;
+  if (!laneTitle) return fallback;
+  const titleSlug = branchFragmentFromLaneTitle(laneTitle);
+  if (branchFragment && branchFragment === titleSlug) {
+    return { laneTitle, branchFragment };
+  }
+  return { laneTitle, branchFragment: titleSlug };
+}
+
+export function resolveAppliedAutoLaneBranchFragment(args: {
+  adoptedAiTitle: boolean;
+  aiBranchFragment: string;
+  identityTitle: string;
+  occupied: (branchRef: string) => boolean;
+}): string {
+  const fromTitle = branchFragmentFromLaneTitle(args.identityTitle);
+  const aiFragment = String(args.aiBranchFragment ?? "").trim().toLowerCase();
+  const branchFragment = args.adoptedAiTitle && aiFragment ? aiFragment : fromTitle;
+  if (args.occupied(`ade/${branchFragment}`) && fromTitle !== branchFragment) {
+    return fromTitle;
+  }
+  return branchFragment;
+}
+
 export function isAutoLaneTemporaryBranch(branchRef: string): boolean {
   return AUTO_LANE_TEMP_BRANCH_RE.test(branchRef);
 }

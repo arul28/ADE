@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  branchFragmentFromLaneTitle,
   cleanPromptForNaming,
   deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
@@ -8,6 +9,8 @@ import {
   genericLaneFallbackName,
   genericSuffixFromLaneFallbackName,
   isAutoLaneTemporaryBranch,
+  resolveAppliedAutoLaneBranchFragment,
+  resolveCoherentAutoLaneIdentity,
 } from "./laneNameFallback";
 
 describe("automatic lane identity fallback", () => {
@@ -29,6 +32,67 @@ describe("automatic lane identity fallback", () => {
     expect(isAutoLaneTemporaryBranch("ade/naming-auto-created-lanes")).toBe(false);
     expect(isAutoLaneTemporaryBranch("feature/1a2b3c4d")).toBe(false);
     expect(isAutoLaneTemporaryBranch("ade/ABCDEF12")).toBe(false);
+  });
+
+  it("keeps a title and derives the branch when AI copies a mentioned lane's fragment", () => {
+    const fallback = deriveDeterministicAutoLaneIdentity(
+      "ok something super weird happened. @lane Chat Mention Tags is showing pr 1068",
+    );
+    expect(fallback.laneTitle).toBe("Ok Something Super Weird Happened");
+    expect(resolveCoherentAutoLaneIdentity({
+      laneTitle: "Ok Something Super Weird Happened",
+      branchFragment: "chat-mention-tags",
+    }, fallback)).toEqual({
+      laneTitle: "Ok Something Super Weird Happened",
+      branchFragment: "ok-something-super-weird-happened",
+    });
+  });
+
+  it("does not mix a fallback title with a mention-copied branch fragment", () => {
+    const fallback = {
+      laneTitle: "Ok Something Super Weird Happened",
+      branchFragment: "ok-something-super-weird-happened",
+    };
+    expect(resolveCoherentAutoLaneIdentity({
+      laneTitle: null,
+      branchFragment: "chat-mention-tags",
+    }, fallback)).toEqual(fallback);
+  });
+
+  it("keeps a coherent AI title/branch pair", () => {
+    expect(resolveCoherentAutoLaneIdentity({
+      laneTitle: "Chat Mention Tags",
+      branchFragment: "chat-mention-tags",
+    }, {
+      laneTitle: "Start Skill Image Wann Highlihgt",
+      branchFragment: "start-skill-image-wann-highlihgt",
+    })).toEqual({
+      laneTitle: "Chat Mention Tags",
+      branchFragment: "chat-mention-tags",
+    });
+  });
+
+  it("slugs titles without the prompt stopword list", () => {
+    expect(branchFragmentFromLaneTitle("Chat Mention Tags")).toBe("chat-mention-tags");
+    expect(branchFragmentFromLaneTitle("!!!")).toBe("parallel-task");
+  });
+
+  it("drops a stolen AI fragment when the title was not adopted", () => {
+    expect(resolveAppliedAutoLaneBranchFragment({
+      adoptedAiTitle: false,
+      aiBranchFragment: "chat-mention-tags",
+      identityTitle: "Ok Something Super Weird Happened",
+      occupied: () => false,
+    })).toBe("ok-something-super-weird-happened");
+  });
+
+  it("prefers the applied title slug over suffixing an occupied stolen fragment", () => {
+    expect(resolveAppliedAutoLaneBranchFragment({
+      adoptedAiTitle: true,
+      aiBranchFragment: "chat-mention-tags",
+      identityTitle: "Ok Something Super Weird Happened",
+      occupied: (ref) => ref === "ade/chat-mention-tags",
+    })).toBe("ok-something-super-weird-happened");
   });
 });
 

@@ -787,6 +787,26 @@ describe("laneService automatic lane identity", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
+  const stubUnpublishedTempBranchGit = (currentBranch = "ade/1a2b3c4d") => {
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      if (args[0] === "branch" && args[1] === "--show-current") {
+        return { exitCode: 0, stdout: `${currentBranch}\n`, stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args.includes("@{upstream}")) {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "remote" && args[1] === "get-url") {
+        return { exitCode: 2, stdout: "", stderr: "" };
+      }
+      if (args[0] === "check-ref-format") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "branch" && args[1] === "-m") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+  };
+
   it("serializes duplicate completions and renames the exact temporary branch once", async () => {
     const repoRoot = makeTempRepoRoot("ade-auto-lane-identity-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -862,6 +882,183 @@ describe("laneService automatic lane identity", () => {
         branch_ref: "ade/naming-auto-created-lanes",
       });
       expect(identityUpdateBranchRefs).toEqual(["ade/naming-auto-created-lanes"]);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a detached merged PR head branch even when git refs are gone", async () => {
+    const repoRoot = makeTempRepoRoot("ade-auto-lane-identity-pr-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-auto-identity-pr", repoRoot });
+      db.run("update lanes set name = ?, branch_ref = ? where id = ?", [
+        "Ok Something Super Weird Happened",
+        "ade/1a2b3c4d",
+        "lane-child",
+      ]);
+      db.run(
+        `
+          insert into pull_requests(
+            id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
+            title, state, base_branch, head_branch, created_at, updated_at, detached_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "pr-1068",
+          "proj-auto-identity-pr",
+          "lane-parent",
+          "acme",
+          "demo",
+          1068,
+          "https://example.com/pr/1068",
+          "Chat Mention Tags",
+          "merged",
+          "main",
+          "ade/chat-mention-tags",
+          "2026-08-10T12:55:38.000Z",
+          "2026-08-10T12:55:38.000Z",
+          "2026-08-10T13:00:00.000Z",
+        ],
+      );
+
+      stubUnpublishedTempBranchGit();
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-auto-identity-pr",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      const completed = await service.applyAutoLaneIdentity({
+        laneId: "lane-child",
+        expectedLaneName: "Ok Something Super Weird Happened",
+        temporaryBranch: "ade/1a2b3c4d",
+        laneTitle: "Ok Something Super Weird Happened",
+        branchFragment: "chat-mention-tags",
+      });
+
+      expect(completed).toMatchObject({
+        branchRenameOutcome: "renamed",
+        branchRef: "ade/ok-something-super-weird-happened",
+      });
+      expect(vi.mocked(runGit).mock.calls.some(([gitArgs]) => (
+        gitArgs[0] === "branch" && gitArgs[1] === "-m" && gitArgs[2] === "ade/ok-something-super-weird-happened"
+      ))).toBe(true);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("skips a projected GitHub PR head branch with no mapped pull_requests row", async () => {
+    const repoRoot = makeTempRepoRoot("ade-auto-lane-identity-proj-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-auto-identity-proj", repoRoot });
+      db.run("update lanes set name = ?, branch_ref = ? where id = ?", [
+        "Ok Something Super Weird Happened",
+        "ade/1a2b3c4d",
+        "lane-child",
+      ]);
+      db.run(
+        `
+          insert into github_pr_projections(
+            project_id, repo_owner, repo_name, github_pr_number, title, state,
+            is_draft, labels_json, comment_count, created_at, updated_at, synced_at, head_branch
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          "proj-auto-identity-proj",
+          "acme",
+          "demo",
+          1068,
+          "Chat Mention Tags",
+          "merged",
+          0,
+          "[]",
+          0,
+          "2026-08-10T12:55:38.000Z",
+          "2026-08-10T12:55:38.000Z",
+          "2026-08-10T12:55:38.000Z",
+          "ade/chat-mention-tags",
+        ],
+      );
+
+      stubUnpublishedTempBranchGit();
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-auto-identity-proj",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      const completed = await service.applyAutoLaneIdentity({
+        laneId: "lane-child",
+        expectedLaneName: "Ok Something Super Weird Happened",
+        temporaryBranch: "ade/1a2b3c4d",
+        laneTitle: "Ok Something Super Weird Happened",
+        branchFragment: "chat-mention-tags",
+      });
+
+      expect(completed).toMatchObject({
+        branchRenameOutcome: "renamed",
+        branchRef: "ade/ok-something-super-weird-happened",
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the fallback title and title-derived branch when the AI identity duplicates a live lane", async () => {
+    const repoRoot = makeTempRepoRoot("ade-auto-lane-identity-dup-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-auto-identity-dup", repoRoot });
+      db.run("update lanes set name = ?, branch_ref = ? where id = ?", [
+        "Chat Mention Tags",
+        "ade/chat-mention-tags",
+        "lane-parent",
+      ]);
+      db.run("update lanes set name = ?, branch_ref = ? where id = ?", [
+        "Ok Something Super Weird Happened",
+        "ade/1a2b3c4d",
+        "lane-child",
+      ]);
+
+      stubUnpublishedTempBranchGit();
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-auto-identity-dup",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      const completed = await service.applyAutoLaneIdentity({
+        laneId: "lane-child",
+        expectedLaneName: "Ok Something Super Weird Happened",
+        temporaryBranch: "ade/1a2b3c4d",
+        laneTitle: "Chat Mention Tags",
+        branchFragment: "chat-mention-tags",
+      });
+
+      expect(completed).toMatchObject({
+        laneRenameOutcome: "failed",
+        branchRenameOutcome: "renamed",
+        branchRef: "ade/ok-something-super-weird-happened",
+      });
+      expect(db.get("select name, branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
+        name: "Ok Something Super Weird Happened",
+        branch_ref: "ade/ok-something-super-weird-happened",
+      });
+      expect(vi.mocked(runGit).mock.calls.some(([gitArgs]) => (
+        gitArgs[0] === "branch" && gitArgs[1] === "-m" && gitArgs[2] === "ade/chat-mention-tags-2"
+      ))).toBe(false);
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
