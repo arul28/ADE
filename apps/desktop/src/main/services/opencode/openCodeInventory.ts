@@ -38,7 +38,6 @@ type CacheEntry = {
   projectRoot: string;
   configFingerprint: string;
   passiveConfigFingerprint: string;
-  catalogModelIds: string[];
   modelIds: string[];
   providers: OpenCodeProviderInfo[];
   error: string | null;
@@ -146,8 +145,6 @@ export function __setOpenCodeInventoryPersistencePathForTests(filePath: string |
 export type OpenCodeInventoryResult = {
   /** Selectable model ids for connected providers only. */
   modelIds: string[];
-  /** Browseable catalog model ids. Unconnected cloud providers appear here but not in modelIds. */
-  catalogModelIds: string[];
   providers: OpenCodeProviderInfo[];
   error: string | null;
   descriptors: ModelDescriptor[];
@@ -384,7 +381,7 @@ export async function probeOpenCodeProviderInventory(args: {
   if (!resolveOpenCodeExecutablePath()) {
     replaceDynamicOpenCodeModelDescriptors([]);
     inventoryCache = null;
-    return { modelIds: [], catalogModelIds: [], providers: [], error: null, descriptors: [] };
+    return { modelIds: [], providers: [], error: null, descriptors: [] };
   }
 
   const fp = fingerprintOpenCodeConfig(args.projectConfig, args.discoveredLocalModels);
@@ -399,7 +396,6 @@ export async function probeOpenCodeProviderInventory(args: {
   ) {
       return {
         modelIds: inventoryCache.modelIds,
-        catalogModelIds: inventoryCache.catalogModelIds,
         providers: inventoryCache.providers,
         error: inventoryCache.error,
         descriptors: [],
@@ -545,7 +541,6 @@ export async function probeOpenCodeProviderInventory(args: {
         }
 
         replaceDynamicOpenCodeModelDescriptors(descriptors);
-        const catalogModelIds = [...descriptors.map((d) => d.id)].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
         const modelIds = descriptors
           .filter((d) => d.openCodeProviderId ? connected.has(d.openCodeProviderId) : true)
           .map((d) => d.id)
@@ -573,13 +568,12 @@ export async function probeOpenCodeProviderInventory(args: {
           projectRoot: args.projectRoot,
           configFingerprint: fp,
           passiveConfigFingerprint: passiveFp,
-          catalogModelIds,
           modelIds,
           providers: providerInfos,
           error: null,
         };
         persistOpenCodeInventory(args.projectRoot, providerInfos);
-        return { modelIds, catalogModelIds, providers: providerInfos, error: null, descriptors };
+        return { modelIds, providers: providerInfos, error: null, descriptors };
       } finally {
         lease.release("handle_close");
       }
@@ -592,12 +586,11 @@ export async function probeOpenCodeProviderInventory(args: {
         projectRoot: args.projectRoot,
         configFingerprint: fp,
         passiveConfigFingerprint: passiveFp,
-        catalogModelIds: [],
         modelIds: [],
         providers: [],
         error: message,
       };
-      return { modelIds: [], catalogModelIds: [], providers: [], error: message, descriptors: [] };
+      return { modelIds: [], providers: [], error: message, descriptors: [] };
     } finally {
       probeInFlightMap.delete(probeKey);
     }
@@ -611,14 +604,13 @@ export async function probeOpenCodeProviderInventory(args: {
 export function peekOpenCodeInventoryCache(args: {
   projectRoot: string;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
-}): { modelIds: string[]; catalogModelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null } | null {
+}): { modelIds: string[]; providers: OpenCodeProviderInfo[]; error: string | null } | null {
   const fp = fingerprintOpenCodeConfig(args.projectConfig);
   if (!inventoryCache) return null;
   if (inventoryCache.projectRoot !== args.projectRoot) return null;
   if (inventoryCache.passiveConfigFingerprint !== fp && inventoryCache.configFingerprint !== fp) return null;
   return {
     modelIds: inventoryCache.modelIds,
-    catalogModelIds: inventoryCache.catalogModelIds,
     providers: inventoryCache.providers,
     error: inventoryCache.error,
   };

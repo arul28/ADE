@@ -183,7 +183,7 @@ describe("openCodeInventory", () => {
     });
 
     expect(result.modelIds).not.toContain("opencode/ollama/llama-3.1");
-    expect(result.catalogModelIds).not.toContain("opencode/ollama/llama-3.1");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/ollama/llama-3.1");
     expect(result.descriptors).toHaveLength(0);
   });
 
@@ -241,10 +241,10 @@ describe("openCodeInventory", () => {
       force: true,
     });
 
-    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-5");
-    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-opus-4-8");
-    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
-    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-opus-4-7");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-sonnet-5");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.descriptors.map((descriptor) => descriptor.id)).not.toContain("opencode/anthropic/claude-opus-4-7");
     expect(result.descriptors.find((descriptor) => descriptor.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,

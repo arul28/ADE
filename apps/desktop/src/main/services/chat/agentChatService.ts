@@ -43476,7 +43476,6 @@ export function createAgentChatService(args: {
       });
       return peeked ?? {
         modelIds: [] as string[],
-        catalogModelIds: [] as string[],
         providers: [],
         error: null as string | null,
       };
@@ -43526,9 +43525,12 @@ export function createAgentChatService(args: {
     // Only models from connected providers enter the catalog. The full OpenCode
     // directory is models.dev in its entirety — 195 providers / ~7.2k models — and
     // emitting it made the synced catalog 4.85 MB, which stalled or killed the iOS
-    // model picker. OpenCode's own TUI, desktop app and CLI all render model rows
-    // from the connected-only list and keep the full directory for the
-    // provider-connect dialog. `opencodeInventory.providers` still carries every
+    // model picker. OpenCode's own clients do the same: verified against
+    // sst/opencode@dev, its TUI model dialog reads the connected-only
+    // `/config/providers` store while the full `/provider` payload (which carries a
+    // `connected: string[]`) feeds only the provider-connect dialog; the desktop app
+    // and `opencode models` CLI likewise list connected providers only.
+    // `opencodeInventory.providers` still carries every
     // provider (id/name/connected/modelCount), so browsing survives without the bulk,
     // and ids still resolve through the dynamic descriptor registry that
     // openCodeInventory populates from every catalog entry.

@@ -818,8 +818,9 @@ private func workMergedProvidersByKey(
     if modelsByKey[provider.key] == nil {
       order.append(provider.key)
     }
-    // First non-empty label wins, so a blank leading block cannot hide a real one.
-    if (labelsByKey[provider.key] ?? "").isEmpty {
+    // First non-blank label wins, so an empty leading block cannot hide a real one.
+    // Trimmed, because the rest of this file treats whitespace-only as absent.
+    if (labelsByKey[provider.key] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       labelsByKey[provider.key] = provider.displayName
     }
     modelsByKey[provider.key, default: []] += provider.models
@@ -827,7 +828,9 @@ private func workMergedProvidersByKey(
   return order.map { key in
     WorkModelProvider(
       key: key,
-      displayName: labelsByKey[key] ?? key,
+      // `order` only ever holds keys inserted into both dictionaries, so these
+      // unwraps are total rather than fallbacks with meaning.
+      displayName: labelsByKey[key] ?? "",
       models: workPrioritizeCodex56Models(
         workDeduplicatedModelOptions(modelsByKey[key] ?? []),
         groupKey: groupKey,
@@ -1094,8 +1097,6 @@ struct WorkModelIdMatcher {
   init(ids: [String]) {
     keys = Set(ids.flatMap { workModelLookupKeys($0) })
   }
-
-  var isEmpty: Bool { keys.isEmpty }
 
   func matches(_ id: String?) -> Bool {
     workModelLookupKeys(id).contains { keys.contains($0) }

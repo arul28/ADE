@@ -147,9 +147,10 @@ struct WorkNewChatSheet: View {
           GlassSection(title: "Model") {
             // Lazy, because every row materialises two RoundedRectangles and a
             // `.glassEffect` layer, and an eager VStack builds all of them
-            // synchronously the moment a provider is picked. The host now scopes
-            // OpenCode to connected providers, so the list is small — this keeps a
-            // large provider list from stalling the sheet if that ever regresses.
+            // synchronously the moment a provider is picked. This is load-bearing
+            // even with the host scoped to connected providers: a single connected
+            // provider such as openrouter or github-copilot still lists hundreds of
+            // models.
             LazyVStack(alignment: .leading, spacing: 12) {
               if models.isEmpty && errorMessage == nil {
                 HStack(spacing: 10) {

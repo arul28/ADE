@@ -570,7 +570,6 @@ vi.mock("../opencode/openCodeInventory", () => ({
   peekOpenCodeInventoryCache: vi.fn(() => null),
   probeOpenCodeProviderInventory: vi.fn(async () => ({
     modelIds: ["opencode/openai/gpt-5.4"],
-    catalogModelIds: ["opencode/openai/gpt-5.4"],
     providers: [],
     error: null,
     descriptors: [],
@@ -2124,7 +2123,6 @@ beforeEach(() => {
   vi.mocked(probeOpenCodeProviderInventory).mockReset();
   vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
     modelIds: ["opencode/openai/gpt-5.4"],
-    catalogModelIds: ["opencode/openai/gpt-5.4"],
     providers: [],
     error: null,
     descriptors: [],
@@ -28401,7 +28399,7 @@ describe("createAgentChatService", () => {
     });
 
     it("keeps unconnected OpenCode providers out of the model catalog", async () => {
-      // `catalogModelIds` is the whole models.dev directory (195 providers / ~7.2k
+      // The OpenCode directory is models.dev in its entirety (195 providers / ~7.2k
       // models). Emitting all of it made the synced catalog 4.85 MB and stalled or
       // killed the iOS model picker. Only connected providers may reach the catalog.
       replaceDynamicOpenCodeModelDescriptors([
@@ -28420,7 +28418,6 @@ describe("createAgentChatService", () => {
       ]);
       vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
         modelIds: ["opencode/openai/gpt-5.4"],
-        catalogModelIds: ["opencode/nano-gpt/nano-model", "opencode/openai/gpt-5.4"],
         providers: [
           { id: "openai", name: "OpenAI", connected: true, modelCount: 1, availableModelCount: 1 },
           { id: "nano-gpt", name: "nano-gpt", connected: false, modelCount: 1, availableModelCount: 0 },

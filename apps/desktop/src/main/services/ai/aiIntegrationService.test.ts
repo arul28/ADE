@@ -483,7 +483,6 @@ describe("aiIntegrationService", () => {
     const persisted = [{ id: "moonshotai", name: "Moonshot AI", connected: false, modelCount: 10 }];
     mockState.probeOpenCodeProviderInventory.mockResolvedValue({
       modelIds: [],
-      catalogModelIds: [],
       providers: [],
       error: "OpenCode: launch-timeout: OpenCode server did not become ready in time.",
       descriptors: [],

@@ -277,7 +277,6 @@ struct WorkModelPickerSheet: View {
       .filter { !$0.isEmpty }
     guard !scopedIds.isEmpty else { return [] }
     let matcher = WorkModelIdMatcher(ids: scopedIds)
-    guard !matcher.isEmpty else { return [] }
     return availabilityScoped.compactMap { group -> WorkModelCatalogGroup? in
       let providers = group.providers.compactMap { provider -> WorkModelProvider? in
         let models = provider.models.filter { matcher.matches($0.id) }
@@ -1292,8 +1291,9 @@ enum ModelPickerRowStyle {
 // so only the handful of visible rows ever diff and skipping that work saves close
 // to nothing. It is not free, either: when `EquatableView`'s `==` returns true
 // SwiftUI keeps the installed view value, including its captured closures, and those
-// close over parent `let`s (`currentModelId`, `chatSummaryContext`, `lanes`). A sync
-// update arriving while the sheet is open would then be invisible to a tapped row.
+// close over this view's `let`s (`currentModelId`, `lanes`, `onSelect`) and, through
+// `onSelect`, over the presenting view's state. A sync update arriving while the
+// sheet is open would then be invisible to a tapped row.
 struct ModelPickerListRow: View {
   let model: WorkModelOption
   let style: ModelPickerRowStyle
