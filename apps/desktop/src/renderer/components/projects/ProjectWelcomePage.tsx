@@ -501,14 +501,10 @@ export function ProjectWelcomePage() {
           Drop a folder to open
         </div>
       ) : null}
-      {/* Top spacer: pushes the logo title down to ~1/3 of the screen height.
-          Paired with the 2x bottom region below so free space splits 1:2.
-          The hosted client skips it: with no window chrome and no onboarding
-          tour anchored to the mark, that third of the screen is better spent on
-          the machines' project list, which is the only way in on web. */}
+      {/* Keep the entry actions and project list in the first viewport. */}
       <div
         aria-hidden
-        style={webMode ? { flex: "0 0 auto", height: 16 } : { flex: "1 1 0%", minHeight: 32 }}
+        style={{ flex: "0 0 auto", height: webMode ? 16 : 24 }}
       />
 
       {/* Pinned header: logo + add button */}
@@ -518,8 +514,8 @@ export function ProjectWelcomePage() {
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
-          gap: webMode ? 16 : 32,
-          paddingBottom: webMode ? 8 : 16,
+          gap: webMode ? 12 : 18,
+          paddingBottom: webMode ? 8 : 14,
         }}
       >
         <div style={{ textAlign: "center", maxWidth: 520 }}>
@@ -538,8 +534,8 @@ export function ProjectWelcomePage() {
               alt="ADE Logo"
               data-ade-welcome-motion={webMode ? "true" : undefined}
               style={{
-                width: webMode ? 300 : 420,
-                height: webMode ? 150 : 240,
+                width: webMode ? 220 : 280,
+                height: webMode ? 110 : 150,
                 objectFit: "contain",
                 maxWidth: "72vw",
                 ...(webMode
@@ -550,7 +546,7 @@ export function ProjectWelcomePage() {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: webMode ? -6 : -16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: webMode ? -4 : -8 }}>
         <button
           type="button"
           data-tour="project.welcomeAddButton"
@@ -568,7 +564,7 @@ export function ProjectWelcomePage() {
             setWebAddProjectNoticeOpen(true);
           }}
           style={{
-            ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
+            ...primaryButton({ height: 42, padding: "0 24px", fontSize: 12 }),
             opacity: webMode && !activeWebMachine ? 0.5 : 1,
             gap: 12,
             border:
@@ -604,7 +600,7 @@ export function ProjectWelcomePage() {
           disabled={webMode && !activeWebMachine}
           onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
           style={{
-            ...outlineButton({ height: 48, padding: "0 22px", fontSize: 12 }),
+            ...outlineButton({ height: 42, padding: "0 18px", fontSize: 11 }),
             opacity: webMode && !activeWebMachine ? 0.5 : 1,
             display: "inline-flex",
             alignItems: "center",
@@ -664,37 +660,39 @@ export function ProjectWelcomePage() {
           </div>
         ) : null}
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
-        {connectedRemoteCount > 0 ? (
-          <div
-            style={{
-              marginTop: -22,
-              fontFamily: MONO_FONT,
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "#FBBF24",
-            }}
-          >
-            {connectedRemoteCount} remote device
-            {connectedRemoteCount === 1 ? "" : "s"} available
-          </div>
-        ) : null}
       </div>
 
-      {/* Scrollable recent projects list (takes ~2/3 of the free space) */}
+      {/* Scrollable recent projects list */}
       {visibleProjectGroups.length > 0 ? (
-        <div style={{ flex: "2 1 0%", minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
-          <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 48 }}>
+        <div style={{ flex: "1 1 auto", minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
+          <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 40 }}>
             <div
               style={{
-                ...LABEL_STYLE,
-                marginBottom: 12,
-                textAlign: "center",
-                color: COLORS.textMuted,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                marginBottom: 10,
+                padding: "0 2px",
               }}
             >
-              RECENT PROJECTS
+              <span style={{ ...LABEL_STYLE, color: COLORS.textSecondary }}>
+                RECENT PROJECTS
+              </span>
+              {connectedRemoteCount > 0 ? (
+                <span
+                  style={{
+                    ...LABEL_STYLE,
+                    color: "#FBBF24",
+                    fontFamily: MONO_FONT,
+                    fontSize: 9,
+                    letterSpacing: "0.04em",
+                  }}
+                >
+                  {connectedRemoteCount} remote device
+                  {connectedRemoteCount === 1 ? "" : "s"} available
+                </span>
+              ) : null}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {visibleProjectGroups.map((group) => {
@@ -727,28 +725,15 @@ export function ProjectWelcomePage() {
                 const isOpeningRow = openingRowKey === key;
                 const web: WebRowChrome | null = machine
                   ? {
-                      machineName: machine.name,
                       status: isOpeningRow
                         ? "connecting"
                         : machine.status === "connecting"
                           ? "available"
                           : machine.status,
-                      reachability: machine.reachability,
                       connectStage: isOpeningRow
                         ? machine.connectStage ?? "Dialing relay…"
                         : null,
                       stale: machine.stale,
-                      alsoOn: group.locations
-                        .filter((location) => location !== primary)
-                        .flatMap((location) => {
-                          const other = location.summary.remote;
-                          if (!other) return [];
-                          return [{
-                            key: `${other.targetId}:${other.projectId}`,
-                            machineName: location.machineName,
-                            onSelect: () => openWebProject(other.targetId, other.projectId, key),
-                          }];
-                        }),
                     }
                   : null;
                 return (
@@ -763,9 +748,10 @@ export function ProjectWelcomePage() {
                     onTogglePin={() => void handleTogglePin(group)}
                     onForget={() => handleForget(group)}
                     onMerge={canMerge ? () => setMergeTarget(rp) : undefined}
-                    alsoOn={group.locations.filter(
-                      (location) => location !== primary,
-                    )}
+                    primary={primary}
+                    locations={group.locations}
+                    onSelectMachine={(location) => handleOpen(location.summary)}
+                    lastActiveAt={group.lastOpenedAt}
                     web={web}
                   />
                 );
@@ -774,7 +760,7 @@ export function ProjectWelcomePage() {
           </div>
         </div>
       ) : (
-        <div aria-hidden style={{ flex: "2 1 0%" }} />
+        <div aria-hidden style={{ flex: "1 1 auto" }} />
       )}
 
       {forgetToast ? (
