@@ -559,7 +559,7 @@ follows the chat: a chat on another machine gets **that** machine's git,
 terminals, and files, not the tab's.
 
 - **Lane resolution.** A foreign chat's lane is absent from the tab-bound
-  `lanes` array, so the worktree path — and therefore the iOS / App Control
+  `lanes` array, so the worktree path — and therefore the iOS / Electron Control
   project root — resolved to null. The pane resolves the active lane against
   `useLanesForPin(runtimePin)` (the pinned machine's slice of the
   cross-machine lane union), falling back to `lanes` only for an unpinned

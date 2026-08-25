@@ -22,6 +22,11 @@ private struct HubChatCoverModifier: ViewModifier {
       HubChatCover(target: target, syncService: syncService) { self.target = nil }
         .environmentObject(syncService)
         .environmentObject(dictationController)
+        // The cover hosts `WorkSessionDestinationView`, which reads the gate to
+        // decide whether "Attach issue" exists. Re-injected for the same reason
+        // its two neighbours are: a cover that misses an `@EnvironmentObject`
+        // its content reads traps at runtime rather than degrading.
+        .environmentObject(syncService.pluginPresenceGate)
     }
   }
 }

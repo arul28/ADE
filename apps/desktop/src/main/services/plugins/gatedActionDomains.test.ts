@@ -7,6 +7,7 @@ import {
   allGatedActionDomains,
   buildGatedDomainDenial,
   buildMissingSurfaceDenial,
+  gatedDomainUnavailableReason,
   pluginDisplayNameFromCatalog,
   pluginNotInstalledMessage,
   pluginStepUnavailableMessage,
@@ -275,5 +276,43 @@ describe("plugin step refusal", () => {
       pluginsRoot: writePluginsRoot({}),
       lookupDisplayName: () => null,
     })).toBe("This machine doesn't have the ade-linear plugin.");
+  });
+});
+
+describe("gatedDomainUnavailableReason", () => {
+  // The domain-shaped half of the same question, and the one that regressed:
+  // both automation registries answered it with `buildGatedDomainDenial` alone,
+  // which writes the sentence without ever checking install state. Every
+  // `ios_simulator` / `linear_*` / `app_control` automation step then failed —
+  // telling the user to install a plugin they already had.
+  it("stays silent for a domain whose plugin is installed and enabled", () => {
+    expect(gatedDomainUnavailableReason("linear_issue_tracker", {
+      pluginsRoot: writePluginsRoot({ "ade-linear": {} }),
+      lookupDisplayName: () => "Linear",
+    })).toBeNull();
+  });
+
+  it("refuses a domain whose plugin is installed but switched off", () => {
+    expect(gatedDomainUnavailableReason("linear_issue_tracker", {
+      pluginsRoot: writePluginsRoot({ "ade-linear": { enabled: false } }),
+      lookupDisplayName: () => "Linear",
+    })).toContain("Linear");
+  });
+
+  it("refuses a domain whose plugin was never installed", () => {
+    expect(gatedDomainUnavailableReason("ios_simulator", {
+      pluginsRoot: writePluginsRoot({}),
+      lookupDisplayName: () => "iOS Simulator",
+    })).toBe(
+      "This machine doesn't have iOS Simulator. It's provided by the ade-ios-sim plugin — available in the Marketplace.",
+    );
+  });
+
+  it("stays silent for a domain no plugin gates", () => {
+    // ADE's own domains are not a plugin's to refuse, installed or not.
+    expect(gatedDomainUnavailableReason("lane", {
+      pluginsRoot: writePluginsRoot({}),
+      lookupDisplayName: () => "Linear",
+    })).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } fr
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 
 export function UserMessageIssueContext({
@@ -17,6 +18,11 @@ export function UserMessageIssueContext({
   mode: ChatSurfaceMode;
   sessionId?: string | null;
 }) {
+  // The transcript's own copy of the composer's Linear detail pane, and it
+  // needs the composer's gate. The chip itself stays — a past turn really did
+  // carry that issue — but opening the Linear-branded pane, and offering to
+  // detach from a machine with no Linear, does not.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
   const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
   const [hiddenContextKeys, setHiddenContextKeys] = useState<string[]>([]);
@@ -45,6 +51,7 @@ export function UserMessageIssueContext({
         className="mt-1 px-0 py-0"
         onOpenContext={(attachment) => {
           if (attachment.type === "linear_issue") {
+            if (!linearSurfaceVisible) return;
             setLinearDetailsIssueId(attachment.issue.id);
             return;
           }
@@ -55,7 +62,7 @@ export function UserMessageIssueContext({
         }}
       />
       <LinearIssueSelectModal
-        open={linearIssue != null}
+        open={linearIssue != null && linearSurfaceVisible}
         ariaLabel="Linear issue"
         selectedIssue={linearIssue}
         mode="details"

@@ -507,7 +507,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   CLI/shell rows, adding lane-then-launch-pin resolution
   (`pinForSession`) and the launch-pin registry writes
   (`rememberSessionPin` / `forgetSessionPin`) on top of the shared router. The
-  Work tools pane (Terminal / Git / Files / iOS / App Control / Browser) follows
+  Work tools pane (Terminal / Git / Files / iOS / Electron Control / Browser) follows
   the active Work session's machine through a `runtimePin` prop off that same
   hook, so a chat on another machine gets *that* machine's git, terminals, and
   files rather than the tab's.
@@ -517,7 +517,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `useForeignSessionLaneId` when the chat is not in this tab's list → pin, via
   the chat machine router) and hands the result to `ChatRuntimeScopeProvider`,
   which covers its whole panel/drawer subtree. The pane and every chat-scoped
-  tool — Git toolbar, iOS simulator, App Control, built-in browser, file
+  tool — Git toolbar, iOS simulator, Electron Control, built-in browser, file
   changes, PR pane, terminals — therefore cannot disagree about which machine
   the chat is on, which is the failure mode a global `useAppStore` selector
   produces by default: it answers with the *tab's* machine, wrong in exactly the
@@ -599,7 +599,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   and a run's captured artifacts all live on the machine that owns the lane:
   - the **iOS simulator** domain (`getStatus` / `listDevices` /
     `listLaunchTargets` / `launch` / `attachToChatSession` / `shutdown` /
-    `screenshot` / `getScreenSnapshot` and the rest), **App Control**, and the
+    `screenshot` / `getScreenSnapshot` and the rest), **Electron Control**, and the
     **computer-use artifact** reads and repairs (`deleteArtifacts` /
     `recoverArtifact` / `readArtifactPreview`). These route through domain-bound
     wrappers — `callIosSimulatorActionOr`, `callAppControlActionOr`,

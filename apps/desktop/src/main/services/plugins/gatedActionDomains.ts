@@ -222,6 +222,26 @@ export function buildGatedDomainDenial(
 }
 
 /**
+ * Why an automation's ADE-action step cannot run right now, or null when it can.
+ *
+ * The domain-shaped twin of {@link pluginStepUnavailableReason}, and it exists
+ * because the two halves are easy to get wrong apart.
+ * {@link buildGatedDomainDenial} only WRITES the sentence — it resolves the
+ * owner from the table and never asks whether that owner is installed — so a
+ * caller that treats it as the whole answer refuses every gated domain,
+ * including the ones this machine has. Both automation registries did exactly
+ * that. Keeping the pair in one exported function is what stops the next one.
+ */
+export function gatedDomainUnavailableReason(
+  domain: string,
+  options: { pluginsRoot?: string; lookupDisplayName?: PluginDisplayNameLookup } = {},
+): string | null {
+  const pluginsRoot = options.pluginsRoot ?? resolvePluginsRoot();
+  if (!resolveDisabledActionDomains(pluginsRoot).has(domain)) return null;
+  return buildGatedDomainDenial(domain, options.lookupDisplayName ?? defaultLookup)?.message ?? null;
+}
+
+/**
  * The same refusal for a whole compiled surface, for transports that expose a
  * plugin's capability as named methods rather than as an action domain — the
  * sync command surface phones and the web client call.

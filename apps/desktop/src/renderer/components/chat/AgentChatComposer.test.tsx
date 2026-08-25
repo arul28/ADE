@@ -74,8 +74,8 @@ vi.mock("@lobehub/icons", () => {
 
 beforeEach(() => {
   installMatchMediaMock();
-  // Issue context attaches Linear tickets and nothing else, so the whole entry
-  // is a Linear plugin surface. These tests describe a machine that has it.
+  // Issue context has a Linear half and a core GitHub half. Only the Linear
+  // half is a plugin surface; these tests describe a machine that has it.
   seedBuiltinSurfacePlugins(["linear"]);
 });
 

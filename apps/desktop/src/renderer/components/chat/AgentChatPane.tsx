@@ -916,7 +916,11 @@ function buildDraftLaunchNamingSeed(snapshot: DraftLaunchSnapshot): string {
   if (snapshot.text.length) return snapshot.text;
   const imageCount = snapshot.attachments.filter((attachment) => attachment.type === "image").length;
   const fileCount = snapshot.attachments.filter((attachment) => attachment.type === "file").length;
-  const issueCount = snapshot.contextAttachments.filter((attachment) => attachment.type === "linear_issue").length;
+  // Both issue sources count. A chat launched with GitHub issues and no text
+  // was named "New chat task" with nothing after it.
+  const issueCount = snapshot.contextAttachments.filter(
+    (attachment) => attachment.type === "linear_issue" || attachment.type === "github_issue",
+  ).length;
   const parts = [
     "New chat task",
     imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,
@@ -7053,7 +7057,11 @@ export function AgentChatPane({
     setIosSimulatorDrawerModeRequest(null);
     setIosSimulatorSessionChip(null);
     const api = window.ade?.iosSimulator;
-    if (!api?.getStatus || hideLaneToolDrawers) return undefined;
+    // Same rule as the event subscription above: an absent plugin gets no probe
+    // at all. Without this the pane asked the simulator service for status on
+    // every chat switch and could set `iosSimulatorHostSupported` for a surface
+    // this machine no longer has.
+    if (!api?.getStatus || hideLaneToolDrawers || !iosSimulatorSurfaceVisible) return undefined;
     let cancelled = false;
     // The chip existed only as a side effect of the live `session-started`
     // event, so the two commonest cases lost it entirely: opening ADE while a
@@ -7071,7 +7079,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, laneId, selectedSessionId]);
+  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane, iosSimulatorSurfaceVisible, laneId, selectedSessionId]);
 
   useEffect(() => {
     const next = new Set<string>();
@@ -10413,7 +10421,9 @@ export function AgentChatPane({
         if (!text.length && (attachmentsSnapshot.length || contextAttachmentsSnapshot.length)) {
           const imageCount = attachmentsSnapshot.filter((a) => a.type === "image").length;
           const fileCount = attachmentsSnapshot.filter((a) => a.type === "file").length;
-          const issueCount = contextAttachmentsSnapshot.filter((a) => a.type === "linear_issue").length;
+          const issueCount = contextAttachmentsSnapshot.filter(
+            (a) => a.type === "linear_issue" || a.type === "github_issue",
+          ).length;
           namingSeed = [
             "Parallel attachment task",
             imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : null,

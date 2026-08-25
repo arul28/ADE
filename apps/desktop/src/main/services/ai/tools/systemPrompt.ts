@@ -1,4 +1,4 @@
-import { buildAdeCliAgentGuidance } from "../../../../shared/adeCliGuidance";
+import { buildAdeCliAgentGuidance, type AdeGuidanceOptions } from "../../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../../shared/agentSkillRoots";
 
 type HarnessMode = "chat" | "coding" | "planning";
@@ -180,6 +180,15 @@ export function buildCodingAgentSystemPrompt(args: {
   interactive?: boolean;
   runtime?: AdeRuntimeKind;
   adeSkillRoots?: readonly string[];
+  /**
+   * What this machine actually has installed, for the bootstrap skill roster.
+   *
+   * Omitted means "this caller cannot know", and the roster stays complete —
+   * see {@link AdeGuidanceOptions}. Callers that can read the plugin install
+   * records must pass them, or the prompt advertises skills whose plugin was
+   * uninstalled.
+   */
+  guidanceOptions?: AdeGuidanceOptions;
   orchestrationRole?: OrchestratorRoleKind;
   orchestrationRunId?: string;
   orchestrationBundlePath?: string;
@@ -294,7 +303,7 @@ export function buildCodingAgentSystemPrompt(args: {
       : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
     "If tool results fail or contradict the current plan, synthesize the finding and adapt rather than repeating the same failing action.",
     "",
-    buildAdeCliAgentGuidance(adeSkillRoots),
+    buildAdeCliAgentGuidance(adeSkillRoots, args.guidanceOptions ?? {}),
     ...(hasWorkflowTools
       ? [
           "",

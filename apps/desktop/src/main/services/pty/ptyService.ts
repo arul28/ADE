@@ -5998,6 +5998,10 @@ export function createPtyService({
               ?? initialResumeMetadata?.launch?.permissionMode
               ?? existingSession?.resumeMetadata?.launch?.permissionMode
               ?? null,
+            // Read here rather than at module scope: the file is rewritten on
+            // every launch precisely so an install or uninstall between two
+            // launches reaches the next OpenCode session.
+            installedBuiltinSurfaces: readInstalledBuiltinSurfaces(),
           });
           const withInstructions = withOpenCodeAdeInstructions(
             { env: launchEnv as Record<string, string>, startupCommand },

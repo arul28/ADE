@@ -122,6 +122,7 @@ import { readPluginRegistryFile } from "../../desktop/src/main/services/plugins/
 import {
   allGatedActionDomains,
   buildGatedDomainDenial,
+  gatedDomainUnavailableReason,
   pluginStepUnavailableReason,
 } from "../../desktop/src/main/services/plugins/gatedActionDomains";
 import { builtinSurfaceOwner } from "../../desktop/src/shared/plugins/builtinSurfaces";
@@ -2762,7 +2763,7 @@ export async function createAdeRuntime(args: {
           .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
       },
       unavailableReason(domain: string): string | null {
-        return buildGatedDomainDenial(domain)?.message ?? null;
+        return gatedDomainUnavailableReason(domain);
       },
     };
     automationService?.bindAdeActionRegistry(adeActionLookup);

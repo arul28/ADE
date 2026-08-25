@@ -7,6 +7,7 @@ import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 
 function attachmentName(path: string): string {
   // Split on both POSIX and Windows separators so a Windows path
@@ -75,9 +76,20 @@ function ContextAttachmentChip({
   onRemove?: (key: string) => void;
   onOpen?: (attachment: AgentChatContextAttachment) => void;
 }) {
+  // The chip stays either way — the attachment is real and the agent receives
+  // it, so erasing it on uninstall would misreport what the turn carries. What
+  // goes is the way in: with `ade-linear` absent there is no Linear pane to
+  // open, and a chip that still looked clickable was a dead click.
+  const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
   switch (attachment.type) {
     case "linear_issue":
-      return <LinearIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
+      return (
+        <LinearIssueContextChip
+          attachment={attachment}
+          onRemove={onRemove}
+          onOpen={linearSurfaceVisible ? onOpen : undefined}
+        />
+      );
     case "github_issue":
       return <GitHubIssueContextChip attachment={attachment} onRemove={onRemove} onOpen={onOpen} />;
     case "orchestration_annotation":

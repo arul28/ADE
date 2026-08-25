@@ -717,7 +717,7 @@ Renderer surfaces:
   files. Lanes resolve against `useLanesForPin(runtimePin)` — the pinned
   machine's slice of the cross-machine lane union — because a foreign chat's
   lane is absent from the tab-bound `lanes` array, which left the worktree
-  path (and therefore the iOS / App Control project root) null; the same
+  path (and therefore the iOS / Electron Control project root) null; the same
   scoped list feeds lane-mismatch messages. Each panel gets a machine-keyed
   React `key` (`work-git:<pinKey>:<laneId>`, `work-terminal:…`,
   `work-files:…`, `work-ios:…`, `work-appcontrol:…`, `work-browser:…`) so a
@@ -726,7 +726,7 @@ Renderer surfaces:
   calls have no local fallback, so a pinned machine that is known offline
   (`useMachineEntryForBinding`) gets one plain line naming it
   ("<machine> is offline.", via `machineNameForBinding`) on the git and
-  terminal tabs and skipped App Control / iOS status probes, instead of a
+  terminal tabs and skipped Electron Control / iOS status probes, instead of a
   wall of rejected IPC. Terminal ownership is resolved from the active
   session itself — any chat session, or any running agent-CLI session with a
   `ptyId` and an insertable tool type, including one on another machine —

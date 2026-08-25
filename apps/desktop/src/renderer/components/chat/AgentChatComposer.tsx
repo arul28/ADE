@@ -2210,13 +2210,17 @@ export function AgentChatComposer({
     attachmentCount: attachmentSlotsUsed,
   });
   const contextAttachmentCount = contextAttachments.length;
-  // Linear is the only issue source this menu can actually attach from —
-  // GitHub is a placeholder row — so without the Linear plugin the whole
-  // "Issue context" entry opens onto nothing and goes with it.
+  // This menu has two issue sources and only one of them is a plugin. GitHub
+  // attach is core and stays whatever the Linear plugin does; the Linear row
+  // follows `ade-linear`. Gating them together used to be right — GitHub was a
+  // placeholder — and became wrong the moment GitHub could really attach: the
+  // shared gate took a working core feature down with the uninstalled plugin.
   const linearSurfaceVisible = useBuiltinSurfaceVisible("linear");
-  const canAttachIssueContext =
-    linearSurfaceVisible && !composerInputLocked && typeof onAddContextAttachment === "function";
-  const showIssueContextEntry = linearSurfaceVisible;
+  const attachIssueContextEnabled =
+    !composerInputLocked && typeof onAddContextAttachment === "function";
+  const canAttachLinearIssueContext = attachIssueContextEnabled && linearSurfaceVisible;
+  const canAttachGitHubIssueContext = attachIssueContextEnabled && githubRepo != null;
+  const showIssueContextEntry = linearSurfaceVisible || githubRepo != null;
   const showOrchestratorModeButton = Boolean(onStartOrchestratorChat && !sessionId && !parallelChatMode);
   const orchestratorModeButtonDisabled = composerInputLocked || busy || turnActive;
   const showLaunchClipboardNotice =
@@ -4935,7 +4939,7 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const issueContextMenu = issueContextMenuOpen && linearSurfaceVisible && issueContextButtonRef.current ? createPortal(
+  const issueContextMenu = issueContextMenuOpen && showIssueContextEntry && issueContextButtonRef.current ? createPortal(
     <div
       className="fixed z-[1000] overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
       data-issue-context-menu="true"
@@ -4947,34 +4951,36 @@ export function AgentChatComposer({
         <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
       </div>
       <div className="p-1">
-        <button
-          type="button"
-          className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
-          disabled={!canAttachIssueContext}
-          onClick={() => {
-            if (!canAttachIssueContext) return;
-            setIssueContextMenuOpen(false);
-            setLinearIssuePickerMode("attach");
-            setLinearIssuePickerOpen(true);
-          }}
-        >
-          <span
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-            style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
+        {linearSurfaceVisible ? (
+          <button
+            type="button"
+            className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+            disabled={!canAttachLinearIssueContext}
+            onClick={() => {
+              if (!canAttachLinearIssueContext) return;
+              setIssueContextMenuOpen(false);
+              setLinearIssuePickerMode("attach");
+              setLinearIssuePickerOpen(true);
+            }}
           >
-            <LinearMark size={11} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">Linear issue</span>
-          </span>
-        </button>
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
+            >
+              <LinearMark size={11} />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-medium">Linear issue</span>
+            </span>
+          </button>
+        ) : null}
         {githubRepo ? (
           <button
             type="button"
             className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
-            disabled={!canAttachIssueContext}
+            disabled={!canAttachGitHubIssueContext}
             onClick={() => {
-              if (!canAttachIssueContext) return;
+              if (!canAttachGitHubIssueContext) return;
               setIssueContextMenuOpen(false);
               setGitHubIssuePickerMode("attach");
               setGitHubIssuePickerOpen(true);
@@ -5847,10 +5853,10 @@ export function AgentChatComposer({
                       // Reads as "on" while issues are attached, so the collapsed
                       // trigger's dot reports them without needing its own badge.
                       active: contextAttachmentCount > 0,
-                      disabled: !canAttachIssueContext,
+                      disabled: !(canAttachLinearIssueContext || canAttachGitHubIssueContext),
                       badge: contextAttachmentCount || undefined,
                       onSelect: () => {
-                        if (!canAttachIssueContext) return;
+                        if (!canAttachLinearIssueContext && !canAttachGitHubIssueContext) return;
                         setAttachmentPickerOpen(false);
                         setIssueContextMenuOpen((open) => !open);
                       },

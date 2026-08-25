@@ -722,4 +722,32 @@ describe("ADE instructions for the tracked OpenCode CLI", () => {
       permissionMode: "edit",
     })).toBeNull();
   });
+
+  it("advertises only the skills whose plugin this machine has", () => {
+    // A tracked OpenCode session gets the same trimmed roster the other
+    // providers get. Naming `ade-linear` on a machine without the Linear
+    // plugin costs the agent a turn to discover the skill is not loadable.
+    const trimmed = buildOpenCodeAdeInstructions({
+      laneWorktreePath: lane,
+      permissionMode: "edit",
+      installedBuiltinSurfaces: new Set(["ios"] as const),
+    });
+
+    expect(trimmed).toContain("`ade-ios-simulator`");
+    expect(trimmed).not.toContain("`ade-linear`");
+    expect(trimmed).not.toContain("`ade-app-control`");
+    // Skills that belong to no plugin are unconditional.
+    expect(trimmed).toContain("`ade-cli-control-plane`");
+  });
+
+  it("keeps the roster complete when install state is unknown", () => {
+    // Omitted means "this caller cannot know", never "none": a roster trimmed
+    // on a guess hides a skill the machine really has, and the agent has no
+    // way to find out later.
+    const unknown = buildOpenCodeAdeInstructions({ laneWorktreePath: lane, permissionMode: "edit" });
+
+    expect(unknown).toContain("`ade-linear`");
+    expect(unknown).toContain("`ade-ios-simulator`");
+    expect(unknown).toContain("`ade-app-control`");
+  });
 });

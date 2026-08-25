@@ -622,6 +622,12 @@ private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? 
 
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
+  /// "Attach issue" attaches a Linear issue and nothing else on iOS, so the row
+  /// is a Linear entry point and follows `ade-linear`. The remote-action probe
+  /// alone cannot answer this: the verb lives in the ungated `lane` domain, so
+  /// it stays callable after the plugin is gone and the row would render onto a
+  /// sheet `ContentView` already refuses to present.
+  @EnvironmentObject private var pluginGate: PluginPresenceGate
   /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows
   /// into `headerMenuModel` and re-renders the equatable-gated header menu.
   @ObservedObject private var pushNotificationService = PushNotificationService.shared
@@ -1164,6 +1170,10 @@ struct WorkSessionDestinationView: View {
             invokeChatHeaderPluginAction(contribution, actionId: actionId)
           },
           onAttachIssue: {
+            // Checked again rather than trusting the hidden row: a hidden
+            // control is not access control, which is the rule every other
+            // gated entry point on the phone follows.
+            guard pluginGate.owns(.linear) else { return }
             ADEHaptics.light()
             syncService.linearPaneAttachSessionId = session.id
             syncService.linearPanePresented = true
@@ -1202,7 +1212,8 @@ struct WorkSessionDestinationView: View {
       pluginActions: pluginContributions.chatHeaderActions(sessionId: session.id),
       pluginNames: chatHeaderPluginNames(session.id),
       pluginActionsEnabled: syncService.canInvokePluginActions,
-      canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
+      canAttachIssue: pluginGate.owns(.linear)
+        && syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
     )
   }
 
