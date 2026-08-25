@@ -579,6 +579,7 @@ import {
   GENERIC_LANE_FALLBACK_TITLE,
   genericLaneFallbackName,
   genericSuffixFromLaneFallbackName,
+  resolveCoherentAutoLaneIdentity,
 } from "../../../shared/laneNameFallback";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import {
@@ -12683,19 +12684,18 @@ export function createAgentChatService(args: {
         if (config.titleGenerationEnabled !== false) {
           const auth = await detectAuth();
           const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
-          // Chain: configured naming model -> the model this chat was launched
-          // with -> a different provider -> deterministic. The launched model is
-          // always present (not only when no naming model is configured) and a
-          // cross-provider candidate is always reachable, so an outage confined
-          // to one provider (auth, missing binary, account-rejected model) can no
-          // longer end naming outright.
+          // Same chain as chat auto-title: configured naming model -> default
+          // title model (haiku) -> launched chat model -> requested model ->
+          // first available -> deterministic. Haiku stays ahead of the chat
+          // model so a JSON miss on the configured namer does not send lane
+          // identity to grok while chat titles still use haiku.
           const candidateModelIds = buildNamingModelCandidates({
             availableModels,
             preferred: [
               config.titleModelId,
+              DEFAULT_AUTO_TITLE_MODEL_ID,
               chatModelId,
               requestedModelId,
-              DEFAULT_AUTO_TITLE_MODEL_ID,
               availableModels[0]?.id,
             ],
           });
@@ -12716,10 +12716,7 @@ export function createAgentChatService(args: {
               });
               const parsed = parseAutoLaneIdentity(result.text);
               if (!parsed || (!parsed.laneTitle && !parsed.branchFragment)) return null;
-              return {
-                laneTitle: parsed.laneTitle ?? fallback.laneTitle,
-                branchFragment: parsed.branchFragment ?? fallback.branchFragment,
-              };
+              return resolveCoherentAutoLaneIdentity(parsed, fallback);
             },
             onFailure: ({ descriptor, provider, providerLevelFailure, error }) => {
               logger.warn("agent_chat.suggest_lane_name_failed", {

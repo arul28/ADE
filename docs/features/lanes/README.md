@@ -207,9 +207,19 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   generates one structured lane/branch identity.
   The backend applies the readable lane title independently, then renames the
   temporary branch only while the lane record, checked-out worktree branch,
-  upstream/remote state, and PR state still prove it is safe. Collisions receive
-  `-2`, `-3`, and later suffixes. A manual lane or branch rename wins over a late
-  result. Mobile calls the same host operation through `SyncService.suggestLaneName`
+  upstream/remote state, and PR state still prove it is safe. Title and branch
+  have to name the same new workstream: a mention-copied fragment next to an
+  unrelated title is dropped, and if the AI title collides with a live lane the
+  fallback title stays and the branch is derived from that title rather than
+  suffixing the stolen name (`ade/chat-mention-tags-2`). Collision checks
+  include live lane branches, historical `pull_requests.head_branch` rows
+  (including detached merged PRs whose git refs are gone), and
+  `github_pr_projections.head_branch`. Occupied names lose to the applied
+  title's slug first; only then do remaining collisions receive `-2`, `-3`,
+  and later suffixes. A manual lane or branch rename wins over a late
+  result. Automatic lane identity uses the same model chain as chat auto-title
+  (configured naming model → default title model → launched chat model). Mobile
+  calls the same host operation through `SyncService.suggestLaneName`
   (the non-queueable `lanes.suggestName` sync command →
   `agentChatService.generateAutoLaneIdentity` on the host).
   Deterministic fallback (`apps/desktop/src/shared/laneNameFallback.ts`)

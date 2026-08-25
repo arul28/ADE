@@ -42411,7 +42411,32 @@ describe("suggestLaneNameFromPrompt", () => {
     });
 
     expect(result.laneTitle).toBe("Claude OAuth Login");
-    expect(result.branchFragment).toBe("claude-auth-login-button-hangs");
+    expect(result.branchFragment).toBe("claude-oauth-login");
+  });
+
+  it("does not let a mentioned lane's branch fragment override this prompt's title", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({
+        laneTitle: "Ok Something Super Weird Happened",
+        branchFragment: "chat-mention-tags",
+      }),
+    } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "ok something super weird happened. why is Chat Mention Tags showing pr 1068?",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      fallbackName: "Ok Something Super Weird Happened",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(result.laneTitle).toBe("Ok Something Super Weird Happened");
+    expect(result.branchFragment).toBe("ok-something-super-weird-happened");
+    expect(result.source).toBe("ai");
   });
 
   it("clamps an over-long AI identity instead of discarding it for a slug", async () => {
@@ -42484,6 +42509,29 @@ describe("suggestLaneNameFromPrompt", () => {
 
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
       model: "openai/gpt-5.4-mini",
+    }));
+  });
+
+  it("uses the default title model before the launched chat model", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({ laneTitle: "Lane Naming", branchFragment: "lane-naming" }),
+    } as any);
+
+    await service.generateAutoLaneIdentity({
+      prompt: "Rename automatic lanes",
+      modelId: "openai/gpt-5.4",
+      chatModelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "anthropic/claude-haiku-4-5",
     }));
   });
 

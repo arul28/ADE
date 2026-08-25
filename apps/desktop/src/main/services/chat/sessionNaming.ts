@@ -42,10 +42,11 @@ laneTitle:
 - Avoid generic leading verbs such as Fix, Update, Improve, Handle, or Work On when a specific noun phrase is available.
 - Do not repeat the user's sentence verbatim. No quotes, emoji, or trailing punctuation.
 branchFragment:
-- Describe the same workstream in 2 to ${MAX_NAMING_WORDS} short specific words.
+- Describe the SAME new workstream as laneTitle, in 2 to ${MAX_NAMING_WORDS} short specific words.
 - Lowercase ASCII and hyphen-separated. Do not include the ade/ prefix.
 - No spaces, quotes, refs/heads/, punctuation-heavy text, or leading/trailing separators.
 - Keep it concise and safe for GitHub, PR lists, terminals, and Git branch naming.
+- Never copy the title or branch of an existing lane, chat, or pull request mentioned in the request. Those are context, not this workspace's identity.
 Attached images are primary context for visual and UI requests.`;
 
 export const LEGACY_LANE_NAME_SYSTEM_PROMPT = `Name a git worktree lane.
