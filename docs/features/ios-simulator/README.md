@@ -56,7 +56,21 @@ stating the intent works.
 - `launch --force`, which validates the new target before evicting, and
   `attachToChatSession({ takeOver: true })`, which transfers ownership without
   a teardown at all.
-- `claim({ ignoreOwnership: true })` / `claim --arg force=true`. `claim`
+- `attachToChatSession(<any chat id>, null)` — the cheapest path on the list,
+  and the only one that needs no flag at all. The guard only runs when the
+  caller supplies a non-empty `callerChatSessionId`, so a caller that passes
+  `null` for it skips the check entirely: it can transfer the session to any
+  chat, and `attachToChatSession(null, null)` detaches it outright — after
+  which any chat's plain `shutdown` is accepted. It is reachable from an agent,
+  not just from trusted code: `attachToChatSession` is in the agent-allowed
+  `ios_simulator` action list, the RPC tool accepts a positional `argsList`,
+  `ios_simulator` has no object-args requirement to force the named form, and
+  `argsList` is applied straight to the method. The IPC path is unaffected —
+  the renderer always passes both ids. The hole is documented in
+  `attachToChatSession` itself and left open on purpose: closing it is a change
+  to the ownership rules, not a doc fix.
+- `claim --ignore-ownership` / `claim --force` (or `claim --arg
+  ignoreOwnership=true`, which is the same thing). `claim`
   rewrites `activeSession.chatSessionId` outright, and the CLI defaults that id
   to the caller's own `$ADE_CHAT_SESSION_ID`, so `ade ios-sim claim --lane …`
   from a foreign chat used to take ownership with no bypass flag at all — after

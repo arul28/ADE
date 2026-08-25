@@ -37,10 +37,10 @@ import type {
  * fair chance. The IPC channel allows 60s, so this is comfortably inside its
  * own transport budget.
  *
- * This is a *per-call* cap and the drawer sweeps more than once, so it does not
- * bound what the user waits for on its own — the drawer owns an overall
- * deadline across its sweeps (`WINDOW_SOURCE_TOTAL_DISCOVERY_MS`) and stops
- * asking once one call's worth of budget is all that is left.
+ * The drawer asks exactly once, so this per-call cap *is* the whole wait the
+ * user sees: one call either lands a source or comes back empty, and there is
+ * no outer deadline above it. That is why the settle and the re-attach live
+ * inside this budget rather than in a caller-side retry loop.
  */
 export const SIMULATOR_SOURCE_DISCOVERY_BUDGET_MS = 12_000;
 
@@ -461,7 +461,7 @@ let simulatorParkingTimer: NodeJS.Timeout | null = null;
 let cleanupSimulatorParkingFollow: (() => void) | null = null;
 
 /**
- * The two teardown signals a holder is dropped on, and their removal.
+ * The teardown signals a holder is dropped on, and their removal.
  *
  * Declared as overloads rather than a union so a real Electron `WebContents`
  * — whose `on`/`off` are themselves overloaded per event — satisfies it.
@@ -469,13 +469,14 @@ let cleanupSimulatorParkingFollow: (() => void) | null = null;
 type SimulatorParkingHolderSubscription = {
   (event: "destroyed", listener: () => void): unknown;
   (event: "did-navigate", listener: () => void): unknown;
+  (event: "render-process-gone", listener: () => void): unknown;
 };
 
 /**
  * The renderer side of a holder: the `webContents` that asked for it.
  *
  * Structural rather than `WebContents` so a unit test can hand over a plain
- * object — the only members the refcount needs are the identity, the two
+ * object — the only members the refcount needs are the identity, the
  * teardown signals, and a way to stop listening for them.
  */
 export type SimulatorParkingHolderSender = {
@@ -640,11 +641,32 @@ export function retainSimulatorParkingFollow(
     // isSameDocument filtering is needed. It still precedes the new document's
     // scripts, so the drop lands before the reloaded drawer re-retains.
     const onNavigated = () => dropSimulatorParkingHoldersFor(sender.id);
+    // A dead renderer process is the third way the drawer stops existing while
+    // its webContents object lives on. ADE reloads a recoverable crash, which
+    // would arrive as `did-navigate` anyway — but the crash-recovery budget can
+    // be exhausted (a boot-crash loop stops trying), and then nothing navigates
+    // and nothing is destroyed, so the holder outlived the document and the
+    // follow stayed pinned until the window closed. Dropping here is safe under
+    // the reload case too: `dropSimulatorParkingHoldersFor` no-ops on an id it
+    // has already forgotten, so crash-then-reload drops once, not twice.
+    //
+    // Not wired: `did-fail-load`. A main-frame navigation that commits an error
+    // page emits only that, so a holder can still outlive a dead document in
+    // dev (a reload landing while Vite restarts). It is deliberately left
+    // uncovered, because ADE preventDefaults every main-frame `will-navigate`
+    // that is not the renderer URL and a cancelled navigation *also* reports
+    // `did-fail-load` (ERR_ABORTED, -3) — subscribing would reintroduce exactly
+    // the "tore the follow down under a live document" bug the `did-navigate`
+    // choice above fixed. Both remaining cases self-heal: on the next
+    // successful navigation, and on window close.
+    const onProcessGone = () => dropSimulatorParkingHoldersFor(sender.id);
     sender.on("destroyed", onDestroyed);
     sender.on("did-navigate", onNavigated);
+    sender.on("render-process-gone", onProcessGone);
     simulatorParkingHolderWatched.set(sender.id, () => {
       sender.off("destroyed", onDestroyed);
       sender.off("did-navigate", onNavigated);
+      sender.off("render-process-gone", onProcessGone);
     });
   }
   return true;

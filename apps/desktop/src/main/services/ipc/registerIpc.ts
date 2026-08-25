@@ -8469,11 +8469,19 @@ export function registerIpc({
     // nothing moved.
     const settledWindowState = hasActiveSession ? await getSimulatorWindowState() : windowState;
 
-    // `message` is a verdict, not a status line: the caller stops polling the
-    // moment one arrives. A permission blocker, a missing session and an
-    // exhausted budget are terminal, so they get named. Plain emptiness with
-    // budget left is not — a Simulator window can appear a beat after the app
-    // does — so it answers with no message and lets the caller sweep again.
+    // `message` is a verdict, and the drawer asks only once, so every answer is
+    // final: a permission blocker, a missing session and an exhausted budget
+    // each name themselves, and the caller shows that text verbatim.
+    //
+    // The remaining branch — empty sources, a live session, budget left, and no
+    // window-state message — is left deliberately verdict-free. It is the case
+    // where a cold Simulator's window is a beat behind the app it just started,
+    // and the host genuinely does not know why it found nothing. Naming it here
+    // would replace the drawer's fallback ("ADE could not find the <device>
+    // window. Make sure the simulator is running and its window is open, then
+    // try again."), which is both truthful about the outcome and more
+    // actionable than anything this layer could assert, with a guess. The host
+    // reports the absence; the caller owns the wording.
     const message = settledWindowState.message
       ?? (!hasActiveSession
         ? "No simulator session is running. Launch the app from ADE first."

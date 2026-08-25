@@ -926,12 +926,18 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   you say you mean it. Re-attributing only the lane never trips the guard.
 
     $ ade --socket ios-sim claim --lane <lane-id> --text
+    $ ade --socket ios-sim claim --lane <lane-id> --ignore-ownership --text
 
   Flags:
     --lane, --lane-id <id>   Required; defaults to $ADE_LANE_ID.
     --chat-session <id>      Owner chat session; defaults to $ADE_CHAT_SESSION_ID.
+    --ignore-ownership       Take a session another chat owns, deliberately. No
+                             teardown: the session, its idb companions and the
+                             launch lock all stay up, only the owner changes.
+    --force, -f              Same bypass, spelled the way launch/shutdown spell
+                             it. Unlike "shutdown --force" it resets nothing.
     --arg ignoreOwnership=true
-                             Take a session another chat owns, deliberately.
+                             The generic escape hatch; equivalent to the flags.
 `,
   shutdown: `${ADE_BANNER}
   iOS Simulator: shutdown
@@ -9265,8 +9271,20 @@ function iosSimulatorRootArgs(
  * is at a terminal. The daemon reports these as plain action errors, so the code
  * prefix in the message is the only thing the CLI can key on. The message
  * already carries the launch id, owner, and lane; the hint does not restate them.
+ *
+ * One code can arrive from subcommands whose right answer differs, so the hint
+ * also takes the `ios-sim` subcommand that produced it (null for every other
+ * command). `IOS_SIMULATOR_OWNED_BY_OTHER_SESSION` is the case: from `launch`
+ * or `shutdown` the escape hatch really is a forced teardown, but a refused
+ * `claim` only wanted to re-attribute a session, and pointing that caller at
+ * `shutdown --force` would tear down the owner's session, stop its idb
+ * companions, and clear the launch lock to do a job `--ignore-ownership` does
+ * with none of that.
  */
-function iosSimulatorErrorHint(message: string): string | null {
+function iosSimulatorErrorHint(
+  message: string,
+  subcommand: string | null = null,
+): string | null {
   if (message.includes(IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE)) {
     return "This target belongs to a different checkout — re-run: ade ios-sim apps";
   }
@@ -9277,7 +9295,9 @@ function iosSimulatorErrorHint(message: string): string | null {
     return "No buildable app under that root. The message above names the root and any targets found — check --project-root/--lane, or pass --target-id/--bundle-id to run an installed app.";
   }
   if (message.includes(IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE)) {
-    return "Another chat owns the simulator — wait for it to finish, or take it over with: ade ios-sim shutdown --force";
+    return subcommand === "claim"
+      ? "Another chat owns the simulator — wait for it to finish, or re-run this claim with --ignore-ownership to take it over without tearing the session down"
+      : "Another chat owns the simulator — wait for it to finish, or take it over with: ade ios-sim shutdown --force";
   }
   if (message.includes(IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE)) {
     return "That lane has no worktree on this machine — pass --project-root with the checkout you want built.";
@@ -9286,6 +9306,31 @@ function iosSimulatorErrorHint(message: string): string | null {
     return "--out must land inside the build root named above — drop --out to use the default cache path, or pass a path under that root.";
   }
   return null;
+}
+
+/**
+ * The canonical `ios-sim` subcommand behind an invocation, for the hint above.
+ *
+ * The failure is reported from `main`, which only ever sees raw argv, so the
+ * subcommand is recovered the same way the plan builder resolves it: strip the
+ * global prefix with the real parser (global flags carry values, so scanning
+ * for "the first token without a dash" would mistake `--project-root <path>`
+ * for the command), then take the first positional and resolve its alias.
+ * Anything that is not an `ios-sim` invocation answers null.
+ */
+function iosSimulatorSubcommandFromArgv(argv: string[]): string | null {
+  let command: string[];
+  try {
+    command = parseCliArgs(argv).command;
+  } catch {
+    return null;
+  }
+  const primary = command[0]?.toLowerCase();
+  if (primary !== "ios-sim" && primary !== "ios" && primary !== "simulator") {
+    return null;
+  }
+  const sub = peekFirstPositional(command.slice(1))?.toLowerCase() ?? "status";
+  return IOS_SIMULATOR_HELP_ALIASES[sub] ?? sub;
 }
 
 /**
@@ -9355,6 +9400,17 @@ function buildIosSimulatorPlan(
     };
   if (sub === "claim") {
     const claimArgs = readRequiredToolClaimArgs(args, "iOS simulator");
+    // `claim` rewrites the owning chat, so it is an ownership call and carries
+    // the same guard — and therefore has to accept the same bypass spellings —
+    // as `launch`/`shutdown`. Parsed here rather than left to `--arg` because
+    // an unparsed `--force` is not an error: collectGenericObjectArgs ignores
+    // bare flags, so `claim --lane X --force` was silently refused as if the
+    // caller had never said it.
+    const ignoreOwnership = readFlag(args, [
+      "--ignore-ownership",
+      "--ignore-owner",
+    ]);
+    const force = readFlag(args, ["--force", "-f"]);
     return {
       kind: "execute",
       label: "iOS simulator claim",
@@ -9363,7 +9419,11 @@ function buildIosSimulatorPlan(
           "result",
           "ios_simulator",
           "claim",
-          collectGenericObjectArgs(args, claimArgs),
+          collectGenericObjectArgs(args, {
+            ...claimArgs,
+            ...(force ? { force: true } : {}),
+            ...(ignoreOwnership ? { ignoreOwnership: true } : {}),
+          }),
         ),
       ],
     };
@@ -22773,7 +22833,10 @@ async function main(): Promise<void> {
     }
     if (error instanceof CliToolError) {
       await writeProcessOutput(process.stderr, `ade: ${error.message}\n`);
-      const iosHint = iosSimulatorErrorHint(error.message);
+      const iosHint = iosSimulatorErrorHint(
+        error.message,
+        iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
+      );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
       if (error.details !== undefined) {
         await writeProcessOutput(
@@ -22827,6 +22890,7 @@ export {
   graphWaitState,
   inferFormatter,
   iosSimulatorErrorHint,
+  iosSimulatorSubcommandFromArgv,
   applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,

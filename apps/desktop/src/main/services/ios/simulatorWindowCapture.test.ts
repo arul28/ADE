@@ -78,12 +78,17 @@ type FakeSender = SimulatorParkingHolderSender & {
   startBlockedNavigation: () => void;
   /** A `pushState` or fragment jump, which keeps the drawer alive. */
   navigateInPage: () => void;
-  /** How many listeners are still armed, across both events. */
+  /**
+   * The renderer process died and ADE's recovery budget is spent, so no reload
+   * follows: the webContents object survives with no document behind it.
+   */
+  crashWithoutRecovery: () => void;
+  /** How many listeners are still armed, across every watched event. */
   listenerCount: () => number;
 };
 
 /**
- * A renderer's webContents: an id, the two teardown signals, and — the part
+ * A renderer's webContents: an id, the teardown signals, and — the part
  * that matters for the leak — real add/remove semantics, so a test can see the
  * listeners a long-lived renderer accumulates.
  */
@@ -117,6 +122,7 @@ function fakeSender(id: number): FakeSender {
     // main-frame, cross-document navigation start that `will-navigate` cancels.
     startBlockedNavigation: () => emit("did-start-navigation", { isMainFrame: true, isSameDocument: false }),
     navigateInPage: () => emit("did-navigate-in-page", "https://ade.local/index.html#work"),
+    crashWithoutRecovery: () => emit("render-process-gone", { reason: "crashed" }),
     listenerCount: () => {
       let total = 0;
       for (const set of listeners.values()) total += set.size;
@@ -444,7 +450,13 @@ describe("simulator window parking holders", () => {
 
   // `pushState` and fragment jumps keep the document — and the drawer holding
   // the claim — alive, so they must not be read as a reload.
-  it("keeps the holders of a renderer that navigates in place", () => {
+  //
+  // Kept deliberately even though production subscribes to no in-page event
+  // today, which makes this pass without exercising a listener: it is a guard
+  // against someone "fixing" a missed navigation by adding
+  // `did-navigate-in-page` to the watch list, which would tear the follow down
+  // under a document that never went away.
+  it("keeps the holders of a renderer that navigates in place (guards against a did-navigate-in-page listener)", () => {
     const claimant = fakeWindow();
     const renderer = fakeSender(1);
     followSimulatorWindowUnderAde(asBrowserWindow(claimant));
@@ -467,6 +479,40 @@ describe("simulator window parking holders", () => {
 
     renderer.destroy();
 
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // The third teardown: the renderer process dies and ADE's recovery budget is
+  // already spent, so no reload follows. Nothing is destroyed and nothing
+  // navigates, so without this listener the holder outlived its document and
+  // the follow kept nudging Simulator.app until the window closed.
+  it("drops a renderer's holders when its process dies with no reload", () => {
+    const claimant = fakeWindow();
+    const renderer = fakeSender(1);
+    followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), renderer);
+
+    renderer.crashWithoutRecovery();
+
+    expect(activeSimulatorParkingWindow()).toBeNull();
+  });
+
+  // A recoverable crash reloads, so both signals fire for one teardown. The
+  // second must be a no-op, not a second decrement against a holder someone
+  // else may have taken since.
+  it("drops the holders of a crash-then-reload cycle exactly once", () => {
+    const claimant = fakeWindow();
+    const crashed = fakeSender(1);
+    const survivor = fakeSender(2);
+    followSimulatorWindowUnderAde(asBrowserWindow(claimant));
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), crashed);
+    retainSimulatorParkingFollow(asBrowserWindow(claimant), survivor);
+
+    crashed.crashWithoutRecovery();
+    crashed.reload();
+
+    expect(activeSimulatorParkingWindow()).toBe(claimant);
+    expect(releaseSimulatorParkingHolder(asBrowserWindow(claimant), survivor)).toBe(true);
     expect(activeSimulatorParkingWindow()).toBeNull();
   });
 

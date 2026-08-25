@@ -23,6 +23,7 @@ import {
   inferFormatter,
   includeHostProjectInCatalog,
   iosSimulatorErrorHint,
+  iosSimulatorSubcommandFromArgv,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
@@ -9713,6 +9714,62 @@ describe("ADE CLI", () => {
     }
   });
 
+  // `ios-sim claim` parsed no flags of its own, so the ownership bypass spelled
+  // the way launch/shutdown spell it was dropped on the floor and the claim was
+  // refused as if the caller had never asked — the silent flag-drop class this
+  // lane already fixed twice.
+  it("forwards the ios-sim claim ownership bypass flags to the service", () => {
+    const previousLane = process.env.ADE_LANE_ID;
+    const previousChat = process.env.ADE_CHAT_SESSION_ID;
+    try {
+      delete process.env.ADE_LANE_ID;
+      delete process.env.ADE_CHAT_SESSION_ID;
+
+      const forced = buildCliPlan(["ios-sim", "claim", "--lane", "lane-a", "--force"]);
+      expect(forced.kind).toBe("execute");
+      if (forced.kind !== "execute") return;
+      expect(forced.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "claim",
+          args: { laneId: "lane-a", force: true },
+        },
+      });
+
+      const ignored = buildCliPlan([
+        "ios-sim",
+        "claim",
+        "--lane",
+        "lane-a",
+        "--ignore-ownership",
+      ]);
+      expect(ignored.kind).toBe("execute");
+      if (ignored.kind !== "execute") return;
+      expect(ignored.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "ios_simulator",
+          action: "claim",
+          args: { laneId: "lane-a", ignoreOwnership: true },
+        },
+      });
+
+      // Neither flag means neither key: a plain claim must not smuggle a
+      // takeover through as `force: false`.
+      const plain = buildCliPlan(["ios-sim", "claim", "--lane", "lane-a"]);
+      expect(plain.kind).toBe("execute");
+      if (plain.kind !== "execute") return;
+      const plainArgs = (plain.steps[0]?.params as { arguments: { args: Record<string, unknown> } })
+        .arguments.args;
+      expect(plainArgs).not.toHaveProperty("force");
+      expect(plainArgs).not.toHaveProperty("ignoreOwnership");
+    } finally {
+      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
+      else process.env.ADE_LANE_ID = previousLane;
+      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = previousChat;
+    }
+  });
+
   it("tool claim commands require an explicit or ADE-provided lane", () => {
     const previousLane = process.env.ADE_LANE_ID;
     const previousChat = process.env.ADE_CHAT_SESSION_ID;
@@ -11415,6 +11472,40 @@ describe("ADE CLI", () => {
         iosSimulatorErrorHint("IOS_SIMULATOR_LANE_NOT_RESOLVED: no worktree resolved for lane lane-x."),
       ).toContain("--project-root");
       expect(iosSimulatorErrorHint("something else went wrong")).toBeNull();
+    });
+
+    // A refused `claim` wanted to re-attribute a session, not tear one down, so
+    // it must not be pointed at the hard reset: `shutdown --force` stops the
+    // owner's idb companions and clears the launch lock to do a job the
+    // non-destructive bypass does without any of it.
+    it("points a refused claim at the non-destructive bypass, not shutdown --force", () => {
+      const owned =
+        "IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: simulator is owned by chat session chat-A on lane lane-A.";
+
+      const claimHint = iosSimulatorErrorHint(owned, "claim");
+      expect(claimHint).toContain("--ignore-ownership");
+      expect(claimHint).not.toContain("shutdown --force");
+
+      // Every other subcommand keeps the takeover advice it already had.
+      expect(iosSimulatorErrorHint(owned, "launch")).toContain("shutdown --force");
+      expect(iosSimulatorErrorHint(owned, "shutdown")).toContain("shutdown --force");
+      expect(iosSimulatorErrorHint(owned, null)).toContain("shutdown --force");
+    });
+
+    // The hint is emitted from `main`, which only has raw argv, so the wiring
+    // that recovers the subcommand is what actually decides which line prints.
+    it("recovers the ios-sim subcommand from raw argv, aliases and global flags included", () => {
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "claim", "--lane", "lane-a"])).toBe("claim");
+      expect(iosSimulatorSubcommandFromArgv(["--socket", "ios-sim", "claim"])).toBe("claim");
+      // A global flag that carries a value must not be mistaken for the command.
+      expect(
+        iosSimulatorSubcommandFromArgv(["--project-root", "/tmp/root", "ios", "claim"]),
+      ).toBe("claim");
+      // Aliases resolve to the canonical name the hint keys on.
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "stop"])).toBe("shutdown");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim", "open"])).toBe("launch");
+      expect(iosSimulatorSubcommandFromArgv(["ios-sim"])).toBe("status");
+      expect(iosSimulatorSubcommandFromArgv(["lanes", "list"])).toBeNull();
     });
 
     it("summarises a launch with its build root, warning, and capabilities", () => {
