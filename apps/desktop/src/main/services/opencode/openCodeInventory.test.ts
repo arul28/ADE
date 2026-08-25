@@ -35,7 +35,7 @@ const mockState = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock("@opencode-ai/sdk", () => ({
+vi.mock("@opencode-ai/sdk/v2/client", () => ({
   createOpencodeClient: vi.fn(() => ({
     provider: {
       list: mockState.providerList,

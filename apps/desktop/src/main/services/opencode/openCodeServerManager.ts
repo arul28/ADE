@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import type { Config as OpenCodeConfig } from "@opencode-ai/sdk";
+import type { Config as OpenCodeConfig } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
 import {

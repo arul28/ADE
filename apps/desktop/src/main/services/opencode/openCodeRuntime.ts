@@ -1,17 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { pathToFileURL } from "node:url";
+import type { Config as OpenCodeConfig } from "@opencode-ai/sdk/v2/client";
+// The v2 client is ADE's only OpenCode client. It targets the SAME server routes
+// as the legacy client (`/event`, `/session/{id}/fork`, …) — verified endpoint by
+// endpoint against the generated SDKs — but its generated types track the current
+// server, where the legacy set had gone stale: `question.*` and `permission.asked`
+// are first-class events here rather than shapes ADE hand-declared, and
+// `message.part.updated` correctly no longer advertises a `delta` (the server
+// publishes deltas on `message.part.delta`). Do NOT move to
+// `@opencode-ai/sdk-next`: that is the 2.0 beta's in-process embedding
+// architecture, which would host OpenCode inside ADE instead of talking to a
+// separately managed server.
 import {
   createOpencodeClient,
-  type Config as OpenCodeConfig,
   type Event,
   type FilePartInput,
   type OpencodeClient,
+  type QuestionInfo,
   type TextPartInput,
-} from "@opencode-ai/sdk";
-import {
-  createOpencodeClient as createOpenCodeV2Client,
-  type OpencodeClient as OpenCodeV2Client,
 } from "@opencode-ai/sdk/v2/client";
 import {
   getLocalProviderDefaultEndpoint,
@@ -45,7 +52,6 @@ export type OpenCodeAgentProfile = "ade-plan" | "ade-edit" | "ade-full-auto" | "
 
 export type OpenCodeSessionHandle = {
   client: OpencodeClient;
-  v2Client: OpenCodeV2Client;
   server: {
     url: string;
     close(): Promise<void>;
@@ -61,46 +67,18 @@ export type OpenCodeSessionHandle = {
   setEvictionHandler(handler: ((reason: OpenCodeServerShutdownReason) => void) | null): void;
 };
 
-export type OpenCodeQuestionInfo = {
-  question: string;
-  header: string;
-  options: Array<{ label: string; description?: string }>;
-  multiple?: boolean;
-  custom?: boolean;
-};
+export type OpenCodeQuestionInfo = QuestionInfo;
 
-export type OpenCodeRuntimeEvent = Event | {
-  type: "question.asked";
-  properties: {
-    id: string;
-    sessionID: string;
-    questions: OpenCodeQuestionInfo[];
-    tool?: { messageID: string; callID: string };
-  };
-} | {
-  type: "question.replied";
-  properties: {
-    sessionID: string;
-    requestID: string;
-    answers: string[][];
-  };
-} | {
-  type: "question.rejected";
-  properties: {
-    sessionID: string;
-    requestID: string;
-  };
-} | {
-  type: "permission.asked";
-  properties: {
-    id: string;
-    sessionID: string;
-    permission: string;
-    patterns?: string[];
-    metadata?: Record<string, unknown>;
-    tool?: { messageID: string; callID: string };
-  };
-};
+/**
+ * The event union ADE consumes off `/event`.
+ *
+ * This used to be the legacy `Event` union widened by four hand-declared members
+ * (`question.asked`/`replied`/`rejected` and `permission.asked`) because the
+ * legacy generated types predated them. The v2 types carry all four for real, so
+ * the hand-written shapes are gone: the compiler now checks ADE's narrowing
+ * against what the server actually publishes instead of against a local guess.
+ */
+export type OpenCodeRuntimeEvent = Event;
 
 export type OpenCodePromptFile = {
   path: string;
@@ -671,7 +649,6 @@ export function isOpenCodeNotFoundError(error: unknown): boolean {
 
 function createOpenCodeSessionHandle(args: {
   client: OpencodeClient;
-  v2Client: OpenCodeV2Client;
   lease: OpenCodeServerLease;
   sessionId: string;
   initialTitle?: string | null;
@@ -680,7 +657,6 @@ function createOpenCodeSessionHandle(args: {
 }): OpenCodeSessionHandle {
   return {
     client: args.client,
-    v2Client: args.v2Client,
     server: {
       url: args.lease.url,
       async close() {
@@ -738,22 +714,16 @@ async function startOpenCodeSessionInternal(
     baseUrl: lease.url,
     directory: args.directory,
   });
-  const v2Client = createOpenCodeV2Client({
-    baseUrl: lease.url,
-    directory: args.directory,
-  });
   const resolvedSessionId = trimToUndefined(args.sessionId);
 
   if (resolvedSessionId) {
     try {
-      const existing = await client.session.get({
-        path: { id: resolvedSessionId },
-        query: { directory: args.directory },
-        throwOnError: true,
-      });
+      const existing = await client.session.get(
+        { sessionID: resolvedSessionId, directory: args.directory },
+        { throwOnError: true },
+      );
       return createOpenCodeSessionHandle({
         client,
-        v2Client,
         lease,
         sessionId: resolvedSessionId,
         initialTitle: existing.data?.title,
@@ -772,11 +742,14 @@ async function startOpenCodeSessionInternal(
     }
   }
 
-  const created = await client.session.create({
-    query: { directory: args.directory },
-    body: trimToUndefined(args.title) ? { title: trimToUndefined(args.title) } : {},
-    throwOnError: true,
-  });
+  const createdTitle = trimToUndefined(args.title);
+  const created = await client.session.create(
+    {
+      directory: args.directory,
+      ...(createdTitle ? { title: createdTitle } : {}),
+    },
+    { throwOnError: true },
+  );
 
   if (!created.data) {
     lease.close("error");
@@ -785,7 +758,6 @@ async function startOpenCodeSessionInternal(
 
   return createOpenCodeSessionHandle({
     client,
-    v2Client,
     lease,
     sessionId: created.data.id,
     initialTitle: created.data.title,
@@ -811,15 +783,31 @@ export function __resetOpenCodeRuntimeDiagnosticsForTests(): void {
   // Preserved for older tests; OpenCode no longer tracks per-session ADE tool registration.
 }
 
+/**
+ * The incremental text an older OpenCode may have attached to
+ * `message.part.updated`.
+ *
+ * 1.18.21 does not send one: `Session.updatePart` publishes `{ sessionID, part,
+ * time }` and routes incremental text to the separate `message.part.delta`
+ * event, which is why the field is absent from the current SDK types. Callers
+ * already reconstruct the delta by diffing against the text they last saw, so
+ * this only preserves the cheaper path for a user-installed binary old enough to
+ * still populate it.
+ */
+export function openCodePartUpdatedDelta(properties: unknown): string | undefined {
+  const candidate = (properties as { delta?: unknown } | null | undefined)?.delta;
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
 export async function openCodeEventStream(args: {
   client: OpencodeClient;
   directory: string;
   signal?: AbortSignal;
 }): Promise<AsyncGenerator<OpenCodeRuntimeEvent>> {
-  const result = await args.client.event.subscribe({
-    query: { directory: args.directory },
-    signal: args.signal,
-  });
+  const result = await args.client.event.subscribe(
+    { directory: args.directory },
+    { signal: args.signal },
+  );
   return result.stream as AsyncGenerator<OpenCodeRuntimeEvent>;
 }
 
@@ -865,11 +853,10 @@ export async function runOpenCodeTextPrompt(
     });
     const toolSelection = await refreshOpenCodeSessionToolSelection(handle);
 
-    await handle.client.session.promptAsync({
-      path: { id: handle.sessionId },
-      query: { directory: handle.directory },
-      throwOnError: true,
-      body: {
+    await handle.client.session.promptAsync(
+      {
+        sessionID: handle.sessionId,
+        directory: handle.directory,
         agent: args.agent ?? "ade-helper",
         model,
         // First-class system prompt on the wire. Never inject it as a
@@ -883,14 +870,16 @@ export async function runOpenCodeTextPrompt(
           files: args.files,
         }),
       },
-    });
+      { throwOnError: true },
+    );
 
     let text = "";
     let inputTokens: number | null = null;
     let outputTokens: number | null = null;
     for await (const event of stream) {
       if (event.type === "message.part.updated") {
-        const { part, delta } = event.properties;
+        const { part } = event.properties;
+        const delta = openCodePartUpdatedDelta(event.properties);
         if (part.sessionID !== handle.sessionId) continue;
         if (part.type === "text" || part.type === "reasoning") {
           text += typeof delta === "string" ? delta : part.text;

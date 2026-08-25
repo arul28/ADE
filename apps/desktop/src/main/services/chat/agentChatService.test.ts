@@ -301,6 +301,13 @@ vi.mock("../opencode/openCodeRuntime", async () => {
     typeof import("../../../shared/orchestrationRuntimePolicy")
   >("../../../shared/orchestrationRuntimePolicy");
   return {
+  // Real implementation, not a stub: it decides whether an incremental text
+  // delta rode along on `message.part.updated`, and stubbing it to a constant
+  // would silently change how the transcript is reassembled.
+  openCodePartUpdatedDelta: (properties: unknown): string | undefined => {
+    const candidate = (properties as { delta?: unknown } | null | undefined)?.delta;
+    return typeof candidate === "string" ? candidate : undefined;
+  },
   buildOpenCodePromptParts: vi.fn(({ prompt, files = [] }: { prompt: string; files?: Array<Record<string, unknown>> }) => [
     { type: "text", text: prompt },
     ...files,
@@ -372,13 +379,16 @@ vi.mock("../opencode/openCodeRuntime", async () => {
     const client = {
       __sessionId: sessionId,
       session: {
-        fork: vi.fn(async ({ path }: { path: { id: string } }) => {
-          const forkedId = `${path.id}-fork`;
-          mockState.openCodeForkCalls.push({ id: path.id });
+        fork: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          const forkedId = `${sessionID}-fork`;
+          mockState.openCodeForkCalls.push({ id: sessionID });
           return { data: { id: forkedId } };
         }),
-        promptAsync: vi.fn(async ({ body }: { body?: any } = {}) => {
-          state.promptBodies.push(body ?? {});
+        // The v2 client takes one flat parameters object; there is no `body`
+        // envelope. Everything ADE sends (agent/model/system/tools/parts) now
+        // arrives alongside sessionID and directory.
+        promptAsync: vi.fn(async (params: any = {}) => {
+          state.promptBodies.push(params ?? {});
           void (async () => {
             if (mockState.openCodeTitleForNextPrompt) {
               pushEvent({
@@ -423,7 +433,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                   type: "message.part.updated",
                   properties: {
                     part: { id: `step-${sessionId}`, sessionID: sessionId, type: "step-start" },
-                    delta: "",
                   },
                 });
                 continue;
@@ -434,7 +443,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                   type: "message.part.updated",
                   properties: {
                     part: { id: `text-${sessionId}`, type: "text", text, messageID: assistantMessageId, sessionID: sessionId },
-                    delta: String(part.textDelta ?? ""),
                   },
                 });
                 continue;
@@ -451,7 +459,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                       tool: String(part.toolName ?? "tool"),
                       state: { status: "running", input: part.input ?? {} },
                     },
-                    delta: "",
                   },
                 });
                 continue;
@@ -468,7 +475,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                       tool: String(part.toolName ?? "tool"),
                       state: { status: "completed", input: {}, output: part.result ?? part.output ?? {} },
                     },
-                    delta: "",
                   },
                 });
                 continue;
@@ -488,7 +494,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
                         cache: { read: 0, write: 0 },
                       },
                     },
-                    delta: "",
                   },
                 });
                 break;
@@ -500,8 +505,8 @@ vi.mock("../opencode/openCodeRuntime", async () => {
             });
           })();
         }),
-        abort: vi.fn(async ({ path }: { path: { id: string } }) => {
-          if (path.id !== sessionId) return;
+        abort: vi.fn(async ({ sessionID }: { sessionID: string }) => {
+          if (sessionID !== sessionId) return;
           state.aborted = true;
           pushEvent({
             type: "session.idle",
@@ -509,24 +514,27 @@ vi.mock("../opencode/openCodeRuntime", async () => {
           });
         }),
       },
-      postSessionIdPermissionsPermissionId: vi.fn(async ({ path, body }: { path: { id: string; permissionID: string }; body: { response: string } }) => {
-        pushEvent({
-          type: "permission.replied",
-          properties: {
-            sessionID: path.id,
-            permissionID: path.permissionID,
-            response: body.response,
-          },
-        });
-      }),
-      v2Client: {
-        question: {
-          reply: state.questionReply,
-          reject: state.questionReject,
-        },
-        permission: {
-          reply: state.permissionReply,
-        },
+      question: {
+        reply: state.questionReply,
+        reject: state.questionReject,
+      },
+      permission: {
+        reply: state.permissionReply,
+        // The deprecated session-scoped route, still how ADE answers the
+        // pre-`permission.asked` event an older user-installed OpenCode emits.
+        respond: vi.fn(async (
+          { sessionID, permissionID, response }:
+            { sessionID: string; permissionID: string; response: string },
+        ) => {
+          pushEvent({
+            type: "permission.replied",
+            properties: {
+              sessionID,
+              permissionID,
+              response,
+            },
+          });
+        }),
       },
     };
 
@@ -542,7 +550,6 @@ vi.mock("../opencode/openCodeRuntime", async () => {
       setBusy: vi.fn(),
       setEvictionHandler: vi.fn(),
       client,
-      v2Client: client.v2Client,
     };
   }),
   openCodeEventStream: vi.fn(async ({ client }: { client: { __sessionId?: string } }) => {
@@ -27626,6 +27633,59 @@ describe("createAgentChatService", () => {
         variant: "fast",
       }));
     });
+
+    it("keeps ADE instructions in the system channel on every turn, never in user text", async () => {
+      // The prompt boundary, asserted on the wire ADE actually sends:
+      //  - ADE's instructions ride the first-class `system` field, so OpenCode
+      //    never renders them as a user message (the reported prompt echo);
+      //  - a second turn carries the same contract rather than re-appending the
+      //    instructions to the user's text (the reported reprint);
+      //  - the user's own words stay in `parts` and out of `system`, so nothing
+      //    the user typed can be promoted into privileged instructions.
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      // runSessionTurn awaits completion, so the second turn is a genuine
+      // follow-up rather than a steer queued onto an active one.
+      await service.runSessionTurn({ sessionId: session.id, text: "First request." });
+      await service.runSessionTurn({ sessionId: session.id, text: "Second request." });
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      await vi.waitFor(() => {
+        expect(openCodeState.promptBodies.length).toBe(2);
+      });
+
+      const partsText = (body: any): string => (body.parts ?? [])
+        .map((part: any) => String(part?.text ?? ""))
+        .join("\n");
+
+      // `buildCodingAgentSystemPrompt` is mocked to this sentinel at the top of
+      // the file; what matters is which channel carries its output.
+      for (const body of openCodeState.promptBodies) {
+        expect(typeof body.system).toBe("string");
+        expect(body.system).toContain("system prompt");
+        // The instructions must not also be pasted into the visible message.
+        expect(partsText(body)).not.toContain("system prompt");
+      }
+
+      const [first, second] = openCodeState.promptBodies;
+      expect(second.system).toBe(first.system);
+      expect(partsText(first)).toContain("First request.");
+      expect(partsText(second)).toContain("Second request.");
+      expect(second.system).not.toContain("Second request.");
+      expect(second.system).not.toContain("First request.");
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -37470,7 +37530,6 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
             filename: "reference.png",
             url: "file:///tmp/reference.png",
           },
-          delta: "",
         },
       },
       {
@@ -37489,7 +37548,6 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
             filename: "diagram.png",
             url: "file:///tmp/diagram.png",
           },
-          delta: "",
         },
       },
       {
@@ -37520,7 +37578,6 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
               }],
             },
           },
-          delta: "",
         },
       },
     );
@@ -37616,14 +37673,12 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
         type: "message.part.updated",
         properties: {
           part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
-          delta: "",
         },
       },
       {
         type: "message.part.updated",
         properties: {
           part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
-          delta: "",
         },
       },
       {

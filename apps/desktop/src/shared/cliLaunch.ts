@@ -827,10 +827,17 @@ export function buildTrackedCliLaunchCommand(args: {
     };
   }
 
+  // Only the user's own text rides `--prompt`. OpenCode submits that value as a
+  // real user message and renders it in the TUI, so the ADE preamble that used
+  // to be prepended here was displayed to the user verbatim on every launch —
+  // the reported "OpenCode echoes ADE's system prompt" — and reached the model
+  // as ordinary user text rather than as system instructions. The ADE contract
+  // now travels through `instructions` in OPENCODE_CONFIG_CONTENT instead; see
+  // withOpenCodeAdeInstructions.
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model: args.model,
-    prompt: workTabCliPrompt(initialPrompt, skillRoots),
+    ...(initialPrompt ? { prompt: initialPrompt } : {}),
   });
   const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
   return {
@@ -1148,7 +1155,59 @@ function buildDroidCommandLine(args: {
   ].join(" && ");
 }
 
-const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
+export const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
+
+/**
+ * Add ADE's instruction file to an OpenCode launch environment.
+ *
+ * This is how the tracked CLI gets the same ADE instruction contract the chat
+ * runtime sends through `session.prompt`'s first-class `system` field. OpenCode
+ * gives a CLI launch no per-request system hook, and its two config-level
+ * alternatives are not interchangeable: `agent.<name>.prompt` REPLACES the
+ * provider base prompt (`agent.prompt ? [agent.prompt] : SystemPrompt.provider(model)`
+ * in the server's request builder), which would delete OpenCode's own tool
+ * instructions. `instructions` is the additive one — it lands in the same
+ * assembled system block as AGENTS.md, after the base prompt, and never appears
+ * in the transcript.
+ *
+ * Config layers concatenate this key rather than overwrite it (the loader uses a
+ * union merge for `instructions` specifically), so ADE's entry is added to the
+ * user's own instruction files instead of replacing them. A path that does not
+ * exist is silently skipped by OpenCode, so a stale entry degrades to "no ADE
+ * prompt" rather than a launch failure.
+ */
+export function withOpenCodeAdeInstructions(
+  env: Record<string, string> | undefined,
+  instructionsPath: string | null | undefined,
+): Record<string, string> | undefined {
+  const resolved = instructionsPath?.trim();
+  if (!resolved) return env;
+  let config: Record<string, unknown> = {};
+  const existing = env?.[OPENCODE_INLINE_CONFIG_ENV];
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        config = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // A value ADE cannot parse is not ADE's to extend. Leave it untouched
+      // rather than dropping whatever the caller meant to send.
+      return env;
+    }
+  }
+  const current = Array.isArray(config.instructions)
+    ? config.instructions.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  if (current.includes(resolved)) return env;
+  return {
+    ...(env ?? {}),
+    [OPENCODE_INLINE_CONFIG_ENV]: JSON.stringify({
+      ...config,
+      instructions: [...current, resolved],
+    }),
+  };
+}
 
 function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
   if (permissionMode == null) return null;

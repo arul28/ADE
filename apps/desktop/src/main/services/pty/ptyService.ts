@@ -27,6 +27,7 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
+import { ensureOpenCodeAdeInstructionsFile } from "../opencode/openCodeAdeInstructions";
 import {
   acquirePiSessionLease,
   piSessionCreationLeaseTarget,
@@ -110,6 +111,7 @@ import {
   sanitizeTrackedCliPromptSeed,
   shellCommandLineArgIndex,
   trackedCliTitleFromPromptSeed,
+  withOpenCodeAdeInstructions,
   type TrackedCliLaunchCommand,
   type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
@@ -5476,6 +5478,25 @@ export function createPtyService({
       }
       if (existingSession && !existingSession.tracked) {
         throw ptySendPreDeliveryError(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
+      }
+      // Every tracked OpenCode launch reaches this one method — fresh, resumed,
+      // desktop, or driven remotely through the CLI — so ADE's instruction file
+      // is written here rather than at each of the callers that build a launch
+      // command. That is what makes a resume carry the same ADE contract as the
+      // first launch; the old `--prompt` preamble was only ever attached to a
+      // fresh launch, so resumed sessions ran with no ADE instructions at all.
+      // A resume arrives without `runtimeCliLaunch`, so the mode comes from the
+      // session's own resume metadata — otherwise a plan-mode session would be
+      // told it is in edit mode while the CLI runs `--agent plan`.
+      if (isOpenCodeToolType(args.toolType ?? null)) {
+        const instructionsPath = ensureOpenCodeAdeInstructionsFile({
+          laneWorktreePath: worktreePath,
+          permissionMode: args.runtimeCliLaunch?.permissionMode
+            ?? existingSession?.resumeMetadata?.launch?.permissionMode
+            ?? null,
+        });
+        const envWithInstructions = withOpenCodeAdeInstructions(effectiveArgs.env, instructionsPath);
+        if (envWithInstructions) effectiveArgs = { ...effectiveArgs, env: envWithInstructions };
       }
       // Snapshot only a real terminal end state before reattach/backfill can
       // overwrite it. A row may still say `running` after its owning brain

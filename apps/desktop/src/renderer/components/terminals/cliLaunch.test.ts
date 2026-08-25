@@ -17,6 +17,7 @@ import {
   piToolsForPermissionMode,
   piToolFlags,
   validateLaunchProfilePermissionMode,
+  withOpenCodeAdeInstructions,
   resolveTrackedCliResumeCommand,
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
@@ -1636,5 +1637,75 @@ describe("tracked CLI resume helpers", () => {
     } satisfies Pick<TerminalSessionSummary, "resumeCommand" | "resumeMetadata">;
 
     expect(resolveTrackedCliResumeCommand(session)).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-99");
+  });
+
+  describe("OpenCode prompt boundary", () => {
+    // The reported failure: launching a tracked OpenCode CLI showed ADE's
+    // instructions to the user. `--prompt` is submitted as a real user message
+    // and rendered in the TUI, so anything ADE prepended to the user's text was
+    // displayed verbatim — and reached the model as user content rather than as
+    // system instructions.
+    it("puts only the user's text on --prompt, never ADE's instructions", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "edit",
+        initialPrompt: "Fix the failing test.",
+        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+      });
+
+      const promptIndex = launch.args.indexOf("--prompt");
+      expect(promptIndex).toBeGreaterThanOrEqual(0);
+      expect(launch.args[promptIndex + 1]).toBe("Fix the failing test.");
+
+      const everything = [launch.startupCommand, ...launch.args, launch.initialInput ?? ""].join("\n");
+      expect(everything).not.toContain("ADE session guidance");
+      expect(everything).not.toContain("User prompt:");
+      expect(everything).not.toContain("ADE is a local-first dev environment");
+      // Nor may it be smuggled in through the post-launch PTY write instead.
+      expect(launch.initialInput ?? "").not.toContain("ADE session guidance");
+    });
+
+    it("omits --prompt entirely when the user typed nothing", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "edit",
+        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
+      });
+
+      expect(launch.args).not.toContain("--prompt");
+      expect(launch.startupCommand).not.toContain("ADE session guidance");
+    });
+
+    it("adds ADE's instruction file to the config env without dropping the user's", () => {
+      const env = withOpenCodeAdeInstructions(
+        { OPENCODE_CONFIG_CONTENT: JSON.stringify({ instructions: ["./AGENTS.local.md"], permission: { edit: "allow" } }) },
+        "/tmp/ade/instructions.md",
+      );
+
+      const config = JSON.parse(env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
+        instructions?: string[];
+        permission?: Record<string, string>;
+      };
+      // Verified against opencode 1.18.21: config layers union `instructions`
+      // rather than overwriting, so the user's own files must survive.
+      expect(config.instructions).toEqual(["./AGENTS.local.md", "/tmp/ade/instructions.md"]);
+      expect(config.permission).toEqual({ edit: "allow" });
+    });
+
+    it("creates the config env when a launch had none, and stays idempotent", () => {
+      const first = withOpenCodeAdeInstructions(undefined, "/tmp/ade/instructions.md");
+      expect(JSON.parse(first?.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
+        instructions: ["/tmp/ade/instructions.md"],
+      });
+
+      const second = withOpenCodeAdeInstructions(first, "/tmp/ade/instructions.md");
+      expect(second).toBe(first);
+    });
+
+    it("leaves a config value it cannot parse untouched", () => {
+      const env = { OPENCODE_CONFIG_CONTENT: "{not json" };
+      expect(withOpenCodeAdeInstructions(env, "/tmp/ade/instructions.md")).toBe(env);
+      expect(withOpenCodeAdeInstructions(env, "   ")).toBe(env);
+    });
   });
 });

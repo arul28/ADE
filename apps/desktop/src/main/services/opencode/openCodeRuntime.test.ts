@@ -66,7 +66,10 @@ const mockState = vi.hoisted(() => {
   };
 });
 
-vi.mock("@opencode-ai/sdk", () => ({
+// One client, not two. ADE talks to OpenCode exclusively through the v2 client;
+// the legacy `@opencode-ai/sdk` entry point is no longer imported for anything
+// but the `Config` type, so a mock of it would never be consulted.
+vi.mock("@opencode-ai/sdk/v2/client", () => ({
   createOpencodeClient: vi.fn(() => ({
     event: {
       subscribe: mockState.eventSubscribe,
@@ -76,17 +79,13 @@ vi.mock("@opencode-ai/sdk", () => ({
       get: mockState.getSession,
       promptAsync: mockState.promptAsync,
     },
-  })),
-}));
-
-vi.mock("@opencode-ai/sdk/v2/client", () => ({
-  createOpencodeClient: vi.fn(() => ({
     question: {
       reply: vi.fn(),
       reject: vi.fn(),
     },
     permission: {
       reply: vi.fn(),
+      respond: vi.fn(),
     },
   })),
 }));
@@ -126,6 +125,13 @@ import {
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
 } from "./openCodeServerManager";
+
+/** The flat parameters object from the most recent v2 `session.promptAsync`. */
+function openCodePromptParams(): Record<string, unknown> {
+  const call = mockState.promptAsync.mock.calls.at(-1) as unknown as
+    [Record<string, unknown> | undefined] | undefined;
+  return call?.[0] ?? {};
+}
 
 describe("openCodeRuntime", () => {
   afterEach(() => {
@@ -204,9 +210,11 @@ describe("openCodeRuntime", () => {
       ownerKey: "chat:chat-1",
     });
 
-    expect(mockState.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      body: {},
-    }));
+    // v2 takes flat parameters: no title key at all rather than an empty body.
+    expect(mockState.createSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ title: expect.anything() }),
+      expect.objectContaining({ throwOnError: true }),
+    );
   });
 
   it("applies no scoped tool selection to one-shot prompts", async () => {
@@ -226,11 +234,10 @@ describe("openCodeRuntime", () => {
     });
 
     expect(result.text).toBe("pong");
-    expect(mockState.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
-      body: expect.not.objectContaining({
-        tools: expect.anything(),
-      }),
-    }));
+    expect(mockState.promptAsync).toHaveBeenCalledWith(
+      expect.not.objectContaining({ tools: expect.anything() }),
+      expect.objectContaining({ throwOnError: true }),
+    );
   });
 
   it("reports OpenCode runtime diagnostics for shared and dedicated sessions", () => {
@@ -241,7 +248,7 @@ describe("openCodeRuntime", () => {
     expect(Object.keys(snapshot).sort()).toEqual(["dedicatedCount", "entries", "sharedCount"]);
   });
 
-  it("sends a provided system prompt through the body system field, not a text part", async () => {
+  it("sends a provided system prompt through the first-class system field, not a text part", async () => {
     await runOpenCodeTextPrompt({
       directory: "/repo",
       title: "System prompt transport",
@@ -258,17 +265,17 @@ describe("openCodeRuntime", () => {
       projectConfig: { ai: {} },
     });
 
-    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
-      [{ body: Record<string, unknown> } | undefined];
-    const body = lastPromptCall?.[0]?.body ?? {};
-    expect(body.system).toBe("You are ADE's naming agent.");
+    const params = openCodePromptParams();
+    expect(params.system).toBe("You are ADE's naming agent.");
     // The synthetic/ignored part injection is gone for good: OpenCode drops
     // `ignored` parts from model context, so that transport never worked.
-    const parts = body.parts as Array<Record<string, unknown>>;
+    const parts = params.parts as Array<Record<string, unknown>>;
     expect(parts.every((part) => !part.synthetic && !part.ignored)).toBe(true);
+    // And it must not have leaked into the user-visible message text either.
+    expect(parts.some((part) => String(part.text ?? "").includes("naming agent"))).toBe(false);
   });
 
-  it("omits the body system field when no system prompt is provided", async () => {
+  it("omits the system field when no system prompt is provided", async () => {
     await runOpenCodeTextPrompt({
       directory: "/repo",
       title: "No system prompt",
@@ -284,10 +291,7 @@ describe("openCodeRuntime", () => {
       projectConfig: { ai: {} },
     });
 
-    const lastPromptCall = mockState.promptAsync.mock.calls.at(-1) as unknown as
-      [{ body: Record<string, unknown> } | undefined];
-    const body = lastPromptCall?.[0]?.body ?? {};
-    expect(body).not.toHaveProperty("system");
+    expect(openCodePromptParams()).not.toHaveProperty("system");
   });
 
   it("builds prompt parts from the user text plus file attachments only", () => {

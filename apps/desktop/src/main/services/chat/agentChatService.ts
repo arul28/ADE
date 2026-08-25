@@ -560,6 +560,7 @@ import {
   buildOpenCodePromptParts,
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
+  openCodePartUpdatedDelta,
   refreshOpenCodeSessionToolSelection,
   resolveOpenCodeExecutablePath,
   resolveOpenCodeModelSelection,
@@ -1814,6 +1815,106 @@ type PendingOpenCodeApproval = {
   protocol?: "legacy" | "v2";
   request?: PendingInputRequest;
 };
+
+/** Stable id for one OpenCode todo entry, which carries no id of its own. */
+function openCodeTodoId(todo: unknown, index: number): string {
+  const candidate = (todo as { id?: unknown } | null | undefined)?.id;
+  return typeof candidate === "string" && candidate.trim().length
+    ? candidate.trim()
+    : `todo-${index}`;
+}
+
+/**
+ * The pre-`permission.asked` approval event.
+ *
+ * OpenCode 1.18.21 — the version ADE pins and bundles — publishes only
+ * `permission.asked` and `permission.replied`; `permission.updated` is gone from
+ * both its source and the current SDK types. But `resolveOpenCodeBinaryPath`
+ * prefers a *user-installed* binary over the bundled one, so an older install
+ * can still be the server ADE is talking to, and dropping this handler would
+ * leave those users' approvals unanswered forever. It is declared here rather
+ * than narrowed from the event union because the union no longer contains it.
+ */
+type LegacyOpenCodePermissionUpdatedEvent = {
+  type: "permission.updated";
+  properties: {
+    id: string;
+    type: string;
+    sessionID: string;
+    title: string;
+    callID?: string;
+    metadata: Record<string, unknown>;
+  };
+};
+
+function asLegacyOpenCodePermissionUpdated(
+  event: { type: string },
+): LegacyOpenCodePermissionUpdatedEvent | null {
+  if (event.type !== "permission.updated") return null;
+  const properties = (event as { properties?: unknown }).properties;
+  if (!properties || typeof properties !== "object") return null;
+  const record = properties as Record<string, unknown>;
+  if (typeof record.id !== "string" || typeof record.sessionID !== "string") return null;
+  return {
+    type: "permission.updated",
+    properties: {
+      id: record.id,
+      sessionID: record.sessionID,
+      type: typeof record.type === "string" ? record.type : "",
+      title: typeof record.title === "string" ? record.title : "",
+      ...(typeof record.callID === "string" ? { callID: record.callID } : {}),
+      metadata: (record.metadata && typeof record.metadata === "object"
+        ? record.metadata
+        : {}) as Record<string, unknown>,
+    },
+  };
+}
+
+/**
+ * Answer one pending OpenCode approval.
+ *
+ * The two protocols are different endpoints, not different spellings of one:
+ * `permission.asked` carries a request id answered at `/permission/{id}/reply`,
+ * while the legacy `permission.updated` flow is keyed by session + permission id
+ * at `/session/{id}/permissions/{permissionID}`. Both are reachable from the v2
+ * client. Routing every reply through here keeps teardown, interrupt, and the
+ * user-facing decision path on one implementation — they had drifted onto
+ * different call shapes before, and only the user-facing one had `throwOnError`.
+ */
+async function replyToOpenCodePendingApproval(
+  handle: OpenCodeSessionHandle,
+  pending: PendingOpenCodeApproval,
+  reply: "once" | "always" | "reject",
+): Promise<void> {
+  if (pending.protocol === "v2") {
+    await handle.client.permission.reply(
+      {
+        requestID: pending.permissionId,
+        directory: handle.directory,
+        reply,
+      },
+      { throwOnError: true },
+    );
+    return;
+  }
+  await handle.client.permission.respond(
+    {
+      sessionID: handle.sessionId,
+      permissionID: pending.permissionId,
+      directory: handle.directory,
+      response: reply,
+    },
+    { throwOnError: true },
+  );
+}
+
+/** Best-effort rejection used by teardown and interrupt, where failures are ignorable. */
+async function rejectOpenCodePendingApproval(
+  handle: OpenCodeSessionHandle,
+  pending: PendingOpenCodeApproval,
+): Promise<void> {
+  await replyToOpenCodePendingApproval(handle, pending, "reject");
+}
 
 type OpenCodeRuntime = {
   kind: "opencode";
@@ -17509,11 +17610,7 @@ export function createAgentChatService(args: {
       managed.runtime.eventAbortController?.abort();
       managed.runtime.handle.setBusy(false);
       for (const pending of managed.runtime.pendingApprovals.values()) {
-        managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
-          path: { id: managed.runtime.handle.sessionId, permissionID: pending.permissionId },
-          query: { directory: managed.runtime.handle.directory },
-          body: { response: "reject" },
-        }).catch(() => {});
+        rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
       managed.runtime.handle.setEvictionHandler(null);
@@ -23325,6 +23422,8 @@ export function createAgentChatService(args: {
         session: managed.session,
       });
       const openCodePromptBody = {
+        sessionID: runtime.handle.sessionId,
+        directory: runtime.handle.directory,
         ...(openCodeAgent ? { agent: openCodeAgent } : {}),
         model: resolveOpenCodeModelSelection(runtime.modelDescriptor),
         ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
@@ -23347,12 +23446,10 @@ export function createAgentChatService(args: {
         signal: abortController.signal,
       });
 
-      const promptAccepted = runtime.handle.client.session.promptAsync({
-        path: { id: runtime.handle.sessionId },
-        query: { directory: runtime.handle.directory },
-        throwOnError: true,
-        body: openCodePromptBody,
-      });
+      const promptAccepted = runtime.handle.client.session.promptAsync(
+        openCodePromptBody,
+        { throwOnError: true },
+      );
 
       await promptAccepted;
       if (args.onBackendDispatched) {
@@ -23380,6 +23477,8 @@ export function createAgentChatService(args: {
       let parentSessionIdle = false;
       for await (const event of eventStream) {
         const resolveSessionId = (): string | null => {
+          const legacyPermission = asLegacyOpenCodePermissionUpdated(event);
+          if (legacyPermission) return legacyPermission.properties.sessionID;
           switch (event.type) {
             case "message.updated":
               return event.properties.info.sessionID;
@@ -23390,8 +23489,6 @@ export function createAgentChatService(args: {
             case "message.part.updated":
               return event.properties.part.sessionID;
             case "message.part.removed":
-              return event.properties.sessionID;
-            case "permission.updated":
               return event.properties.sessionID;
             case "permission.asked":
               return event.properties.sessionID;
@@ -23573,7 +23670,8 @@ export function createAgentChatService(args: {
         }
 
         if (event.type === "message.part.updated") {
-          const { part, delta } = event.properties;
+          const { part } = event.properties;
+          const delta = openCodePartUpdatedDelta(event.properties);
           markFirstStreamEvent(part.type);
 
           // Compaction begin marker. OpenCode has no dedicated "started" event, but it
@@ -23816,7 +23914,7 @@ export function createAgentChatService(args: {
             continue;
           }
           if (response.decision === "decline" || response.decision === "cancel") {
-            await runtime.handle.v2Client.question.reject({
+            await runtime.handle.client.question.reject({
               requestID: questionRequest.id,
               directory: runtime.handle.directory,
             }, { throwOnError: true });
@@ -23827,7 +23925,7 @@ export function createAgentChatService(args: {
             if (answers.length > 0) return answers;
             return response.responseText?.trim() ? [response.responseText.trim()] : [];
           });
-          await runtime.handle.v2Client.question.reply({
+          await runtime.handle.client.question.reply({
             requestID: questionRequest.id,
             directory: runtime.handle.directory,
             answers: answerList,
@@ -23883,8 +23981,9 @@ export function createAgentChatService(args: {
           continue;
         }
 
-        if (event.type === "permission.updated") {
-          const permission = event.properties;
+        const legacyPermissionUpdated = asLegacyOpenCodePermissionUpdated(event);
+        if (legacyPermissionUpdated) {
+          const permission = legacyPermissionUpdated.properties;
           const normalizedType = permission.type.trim().toLowerCase();
           const description = permission.title.trim() || normalizedType || "Approval required";
           const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
@@ -23951,8 +24050,13 @@ export function createAgentChatService(args: {
           emitChatEvent(managed, {
             type: "todo_update",
             items: event.properties.todos
-              .map((todo: { id: string; content: string; status: string }) => ({
-                id: todo.id,
+              .map((todo, index) => ({
+                // OpenCode's todo entries carry no id — the field the legacy SDK
+                // types advertised does not exist on the wire, so every item was
+                // emitted with `id: undefined` and the renderer keyed them all
+                // alike. Fall back to the list position, matching how the Claude
+                // todo mapper above already derives a stable id.
+                id: openCodeTodoId(todo, index),
                 description: todo.content,
                 status: todo.status === "completed"
                   ? "completed"
@@ -31520,11 +31624,10 @@ export function createAgentChatService(args: {
         throw new Error("Unable to start the OpenCode runtime to fork this chat. Use a brief handoff instead.");
       }
       const handle = managed.runtime.handle;
-      const forkResponse = await handle.client.session.fork({
-        path: { id: handle.sessionId },
-        query: { directory: handle.directory },
-        throwOnError: true,
-      });
+      const forkResponse = await handle.client.session.fork(
+        { sessionID: handle.sessionId, directory: handle.directory },
+        { throwOnError: true },
+      );
       const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
       if (!forkedId) {
         throw new Error(`OpenCode session fork did not return a new session id for '${handle.sessionId}'.`);
@@ -32956,11 +33059,10 @@ export function createAgentChatService(args: {
         throw new Error("Unable to start the OpenCode runtime for the imported fork.");
       }
       const handle = args.managed.runtime.handle;
-      const forkResponse = await handle.client.session.fork({
-        path: { id: importedId },
-        query: { directory: handle.directory },
-        throwOnError: true,
-      });
+      const forkResponse = await handle.client.session.fork(
+        { sessionID: importedId, directory: handle.directory },
+        { throwOnError: true },
+      );
       const forkedId = typeof forkResponse.data?.id === "string" ? forkResponse.data.id.trim() : "";
       if (!forkedId) throw new Error("OpenCode session fork did not return a new session id.");
       handle.sessionId = forkedId;
@@ -40152,8 +40254,8 @@ export function createAgentChatService(args: {
       managed.runtime.eventAbortController?.abort();
       try {
         await managed.runtime.handle.client.session.abort({
-          path: { id: managed.runtime.handle.sessionId },
-          query: { directory: managed.runtime.handle.directory },
+          sessionID: managed.runtime.handle.sessionId,
+          directory: managed.runtime.handle.directory,
         });
       } catch {
         // Ignore provider abort failures; SSE cancellation still tears the turn down.
@@ -40167,11 +40269,7 @@ export function createAgentChatService(args: {
       if (mode === "stop_and_clear") cancelQueuedSteers(managed, managed.runtime, "interrupted");
       persistChatState(managed);
       for (const pending of managed.runtime.pendingApprovals.values()) {
-        managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
-          path: { id: managed.runtime.handle.sessionId, permissionID: pending.permissionId },
-          query: { directory: managed.runtime.handle.directory },
-          body: { response: "reject" },
-        }).catch(() => {});
+        rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
       return result;
@@ -42845,27 +42943,7 @@ export function createAgentChatService(args: {
         : resolvedDecision === "accept"
           ? "once"
           : "reject";
-      if (pending.protocol === "v2") {
-        await managed.runtime.handle.v2Client.permission.reply({
-          requestID: pending.permissionId,
-          directory: managed.runtime.handle.directory,
-          reply,
-        }, { throwOnError: true });
-      } else {
-        await managed.runtime.handle.client.postSessionIdPermissionsPermissionId({
-          path: {
-            id: managed.runtime.handle.sessionId,
-            permissionID: pending.permissionId,
-          },
-          query: {
-            directory: managed.runtime.handle.directory,
-          },
-          throwOnError: true,
-          body: {
-            response: reply,
-          },
-        });
-      }
+      await replyToOpenCodePendingApproval(managed.runtime.handle, pending, reply);
       emitPendingInputResolved(managed, {
         itemId,
         decision: resolvedDecision,
@@ -45547,8 +45625,8 @@ export function createAgentChatService(args: {
     if (runtimeKind === "opencode" && managed?.runtime?.kind === "opencode") {
       try {
         const response = await managed.runtime.handle.client.session.messages({
-          path: { id: normalizedAgentId },
-          query: { directory: managed.runtime.handle.directory },
+          sessionID: normalizedAgentId,
+          directory: managed.runtime.handle.directory,
         });
         const rows = (response as { data?: Array<{ info: unknown; parts: unknown }> }).data
           ?? (response as unknown as Array<{ info: unknown; parts: unknown }>);
