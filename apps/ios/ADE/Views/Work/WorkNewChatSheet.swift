@@ -145,7 +145,10 @@ struct WorkNewChatSheet: View {
           }
 
           GlassSection(title: "Model") {
-            VStack(alignment: .leading, spacing: 12) {
+            // Lazy, because every row materialises two RoundedRectangles and a
+            // `.glassEffect` layer. An eager VStack built all of them synchronously
+            // the moment a provider was picked.
+            LazyVStack(alignment: .leading, spacing: 12) {
               if models.isEmpty && errorMessage == nil {
                 HStack(spacing: 10) {
                   ProgressView()

@@ -62,6 +62,11 @@ struct WorkModelPickerSheet: View {
   @State private var selection: ModelPickerRailSelection = .favorites
   @State private var searchText: String = ""
   @State private var liveCatalog: [WorkModelCatalogGroup]?
+  /// `scopedCatalog` is O(models) and `catalog` is read ~10x per body pass, which
+  /// SwiftUI re-runs on every search keystroke. Scope once per catalog change and
+  /// read the result instead. `availableModelIds` and `cursorAvailabilityMode` are
+  /// immutable `let` properties, so `liveCatalog` is the only input that varies.
+  @State private var scopedCatalogCache: [WorkModelCatalogGroup] = []
   @State private var isLoadingCatalog = false
   @State private var didPickInitialSelection = false
   @State private var selectedProviderTabKey: String?
@@ -76,10 +81,13 @@ struct WorkModelPickerSheet: View {
   @State private var piLoginError: String?
 
   private var catalog: [WorkModelCatalogGroup] {
-    if let liveCatalog {
-      return scopedCatalog(liveCatalog)
-    }
-    return []
+    scopedCatalogCache
+  }
+
+  @MainActor
+  private func setLiveCatalog(_ groups: [WorkModelCatalogGroup]) {
+    liveCatalog = groups
+    scopedCatalogCache = scopedCatalog(groups)
   }
 
   private var flattenedModels: [WorkModelOption] {
@@ -96,7 +104,11 @@ struct WorkModelPickerSheet: View {
   }
 
   private var modelById: [String: WorkModelOption] {
-    Dictionary(uniqueKeysWithValues: flattenedModels.map { ($0.id, $0) })
+    // `Dictionary(uniqueKeysWithValues:)` traps on a duplicate key. `flattenedModels`
+    // dedupes today, but an injected current model (`injectCurrentWorkModelIfNeeded`)
+    // matches on equivalence rather than exact id, so an exact-id collision is
+    // reachable. Keep the first entry instead of crashing the picker.
+    Dictionary(flattenedModels.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
   }
 
   /// Rail entries: Favorites + Recents first, then one row per provider that
@@ -248,10 +260,15 @@ struct WorkModelPickerSheet: View {
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
     guard !scopedIds.isEmpty else { return [] }
+    // Equivalence is "the two ids share a lookup key", so collapsing every scoped id
+    // into one key set turns this from O(models x scopedIds) — with two Set
+    // allocations inside `workModelIdsEquivalent` per comparison — into O(models).
+    let scopedKeys = Set(scopedIds.flatMap { workModelLookupKeys($0) })
+    guard !scopedKeys.isEmpty else { return [] }
     return availabilityScoped.compactMap { group -> WorkModelCatalogGroup? in
       let providers = group.providers.compactMap { provider -> WorkModelProvider? in
         let models = provider.models.filter { model in
-          scopedIds.contains { workModelIdsEquivalent($0, model.id) }
+          workModelLookupKeys(model.id).contains(where: scopedKeys.contains)
         }
         guard !models.isEmpty else { return nil }
         return WorkModelProvider(key: provider.key, displayName: provider.displayName, models: models)
@@ -485,11 +502,11 @@ struct WorkModelPickerSheet: View {
     defer { isLoadingCatalog = false }
 
     if commandScope == .project, liveCatalog == nil, let cached = syncService.cachedChatModelCatalog() {
-      liveCatalog = workModelCatalogGroups(
+      setLiveCatalog(workModelCatalogGroups(
         hostCatalog: cached,
         currentModelId: currentModelId,
         currentProvider: currentProvider
-      )
+      ))
     }
 
     do {
@@ -527,11 +544,11 @@ struct WorkModelPickerSheet: View {
 
   @MainActor
   private func apply(hostCatalog: AgentChatModelCatalog) {
-    liveCatalog = workModelCatalogGroups(
+    setLiveCatalog(workModelCatalogGroups(
       hostCatalog: hostCatalog,
       currentModelId: currentModelId,
       currentProvider: currentProvider
-    )
+    ))
   }
 
   private func modelCatalog(
@@ -949,6 +966,7 @@ struct ModelPickerContentPane: View {
                     onPiLogin: onPiLogin,
                     isPiLoginBusy: isPiLoginBusy
                   )
+                  .equatable()
                 }
               }
             }
@@ -1264,7 +1282,7 @@ enum ModelPickerRowStyle {
   case detailed
 }
 
-struct ModelPickerListRow: View {
+struct ModelPickerListRow: View, Equatable {
   let model: WorkModelOption
   let style: ModelPickerRowStyle
   let catalogGroupKey: String?
@@ -1288,6 +1306,25 @@ struct ModelPickerListRow: View {
 
   private var rowLogoProvider: String {
     workModelRowLogoProvider(for: model, catalogGroupKey: catalogGroupKey)
+  }
+
+  /// Closure properties make SwiftUI treat every row as changed, so a keystroke in
+  /// the search field re-diffs the whole list. Compare the value inputs that
+  /// actually drive rendering instead — the closures are recreated per body pass
+  /// but always behave the same for a given model, so only their presence matters.
+  static func == (lhs: ModelPickerListRow, rhs: ModelPickerListRow) -> Bool {
+    lhs.model == rhs.model
+      && lhs.style == rhs.style
+      && lhs.catalogGroupKey == rhs.catalogGroupKey
+      && lhs.isSelected == rhs.isSelected
+      && lhs.isFavorite == rhs.isFavorite
+      && lhs.isBusy == rhs.isBusy
+      && lhs.selectedReasoningEffort == rhs.selectedReasoningEffort
+      && lhs.selectedCodexFastMode == rhs.selectedCodexFastMode
+      && (lhs.onClaudeLogin == nil) == (rhs.onClaudeLogin == nil)
+      && lhs.isClaudeLoginBusy == rhs.isClaudeLoginBusy
+      && (lhs.onPiLogin == nil) == (rhs.onPiLogin == nil)
+      && lhs.isPiLoginBusy == rhs.isPiLoginBusy
   }
 
   private var supportedTiers: [String] {

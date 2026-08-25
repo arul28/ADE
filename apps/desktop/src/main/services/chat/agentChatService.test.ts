@@ -28400,6 +28400,55 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("keeps unconnected OpenCode providers out of the model catalog", async () => {
+      // `catalogModelIds` is the whole models.dev directory (195 providers / ~7.2k
+      // models). Emitting all of it made the synced catalog 4.85 MB and stalled or
+      // killed the iOS model picker. Only connected providers may reach the catalog.
+      replaceDynamicOpenCodeModelDescriptors([
+        createDynamicOpenCodeModelDescriptor("", {
+          displayName: "GPT 5.4",
+          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+        }),
+        createDynamicOpenCodeModelDescriptor("", {
+          displayName: "Nano Model",
+          capabilities: { tools: true, vision: false, reasoning: false, streaming: true },
+          openCodeProviderId: "nano-gpt",
+          openCodeModelId: "nano-model",
+        }),
+      ]);
+      vi.mocked(probeOpenCodeProviderInventory).mockResolvedValue({
+        modelIds: ["opencode/openai/gpt-5.4"],
+        catalogModelIds: ["opencode/nano-gpt/nano-model", "opencode/openai/gpt-5.4"],
+        providers: [
+          { id: "openai", name: "OpenAI", connected: true, modelCount: 1, availableModelCount: 1 },
+          { id: "nano-gpt", name: "nano-gpt", connected: false, modelCount: 1, availableModelCount: 0 },
+        ],
+        error: null,
+        descriptors: [],
+      });
+
+      const { service } = createService();
+      const catalog = await service.getModelCatalog({ mode: "force", refreshProvider: "opencode" });
+
+      const openCodeGroup = catalog.groups.find((group) => group.key === "opencode");
+      const modelIds = openCodeGroup?.providers.flatMap((provider) =>
+        provider.subsections.flatMap((subsection) => subsection.models.map((model) => model.id)),
+      ) ?? [];
+
+      expect(modelIds).toContain("opencode/openai/gpt-5.4");
+      expect(modelIds).not.toContain("opencode/nano-gpt/nano-model");
+      // The unconnected provider still appears, but as an empty block — that is the
+      // connect affordance, and it costs one small object instead of its whole model
+      // list. This mirrors OpenCode's own clients, which list every provider in the
+      // connect dialog and render model rows only for connected ones.
+      const nanoGpt = openCodeGroup?.providers.find((provider) => provider.key === "nano-gpt");
+      expect(nanoGpt).toBeDefined();
+      expect(nanoGpt?.modelCount).toBe(0);
+      expect(nanoGpt?.subsections).toEqual([]);
+    });
+
     it("omits Codex service tier when fast mode was never turned on", async () => {
       mockState.codexResponseOverrides.set("thread/start", (payload) => ({
         thread: { id: "thread-default" },

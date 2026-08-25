@@ -766,7 +766,12 @@ func workModelCatalogGroups(
         }
       }
     } else {
-      providers = group.providers.map { provider in
+      // `WorkModelProvider.id` is its key, so two providers sharing a key would
+      // produce duplicate SwiftUI ForEach ids. The Pi branch above already guards
+      // this; do the same here by merging same-key providers instead.
+      var seenProviderKeys: [String: Int] = [:]
+      var merged: [WorkModelProvider] = []
+      for provider in group.providers {
         let models = provider.subsections
           .flatMap(\.models)
           .map { model in
@@ -776,16 +781,32 @@ func workModelCatalogGroups(
               providerKey: provider.key
             )
           }
-        return WorkModelProvider(
-          key: provider.key,
-          displayName: provider.displayName,
-          models: workPrioritizeCodex56Models(
-            workDeduplicatedModelOptions(models),
-            groupKey: group.key,
-            providerKey: provider.key
+        if let existing = seenProviderKeys[provider.key] {
+          merged[existing] = WorkModelProvider(
+            key: provider.key,
+            displayName: merged[existing].displayName,
+            models: workPrioritizeCodex56Models(
+              workDeduplicatedModelOptions(merged[existing].models + models),
+              groupKey: group.key,
+              providerKey: provider.key
+            )
+          )
+          continue
+        }
+        seenProviderKeys[provider.key] = merged.count
+        merged.append(
+          WorkModelProvider(
+            key: provider.key,
+            displayName: provider.displayName,
+            models: workPrioritizeCodex56Models(
+              workDeduplicatedModelOptions(models),
+              groupKey: group.key,
+              providerKey: provider.key
+            )
           )
         )
       }
+      providers = merged
     }
 
     return WorkModelCatalogGroup(
@@ -898,7 +919,11 @@ private func workCuratedModelLookupMatch(
   return nil
 }
 
-private func workModelLookupKeys(_ raw: String?) -> [String] {
+/// Canonical comparison keys for a model id. Two ids are equivalent when their key
+/// sets intersect. Internal (not file-private) so callers filtering a whole catalog
+/// can hoist one key set out of the loop instead of paying `workModelIdsEquivalent`
+/// — and its two Set allocations — per comparison.
+func workModelLookupKeys(_ raw: String?) -> [String] {
   let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   guard !trimmed.isEmpty else { return [] }
 
@@ -1040,9 +1065,13 @@ private func workCodexRuntimeModelId(for raw: String) -> String? {
 }
 
 func workModelIdsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
-  let lhsKeys = Set(workModelLookupKeys(lhs))
-  let rhsKeys = Set(workModelLookupKeys(rhs))
-  return !lhsKeys.isDisjoint(with: rhsKeys)
+  // Key lists hold at most a handful of entries, so a nested scan beats building
+  // two Sets — this runs inside per-render catalog filters and sort comparators.
+  let lhsKeys = workModelLookupKeys(lhs)
+  guard !lhsKeys.isEmpty else { return false }
+  let rhsKeys = workModelLookupKeys(rhs)
+  guard !rhsKeys.isEmpty else { return false }
+  return lhsKeys.contains(where: rhsKeys.contains)
 }
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
