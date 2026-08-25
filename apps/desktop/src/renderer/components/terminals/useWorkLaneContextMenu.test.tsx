@@ -151,6 +151,30 @@ describe("useWorkLaneContextMenu", () => {
     expect(navigate).toHaveBeenCalledWith("/work");
   });
 
+  it("opens local manage without routing to the Lanes tab", () => {
+    const { result } = renderHook(() => useWorkLaneContextMenu(), {
+      wrapper: ({ children }) => <MemoryRouter>{children}</MemoryRouter>,
+    });
+
+    act(() => {
+      result.current.trigger("lane-remote", {
+        preventDefault: vi.fn(),
+        clientX: 12,
+        clientY: 34,
+      });
+    });
+    const view = render(<>{result.current.menu}</>);
+    const onManage = capturedLaneContextMenuProps?.onManage as (laneId: string) => void;
+    act(() => {
+      onManage("lane-remote");
+    });
+    view.rerender(<>{result.current.menu}</>);
+
+    expect(capturedManageLaneHostProps).toMatchObject({ laneId: "lane-remote" });
+    expect(view.getByTestId("work-manage-lane-dialog")).toBeTruthy();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("starts a foreign lane draft with its owning machine", () => {
     const writeClipboardText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window, "ade", {

@@ -96,6 +96,16 @@ describe("LaneContextMenu grouping", () => {
     expect(screen.getByRole("menuitem", { name: "Manage Lane" })).toBeTruthy();
   });
 
+  it("opens Manage Lane without selecting the lane (Work must not route to Lanes)", () => {
+    const props = renderLaneMenu();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Manage Lane" }));
+
+    expect(props.onManage).toHaveBeenCalledWith(lane.id);
+    expect(props.selectLane).not.toHaveBeenCalled();
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps every clipboard action reachable behind the Copy submenu", () => {
     const props = renderLaneMenu();
 

@@ -7,6 +7,7 @@ export function LaneDialogShell({
   open,
   onOpenChange,
   title,
+  titleContent,
   description,
   headerExtra,
   icon: Icon,
@@ -21,6 +22,8 @@ export function LaneDialogShell({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
+  /** Replaces the default title text while keeping `title` for the accessible name. */
+  titleContent?: ReactNode;
   description?: string;
   headerExtra?: ReactNode;
   icon?: ComponentType<{ size?: number | string; className?: string }>;
@@ -65,24 +68,32 @@ export function LaneDialogShell({
                 <div className="shrink-0 border-b border-white/[0.06] bg-white/[0.02] px-4 pb-3 pt-4 sm:px-5 sm:pt-5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
-                      <Dialog.Title className="flex items-center gap-2 text-base font-semibold text-fg sm:text-lg">
-                        {Icon ? (
-                          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-accent/[0.12] text-accent">
-                            <Icon size={16} />
-                          </span>
-                        ) : null}
-                        <span className="truncate">{title}</span>
+                      <Dialog.Title className={titleContent
+                        ? "sr-only"
+                        : "flex items-center gap-2 text-base font-semibold text-fg sm:text-lg"}
+                      >
+                        {titleContent ? title : (
+                          <>
+                            {Icon ? (
+                              <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-accent/[0.12] text-accent">
+                                <Icon size={16} />
+                              </span>
+                            ) : null}
+                            <span className="truncate">{title}</span>
+                          </>
+                        )}
                       </Dialog.Title>
+                      {titleContent ? <div className="min-w-0">{titleContent}</div> : null}
                       {headerExtra ? <div className="mt-3 min-w-0">{headerExtra}</div> : null}
                       {description ? (
                         <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-fg sm:max-w-2xl">
                           {description}
                         </Dialog.Description>
-                      ) : !headerExtra ? (
+                      ) : (
                         <Dialog.Description className="sr-only">
                           {title}
                         </Dialog.Description>
-                      ) : null}
+                      )}
                     </div>
                     <Dialog.Close asChild>
                       <Button variant="ghost" size="sm" className="shrink-0" disabled={busy}>

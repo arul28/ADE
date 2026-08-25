@@ -130,6 +130,26 @@ describe("ManageLaneDialog tabs", () => {
     expect(selectedTabLabel()).toBe("Delete");
   });
 
+  it("titles the dialog with the lane name instead of Manage Lane", () => {
+    const lane = makeLane({ name: "Manage tabs", color: "#5eead4" });
+    render(<ManageLaneDialog {...makeProps({ managedLane: lane, allLanes: [lane] })} />);
+
+    expect(screen.queryByText("Manage Lane")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Manage tabs" })).toBeTruthy();
+    const name = screen.getByText("Manage tabs", { selector: "span" });
+    expect(name.style.color).toBe("rgb(94, 234, 212)");
+  });
+
+  it("keeps Select everything compact and separate from the delete targets", () => {
+    render(<ManageLaneDialog {...makeProps()} />);
+
+    const selectEverything = screen.getByRole("button", { name: "Select everything" });
+    expect(selectEverything.className).toContain("h-8");
+    expect(screen.queryByText("Worktree, local & remote branch")).toBeNull();
+    const targets = screen.getByRole("checkbox", { name: /Worktree/i }).closest(".ml-3");
+    expect(targets).toBeTruthy();
+  });
+
   it("opens on the delete tab for batch lane management", () => {
     const firstLane = makeLane({ id: "lane-1", name: "First lane" });
     const secondLane = makeLane({ id: "lane-2", name: "Second lane" });
