@@ -163,6 +163,8 @@ struct LaneManageSheet: View {
             manageErrorBanner(errorMessage)
           }
 
+          laneNameTitle
+
           laneInfoHeader
 
           if isPrimary {
@@ -184,7 +186,7 @@ struct LaneManageSheet: View {
       .adeScreenBackground()
       .overlay { busyOverlay }
       .adeNavigationGlass()
-      .navigationTitle("Manage lane")
+      .navigationTitle(snapshot.lane.name)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -214,26 +216,32 @@ struct LaneManageSheet: View {
     }
   }
 
+  private var laneTint: Color {
+    laneSurfaceTint(forHex: snapshot.lane.color).text ?? ADEColor.accent
+  }
+
+  private var laneNameTitle: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(snapshot.lane.name)
+        .font(.largeTitle.weight(.bold))
+        .foregroundStyle(laneTint)
+        .lineLimit(2)
+        .minimumScaleFactor(0.7)
+      if snapshot.lane.status.dirty {
+        Text("DIRTY")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.warning)
+          .padding(.horizontal, 6)
+          .padding(.vertical, 2)
+          .background(ADEColor.warning.opacity(0.14), in: Capsule())
+      }
+      Spacer(minLength: 0)
+    }
+    .accessibilityAddTraits(.isHeader)
+  }
+
   private var laneInfoHeader: some View {
     VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        WorkLaneLogoMark(
-          color: laneSurfaceTint(forHex: snapshot.lane.color).text ?? ADEColor.accent,
-          laneIcon: snapshot.lane.icon,
-          size: 13
-        )
-        Text(snapshot.lane.name)
-          .font(.headline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        if snapshot.lane.status.dirty {
-          Text("DIRTY")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(ADEColor.warning)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(ADEColor.warning.opacity(0.14), in: Capsule())
-        }
-      }
       LabeledContent("Branch") {
         Text(branchLabel)
           .font(.system(.caption, design: .monospaced))
@@ -335,57 +343,75 @@ struct LaneManageSheet: View {
   }
 
   private var deleteChecklist: some View {
-    VStack(spacing: 0) {
-      deleteChecklistRow(
-        title: "Select everything",
-        subtitle: "Worktree, local & remote branch",
-        symbol: "checkmark.circle",
-        isSelected: deleteSelection.allSelected,
-        isIndeterminate: deleteSelection.hasAny && !deleteSelection.allSelected
-      ) {
-        deleteSelection = deleteSelection.allSelected ? .empty : LaneDeleteSelection(worktree: true, localBranch: true, remoteBranch: true)
+    VStack(alignment: .leading, spacing: 8) {
+      Button {
+        deleteSelection = deleteSelection.allSelected
+          ? .empty
+          : LaneDeleteSelection(worktree: true, localBranch: true, remoteBranch: true)
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: deleteSelection.allSelected
+            ? "checkmark.square.fill"
+            : (deleteSelection.hasAny ? "minus.square.fill" : "square"))
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(deleteSelection.hasAny ? ADEColor.danger : ADEColor.textMuted)
+          Text("Select everything")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
+        )
       }
+      .buttonStyle(.plain)
+      .disabled(!canRunLiveActions || busyAction != nil)
 
-      Divider().opacity(0.2)
+      VStack(spacing: 0) {
+        deleteChecklistRow(
+          title: "Worktree",
+          subtitle: "Removes the working folder and ADE registration.",
+          symbol: "shippingbox",
+          isSelected: deleteSelection.worktree
+        ) {
+          toggleDeleteTarget(.worktree, !deleteSelection.worktree)
+        }
 
-      deleteChecklistRow(
-        title: "Worktree",
-        subtitle: "Removes the working folder and ADE registration.",
-        symbol: "shippingbox",
-        isSelected: deleteSelection.worktree
-      ) {
-        toggleDeleteTarget(.worktree, !deleteSelection.worktree)
+        Divider().opacity(0.2)
+
+        deleteChecklistRow(
+          title: "Local branch",
+          subtitle: branchLabel,
+          symbol: "arrow.triangle.branch",
+          isSelected: deleteSelection.localBranch,
+          monoSubtitle: true
+        ) {
+          toggleDeleteTarget(.localBranch, !deleteSelection.localBranch)
+        }
+
+        Divider().opacity(0.2)
+
+        deleteChecklistRow(
+          title: "Remote branch",
+          subtitle: "origin · \(branchLabel)",
+          symbol: "cloud",
+          isSelected: deleteSelection.remoteBranch,
+          monoSubtitle: true
+        ) {
+          toggleDeleteTarget(.remoteBranch, !deleteSelection.remoteBranch)
+        }
       }
-
-      Divider().opacity(0.2)
-
-      deleteChecklistRow(
-        title: "Local branch",
-        subtitle: branchLabel,
-        symbol: "arrow.triangle.branch",
-        isSelected: deleteSelection.localBranch,
-        monoSubtitle: true
-      ) {
-        toggleDeleteTarget(.localBranch, !deleteSelection.localBranch)
-      }
-
-      Divider().opacity(0.2)
-
-      deleteChecklistRow(
-        title: "Remote branch",
-        subtitle: "origin · \(branchLabel)",
-        symbol: "cloud",
-        isSelected: deleteSelection.remoteBranch,
-        monoSubtitle: true
-      ) {
-        toggleDeleteTarget(.remoteBranch, !deleteSelection.remoteBranch)
-      }
+      .padding(.leading, 12)
+      .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
+      )
     }
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.16), lineWidth: 0.5)
-    )
   }
 
   private enum DeleteTarget {

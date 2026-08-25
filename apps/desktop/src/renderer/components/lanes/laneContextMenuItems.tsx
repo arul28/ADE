@@ -324,7 +324,9 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       kind: "action",
       key: "manage",
       label: "Manage Lane",
-      onSelect: () => { onClose(); selectLane(laneId); onManage(laneId); },
+      // Do not call selectLane here. On Work, that action navigates to the
+      // Lanes tab (split-open). Manage must stay on the surface that opened it.
+      onSelect: () => { onClose(); onManage(laneId); },
     });
   }
   if (deletableVisibleIds.length > 1) {
