@@ -1897,6 +1897,8 @@ export function AgentChatComposer({
   const [linearIssuePickerMode, setLinearIssuePickerMode] = useState<"attach" | "details">("attach");
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
   const [githubIssuePickerMode, setGitHubIssuePickerMode] = useState<"attach" | "details">("attach");
+  const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
+  const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
   const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
 
   useEffect(() => {
@@ -4751,15 +4753,31 @@ export function AgentChatComposer({
     document.body,
   ) : null;
 
-  const selectedLinearContextIssue = contextAttachments.find(
-    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
-      attachment.type === "linear_issue"
-    ),
+  const selectedLinearContextIssue = (
+    linearIssuePickerMode === "details" && linearDetailsIssueId
+      ? contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+          attachment.type === "linear_issue" && attachment.issue.id === linearDetailsIssueId
+        ),
+      )
+      : contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "linear_issue" }> => (
+          attachment.type === "linear_issue"
+        ),
+      )
   )?.issue ?? null;
-  const selectedGitHubContextIssue = contextAttachments.find(
-    (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
-      attachment.type === "github_issue"
-    ),
+  const selectedGitHubContextIssue = (
+    githubIssuePickerMode === "details" && githubDetailsIssueId
+      ? contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
+          attachment.type === "github_issue" && attachment.issue.id === githubDetailsIssueId
+        ),
+      )
+      : contextAttachments.find(
+        (attachment): attachment is Extract<AgentChatContextAttachment, { type: "github_issue" }> => (
+          attachment.type === "github_issue"
+        ),
+      )
   )?.issue ?? null;
   const isMcpElicitation = pendingInput?.providerMetadata?.mcpElicitation === true;
   const mcpElicitationSupportsPersistence = pendingInput?.providerMetadata?.persistenceSupported === true;
@@ -5200,11 +5218,13 @@ export function AgentChatComposer({
               onRemoveContext={onRemoveContextAttachment}
               onOpenContext={(attachment) => {
                 if (attachment.type === "linear_issue") {
+                  setLinearDetailsIssueId(attachment.issue.id);
                   setLinearIssuePickerMode("details");
                   setLinearIssuePickerOpen(true);
                   return;
                 }
                 if (attachment.type === "github_issue") {
+                  setGitHubDetailsIssueId(attachment.issue.id);
                   setGitHubIssuePickerMode("details");
                   setGitHubIssuePickerOpen(true);
                 }

@@ -2574,20 +2574,25 @@ export function createLaneService({
   };
 
   /**
-   * Fold a duplicate lane's user-visible data onto the keeper, then cascade the
-   * duplicate row away. Sessions (and their session-scoped Linear links), child
-   * lanes, branch profiles, the lane's primary Linear issue, and additional
-   * Linear issue links are all re-pointed first so nothing the user attached to
-   * the soon-to-be-deleted row is lost. The caller MUST run this inside a
-   * transaction (both call sites already hold `begin immediate`) and the keeper
-   * row must already exist. Shared by the create/recover dedupe repair and the
-   * create-path raced-adoption absorb.
+       * Fold a duplicate lane's user-visible data onto the keeper, then cascade the
+       * duplicate row away. Sessions (and their session-scoped Linear and GitHub
+       * links), child lanes, branch profiles, the lane's primary Linear issue, and
+       * additional Linear issue links are all re-pointed first so nothing the user
+       * attached to the soon-to-be-deleted row is lost. The caller MUST run this
+       * inside a transaction (both call sites already hold `begin immediate`) and
+       * the keeper row must already exist. Shared by the create/recover dedupe
+       * repair and the create-path raced-adoption absorb.
    */
   const mergeDuplicateLaneInto = (keeperId: string, duplicateId: string): void => {
     // Sessions and their session-scoped Linear links follow the lane.
     db.run("update claude_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     db.run("update terminal_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     db.run("update session_linear_issues set lane_id = ? where lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
+    db.run("update session_github_issues set lane_id = ? where lane_id = ? and project_id = ?", [
       keeperId,
       duplicateId,
       projectId,
@@ -3790,6 +3795,18 @@ export function createLaneService({
     db.run(
       `
         delete from session_linear_issues
+        where project_id = ?
+          and (
+            lane_id = ?
+            or session_id in (select id from terminal_sessions where lane_id = ?)
+            or session_id in (select session_id from claude_sessions where lane_id = ?)
+          )
+      `,
+      [projectId, laneId, laneId, laneId],
+    );
+    db.run(
+      `
+        delete from session_github_issues
         where project_id = ?
           and (
             lane_id = ?
