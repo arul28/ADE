@@ -10123,7 +10123,7 @@ describe("ADE CLI", () => {
       arguments: {
         domain: "ios_simulator",
         action: "openPreviewWorkspace",
-        args: { projectRoot: "/tmp/app" },
+        args: { projectRoot: path.resolve("/tmp/app") },
       },
     });
   });
@@ -10148,7 +10148,7 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "resolvePreviewMatch",
         args: {
-          projectRoot: "/tmp/app",
+          projectRoot: path.resolve("/tmp/app"),
           sourceFile: "Views/HomeView.swift",
           sourceLine: 44,
           elementLabel: "Settings",
@@ -10255,7 +10255,7 @@ describe("ADE CLI", () => {
         domain: "ios_simulator",
         action: "renderCurrentPreview",
         args: {
-          projectRoot: "/tmp/app",
+          projectRoot: path.resolve("/tmp/app"),
           sourceFile: "Views/HomeView.swift",
           sourceLine: 44,
           elementLabel: "Settings",
@@ -11556,10 +11556,13 @@ describe("ADE CLI", () => {
       process.env.ADE_LANE_ID = "lane-ios-1";
       expect(
         launchArgsFor(["ios-sim", "launch", "--project-root", "/tmp/primary"]),
-      ).toMatchObject({ projectRoot: "/tmp/primary" });
+      ).toMatchObject({ projectRoot: path.resolve("/tmp/primary") });
       expect(
         launchArgsFor(["ios-sim", "apps", "--root", "/tmp/primary"]),
-      ).toMatchObject({ projectRoot: "/tmp/primary", laneId: "lane-ios-1" });
+      ).toMatchObject({
+        projectRoot: path.resolve("/tmp/primary"),
+        laneId: "lane-ios-1",
+      });
     });
 
     it("keeps the simulator in the background unless asked otherwise", () => {
