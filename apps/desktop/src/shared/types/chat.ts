@@ -6,7 +6,7 @@ import type { AdeCardPayload } from "../adeCard";
 import type { ModelId } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
-import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
+import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
 import type { AdeRecoveryErrorCode } from "./recovery";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
@@ -330,6 +330,13 @@ export type AgentChatLinearIssueContextAttachment = {
   attachedAt?: string;
 };
 
+export type AgentChatGitHubIssueContextAttachment = {
+  type: "github_issue";
+  issue: LaneGitHubIssue;
+  source?: "manual" | "lane_link";
+  attachedAt?: string;
+};
+
 /**
  * Ephemeral plan-annotation attachment produced by the orchestration plan
  * panel popover (see `goal.md` §10.7). Lives only in the composer tray; not
@@ -346,6 +353,7 @@ export type AgentChatOrchestrationAnnotationContextAttachment = {
 
 export type AgentChatContextAttachment =
   | AgentChatLinearIssueContextAttachment
+  | AgentChatGitHubIssueContextAttachment
   | AgentChatOrchestrationAnnotationContextAttachment;
 
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */

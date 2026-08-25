@@ -67,6 +67,7 @@ import type {
   PrStatus,
   PrSummary,
   PrSnapshotHydration,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   PrWithConflicts,
   PrActionCapabilities,
@@ -195,6 +196,12 @@ import {
   ensureLinearPrReferences,
   type LinearPrIssueReference,
 } from "../../../shared/linearMagicWords";
+import {
+  dedupeGitHubPrIssueReferences,
+  ensureGitHubPrIssueLinkSection,
+  ensureGitHubPrReferences,
+  type GitHubPrIssueReference,
+} from "../../../shared/githubMagicWords";
 import { ensureAdeDeeplinkFooter } from "../../../shared/adeDeeplinkFooter";
 import { ensureAdePrTranscriptGistLinks, hasAdePrTranscriptGistLinks, type AdePrTranscriptGistLink } from "../../../shared/adePrTranscriptGists";
 import { normalizeEscapedMarkdownNewlines } from "../../../shared/prMarkdownText";
@@ -811,6 +818,12 @@ function applyLinearPrLinkage(
   if (!refs.length) return body;
   const withMagicWords = ensureLinearPrReferences(body, refs, { preserveExisting: false });
   return ensureLinearPrIssueLinkSection(withMagicWords, refs);
+}
+
+function applyGitHubPrLinkage(body: string, refs: GitHubPrIssueReference[]): string {
+  if (!refs.length) return body;
+  const withMagicWords = ensureGitHubPrReferences(body, refs, { preserveExisting: false });
+  return ensureGitHubPrIssueLinkSection(withMagicWords, refs);
 }
 
 function createEmptyIntegrationResolutionState(integrationLaneId: string, updatedAt = nowIso()): IntegrationResolutionState {
@@ -1720,6 +1733,33 @@ export function createPrService({
     return links
       .filter((link) => link.includeInPr)
       .map((link) => ({ issue: link.issue, closeOnMerge: link.closeOnMerge, role: link.role }));
+  };
+
+  const collectGitHubPrIssueReferencesForLaneSessions = (laneId: string): GitHubPrIssueReference[] => {
+    let links: SessionGitHubIssueLink[] = [];
+    try {
+      links = laneService.listGitHubIssuesForLaneSessions?.({ laneId }) ?? [];
+    } catch (error) {
+      logger.warn("prs.github_session_links_read_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+    return dedupeGitHubPrIssueReferences(
+      links
+        .filter((link) => link.includeInPr)
+        .map((link) => ({ issue: link.issue, closeOnMerge: link.closeOnMerge })),
+    );
+  };
+
+  const applyIssuePrLinkage = (
+    body: string,
+    lane: LaneSummary,
+    closePrimaryOnMerge: boolean,
+  ): string => {
+    const withLinear = applyLinearPrLinkage(body, lane, closePrimaryOnMerge);
+    return applyGitHubPrLinkage(withLinear, collectGitHubPrIssueReferencesForLaneSessions(lane.id));
   };
 
   const publishLinearPrCardsForLane = async (args: {
@@ -6706,8 +6746,9 @@ export function createPrService({
     const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
     const finalizeDraft = (draft: { title: string; body: string }): { title: string; body: string } => {
       const linearRefs = collectLinearPrIssueReferences(lane, closeLinearIssueOnMerge);
-      if (!linearRefs.length) return draft;
-      const body = applyLinearPrLinkage(draft.body, lane, closeLinearIssueOnMerge);
+      const githubRefs = collectGitHubPrIssueReferencesForLaneSessions(lane.id);
+      if (!linearRefs.length && !githubRefs.length) return draft;
+      const body = applyIssuePrLinkage(draft.body, lane, closeLinearIssueOnMerge);
       if (!lane.linearIssue) return { title: draft.title, body };
       const escapedIdentifier = lane.linearIssue.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const hasExactIdentifier = new RegExp(`(^|[^A-Za-z0-9])${escapedIdentifier}([^A-Za-z0-9]|$)`, "i").test(draft.title);
@@ -6839,7 +6880,7 @@ export function createPrService({
 
     const repo = await githubService.getRepoOrThrow();
     const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
-    const linearAdjustedBody = applyLinearPrLinkage(args.body ?? "", lane, closeLinearIssueOnMerge);
+    const linearAdjustedBody = applyIssuePrLinkage(args.body ?? "", lane, closeLinearIssueOnMerge);
     // Append the branded "Open in ADE" footer (branch link only at this point;
     // we'll PATCH the PR body with the PR-number-aware variant once we know it).
     const prBody = ensureAdeDeeplinkFooter(linearAdjustedBody, {
@@ -6886,7 +6927,7 @@ export function createPrService({
         const existingPrNumber = Number(existingPr?.number);
         if (Number.isFinite(existingPrNumber) && existingPrNumber > 0) {
           const existingBody = typeof existingPr?.body === "string" ? existingPr.body : "";
-          let patchedBody = applyLinearPrLinkage(existingBody, lane, closeLinearIssueOnMerge);
+          let patchedBody = applyIssuePrLinkage(existingBody, lane, closeLinearIssueOnMerge);
           patchedBody = ensureAdeDeeplinkFooter(patchedBody, {
             repoOwner: repo.owner,
             repoName: repo.name,
@@ -6927,7 +6968,7 @@ export function createPrService({
     // link is present. The footer is idempotent: if the rendered output is
     // unchanged (rare — happens when prBody was rebuilt elsewhere), we skip.
     const currentBody = typeof pr?.body === "string" ? pr.body : prBody;
-    const enrichedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, closeLinearIssueOnMerge), {
+    const enrichedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, closeLinearIssueOnMerge), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,
@@ -7088,7 +7129,7 @@ export function createPrService({
         )
       : null;
     const closePrimaryOnMerge = primaryLink?.closeOnMerge === true;
-    const patchedBody = ensureAdeDeeplinkFooter(applyLinearPrLinkage(currentBody, lane, closePrimaryOnMerge), {
+    const patchedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, closePrimaryOnMerge), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,

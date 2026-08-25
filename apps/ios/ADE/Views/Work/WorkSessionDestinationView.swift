@@ -949,7 +949,12 @@ struct WorkSessionDestinationView: View {
           onDelete: { Task { await deleteCurrentChatSession() } },
           onCopySessionId: { copyCurrentSessionId() },
           onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
-          onTogglePinned: { Task { await toggleCurrentSessionPinned() } }
+          onTogglePinned: { Task { await toggleCurrentSessionPinned() } },
+          onAttachIssue: {
+            ADEHaptics.light()
+            syncService.linearPaneAttachSessionId = session.id
+            syncService.linearPanePresented = true
+          }
         )
         .equatable()
       }
@@ -980,7 +985,8 @@ struct WorkSessionDestinationView: View {
       sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id),
       showsProof: !personalChat,
       showsPinAction: !personalChat,
-      showsSessionLink: !personalChat
+      showsSessionLink: !personalChat,
+      canAttachIssue: syncService.canInvokeRemoteAction("lane.attachLinearIssueToSession")
     )
   }
 

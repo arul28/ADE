@@ -56,6 +56,21 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /issue commands to the right pane", () => {
+    const parsed = parseCommand("/issue attach ADE-123");
+    expect(parsed?.name).toBe("/issue attach");
+    expect(parsed?.args).toBe("ADE-123");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/issue")).toContainEqual(expect.objectContaining({
+      name: "/issue",
+      source: "ade",
+      description: "Attach, list, or detach Linear and GitHub issues",
+    }));
+    expect(parseCommand("/issue list")?.name).toBe("/issue list");
+    expect(parseCommand("/issue detach ade/app#42")?.name).toBe("/issue detach");
+    expect(parseCommand("/issue detach ade/app#42")?.args).toBe("ade/app#42");
+  });
+
   it("parses /pr update-branch as a multi-word ADE command with a strategy arg", () => {
     const withStrategy = parseCommand("/pr update-branch rebase");
     expect(withStrategy?.name).toBe("/pr update-branch");

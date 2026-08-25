@@ -370,6 +370,7 @@ import {
 } from "./externalSessionBrowser";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
+import { executeIssueToolRequest } from "./issueCommands";
 import {
   formatLinearIssueComments,
   derivePrMergeReadiness,
@@ -11549,6 +11550,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const result = await conn.tool(request.toolName, request.args);
       setRightPane({ kind: "details", title: request.title, body: renderObject(result, 24) });
+      return;
+    }
+    if (name === "/issue" || name.startsWith("/issue ")) {
+      const issueInput = `${name.slice("/issue".length)} ${args}`.trim();
+      await executeIssueToolRequest(issueInput, {
+        sessionId: sessionId ?? null,
+        conn,
+        setDetails: (title, body) => setRightPane({ kind: "details", title, body }),
+        notifySuccess: (message) => addNotice(message, "success"),
+        render: renderObject,
+      });
       return;
     }
     if (name === "/feedback") {

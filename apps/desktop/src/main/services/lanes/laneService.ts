@@ -18,7 +18,13 @@ import {
   isLinkableLaneLinearIssue,
   laneLinearIssueMissingFields,
   parseLaneLinearIssueJson,
+  parseLaneLinearIssueValue,
 } from "../../../shared/laneLinearIssue";
+import {
+  cloneLaneGitHubIssue,
+  parseLaneGitHubIssueJson,
+  parseLaneGitHubIssueValue,
+} from "../../../shared/laneGitHubIssue";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
@@ -45,6 +51,7 @@ import type {
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
   LaneBranchSwitchResult,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneLinearIssueLink,
   LaneLinearIssueLinkRole,
@@ -69,6 +76,7 @@ import type {
   RebaseStartResult,
   RebasePushArgs,
   PushMode,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   StackChainItem,
   UpdateLaneAppearanceArgs
@@ -162,6 +170,8 @@ type SessionLinearIssueLinkRow = {
   created_at: string;
   updated_at: string;
 };
+
+type SessionGitHubIssueLinkRow = SessionLinearIssueLinkRow;
 
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
@@ -608,6 +618,25 @@ function parseLaneLinearIssueLink(row: LaneLinearIssueLinkRow | null | undefined
 function parseSessionLinearIssueLink(row: SessionLinearIssueLinkRow | null | undefined): SessionLinearIssueLink | null {
   if (!row) return null;
   const issue = parseLaneLinearIssueJson(row.issue_json);
+  if (!issue) return null;
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    laneId: row.lane_id ?? null,
+    issue,
+    role: normalizeLaneLinearIssueLinkRole(row.role),
+    source: normalizeLaneLinearIssueLinkSource(row.source),
+    includeInPr: row.include_in_pr === 1,
+    closeOnMerge: row.close_on_merge === 1,
+    evidence: parseIssueLinkEvidence(row.evidence_json),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function parseSessionGitHubIssueLink(row: SessionGitHubIssueLinkRow | null | undefined): SessionGitHubIssueLink | null {
+  if (!row) return null;
+  const issue = parseLaneGitHubIssueJson(row.issue_json);
   if (!issue) return null;
   return {
     id: row.id,
@@ -1544,6 +1573,99 @@ export function createLaneService({
         sessionId,
         laneId,
         issue: cloneLaneLinearIssue(args.issue),
+        role: args.role,
+        source: args.source,
+        includeInPr,
+        closeOnMerge,
+        evidence: args.evidence ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+    } catch (err) {
+      try { db.run("rollback"); } catch { /* keep original issue-link error */ }
+      throw err;
+    }
+  };
+
+  const getSessionGitHubIssueLinks = (sessionId: string): SessionGitHubIssueLink[] => {
+    const id = sessionId.trim();
+    if (!id) return [];
+    try {
+      return db.all<SessionGitHubIssueLinkRow>(
+        `
+          select *
+          from session_github_issues
+          where project_id = ?
+            and session_id = ?
+          order by
+            case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+            updated_at desc
+        `,
+        [projectId, id],
+      ).map(parseSessionGitHubIssueLink).filter((link): link is SessionGitHubIssueLink => Boolean(link));
+    } catch {
+      return [];
+    }
+  };
+
+  const upsertSessionGitHubIssueLink = (args: {
+    sessionId: string;
+    laneId?: string | null;
+    issue: LaneGitHubIssue;
+    role: LaneLinearIssueLinkRole;
+    source: LaneLinearIssueLinkSource;
+    includeInPr?: boolean;
+    closeOnMerge?: boolean;
+    evidence?: SessionGitHubIssueLink["evidence"];
+  }): SessionGitHubIssueLink => {
+    const sessionId = args.sessionId.trim();
+    const laneId = args.laneId?.trim() || null;
+    const now = new Date().toISOString();
+    const includeInPr = args.includeInPr !== false;
+    const closeOnMerge = args.closeOnMerge !== false;
+    db.run("begin");
+    try {
+      db.run(
+        `
+          delete from session_github_issues
+          where project_id = ?
+            and session_id = ?
+            and issue_id = ?
+            and role = ?
+        `,
+        [projectId, sessionId, args.issue.id, args.role],
+      );
+      const id = randomUUID();
+      db.run(
+        `
+          insert into session_github_issues(
+            id, project_id, session_id, lane_id, issue_id, issue_json, role, source,
+            include_in_pr, close_on_merge, evidence_json, created_at, updated_at
+          )
+          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          id,
+          projectId,
+          sessionId,
+          laneId,
+          args.issue.id,
+          JSON.stringify(args.issue),
+          args.role,
+          args.source,
+          includeInPr ? 1 : 0,
+          closeOnMerge ? 1 : 0,
+          args.evidence ? JSON.stringify(args.evidence) : null,
+          now,
+          now,
+        ],
+      );
+      db.run("commit");
+      return {
+        id,
+        sessionId,
+        laneId,
+        issue: cloneLaneGitHubIssue(args.issue),
         role: args.role,
         source: args.source,
         includeInPr,
@@ -4100,9 +4222,11 @@ export function createLaneService({
       const seen = new Set<string>();
       let mirrored = false;
       for (const issue of args.issues) {
+        const parsed = parseLaneLinearIssueValue(issue);
+        if (!parsed) continue;
         const normalized = finalizeLaneLinearIssue(
-          issue,
-          issue.branchName ?? branchHint ?? linearIssueBranchName(issue),
+          parsed,
+          parsed.branchName ?? branchHint ?? linearIssueBranchName(parsed),
         );
         if (!isLinkableLaneLinearIssue(normalized) || seen.has(normalized.id)) continue;
         seen.add(normalized.id);
@@ -4231,6 +4355,98 @@ export function createLaneService({
           `,
           [projectId, id],
         ).map(parseSessionLinearIssueLink).filter((link): link is SessionLinearIssueLink => Boolean(link));
+      } catch {
+        return [];
+      }
+    },
+
+    /**
+     * Attach GitHub issues to a chat or CLI session. Works without a lane.
+     * GitHub links stay session-scoped (no lane-level GitHub table). Default
+     * `closeOnMerge` is true so PR bodies get `Closes owner/repo#n`.
+     */
+    attachGitHubIssueToSession(args: {
+      chatSessionId: string;
+      issues: LaneGitHubIssue[];
+      role?: LaneLinearIssueLinkRole;
+      source?: LaneLinearIssueLinkSource;
+      includeInPr?: boolean;
+      closeOnMerge?: boolean;
+      evidence?: SessionGitHubIssueLink["evidence"];
+    }): SessionGitHubIssueLink[] {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const laneId = resolveSessionLaneId(chatSessionId);
+      const role = args.role ?? "worked";
+      const source = args.source ?? "chat_attach";
+      const includeInPr = args.includeInPr ?? true;
+      const closeOnMerge = args.closeOnMerge ?? true;
+      const evidence = args.evidence ?? { chatSessionId };
+      const links: SessionGitHubIssueLink[] = [];
+      const seen = new Set<string>();
+      for (const issue of args.issues) {
+        const normalized = parseLaneGitHubIssueValue(issue);
+        if (!normalized || seen.has(normalized.id)) continue;
+        seen.add(normalized.id);
+        links.push(upsertSessionGitHubIssueLink({
+          sessionId: chatSessionId,
+          laneId,
+          issue: normalized,
+          role,
+          source,
+          includeInPr,
+          closeOnMerge,
+          evidence,
+        }));
+      }
+      return links;
+    },
+
+    detachGitHubIssueFromSession(args: { chatSessionId: string; issueId?: string }): boolean {
+      const chatSessionId = args.chatSessionId.trim();
+      if (!chatSessionId) throw new Error("chatSessionId is required.");
+      const issueId = args.issueId?.trim() || null;
+      const before = getSessionGitHubIssueLinks(chatSessionId);
+      const target = issueId
+        ? before.filter((link) => link.issue.id === issueId || `${link.issue.owner}/${link.issue.repo}#${link.issue.number}` === issueId)
+        : before;
+      if (!target.length) return false;
+      db.run("begin");
+      try {
+        for (const link of target) {
+          db.run(
+            "delete from session_github_issues where project_id = ? and id = ?",
+            [projectId, link.id],
+          );
+        }
+        db.run("commit");
+      } catch (err) {
+        try { db.run("rollback"); } catch { /* keep original detach error */ }
+        throw err;
+      }
+      return true;
+    },
+
+    listGitHubIssuesForSession(args: { chatSessionId: string }): SessionGitHubIssueLink[] {
+      return getSessionGitHubIssueLinks(args.chatSessionId);
+    },
+
+    listGitHubIssuesForLaneSessions(args: { laneId: string }): SessionGitHubIssueLink[] {
+      const id = args.laneId.trim();
+      if (!id) return [];
+      try {
+        return db.all<SessionGitHubIssueLinkRow>(
+          `
+            select *
+            from session_github_issues
+            where project_id = ?
+              and lane_id = ?
+            order by
+              case role when 'primary' then 0 when 'worked' then 1 when 'referenced' then 2 else 3 end,
+              updated_at desc
+          `,
+          [projectId, id],
+        ).map(parseSessionGitHubIssueLink).filter((link): link is SessionGitHubIssueLink => Boolean(link));
       } catch {
         return [];
       }

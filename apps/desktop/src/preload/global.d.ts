@@ -468,6 +468,7 @@ import type {
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
+  LaneGitHubIssue,
   LaneLinearIssue,
   LaneSummary,
   ImportBranchLaneArgs,
@@ -530,6 +531,7 @@ import type {
   SuggestResolverTargetResult,
   SessionDeltaSummary,
   SessionLifecycleSettings,
+  SessionGitHubIssueLink,
   SessionLinearIssueLink,
   SessionSettleOverride,
   SessionWakeReason,
@@ -717,6 +719,7 @@ import type {
   SearchQueryResult,
   SearchRebuildResult,
 } from "../shared/types";
+import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   MaintenanceRunReport,
@@ -1597,6 +1600,17 @@ declare global {
         detachLinearIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
         listLinearIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionLinearIssueLink[]>;
         listLinearIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionLinearIssueLink[]>;
+        attachGitHubIssueToSession: (args: {
+          chatSessionId: string;
+          issues: LaneGitHubIssue[];
+          role?: string;
+          source?: string;
+          includeInPr?: boolean;
+          closeOnMerge?: boolean;
+        }) => Promise<SessionGitHubIssueLink[]>;
+        detachGitHubIssueFromSession: (args: { chatSessionId: string; issueId?: string }) => Promise<boolean>;
+        listGitHubIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionGitHubIssueLink[]>;
+        listGitHubIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionGitHubIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
         rebaseStart: (args: RebaseStartArgs) => Promise<RebaseStartResult>;
         rebasePush: (args: RebasePushArgs) => Promise<RebaseRun>;
@@ -2752,6 +2766,17 @@ declare global {
         // Callers must feature-detect and fall back to their own local backoff.
         getRequestBudget?: () => Promise<GitHubRequestBudget>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
+        listRepoIssues: (args?: {
+          owner?: string;
+          name?: string;
+          state?: "open" | "closed" | "all";
+          since?: string;
+        }) => Promise<GitHubIssueLike[]>;
+        getIssue: (args: {
+          owner?: string;
+          name?: string;
+          number: number;
+        }) => Promise<GitHubIssueLike | null>;
         listRepoAutolinks: (args?: {
           owner?: string;
           name?: string;

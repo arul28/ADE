@@ -1,13 +1,20 @@
-import type { AgentChatContextAttachment, LaneLinearIssue } from "./types";
+import type { AgentChatContextAttachment, LaneGitHubIssue, LaneLinearIssue } from "./types";
 import type { OrchestrationContextItem } from "./types/orchestration";
+import { parseLaneGitHubIssueValue } from "./laneGitHubIssue";
 import { parseLaneLinearIssueValue } from "./laneLinearIssue";
 
 export function chatContextAttachmentKey(attachment: AgentChatContextAttachment): string {
   switch (attachment.type) {
     case "linear_issue":
       return `linear:${attachment.issue.id}`;
+    case "github_issue":
+      return `github:${attachment.issue.id}`;
     case "orchestration_annotation":
       return orchestrationAnnotationAttachmentKey(attachment.item);
+    default: {
+      const exhaustive: never = attachment;
+      return exhaustive;
+    }
   }
 }
 
@@ -27,6 +34,18 @@ export function makeLinearIssueContextAttachment(
 ): AgentChatContextAttachment {
   return {
     type: "linear_issue",
+    issue,
+    source,
+    attachedAt: new Date().toISOString(),
+  };
+}
+
+export function makeGitHubIssueContextAttachment(
+  issue: LaneGitHubIssue,
+  source: "manual" | "lane_link" = "manual",
+): AgentChatContextAttachment {
+  return {
+    type: "github_issue",
     issue,
     source,
     attachedAt: new Date().toISOString(),
@@ -77,15 +96,28 @@ export function normalizeChatContextAttachments(value: unknown): AgentChatContex
   const out: AgentChatContextAttachment[] = [];
   for (const entry of value) {
     const record = readRecord(entry);
-    if (!record || record.type !== "linear_issue") continue;
-    const issue = parseLaneLinearIssueValue(record.issue);
-    if (!issue) continue;
-    out.push({
-      type: "linear_issue",
-      issue,
-      source: record.source === "lane_link" ? "lane_link" : "manual",
-      attachedAt: readNullableString(record.attachedAt) ?? undefined,
-    });
+    if (!record) continue;
+    if (record.type === "linear_issue") {
+      const issue = parseLaneLinearIssueValue(record.issue);
+      if (!issue) continue;
+      out.push({
+        type: "linear_issue",
+        issue,
+        source: record.source === "lane_link" ? "lane_link" : "manual",
+        attachedAt: readNullableString(record.attachedAt) ?? undefined,
+      });
+      continue;
+    }
+    if (record.type === "github_issue") {
+      const issue = parseLaneGitHubIssueValue(record.issue);
+      if (!issue) continue;
+      out.push({
+        type: "github_issue",
+        issue,
+        source: record.source === "lane_link" ? "lane_link" : "manual",
+        attachedAt: readNullableString(record.attachedAt) ?? undefined,
+      });
+    }
   }
   return mergeChatContextAttachments([], out);
 }
@@ -114,6 +146,10 @@ function wrapUntrustedLinearText(value: string): string {
   return `<untrusted-data source="linear">${escapeUntrustedXml(value)}</untrusted-data>`;
 }
 
+function wrapUntrustedGitHubText(value: string): string {
+  return `<untrusted-data source="github">${escapeUntrustedXml(value)}</untrusted-data>`;
+}
+
 function formatLinearIssueContext(issue: LaneLinearIssue): string {
   const project = cleanIssueValue(issue.projectName) ?? cleanIssueValue(issue.projectSlug) ?? cleanIssueValue(issue.teamKey);
   const team = cleanIssueValue(issue.teamName) ?? cleanIssueValue(issue.teamKey);
@@ -136,6 +172,26 @@ function formatLinearIssueContext(issue: LaneLinearIssue): string {
     issue.branchName ? `- Suggested branch: ${wrapUntrustedLinearText(issue.branchName)}` : null,
     issue.url ? `- URL: ${wrapUntrustedLinearText(issue.url)}` : null,
     description ? `- Description:\n${wrapUntrustedLinearText(description)}` : null,
+  ].filter((line): line is string => Boolean(line)).join("\n");
+}
+
+function formatGitHubIssueContext(issue: LaneGitHubIssue): string {
+  const labels = issue.labels.filter((label) => label.trim().length > 0).join(", ");
+  const assignees = issue.assignees.filter((login) => login.trim().length > 0).join(", ");
+  const body = issue.body?.trim();
+  return [
+    `- Provider: GitHub`,
+    `- Identifier: ${issue.owner}/${issue.repo}#${issue.number}`,
+    `- GitHub issue id: ${issue.id}`,
+    `- Title: ${wrapUntrustedGitHubText(issue.title)}`,
+    `- Repository: ${issue.owner}/${issue.repo}`,
+    `- State: ${issue.state}`,
+    issue.stateReason ? `- State reason: ${wrapUntrustedGitHubText(issue.stateReason)}` : null,
+    assignees ? `- Assignees: ${wrapUntrustedGitHubText(assignees)}` : `- Assignees: Unassigned`,
+    issue.authorLogin ? `- Author: ${wrapUntrustedGitHubText(issue.authorLogin)}` : null,
+    labels ? `- Labels: ${wrapUntrustedGitHubText(labels)}` : null,
+    `- URL: ${wrapUntrustedGitHubText(issue.url)}`,
+    body ? `- Description:\n${wrapUntrustedGitHubText(body)}` : null,
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
@@ -165,6 +221,10 @@ export function buildChatContextAttachmentPrompt(
     (entry): entry is Extract<AgentChatContextAttachment, { type: "linear_issue" }> =>
       entry.type === "linear_issue",
   );
+  const github = contextAttachments.filter(
+    (entry): entry is Extract<AgentChatContextAttachment, { type: "github_issue" }> =>
+      entry.type === "github_issue",
+  );
   const annotations = contextAttachments.filter(
     (entry): entry is Extract<AgentChatContextAttachment, { type: "orchestration_annotation" }> =>
       entry.type === "orchestration_annotation",
@@ -177,6 +237,16 @@ export function buildChatContextAttachmentPrompt(
       ...linear.map((attachment, index) => [
         `Linear issue ${index + 1}:`,
         formatLinearIssueContext(attachment.issue),
+      ].join("\n")),
+    ].join("\n\n"));
+  }
+  if (github.length) {
+    sections.push([
+      "Attached GitHub issue context:",
+      "ADE already stores any local GitHub credentials; do not ask the user for a GitHub token. Use the identifiers below, and refresh from ADE/GitHub tooling only if current state matters.",
+      ...github.map((attachment, index) => [
+        `GitHub issue ${index + 1}:`,
+        formatGitHubIssueContext(attachment.issue),
       ].join("\n")),
     ].join("\n\n"));
   }

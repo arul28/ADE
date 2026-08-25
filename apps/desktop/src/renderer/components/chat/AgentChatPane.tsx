@@ -2091,6 +2091,8 @@ function contextAttachmentMatchKey(attachment: AgentChatContextAttachment): stri
   switch (attachment.type) {
     case "linear_issue":
       return `${attachment.type}:${attachment.issue.id}`;
+    case "github_issue":
+      return `${attachment.type}:${attachment.issue.id}`;
     case "orchestration_annotation": {
       const anchor = attachment.item.anchor;
       const anchorId = anchor.id ?? "anon";

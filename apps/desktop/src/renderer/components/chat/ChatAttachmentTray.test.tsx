@@ -2,8 +2,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
-import type { LaneLinearIssue } from "../../../shared/types";
+import { makeGitHubIssueContextAttachment, makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
+import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
+import type { LaneGitHubIssue, LaneLinearIssue } from "../../../shared/types";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 
 function makeIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
@@ -250,5 +251,43 @@ describe("ChatAttachmentTray", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove ADE-123" }));
 
     expect(onRemoveContext).toHaveBeenCalledWith("linear:issue-1");
+  });
+
+  it("renders removable GitHub issue context chips", () => {
+    const onRemoveContext = vi.fn();
+    const issue: LaneGitHubIssue = {
+      id: "ade/app#42",
+      number: 42,
+      owner: "ade",
+      repo: "app",
+      title: "Fix attach menu",
+      body: "Details",
+      url: "https://github.com/ade/app/issues/42",
+      state: "open",
+      stateReason: null,
+      labels: ["bug"],
+      assignees: [],
+      authorLogin: "arul",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+    };
+    const contextAttachment = makeGitHubIssueContextAttachment(issue, "manual");
+
+    render(
+      <ChatAttachmentTray
+        attachments={[]}
+        contextAttachments={[contextAttachment]}
+        mode="standard"
+        onRemoveContext={onRemoveContext}
+      />,
+    );
+
+    expect(screen.getByTestId("github-issue-context-chip")).toBeTruthy();
+    expect(screen.getByText(githubIssueIdentifier(issue))).toBeTruthy();
+    expect(screen.getByText("Fix attach menu")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: `Remove ${githubIssueIdentifier(issue)}` }));
+
+    expect(onRemoveContext).toHaveBeenCalledWith("github:ade/app#42");
   });
 });

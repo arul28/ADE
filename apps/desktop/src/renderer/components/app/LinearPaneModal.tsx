@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { CircleNotch, X } from "@phosphor-icons/react";
 
@@ -9,21 +9,35 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 
+export type IssuePaneBrand = {
+  surface: string;
+  surfaceHover: string;
+  accent: string;
+  border: string;
+};
+
+const LINEAR_PANE_BRAND: IssuePaneBrand = {
+  surface: LINEAR_BRAND.surface,
+  surfaceHover: LINEAR_BRAND.surfaceHover,
+  accent: LINEAR_BRAND.primaryBright,
+  border: LINEAR_BRAND.border,
+};
+
 /**
- * The shared popover chrome for the Linear pane: a centered, portal'd dialog
- * with a blurred backdrop, a Linear-brand header (org / viewer / refresh /
- * close), and a flex column body. It mirrors the top-right Linear quick view
- * so every Linear surface — quick view, attach-to-chat, etc. — feels the same.
- *
- * The body (`children`) is expected to be a `<LinearIssueBrowser>`; the browser
- * owns its own per-issue sticky action dock, so callers vary only the browser
- * config, not this shell.
+ * Shared popover chrome for Linear and GitHub issue panes: a centered, portal'd
+ * dialog with a blurred backdrop, a branded header, and a flex column body.
  */
 export function LinearPaneModal({
   open,
   ariaLabel,
   quickView,
   loading = false,
+  brand = LINEAR_PANE_BRAND,
+  mark,
+  headerTitle,
+  headerSubtitle,
+  refreshTitle = "Refresh Linear",
+  closeTitle = "Close Linear",
   onRefresh,
   onClose,
   children,
@@ -32,11 +46,25 @@ export function LinearPaneModal({
   ariaLabel: string;
   quickView?: CtoLinearQuickView | null;
   loading?: boolean;
+  brand?: IssuePaneBrand;
+  mark?: ReactNode;
+  headerTitle?: string;
+  headerSubtitle?: string;
+  refreshTitle?: string;
+  closeTitle?: string;
   onRefresh: () => void;
   onClose: () => void;
   children: React.ReactNode;
 }) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const title = headerTitle
+    ?? quickView?.organization?.name
+    ?? "Linear";
+  const subtitle = headerSubtitle
+    ?? [
+      quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected",
+      quickView?.organization?.urlKey,
+    ].filter(Boolean).join(" · ");
 
   useEffect(() => {
     if (!open || typeof window === "undefined") return undefined;
@@ -87,28 +115,29 @@ export function LinearPaneModal({
         aria-label={ariaLabel}
         className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(940px,calc(100dvh-28px))] w-[min(1760px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
         style={{
-          borderColor: "rgba(123, 138, 240, 0.55)",
-          boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
+          borderColor: brand.border,
+          boxShadow: `0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px ${brand.border}`,
         }}
       >
         <div
           className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
-          style={{ background: LINEAR_BRAND.surface }}
+          style={{ background: brand.surface }}
         >
           <div className="flex min-w-0 items-center gap-2">
             <span
               className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
-              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
+              style={{ background: brand.surfaceHover, color: brand.accent }}
             >
-              <LinearMark size={14} />
+              {mark ?? <LinearMark size={14} />}
             </span>
             <div className="min-w-0 truncate text-[12px] text-fg/90">
-              <span className="font-medium">{quickView?.organization?.name ?? "Linear"}</span>
-              <span className="text-muted-fg/45"> · </span>
-              <span className="text-muted-fg/65">
-                {quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected"}
-                {quickView?.organization?.urlKey ? ` · ${quickView.organization.urlKey}` : ""}
-              </span>
+              <span className="font-medium">{title}</span>
+              {subtitle ? (
+                <>
+                  <span className="text-muted-fg/45"> · </span>
+                  <span className="text-muted-fg/65">{subtitle}</span>
+                </>
+              ) : null}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -118,7 +147,7 @@ export function LinearPaneModal({
               data-variant="ghost"
               onClick={onRefresh}
               disabled={loading}
-              title="Refresh Linear"
+              title={refreshTitle}
             >
               {loading ? <CircleNotch size={11} className="animate-spin" /> : null}
               Refresh
@@ -128,7 +157,7 @@ export function LinearPaneModal({
               className="ade-shell-control inline-flex h-6 w-6 items-center justify-center rounded-md"
               data-variant="ghost"
               onClick={onClose}
-              title="Close Linear"
+              title={closeTitle}
             >
               <X size={12} />
             </button>

@@ -3967,6 +3967,9 @@ final class SyncService: ObservableObject {
   /// `requestedLinearIssueNavigation` deep links.
   @Published var linearPanePresented = false
   @Published var cursorCloudPanePresented = false
+  /// When set, the Linear pane attaches the chosen issue to this chat session
+  /// instead of opening issue detail / launch.
+  @Published var linearPaneAttachSessionId: String? = nil
   /// A `ade://linear-issue/<IDENT>` deep link that should open the Linear pane
   /// straight to a specific issue instead of bouncing to the paired Mac.
   @Published var requestedLinearIssueNavigation: LinearIssueNavigationRequest?
@@ -9410,6 +9413,81 @@ final class SyncService: ObservableObject {
       action: "ai.openCursorCloudChat",
       args: args,
       as: CursorCloudOpenChatResult.self
+    )
+  }
+
+  private struct AttachLinearIssueToSessionPayload: Encodable {
+    var chatSessionId: String
+    var issues: [LinearIssueAttachPayload]
+  }
+
+  private struct LinearIssueAttachPayload: Encodable {
+    var id: String
+    var identifier: String
+    var title: String
+    var description: String?
+    var url: String?
+    var projectId: String
+    var projectSlug: String
+    var projectName: String?
+    var teamId: String
+    var teamKey: String
+    var teamName: String?
+    var stateId: String
+    var stateName: String
+    var stateType: String
+    var priority: Int
+    var priorityLabel: String
+    var labels: [String]
+    var assigneeId: String?
+    var assigneeName: String?
+    var creatorId: String?
+    var creatorName: String?
+    var dueDate: String?
+    var estimate: Double?
+    var branchName: String?
+    var createdAt: String
+    var updatedAt: String
+
+    init(issue: NormalizedLinearIssue) {
+      let now = Date().ISO8601Format()
+      id = issue.id
+      identifier = issue.identifier
+      title = issue.title
+      description = issue.description
+      url = issue.url
+      projectId = issue.projectId ?? ""
+      projectSlug = issue.projectSlug ?? ""
+      projectName = issue.projectName
+      teamKey = issue.teamKey ?? "UNK"
+      teamId = issue.teamId ?? teamKey
+      teamName = issue.teamName
+      stateId = issue.stateId ?? "unknown"
+      stateName = issue.stateName ?? "Unknown"
+      stateType = issue.stateType ?? "unstarted"
+      priority = issue.priority ?? 0
+      priorityLabel = issue.priorityLabel ?? "none"
+      labels = issue.labels ?? []
+      assigneeId = issue.assigneeId
+      assigneeName = issue.assigneeName
+      creatorId = issue.creatorId
+      creatorName = issue.creatorName
+      dueDate = issue.dueDate
+      estimate = issue.estimate
+      branchName = nil
+      createdAt = issue.createdAt ?? now
+      updatedAt = issue.updatedAt ?? now
+    }
+  }
+
+  func attachLinearIssueToChat(chatSessionId: String, issue: NormalizedLinearIssue) async throws {
+    try requireInvokableRemoteAction("lane.attachLinearIssueToSession")
+    _ = try await sendChatCommand(
+      action: "lane.attachLinearIssueToSession",
+      payload: AttachLinearIssueToSessionPayload(
+        chatSessionId: chatSessionId,
+        issues: [LinearIssueAttachPayload(issue: issue)]
+      )
     )
   }
 
