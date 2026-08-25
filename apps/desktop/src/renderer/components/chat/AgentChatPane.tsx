@@ -7088,8 +7088,8 @@ export function AgentChatPane({
       }
       setIosSimulatorOpen(true);
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
-    }, chatRuntimePinRef.current);
-  }, [hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
+    }, chatRuntimePin);
+  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {

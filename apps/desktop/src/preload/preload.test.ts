@@ -7185,6 +7185,8 @@ describe("per-chat runtime routing", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllTimers();
     vi.resetModules();
     vi.doUnmock("electron");
     delete (globalThis as any).__adeBridge;

@@ -1489,8 +1489,8 @@ describe("ChatIosSimulatorPanel", () => {
       />,
     );
 
-    await screen.findByText("Screen Recording");
-    await user.click(screen.getByRole("button", { name: "Open Settings" }));
+    await screen.findByText("Screen recording");
+    await user.click(screen.getByRole("button", { name: "Open settings" }));
 
     await waitFor(() => {
       expect(api.openSystemSettings).toHaveBeenCalledWith({ pane: "screen-recording" });

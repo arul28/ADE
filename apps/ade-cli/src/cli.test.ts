@@ -9896,7 +9896,17 @@ describe("ADE CLI", () => {
       expect(scopedPlan.kind).toBe("execute");
       if (scopedPlan.kind !== "execute") return;
       expect(scopedPlan.steps[0]?.params).toMatchObject({
-        arguments: { args: { projectRoot: "/tmp/scoped-repo" } },
+        arguments: { args: { projectRoot: path.resolve("/tmp/scoped-repo") } },
+      });
+
+      // A relative subcommand root must resolve against the caller cwd, not the
+      // brain process cwd, so the daemon and the shell agree on the path.
+      const relative = parseCliArgs(["ios-sim", "apps", "--project-root", "relative-repo"]);
+      const relativePlan = buildCliPlan(relative.command, relative.options);
+      expect(relativePlan.kind).toBe("execute");
+      if (relativePlan.kind !== "execute") return;
+      expect(relativePlan.steps[0]?.params).toMatchObject({
+        arguments: { args: { projectRoot: path.resolve("relative-repo") } },
       });
     } finally {
       if (previousLane === undefined) delete process.env.ADE_LANE_ID;

@@ -183,6 +183,10 @@ describe("createAdeRuntime startup teardown", () => {
     // nobody starts any more is stale documentation.
     expect([...startedWithoutRelease.keys()].filter((service) => !started.has(service))).toEqual([]);
   });
+
+  it("does not register a chat-end simulator release on the headless chat stub", () => {
+    expect(runtimeFn).toContain('typeof registerChatSessionEndedListener === "function"');
+  });
 });
 
 describe("headless ADE CLI agent skill roots", () => {

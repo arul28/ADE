@@ -2875,6 +2875,9 @@ export function ChatIosSimulatorPanel({
     // Same as the recovery path: the token is read before the prelude, so a
     // drawer that moves on during the stop below cancels this restart.
     const armedForRestart = captureStartRef.current;
+    // A remote chat never arms a capture token. Stopping the visual first
+    // would replace the remote-machine error with an empty live view.
+    if (armedForRestart == null) return;
     try {
       stopRendererLiveVisual();
       await window.ade.iosSimulator.stopStream(runtimePinRef.current).catch(() => {});

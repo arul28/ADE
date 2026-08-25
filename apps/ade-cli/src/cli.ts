@@ -9327,7 +9327,7 @@ function iosSimulatorRootArgs(
   const explicitRoot =
     readValue(args, ["--project-root", "--root"]) ?? globalProjectRoot;
   if (explicitRoot) {
-    return { projectRoot: explicitRoot, ...(laneId ? { laneId } : {}) };
+    return { projectRoot: path.resolve(explicitRoot), ...(laneId ? { laneId } : {}) };
   }
   if (laneId) return { laneId };
   return { projectRoot: callerWorkspaceRoot() };

@@ -1380,8 +1380,16 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
-    if (agentChatService && iosSimulatorService) {
-      agentChatService.registerChatSessionEndedListener((sessionId) => {
+    // Headless chat (omitted / headless-stub runtime) has no session-end
+    // listener. Calling the desktop method here threw during brain startup and
+    // left CLI tests hanging on a runtime that never came up.
+    const registerChatSessionEndedListener = (
+      agentChatService as {
+        registerChatSessionEndedListener?: (listener: (sessionId: string) => void) => void;
+      } | null
+    )?.registerChatSessionEndedListener;
+    if (typeof registerChatSessionEndedListener === "function" && iosSimulatorService) {
+      registerChatSessionEndedListener.call(agentChatService, (sessionId) => {
         void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
           logger.debug("ios_simulator.release_on_chat_end_failed", {
             sessionId,

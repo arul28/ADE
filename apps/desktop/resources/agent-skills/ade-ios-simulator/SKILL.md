@@ -27,7 +27,7 @@ ade --socket ios-sim proof --caption "Settings row renders" --text
 
 ## Interact
 
-`launch` returns `capabilities` (`canTap` / `canType` / `canDrag` / `canInspect`). Check them before acting; they are false when `idb` and `idb_companion` are not installed.
+`launch` returns `capabilities` (`canTap` / `canType` / `canDrag` / `canInspect`). Check them before acting. Tap, type, and drag are false unless both `idb` and `idb_companion` are installed. Snapshots and inspection can still work when `xcrun` is available even if those `idb` tools are missing.
 
 ```bash
 ade --socket ios-sim snapshot --text
@@ -90,4 +90,4 @@ One chat owns a simulator session at a time. A second launch fails with `IOS_SIM
 - `apps` drives project/scheme detection. If it does not find your app, re-run it and report the selected project, scheme, and build output — do not work around it with symlink projects, fake schemes, or repo-layout shims.
 - `preview-current` / `preview-match` returning `no-context` means nothing on screen is source-backed. Run `snapshot`, `select` a source-backed element, or pass `--source` / `--line`.
 - On a remote Mac runtime, control and screenshots work; the drawer live view does not — it captures a local desktop window.
-- Tap/drag/type/inspect failing usually means `idb` and `idb_companion` are missing.
+- Tap/drag/type failing usually means `idb` and `idb_companion` are missing. Inspection and snapshots can still work with `xcrun` alone.

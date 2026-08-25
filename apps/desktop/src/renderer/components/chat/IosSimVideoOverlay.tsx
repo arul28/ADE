@@ -57,10 +57,10 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
     return {
       kind: "screen-recording-permission",
       tone: "permission",
-      label: "Screen Recording",
+      label: "Screen recording",
       detail: message,
       action: "open-screen-recording",
-      actionLabel: "Open Settings",
+      actionLabel: "Open settings",
       spinner: false,
     };
   }
@@ -71,7 +71,7 @@ export function resolveIosSimBlocker(input: ResolveIosSimBlockerInput): IosSimBl
       label: "Automation",
       detail: message,
       action: "open-automation",
-      actionLabel: "Open Settings",
+      actionLabel: "Open settings",
       spinner: false,
     };
   }

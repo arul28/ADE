@@ -31,7 +31,13 @@ export function selectLaunchSteps(progress: IosSimulatorLaunchProgress[]): IosSi
   const latestLaunchId = progress.length ? progress[progress.length - 1]?.launchId ?? null : null;
   if (!latestLaunchId) return [];
   return IOS_SIM_LAUNCH_STEP_ORDER
-    .map((step) => progress.find((item) => item.launchId === latestLaunchId && item.step === step))
+    .map((step) => {
+      for (let index = progress.length - 1; index >= 0; index -= 1) {
+        const item = progress[index];
+        if (item?.launchId === latestLaunchId && item.step === step) return item;
+      }
+      return undefined;
+    })
     .filter((item): item is IosSimulatorLaunchProgress => Boolean(item));
 }
 
