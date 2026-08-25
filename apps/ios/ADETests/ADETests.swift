@@ -15617,6 +15617,7 @@ final class ADETests: XCTestCase {
 
     XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
+      contentFitsViewport: true,
       loading: false,
       hasError: false,
       hasBufferedEntries: false,
@@ -15624,6 +15625,7 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
+      contentFitsViewport: true,
       loading: false,
       hasError: false,
       hasBufferedEntries: true,
@@ -15631,6 +15633,7 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 80,
+      contentFitsViewport: true,
       loading: false,
       hasError: false,
       hasBufferedEntries: false,
@@ -15638,6 +15641,7 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
+      contentFitsViewport: true,
       loading: false,
       hasError: true,
       hasBufferedEntries: false,
@@ -15647,6 +15651,7 @@ final class ADETests: XCTestCase {
     // gesture that re-arms anything. Buffered rows have to stay reachable.
     XCTAssertTrue(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
+      contentFitsViewport: true,
       loading: false,
       hasError: true,
       hasBufferedEntries: true,
@@ -15654,6 +15659,7 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
+      contentFitsViewport: true,
       loading: true,
       hasError: true,
       hasBufferedEntries: true,
@@ -15661,10 +15667,32 @@ final class ADETests: XCTestCase {
     ))
     XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
       distanceFromBottom: 0,
+      contentFitsViewport: true,
       loading: false,
       hasError: false,
       hasBufferedEntries: false,
       hasHostHistory: false
+    ))
+    XCTAssertFalse(workChatShouldContinueAutomaticOlderHistory(
+      distanceFromBottom: 0,
+      contentFitsViewport: false,
+      loading: false,
+      hasError: false,
+      hasBufferedEntries: true,
+      hasHostHistory: true
+    ))
+
+    XCTAssertTrue(workChatShouldInstallPrependProbe(
+      distanceFromTop: 0,
+      hasPrependAnchor: false
+    ))
+    XCTAssertFalse(workChatShouldInstallPrependProbe(
+      distanceFromTop: workChatOlderHistoryTriggerDistance + 1,
+      hasPrependAnchor: false
+    ))
+    XCTAssertTrue(workChatShouldInstallPrependProbe(
+      distanceFromTop: workChatOlderHistoryTriggerDistance + 1,
+      hasPrependAnchor: true
     ))
 
     XCTAssertEqual(
@@ -19806,6 +19834,34 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(first, second)
     XCTAssertEqual(first.map(\.id), second.map(\.id))
+  }
+
+  func testParseMarkdownListBlocksStayBoundedAndPreserveOrder() {
+    let itemCount = workMarkdownListItemsPerRenderBlock * 2 + 3
+    let expectedItems = (1...itemCount).map { "Item \($0)" }
+    let orderedMarkdown = (1...itemCount).map { "\($0). Item \($0)" }.joined(separator: "\n")
+    let orderedBlocks = parseMarkdownBlocks(orderedMarkdown)
+    let orderedListBlocks = orderedBlocks.compactMap { block -> (Int, [String])? in
+      guard case .orderedList(let start, let items) = block.kind else { return nil }
+      return (start, items)
+    }
+
+    XCTAssertEqual(
+      orderedListBlocks.map(\.0),
+      [1, workMarkdownListItemsPerRenderBlock + 1, workMarkdownListItemsPerRenderBlock * 2 + 1]
+    )
+    XCTAssertTrue(orderedListBlocks.dropLast().allSatisfy { $0.1.count == workMarkdownListItemsPerRenderBlock })
+    XCTAssertEqual(orderedListBlocks.last?.1.count, 3)
+    XCTAssertEqual(orderedListBlocks.flatMap(\.1), expectedItems)
+
+    let unorderedMarkdown = expectedItems.map { "- \($0)" }.joined(separator: "\n")
+    let unorderedBlocks = parseMarkdownBlocks(unorderedMarkdown)
+    let unorderedListBlocks = unorderedBlocks.compactMap { block -> [String]? in
+      guard case .unorderedList(let items) = block.kind else { return nil }
+      return items
+    }
+    XCTAssertTrue(unorderedListBlocks.allSatisfy { $0.count <= workMarkdownListItemsPerRenderBlock })
+    XCTAssertEqual(unorderedListBlocks.flatMap { $0 }, expectedItems)
   }
 
   func testParseMarkdownTableRowsPreservesBlankCells() {

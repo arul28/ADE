@@ -644,6 +644,9 @@ struct WorkSessionDestinationView: View {
   var navigationTitleOverride: String?
   /// Lanes forwarded to the chat composer for `@`-mention autocomplete.
   var lanes: [LaneSummary] = []
+  /// Lanes are immutable for this mounted destination. Compute the render
+  /// signature once instead of hashing every lane on each streaming update.
+  let lanesRenderSignature: Int
   /// Set when this chat is opened from the hub as a cross-project "quick look":
   /// the session lives in a project OTHER than the phone's active one and
   /// streams read-only without a project switch. Nil for the ordinary
@@ -696,6 +699,7 @@ struct WorkSessionDestinationView: View {
     self.showsLaneActions = showsLaneActions
     self.navigationTitleOverride = navigationTitleOverride
     self.lanes = lanes
+    self.lanesRenderSignature = workLaneListRenderSignature(lanes)
     self.crossProjectContext = crossProjectContext
     self.personalChat = personalChat
     self.compactComposer = compactComposer
@@ -777,8 +781,10 @@ struct WorkSessionDestinationView: View {
   @State var postSendRefreshTask: Task<Void, Never>?
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var subagentSnapshots: [WorkSubagentSnapshot] = []
+  @State var subagentSnapshotsRenderSignature = 0
   @State var remoteSubagentSnapshots: [WorkSubagentSnapshot] = []
   @State var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
+  @State var scheduledWorkSnapshotsRenderSignature = 0
   @State var subagentView: WorkSubagentSelection?
   @State var subagentTranscript: [WorkChatEnvelope] = []
   @State var subagentTranscriptRenderSignature = 0
@@ -1791,13 +1797,13 @@ struct WorkSessionDestinationView: View {
       onOpenParentSession: viewingSubagent ? nil : { openParentSession() },
       resolvedSessionStatus: resolvedSessionStatus,
       lanes: lanes,
-      lanesRenderSignature: workLaneListRenderSignature(lanes),
+      lanesRenderSignature: lanesRenderSignature,
       hasOlderTranscriptHistory: viewingSubagent ? false : hasOlderTranscriptHistory,
       onLoadOlderTranscript: loadOlderTranscriptAction,
       subagentSnapshots: subagentSnapshots,
-      subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature(subagentSnapshots),
+      subagentSnapshotsRenderSignature: subagentSnapshotsRenderSignature,
       scheduledWorkSnapshots: viewingSubagent ? [] : scheduledWorkSnapshots,
-      scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : workScheduledWorkSnapshotsRenderSignature(scheduledWorkSnapshots),
+      scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : scheduledWorkSnapshotsRenderSignature,
       selectedSubagentTaskId: subagentView?.taskId,
       // One chip, one destination: subagents, background work and schedules
       // all live in the Chat Info sheet. Timeline-row selection stays scoped
@@ -2994,6 +3000,7 @@ struct WorkSessionDestinationView: View {
     let next = mergeWorkSubagentSnapshots(local: local, remote: remoteSubagentSnapshots)
     if next != subagentSnapshots {
       subagentSnapshots = next
+      subagentSnapshotsRenderSignature = workSubagentSnapshotsRenderSignature(next)
     }
     if let subagentView,
        let updated = next.first(where: { snapshot in
@@ -3019,6 +3026,7 @@ struct WorkSessionDestinationView: View {
     )
     if next != scheduledWorkSnapshots {
       scheduledWorkSnapshots = next
+      scheduledWorkSnapshotsRenderSignature = workScheduledWorkSnapshotsRenderSignature(next)
     }
   }
 
@@ -3317,7 +3325,7 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.navigationChrome == rhs.navigationChrome
       && lhs.showsLaneActions == rhs.showsLaneActions
       && lhs.navigationTitleOverride == rhs.navigationTitleOverride
-      && workLaneListRenderSignature(lhs.lanes) == workLaneListRenderSignature(rhs.lanes)
+      && lhs.lanesRenderSignature == rhs.lanesRenderSignature
       && lhs.crossProjectContext == rhs.crossProjectContext
       && lhs.personalChat == rhs.personalChat
   }
