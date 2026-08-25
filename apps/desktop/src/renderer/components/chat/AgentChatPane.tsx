@@ -9206,14 +9206,29 @@ export function AgentChatPane({
           ? (availableLanes ?? lanes).find((candidate) => candidate.id === laneId)
           : undefined
       );
-    if (!launchLane && draftExecutionMachineIdRef.current !== draftBoundMachineIdRef.current) {
+    // A direct Work draft can arrive before its lane catalog has hydrated; in
+    // that case the existing lane id is still a valid launch target. Once a
+    // catalog is known, however, a missing lane is an unavailable selection
+    // and must not fall back to the project's root worktree.
+    const laneCatalogLoaded = availableLanes !== undefined || lanes.length > 0;
+    if (
+      !launchLane
+      && (
+        draftExecutionMachineIdRef.current !== draftBoundMachineIdRef.current
+        || laneCatalogLoaded
+      )
+    ) {
       throw new Error("Selected lane is not available on the selected machine. Choose a lane for that machine.");
     }
+    const launchWorktreePath =
+      launchLane && "worktreePath" in launchLane && typeof launchLane.worktreePath === "string"
+        ? launchLane.worktreePath
+        : null;
     const laneName = launchLane?.name ?? laneDisplayLabel ?? laneId;
     return {
       laneId,
       laneName,
-      worktreePath: routedLaunchLane?.worktreePath ?? projectRoot ?? null,
+      worktreePath: launchWorktreePath ?? projectRoot ?? null,
       autoCreated: false,
     };
   }, [

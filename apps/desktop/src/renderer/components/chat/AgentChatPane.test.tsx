@@ -1222,6 +1222,7 @@ function renderAutoCreateDraftPane(args?: {
   onDraftMachineChange?: React.ComponentProps<typeof AgentChatPane>["onDraftMachineChange"];
   onImportedSession?: React.ComponentProps<typeof AgentChatPane>["onImportedSession"];
   initialDraftMachineId?: string | null;
+  laneId?: string | null;
   lanes?: any[];
   project?: { rootPath: string; displayName?: string };
   projectBinding?: OpenProjectBinding;
@@ -1258,7 +1259,7 @@ function renderAutoCreateDraftPane(args?: {
           element={(
             <>
               <AgentChatPane
-                laneId="lane-1"
+                laneId={args?.laneId ?? "lane-1"}
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
@@ -6180,6 +6181,35 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(onDraftMachineChange).not.toHaveBeenCalled();
     expect(onLaneChange).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unavailable draft lane instead of launching against the bound project", async () => {
+    seedRuntimeModelCatalog();
+    const { create } = installAdeMocks({ sessions: [] });
+    const onSessionCreated = vi.fn();
+    renderAutoCreateDraftPane({
+      laneId: "lane-only-on-another-machine",
+      onSessionCreated,
+    });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Do not launch this unavailable lane." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("draft-launch-job").textContent).toContain(
+        "Selected lane is not available on the selected machine",
+      );
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(onSessionCreated).not.toHaveBeenCalled();
   });
 
   it("auto-creates on this computer from a remote-bound tab without rebinding the project", async () => {
