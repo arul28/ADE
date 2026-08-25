@@ -316,7 +316,8 @@ private enum WorkStreamingMergeResult {
 private func workStreamingMergeResult(
   _ existing: String,
   _ incoming: String,
-  existingUTF8Length: Int? = nil
+  existingUTF8Length: Int? = nil,
+  existingTrailingBacktickRun: Int = 0
 ) -> WorkStreamingMergeResult {
   if existing.isEmpty { return .appended(incoming) }
   if incoming.isEmpty { return .unchanged }
@@ -354,6 +355,20 @@ private func workStreamingMergeResult(
   if !normalizedExisting.isEmpty,
      normalizedIncoming.hasPrefix(normalizedExisting) {
     return .replaced(incoming)
+  }
+
+  // A provider may split an opening fence between deltas (` `` ` then
+  // `` `swift``). The bounded overlap fallback would otherwise treat the
+  // shared backtick as replay and drop it, turning a valid fence into prose.
+  // Preserve the incoming fragment whenever its leading backticks complete
+  // the existing run; cumulative snapshots have already taken the fast
+  // prefix path above.
+  let incomingLeadingBacktickRun = workMarkdownLeadingBacktickRun(incoming)
+  if existingTrailingBacktickRun > 0,
+     incomingLeadingBacktickRun > 0,
+     existingTrailingBacktickRun + incomingLeadingBacktickRun >= 3,
+     incomingLeadingBacktickRun < 3 {
+    return .appended(incoming)
   }
   if workStreamingTextHasMultiwordReplayShape(incoming),
      existing.hasSuffix(incoming) {
@@ -436,7 +451,13 @@ func workApplyStreamingAssistantText(_ incoming: String, to message: inout WorkC
       message.markdownHasCarriageReturn ?? existing.contains("\r"),
       message.markdownContainsFence ?? existing.contains("```"),
       message.markdownTrailingBacktickRun ?? workMarkdownTrailingBacktickRun(existing),
-      workStreamingMergeResult(existing, incoming, existingUTF8Length: existing.utf8.count)
+      workStreamingMergeResult(
+        existing,
+        incoming,
+        existingUTF8Length: existing.utf8.count,
+        existingTrailingBacktickRun: message.markdownTrailingBacktickRun
+          ?? workMarkdownTrailingBacktickRun(existing)
+      )
     )
   }()
 
@@ -506,6 +527,15 @@ private func workMarkdownTrailingBacktickRunAfterAppending(_ appended: String, p
     } else {
       count = 0
     }
+  }
+  return count
+}
+
+private func workMarkdownLeadingBacktickRun(_ text: String) -> Int {
+  var count = 0
+  for character in text {
+    guard character == "`" else { break }
+    count += 1
   }
   return count
 }
