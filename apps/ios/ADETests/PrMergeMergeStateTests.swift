@@ -405,6 +405,118 @@ final class PrMergeMergeStateTests: XCTestCase {
     XCTAssertEqual(snapshot.history?.repoPullRequestCounts?.open, 2)
     XCTAssertEqual(snapshot.history?.repoPullRequestCounts?.merged, 834)
     XCTAssertEqual(snapshot.history?.repoPullRequestCounts?.closed, 17)
+    XCTAssertNil(snapshot.writeViewerLogin)
+  }
+
+  func testGitHubSnapshotDecodesWriteViewerLogin() throws {
+    let snapshot = try JSONDecoder().decode(GitHubPrSnapshot.self, from: Data(#"""
+    {
+      "repo": { "owner": "arul28", "name": "ADE", "defaultBranch": "main" },
+      "viewerLogin": "arul28",
+      "writeViewerLogin": "ade-bot",
+      "repoPullRequests": [],
+      "externalPullRequests": [],
+      "syncedAt": "2026-08-26T12:00:00Z"
+    }
+    """#.utf8))
+
+    XCTAssertEqual(snapshot.viewerLogin, "arul28")
+    XCTAssertEqual(snapshot.writeViewerLogin, "ade-bot")
+  }
+
+  func testPrCommentDecodesReactionSnapshotFields() throws {
+    let comment = try JSONDecoder().decode(PrComment.self, from: Data(#"""
+    {
+      "id": "comment-1",
+      "author": "octocat",
+      "body": "Looks good",
+      "source": "issue",
+      "url": "https://github.com/arul28/ADE/pull/1#issuecomment-55",
+      "path": null,
+      "line": null,
+      "createdAt": "2026-08-26T12:00:00Z",
+      "updatedAt": "2026-08-26T12:01:00Z",
+      "githubId": 55,
+      "nodeId": "IC_kwDOComment",
+      "reactions": [
+        { "id": "roll-up", "content": "+1", "user": "", "count": 3 },
+        { "id": "r2", "content": "heart", "user": "arul28" }
+      ]
+    }
+    """#.utf8))
+
+    XCTAssertEqual(comment.githubId, 55)
+    XCTAssertEqual(comment.nodeId, "IC_kwDOComment")
+    XCTAssertEqual(comment.reactions?.count, 2)
+    XCTAssertEqual(comment.reactions?.first?.content, "+1")
+    XCTAssertEqual(comment.reactions?.first?.count, 3)
+    XCTAssertEqual(comment.reactions?.last?.user, "arul28")
+  }
+
+  func testPrCommentDecodesWithoutReactionSnapshotFields() throws {
+    let comment = try JSONDecoder().decode(PrComment.self, from: Data(#"""
+    {
+      "id": "comment-legacy",
+      "author": "octocat",
+      "body": "Queued",
+      "source": "issue",
+      "url": null,
+      "path": null,
+      "line": null,
+      "createdAt": "2026-08-26T12:00:00Z",
+      "updatedAt": null
+    }
+    """#.utf8))
+
+    XCTAssertNil(comment.githubId)
+    XCTAssertNil(comment.nodeId)
+    XCTAssertNil(comment.reactions)
+  }
+
+  func testPrDetailDecodesNodeIdAndReactions() throws {
+    let detail = try JSONDecoder().decode(PrDetail.self, from: Data(#"""
+    {
+      "prId": "pr-1",
+      "body": "Ship it",
+      "nodeId": "PR_kwDOPull",
+      "reactions": [
+        { "id": "roll-up", "content": "hooray", "user": "", "count": 2 }
+      ],
+      "assignees": [],
+      "author": { "login": "octocat" },
+      "isDraft": false,
+      "labels": [],
+      "requestedReviewers": [],
+      "milestone": null,
+      "linkedIssues": []
+    }
+    """#.utf8))
+
+    XCTAssertEqual(detail.nodeId, "PR_kwDOPull")
+    XCTAssertEqual(detail.reactions?.first?.content, "hooray")
+    XCTAssertEqual(detail.reactions?.first?.count, 2)
+  }
+
+  func testPrReviewThreadCommentDecodesReactionSnapshotFields() throws {
+    let comment = try JSONDecoder().decode(PrReviewThreadComment.self, from: Data(#"""
+    {
+      "id": "thread-comment-1",
+      "author": "reviewer",
+      "authorAvatarUrl": null,
+      "body": "nit",
+      "url": null,
+      "createdAt": "2026-08-26T12:00:00Z",
+      "updatedAt": null,
+      "githubId": 99,
+      "reactions": [
+        { "id": "r1", "content": "eyes", "user": "octocat" }
+      ]
+    }
+    """#.utf8))
+
+    XCTAssertEqual(comment.githubId, 99)
+    XCTAssertEqual(comment.reactions?.first?.content, "eyes")
+    XCTAssertEqual(comment.reactions?.first?.user, "octocat")
   }
 
   func testReconcileKeepsMappedTerminalPrVisibleWhenProjectionOmitsIt() {

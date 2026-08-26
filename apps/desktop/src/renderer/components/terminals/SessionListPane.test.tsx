@@ -1417,6 +1417,42 @@ describe("SessionListPane", () => {
           laneId: "lane-elsewhere",
           laneName: "Elsewhere Lane",
         }),
+        // No hostname on this foreign binding, so Open in stays hidden even
+        // though a headerless foreign card would otherwise keep it at session
+        // root (Lane ▸ cannot resolve a remote editor from the local store).
+        null,
+      );
+    });
+
+    it("keeps session-root Open in on a headerless foreign SSH lane", () => {
+      seedForeignMachine({
+        binding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Mac Studio (12)",
+          transport: "ssh",
+          hostname: "dev.example",
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+      });
+      const onContextMenu = vi.fn();
+      renderPane({ onContextMenu });
+
+      fireEvent.contextMenu(document.querySelector('[data-session-id="session-elsewhere"]')!);
+
+      expect(onContextMenu).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "session-elsewhere" }),
+        expect.anything(),
+        expect.objectContaining({ hostname: "dev.example", transport: "ssh" }),
+        "Mac Studio (12)",
+        expect.objectContaining({ laneId: "lane-elsewhere" }),
+        expect.objectContaining({
+          rootPath: "/tmp/known-lane",
+          remote: { hostname: "dev.example", transport: "ssh" },
+        }),
       );
     });
 
@@ -2117,6 +2153,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       undefined,
       expect.objectContaining({ laneId: "lane-solo", laneName: "Solo lane" }),
+      null,
     );
 
     // And the handle really opens the shared lane menu, rather than a stub.
@@ -2148,6 +2185,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       undefined,
       undefined,
+      expect.anything(),
     );
   });
 

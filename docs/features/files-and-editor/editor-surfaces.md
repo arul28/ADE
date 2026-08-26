@@ -35,7 +35,9 @@ Path: `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx`
 - the unified `FilesSearchPanel`, in the sidebar column and as a centred modal
 - file and directory creation prompts
 - context-menu actions for open, rename, delete, copy full/relative path,
-  copy name, and reveal
+  copy name, and reveal (`openPathInEditor` with `target: "finder"`).
+  Lane/session **Open in** (detected VS Code / Zed / …) is a separate
+  submenu — see [README.md](./README.md#opening-in-an-external-editor).
 - status bar with branch, group, open-tab, dirty counts, and the active
   full path
 

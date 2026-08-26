@@ -149,6 +149,7 @@ type Props = {
   reviewThreads: PrReviewThread[];
   deployments: PrDeployment[];
   viewerLogin: string | null;
+  writeViewerLogin?: string | null;
   filters: PrTimelineFilters;
   onFiltersChange: (next: PrTimelineFilters) => void;
   aiSummary: PrAiSummary | null;
@@ -290,6 +291,8 @@ export function buildTimelineEvents(args: {
       author: args.detail.author?.login ?? null,
       avatarUrl: args.detail.author?.avatarUrl ?? null,
       body: args.detail.body,
+      subjectId: args.detail.nodeId ?? null,
+      reactions: args.detail.reactions ?? [],
     });
   }
 
@@ -541,11 +544,14 @@ export function buildTimelineEvents(args: {
       id: `comment:${comment.id}`,
       type: "issue_comment",
       timestamp: comment.createdAt ?? new Date(0).toISOString(),
-      author: comment.author,
-      avatarUrl: comment.authorAvatarUrl,
-      commentId: comment.id,
-      body: comment.body,
-      isBot: isBotLogin(comment.author),
+        author: comment.author,
+        avatarUrl: comment.authorAvatarUrl,
+        commentId: comment.id,
+        body: comment.body,
+        isBot: isBotLogin(comment.author),
+        commentGithubId: comment.githubId ?? null,
+        commentNodeId: comment.nodeId ?? null,
+        reactions: comment.reactions ?? [],
     });
   }
 
@@ -695,6 +701,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       reviewThreads,
       deployments,
       viewerLogin,
+      writeViewerLogin,
       filters,
       onFiltersChange,
       aiSummary,
@@ -934,6 +941,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
             repoOwner={pr.repoOwner}
             repoName={pr.repoName}
             viewerLogin={viewerLogin}
+            writeViewerLogin={writeViewerLogin}
             filters={filters}
             onFiltersChange={onFiltersChange}
             summary={summaryForTimeline}

@@ -540,6 +540,7 @@ export function registerRuntimeBridge({
       key: remoteProjectBindingKey(target.id, project.projectId),
       targetId: target.id,
       runtimeName: target.name,
+      transport: target.transport ?? "ssh",
       hostname: target.hostname,
       projectId: project.projectId,
       rootPath: project.rootPath,

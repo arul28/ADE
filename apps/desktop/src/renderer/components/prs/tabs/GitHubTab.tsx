@@ -113,6 +113,7 @@ export function GitHubTab({
     detailBusy,
     loading: prsContextLoading,
     setViewerLogin: setContextViewerLogin,
+    setWriteViewerLogin: setContextWriteViewerLogin,
   } = usePrs();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -241,6 +242,9 @@ export function GitHubTab({
         if (next.viewerLogin) {
           setContextViewerLogin?.(next.viewerLogin);
         }
+        if (next.writeViewerLogin !== undefined) {
+          setContextWriteViewerLogin?.(next.writeViewerLogin);
+        }
         return next;
       })
       .catch((err) => {
@@ -266,7 +270,7 @@ export function GitHubTab({
       });
     inFlightSnapshotRef.current = { request: pending, ...requestKey };
     return pending;
-  }, [setContextViewerLogin]);
+  }, [setContextViewerLogin, setContextWriteViewerLogin]);
 
   React.useEffect(() => {
     if (projectRootRef.current === projectRoot) return;
@@ -293,7 +297,10 @@ export function GitHubTab({
     if (snapshot?.viewerLogin) {
       setContextViewerLogin?.(snapshot.viewerLogin);
     }
-  }, [setContextViewerLogin, snapshot?.viewerLogin]);
+    if (snapshot?.writeViewerLogin !== undefined) {
+      setContextWriteViewerLogin?.(snapshot.writeViewerLogin);
+    }
+  }, [setContextViewerLogin, setContextWriteViewerLogin, snapshot?.viewerLogin, snapshot?.writeViewerLogin]);
 
   const startHotRefreshWindow = React.useCallback(() => {
     if (hotRefreshTimerRef.current != null) return;

@@ -6,7 +6,7 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
 import { LanePrBadge } from "./LanePrBadge";
-import type { SessionContextMenuLaneActions } from "./SessionContextMenu";
+import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./SessionContextMenu";
 import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
 import {
   canonicalInputFromSummary,
@@ -23,6 +23,7 @@ import {
 } from "../../state/crossMachineLanes";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
+import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneMachineMarker } from "./LaneMachineMarker";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
@@ -973,6 +974,7 @@ export const SessionListPane = React.memo(function SessionListPane({
      * management — the menu appends a lane section when this is present.
      */
     laneActions?: SessionContextMenuLaneActions | null,
+    openIn?: SessionContextMenuOpenIn | null,
   ) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
@@ -1022,6 +1024,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       : lanesProp),
     [lanesProp],
   );
+  const projectBinding = useAppStore((state) => state.projectBinding);
   const prsByLaneId = useLanePrsByLaneId();
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
   const keybindings = useAppStore((state) => state.keybindings);
@@ -1933,12 +1936,19 @@ export const SessionListPane = React.memo(function SessionListPane({
         }}
         onContextMenu={(e) => {
           e.preventDefault();
+          const openIn = resolveOpenInTarget({
+            worktreePath: sessionLane?.worktreePath,
+            binding: foreignRow?.binding ?? projectBinding,
+          });
           onContextMenu(
             session,
             e,
             foreignRow?.binding,
             foreignRow?.machineName,
             options?.laneActions,
+            openIn && (!options?.laneActions || Boolean(foreignRow))
+              ? openIn
+              : null,
           );
         }}
         compact={options?.compact}

@@ -229,6 +229,11 @@ export type PrComment = {
   line: number | null;
   createdAt: string | null;
   updatedAt: string | null;
+  /** REST database id used by comment edit endpoints. */
+  githubId?: number | null;
+  /** Global GraphQL node id used by reaction mutations. */
+  nodeId?: string | null;
+  reactions?: PrReviewThreadReaction[];
 };
 
 export type PrReviewThreadComment = {
@@ -241,6 +246,9 @@ export type PrReviewThreadComment = {
   updatedAt: string | null;
   /** Surrounding diff context for the inline comment (GitHub `diff_hunk`). */
   diffHunk?: string | null;
+  /** REST database id used by the inline-comment edit endpoint. */
+  githubId?: number | null;
+  reactions?: PrReviewThreadReaction[];
 };
 
 export type PrReviewThread = {
@@ -363,6 +371,8 @@ export type GitHubPrListItem = {
 export type GitHubPrSnapshot = {
   repo: GitHubRepoRef | null;
   viewerLogin: string | null;
+  /** Account selected for write-capable GitHub mutations, when distinct. */
+  writeViewerLogin?: string | null;
   repoPullRequests: GitHubPrListItem[];
   externalPullRequests: GitHubPrListItem[];
   syncedAt: string;
@@ -1201,6 +1211,9 @@ export function parseSyntheticGithubPrId(prId: string): PrGithubCoords | null {
 export type PrDetail = {
   prId: string;
   body: string | null;
+  /** Global GraphQL node id for the pull request itself. */
+  nodeId?: string | null;
+  reactions?: PrReviewThreadReaction[];
   labels: PrLabel[];
   assignees: PrUser[];
   requestedReviewers: PrUser[];
@@ -1466,6 +1479,7 @@ export type UpdatePrCommentArgs = {
   prId: string;
   commentId: string;
   body: string;
+  source?: "issue" | "review";
 };
 
 export type UpdatePrTitleArgs = {
@@ -1615,6 +1629,8 @@ export type PrTimelineEvent =
   | (PrTimelineEventBase & {
       type: "description";
       body: string | null;
+      subjectId?: string | null;
+      reactions?: PrReviewThreadReaction[];
     })
   | (PrTimelineEventBase & {
       type: "commit_push";
@@ -1659,6 +1675,9 @@ export type PrTimelineEvent =
       commentId: string;
       body: string | null;
       isBot: boolean;
+      commentGithubId?: number | null;
+      commentNodeId?: string | null;
+      reactions?: PrReviewThreadReaction[];
     })
   | (PrTimelineEventBase & {
       type: "check_update";
@@ -1746,6 +1765,8 @@ export type PrReviewThreadReaction = {
   id: string;
   content: PrReactionContent;
   user: string;
+  /** REST reaction rollups use one synthetic entry with an exact aggregate count. */
+  count?: number;
 };
 
 export type PrReactionContent =

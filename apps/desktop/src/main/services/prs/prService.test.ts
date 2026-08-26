@@ -6995,6 +6995,7 @@ describe("prService.updateComment", () => {
     const db = makeMockDb();
     installPullRequestRowStore(db, [makePrRow()]);
     const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({ userLogin: "ade[bot]" })),
       apiRequest: vi.fn(async (request: { method?: string }) => {
         // The ownership pre-check GETs the comment to confirm it belongs to the
         // target PR; the PATCH then performs the edit.
@@ -7003,6 +7004,7 @@ describe("prService.updateComment", () => {
             data: {
               id: 555,
               issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+              user: { login: "ade[bot]" },
             },
           };
         }
@@ -7051,6 +7053,31 @@ describe("prService.updateComment", () => {
     await expect(
       service.updateComment({ prId: "pr-row-1", commentId: "555", body: "Edited body" }),
     ).rejects.toThrow("Comment does not belong to the target PR.");
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
+  it("rejects a comment authored by another GitHub account", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({ userLogin: "octocat" })),
+      apiRequest: vi.fn(async (request: { method?: string }) => ({
+        data: request.method === "GET"
+          ? {
+              id: 555,
+              issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+              user: { login: "someone-else" },
+            }
+          : { id: 555 },
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(
+      service.updateComment({ prId: "pr-row-1", commentId: "555", body: "Edited body" }),
+    ).rejects.toThrow("only edit comments authored");
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(
       expect.objectContaining({ method: "PATCH" }),
     );

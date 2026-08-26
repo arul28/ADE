@@ -4479,6 +4479,12 @@ struct PrComment: Codable, Identifiable, Equatable {
   var line: Int?
   var createdAt: String?
   var updatedAt: String?
+  /// REST database id used by comment edit endpoints. Nil against older hosts.
+  var githubId: Int? = nil
+  /// Global GraphQL node id used by reaction mutations. Nil against older hosts.
+  var nodeId: String? = nil
+  /// GitHub reaction rollups. Nil/empty against older hosts that omit them.
+  var reactions: [PrReviewThreadReaction]? = nil
 }
 
 struct PrFile: Codable, Identifiable, Equatable {
@@ -4501,6 +4507,10 @@ struct PrDetail: Codable, Equatable {
   var requestedReviewers: [PrUser]
   var milestone: String?
   var linkedIssues: [PrLinkedIssue]
+  /// Global GraphQL node id for the pull request itself. Nil against older hosts.
+  var nodeId: String? = nil
+  /// GitHub reaction rollups on the PR body. Nil/empty against older hosts.
+  var reactions: [PrReviewThreadReaction]? = nil
 }
 
 struct PrLabel: Codable, Identifiable, Equatable {
@@ -4679,6 +4689,9 @@ struct PrMergedBy: Codable, Equatable {
 struct GitHubPrSnapshot: Codable, Equatable {
   var repo: GitHubRepoRef?
   var viewerLogin: String?
+  /// Account selected for write-capable GitHub mutations, when distinct from
+  /// `viewerLogin`. Nil against older hosts and when the accounts coincide.
+  var writeViewerLogin: String? = nil
   var repoPullRequests: [GitHubPrListItem]
   var externalPullRequests: [GitHubPrListItem]
   var syncedAt: String
@@ -4700,6 +4713,14 @@ struct GitHubPrSnapshotCounts: Codable, Equatable {
   var merged: Int
 }
 
+struct PrReviewThreadReaction: Codable, Identifiable, Equatable {
+  var id: String
+  var content: String
+  var user: String
+  /// REST reaction rollups use one synthetic entry with an exact aggregate count.
+  var count: Int? = nil
+}
+
 struct PrReviewThreadComment: Codable, Identifiable, Equatable {
   var id: String
   var author: String
@@ -4708,6 +4729,10 @@ struct PrReviewThreadComment: Codable, Identifiable, Equatable {
   var url: String?
   var createdAt: String?
   var updatedAt: String?
+  /// REST database id used by the inline-comment edit endpoint. Nil against older hosts.
+  var githubId: Int? = nil
+  /// GitHub reaction rollups. Nil/empty against older hosts that omit them.
+  var reactions: [PrReviewThreadReaction]? = nil
 }
 
 struct PrReviewThread: Codable, Identifiable, Equatable {

@@ -134,6 +134,7 @@ type PrsState = {
   dismissedAiSummaries: Record<string, boolean>;
   timelineFiltersByPrId: Record<string, PrTimelineFilters>;
   viewerLogin: string | null;
+  writeViewerLogin?: string | null;
 };
 
 type PrsContextValue = PrsState & {
@@ -153,6 +154,7 @@ type PrsContextValue = PrsState & {
   setAiSummaryDismissed: (prId: string, dismissed: boolean) => void;
   regeneratePrAiSummary: (prId: string) => Promise<void>;
   setViewerLogin: (login: string | null) => void;
+  setWriteViewerLogin: (login: string | null) => void;
 } & GithubPollGovernor;
 
 const PrsContext = createContext<PrsContextValue | null>(null);
@@ -188,6 +190,7 @@ type PrsContextWarmCache = {
   inlineTerminal: InlineTerminalState;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
   viewerLogin: string | null;
+  writeViewerLogin?: string | null;
   cachedAt: number;
   dataLoadedAt: number;
 };
@@ -440,6 +443,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const [detailLiveDataPrId, setDetailLiveDataPrId] = useState<string | null>(null);
   const [detailBusy, setDetailBusy] = useState(false);
   const [viewerLogin, setViewerLogin] = useState<string | null>(() => warmCache?.viewerLogin ?? null);
+  const [writeViewerLogin, setWriteViewerLogin] = useState<string | null | undefined>(
+    () => warmCache?.writeViewerLogin,
+  );
   const detailCacheHasDataRef = React.useRef(false);
   const detailSnapshotLoadedAtByPrIdRef = React.useRef<Record<string, number>>({});
   const detailSnapshotStatePrIdRef = React.useRef<string | null>(null);
@@ -1429,6 +1435,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       inlineTerminal,
       resolverSessionsByContextKey,
       viewerLogin,
+      writeViewerLogin,
       cachedAt,
       dataLoadedAt: warmCacheHydratedAtRef.current,
     });
@@ -1454,6 +1461,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     selectedPrId,
     selectedRebaseItemId,
     viewerLogin,
+    writeViewerLogin,
   ]);
 
   const value = useMemo<PrsContextValue>(
@@ -1488,6 +1496,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       dismissedAiSummaries,
       timelineFiltersByPrId,
       viewerLogin,
+      writeViewerLogin,
       setActiveTab,
       setSelectedPrId,
       setSelectedRebaseItemId,
@@ -1503,6 +1512,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setAiSummaryDismissed,
       regeneratePrAiSummary,
       setViewerLogin,
+      setWriteViewerLogin,
       isGithubPollStoodDown,
       noteGithubReadFailure,
       noteGithubReadSuccess,
@@ -1510,7 +1520,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       githubPollGeneration,
     }),
     // Note: setActiveTab, setSelectedPrId, setSelectedRebaseItemId,
-    // setMergeMethod, setInlineTerminal, and setViewerLogin are intentionally excluded from this dependency
+    // setMergeMethod, setInlineTerminal, setViewerLogin, and setWriteViewerLogin are intentionally excluded from this dependency
     // array because they are useState setters which are guaranteed to be referentially stable
     // across re-renders per the React useState contract. Resolver preference setters are
     // included because they are useCallback wrappers (not raw setters).
@@ -1545,6 +1555,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       dismissedAiSummaries,
       timelineFiltersByPrId,
       viewerLogin,
+      writeViewerLogin,
       setResolverModel,
       setResolverReasoningLevel,
       setResolverPermissionMode,

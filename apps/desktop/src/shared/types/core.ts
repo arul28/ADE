@@ -372,6 +372,8 @@ export type OpenProjectBinding =
       key: string;
       targetId: string;
       runtimeName: string;
+      /** Transport that owns the project path; missing legacy values mean SSH. */
+      transport?: "ssh" | "paired";
       hostname?: string;
       projectId: string;
       rootPath: string;
@@ -569,6 +571,8 @@ export type RecentProjectRemoteRef = {
   /** Human-friendly machine name shown on the recents row chip. */
   runtimeName: string;
   hostname: string;
+  /** Transport that owns the project path; missing legacy values mean SSH. */
+  transport?: "ssh" | "paired";
   /** Credential-free origin retained so offline recents can still auto-bind. */
   gitOriginUrl?: string | null;
   /** Host-resolved project logo for remote recents, when available. */

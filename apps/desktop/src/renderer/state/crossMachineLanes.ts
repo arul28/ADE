@@ -1426,6 +1426,7 @@ async function runRefresh(): Promise<void> {
             ),
             targetId: option.targetId as string,
             runtimeName: option.name,
+            transport: option.transport ?? "ssh",
             ...(option.hostname ? { hostname: option.hostname } : {}),
             projectId: option.project?.projectId as string,
             rootPath: option.project?.rootPath as string,

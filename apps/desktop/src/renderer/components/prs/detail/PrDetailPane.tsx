@@ -512,6 +512,7 @@ export function PrDetailPane({
     detailDeployments,
     detailLiveDataPrId: ctxDetailPrId,
     viewerLogin,
+    writeViewerLogin,
     setTimelineFilters,
     setAiSummaryDismissed,
     regeneratePrAiSummary,
@@ -1704,6 +1705,7 @@ export function PrDetailPane({
             reviewThreads={reviewThreadsForTimeline}
             deployments={deploymentsForTimeline}
             viewerLogin={viewerLogin}
+            writeViewerLogin={writeViewerLogin}
             filters={timelineFilters}
             onFiltersChange={handleTimelineFiltersChange}
             aiSummary={timelineAiSummary}

@@ -275,6 +275,7 @@ export function useWorkLaneContextMenu(options?: {
               />
               <ForeignLaneContextMenu
                 lane={foreignMenuState.lane}
+                binding={foreignMenuState.binding}
                 machineName={foreignMenuState.machineName}
                 online={foreignMachineOnline}
                 x={foreignMenuState.x}
