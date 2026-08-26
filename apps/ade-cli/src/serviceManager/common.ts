@@ -124,6 +124,10 @@ export type ServiceManagerProcessResult = {
   status: number | null;
   stdout?: string | Buffer | null;
   stderr?: string | Buffer | null;
+  /** Set by `spawnSync` when the child never ran or was killed (e.g. ETIMEDOUT). */
+  error?: Error | undefined;
+  /** Signal that killed the child, if any — `SIGTERM` for a blown `timeout`. */
+  signal?: NodeJS.Signals | null;
 };
 
 export type ServiceManagerSpawnSync = (
@@ -177,25 +181,53 @@ export function buildWindowsParentPidQueryArgs(pid: number): string[] {
   return ["-NoProfile", "-NonInteractive", "-Command", query];
 }
 
+/**
+ * Per-attempt budgets for the win32 parent-pid query, in order.
+ *
+ * 5s was not enough: powershell.exe cold start plus the first CIM call in a
+ * session routinely exceeds it on a contended Windows host, and a timeout is
+ * indistinguishable from a real failure, so the guard falls back to
+ * PARENT_PID_UNKNOWN and refuses a teardown the user is entitled to. 15s was
+ * still not enough on a CPU-saturated host (a 2-core CI runner running other
+ * suites in parallel), so a timeout gets ONE retry on a longer budget: by then
+ * powershell.exe and the CIM infrastructure are warm, so the retry is the
+ * steady-state cost, not another cold start. Only a timeout is retried — a real
+ * answer (including "no such process") and a real failure are both final.
+ *
+ * The walk in isCurrentProcessDescendantOfPid stops at the first
+ * PARENT_PID_UNKNOWN, so this budget is spent at most once per lookup chain.
+ */
+const WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS = [15_000, 25_000] as const;
+
+/**
+ * Whether `spawnSync` killed the child because it blew its `timeout` budget, as
+ * opposed to the child answering. Node reports this as `error.code === 'ETIMEDOUT'`
+ * with a null status; the signal check covers runtimes that only surface the kill.
+ */
+function isSpawnTimeout(result: ServiceManagerProcessResult): boolean {
+  if (result.status !== null) return false;
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ETIMEDOUT" || result.signal === "SIGTERM";
+}
+
 function readWindowsParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
-  let result: ServiceManagerProcessResult;
-  try {
-    // Resolve through the hardened GLOBALROOT lookup: a bare `powershell` is
-    // redirectable via PATH/SystemRoot, and this guard protects a teardown.
-    // 5s was not enough: powershell.exe cold start plus the first CIM call in a
-    // session routinely exceeds it on a contended Windows host, and the timeout
-    // is indistinguishable from a real failure, so the guard below falls back to
-    // PARENT_PID_UNKNOWN and refuses a teardown the user is entitled to. The
-    // walk in isCurrentProcessDescendantOfPid stops at the first
-    // PARENT_PID_UNKNOWN, so this budget is spent at most once per lookup chain.
-    result = run(
-      resolveTrustedWindowsTool("powershell"),
-      buildWindowsParentPidQueryArgs(pid),
-      { encoding: "utf8", timeout: 15_000, windowsHide: true },
-    );
-  } catch {
-    return PARENT_PID_UNKNOWN;
+  let result: ServiceManagerProcessResult | undefined;
+  for (const [attempt, timeout] of WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS.entries()) {
+    try {
+      // Resolve through the hardened GLOBALROOT lookup: a bare `powershell` is
+      // redirectable via PATH/SystemRoot, and this guard protects a teardown.
+      result = run(
+        resolveTrustedWindowsTool("powershell"),
+        buildWindowsParentPidQueryArgs(pid),
+        { encoding: "utf8", timeout, windowsHide: true },
+      );
+    } catch {
+      return PARENT_PID_UNKNOWN;
+    }
+    const isLastAttempt = attempt === WINDOWS_PARENT_PID_QUERY_TIMEOUTS_MS.length - 1;
+    if (isLastAttempt || !isSpawnTimeout(result)) break;
   }
+  if (!result) return PARENT_PID_UNKNOWN;
   // Only "the process does not exist" is a definitive end of the chain. Any
   // other non-zero status (spawn failure, CIM unavailable, timeout) means the
   // ancestry is undetermined, NOT that we reached the root.
