@@ -85,6 +85,23 @@ describe("TabNav", () => {
     expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
   });
 
+  it("places sidebar tooltips beside navigation rows", () => {
+    useAppStore.setState({ smartTooltipsEnabled: true } as any);
+    vi.useFakeTimers();
+
+    render(
+      <MemoryRouter initialEntries={["/chats"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    const chatsLink = screen.getByRole("link", { name: "Chats" });
+    fireEvent.mouseEnter(chatsLink.parentElement!);
+    act(() => vi.advanceTimersByTime(320));
+
+    expect(document.querySelector('.ade-smart-tooltip[data-side="right"]')).toBeTruthy();
+  });
+
   it("keeps Activity a header control and a modal, never a nav tab", () => {
     useAppStore.setState({
       project: null,

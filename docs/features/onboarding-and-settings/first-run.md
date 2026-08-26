@@ -9,7 +9,7 @@ unpublished; the header Publish pill appears until `origin` exists.
 
 The canonical backend is
 `apps/desktop/src/main/services/onboarding/onboardingService.ts`
-(status, suggested config, glossary help). `/onboarding` redirects to `/work`.
+(status and suggested config). `/onboarding` redirects to `/work`.
 
 ## Surfaces
 
@@ -30,13 +30,10 @@ complete(): OnboardingStatus
 setDismissed(dismissed: boolean): OnboardingStatus
 detectDefaults(): Promise<OnboardingDetectionResult>
 applySuggestedConfig(suggestedConfig: ProjectConfigFile): Promise<void>
-getHelpState(): OnboardingHelpState
-markGlossaryTermSeen(termId: string): OnboardingHelpState
 ```
 
-The first six methods remain for suggested config and status storage. The
-desktop shell no longer redirects on `freshProject`. `getHelpState` and
-`markGlossaryTermSeen` support passive glossary/help chips.
+These five methods remain for suggested config and status storage. The desktop
+shell no longer redirects on `freshProject`.
 
 ### Detection
 

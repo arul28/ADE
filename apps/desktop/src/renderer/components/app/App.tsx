@@ -25,7 +25,6 @@ import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
-import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
@@ -477,7 +476,6 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
         <Routes location={route}>
           <Route path="/" element={<Navigate to="/work" replace />} />
           <Route path="/onboarding" element={<Navigate to="/work" replace />} />
-          <Route path="/glossary" element={<PageErrorBoundary><GlossaryPage /></PageErrorBoundary>} />
           <Route path="/files" element={
             <PageErrorBoundary>
               <React.Suspense fallback={LazyFallback}>{React.createElement(FilesTab as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
@@ -641,8 +639,6 @@ function ProjectTabHost() {
     chatChromeTint: s.chatChromeTint,
     chatShellGeometry: s.chatShellGeometry,
     smartTooltipsEnabled: s.smartTooltipsEnabled,
-    onboardingEnabled: s.onboardingEnabled,
-    didYouKnowEnabled: s.didYouKnowEnabled,
     launchPromptClipboardEnabled: s.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: s.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: s.promptStashButtonEnabled,

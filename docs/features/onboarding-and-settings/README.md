@@ -92,8 +92,8 @@ Main process:
   radiogroup, the "This Mac can still sleep" recovery alert, and the
   system-sleep fix card.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
-  status, stack detection, existing lane detection, suggested config
-  application, plus passive glossary help state. The active renderer
+  status, stack detection, existing lane detection, and suggested config
+  application. The active renderer
   no longer mounts guided tours.
 - `apps/desktop/src/main/services/tools/agentToolsCacheService.ts` — the
   desktop half of the pinned agent-tools cache. Kicks a coalesced ensure on
@@ -250,11 +250,8 @@ Renderer — onboarding:
   or the removed project-setup dashboard.
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
   — top-level passive help mount. It renders the one-time ADE welcome
-  video gate plus `DidYouKnow`; guided per-tab tours and the old
-  welcome wizard are no longer mounted. The `DidYouKnow` toast is
-  suppressed on every `/chats` route (projectless or not) because its
-  fixed bottom-right portal overlaps the chats composer at narrow
-  widths.
+  video gate; guided per-tab tours, the old welcome wizard, and the
+  `DidYouKnow` hint toast were removed with their renderer surfaces.
 - `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx`
   — process-launch gate. New installations show the welcome card before
   account choice; returning signed-out launches show account choice directly.
@@ -314,12 +311,13 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/public/welcome/` — website-synchronized bundled
   hero screenshots and icon assets consumed by the welcome card.
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
-  — persistent help menu in the top bar: glossary, docs links, welcome
-  video replay, and help preferences. Tour replay entries were removed
-  with the guided-tour renderer.
+  — persistent help menu in the top bar: docs link, welcome video replay,
+  and one help preference (the detailed hover-tooltip toggle). Glossary,
+  help chips, and did-you-know hints were removed; `SmartTooltip`
+  hover detail is the single surviving help surface.
 - `apps/desktop/src/renderer/onboarding/docsLinks.ts` — typed registry
-  of internal/public doc URLs that `DidYouKnow`, `HelpMenu`, and
-  glossary surfaces link to, including the public ADE Relay explainer used by
+  of internal/public doc URLs that `SmartTooltip`, `HelpMenu`, welcome,
+  and account surfaces link to, including the public ADE Relay explainer used by
   account sign-in surfaces.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
   single lightweight card covering personality and work-style setup.

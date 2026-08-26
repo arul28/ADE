@@ -18,16 +18,16 @@ export type SmartTooltipContent = {
   shortcut?: string;
   /** When set, renders a "Learn more →" link opening this URL in a new tab. */
   docUrl?: string;
-  /** Future use — identifies a glossary term for this tooltip. Currently not rendered. */
-  glossaryTermId?: string;
 };
+
+type TooltipSide = "top" | "bottom" | "left" | "right";
 
 type SmartTooltipProps = {
   children: React.ReactElement;
   content: SmartTooltipContent;
   /** Override the global toggle (used for the toggle button itself) */
   forceEnabled?: boolean;
-  side?: "top" | "bottom";
+  side?: TooltipSide;
   wrapperClassName?: string;
   wrapperStyle?: React.CSSProperties;
 };
@@ -53,7 +53,7 @@ export function SmartTooltip({
   const tooltipId = useId();
 
   const [visible, setVisible] = useState(false);
-  const [coords, setCoords] = useState<{ x: number; y: number; side: "top" | "bottom" } | null>(null);
+  const [coords, setCoords] = useState<{ x: number; y: number; side: TooltipSide } | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,15 +81,18 @@ export function SmartTooltip({
       if (!el) return;
       const r = el.getBoundingClientRect();
       const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
 
       // Pick side: prefer requested, but flip if no room
       let side = preferredSide;
       if (side === "top" && r.top < 140) side = "bottom";
       else if (side === "bottom" && window.innerHeight - r.bottom < 140) side = "top";
+      else if (side === "right" && window.innerWidth - r.right < 160) side = "left";
+      else if (side === "left" && r.left < 160) side = "right";
 
       setCoords({
-        x: cx,
-        y: side === "top" ? r.top - GAP : r.bottom + GAP,
+        x: side === "right" ? r.right + GAP : side === "left" ? r.left - GAP : cx,
+        y: side === "top" ? r.top - GAP : side === "bottom" ? r.bottom + GAP : cy,
         side,
       });
       setVisible(true);
@@ -131,17 +134,51 @@ export function SmartTooltip({
     [],
   );
 
-  // Clamp horizontal position after first paint
+  // Clamp the rendered tooltip to the viewport after first paint. For
+  // left/right placement, use the measured width to flip or clamp horizontally
+  // instead of relying only on an estimated available-space threshold.
   useEffect(() => {
     if (!visible || !tooltipRef.current || !coords) return;
+    const trigger = triggerRef.current;
+    if (!trigger) return;
     const tt = tooltipRef.current;
     const ttRect = tt.getBoundingClientRect();
     const vw = window.innerWidth;
-    const half = ttRect.width / 2;
+    const vh = window.innerHeight;
+    const r = trigger.getBoundingClientRect();
+    let side = coords.side;
     let x = coords.x;
-    if (x - half < VIEWPORT_PAD) x = half + VIEWPORT_PAD;
-    if (x + half > vw - VIEWPORT_PAD) x = vw - half - VIEWPORT_PAD;
-    if (x !== coords.x) setCoords((prev) => prev ? { ...prev, x } : prev);
+    let y = coords.y;
+
+    if (side === "top" || side === "bottom") {
+      const half = ttRect.width / 2;
+      const minX = VIEWPORT_PAD + half;
+      const maxX = vw - VIEWPORT_PAD - half;
+      x = minX <= maxX ? Math.min(Math.max(coords.x, minX), maxX) : vw / 2;
+    } else {
+      const rightX = r.right + GAP;
+      const leftX = r.left - GAP;
+      const rightFits = rightX + ttRect.width <= vw - VIEWPORT_PAD;
+      const leftFits = leftX - ttRect.width >= VIEWPORT_PAD;
+
+      if (side === "right" && !rightFits && leftFits) side = "left";
+      if (side === "left" && !leftFits && rightFits) side = "right";
+
+      if (side === "right") {
+        const maxX = vw - VIEWPORT_PAD - ttRect.width;
+        x = maxX >= VIEWPORT_PAD ? Math.min(Math.max(rightX, VIEWPORT_PAD), maxX) : VIEWPORT_PAD;
+      } else {
+        const minX = VIEWPORT_PAD + ttRect.width;
+        x = minX <= vw - VIEWPORT_PAD
+          ? Math.max(Math.min(leftX, vw - VIEWPORT_PAD), minX)
+          : vw - VIEWPORT_PAD;
+      }
+      y = Math.min(Math.max(r.top + r.height / 2, VIEWPORT_PAD + ttRect.height / 2), vh - VIEWPORT_PAD - ttRect.height / 2);
+    }
+
+    if (x !== coords.x || y !== coords.y || side !== coords.side) {
+      setCoords((prev) => prev ? { ...prev, x, y, side } : prev);
+    }
   }, [visible, coords]);
 
   const hasExtra = Boolean(content.gitCommand || content.effect || content.warning || content.shortcut);
@@ -201,7 +238,14 @@ export function SmartTooltip({
                 zIndex: 9999,
                 left: coords.x,
                 top: coords.y,
-                transform: coords.side === "top" ? "translate(-50%, -100%)" : "translate(-50%, 0)",
+                transform:
+                  coords.side === "top"
+                    ? "translate(-50%, -100%)"
+                    : coords.side === "bottom"
+                      ? "translate(-50%, 0)"
+                      : coords.side === "right"
+                        ? "translate(0, -50%)"
+                        : "translate(-100%, -50%)",
                 // Only allow pointer events when there's a link to click; otherwise preserve
                 // the original click-through behaviour.
                 pointerEvents: content.docUrl ? "auto" : "none",

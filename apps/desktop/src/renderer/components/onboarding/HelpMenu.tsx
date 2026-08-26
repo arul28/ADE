@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Question, ArrowSquareOut, Check } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
@@ -11,13 +10,8 @@ import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 type MenuPosition = { top: number; right: number } | null;
 
 export function HelpMenu({ compact = false }: { compact?: boolean }) {
-  const navigate = useNavigate();
   const smartTooltipsEnabled = useAppStore((s) => s.smartTooltipsEnabled);
   const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
-  const onboardingEnabled = useAppStore((s) => s.onboardingEnabled);
-  const setOnboardingEnabled = useAppStore((s) => s.setOnboardingEnabled);
-  const didYouKnowEnabled = useAppStore((s) => s.didYouKnowEnabled);
-  const setDidYouKnowEnabled = useAppStore((s) => s.setDidYouKnowEnabled);
 
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<MenuPosition>(null);
@@ -60,11 +54,6 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
     };
   }, [open, close]);
 
-  const handleOpenGlossary = useCallback(() => {
-    close();
-    navigate("/glossary");
-  }, [close, navigate]);
-
   const handleOpenDocs = useCallback(() => {
     close();
     openExternalUrl(docs.home);
@@ -83,7 +72,7 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
         aria-label="Help menu"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Help · welcome video, glossary, docs, and preferences"
+        title="Help · welcome video, docs, and preferences"
         className={cn(
           "ade-shell-control inline-flex items-center justify-center",
           compact
@@ -122,7 +111,6 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
                 fontSize: 12.5,
               }}
             >
-              <MenuItem onClick={handleOpenGlossary}>Open Glossary</MenuItem>
               <MenuItem onClick={handleOpenDocs}>
                 <span style={{ flex: 1, textAlign: "left" }}>ADE Docs</span>
                 <ArrowSquareOut size={11} weight="regular" />
@@ -133,22 +121,10 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
 
               <SectionLabel>Help preferences</SectionLabel>
               <CheckboxItem
-                checked={onboardingEnabled}
-                onToggle={() => setOnboardingEnabled(!onboardingEnabled)}
-                label="Show help chips"
-                hint="Show the small ‘?’ icons that open quick plain-English definitions."
-              />
-              <CheckboxItem
                 checked={smartTooltipsEnabled}
                 onToggle={() => setSmartTooltipsEnabled(!smartTooltipsEnabled)}
                 label="Show detailed hover tooltips"
                 hint="Extra detail appears when you hover a button — what it does and what would happen."
-              />
-              <CheckboxItem
-                checked={didYouKnowEnabled}
-                onToggle={() => setDidYouKnowEnabled(!didYouKnowEnabled)}
-                label="Show ‘Did you know’ hints"
-                hint="One gentle tip per session, dismissible."
               />
             </div>,
             document.body,

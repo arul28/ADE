@@ -297,7 +297,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     detectDefaults: async () => ({ tools: [], project: state.getProject() }),
     setDismissed: async () => onboardingStatus(),
     complete: async () => onboardingStatus(),
-    markGlossaryTermSeen: async () => ({ seenTermIds: [] }),
   };
 
   const modelPicker: Record<string, unknown> = {
