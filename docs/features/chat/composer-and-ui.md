@@ -921,25 +921,29 @@ render unwindowed. Key rules:
   history does not make every transcript row resident. The subagent roster is
   owned exclusively by Chat Info; only lifecycle cards remain inline at their
   transcript positions.
-- **Per-chat scroll memory.** The owning pane force-remounts the list with
-  `key={selectedSessionId}`, so every ref and state value dies on a chat
-  switch; the memory therefore lives in a module-scope LRU `Map`
-  (`chatScrollMemoryBySession`, capped at 32 sessions) — not a ref and not
-  the store, since it is throwaway view state, not user data. Each entry
-  records `wasPinnedToBottom`, the `anchorRowKey` at the viewport top, its
-  `anchorOffsetPx`, and the `lastSeenRowKey` that seeds the `N new`
-  counter on return. It is snapshotted on unmount only (refs are still
-  live in the cleanup), so following the scroll costs no renders while the
-  chat is open. Restore is hybrid: a reader who left pinned to the tail
-  comes back pinned, otherwise a layout effect re-anchors — waiting for a
-  non-zero container height, because the container measures 0 on the first
-  frame and writing `scrollTop` against that clamps to 0 and reads as "it
-  forgot where I was" — then applies exactly one correction on the next
-  frame once real measured heights replace `ESTIMATED_ROW_HEIGHT`. Any
-  real scroll between the two passes means the reader took over and the
-  correction is abandoned. The anchor uses `measuredRowStartOffsets`, the
-  same shared height model as the prepend anchor and the minimap, so the
-  three cannot disagree about where a row starts.
+- **Per-chat and nested-transcript scroll memory.** The owning pane still
+  remounts the list when the chat session changes (`key={renderedSessionId ??
+  "chat-draft"}`), but native transcript drill-in keeps that list mounted.
+  `AgentChatPane` passes `scrollMemoryKey` for the parent session and for each
+  `subagent:<session>:<taskId>` child view, so a parent position cannot be
+  overwritten by a nested transcript position. The list keeps a bounded
+  per-key snapshot alongside the module-scope LRU `Map`
+  (`chatScrollMemoryBySession`, capped at 32 entries) — not the store, since
+  this is throwaway view state, not user data. Each entry records
+  `wasPinnedToBottom`, the `anchorRowKey` at the viewport top, its
+  `anchorOffsetPx`, and the `lastSeenRowKey` that seeds the `N new` counter on
+  return. The active key is captured from layout effects as rows, measurements,
+  or pin state change and finalized on cleanup, so following the scroll costs
+  no renders while the chat is open. Restore is hybrid: a reader who left
+  pinned to the tail comes back pinned, otherwise a layout effect re-anchors —
+  waiting for a non-zero container height, because the container measures 0 on
+  the first frame and writing `scrollTop` against that clamps to 0 and reads as
+  "it forgot where I was" — then applies exactly one correction on the next
+  frame once real measured heights replace `ESTIMATED_ROW_HEIGHT`. Any real
+  scroll between the two passes means the reader took over and the correction
+  is abandoned. The anchor uses `measuredRowStartOffsets`, the same shared
+  height model as the prepend anchor and the minimap, so the three cannot
+  disagree about where a row starts.
 
 Row derivation uses `chatTranscriptRows.ts` (see
 [transcript-and-turns](transcript-and-turns.md)).

@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { ADE_SESSION_STATUS_PROTOCOL_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { buildNativeSubagentRoutingGuidance } from "../ai/tools/systemPrompt";
 
 const TOTAL_BUDGET_BYTES = 3 * 1024;
 const CLI_HELP_BUDGET = 700;
@@ -136,6 +137,10 @@ export const buildCursorSdkSystemPrompt = (
     blocks.push(`## Cursor Cloud capability\n${cloudT.value}`);
     sections.push({ name: "cloud", bytes: cloudT.value.length, truncated: cloudT.truncated });
   }
+
+  const subagentRouting = buildNativeSubagentRoutingGuidance("cursor-sdk");
+  blocks.push(`## Subagent routing\n${subagentRouting}`);
+  sections.push({ name: "subagent-routing", bytes: subagentRouting.length, truncated: false });
 
   blocks.push(ADE_SESSION_STATUS_PROTOCOL_GUIDANCE);
   sections.push({

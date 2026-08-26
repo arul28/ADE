@@ -79,6 +79,7 @@ vi.mock("../ai/tools/linearTools", () => ({ createLinearTools: vi.fn(() => []) }
 vi.mock("../ai/tools/ctoOperatorTools", () => ({ createCtoOperatorTools: vi.fn(() => []) }));
 vi.mock("../ai/tools/systemPrompt", () => ({
   buildCodingAgentSystemPrompt: vi.fn(() => "system prompt"),
+  buildNativeSubagentRoutingGuidance: vi.fn(() => "native subagent routing"),
   composeSystemPrompt: vi.fn(() => "system prompt"),
 }));
 vi.mock("../ai/claudeModelUtils", () => ({ resolveClaudeCliModel: vi.fn((model: string) => model) }));

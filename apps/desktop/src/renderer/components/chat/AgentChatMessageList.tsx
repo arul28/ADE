@@ -4974,10 +4974,10 @@ export function resolveOlderHistoryPrefetchTriggerPx(viewportHeightPx: number): 
 }
 
 /* ── Per-chat scroll memory ────────────────────────────────────────────────
- * The owning pane force-remounts this list with `key={selectedSessionId}`, so
- * every ref and piece of state is destroyed on a chat switch. Module scope is
- * what survives that remount, which is why the memory lives here and not in a
- * ref or the store (it is throwaway view state, not user data).
+ * The owning pane force-remounts this list on a chat switch, while native
+ * transcript drill-in keeps the list mounted. Module scope survives the former;
+ * the per-key ref snapshot below preserves the latter without sharing scroll
+ * state between parent and child views.
  */
 type ChatScrollMemory = {
   /** Whether the reader was following the live tail when they left. */
@@ -4996,19 +4996,27 @@ const CHAT_SCROLL_MEMORY_LIMIT = 32;
 /** Insertion order doubles as LRU order: writes re-insert at the tail. */
 const chatScrollMemoryBySession = new Map<string, ChatScrollMemory>();
 
+function rememberBoundedChatScrollMemory(
+  cache: Map<string, ChatScrollMemory>,
+  sessionId: string,
+  memory: ChatScrollMemory,
+): void {
+  cache.delete(sessionId);
+  cache.set(sessionId, memory);
+  while (cache.size > CHAT_SCROLL_MEMORY_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
 function readChatScrollMemory(sessionId: string | null | undefined): ChatScrollMemory | null {
   if (!sessionId) return null;
   return chatScrollMemoryBySession.get(sessionId) ?? null;
 }
 
 function rememberChatScrollMemory(sessionId: string, memory: ChatScrollMemory): void {
-  chatScrollMemoryBySession.delete(sessionId);
-  chatScrollMemoryBySession.set(sessionId, memory);
-  while (chatScrollMemoryBySession.size > CHAT_SCROLL_MEMORY_LIMIT) {
-    const oldest = chatScrollMemoryBySession.keys().next().value;
-    if (oldest === undefined) break;
-    chatScrollMemoryBySession.delete(oldest);
-  }
+  rememberBoundedChatScrollMemory(chatScrollMemoryBySession, sessionId, memory);
 }
 
 export function shouldAbsorbProgrammaticScrollEvent({
@@ -5309,6 +5317,7 @@ function AgentChatMessageListMain({
   laneId,
   runtimePin = null,
   sessionId,
+  scrollMemoryKey,
   transcriptCollapseCacheKey,
   onInsertDraft,
   onRevealChatTerminal,
@@ -5364,6 +5373,8 @@ function AgentChatMessageListMain({
    */
   runtimePin?: OpenProjectBinding | null;
   sessionId?: string | null;
+  /** Separate scroll state for the parent and a drilled-in native transcript. */
+  scrollMemoryKey?: string | null;
   /** Stable identity for collapse warm-cache isolation when rendering a nested transcript. */
   transcriptCollapseCacheKey?: string | null;
   sessionEnded?: boolean;
@@ -5425,9 +5436,11 @@ function AgentChatMessageListMain({
   }
   // Read once per mount: the pane remounts this component per chat, so this is
   // effectively "the state this chat was left in".
-  const [restoredScrollMemory] = useState(() => readChatScrollMemory(sessionId));
-  const [stickToBottom, setStickToBottom] = useState(() => restoredScrollMemory?.wasPinnedToBottom ?? true);
-  const stickToBottomRef = useRef(restoredScrollMemory?.wasPinnedToBottom ?? true);
+  const resolvedScrollMemoryKey = scrollMemoryKey ?? sessionId;
+  const initialScrollMemory = readChatScrollMemory(resolvedScrollMemoryKey);
+  const restoredScrollMemoryRef = useRef(initialScrollMemory);
+  const [stickToBottom, setStickToBottom] = useState(() => initialScrollMemory?.wasPinnedToBottom ?? true);
+  const stickToBottomRef = useRef(initialScrollMemory?.wasPinnedToBottom ?? true);
   // Scroll bookkeeping written from `handleScroll` only — never state, so
   // scrolling stays render-free.
   const lastScrollTopRef = useRef(0);
@@ -5438,7 +5451,7 @@ function AgentChatMessageListMain({
   // Row key that was last in the transcript when bottom-follow broke; drives
   // the "N new" count on the jump pill.
   const [detachAnchorRowKey, setDetachAnchorRowKey] = useState<string | null>(
-    restoredScrollMemory?.wasPinnedToBottom === false ? (restoredScrollMemory.lastSeenRowKey ?? null) : null,
+    initialScrollMemory?.wasPinnedToBottom === false ? (initialScrollMemory.lastSeenRowKey ?? null) : null,
   );
   // Measured geometry the minimap rail needs. Kept as two pieces of state so a
   // width-only change and a height-only change don't invalidate each other.
@@ -5456,6 +5469,46 @@ function AgentChatMessageListMain({
   // latest ADE-authored scrollTop target instead of using a counter, so a real
   // user scroll never gets swallowed by stale "programmatic" credits.
   const programmaticScrollTargetRef = useRef<number | null>(null);
+  const scrollToBottomSoonRef = useRef<((followUpFrames?: number) => void) | null>(null);
+  const scrollMemoryKeyRef = useRef(resolvedScrollMemoryKey);
+  const scrollMemorySnapshotByKeyRef = useRef(new Map<string, ChatScrollMemory>());
+  useLayoutEffect(() => {
+    const previousKey = scrollMemoryKeyRef.current;
+    if (previousKey === resolvedScrollMemoryKey) return;
+    if (previousKey) {
+      const previousMemory = scrollMemorySnapshotByKeyRef.current.get(previousKey);
+      if (previousMemory) rememberChatScrollMemory(previousKey, previousMemory);
+    }
+    scrollMemoryKeyRef.current = resolvedScrollMemoryKey;
+    const nextMemory = readChatScrollMemory(resolvedScrollMemoryKey);
+    restoredScrollMemoryRef.current = nextMemory;
+    const pinned = nextMemory?.wasPinnedToBottom ?? true;
+    stickToBottomRef.current = pinned;
+    setStickToBottom(pinned);
+    setDetachAnchorRowKey(pinned ? null : nextMemory?.lastSeenRowKey ?? null);
+    pendingScrollRestoreRef.current = null;
+    scrollRestoreSettledRef.current = false;
+    scrollRestoreAppliedTopRef.current = null;
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = null;
+    }
+    if (scrollRestoreCorrectionRafRef.current !== null) {
+      cancelAnimationFrame(scrollRestoreCorrectionRafRef.current);
+      scrollRestoreCorrectionRafRef.current = null;
+    }
+    if (anchorCorrectionRafRef.current !== null) {
+      cancelAnimationFrame(anchorCorrectionRafRef.current);
+      anchorCorrectionRafRef.current = null;
+    }
+    if (anchorHighlightTimerRef.current !== null) {
+      clearTimeout(anchorHighlightTimerRef.current);
+      anchorHighlightTimerRef.current = null;
+    }
+    pendingChatEventAnchorRef.current = null;
+    programmaticScrollTargetRef.current = null;
+    if (pinned) scrollToBottomSoonRef.current?.(2);
+  }, [resolvedScrollMemoryKey]);
   const onApprovalRef = useRef(onApproval);
   const resolvedInputStates = useMemo(() => {
     const resolved = new Map<string, PendingInputResolution>();
@@ -5969,6 +6022,7 @@ function AgentChatMessageListMain({
     };
     scrollRafRef.current = requestAnimationFrame(run);
   }, []);
+  scrollToBottomSoonRef.current = scrollToBottomSoon;
 
   /** Row the transcript ended on at the moment bottom-follow broke. */
   const markDetachAnchor = useCallback(() => {
@@ -6393,6 +6447,42 @@ function AgentChatMessageListMain({
     )
   ), []);
 
+  const captureScrollMemory = useCallback((
+    keys: readonly string[],
+    pinned: boolean,
+    scrollTopAtExit: number,
+  ): ChatScrollMemory => {
+    let anchorRowKey: string | null = null;
+    let anchorOffsetPx = 0;
+    if (!pinned && keys.length) {
+      const anchor = resolveRowAnchorAtScrollTop(measuredRowStartOffsets(keys), scrollTopAtExit);
+      if (anchor) {
+        anchorRowKey = keys[anchor.index] ?? null;
+        anchorOffsetPx = anchor.offsetPx;
+      }
+    }
+    return {
+      wasPinnedToBottom: pinned,
+      anchorRowKey,
+      anchorOffsetPx,
+      lastSeenRowKey: keys.length ? keys[keys.length - 1]! : null,
+      savedAtMs: Date.now(),
+    };
+  }, [measuredRowStartOffsets]);
+
+  // Keep a committed snapshot for each view. Passive cleanup runs after the
+  // shared list has already rendered the next view, so reading live refs there
+  // would save the child transcript under the parent's key.
+  useLayoutEffect(() => {
+    if (!resolvedScrollMemoryKey) return;
+    const scrollTopAtExit = scrollRef.current?.scrollTop ?? lastScrollTopRef.current;
+    rememberBoundedChatScrollMemory(
+      scrollMemorySnapshotByKeyRef.current,
+      resolvedScrollMemoryKey,
+      captureScrollMemory(groupedRowKeys, stickToBottomRef.current, scrollTopAtExit),
+    );
+  }, [captureScrollMemory, groupedRowKeys, measurementTick, resolvedScrollMemoryKey, scrollTop, stickToBottom]);
+
   const applyScrollRestore = useCallback((anchorRowKey: string, anchorOffsetPx: number) => {
     const el = scrollRef.current;
     if (!el) return false;
@@ -6414,7 +6504,7 @@ function AgentChatMessageListMain({
 
   useLayoutEffect(() => {
     if (scrollRestoreSettledRef.current) return;
-    const memory = restoredScrollMemory;
+    const memory = restoredScrollMemoryRef.current;
     if (!memory || memory.wasPinnedToBottom || !memory.anchorRowKey) {
       scrollRestoreSettledRef.current = true;
       return;
@@ -6429,7 +6519,7 @@ function AgentChatMessageListMain({
         anchorOffsetPx: memory.anchorOffsetPx,
       };
     }
-  }, [applyScrollRestore, containerHeight, groupedRowKeys, restoredScrollMemory]);
+  }, [applyScrollRestore, containerHeight, groupedRowKeys, resolvedScrollMemoryKey]);
 
   // Exactly one correction once measured heights land: the first pass runs on
   // ESTIMATED_ROW_HEIGHT for anything not yet measured.
@@ -6448,35 +6538,19 @@ function AgentChatMessageListMain({
     });
   }, [applyScrollRestore, measurementTick]);
 
-  // Snapshot on unmount only — refs are still live in the cleanup, so following
-  // the scroll costs no renders while the chat is open.
+  // Promote the latest committed snapshot when the view changes or unmounts.
+  // The layout effect above always seeds the active key before this cleanup
+  // runs, so cleanup never needs to read refs that may now belong to another
+  // nested transcript.
   useEffect(() => {
-    if (!sessionId) return;
-    const memorySessionId = sessionId;
+    if (!resolvedScrollMemoryKey) return;
+    const memorySessionId = resolvedScrollMemoryKey;
+    const snapshots = scrollMemorySnapshotByKeyRef.current;
     return () => {
-      const keys = groupedRowKeysRef.current;
-      const pinned = stickToBottomRef.current;
-      const scrollTopAtExit = lastScrollTopRef.current;
-      let anchorRowKey: string | null = null;
-      let anchorOffsetPx = 0;
-      if (!pinned && keys.length) {
-        // Same offsets model as the restore path it feeds, so a round trip
-        // through this snapshot cannot drift.
-        const anchor = resolveRowAnchorAtScrollTop(measuredRowStartOffsets(keys), scrollTopAtExit);
-        if (anchor) {
-          anchorRowKey = keys[anchor.index] ?? null;
-          anchorOffsetPx = anchor.offsetPx;
-        }
-      }
-      rememberChatScrollMemory(memorySessionId, {
-        wasPinnedToBottom: pinned,
-        anchorRowKey,
-        anchorOffsetPx,
-        lastSeenRowKey: keys.length ? keys[keys.length - 1]! : null,
-        savedAtMs: Date.now(),
-      });
+      const memory = snapshots.get(memorySessionId);
+      if (memory) rememberChatScrollMemory(memorySessionId, memory);
     };
-  }, [measuredRowStartOffsets, sessionId]);
+  }, [resolvedScrollMemoryKey]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;

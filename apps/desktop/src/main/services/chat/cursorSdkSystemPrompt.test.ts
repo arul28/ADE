@@ -45,6 +45,13 @@ describe("buildCursorSdkSystemPrompt", () => {
     expect(cloud.text).toContain("runtime: cloud");
   });
 
+  it("includes the native subagent routing contract", () => {
+    const out = buildCursorSdkSystemPrompt({ runtime: "local" });
+
+    expect(out.text).toContain("prefer Cursor's native task tool");
+    expect(out.text).toContain("independent durable transcript");
+  });
+
   it("always emits control-protocol primer with all three block names", () => {
     const out = buildCursorSdkSystemPrompt({ runtime: "local" });
     expect(out.text).toContain("ade_update_plan");
