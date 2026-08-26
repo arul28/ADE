@@ -328,6 +328,7 @@ export function PrAiResolverPanel({
             <AgentChatPane
               laneId={sessionLaneId}
               lockSessionId={sessionId}
+              lockSessionProvider={activeSession?.provider ?? null}
               hideSessionTabs
               availableModelIdsOverride={[displayModelId]}
               modelSelectionLocked

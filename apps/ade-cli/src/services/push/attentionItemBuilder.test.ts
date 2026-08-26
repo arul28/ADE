@@ -31,7 +31,7 @@ function run(overrides: Partial<AgentRunState> = {}): AgentRunState {
     metaResolved: true,
     backgroundTaskIds: new Set<string>(),
     chatActivityMode: null,
-    chatActivityModeCheckedAt: 0,
+    chatMetaCheckedAt: 0,
     deferredTerminalPhase: null,
     ...overrides,
   };
@@ -135,7 +135,7 @@ describe("attention item vocabulary", () => {
       backgroundTaskIds: new Set(["task-1"]),
     }))).toBe("agent_running");
     expect(agentAttentionTitle("Claude", "completed")).toBe("Claude is done");
-    expect(agentAttentionPrivacyPreview("needs_you")).toBe("An ADE agent needs your input.");
+    expect(agentAttentionPrivacyPreview("needs_you")).toBe("An ADE agent needs you.");
   });
 
   it("resolves the cross-machine project id once per item", () => {

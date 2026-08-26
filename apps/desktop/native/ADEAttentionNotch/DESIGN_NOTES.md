@@ -15,11 +15,16 @@ The ADE implementation owns its protocol, state reducer, panel geometry, hit
 testing, view hierarchy, animations, and particle rendering. These repositories
 are design references only and are not bundled dependencies.
 
-Compact strip badges, panel rows, and takeover cards draw the canonical **state
-glyphs** (`NotchStateGlyph`), not provider logos. A row only has room for status
-and content; the provider is metadata. The five LobeHub Lobe Icons SVGs remain
-under `Resources/ProviderIcons` for attribution (see `THIRD_PARTY_NOTICES.md`)
-but are not drawn.
+Compact strip badges draw the canonical **state glyphs**, which is all a count
+needs. Panel rows and takeover cards draw a **provider logomark with a state dot
+on its corner** (`NotchItemMark`): the state alone gave a screen of identical
+amber circles that said five things need you and nothing about which agent any
+of them was. The marks are the monochrome LobeHub Lobe Icons SVGs under
+`Resources/ProviderIcons`, drawn as template images and tinted — Droid is the
+one colour mark, because its badge draws its own disc. A provider with no
+shipped mark falls back to a monogram letter, never an empty disc; privacy mode
+and an item with no provider fall all the way back to the state glyph. See
+`THIRD_PARTY_NOTICES.md`.
 
 ## Physical-notch geometry
 
@@ -121,9 +126,32 @@ Each compact-strip control is a click target, not a readout:
 - the rest of the strip still toggles the panel.
 
 The needs-you card is a **timed takeover** (~10s), not a state: it auto-dismisses
-by morphing back into its amber glyph, and also ends on click, on explicit
-close, and when the row is acknowledged from another device. When the last
-needs-you row clears, the strip plays a brief "all clear" beat.
+by morphing back into its glyph, and also ends on click, on explicit close, and
+when the row is acknowledged from another device. When the last needs-you row
+clears, the strip plays a brief "all clear" beat.
+
+The card carries exactly **one action button**, and its verb names what is
+waiting: `Answer` for a question, `Approve` for an approval, `Review` for a PR
+review request, `Open` otherwise (`NotchPrimaryAction`, which also carries the
+subtitle's "Waiting on your …" line for each case). It used to draw
+two — a ghost "Open to approve" beside a filled "Open" — which navigated to the
+identical place. Clicking anywhere on the card does what that button does; the
+expanded panel is reached from the menu-bar item, not by tapping the card.
+
+**Close is an acknowledgement.** The `x` emits `dismiss_item` with
+`mode: "seen"`: it stops the row interrupting without filing it out of Activity,
+so the same state cannot re-toast the moment the next snapshot lands. A timeout
+emits nothing — "you were not looking" is not "I saw it". Only the panel's own
+dismiss sends `mode: "dismiss"`, which is also what an omitted mode means.
+
+The card's controls have to be hittable **first click**, from a helper window
+that is neither key nor frontmost: `ShapeHostingView.acceptsFirstMouse` is true,
+a takeover is allowed key activation, and the `x` is an 18pt disc inside a 28pt
+target. Pointer tracking is handled inline on the monitor's own main-thread
+turn rather than hopped onto the next one — the panel's `ignoresMouseEvents` IS
+its hit region (a `hitTest` returning nil eats the click rather than passing it
+down), so a stale value both swallows clicks meant for the app below and loses
+the first click on the surface.
 
 ## Expanded panel
 
@@ -165,7 +193,8 @@ The helper reads one JSON object per line from standard input. It accepts raw
 {"type":"quit"}
 ```
 
-It emits `open`, `action`, `dismiss_item`, `open_center`, `open_settings`,
+It emits `open`, `action`, `dismiss_item` (with an optional
+`mode: "seen" | "dismiss"`), `open_center`, `open_settings`,
 `refresh`, `settings`, `surface`, and `protocol_error` JSON lines on standard
 output. Diagnostic text is written only to standard error. The output set is
 additive by contract: a host that does not recognise a type must ignore it.

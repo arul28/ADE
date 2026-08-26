@@ -72,8 +72,13 @@ export type AgentRunState = {
    * an additive hint; a reader that ignores it sees exactly today's row.
    */
   chatActivityMode: "planning" | null;
-  /** When `chatActivityMode` was last read, so the refresh stays bounded. */
-  chatActivityModeCheckedAt: number;
+  /**
+   * When this run's session summary was last re-read, so the refresh stays
+   * bounded. It covers the title (chats are renamed seconds after they are
+   * created, and the row must follow) as well as `chatActivityMode` — one
+   * read, one cadence, because both facts come from the same summary.
+   */
+  chatMetaCheckedAt: number;
   /**
    * Where the foreground turn landed while background work was still running.
    * The run is held at `running` until the last task drains and then settles
@@ -343,7 +348,10 @@ const AGENT_TITLE_SUFFIX_BY_PHASE: Partial<Record<AttentionPhase, string>> = {
 const AGENT_TITLE_SUFFIX_FALLBACK = "is working";
 
 const AGENT_PRIVACY_PREVIEW_BY_PHASE: Partial<Record<AttentionPhase, string>> = {
-  needs_you: "An ADE agent needs your input.",
+  // "needs you", the same two words the status label, the title suffix and the
+  // notch's own section heading use. "needs your input" was a third phrasing
+  // for one state, on the surface with the least room to explain itself.
+  needs_you: "An ADE agent needs you.",
   failed: "An ADE agent run failed.",
   completed: "An ADE agent is done.",
   // "An ADE agent is idle." — same subject ("An ADE agent") and same verb

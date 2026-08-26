@@ -365,6 +365,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           <AgentChatPane
             laneId={primaryLaneId}
             lockSessionId={session?.id ?? null}
+            lockSessionProvider={lockedSessionSummary.provider ?? null}
             initialSessionSummary={lockedSessionSummary}
             hideSessionTabs
             hideNativeControls

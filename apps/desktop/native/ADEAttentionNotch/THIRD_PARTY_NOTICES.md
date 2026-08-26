@@ -4,7 +4,9 @@
 
 The provider SVG marks in
 `Sources/ADEAttentionNotch/Resources/ProviderIcons` are adapted from
-[Lobe Icons](https://github.com/lobehub/lobe-icons), version 1.84.0.
+[Lobe Icons](https://github.com/lobehub/lobe-icons), version 1.84.0 —
+except `droid.svg` and `pi.svg`, which are vendor brand marks and are covered
+below.
 
 MIT License
 
@@ -27,3 +29,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Factory Droid
+
+`Sources/ADEAttentionNotch/Resources/ProviderIcons/droid.svg` is the Factory
+Droid brand mark, adapted from `apps/desktop/src/renderer/assets/provider-logos/`
+where ADE already ships it. Used to identify the Droid runtime; Factory retains
+all rights to the mark.
+
+## Pi
+
+`Sources/ADEAttentionNotch/Resources/ProviderIcons/pi.svg` is the Pi brand mark,
+copied from `apps/desktop/src/renderer/assets/provider-logos/` where ADE already
+ships it. Used to identify the Pi runtime; the mark's owner retains all rights
+to it.

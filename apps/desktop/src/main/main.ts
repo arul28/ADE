@@ -105,7 +105,10 @@ import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { releaseLaneRuntimeResources } from "./services/lanes/laneRuntimeLifecycle";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
-import { createSessionService } from "./services/sessions/sessionService";
+import {
+  createSessionService,
+  STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
+} from "./services/sessions/sessionService";
 import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./services/sessions/sessionSettleTeardown";
 import { createSettleTeardownWiring } from "./services/sessions/settleTeardownWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
@@ -116,10 +119,7 @@ import {
   setPtyDataSubscriptionsForSender,
   shouldSendPtyDataToWebContents,
 } from "./services/pty/ptyDataSubscriptions";
-import {
-  createProcessRegistryService,
-  DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
-} from "./services/runtime/processRegistryService";
+import { createProcessRegistryService } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
@@ -148,7 +148,7 @@ import { consumeFirstOpenStabilityMarker } from "./services/projects/projectLoca
 import { createFeedbackReporterService } from "./services/feedback/feedbackReporterService";
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
-import { createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
+import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
 } from "./services/prs/prChatCards";
@@ -3192,7 +3192,7 @@ app.whenReady().then(async () => {
     reconcileStaleRunningSessions("startup");
     const staleSessionReconcileTimer = setTimeout(
       () => reconcileStaleRunningSessions("owner-liveness-expired"),
-      DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS + 1_000,
+      STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
     );
     staleSessionReconcileTimer.unref?.();
     const diffService = createDiffService({ laneService });
@@ -3894,12 +3894,8 @@ app.whenReady().then(async () => {
       db,
       sessionService,
       emitEvent: emitPrEvent,
-      getChatLiveness: async (sessionId) => {
-        const summary = await agentChatService.getSessionSummary(sessionId);
-        return summary
-          ? { status: summary.status, awaitingInput: summary.awaitingInput }
-          : null;
-      },
+      logger,
+      getChatLiveness: chatLivenessReader(agentChatService),
     });
     laneTeardownDeps.agentChatService = {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
@@ -7685,7 +7681,10 @@ app.whenReady().then(async () => {
     if (output.type === "dismiss_item") {
       void sendAttentionNotchAcknowledge({
         itemId: output.itemId,
-        mode: "dismiss",
+        // "seen" stops the interrupting but leaves the row in Activity; only
+        // the panel's explicit dismiss files it away. Already narrowed to one
+        // of the two by the helper reader.
+        mode: output.mode,
       }).catch((error: unknown) => {
         getActiveContext().logger.warn("attention.notch_ack_route_failed", {
           itemId: output.itemId,

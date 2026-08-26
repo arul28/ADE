@@ -160,8 +160,23 @@ final class NotchViewModel: ObservableObject {
             ?? "ADE is ready"
     }
 
+    /// The expanded panel's secondary buttons follow the panel's own selection.
+    /// The takeover card draws no secondary buttons, so it has no claim here.
     var navigationActions: [AttentionAction] {
-        notchSecondaryActions(takeoverItem?.actions ?? selectedItem?.actions ?? [])
+        notchSecondaryActions(selectedItem?.actions ?? [])
+    }
+
+    /// What the takeover card's single button is for.
+    var primaryAction: NotchPrimaryAction {
+        NotchPrimaryAction(item: takeoverItem)
+    }
+
+    /// The one line under the headline. A plain statement of what is waiting
+    /// when something is, and the row's own preview otherwise — never a blank
+    /// line where the reason should be.
+    var takeoverSubtitle: String {
+        if let subtitle = notchNonEmpty(toastPresentation?.subtitle) { return subtitle }
+        return primaryAction.waitingLine ?? visiblePreview
     }
 
     /// The row a takeover card is about — which is not always the selected row,
@@ -365,7 +380,7 @@ final class NotchViewModel: ObservableObject {
         // Draining to zero is not a reason to yank the surface out from under
         // the pointer or out of a panel the user opened: those states render
         // the empty/error copy instead.
-        if interaction.presentation == .flash || interaction.presentation == .celebration {
+        if interaction.presentation.isTakeover {
             settleTakeover()
         }
     }
@@ -449,7 +464,7 @@ final class NotchViewModel: ObservableObject {
     func toggleExpanded() -> Bool {
         // Clicking through a takeover opens the panel *at* what it was about,
         // which is the whole point of the two tabs.
-        if interaction.presentation == .flash || interaction.presentation == .celebration {
+        if interaction.presentation.isTakeover {
             let revealed = takeoverItem
             finishTakeover(morphing: false)
             return openPanel(revealing: revealed)
@@ -594,6 +609,13 @@ final class NotchViewModel: ObservableObject {
     func openSelected() {
         guard let item = takeoverItem ?? selectedItem else { return }
         open(item)
+        // The card is answered, so it goes now rather than sitting there until
+        // the host's acknowledgement round-trips back in a snapshot. Clicking
+        // something and watching it do nothing for a beat is how the card's
+        // controls read as dead in the first place.
+        if interaction.presentation.isTakeover {
+            finishTakeover(morphing: true)
+        }
     }
 
     func open(_ item: AttentionItem) {
@@ -608,10 +630,25 @@ final class NotchViewModel: ObservableObject {
     /// Asks the host to file the row away. The helper never mutates the feed
     /// itself — the next snapshot is what removes the row.
     func dismiss(_ item: AttentionItem) {
+        emitDismiss(item, mode: .dismiss)
+    }
+
+    /// Closing a card is an answer to it: "I've seen this", which is what stops
+    /// the next snapshot toasting the same row again. `seen` and not `dismiss`
+    /// — the user closed a card, they did not throw the work away, so the row
+    /// stays in Activity until it is actually handled.
+    func acknowledge(_ item: AttentionItem) {
+        emitDismiss(item, mode: .seen)
+    }
+
+    /// Both filing verbs ride the same `dismiss_item` output and differ only in
+    /// `mode`, so the envelope is built in one place.
+    private func emitDismiss(_ item: AttentionItem, mode: NotchDismissMode) {
         emit(NotchOutput(
             type: "dismiss_item",
             itemId: item.id,
-            destination: item.destination
+            destination: item.destination,
+            mode: mode
         ))
     }
 
@@ -654,8 +691,16 @@ final class NotchViewModel: ObservableObject {
 
     /// Explicit close on the card. Morphs like a timeout would: the user is
     /// telling it to go away, not telling it to disappear.
+    ///
+    /// Unlike a timeout it also acknowledges the row. A timeout means "you were
+    /// not looking"; a close means "I saw it", and only the second one earns
+    /// the right to stop interrupting for this state. A genuinely new event
+    /// republishes the row with a new phase and toasts again.
     func dismissTakeover() {
-        guard interaction.presentation == .flash || interaction.presentation == .celebration else { return }
+        guard interaction.presentation.isTakeover else { return }
+        if let item = takeoverItem, activeToast != nil {
+            acknowledge(item)
+        }
         finishTakeover(morphing: true)
     }
 

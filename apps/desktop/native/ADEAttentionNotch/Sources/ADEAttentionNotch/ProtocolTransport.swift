@@ -4,7 +4,8 @@ import ADEAttentionNotchCore
 
 final class StandardIOTransport {
     private let decoder = JSONDecoder()
-    private let encoder: JSONEncoder = {
+    /// Not private so tests can pin the exact bytes this writes to stdout.
+    let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return encoder

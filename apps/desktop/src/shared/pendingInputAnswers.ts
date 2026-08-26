@@ -30,6 +30,19 @@ import type { PendingInputOption, PendingInputQuestion } from "./types/chat";
  */
 
 /**
+ * Is the agent asking you something, or asking you to allow something?
+ *
+ * The distinction is the difference between "Answer" and "Approve" on every
+ * surface that renders a waiting run, so it is decided once, here, rather than
+ * re-derived by each reader. Anything this build does not recognise — including
+ * a kind from a newer runtime, and the absent kind of an older event — is an
+ * approval, which is the safer of the two words to be wrong with.
+ */
+export function isQuestionKind(kind: string | null | undefined): boolean {
+  return kind === "question" || kind === "structured_question";
+}
+
+/**
  * Is this request the one the ask-question composer owns?
  *
  * Canonical because the decision is made in two places that must agree: the
@@ -40,7 +53,7 @@ import type { PendingInputOption, PendingInputQuestion } from "./types/chat";
 export function isAskQuestionRequest(
   request: { kind?: string | null } | null | undefined,
 ): boolean {
-  return request?.kind === "question" || request?.kind === "structured_question";
+  return isQuestionKind(request?.kind);
 }
 
 /**

@@ -7,6 +7,7 @@ import {
   hostSleepNoticeMergeKey,
   isHostSleepNoticeEvent,
 } from "../../../desktop/src/shared/hostSleepNotice";
+import { isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
 import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
@@ -36,6 +37,31 @@ function singleLine(value: unknown, max = 96): string {
 // the search line. Domain is derived defensively so a malformed url can never
 // throw. Shared by renderChatLines (subagent pane) and ChatView (work log) so
 // both surfaces show the same lines.
+/**
+ * What an `approval_request` is actually asking for.
+ *
+ * Two sources because both are on the wire: the top-level `requestKind` a
+ * current host sends, and the embedded `detail.request.kind` that every host
+ * before it sent (and still sends alongside). Reading the embedded request as
+ * the fallback is what keeps an older host's questions from reading as
+ * approvals here. This check is looser than `latestPendingApproval`'s (which
+ * needs a full `PendingInputRequest`); the sole emitter attaches both, so
+ * real events agree.
+ */
+function approvalRequestKind(
+  event: Extract<AgentChatEvent, { type: "approval_request" }>,
+  record: Record<string, unknown>,
+): string | null {
+  if (typeof event.requestKind === "string" && event.requestKind) return event.requestKind;
+  const detail = record.detail && typeof record.detail === "object"
+    ? record.detail as Record<string, unknown>
+    : null;
+  const request = detail?.request && typeof detail.request === "object"
+    ? detail.request as Record<string, unknown>
+    : null;
+  return typeof request?.kind === "string" ? request.kind : null;
+}
+
 export function webSearchResultDomain(url: string | undefined | null): string {
   if (!url) return "";
   try {
@@ -979,6 +1005,15 @@ export function renderChatLines(args: {
     }
     if (event.type === "approval_request") {
       const record = event as unknown as Record<string, unknown>;
+      // A question and an approval arrive on the same event; only the request
+      // kind tells them apart. Rendering both as "approval needed" put the
+      // wrong word — and a meaningless file/line count — on prose the agent is
+      // waiting to be told. Same kind rule as the pending-input card, so the
+      // two surfaces agree on every event a real host emits.
+      if (isQuestionKind(approvalRequestKind(event, record))) {
+        lines.push({ id, tone: "approval", body: `[?] ${singleLine(event.description, 160)}` });
+        continue;
+      }
       const files = Array.isArray(record.files) ? record.files : [];
       const additions = typeof record.totalAdditions === "number" ? record.totalAdditions : 0;
       const deletions = typeof record.totalDeletions === "number" ? record.totalDeletions : 0;

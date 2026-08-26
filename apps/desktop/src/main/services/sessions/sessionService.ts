@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import type { AdeDb, RemoteSettleTupleChange } from "../state/kvDb";
+import { DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS } from "../runtime/processRegistryService";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
 import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome } from "./sessionSettleTeardown";
+import { settleSourceMayInterruptActiveTurn } from "./sessionSettleTeardown";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -92,6 +94,21 @@ type ClaudeSessionRow = {
 };
 
 export const STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS = 2 * 60 * 1000;
+
+/**
+ * How long a host must wait before re-running `reconcileStaleRunningSessions`
+ * after startup.
+ *
+ * BOTH windows have to elapse or the rescan just skips the same rows again: the
+ * owner is only provably gone once the process registry stops counting it live,
+ * and a row with fresh activity is held back until its grace expires. Owned
+ * here, next to the grace it is built from, so the two hosts that schedule the
+ * rescan — desktop `main.ts` and the brain's `bootstrap.ts` — cannot drift.
+ */
+export const STALE_RUNNING_SESSION_RESCAN_DELAY_MS = Math.max(
+  DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
+  STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
+) + 1_000;
 
 /** Bounded so a large sweep cannot open a provider stop per session at once. */
 const SETTLE_TEARDOWN_CONCURRENCY = 4;
@@ -430,6 +447,66 @@ export function createSessionService({
     run(trimmed);
     emitChanged({ sessionId: trimmed, reason: "meta-updated" });
     return true;
+  };
+
+  /**
+   * Move a session row back to `running`, restricted to the given scope.
+   *
+   * One conditional statement, no read-modify-write: the scope predicate lives
+   * in the WHERE, so a concurrent writer cannot lose a race against a value
+   * this process read earlier. It is a PK seek that matches nothing in the
+   * normal case. `status` / `ended_at` / `exit_code` are plain CRR columns (not
+   * settle-tuple columns, so this stays outside the settle chokepoint); a
+   * simple column write is exactly what cr-sqlite merges by last-writer-wins,
+   * and nothing here filters columns out of a changeset. Emits only when a row
+   * actually moved, so calling it on an already-running row is idempotent and
+   * silent.
+   */
+  const reopenRow = (sessionId: string, scope: "detached-only" | "any-non-running"): boolean => {
+    const trimmed = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!trimmed) return false;
+    const changed = db.runChanged(
+      `
+        update terminal_sessions
+        set status = 'running',
+            ended_at = null,
+            exit_code = null
+        where id = ? and status ${scope === "detached-only" ? "= 'detached'" : "!= 'running'"}
+      `,
+      [trimmed],
+    );
+    // Without this, the renderer never learns the session went from
+    // stopped/ended back to running, so the Work tab keeps showing the frozen
+    // ClosedCliSessionSurface even though the PTY is live and streaming output
+    // that the TUI receives.
+    if (changed > 0) emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return changed > 0;
+  };
+
+  /**
+   * Undo a stale `detached` on real activity — the repair that lands BETWEEN
+   * turns.
+   *
+   * `reconcileStaleRunningSessions` decides liveness from the process registry,
+   * which can be wrong for a session whose owner is another ADE process (or
+   * whose registry row has not been observed yet at boot). This one rides every
+   * output write instead of waiting for a turn, so a session that keeps
+   * streaming for hours is repaired mid-stream. It also covers PTY/CLI
+   * sessions, whose only life signal is output and which `reopen` never sees —
+   * every `reopen` call site is a chat lifecycle site. Until this fires, an
+   * agent-CLI row sits behind the frozen `ClosedCliSessionSurface` (the main
+   * pane's "Ended" copy).
+   *
+   * Narrow on purpose: it reopens only from `detached`. The wider per-turn
+   * repair, which reopens from any non-running status, is `reopen`.
+   *
+   * Only the two activity writers call this, and they only fire while the live
+   * runtime in THIS process is producing output for the session — so the caller
+   * is by construction the owner, and a genuinely dead session produces no
+   * activity and can never be resurrected here.
+   */
+  const repairStaleDetachOnActivity = (sessionId: string): void => {
+    reopenRow(sessionId, "detached-only");
   };
 
   /**
@@ -836,6 +913,9 @@ export function createSessionService({
               // token, so a window that was force-closed and reopened by a
               // different settle reads as abandoned rather than as healthy.
               isAborted: () => settleLifecycle.settling.abandoned(id, begin.token),
+              // Derived from WHO asked, not from what the session is doing: a
+              // poller must not inherit the user's right to cancel a turn.
+              mayInterruptActiveTurn: settleSourceMayInterruptActiveTurn(options.source),
             })
             : null;
         } catch (error) {
@@ -849,6 +929,12 @@ export function createSessionService({
         }
         if (teardownThrew) {
           outcome.aborted.push({ sessionId: id, reason: "teardown_failed" });
+          return outcome;
+        }
+        // Teardown refused to stop this session's work (a machine settle over a
+        // running turn). Nothing was stopped, so nothing may be filed either.
+        if (teardown?.abortedBy) {
+          outcome.aborted.push({ sessionId: id, reason: teardown.abortedBy });
           return outcome;
         }
 
@@ -1132,7 +1218,14 @@ export function createSessionService({
       liveOwnerIdentities,
       knownOwnerPids,
       knownOwnerIdentities,
-      freshActivityGraceMs,
+      /**
+       * Owner liveness alone is not evidence a session is dead: a session owned
+       * by another ADE process (or one whose registry row has not been observed
+       * yet at boot) reads as "no live owner" while it is still streaming.
+       * Rows that produced output inside this window are therefore skipped.
+       * Overridable for tests; every caller wants the default.
+       */
+      freshActivityGraceMs = STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
     }: {
       endedAt?: string;
       status?: TerminalSessionStatus;
@@ -1478,24 +1571,26 @@ export function createSessionService({
       emitChanged({ sessionId, reason: "meta-updated" });
     },
 
+    /**
+     * Reopen a row that is not `running`.
+     *
+     * The repair a turn is entitled to make. A boot/liveness reconcile decides
+     * ownership from the process registry, which is wrong for a session owned
+     * by another ADE process, so a still-live chat can be left `detached` — or
+     * `ended` — while it keeps streaming; an agent-CLI row stuck that way shows
+     * the frozen `ClosedCliSessionSurface` in the main pane. A turn arriving
+     * for the session is proof the row is wrong.
+     *
+     * Wider than `repairStaleDetachOnActivity` on purpose: that one rides every
+     * output write, where only the narrow stale-detach case is safe to assume,
+     * and it is what repairs a row between turns. This one runs from chat
+     * lifecycle callers about to drive the session themselves — turn start,
+     * restart recovery, keeping a chat open across a runtime close — so it may
+     * reopen from any non-running status. See `reopenRow` for the SQL's race
+     * and idempotence properties.
+     */
     reopen(sessionId: string): void {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return;
-      db.run(
-        `
-          update terminal_sessions
-          set status = 'running',
-              ended_at = null,
-              exit_code = null
-          where id = ?
-        `,
-        [trimmed]
-      );
-      // Without this, the renderer never learns the session went from
-      // stopped/ended back to running, so the Work tab keeps showing the
-      // frozen ClosedCliSessionSurface even though the PTY is live and
-      // streaming output that the TUI receives.
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      reopenRow(sessionId, "any-non-running");
     },
 
     reattach(args: { sessionId: string; ptyId: string | null; startedAt: string; ownerPid?: number | null; ownerProcessStartedAt?: string | null }): TerminalSessionSummary | null {
@@ -1555,6 +1650,7 @@ export function createSessionService({
      */
     setLastOutputPreview(sessionId: string, preview: string, opts?: { clearSettled?: boolean }): void {
       const now = new Date().toISOString();
+      repairStaleDetachOnActivity(sessionId);
       if (!opts?.clearSettled) {
         db.run(
           "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
@@ -1647,6 +1743,7 @@ export function createSessionService({
       at: string = new Date().toISOString(),
       opts?: { clearSettled?: boolean },
     ): void {
+      repairStaleDetachOnActivity(sessionId);
       if (opts?.clearSettled === false) {
         db.run("update terminal_sessions set last_output_at = ? where id = ?", [at, sessionId]);
         return;

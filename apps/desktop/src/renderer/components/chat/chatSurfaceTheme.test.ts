@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { PROVIDER_CHAT_ACCENTS, chatSurfaceVars, providerChatAccent } from "./chatSurfaceTheme";
+import {
+  NEUTRAL_CHAT_ACCENT,
+  PROVIDER_CHAT_ACCENTS,
+  chatSurfaceVars,
+  providerChatAccent,
+  chatAccentForRenderedChat,
+} from "./chatSurfaceTheme";
 
 /** The value a surface actually paints, as the DOM would see it. */
 function vars(accent: string | null, tint: "colored" | "neutral" = "colored") {
@@ -74,5 +80,58 @@ describe("chat surface accents", () => {
     const neutral = vars("#D46C2E", "neutral");
     expect(neutral["--chat-accent"]).toBe("#52525b");
     expect(vars("#181C25", "neutral")["--chat-accent"]).toBe(neutral["--chat-accent"]);
+  });
+});
+
+describe("chatAccentForRenderedChat", () => {
+  const CLAUDE = PROVIDER_CHAT_ACCENTS.claude;
+  const CODEX = PROVIDER_CHAT_ACCENTS.codex;
+
+  it("prefers the rendered chat's own session provider", () => {
+    expect(chatAccentForRenderedChat({
+      sessionProvider: "claude",
+      lockSessionProvider: "claude",
+      modelFamily: "codex",
+      modelColor: "#123456",
+    })).toBe(CLAUDE);
+  });
+
+  // The switch frame: the pane still holds the outgoing Claude chat and its
+  // Claude composer model, so it withholds both by passing null, and the row it
+  // is being pointed at — Codex — is what paints.
+  it("paints the incoming chat's provider on the switch frame, not the outgoing one", () => {
+    expect(chatAccentForRenderedChat({
+      sessionProvider: null,
+      lockSessionProvider: "codex",
+      modelFamily: null,
+      modelColor: null,
+    })).toBe(CODEX);
+  });
+
+  // The invariant: an unplumbed host may show gray, never the previous chat.
+  it("falls to neutral rather than a stale colour when nothing identifies the chat", () => {
+    expect(chatAccentForRenderedChat({
+      sessionProvider: null,
+      lockSessionProvider: null,
+      modelFamily: null,
+      modelColor: null,
+    })).toBe(NEUTRAL_CHAT_ACCENT);
+  });
+
+  // A draft pane has no session at all; its composer model is the only truth,
+  // and its state is never stale, so it passes the model through.
+  it("keeps a draft pane on its composer model's colour", () => {
+    expect(chatAccentForRenderedChat({
+      sessionProvider: null,
+      lockSessionProvider: null,
+      modelFamily: "opencode",
+      modelColor: "#123456",
+    })).toBe(PROVIDER_CHAT_ACCENTS.opencode);
+    expect(chatAccentForRenderedChat({
+      sessionProvider: null,
+      lockSessionProvider: null,
+      modelFamily: "not-a-runtime",
+      modelColor: "#123456",
+    })).toBe("#123456");
   });
 });

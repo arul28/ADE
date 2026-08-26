@@ -593,6 +593,22 @@ describe("AttentionNotchHelper", () => {
       }),
       // A dismiss without an item is not routable and must be rejected.
       JSON.stringify({ type: "dismiss_item" }),
+      // Closing a takeover card says "seen": stop interrupting, but leave the
+      // row in Activity. The mode rides through untouched.
+      JSON.stringify({
+        type: "dismiss_item",
+        itemId: "agent-2",
+        mode: "seen",
+      }),
+      // A mode this build has never heard of is not a reason to drop the
+      // acknowledgement. It narrows to "seen", not "dismiss": a mode only a
+      // NEWER helper knows must degrade to the less destructive action, and
+      // filing the row away on the user's behalf is the destructive one.
+      JSON.stringify({
+        type: "dismiss_item",
+        itemId: "agent-3",
+        mode: "banish",
+      }),
       JSON.stringify({
         type: "settings",
         settings: {
@@ -628,10 +644,16 @@ describe("AttentionNotchHelper", () => {
     expect(onOutput.mock.calls.map((call) => call[0]?.type)).toEqual([
       "open_settings",
       "dismiss_item",
+      "dismiss_item",
+      "dismiss_item",
       "settings",
       "settings",
     ]);
-    expect(onOutput.mock.calls[1]?.[0]).toMatchObject({ itemId: "agent-1" });
+    // No mode on the wire is a helper too old to have the field, and that
+    // message has always meant dismiss.
+    expect(onOutput.mock.calls[1]?.[0]).toMatchObject({ itemId: "agent-1", mode: "dismiss" });
+    expect(onOutput.mock.calls[2]?.[0]).toMatchObject({ itemId: "agent-2", mode: "seen" });
+    expect(onOutput.mock.calls[3]?.[0]).toMatchObject({ itemId: "agent-3", mode: "seen" });
     helper.dispose();
   });
 

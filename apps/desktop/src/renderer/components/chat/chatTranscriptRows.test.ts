@@ -2499,6 +2499,97 @@ function env(
   return { sessionId: "session-1", timestamp, event };
 }
 
+describe("spawn_completed notice folding", () => {
+  // Each sibling TURN emits its own notice, distinguished by `childTurnId` —
+  // that is why the byte-identical system-notice dedupe upstream never caught
+  // these and a real transcript accrued 26 of them.
+  let nextChildTurn = 0;
+  const completion = (childSessionId: string, childTitle: string) =>
+    ({
+      type: "system_notice",
+      noticeKind: "info",
+      status: "spawn_completed",
+      message: `Chat "${childTitle}" finished its turn`,
+      detail: {
+        spawnCompletion: {
+          childSessionId,
+          childTitle,
+          spawnKind: "peer",
+          childTurnId: `turn-${(nextChildTurn += 1)}`,
+          status: "completed",
+          summary: "Done.",
+        },
+      },
+    }) satisfies AgentChatEventEnvelope["event"];
+
+  const repeatCountOf = (row: { repeatCount?: number }): number | undefined => row.repeatCount;
+
+  it("folds adjacent completions for the same child into one row that counts the repeats", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", completion("child-1", "Move/Regroup Engine and Undo")),
+      env("2026-06-01T10:00:01.000Z", completion("child-1", "Move/Regroup Engine and Undo")),
+      env("2026-06-01T10:00:02.000Z", completion("child-1", "Move/Regroup Engine and Undo")),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    // Latest timestamp wins so the row keeps sorting with the newest notice.
+    expect(rows[0]!.timestamp).toBe("2026-06-01T10:00:02.000Z");
+    expect(repeatCountOf(rows[0]!)).toBe(3);
+  });
+
+  it("does not fold across an intervening row, and never folds a different child", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:01.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:02.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:03.000Z", { type: "text", text: "Thanks.", messageId: "m-1" }),
+      env("2026-06-01T10:00:04.000Z", completion("child-1", "Engine")),
+    ]);
+
+    const notices = rows.filter((row) => row.event.type === "system_notice");
+    expect(notices).toHaveLength(4);
+    expect(notices.map((row) => repeatCountOf(row))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("keeps the incremental collapse byte-identical to a full recompute", () => {
+    const stream: AgentChatEventEnvelope[] = [
+      env("2026-06-01T10:00:00.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:01.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:02.000Z", completion("child-2", "Docs")),
+      env("2026-06-01T10:00:03.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:04.000Z", completion("child-1", "Engine")),
+      env("2026-06-01T10:00:05.000Z", { type: "text", text: "Thanks.", messageId: "m-1" }),
+      env("2026-06-01T10:00:06.000Z", completion("child-1", "Engine")),
+    ];
+
+    const full = collapseChatTranscriptEvents(stream);
+    let prevEvents: AgentChatEventEnvelope[] = [];
+    const seed = collapseChatTranscriptEventsWithContext(prevEvents);
+    let prevRows = seed.rows;
+    let prevContext = seed.context;
+    for (let index = 1; index <= stream.length; index += 1) {
+      const nextEvents = stream.slice(0, index);
+      const result = collapseChatTranscriptEventsIncrementalWithContext(
+        nextEvents,
+        prevEvents,
+        prevRows,
+        prevContext,
+      );
+      prevEvents = nextEvents;
+      prevRows = result.rows;
+      prevContext = result.context;
+    }
+
+    expect(prevRows).toEqual(full);
+    expect(prevRows.map((row) => row.key)).toEqual(full.map((row) => row.key));
+  });
+});
+
 describe("subagent two-row rendering", () => {
   it("collapses a double subagent_started into exactly one enriched spawn anchor", () => {
     const rows = collapseChatTranscriptEvents([

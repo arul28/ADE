@@ -390,8 +390,10 @@ import {
   providerSupportsHandoffFork,
 } from "../../../shared/types";
 import {
+  spawnCompletedNoticeMessage,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
+  waitingOnYouDescription,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
@@ -8658,9 +8660,12 @@ export function createAgentChatService(args: {
       source: "claude",
       kind: hasStructuredChoices ? "structured_question" : "question",
       title: questions.length === 1 ? "Question from Claude" : "Questions from Claude",
+      // The question itself when there is one to show; otherwise the shared
+      // fallback line — see `waitingOnYouDescription` for why the copy is
+      // single-sourced.
       description: questions.length === 1
-        ? firstQuestion?.question ?? "Claude needs an answer before it can continue."
-        : "Claude needs a few answers before it can continue.",
+        ? firstQuestion?.question ?? waitingOnYouDescription()
+        : waitingOnYouDescription(questions.length),
       questions,
       allowsFreeform: true,
       blocking: true,
@@ -8920,7 +8925,7 @@ export function createAgentChatService(args: {
       const approvalItemId = request.itemId ?? request.requestId;
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
-        description: request.description ?? "Claude needs input before it can continue.",
+        description: request.description ?? waitingOnYouDescription(request.questions.length),
         detail: {
           tool: "AskUserQuestion",
           questionCount: request.questions.length,
@@ -16844,6 +16849,10 @@ export function createAgentChatService(args: {
       type: "approval_request",
       itemId: request.itemId ?? request.requestId,
       kind: args?.kind ?? "tool_call",
+      // What is being asked, alongside the shape of it. `kind` above cannot
+      // say "this is a question", so a question shipped as an approval and
+      // every surface downstream offered Approve/Deny for prose.
+      requestKind: request.kind,
       description,
       detail: {
         ...(args?.detail ?? {}),
@@ -17114,7 +17123,7 @@ export function createAgentChatService(args: {
         input.body?.trim()
         || input.question?.trim()
         || input.questions?.[0]?.question?.trim()
-        || "The agent needs input before it can continue.";
+        || waitingOnYouDescription(input.questions?.length);
       const response = await requestChatInput({
         chatSessionId: managed.session.id,
         title,
@@ -24425,7 +24434,7 @@ export function createAgentChatService(args: {
             const response = await requestChatInput({
               chatSessionId: managed.session.id,
               title: questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode",
-              body: firstQuestion?.question ?? "OpenCode needs input before it can continue.",
+              body: firstQuestion?.question ?? waitingOnYouDescription(questions.length),
               source: "opencode",
               providerMetadata: {
                 openCodeQuestion: true,
@@ -31727,7 +31736,7 @@ export function createAgentChatService(args: {
         ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
         : assistantSummary;
     } else if (resultStatus === "completed") {
-      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished.";
+      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Chat turn finished.";
     } else if (resultStatus === "stopped") {
       baseSummary = "Stopped before finishing.";
     } else {
@@ -31796,7 +31805,7 @@ export function createAgentChatService(args: {
               type: "system_notice",
               noticeKind: "info",
               status: "spawn_completed",
-              message: `Peer "${childTitle}" turn finished`,
+              message: spawnCompletedNoticeMessage(childTitle),
               detail: { spawnCompletion },
             });
           }
@@ -35072,8 +35081,14 @@ export function createAgentChatService(args: {
       throw new Error(cursorRuntimeHealth.message ?? CURSOR_RUNTIME_AUTH_ERROR);
     }
 
+    // Repair the PERSISTED row, not just the in-memory one: a hot chat's
+    // in-memory status is active/idle, so the `=== "ended"` reset below never
+    // fires for a row a liveness reconcile wrongly marked `detached`, and the
+    // session shows "Ended" while the chat keeps streaming. Idempotent, so it
+    // is called unconditionally; the in-memory reset stays separate.
+    sessionService.reopen(sessionId);
+
     if (managed.session.status === "ended") {
-      sessionService.reopen(sessionId);
       setSessionIdle(managed);
       managed.closed = false;
       managed.endedNotified = false;
@@ -35803,7 +35818,7 @@ export function createAgentChatService(args: {
     const body =
       cursorControlString(payload.body)
       ?? cursorControlString(payload.question)
-      ?? "Cursor needs input before it can continue.";
+      ?? waitingOnYouDescription();
     const questions = normalizeCursorControlQuestions(payload.questions) ?? [{
       id: "answer",
       header: "Question 1",
@@ -36337,7 +36352,7 @@ export function createAgentChatService(args: {
       const response = await requestChatInput({
         chatSessionId: managed.session.id,
         title: req.title,
-        body: req.questions[0]?.question ?? "Droid needs input before it can continue.",
+        body: req.questions[0]?.question ?? waitingOnYouDescription(req.questions.length),
         source: "droid",
         providerMetadata: { droidSdk: true, toolCallId: req.toolCallId, raw: req.raw },
         eventDescription: req.title,

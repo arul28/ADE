@@ -339,18 +339,45 @@ final class NotchProtocolTests: XCTestCase {
         }
     }
 
-    func testInlineActionLabelsDescribeNavigationInsteadOfExecution() {
+    /// The label is the verb; the hint is where the click goes. "Open to
+    /// approve" put the mechanism in the label and read as a weaker Open.
+    func testInlineActionLabelsAreVerbsAndSayWhereTheyGo() {
         let approve = AttentionAction(id: "approve", kind: "approve", label: "Approve")
         let deny = AttentionAction(id: "deny", kind: "deny", label: "Deny")
         let rerun = AttentionAction(id: "rerun", kind: "rerun_checks", label: "Rerun")
         let dismiss = AttentionAction(id: "dismiss", kind: "dismiss", label: "Dismiss")
 
-        XCTAssertEqual(approve.navigationLabel, "Open to approve")
-        XCTAssertEqual(deny.navigationLabel, "Open to deny")
-        XCTAssertEqual(rerun.navigationLabel, "Open to rerun checks")
-        XCTAssertTrue(approve.navigationAccessibilityHint.contains("Open to approve"))
+        XCTAssertEqual(approve.navigationLabel, "Approve")
+        XCTAssertEqual(deny.navigationLabel, "Deny")
+        XCTAssertEqual(rerun.navigationLabel, "Rerun checks")
+        XCTAssertTrue(approve.navigationAccessibilityHint.contains("Opens this item in ADE"))
         XCTAssertTrue(approve.opensDestination)
         XCTAssertFalse(dismiss.opensDestination)
+    }
+
+    /// One button on the takeover card, and its word names what is waiting.
+    func testTakeoverButtonVerbFollowsWhatIsActuallyWaiting() {
+        let question = fixtureItem(id: "question", phase: "needs_you", actions: [
+            AttentionAction(id: "answer", kind: "answer", label: "Answer"),
+            AttentionAction(id: "open", kind: "open", label: "Open"),
+        ])
+        let approval = fixtureItem(id: "approval", phase: "needs_you", actions: [
+            AttentionAction(id: "approve", kind: "approve", label: "Approve"),
+            AttentionAction(id: "deny", kind: "deny", label: "Deny"),
+            AttentionAction(id: "open", kind: "open", label: "Open"),
+        ])
+        let running = fixtureItem(id: "running", phase: "running")
+
+        XCTAssertEqual(NotchPrimaryAction(item: question).label, "Answer")
+        XCTAssertEqual(NotchPrimaryAction(item: approval).label, "Approve")
+        XCTAssertEqual(NotchPrimaryAction(item: running).label, "Open")
+        XCTAssertEqual(NotchPrimaryAction(item: nil).label, "Open")
+
+        // The subtitle line rides the same value as the verb, and only an
+        // outstanding ask has one — "Open" names nothing to wait for.
+        XCTAssertEqual(NotchPrimaryAction(item: question).waitingLine, "Waiting on your answer.")
+        XCTAssertEqual(NotchPrimaryAction(item: approval).waitingLine, "Waiting on your approval.")
+        XCTAssertNil(NotchPrimaryAction(item: running).waitingLine)
     }
 
     func testPhaseVocabularyAndToneMatchAttentionSurfaces() {
@@ -437,7 +464,7 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertTrue(hostAuthored.isProblem)
         XCTAssertEqual(hostAuthored.title, "Signed out")
         XCTAssertEqual(hostAuthored.message, "Your ADE session expired.")
-        XCTAssertEqual(hostAuthored.hint, "Sign in to ADE to restore account Activity.")
+        XCTAssertEqual(hostAuthored.hint, "Sign in to ADE to see your activity again.")
 
         let blankCopy = try XCTUnwrap(notchStatusPresentation(
             availability: AttentionAvailability(state: .incompatible, recovery: .updateHost, hostName: "Studio"),
@@ -452,7 +479,7 @@ final class NotchProtocolTests: XCTestCase {
             availability: AttentionAvailability(state: .degraded),
             itemCount: 3
         ))
-        XCTAssertEqual(stale.message, "Showing the last state ADE received.")
+        XCTAssertEqual(stale.message, "Showing what ADE last heard.")
         XCTAssertEqual(stale.compactLabel, "Reconnecting")
     }
 
@@ -467,18 +494,38 @@ final class NotchProtocolTests: XCTestCase {
         )
     }
 
-    /// The expanded footer renders a prominent "Open in ADE" of its own, so a
-    /// plain `open` action beside it would be the same button twice.
+    /// The expanded footer renders a prominent "Open all in ADE" (which opens
+    /// Activity), so a per-item `open` beside it is a redundant second Open for
+    /// a surface the user is one click from.
     func testPlainOpenActionIsLeftToTheProminentButton() {
         let actions = [
             AttentionAction(id: "open", kind: "open", label: "Open"),
             AttentionAction(id: "approve", kind: "approve", label: "Approve"),
             AttentionAction(id: "dismiss", kind: "dismiss", label: "Dismiss"),
         ]
-        // "open" renders as "Open in ADE", which the prominent button already
-        // is; "dismiss" navigates nowhere.
+        // "open" would be a redundant second Open beside "Open all in ADE",
+        // which is one click from the same place; "dismiss" navigates nowhere.
         XCTAssertEqual(notchSecondaryActions(actions).map(\.id), ["approve"])
-        XCTAssertEqual(AttentionAction(id: "open", kind: "open", label: "Open").navigationLabel, "Open in ADE")
+        XCTAssertEqual(AttentionAction(id: "open", kind: "open", label: "Open").navigationLabel, "Open")
+    }
+
+    /// `NotchDismissMode`'s raw values ARE the wire contract the host parses, so
+    /// renaming a case must not be a silent protocol change. Encoded through the
+    /// same encoder the transport writes to stdout.
+    func testDismissModeEncodesItsWireStrings() throws {
+        let encoder = StandardIOTransport().encoder
+        let json = { (mode: NotchDismissMode?) -> String in
+            String(
+                decoding: (try? encoder.encode(
+                    NotchOutput(type: "dismiss_item", itemId: "i", mode: mode)
+                )) ?? Data(),
+                as: UTF8.self
+            )
+        }
+        XCTAssertTrue(json(.seen).contains("\"mode\":\"seen\""), json(.seen))
+        XCTAssertTrue(json(.dismiss).contains("\"mode\":\"dismiss\""), json(.dismiss))
+        // Omitted, not null: older hosts read a missing `mode` as "dismiss".
+        XCTAssertFalse(json(nil).contains("mode"), json(nil))
     }
 
     // MARK: - Activity revamp protocol additions
@@ -1077,7 +1124,8 @@ final class NotchProtocolTests: XCTestCase {
         phase: String = "running",
         updatedAt: String = "2026-07-28T12:00:00Z",
         tier: String? = nil,
-        chatActivityMode: AttentionChatActivityMode? = nil
+        chatActivityMode: AttentionChatActivityMode? = nil,
+        actions: [AttentionAction] = []
     ) -> AttentionItem {
         AttentionItem(
             id: id,
@@ -1092,6 +1140,7 @@ final class NotchProtocolTests: XCTestCase {
             preview: "Running tests",
             privacyPreview: "Agent update",
             destination: AttentionDestination(kind: "session", sessionId: "session-1"),
+            actions: actions,
             occurredAt: updatedAt,
             updatedAt: updatedAt,
             activityTier: tier

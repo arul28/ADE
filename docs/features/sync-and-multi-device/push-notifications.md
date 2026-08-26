@@ -478,11 +478,24 @@ What it filters and how:
   drains, and `resumeRunOnActivity` waits out a 10 s grace before resuming a
   terminal run so a done→working→done flap cannot mint three alert-fingerprint
   phase entries.
-- **Planning is polled, not inferred.** There is no chat event for an
-  interaction-mode change, so live non-terminal chat runs re-read their session
-  summary on a bounded 10 s cadence; `interactionMode === "plan"` becomes
+- **Chat metadata is polled, not inferred.** Neither a chat's title nor its
+  interaction mode is announced on the chat event stream — a chat is born with a
+  placeholder title and renamed seconds later, once the runtime has read the
+  prompt — so `refreshChatRunMeta` re-reads the session summary for every live
+  non-terminal chat run on one bounded 10 s cadence (`CHAT_META_REFRESH_MS`,
+  stamped as `chatMetaCheckedAt`). One read, one cadence, because both facts come
+  from the same summary. `interactionMode === "plan"` becomes
   `chatActivityMode: "planning"`, emitted only while the published phase is
   `running`.
+
+  The first resolution and every refresh go through **one** `applyChatSummary`.
+  They used to be written out separately and the refresh only re-read the
+  interaction mode, which is how a renamed chat kept its birth title for the life
+  of the session — so an attention row named a chat nobody recognised. The
+  attempt is stamped *before* the await, so a slow or failing read cannot make
+  every flush retry the same session, and a thrown read keeps the last known
+  metadata rather than blanking the title or flipping the glyph. A terminal run
+  is skipped: it cannot be renamed into something the user is waiting on.
 - **Lifetimes.** Running/starting rows expire after 2 h, recent outcomes after
   24 h, and idle roster rows after 7 days. Idle rows used to carry
   `expiresAt: null`, which meant a chat deleted while its machine was offline sat
@@ -601,6 +614,37 @@ fingerprint + device records what each phone was actually told, and is retained
 for 30 days — well past the item's own lifetime. Deleting and republishing an
 item therefore cannot re-alert, which the receipt alone could not prevent
 because receipts are keyed by item id and pruned at 7 days.
+
+### A question is not an approval
+
+`approval_request` carries both flavours, and only its optional `requestKind`
+tells them apart (see
+[chat composer docs](../chat/composer-and-ui.md#approval-vs-question)). The
+publisher classifies with the shared `isQuestionKind` from
+`shared/pendingInputAnswers.ts`:
+
+| | phase | notification category |
+|---|---|---|
+| question / structured question | `waiting_for_input` | none |
+| everything else, and any event with no `requestKind` | `waiting_for_approval` | `APPROVAL_NOTIFICATION_CATEGORY` |
+
+The category *is* the notification's inline Approve/Deny buttons. A question has
+nothing for them to do, so it ships without them — the same shape
+`structured_question` already published. Before this, every `AskUserQuestion`
+went out as `waiting_for_approval`, so the notch and the phone offered
+Approve/Deny for something that wants prose, and the answer branch in the
+attention item builder was dead code. Both flavours share the
+`alert:<sessionId>:approval` dedupe key: it is one prompt per session either way,
+and sharing it keeps a question from re-alerting over an approval it replaced.
+An event with no `requestKind` is an approval, which is what older hosts meant.
+
+The `needs_you` privacy preview reads **"An ADE agent needs you."** — the same
+two words the status label, the title suffix, and the notch's own section
+heading use. "needs your input" was a third phrasing for one state, on the
+surface with the least room to explain itself. Where a specific line is
+available instead, chat surfaces supply `waitingOnYouDescription()` from
+`shared/types/chat.ts` (`Waiting on your answer.` / `…answers.`), which is also
+the notch card's subtitle and the lock-screen preview.
 
 Quiet hours, muted sessions, preview privacy, sound, and exact deep links are
 applied before APNs fan-out. `needs_you` can use time-sensitive interruption;
@@ -851,8 +895,10 @@ machines-online line, then "All clear".
 
 The strip replaced a row of repeated provider logos, which said "three Claudes"
 when the useful sentence was "one is asking you something and two are working".
-Panel rows use the same state glyph in a quiet disc (`NotchStateGlyph`), not a
-provider logo plus a status dot. Width is computed from the groups and the
+The strip is still counts-only for that reason. Individual rows and the takeover
+card do carry identity, through `NotchItemMark` (`NotchItemMark.swift`): the
+provider's mark with the state tone as a dot on it, so one element answers both
+"who" and "what state" — see [Item marks](#item-marks). Width is computed from the groups and the
 signal and clamped, rather than fixed, so the ears stay inside the visible area
 on either side of the camera housing.
 
@@ -880,12 +926,121 @@ cannot disagree. The two resting bands, Idle and Done, start collapsed — the
 same pair the desktop header popover leaves out. The whole projection comes from the
 renderer's `activityFeedOrder`, so priority is not re-derived in Swift.
 
+### Item marks
+
+`NotchItemMark` draws the provider's mark with the state tone as a dot on it,
+and is used by panel rows and the takeover card. The marks ship as **SVG**, not
+PNG: the same file has to look right at 18pt in a row and 22pt on a card, on 1x
+and 2x, and AppKit reads SVG into a vector representation, so one asset covers
+all of it. They are the monochrome Lobe glyphs, drawn as templates and tinted
+like any other symbol — Droid is the deliberate exception, a full-colour badge
+that already draws its own disc and would flatten to a filled circle as a
+template. Lookups are memoized by file name behind a **double** optional, so a
+provider with no mark is not sent back through `Bundle.module` on every redraw.
+
+`NotchProviderMark.fileByProvider` accepts both `providerDisplayName` spellings
+and raw provider ids. **Mirror it** with the renderer's provider→mark tables —
+`ProviderLogo` in `renderer/components/shared/ProviderLogos.tsx` and `LOGO_MAP`
+in `renderer/components/terminals/ToolLogos.tsx` — so one provider never wears
+two different marks across ADE's surfaces. Third-party mark licensing is
+recorded in `native/ADEAttentionNotch/THIRD_PARTY_NOTICES.md`.
+
+`hideDetails` is honoured: with previews hidden the mark falls back to the state
+glyph rather than naming the provider.
+
+### The takeover card
+
+`NotchPresentationState.isTakeover` (flash **or** celebration) is spelled once
+in `NotchInteractionState.swift`, because every caller that treats the two alike
+— dismissal, click-through, key activation, drain-to-zero — has to keep treating
+them alike.
+
 A needs-you **flash card** appears for about ten seconds and ends on any of four
-things: the timeout, an explicit close, a click through (which opens the Events
-tab with that cluster expanded and focused), or the item being acknowledged on
-another device. A remote acknowledgment skips the out-animation — the card should
-not linger politely over work that is already handled. Takeovers are never gated
-on the reveal mode, and never replace a card currently under the pointer.
+things: the timeout, an explicit close, a click through, or the item being
+acknowledged on another device. A remote acknowledgment skips the out-animation
+— the card should not linger politely over work that is already handled.
+Takeovers are never gated on the reveal mode, and never replace a card currently
+under the pointer.
+
+**One card, one meaning.** The card draws exactly one action button and the
+whole card taps to the same thing: `openSelected()`, which goes to the item that
+needs you. It used to expand the panel instead, so the same card had two
+different answers depending on which pixel you hit; the expanded panel is still
+one click away from the menu-bar item. Opening also collapses the card
+immediately rather than waiting for the host's acknowledgement to round-trip
+back in a snapshot.
+
+The button's word comes from `NotchPrimaryAction(item:)`:
+
+| Case | Chosen when | Label | Subtitle when the row has no preview |
+|---|---|---|---|
+| `answer` | the item offers an `answer` action | **Answer** | Waiting on your answer. |
+| `approve` | it offers `approve` | **Approve** | Waiting on your approval. |
+| `review` | it is a pull request in `review_requested` / `changes_requested` | **Review** | Waiting on your review. |
+| `open` | anything else | **Open** | *(none — the caller keeps its preview)* |
+
+An item from a publisher older than the question/approval split falls back to
+the approve verb, which is exactly what that build meant by
+`waiting_for_approval`. `takeoverSubtitle` prefers the row's own subtitle, then
+the waiting line, then `visiblePreview` — never a blank line where the reason
+should be.
+
+The panel's own per-item buttons use `notchNavigationLabel(forActionKind:)`,
+which is now the bare verb (**Approve**, **Deny**, **Answer**, **Restart**,
+**Rerun checks**, **Open**) rather than "Open to approve". Every one of them
+navigates — the helper has no authority to approve anything on its own — but
+making the mechanism the label read as a second, lesser Open beside the real
+one. The verb is the promise; the accessibility hint still says it opens ADE.
+`notchSecondaryActions` drops a plain `open` because the panel's own prominent
+button is "Open all in ADE"; it is used by the **panel** only, follows the
+panel's selection, and the takeover card makes no claim on it.
+
+**Close means seen, not dismissed.** The card's `×` calls `acknowledge(item)`,
+which emits `dismiss_item` with `mode: "seen"`: it stops the row interrupting
+but leaves it in Activity, because the user closed a card, they did not throw
+the work away. The panel's own dismiss keeps `mode: "dismiss"`, which files the
+row away. A timeout acknowledges nothing — a timeout means "you were not
+looking", a close means "I saw it", and only the second earns the right to stop
+interrupting for this state. A genuinely new event republishes the row with a
+new phase and toasts again.
+
+`mode` is additive on the wire, so `AttentionNotchWireOutput` types it as an
+unnarrowed string and `normalizeAttentionNotchOutput` resolves it before it
+leaves `attentionNotchHelper.ts` — no consumer re-decides what an unknown mode
+meant. The two unknown cases differ:
+
+- **absent** → `"dismiss"`. A helper too old to have the field, and that message
+  has always meant "file this away".
+- **present but unrecognised** → `"seen"`. A helper *newer* than this build,
+  naming a mode we cannot interpret. Guessing `dismiss` would file a row away on
+  the user's behalf; `seen` only stops it interrupting, so a future mode degrades
+  to the less destructive action.
+
+The guard deliberately does not gate on `mode`, so an unknown word can never
+cost the whole acknowledgement.
+
+**Making the controls actually clickable** took three fixes in
+`NotchPanelController`, all of the same shape — the panel is a large transparent
+sheet with a small drawn pill:
+
+- `acceptsFirstMouse` on the hosting view. The panel is non-activating and
+  usually not key, so the first click was being spent activating it; the close
+  `×` needed two clicks and the card had timed out by the second.
+- `allowsKeyActivation` now also true for a takeover, since a takeover carries
+  real controls even though the user never asked for it.
+- `ignoresMouseEvents` is the real hit region and is recomputed from the
+  pointer's **actual** position on every event. `hitTest` returning nil does not
+  hand a click back to the window below — it eats it. So the global mouse
+  monitor is handled inline via `MainActor.assumeIsolated` rather than hopped
+  onto the next main-actor turn (the hop meant `ignoresMouseEvents` was still
+  true when the move that entered the surface was followed by a mouse-down), and
+  the 30 Hz throttle applies only while the pointer is *outside* the surface,
+  where the sampling is pure hover detection.
+
+`NotchIconButtonStyle` separates `diameter` (what is drawn) from `hitDiameter`
+(what is clickable) by padding the reach on and taking it straight back off, so
+the target grows without the row growing with it — and the larger target is what
+wins the click against the card-wide tap gesture underneath.
 
 Interaction rules that survive unchanged: right-click anywhere on the surface or
 the menu-bar item opens the same native menu (Open Activity, Refresh,
@@ -894,6 +1049,12 @@ confirmed Hide with restore guidance); ordinary running work and needs-you
 changes update status without overriding the reveal policy; completion remains
 until seen or dismissed; and hit testing covers only the drawn shape, leaving the
 menu bar usable.
+
+Availability problems name ADE rather than the surface: a degraded stream reads
+**"ADE is out of sync"** and an unavailable one **"ADE can't show your
+activity"**. The elapsed label on a row is announced as "*54s* in this state"
+(or "Just now"), because a bare duration beside a headline reads as a countdown
+on the card.
 
 Confetti is one `Canvas` layer with 44 ballistic particles emitted from the two
 cutout corners, generated once from a deterministic seed rather than a view and

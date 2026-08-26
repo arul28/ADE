@@ -4752,6 +4752,82 @@ final class ADETests: XCTestCase {
     }
   }
 
+  /// Hosts now stamp `requestKind` on `approval_request` so the PUSH publisher
+  /// can tell "the agent asked you something" from "the agent wants
+  /// permission" — `kind` only describes the shape of the thing being
+  /// confirmed. The phone does not need it: it has always classified the gate
+  /// from `detail.request.kind`, which carries the same word and more.
+  ///
+  /// This pins both halves of the compatibility matrix in one pass. The new
+  /// field must be inert on decode (an unknown key that a stricter future
+  /// decoder must not start rejecting), and its ABSENCE — every host older
+  /// than this one — must keep classifying exactly as before.
+  func testApprovalRequestClassificationIgnoresRequestKindInBothDirections() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-08-25T00:00:00.000Z",
+          "sequence": 1,
+          "event": {
+            "type": "approval_request",
+            "itemId": "ask-1",
+            "kind": "tool_call",
+            "requestKind": "question",
+            "description": "Which database?",
+            "turnId": "turn-1",
+            "detail": {
+              "request": {
+                "kind": "question",
+                "source": "claude",
+                "title": "Question from Claude",
+                "questions": [
+                  { "id": "db", "question": "Which database?" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-08-25T00:00:01.000Z",
+          "sequence": 2,
+          "event": {
+            "type": "approval_request",
+            "itemId": "gate-1",
+            "kind": "tool_call",
+            "description": "Run the migration?",
+            "turnId": "turn-1"
+          }
+        }
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    XCTAssertEqual(snapshot.events.count, 2, "An unrecognised key must not fail the event decode.")
+    guard case .approvalRequest(let itemId, _, let kind, _, _, _) = snapshot.events[0].event else {
+      return XCTFail("Expected the requestKind-bearing event to decode as an approval_request.")
+    }
+    XCTAssertEqual(itemId, "ask-1")
+    XCTAssertEqual(kind, .toolCall, "requestKind must not be mistaken for the event's own kind.")
+
+    let pendingInputs = derivePendingWorkInputs(from: makeWorkChatTranscript(from: snapshot.events))
+    XCTAssertEqual(pendingInputs.count, 2)
+    guard let asked = pendingInputs.first(where: { $0.itemId == "ask-1" }),
+          case .question(let question) = asked else {
+      return XCTFail("A question gate must render the answer composer, not Approve/Deny.")
+    }
+    XCTAssertEqual(question.questions.first?.question, "Which database?")
+    guard let gate = pendingInputs.first(where: { $0.itemId == "gate-1" }),
+          case .approval = gate else {
+      return XCTFail("An approval with no requestKind must stay an approval — that is what older hosts meant.")
+    }
+  }
+
   func testChatEventHistorySnapshotToleratesUnknownEventBetweenKnownEvents() throws {
     let json = """
     {

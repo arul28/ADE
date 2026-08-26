@@ -28772,6 +28772,32 @@ describe("createAgentChatService", () => {
 
       expect(session.completion).toBeNull();
     });
+
+    it("repairs a persisted row a liveness sweep wrongly detached, on the next turn", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+
+      // What a boot / owner-liveness reconcile does to a chat whose owner it
+      // cannot see. The in-memory session stays idle, so the old
+      // `status === "ended"` check never fired and the row stayed `detached`
+      // forever — the sidebar reads that as "Ended".
+      const persisted = mockState.sessions.get(session.id);
+      persisted.status = "detached";
+      persisted.endedAt = "2026-03-17T00:20:00.000Z";
+
+      await service.sendMessage({ sessionId: session.id, text: "still here" });
+
+      expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
+      expect(mockState.sessions.get(session.id)).toEqual(expect.objectContaining({
+        status: "running",
+        endedAt: null,
+      }));
+    });
   });
 
   // --------------------------------------------------------------------------
