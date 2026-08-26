@@ -36,8 +36,10 @@ SOFTWARE.
 license grant is claimed for them, and none is available to cite. They are
 included on the basis of **nominative fair use** — the mark is displayed solely
 to identify the vendor's own runtime in a list of runtimes ADE can drive, at
-icon size, unaltered apart from the recolouring the notch applies to every
-provider glyph, and never as ADE's own branding.
+icon size, and never as ADE's own branding. Neither mark is redrawn: `droid.svg`
+is listed in `NotchItemMark.colorMarks` and ships in its own colours, and
+`pi.svg` is drawn as a template glyph tinted to the notch foreground, the same
+treatment the Lobe marks get.
 
 Because that basis is permissive rather than granted, it comes with standing
 conditions: no more of the mark is used than is needed to identify the runtime,
