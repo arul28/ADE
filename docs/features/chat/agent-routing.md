@@ -654,9 +654,13 @@ an index signature, so a misspelled key compiles and silently fails to apply
   list — so a bare value wins for every path and silently revokes OpenCode's
   access to its own temp, skill, and reference directories. That is true of
   `"deny"` as much as `"ask"`, which is why `ade-plan` and `ade-helper` drop the
-  key too: their `skill`/`edit`/`bash` denials already impose the boundary those
-  rulesets exist for. The rule binds all four rulesets and is pinned by the test
-  "never states external_directory on any ADE ruleset".
+  key too. That does loosen them: both used to hard-deny every outside-worktree
+  path and now ask for one. Each ask has an answer, which is what makes it
+  acceptable — plan raises an approval card the user decides, and a helper ask is
+  rejected on arrival by the `permission.asked` responder in
+  `runOpenCodeTextPrompt`, because a one-shot prompt has no UI and an unanswered
+  ask would hang it until the caller aborts. The rule binds all four rulesets and
+  is pinned by the test "never states external_directory on any ADE ruleset".
 
 ### Pi
 

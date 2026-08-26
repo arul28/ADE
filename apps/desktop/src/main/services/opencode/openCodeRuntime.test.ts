@@ -73,6 +73,7 @@ const mockState = vi.hoisted(() => {
     getSession: vi.fn(async () => {
       throw new Error("session not found");
     }),
+    permissionReply: vi.fn(async () => ({})),
   };
 });
 
@@ -94,7 +95,7 @@ vi.mock("@opencode-ai/sdk/v2/client", () => ({
       reject: vi.fn(),
     },
     permission: {
-      reply: vi.fn(),
+      reply: mockState.permissionReply,
       respond: vi.fn(),
     },
   })),
@@ -223,9 +224,10 @@ describe("openCodeRuntime", () => {
     for (const agentName of ["ade-edit", "ade-full-auto", "ade-plan", "ade-helper"]) {
       expect(agents[agentName]!.permission).not.toHaveProperty("external_directory");
     }
-    // The rest of each ruleset is unchanged. Plan in particular keeps the denials
-    // that make plan mean plan, and `skill: "deny"` already stops it reaching into
-    // skill directories, so the default's allowances cost it nothing.
+    // The rest of each ruleset is unchanged: plan keeps the denials that make plan
+    // mean plan. Omitting the key does loosen plan and the helper from "deny" to
+    // "ask" for outside-worktree paths — plan raises an approval card, and a
+    // helper ask is auto-rejected by `runOpenCodeTextPrompt`.
     expect(agents["ade-edit"]!.permission).toMatchObject({ edit: "ask", bash: "ask" });
     expect(agents["ade-full-auto"]!.permission).toMatchObject({ edit: "allow", bash: "allow" });
     expect(agents["ade-plan"]!.permission).toMatchObject({
@@ -366,6 +368,58 @@ describe("openCodeRuntime", () => {
     expect(result.text).not.toContain("PROMPT_ECHO");
     expect(result.text).not.toContain("THOUGHTS");
     expect(result.text).not.toContain("INJECTED_CONTEXT");
+  });
+
+  it("rejects an approval request during a one-shot prompt instead of hanging on it", async () => {
+    // A one-shot prompt has no UI and nobody to ask. ADE states no
+    // `external_directory` rule any more, so OpenCode's default ASKS for a path
+    // outside the worktree rather than denying it — and an unanswered ask would
+    // sit there until the caller's abort fires minutes later. Rejecting at once
+    // reproduces the old hard deny.
+    mockState.eventSubscribe.mockImplementationOnce((async () => {
+      const sessionID = "opencode-session-1";
+      return {
+        stream: (async function* () {
+          yield {
+            type: "permission.asked",
+            properties: {
+              id: "perm-1",
+              sessionID,
+              permission: "external_directory",
+              patterns: ["/etc/*"],
+              metadata: {},
+              always: [],
+            },
+          };
+          yield {
+            type: "message.updated",
+            properties: { info: { id: "msg-a", role: "assistant", sessionID } },
+          };
+          yield {
+            type: "message.part.updated",
+            properties: {
+              part: { id: "p-a", sessionID, messageID: "msg-a", type: "text", text: "done" },
+            },
+          };
+          yield { type: "session.idle", properties: { sessionID } };
+        })(),
+      };
+    }) as any);
+
+    // The run completes on its own rather than stalling on the unanswered ask.
+    const result = await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "Approval during a one-shot",
+      modelDescriptor: ONE_SHOT_MODEL_DESCRIPTOR,
+      prompt: "ping",
+      projectConfig: { ai: {} },
+    });
+
+    expect(result.text).toBe("done");
+    expect(mockState.permissionReply).toHaveBeenCalledWith(
+      expect.objectContaining({ requestID: "perm-1", reply: "reject" }),
+      expect.objectContaining({ throwOnError: true }),
+    );
   });
 
   it("bounds the event stream's silent reconnects", async () => {

@@ -2062,8 +2062,12 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   worktree", which is what ADE wants. This binds all four ADE rulesets, `deny`
   included: `ade-plan` and `ade-helper` state no `external_directory` either,
   because a bare `"deny"` revokes the same built-in allowances a bare `"ask"`
-  does, and their own `edit`/`bash`/`skill` denials already impose the boundary
-  those rulesets exist for.
+  does. Name the trade rather than glossing it — plan and the helper used to
+  hard-deny every outside-worktree path and now ask for one, which is a real
+  loosening. It holds because each ask has an answer: plan raises an approval
+  card the user decides, and a helper ask is rejected immediately by the
+  `permission.asked` responder in `runOpenCodeTextPrompt`, since a one-shot
+  prompt has no UI and would otherwise stall until its caller's abort.
 - **`session.status` retry events are the only sign OpenCode is retrying.** When
   a provider fails, OpenCode retries with exponential backoff (2s, 4s, 8s, …)
   and publishes nothing else — no error, no text, no activity. A chat therefore

@@ -219,10 +219,10 @@ function buildPermissionConfig(
       // deny), i.e. edit ALLOWED — so leaving `task` open let plan mode write
       // files indirectly through a child session. Plan has to mean plan.
       task: "deny",
-      // No `external_directory` here either — see the note on the edit ruleset
-      // below. Plan's other denials are unaffected: `skill: "deny"` already stops
-      // plan mode reaching into skill directories, so the default's allowances
-      // cost plan nothing.
+      // No `external_directory` here either — see the canonical note on the edit
+      // ruleset below, including what plan gives up: it now ASKS for a path
+      // outside the worktree where it used to deny outright, and the user
+      // answers that card.
       question: "allow",
       // Replaces the deprecated agent-level `tools` map. OpenCode desugars that
       // map into exactly these permission entries, and an explicit `permission`
@@ -238,15 +238,22 @@ function buildPermissionConfig(
     webfetch: "allow",
     doom_loop: "ask",
     // Never state `external_directory` in ANY ADE ruleset — this note is the
-    // canonical one and the other three point at it. OpenCode's own default is
-    // `{"*": "ask", <tmp>: "allow", <skill dirs>: "allow", <reference dirs>:
-    // "allow"}`, and a bare string expands to a single `{pattern: "*"}` rule
-    // that an agent block appends AFTER those defaults. Rule lookup is a
-    // `findLast` over the merged list, so the bare rule wins for every path and
-    // silently revokes OpenCode's access to its own temp, skill, and reference
-    // directories — whether ADE spelled it "ask" or "deny". Omitting the key
-    // leaves the default in place, which already asks for anything outside the
-    // worktree — exactly what ADE wants.
+    // canonical one and the other three point at it.
+    //
+    // OpenCode's own default is `{"*": "ask", <tmp>: "allow", <skill dirs>:
+    // "allow", <reference dirs>: "allow"}`. A bare string expands to a single
+    // `{pattern: "*"}` rule that an agent block appends AFTER those defaults,
+    // and rule lookup is a `findLast` over the merged list — so the bare rule
+    // wins for every path and silently revokes OpenCode's access to its own
+    // temp, skill, and reference directories. That is equally true of "deny"
+    // and "ask", which is why all four rulesets omit the key.
+    //
+    // The trade, stated honestly: plan and helper used to hard-DENY every path
+    // outside the worktree, and now they ASK for one. That is a real loosening,
+    // not a no-op. It is acceptable because each ask still has an answer — plan
+    // raises an approval card the user decides, and a helper ask is rejected
+    // immediately by the `permission.asked` responder in `runOpenCodeTextPrompt`,
+    // which is a one-shot with no UI. Change either of those and revisit this.
     question: "allow",
   };
 }
@@ -510,9 +517,10 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     bash: "deny",
     webfetch: "deny",
     doom_loop: "deny",
-    // No `external_directory`, matching every other ADE ruleset. The helper
-    // denies edit, bash, and webfetch outright, so there is nothing left for a
-    // directory rule to gate.
+    // No `external_directory`, matching every other ADE ruleset — see the
+    // canonical note in `buildPermissionConfig`. The helper has no UI to show an
+    // approval card, so `runOpenCodeTextPrompt` answers any ask by rejecting it
+    // at once, which is what the old bare "deny" achieved.
     question: "deny",
   } as const satisfies OpenCodePermissionConfig;
 
@@ -943,6 +951,29 @@ export async function runOpenCodeTextPrompt(
         if (roleByMessageId.get(part.messageID) !== "assistant") continue;
         if (part.synthetic || part.ignored) continue;
         text += typeof delta === "string" ? delta : part.text;
+        continue;
+      }
+
+      // A one-shot prompt has no UI and nobody to ask, so an approval request
+      // must fail fast rather than hang. ADE states no `external_directory`
+      // rule any more, which means OpenCode's default ASKS for a path outside
+      // the worktree instead of denying it outright — without this responder
+      // that ask would sit unanswered until the caller's abort fires, minutes
+      // later. Rejecting immediately reproduces the old hard deny: the tool
+      // call fails and the turn errors or idles on its own.
+      if (event.type === "permission.asked" && event.properties.sessionID === handle.sessionId) {
+        void handle.client.permission.reply(
+          {
+            requestID: event.properties.id,
+            directory: handle.directory,
+            reply: "reject",
+          },
+          { throwOnError: true },
+        ).catch(() => {
+          // Best effort. If the reply never lands the turn still ends through
+          // its own error or idle path, and the caller's abort remains the
+          // backstop.
+        });
         continue;
       }
 

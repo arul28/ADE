@@ -3203,10 +3203,13 @@ extension AgentChatEvent {
       // detail can carry a spawn completion, so a failed probe means "not one".
       // The replay path already treats it this way — see
       // `workSpawnCompletionEvent` in WorkTranscriptParser.swift.
-      let detailSpawnCompletion = ((try? container.decodeIfPresent(
+      // `decode`, not `decodeIfPresent`: a missing key throws `keyNotFound`,
+      // which `try?` turns into the same nil the optional-of-optional flattening
+      // produced. One level of optionality, identical behaviour.
+      let detailSpawnCompletion = (try? container.decode(
         AgentChatSpawnCompletionContainer.self,
         forKey: .detail
-      )) ?? nil)?.spawnCompletion
+      ))?.spawnCompletion
       if let completion = detailSpawnCompletion,
          completion.spawnKind == .subagent {
         self = completion.event(fallbackTurnId: eventTurnId)
