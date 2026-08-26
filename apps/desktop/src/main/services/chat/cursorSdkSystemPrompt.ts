@@ -1,12 +1,14 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { ADE_SESSION_STATUS_PROTOCOL_GUIDANCE } from "../../../shared/adeCliGuidance";
+import { buildNativeSubagentRoutingGuidance } from "../ai/tools/systemPrompt";
 
 const TOTAL_BUDGET_BYTES = 3 * 1024;
 const CLI_HELP_BUDGET = 700;
 const RULES_BUDGET = 500;
 const CONTROL_BUDGET = 850;
 const CLOUD_BUDGET = 900;
+const SUBAGENT_ROUTING_BUDGET = 420;
 const TRUNCATED_MARKER = "\n[truncated]";
 
 const SECRET_RE = /[A-Za-z0-9+/=_\-]{40,}/;
@@ -162,6 +164,17 @@ export const buildCursorSdkSystemPrompt = (
   const ctrlT = truncateFromEnd(ctrl, CONTROL_BUDGET);
   blocks.push(`## ADE control protocol\n${ctrlT.value}`);
   sections.push({ name: "control", bytes: ctrlT.value.length, truncated: ctrlT.truncated });
+
+  const subagentRouting = truncateFromEnd(
+    buildNativeSubagentRoutingGuidance("cursor-sdk"),
+    SUBAGENT_ROUTING_BUDGET,
+  );
+  blocks.push(`## Subagent routing\n${subagentRouting.value}`);
+  sections.push({
+    name: "subagent-routing",
+    bytes: subagentRouting.value.length,
+    truncated: subagentRouting.truncated,
+  });
 
   const rulesRaw = (inputs.rulesText ?? "").trim();
   if (rulesRaw.length) {

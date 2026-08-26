@@ -159,6 +159,23 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).not.toContain("will not start a later turn by itself");
     });
 
+    it("routes Claude-family delegation through the native Agent tool", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "claude-agent-sdk-query" });
+
+      expect(result).toContain("prefer Claude's native `Agent`/`Task` tool");
+      expect(result).toContain("another Anthropic-family model");
+      expect(result).toContain("Do not create an ADE `--type subagent` chat in the same lane merely to switch Claude models");
+      expect(result).toContain("independent durable transcript");
+    });
+
+    it("does not claim native subagents for the Pi SDK path", () => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "pi-sdk" });
+
+      expect(result).toContain("Pi's SDK path has no ADE-supported native subagent lifecycle");
+      expect(result).toContain("Use an ADE `--type subagent` chat");
+      expect(result).not.toContain("prefer Pi's native");
+    });
+
     it("describes the Cursor SDK runtime", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "cursor-sdk" });
       expect(result).toContain("Cursor SDK");
