@@ -1,6 +1,8 @@
 
 
 import { PROVIDERS_WITHOUT_BACKGROUND_STOP_CONTROL } from "../../../shared/subagentCapabilities";
+import type { SessionSettleSource } from "../../../shared/types/sessions";
+import type { SettleAbortedReason } from "./settlingStateRegistry";
 
 /**
  * @file Real settle teardown: stop the work a session owns, then confirm it stopped.
@@ -53,7 +55,46 @@ export type SettleResidueItem = {
 /** Checked BETWEEN stop calls, per design 3c. A turn start trips it. */
 export type SettleTeardownContext = {
   isAborted: () => boolean;
+  /**
+   * Whether this settle is allowed to cancel a turn that is running RIGHT NOW.
+   *
+   * Required, not optional: the answer is a property of who asked for the
+   * settle, and a default would silently give an automation the user's
+   * privileges. See `settleSourceMayInterruptActiveTurn`.
+   */
+  mayInterruptActiveTurn: boolean;
 };
+
+/**
+ * Who is allowed to cancel a running turn.
+ *
+ * A person asking for a settle has decided the work is over and can watch what
+ * happens; a poller has decided nothing — it only noticed something. So the
+ * split is by who made the decision, not by how the call arrived:
+ *
+ * - `user` — someone clicked settle. Today's behavior; may interrupt.
+ * - `operator` — the CTO operator tool acting on a person's direct instruction,
+ *   one named session at a time, reporting the refusal straight back to them.
+ *   A proxy for the user, so it carries the user's privileges.
+ * - `agent_explicit` — the session's own agent declaring itself finished. The
+ *   only turn it can cancel is its own, which is exactly what it asked for.
+ * - `pr_merge` — the PR poller. Machine-initiated: nobody is watching, the
+ *   session was not named by a person, and the merge will still be there on the
+ *   next pass. It waits instead.
+ *
+ * Exhaustive on purpose (no `default`): a new `SessionSettleSource` must come
+ * back here and be classified rather than inherit whichever answer is cheaper.
+ */
+export function settleSourceMayInterruptActiveTurn(source: SessionSettleSource | undefined): boolean {
+  switch (source ?? "user") {
+    case "user":
+    case "operator":
+    case "agent_explicit":
+      return true;
+    case "pr_merge":
+      return false;
+  }
+}
 
 /**
  * The result of a real teardown.
@@ -79,6 +120,14 @@ export type SettleTeardownOutcome = {
   residue: SettleResidueItem[];
   /** For the residue analytics dimension. Null when the session has no chat. */
   provider?: string | null;
+  /**
+   * Set when teardown decided the settle must NOT land at all.
+   *
+   * Distinct from `confirmed: false`, which still settles and records residue:
+   * this says nothing was stopped and nothing should be filed, so the caller
+   * reports an abort and leaves the session exactly as it found it.
+   */
+  abortedBy?: SettleAbortedReason;
 };
 
 /**
@@ -193,7 +242,25 @@ export function createSessionSettleTeardown(
     });
 
     const first = await readWork();
-    if (!first.ok) return timedOutResidue();
+    if (!first.ok) {
+      // A read that never answered is not evidence the session is at rest, and
+      // the refusal below runs only on a read that DID answer — so without this
+      // a hung host is the one way a machine settle files a session over a
+      // running turn, silently consuming the merge that asked for it.
+      //
+      // A settle the user asked for still lands, with the timeout residue
+      // attached: that is the signed-off decision for an explicit request, and
+      // it is the same asymmetry `mayInterruptActiveTurn` already encodes. A
+      // machine settle gives up the pass instead; the poller retries once the
+      // host answers.
+      if (!ctx.mayInterruptActiveTurn) {
+        // The residue payload is informational for callers; `abortedBy` makes
+        // sessionService return before recording it (unlike the `turn_start`
+        // abort below, which returns none).
+        return { ...timedOutResidue(), abortedBy: "teardown_failed" };
+      }
+      return timedOutResidue();
+    }
     const before = first.value;
     // Nothing to stop, or a session this service does not own (a plain
     // terminal). Either way there is no work to lose and no residue to report.
@@ -202,6 +269,18 @@ export function createSessionSettleTeardown(
     }
 
     const provider = before.provider;
+    // A machine-initiated settle never cancels a turn the user is watching run.
+    // `interrupt` is not selective — it stops the turn and the background work
+    // together — so the only way to honor that is to not call it, and to give
+    // up the settle entirely rather than file a session whose work is untouched
+    // and still going. The merge is not lost: the poller retries on a later
+    // pass, once the session is genuinely at rest.
+    //
+    // Background work WITHOUT an active turn is still stopped: nothing is being
+    // watched, and that is the work a settle exists to close out.
+    if (before.active && !ctx.mayInterruptActiveTurn) {
+      return { residue, provider, confirmed: false, abortedBy: "turn_start" };
+    }
     // Checked before the step, not after: the point of the abort is to stop
     // work we have NOT done yet.
     if (ctx.isAborted()) return { residue, confirmed: false };

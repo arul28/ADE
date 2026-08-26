@@ -66,15 +66,72 @@ export function canBulkDeleteSession(session: Pick<TerminalSessionSummary, "stat
   return session.status !== "running" || isChatToolType(session.toolType);
 }
 
+/**
+ * The chat provider ↔ tool type mapping, spelled out in both directions.
+ *
+ * Keyed on a literal union rather than `AgentChatProvider`: that type widens
+ * with `string & {}` to stay open to runtimes ADE has not shipped yet, and a
+ * `Record` over it checks nothing — a missing provider would compile. Naming
+ * the six here is what makes adding a seventh a type error in this file.
+ *
+ * The reverse map is written out rather than derived, because `Object.entries`
+ * loses the key types and the result needs a cast that hides exactly the same
+ * mistake. So these are two hand-written literal tables that must agree; the
+ * only thing keeping them in sync is the round-trip test in `sessions.test.ts`.
+ *
+ * The type-error guarantee is forward-only: the reverse map is keyed on `string`
+ * (a lookup here takes an arbitrary runtime tool type), so a typo or an omission
+ * on that side compiles fine and is caught by the test, not the compiler.
+ */
+export type KnownChatProvider = "claude" | "codex" | "cursor" | "droid" | "pi" | "opencode";
+
+export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolType> = {
+  claude: "claude-chat",
+  codex: "codex-chat",
+  cursor: "cursor",
+  droid: "droid-chat",
+  pi: "pi-chat",
+  opencode: "opencode-chat",
+};
+
+const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
+  "claude-chat": "claude",
+  "codex-chat": "codex",
+  cursor: "cursor",
+  "droid-chat": "droid",
+  "pi-chat": "pi",
+  "opencode-chat": "opencode",
+};
+
+/**
+ * Tool type for a chat provider. An unrecognised provider falls back to
+ * `opencode-chat`, which is what every caller has always got for one.
+ */
 export function chatToolTypeForProvider(provider: AgentChatProvider | string | null | undefined): TerminalToolType {
-  switch (provider) {
-    case "claude": return "claude-chat";
-    case "codex": return "codex-chat";
-    case "cursor": return "cursor";
-    case "droid": return "droid-chat";
-    case "pi": return "pi-chat";
-    default: return "opencode-chat";
+  // `Object.hasOwn`, not a plain lookup: the key is arbitrary runtime input, so
+  // a provider named "constructor" or "toString" would otherwise resolve to an
+  // inherited Object.prototype member instead of falling back.
+  if (typeof provider === "string" && Object.hasOwn(CHAT_TOOL_TYPE_BY_PROVIDER, provider)) {
+    return CHAT_TOOL_TYPE_BY_PROVIDER[provider as KnownChatProvider];
   }
+  return "opencode-chat";
+}
+
+/**
+ * Inverse of `chatToolTypeForProvider`: the chat provider a Work-row tool type
+ * belongs to, or null when the tool type is not an ADE chat.
+ *
+ * Used to feed `AgentChatPane`'s `lockSessionProvider` prop — see its doc for
+ * why the host supplies the provider.
+ */
+export function providerFromChatToolType(toolType: string | null | undefined): AgentChatProvider | null {
+  if (!toolType) return null;
+  const key = toolType.trim().toLowerCase();
+  // Same prototype-chain guard as the forward direction: "constructor" and
+  // "toString" are valid runtime strings and must resolve to null, not to an
+  // inherited member of Object.prototype.
+  if (!Object.hasOwn(CHAT_PROVIDER_BY_TOOL_TYPE, key)) return null;
+  return CHAT_PROVIDER_BY_TOOL_TYPE[key] ?? null;
 }
 
 export const STALE_RUNNING_CLI_SESSION_MS = 24 * 60 * 60 * 1_000;

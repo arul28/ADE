@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import { approvalRequestKind, isQuestionKind } from "../../../../desktop/src/shared/pendingInputAnswers";
 import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
@@ -150,12 +151,14 @@ const PUBLISH_RETRY_MS = 30_000;
  */
 const TERMINAL_RESUME_GRACE_MS = 10_000;
 /**
- * How often a live run re-reads its planning mode. There is no chat event for
- * an interaction-mode change — the desktop derives it by reading session
- * summaries too — so the publisher polls the same source, bounded so a busy
- * machine cannot turn every flush into a summary read per run.
+ * How often a live run re-reads its own session summary — its title and its
+ * planning mode. Neither is announced on the chat event stream (a chat is
+ * renamed out from under the publisher seconds after it is created, and the
+ * desktop derives the interaction mode by reading summaries too), so the
+ * publisher polls the same source, bounded so a busy machine cannot turn every
+ * flush into a summary read per run.
  */
-const CHAT_ACTIVITY_MODE_REFRESH_MS = 10_000;
+const CHAT_META_REFRESH_MS = 10_000;
 const ATTENTION_HEARTBEAT_MS = 30_000;
 /**
  * Heartbeat roster-rebuild backoff. The rebuild is a disk read across every
@@ -735,7 +738,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         backgroundTaskIds: new Set<string>(),
         deferredTerminalPhase: null,
         chatActivityMode: null,
-        chatActivityModeCheckedAt: 0,
+        chatMetaCheckedAt: 0,
       };
       runs.set(sessionId, run);
     }
@@ -1145,12 +1148,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             runs.delete(run.sessionId);
             continue;
           }
-          run.title = summary.title?.trim() || run.title || null;
-          run.model = summary.model ?? run.model ?? null;
-          run.agent = providerDisplayName(summary.provider) ?? run.agent;
-          const laneName = scope?.resolveLaneName?.(summary.laneId);
-          run.lane = laneName ?? run.lane ?? (summary.laneId || null);
-          applyChatActivityMode(run, summary.interactionMode);
+          applyChatSummary(run, summary, scope);
         }
         run.metaResolved = true;
       } catch {
@@ -1159,38 +1157,64 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
+  /**
+   * A chat session summary, applied to the run it describes.
+   *
+   * One function because the first read and every refresh have to agree about
+   * what a summary means — they used to be written out separately, and the
+   * refresh only re-read the interaction mode, which is how a renamed chat kept
+   * its birth title forever.
+   */
+  const applyChatSummary = (
+    run: AgentRunState,
+    summary: AgentChatSessionSummary,
+    scope: AttachedScope | undefined,
+  ): void => {
+    run.title = summary.title?.trim() || run.title || null;
+    run.model = summary.model ?? run.model ?? null;
+    run.agent = providerDisplayName(summary.provider) ?? run.agent;
+    const laneName = scope?.resolveLaneName?.(summary.laneId);
+    run.lane = laneName ?? run.lane ?? (summary.laneId || null);
+    applyChatActivityMode(run, summary.interactionMode);
+  };
+
   const applyChatActivityMode = (
     run: AgentRunState,
     interactionMode: string | null | undefined,
   ): void => {
     run.chatActivityMode = interactionMode === "plan" ? "planning" : null;
-    run.chatActivityModeCheckedAt = now();
+    run.chatMetaCheckedAt = now();
   };
 
   /**
-   * Keep the planning hint current for live runs. Nothing on the chat event
-   * stream reports an interaction-mode change — the desktop sidebar derives it
-   * from session summaries as well — so this reads the same source on a bounded
-   * cadence rather than inferring "planning" from the phase, which would be a
-   * guess the design explicitly does not want.
+   * Keep a live run's metadata current: its title above all, and the planning
+   * hint alongside it.
+   *
+   * Both change after the run is first seen and neither is announced on the
+   * chat event stream — a chat is born with a placeholder title and renamed
+   * once the runtime has read the prompt — so a first resolution that latched
+   * would be wrong for the life of the session. One bounded re-read on one
+   * cadence serves both, rather than inferring either from the phase.
    */
-  const refreshChatActivityModes = async (nowMs: number): Promise<void> => {
+  const refreshChatRunMeta = async (nowMs: number): Promise<void> => {
     for (const run of runs.values()) {
       if (run.kind !== "chat" || !run.metaResolved) continue;
-      // A finished run's mode can no longer change, and a terminal row does not
-      // render the planning glyph anyway.
+      // A finished run cannot be renamed into something else the user is
+      // waiting on, and a terminal row does not render the planning glyph.
       if (isTerminalPhase(run.phase)) continue;
-      if (nowMs - run.chatActivityModeCheckedAt < CHAT_ACTIVITY_MODE_REFRESH_MS) continue;
-      const chat = scopes.get(run.scopeKey)?.agentChatService;
+      if (nowMs - run.chatMetaCheckedAt < CHAT_META_REFRESH_MS) continue;
+      const scope = scopes.get(run.scopeKey);
+      const chat = scope?.agentChatService;
       if (!chat) continue;
       // Stamp the attempt before awaiting so a slow/failing read cannot make
       // every flush retry the same session.
-      run.chatActivityModeCheckedAt = nowMs;
+      run.chatMetaCheckedAt = nowMs;
       try {
         const summary = await chat.getSessionSummary(run.sessionId);
-        if (summary) applyChatActivityMode(run, summary.interactionMode);
+        if (summary) applyChatSummary(run, summary, scope);
       } catch {
-        // Keep the last known mode: a failed read must not flip the glyph.
+        // Keep the last known metadata: a failed read must not blank the title
+        // or flip the glyph.
       }
     }
   };
@@ -1745,7 +1769,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     pruneRuns(nowMs);
     prunePrActivities(nowMs);
     await resolveMissingMeta();
-    await refreshChatActivityModes(nowMs);
+    await refreshChatRunMeta(nowMs);
     const attentionPublishResult = await publishActivity(nowMs, presenceOnly);
     const accountAttentionPublished = attentionPublishResult === "published";
     const accountAttentionAvailable = attentionPublishResult !== "unavailable";
@@ -2078,11 +2102,25 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     switch (event.type) {
       case "approval_request": {
-        setRunPhase(run, "waiting_for_approval");
+        // An approval and a question both arrive on this event, and only the
+        // request kind tells them apart. Without it every AskUserQuestion was
+        // published as `waiting_for_approval`, so the notch and the phone
+        // offered Approve/Deny for something that wants prose — and the answer
+        // branch in the item builder was dead code.
+        //
+        // Resolved through the shared reader, not `event.requestKind` alone:
+        // the CLI talks to whatever host is installed, and one that predates
+        // the top-level field still carries the kind in `detail.request`. The
+        // TUI transcript reads it the same way. Neither present is an approval,
+        // which is what a host with no question support meant.
+        const isQuestion = isQuestionKind(approvalRequestKind(event));
+        setRunPhase(run, isQuestion ? "waiting_for_input" : "waiting_for_approval");
         run.detail = event.description ?? run.detail;
         run.itemId = event.itemId || null;
         enqueueAlert({
           sessionId,
+          // Both flavours are one prompt per session; sharing the dedupe key
+          // keeps a question from re-alerting over an approval it replaced.
           dedupeKey: `alert:${sessionId}:approval`,
           render: () => ({ title: `${runSubject(run)} needs you`, body: laneTitleLine(run) }),
           deepLink: `ade://session/${sessionId}`,
@@ -2090,7 +2128,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           phase: "waiting",
           interruptionLevel: "time-sensitive",
           itemId: event.itemId || null,
-          category: APPROVAL_NOTIFICATION_CATEGORY,
+          // The Approve/Deny category is the notification's inline buttons.
+          // A question has nothing for them to do, so it ships without them —
+          // the same shape `structured_question` below already publishes.
+          ...(isQuestion ? {} : { category: APPROVAL_NOTIFICATION_CATEGORY }),
         });
         immediate = true;
         break;

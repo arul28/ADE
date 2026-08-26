@@ -56,6 +56,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
+import { spawnCompletedNoticeMessage } from "../../../shared/types/chat";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -155,7 +156,7 @@ import {
 } from "./chatUserMinimap.logic";
 import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
-import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
+import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
@@ -193,6 +194,15 @@ export type MosaicRenderContext = {
 };
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
+
+/**
+ * Recovers the child chat's title from a `spawn_completed` notice whose detail
+ * lost its `spawnCompletion`. Matches both the current
+ * `spawnCompletedNoticeMessage` sentence and the pre-rename `Peer "<title>"
+ * turn finished`, which persisted transcripts still hold. Not global, so `exec`
+ * has no `lastIndex` to carry between calls.
+ */
+const SPAWN_COMPLETED_TITLE_PATTERN = /^(?:Peer|Chat)\s+"?(.*?)"?\s+(?:turn finished|finished its turn)$/;
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
 type CodexTurnRecoveryEvent = Extract<
@@ -994,6 +1004,8 @@ type RenderEnvelope = {
   | BackgroundJobGroupRenderEvent
   | ScheduledWakeDividerRenderEvent
   | SpawnWakeDividerRenderEvent;
+  /** Folded-row count from the transcript collapse; see ChatTranscriptRenderEnvelope. */
+  repeatCount?: number;
 };
 
 function MessageCopyButton({
@@ -3464,9 +3476,24 @@ function renderEvent(
     if (event.noticeKind === "info" && event.status === "spawn_completed") {
       const completion: AgentChatSpawnCompletion | undefined =
         event.detail && typeof event.detail === "object" ? event.detail.spawnCompletion : undefined;
-      const childTitle = completion?.childTitle?.trim() || event.message.replace(/^Peer\s+"?|"?\s+finished$/g, "").trim() || "Peer";
+      // Fallback title parse for a notice whose detail lost its completion —
+      // which happens to notices in EITHER wording, so both are handled here:
+      // the current `spawnCompletedNoticeMessage` sentence, and the pre-rename
+      // `Peer "<title>" turn finished` that persisted transcripts still hold
+      // and are never re-emitted.
+      //
+      // One anchored match with a capture group rather than subtracting the
+      // two ends with a /g replace: a message that is not a completion notice
+      // at all now fails to match and falls through to "Chat", instead of
+      // being handed back mangled.
+      const parsedChildTitle = SPAWN_COMPLETED_TITLE_PATTERN.exec(event.message)?.[1]?.trim();
+      const childTitle = completion?.childTitle?.trim() || parsedChildTitle || "Chat";
       const childSessionId = typeof completion?.childSessionId === "string" && completion.childSessionId.length
         ? completion.childSessionId
+        : null;
+      const repeatCountRaw = envelope.repeatCount;
+      const repeatCount = typeof repeatCountRaw === "number" && Number.isFinite(repeatCountRaw) && repeatCountRaw > 1
+        ? Math.floor(repeatCountRaw)
         : null;
       return (
         <button
@@ -3474,11 +3501,13 @@ function renderEvent(
           disabled={!childSessionId}
           onClick={() => navigateToSpawnedChat(childSessionId, options?.laneId ?? null)}
           className="inline-flex max-w-full items-center gap-2 rounded-full border border-slate-400/16 bg-slate-400/[0.05] px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-slate-300/70 transition-colors enabled:hover:border-slate-300/28 enabled:hover:text-slate-100/90"
-          title={childSessionId ? "Open the peer chat" : undefined}
+          title={childSessionId ? "Open the chat" : undefined}
         >
           <span aria-hidden className="shrink-0 text-slate-300/60">◦</span>
-          <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-slate-300/50">peer</span>
-          <span className="min-w-0 truncate">"{childTitle}" finished</span>
+          <span className="min-w-0 truncate">{spawnCompletedNoticeMessage(childTitle)}</span>
+          {repeatCount ? (
+            <span className="shrink-0 tabular-nums text-slate-300/45">×{repeatCount}</span>
+          ) : null}
           {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
         </button>
       );
@@ -3716,7 +3745,7 @@ function renderEvent(
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
     const normalizedTool = detailTool.toLowerCase();
-    const isQuestionRequest = isAskQuestionRequest({ kind: requestKind });
+    const isQuestionRequest = isQuestionKind(requestKind);
     const isPermissionRequest = requestKind === "permissions";
     const isPlanApproval = requestKind === "plan_approval";
     const isAskUser = ((normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0) || isQuestionRequest;

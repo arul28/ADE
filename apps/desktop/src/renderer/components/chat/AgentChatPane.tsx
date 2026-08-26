@@ -30,6 +30,7 @@ import {
   type AgentChatStopMode,
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
+  type AgentChatProvider,
   type AgentChatSession,
   type AgentChatSubagentMetadata,
   type AgentChatSubagentTranscriptMessage,
@@ -54,7 +55,6 @@ import {
   type CursorCloudOpenChatResult,
   type OpenProjectBinding,
   type TerminalSessionDetail,
-  type TerminalToolType,
 } from "../../../shared/types";
 import {
   isUnsupportedAgentChatRecoveryActionError,
@@ -154,7 +154,7 @@ export {
 } from "./chatHistoryWindow";
 export { mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot } from "../../../shared/chatHistoryMerge";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
-import { isChatToolType } from "../../lib/sessions";
+import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
@@ -175,7 +175,7 @@ import {
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { OrchestratorLeadFrame } from "./OrchestratorLeadFrame";
 import { OrchestrationPanel } from "../orchestration/OrchestrationPanel";
-import { chatChipToneClass, providerChatAccent } from "./chatSurfaceTheme";
+import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
@@ -2797,17 +2797,6 @@ function filterCursorModelIdsForDraftKind(
   });
 }
 
-function chatToolTypeForProvider(provider: string | null | undefined): TerminalToolType {
-  switch (provider) {
-    case "codex": return "codex-chat";
-    case "claude": return "claude-chat";
-    case "cursor": return "cursor";
-    case "droid": return "droid-chat";
-    case "pi": return "pi-chat";
-    default: return "opencode-chat";
-  }
-}
-
 function normalizeChatLabel(raw: string | null | undefined): string | null {
   const normalized = String(raw ?? "").replace(/\s+/g, " ").trim();
   return normalized.length ? normalized : null;
@@ -3118,6 +3107,7 @@ export function AgentChatPane({
   initialSessionId,
   initialSessionSummary,
   lockSessionId,
+  lockSessionProvider = null,
   sessionTitleById,
   hideSessionTabs = false,
   hideNativeControls = false,
@@ -3167,6 +3157,16 @@ export function AgentChatPane({
   initialSessionId?: string | null;
   initialSessionSummary?: AgentChatSessionSummary | null;
   lockSessionId?: string | null;
+  /**
+   * Provider of `lockSessionId`, when the embedding surface already knows it.
+   *
+   * The pane learns its own session's provider only after an IPC summary round
+   * trip, but it is not remounted across a chat switch — so provider-derived
+   * chrome would paint the outgoing chat's accent until that lands. A host that
+   * has the row in hand passes the provider here to get the right color on the
+   * switch frame.
+   */
+  lockSessionProvider?: AgentChatProvider | null;
   /** Full host-surface title index for locked single-session embeddings. */
   sessionTitleById?: ReadonlyMap<string, string>;
   hideSessionTabs?: boolean;
@@ -3923,6 +3923,20 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  // Does the composer's model actually describe the chat on screen? The
+  // model-derived accent inputs (the composer model descriptor's family and
+  // color, which give the chat its accent) trail a prop-driven switch, because
+  // the pane is not remounted — so those inputs are withheld until this holds,
+  // and a neutral fallback covers the gap. It gates only where it is read; it
+  // is not a blanket freshness test for everything keyed to `selectedSession`.
+  //
+  // Deliberately not `!chatSelectionTransitioning`: that one compares the
+  // composer id to the rendered id, which already agree in the frame where the
+  // incoming id is known but its row has not been listed yet. Here
+  // `selectedSession` is still null in that frame, so this stays false and the
+  // stale model args keep being withheld. A draft pane has no session at all,
+  // so `null === null` holds and it keeps its composer model color.
+  const composerModelDescribesRenderedChat = (selectedSession?.sessionId ?? null) === renderedSessionId;
   // Which atomic active-turn dispatch modes this session's backend accepts,
   // read off the canonical table in shared/types/chat.ts rather than restated
   // here.
@@ -11850,14 +11864,18 @@ export function AgentChatPane({
       </ChatSurfaceShell>
     );
   }
-  // Provider-derived accent first so Claude is always amber, Codex always
-  // warm-white, etc. — keeps chat surfaces consistent across model variants
-  // and across desktop/mobile. Falls back to the per-model registry color
-  // when the provider isn't in the unified table.
-  const draftAccent =
-    providerChatAccent(selectedSession?.provider ?? selectedModelDesc?.family ?? null)
-    ?? selectedModelDesc?.color
-    ?? "#A1A1AA";
+  // The provider comes from `renderedSession`, which is resolved FROM
+  // `renderedSessionId` (with the host's `initialSessionSummary` as the
+  // switch-frame fallback), so it already describes the chat on screen and
+  // needs no freshness test of its own.
+  //
+  // The composer model still does — see `composerModelDescribesRenderedChat`.
+  const draftAccent = chatAccentForRenderedChat({
+    sessionProvider: renderedSession?.provider ?? null,
+    lockSessionProvider,
+    modelFamily: composerModelDescribesRenderedChat ? selectedModelDesc?.family ?? null : null,
+    modelColor: composerModelDescribesRenderedChat ? selectedModelDesc?.color ?? null : null,
+  });
   const chatActionsToolbarIcon = chatActionsOpen
     ? (chatActionsTab === "proof"
       ? Cube

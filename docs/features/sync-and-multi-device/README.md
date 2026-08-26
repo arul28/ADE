@@ -2133,7 +2133,16 @@ Account Activity and push:
   latches so it stops delivering across restarts. The 30 s heartbeat rebuilds
   the roster and skips the write via `activityRosterFingerprint` when nothing
   moved; after four unchanged rebuilds the rebuild backs off to at most every
-  two minutes while presence posts stay on cadence.
+  two minutes while presence posts stay on cadence. `refreshChatRunMeta`
+  re-reads a live chat run's session summary on one bounded 10 s cadence
+  (`CHAT_META_REFRESH_MS`, stamped as `chatMetaCheckedAt`) for its **title** as
+  well as its planning mode — neither is announced on the chat event stream, and
+  a first resolution that latched left every renamed chat wearing its birth
+  title. First read and refresh share one `applyChatSummary`. An
+  `approval_request` is classified with the shared `isQuestionKind`: a question
+  publishes as `waiting_for_input` with no Approve/Deny notification category,
+  everything else (including an event with no `requestKind`) stays
+  `waiting_for_approval`.
 - `apps/ade-cli/src/services/push/attentionItemBuilder.ts` — the Activity
   projection itself, lifted out of the publisher's closure so it can be
   exercised with a plain context record instead of a booted publisher.
@@ -2141,7 +2150,9 @@ Account Activity and push:
   child-shell filtering, phase derivation (including holding a completed turn at
   `running` while background subagents live, and demoting a snoozed running chat
   to `stale`/`idle` unless it is failed or needs-you), the title/preview tables, the
-  2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`.
+  2 h / 24 h / 7-day lifetimes, and `attentionProjectRef`. The `needs_you`
+  privacy preview reads "An ADE agent needs you." — the same two words the status
+  label, the title suffix, and the notch's section heading use.
 - `apps/ade-cli/src/services/push/pushRegistrationStore.ts` — durable device,
   delivery, machine-revocation, and machine-acknowledgment state. Machine
   acknowledgments are keyed by account owner + item and remain pending until a

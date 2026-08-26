@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSessionSettleTeardown, residueCountBucket } from "./sessionSettleTeardown";
+import {
+  createSessionSettleTeardown,
+  residueCountBucket,
+  settleSourceMayInterruptActiveTurn,
+} from "./sessionSettleTeardown";
 import type { SessionActiveWork, SessionSettleTeardownDeps } from "./sessionSettleTeardown";
 
 /**
@@ -8,7 +12,7 @@ import type { SessionActiveWork, SessionSettleTeardownDeps } from "./sessionSett
  * "cannot confirm the stop" decision (design 3d, option 3) actually lives.
  */
 describe("session settle teardown", () => {
-  const neverAborted = { isAborted: () => false };
+  const neverAborted = { isAborted: () => false, mayInterruptActiveTurn: true };
 
   function harness(overrides: Partial<SessionSettleTeardownDeps> = {}) {
     const interrupt = vi.fn(async () => {});
@@ -144,10 +148,66 @@ describe("session settle teardown", () => {
       readActiveWork: async () => work({ active: true }),
     });
 
-    const outcome = await run("session-1", { isAborted: () => true });
+    const outcome = await run("session-1", { isAborted: () => true, mayInterruptActiveTurn: true });
 
     expect(interrupt, "an aborted settle must not stop the work that won the race").not.toHaveBeenCalled();
     expect(outcome.residue).toEqual([]);
+  });
+
+  /**
+   * A machine-initiated settle must never cancel a turn a person is watching.
+   * `interrupt` stops the turn and the background work together, so the only
+   * way to honor that is to make no call at all and give the settle up.
+   */
+  it("abandons a machine settle rather than interrupting an active turn", async () => {
+    const { run, interrupt } = harness({
+      readActiveWork: async () => work({ active: true, backgroundTaskCount: 2 }),
+    });
+
+    const outcome = await run("session-1", { isAborted: () => false, mayInterruptActiveTurn: false });
+
+    expect(interrupt, "a poller must not stop the user's running turn").not.toHaveBeenCalled();
+    // Aborted, not settled-with-residue: nothing was stopped, so nothing may be
+    // filed. The caller reports the abort and retries later.
+    expect(outcome.abortedBy).toBe("turn_start");
+    expect(outcome.confirmed).toBe(false);
+  });
+
+  it("still stops background work for a machine settle when no turn is running", async () => {
+    const states = [work({ backgroundTaskCount: 2 }), work()];
+    const { run, interrupt } = harness({
+      readActiveWork: vi.fn(async () => states.shift() ?? work()),
+    });
+
+    const outcome = await run("session-1", { isAborted: () => false, mayInterruptActiveTurn: false });
+
+    // Nobody is watching background work end, and closing it out is what a
+    // settle is for. Only a live turn is protected.
+    expect(interrupt).toHaveBeenCalledWith("session-1");
+    expect(outcome.abortedBy).toBeUndefined();
+    expect(outcome.residue).toEqual([]);
+  });
+
+  it("still interrupts an active turn for a user-initiated settle", async () => {
+    const states = [work({ active: true }), work()];
+    const { run, interrupt } = harness({
+      readActiveWork: vi.fn(async () => states.shift() ?? work()),
+    });
+
+    const outcome = await run("session-1", neverAborted);
+
+    expect(interrupt, "a person who asked for the settle has already decided").toHaveBeenCalledWith("session-1");
+    expect(outcome.abortedBy).toBeUndefined();
+    expect(outcome.confirmed).toBe(true);
+  });
+
+  it("classifies every settle source, and only the PR poller is held back", () => {
+    expect(settleSourceMayInterruptActiveTurn("user")).toBe(true);
+    expect(settleSourceMayInterruptActiveTurn("operator")).toBe(true);
+    expect(settleSourceMayInterruptActiveTurn("agent_explicit")).toBe(true);
+    expect(settleSourceMayInterruptActiveTurn("pr_merge")).toBe(false);
+    // An unlabelled settle is the user's, which is what the row already records.
+    expect(settleSourceMayInterruptActiveTurn(undefined)).toBe(true);
   });
 
   it("does not report residue for a session the user reclaimed mid-teardown", async () => {
@@ -157,7 +217,7 @@ describe("session settle teardown", () => {
       readActiveWork: async () => work({ active: true, backgroundTaskCount: 1 }),
     });
 
-    const outcome = await run("session-1", { isAborted: () => aborted });
+    const outcome = await run("session-1", { isAborted: () => aborted, mayInterruptActiveTurn: true });
 
     // The settle is being abandoned, so there is no settled row to hang a
     // "1 job could not be stopped" marker on. Reporting it would label a
@@ -211,6 +271,25 @@ describe("session settle teardown", () => {
     }]);
   });
 
+  it("abandons a MACHINE settle when the liveness read times out", async () => {
+    const readActiveWork = vi.fn(() => new Promise<SessionActiveWork>(() => {}));
+    const { run, interrupt } = harness({
+      readActiveWork,
+      expireProviderCall: async () => {},
+    });
+
+    const outcome = await run("session-1", { isAborted: () => false, mayInterruptActiveTurn: false });
+
+    // The refusal above triggers on `before.active`, which only exists for a
+    // read that ANSWERED — so a hung host was the one way a poller filed a
+    // session over a running turn, consuming the merge that asked for it.
+    // Residue still describes what happened; `abortedBy` is what stops the file.
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(outcome.abortedBy, "unknown liveness must not settle a machine settle").toBe("teardown_failed");
+    expect(outcome.confirmed).toBe(false);
+    expect(outcome.residue[0]?.reason).toBe("timeout");
+  });
+
   it("does not claim a clean teardown when the CONFIRMATION read times out", async () => {
     let call = 0;
     let armed = false;
@@ -247,7 +326,7 @@ describe("session settle teardown", () => {
       },
     });
 
-    const outcome = await run("session-1", { isAborted: () => aborted });
+    const outcome = await run("session-1", { isAborted: () => aborted, mayInterruptActiveTurn: true });
 
     expect(reads, "the confirmation loop must actually have run").toBeGreaterThan(1);
 

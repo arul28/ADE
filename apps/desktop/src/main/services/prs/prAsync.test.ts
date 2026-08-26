@@ -9,7 +9,7 @@ import {
   getSessionLifecycleSettings,
   setSessionLifecycleSettings,
 } from "../sessions/sessionLifecycleSettings";
-import { createPrMergeAutoSettlementService } from "./prMergeAutoSettlementService";
+import { chatLivenessReader, createPrMergeAutoSettlementService } from "./prMergeAutoSettlementService";
 import { createPrPollingService } from "./prPollingService";
 import { buildPrSummaryPrompt, createPrSummaryService, parsePrSummaryJson } from "./prSummaryService";
 import {
@@ -1156,15 +1156,16 @@ describe("prMergeAutoSettlementService", () => {
     );
   });
 
-  it("retries a teardown failure immediately instead of waiting for the work to stop", async () => {
+  it("retries a teardown failure on the next pass once the session is at rest", async () => {
     const db = createMemoryDb();
-    // The stop failed and the work is still running — which is precisely why an
-    // inactivity gate must not apply: it would wait on the thing it must stop.
+    // The stop failed. Nothing about that is permanent bookkeeping: the only
+    // thing gating the retry is whether the session is running right now, so an
+    // at-rest session must be attempted again on the very next pass.
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
       settled: [] as string[],
       aborted: ids.map((sessionId) => ({ sessionId, reason: "teardown_failed" })),
     }));
-    const getChatLiveness = vi.fn(async () => ({ status: "active" as const, awaitingInput: false }));
+    const getChatLiveness = vi.fn(async () => ({ status: "idle" as const }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
@@ -1193,9 +1194,228 @@ describe("prMergeAutoSettlementService", () => {
 
     expect(
       settleSessionsReportingAborts,
-      "a failed stop must be attempted again, not parked behind the running work",
+      "a failed stop over a quiet session must be attempted again",
     ).toHaveBeenCalledTimes(2);
-    expect(getChatLiveness, "a teardown failure must not consult the activity gate").not.toHaveBeenCalled();
+  });
+
+  /**
+   * The deferral gate is chat-liveness-only, by construction.
+   *
+   * The obvious alternative — reading the session's persisted row — cannot
+   * work: `terminal_sessions.status` holds `running` for the life of a tracked
+   * CLI terminal and between chat turns, so a row-reading gate defers forever
+   * and no merged PR is ever settled or announced. Everything below is a
+   * session with no evidence of a running turn, and every one must settle on
+   * the first pass.
+   */
+  it.each([
+    [
+      "a tracked CLI session, whose row says running forever",
+      { toolType: "claude" as const, getChatLiveness: vi.fn(async () => null) },
+    ],
+    [
+      "a chat on a host that wired no chat liveness at all",
+      { toolType: "codex-chat" as const, getChatLiveness: undefined },
+    ],
+    [
+      "a chat at rest between turns, which is a state teardown accepts",
+      {
+        toolType: "codex-chat" as const,
+        getChatLiveness: vi.fn(async () => ({ status: "idle" as const })),
+      },
+    ],
+  ])("settles %s on the first pass", async (_label, config) => {
+    const db = createMemoryDb();
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: ids,
+      aborted: [] as Array<{ sessionId: string; reason: string }>,
+    }));
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: withSessionLookup({
+        list: vi.fn(() => [
+          {
+            laneId: "lane-1",
+            id: "session-1",
+            toolType: config.toolType,
+            // The row a chat/tracked CLI actually holds while idle.
+            status: "running",
+            runtimeState: "running",
+            archivedAt: null,
+            settledAt: null,
+          },
+        ]),
+        settleSessionsReportingAborts,
+      }) as any,
+      emitEvent,
+      ...(config.getChatLiveness ? { getChatLiveness: config.getChatLiveness as any } : {}),
+    });
+
+    await service.processSnapshot({
+      prs: [createSummary({ state: "open" })],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [createSummary({
+        state: "merged",
+        mergedAt: "2026-03-24T12:01:00.000Z",
+        chatSessionIds: ["session-1"],
+      })],
+      polledAt: "2026-03-24T12:01:05.000Z",
+    });
+
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pr-sessions-auto-settled", prNumber: 101 }),
+    );
+  });
+
+  /**
+   * The first attempt is gated too.
+   *
+   * It used to go straight to the settle, and it is the attempt most likely to
+   * land on a running turn — the merge arrives while the agent is still
+   * working. With teardown refusing to cancel a turn for a machine settle,
+   * attempting anyway would abort every poll and file nothing.
+   */
+  it("defers the FIRST attempt while the chat is mid-turn, without consulting the row", async () => {
+    const db = createMemoryDb();
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: ids,
+      aborted: [] as Array<{ sessionId: string; reason: string }>,
+    }));
+    // The persisted row of a chat holds `running` between turns on purpose. Any
+    // gate that reads it never sees the turn end — that is the bug this pins.
+    //
+    // Wired as the REAL lookup rather than handed to `withSessionLookup`, which
+    // defines its own `get` over the spy — leaving the assertion below to
+    // measure a function nothing ever calls.
+    const get = vi.fn((sessionId: string) => ({
+      laneId: "lane-1",
+      id: sessionId,
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "running",
+      archivedAt: null,
+      settledAt: null,
+    }));
+    let chatStatus: "active" | "idle" = "active";
+    const getChatLiveness = vi.fn(async () => ({ status: chatStatus }));
+    const debug = vi.fn();
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: {
+        list: vi.fn(() => [
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        get,
+        settleSessionsReportingAborts,
+      } as any,
+      emitEvent,
+      getChatLiveness: getChatLiveness as any,
+      logger: { debug } as any,
+    });
+
+    await service.processSnapshot({
+      prs: [createSummary({ state: "open" })],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+    expect(
+      settleSessionsReportingAborts,
+      "a first attempt over a running turn must never reach the settle",
+    ).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledWith(
+      "prs.auto_settle_deferred_active_turn",
+      expect.objectContaining({ sessionId: "chat-owned", prNumber: 101 }),
+    );
+    // Deferred, not abandoned: the merge stays unhandled so a later pass retries.
+    expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual([]);
+
+    // The turn ends. The ROW still says running — only chat liveness moves — so
+    // a row-reading gate would stay stuck here forever.
+    chatStatus = "idle";
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:02:00.000Z" });
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+    // One read per pass, and only to resolve the declared candidate: a gate
+    // that consulted the row for liveness would show up as an extra call here,
+    // and the row it would have read says `running` in both passes.
+    expect(
+      get.mock.calls.length,
+      "the row resolves candidates only, never liveness",
+    ).toBe(2);
+    // ...and the deferred merge still announces itself when it finally lands.
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pr-sessions-auto-settled", prNumber: 101 }),
+    );
+  });
+
+  /**
+   * A liveness read that THROWS is not evidence the turn ended.
+   *
+   * The gate used to swallow the rejection into `null` and settle, and nothing
+   * downstream catches that: a `readActiveWork` failing the same way returns
+   * `timedOutResidue` with no `abortedBy`, so teardown files the session
+   * without ever noticing it stopped live work. Failing closed costs one
+   * deferred poll; failing open costs the user their running turn.
+   */
+  it("defers while chat liveness is unreadable, and settles once it answers", async () => {
+    const db = createMemoryDb();
+    const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
+      settled: ids,
+      aborted: [] as Array<{ sessionId: string; reason: string }>,
+    }));
+    let livenessThrows = true;
+    const getChatLiveness = vi.fn(async () => {
+      if (livenessThrows) throw new Error("chat service unreachable");
+      return { status: "idle" as const };
+    });
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: withSessionLookup({
+        list: vi.fn(() => [
+          { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
+        ]),
+        get: vi.fn(() => null),
+        settleSessionsReportingAborts,
+      }) as any,
+      emitEvent,
+      getChatLiveness: getChatLiveness as any,
+    });
+
+    await service.processSnapshot({
+      prs: [createSummary({ state: "open" })],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+    const mergedPr = createSummary({
+      state: "merged",
+      mergedAt: "2026-03-24T12:01:00.000Z",
+      chatSessionIds: ["chat-owned"],
+    });
+
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
+    expect(
+      settleSessionsReportingAborts,
+      "an unreachable liveness source must not be read as a finished turn",
+    ).not.toHaveBeenCalled();
+    // Deferred, not abandoned.
+    expect(getPrMergeAutoSettlementState(db as any)?.handledPrIds).toEqual([]);
+
+    livenessThrows = false;
+    await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:02:00.000Z" });
+    expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "pr-sessions-auto-settled", prNumber: 101 }),
+    );
   });
 
   it("holds the retry while the chat is mid-turn, and reads chat liveness not the row", async () => {
@@ -1206,19 +1426,33 @@ describe("prMergeAutoSettlementService", () => {
     }));
     // The persisted row of a chat holds `running` between turns on purpose. Any
     // gate that reads it never sees the turn end — that is the bug this pins.
-    const get = vi.fn(() => ({ id: "chat-owned", status: "running", runtimeState: "running" }));
-    let chatStatus: "active" | "idle" = "active";
-    const getChatLiveness = vi.fn(async () => ({ status: chatStatus, awaitingInput: false }));
+    //
+    // Wired as the REAL lookup rather than handed to `withSessionLookup`, which
+    // defines its own `get` over the spy — leaving the assertion below to
+    // measure a function nothing ever calls.
+    const get = vi.fn((sessionId: string) => ({
+      laneId: "lane-1",
+      id: sessionId,
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "running",
+      archivedAt: null,
+      settledAt: null,
+    }));
+    // Quiet when the pass begins, so the settle is attempted at all — the turn
+    // starts underneath it, which is exactly the race this pins.
+    let chatStatus: "active" | "idle" = "idle";
+    const getChatLiveness = vi.fn(async () => ({ status: chatStatus }));
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: withSessionLookup({
+      sessionService: {
         list: vi.fn(() => [
           { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
         ]),
         get,
         settleSessionsReportingAborts,
-      }) as any,
+      } as any,
       emitEvent,
       getChatLiveness: getChatLiveness as any,
     });
@@ -1231,9 +1465,11 @@ describe("prMergeAutoSettlementService", () => {
       mergedAt: "2026-03-24T12:01:00.000Z",
       chatSessionIds: ["chat-owned"],
     });
-    // The merge loses the race to a turn that just started.
+    // The merge loses the race to a turn that started while the settle was in
+    // flight, and that turn is still going when the next pass arrives.
     await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:01:05.000Z" });
     expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
+    chatStatus = "active";
 
     // Still mid-turn: the retry must not fire. With real teardown attached this
     // is what would otherwise stop the work that won the race, once per poll.
@@ -1255,7 +1491,12 @@ describe("prMergeAutoSettlementService", () => {
       settleSessionsReportingAborts,
       "the merge must still be filed once the turn is genuinely over",
     ).toHaveBeenCalledTimes(2);
-    expect(get, "chat liveness must not come from the persisted row").not.toHaveBeenCalled();
+    // Three merged passes, one candidate lookup each: nothing read the row for
+    // liveness, and what it would have read said `running` throughout.
+    expect(
+      get.mock.calls.length,
+      "the row resolves candidates only, never liveness",
+    ).toBe(3);
   });
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {
     // The machine-switch bug. Point the project tab at another machine and that
@@ -1530,6 +1771,29 @@ describe("prMergeAutoSettlementService", () => {
       ["chat-linked"],
       { outcome: "PR #101 merged", settledAt: "2026-03-24T12:01:05.000Z", source: "pr_merge" },
     );
+  });
+
+  /**
+   * The adapter both PR-polling hosts build their gate from — desktop `main.ts`
+   * and the brain's `bootstrap.ts`. In a normal install it is the BRAIN that
+   * polls, so the two must agree on what "live" means or the gate protects only
+   * the host nobody runs.
+   */
+  it("reads liveness as the chat's own status, and reports nothing for a chat it cannot find", async () => {
+    const getSessionSummary = vi.fn(async (sessionId: string) => (
+      sessionId === "chat-live"
+        // A real summary carries dozens of fields; only `status` may reach the
+        // gate, so a future field cannot quietly become a second deferral reason.
+        ? { id: sessionId, status: "active", awaitingInput: true, provider: "claude" } as any
+        : null
+    ));
+    const readLiveness = chatLivenessReader({ getSessionSummary });
+
+    expect(await readLiveness("chat-live")).toEqual({ status: "active" });
+    // Not "idle" and not a throw: no chat is no evidence either way, and the
+    // gate's own contract turns that into "settle now".
+    expect(await readLiveness("chat-missing")).toBeNull();
+    expect(getSessionSummary).toHaveBeenCalledTimes(2);
   });
 });
 

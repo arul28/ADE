@@ -4634,6 +4634,66 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testSystemNoticeWithStringDetailDecodesInsteadOfBeingDropped() throws {
+    // Regression: the host declares `detail?: string | AgentChatNoticeDetail`,
+    // and every `provider_health` notice carries a plain string — Codex retry
+    // notices, and now the OpenCode provider-retry and context-overflow notices.
+    // The decoder probed `detail` for a spawn completion with a hard `try`, so a
+    // string raised `typeMismatch`. A thrown event is dropped whole
+    // (`ADELossyArray` skips it, `syncDecodeChatEventEnvelope` returns nil), so
+    // the notice never reached the transcript even though `provider_health` is a
+    // fully supported kind.
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "event": {
+        "type": "system_notice",
+        "noticeKind": "provider_health",
+        "severity": "warning",
+        "message": "OpenCode hit a provider error and is retrying automatically (attempt 2).",
+        "detail": "The provider request failed. Retrying in 4s.",
+        "turnId": "turn-1"
+      }
+    }
+    """
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    guard case .systemNotice(let kind, let message, let detail, let turnId, _) = envelope.event else {
+      return XCTFail("Expected a system notice for a string detail.")
+    }
+    XCTAssertEqual(kind, .providerHealth)
+    XCTAssertEqual(message, "OpenCode hit a provider error and is retrying automatically (attempt 2).")
+    XCTAssertEqual(detail, .string("The provider request failed. Retrying in 4s."))
+    XCTAssertEqual(turnId, "turn-1")
+
+    // The lenient probe must not cost the spawn-completion routing it guards.
+    let spawnJSON = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-03-17T00:00:01.000Z",
+      "event": {
+        "type": "system_notice",
+        "noticeKind": "info",
+        "message": "Subagent finished",
+        "detail": {
+          "spawnCompletion": {
+            "childSessionId": "child-1",
+            "childTitle": "Child",
+            "spawnKind": "subagent",
+            "status": "completed"
+          }
+        }
+      }
+    }
+    """
+    let spawnEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(spawnJSON.utf8))
+    guard case .subagentResult(_, let agentId, _, _, _, let status, _, _, _, _, _, _) = spawnEnvelope.event else {
+      return XCTFail("Expected an object detail to still route to a subagent result.")
+    }
+    XCTAssertEqual(agentId, "child-1")
+    XCTAssertEqual(status, .completed)
+  }
+
   func testChatEventHistorySnapshotSurvivesWarningNoticeAlongsidePlanApproval() throws {
     // Regression: a single `system_notice` with an out-of-enum noticeKind used to
     // throw during the strict `[AgentChatEventEnvelope]` array decode, discarding
@@ -4689,6 +4749,86 @@ final class ADETests: XCTestCase {
     let pendingInputs = derivePendingWorkInputs(from: transcript)
     guard case .planApproval = pendingInputs.first else {
       return XCTFail("Expected the plan approval to survive the completed turn.")
+    }
+  }
+
+  /// Hosts now stamp `requestKind` on `approval_request` so the PUSH publisher
+  /// can tell "the agent asked you something" from "the agent wants
+  /// permission" — `kind` only describes the shape of the thing being
+  /// confirmed. The phone reads it too now — `agentChatApprovalDetail` prefers
+  /// it over `detail.request.kind`, mirroring `approvalRequestKind()` on
+  /// desktop — but the two agree on every payload the current host sends, which
+  /// is what this test pins.
+  ///
+  /// This pins both halves of the compatibility matrix in one pass. An
+  /// agreeing `requestKind` must change nothing (and must never be mistaken for
+  /// the event's own `kind`, which describes the SHAPE being confirmed), and
+  /// its ABSENCE — every host older than this one — must keep classifying
+  /// exactly as before. Disagreement is the interesting case, and it is pinned
+  /// separately by `ApprovalRequestKindPrecedenceTests`.
+  func testAgreeingOrAbsentRequestKindLeavesApprovalClassificationUnchanged() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-08-25T00:00:00.000Z",
+          "sequence": 1,
+          "event": {
+            "type": "approval_request",
+            "itemId": "ask-1",
+            "kind": "tool_call",
+            "requestKind": "question",
+            "description": "Which database?",
+            "turnId": "turn-1",
+            "detail": {
+              "request": {
+                "kind": "question",
+                "source": "claude",
+                "title": "Question from Claude",
+                "questions": [
+                  { "id": "db", "question": "Which database?" }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-08-25T00:00:01.000Z",
+          "sequence": 2,
+          "event": {
+            "type": "approval_request",
+            "itemId": "gate-1",
+            "kind": "tool_call",
+            "description": "Run the migration?",
+            "turnId": "turn-1"
+          }
+        }
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    XCTAssertEqual(snapshot.events.count, 2, "An unrecognised key must not fail the event decode.")
+    guard case .approvalRequest(let itemId, _, let kind, _, _, _) = snapshot.events[0].event else {
+      return XCTFail("Expected the requestKind-bearing event to decode as an approval_request.")
+    }
+    XCTAssertEqual(itemId, "ask-1")
+    XCTAssertEqual(kind, .toolCall, "requestKind must not be mistaken for the event's own kind.")
+
+    let pendingInputs = derivePendingWorkInputs(from: makeWorkChatTranscript(from: snapshot.events))
+    XCTAssertEqual(pendingInputs.count, 2)
+    guard let asked = pendingInputs.first(where: { $0.itemId == "ask-1" }),
+          case .question(let question) = asked else {
+      return XCTFail("A question gate must render the answer composer, not Approve/Deny.")
+    }
+    XCTAssertEqual(question.questions.first?.question, "Which database?")
+    guard let gate = pendingInputs.first(where: { $0.itemId == "gate-1" }),
+          case .approval = gate else {
+      return XCTFail("An approval with no requestKind must stay an approval — that is what older hosts meant.")
     }
   }
 

@@ -241,7 +241,8 @@ struct ActivityDrawerSheet: View {
                 ) { follow(row) }
                 ActivityActionButtons(
                     row: row,
-                    markSeen: { drawer.markSeen(row.id) }
+                    markSeen: { drawer.markSeen(row.id) },
+                    openSession: { follow(row) }
                 )
             }
             .listRowBackground(Color.clear)
@@ -386,13 +387,20 @@ struct ActivityDrawerSheet: View {
     /// that reads as a dead tap followed some seconds later by a screen change.
     /// Doing it here keeps the sheet up and says what is happening on the row
     /// itself, so the wait has a cause attached to it.
+    ///
+    /// `markSeen` fires only once the hand-off actually happens. Acknowledging
+    /// on the tap was fine while the tap always navigated, but a cross-machine
+    /// open can END at "could not reach" — and marking a question seen when the
+    /// reader never got to it drops it out of the needs-you band on every
+    /// surface, for a question still waiting. The row that failed to open stays
+    /// unread, which is what it is.
     private func follow(_ row: ActivityRowPresentation) {
         guard let url = row.deepLink else { return }
-        drawer.markSeen(row.id)
         connectFailureRowId = nil
 
         guard let machineKey = row.accountMachineKey,
               !syncService.accountMachineIsCurrent(machineKey) else {
+            drawer.markSeen(row.id)
             handOff(url)
             return
         }
@@ -408,6 +416,7 @@ struct ActivityDrawerSheet: View {
                 connectFailureRowId = row.id
                 return
             }
+            drawer.markSeen(row.id)
             handOff(url)
         }
     }
@@ -659,39 +668,20 @@ private struct ActivityErrorBanner: View {
 
 // MARK: - Server-supplied actions
 
-/// The item's own `actions[]`, rendered instead of the per-kind buttons this
-/// sheet used to hardcode. Inline App Intents run against the paired host, so
-/// they only appear when the row's machine is both this one and reachable —
-/// otherwise every action degrades to navigation.
-///
-/// `.open` is deliberately NOT rendered. It used to draw a full-width button
-/// under every single row, which on a ten-row account was most of the sheet's
-/// height spent restating that a list row is tappable. The row itself is the
-/// tap target now, so only actions that genuinely do something a tap cannot —
-/// approve, deny, restart, rerun — earn a button.
+/// Draws the row's own `actions[]` — see
+/// `ActivityRowPresentation.visibleActions` for which of them earn a button and
+/// why. The rule lives on the presentation rather than here so it can be
+/// asserted directly instead of inferred from a rendered view.
 struct ActivityActionButtons: View {
     let row: ActivityRowPresentation
     let markSeen: () -> Void
-
-    private var canActInline: Bool { row.inlineActionsAllowed && row.machineOnline }
-
-    private var visibleActions: [AccountAttentionAction] {
-        row.actions.filter { action in
-            switch action.kind {
-            case .approve, .deny, .restart, .rerunChecks:
-                return canActInline
-            // `.answer` means "type a reply", which a drawer row cannot do —
-            // it only ever routed to the session. That is what tapping the row
-            // does now, so rendering a button for it would be a second control
-            // for one destination.
-            case .answer, .open, .markSeen, .dismiss, .unrecognized:
-                return false
-            }
-        }
-    }
+    /// Same handler the row's own tap uses, so the button cannot reach a
+    /// different destination — including the cross-machine wake it performs
+    /// first.
+    let openSession: () -> Void
 
     var body: some View {
-        if visibleActions.isEmpty {
+        if row.visibleActions.isEmpty {
             EmptyView()
         } else {
             ViewThatFits(in: .horizontal) {
@@ -704,7 +694,7 @@ struct ActivityActionButtons: View {
 
     @ViewBuilder
     private var buttons: some View {
-        ForEach(visibleActions, id: \.id) { action in
+        ForEach(row.visibleActions, id: \.id) { action in
             actionButton(action)
         }
     }
@@ -749,9 +739,24 @@ struct ActivityActionButtons: View {
             .buttonStyle(.plain)
             .simultaneousGesture(TapGesture().onEnded(markSeen))
 
-        // Unreachable: `visibleActions` admits only the four inline intents
-        // above. Everything else is navigation, and navigation is the row.
-        case .answer, .open, .markSeen, .dismiss, .unrecognized:
+        // Label comes from the wire ("Answer"), not from a second vocabulary
+        // invented here: the host already names this action for every surface
+        // in `attentionItemBuilder`, and a button that disagrees with the push
+        // that raised it is the drift this contract exists to prevent.
+        case .answer:
+            Button(action: openSession) {
+                ActivityActionLabel(
+                    action.label,
+                    systemImage: "arrowshape.turn.up.left",
+                    variant: .primary(activityToneColor(.amber))
+                )
+            }
+            .buttonStyle(.plain)
+
+        // Unreachable: `visibleActions` admits the four inline intents above
+        // plus `.answer`. Everything else is navigation, and navigation is the
+        // row.
+        case .open, .markSeen, .dismiss, .unrecognized:
             EmptyView()
         }
     }

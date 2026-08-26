@@ -7,6 +7,7 @@ import {
   hostSleepNoticeMergeKey,
   isHostSleepNoticeEvent,
 } from "../../../desktop/src/shared/hostSleepNotice";
+import { approvalRequestKind, isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
 import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
@@ -132,6 +133,39 @@ export function compactPath(value: string, max = 42): string {
   const base = path.basename(value);
   if (base.length + 3 >= max) return `...${base.slice(-(max - 3))}`;
   return `.../${base}`;
+}
+
+/**
+ * Whether the event is a spawned-chat turn completion notice at all —
+ * regardless of whether it names the child it reports on.
+ *
+ * Kept separate from `spawnCompletionChildId` on purpose: this answers "should
+ * this bypass `pushLine`", which would otherwise silently DROP a byte-identical
+ * repeat, while the child id answers "which run does this fold into". An
+ * unidentified completion therefore still gets its own line instead of
+ * vanishing, and still folds into nothing.
+ */
+function isSpawnCompletionNotice(event: AgentChatEvent): boolean {
+  if (event.type !== "system_notice") return false;
+  return event.noticeKind === "info" && event.status === "spawn_completed";
+}
+
+/**
+ * The child a spawn-completion notice reports on, or null when the event is not
+ * a completion or lost its `spawnCompletion` detail (an old or truncated
+ * transcript). Mirrors desktop's `readSpawnCompletionChildId`
+ * (renderer/components/chat/chatTranscriptRows.ts) and iOS's
+ * `spawnCompletionChildId` (WorkModels.swift): an unidentified completion folds
+ * into nothing, so it keeps its own line rather than silently absorbing a
+ * different child's.
+ */
+function spawnCompletionChildId(event: AgentChatEvent): string | null {
+  if (!isSpawnCompletionNotice(event)) return null;
+  const detail = event.type === "system_notice" ? event.detail : undefined;
+  const childSessionId = detail && typeof detail === "object"
+    ? detail.spawnCompletion?.childSessionId?.trim()
+    : undefined;
+  return childSessionId ? childSessionId : null;
 }
 
 export type RenderedChatLine = {
@@ -677,6 +711,21 @@ export function renderChatLines(args: {
     lines.push(line);
   };
 
+  // ── Spawned-chat turn completions: ONE line per adjacent run, counted ──
+  // A parent that spawned peers gets one byte-identical `spawn_completed`
+  // notice per sibling TURN. `pushLine`'s general dedupe would drop every
+  // repeat with no trace, so the user could not tell one finish from twelve.
+  // Count them here and render `×N` instead, matching desktop's chip.
+  //
+  // Scoped to this run rather than loosened inside `pushLine`: the dedupe is
+  // shared with local notices and every other notice kind, and those must keep
+  // collapsing silently. Adjacency-only, like desktop — anything pushed in
+  // between ends the run, which the trailing-line id check enforces (it also
+  // survives `transcript_retraction` splicing lines out from under us).
+  let spawnCompletionRun:
+    | { childId: string; lineId: string; count: number }
+    | null = null;
+
   for (const entry of timeline) {
     if (entry.kind === "notice") {
       const notice = entry.notice;
@@ -979,6 +1028,15 @@ export function renderChatLines(args: {
     }
     if (event.type === "approval_request") {
       const record = event as unknown as Record<string, unknown>;
+      // A question and an approval arrive on the same event; only the request
+      // kind tells them apart. Rendering both as "approval needed" put the
+      // wrong word — and a meaningless file/line count — on prose the agent is
+      // waiting to be told. Same kind rule as the pending-input card, so the
+      // two surfaces agree on every event a real host emits.
+      if (isQuestionKind(approvalRequestKind(event))) {
+        lines.push({ id, tone: "approval", body: `[?] ${singleLine(event.description, 160)}` });
+        continue;
+      }
       const files = Array.isArray(record.files) ? record.files : [];
       const additions = typeof record.totalAdditions === "number" ? record.totalAdditions : 0;
       const deletions = typeof record.totalDeletions === "number" ? record.totalDeletions : 0;
@@ -1226,6 +1284,34 @@ export function renderChatLines(args: {
         ))
         ? "error"
         : "notice";
+      if (isSpawnCompletionNotice(event)) {
+        const childId = spawnCompletionChildId(event);
+        const last = lines[lines.length - 1];
+        if (
+          childId
+          && spawnCompletionRun
+          && spawnCompletionRun.childId === childId
+          && last
+          && last.id === spawnCompletionRun.lineId
+        ) {
+          spawnCompletionRun.count += 1;
+          // Render the NEWEST body, like desktop (which swaps the row's event
+          // for the incoming one) and iOS — a child renamed mid-run must read
+          // the same on all three surfaces.
+          lines[lines.length - 1] = {
+            ...last,
+            body: `${message} ×${spawnCompletionRun.count}`,
+          };
+          continue;
+        }
+        // A different child, an unidentified completion, or a broken run starts
+        // its own line. Pushed directly rather than through `pushLine` so two
+        // peers with the same title still render as two lines — and so a repeat
+        // that lost its `spawnCompletion` detail is never silently dropped.
+        lines.push({ id, tone, body: message });
+        spawnCompletionRun = childId ? { childId, lineId: id, count: 1 } : null;
+        continue;
+      }
       pushLine({
         id,
         tone,

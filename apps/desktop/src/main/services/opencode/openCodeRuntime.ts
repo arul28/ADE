@@ -199,10 +199,11 @@ function buildPermissionConfig(
       // means no prompts.
       read: "allow",
       task: "allow",
-      // external_directory stays "ask". That boundary is ADE's lane worktree,
-      // not a permission tier the user picked — the same reason the system
-      // prompt confines edits to the lane.
-      external_directory: "ask",
+      // external_directory is deliberately NOT stated here, and "ask" is what
+      // omitting it means. That boundary is ADE's lane worktree, not a
+      // permission tier the user picked — the same reason the system prompt
+      // confines edits to the lane. See the note on the edit ruleset below for
+      // why the key must be absent rather than spelled out.
       question: "allow",
     };
   }
@@ -218,7 +219,10 @@ function buildPermissionConfig(
       // deny), i.e. edit ALLOWED — so leaving `task` open let plan mode write
       // files indirectly through a child session. Plan has to mean plan.
       task: "deny",
-      external_directory: "deny",
+      // No `external_directory` here either — see the canonical note on the edit
+      // ruleset below, including what plan gives up: it now ASKS for a path
+      // outside the worktree where it used to deny outright, and the user
+      // answers that card.
       question: "allow",
       // Replaces the deprecated agent-level `tools` map. OpenCode desugars that
       // map into exactly these permission entries, and an explicit `permission`
@@ -233,7 +237,23 @@ function buildPermissionConfig(
     bash: "ask",
     webfetch: "allow",
     doom_loop: "ask",
-    external_directory: "ask",
+    // Never state `external_directory` in ANY ADE ruleset — this note is the
+    // canonical one and the other three point at it.
+    //
+    // OpenCode's own default is `{"*": "ask", <tmp>: "allow", <skill dirs>:
+    // "allow", <reference dirs>: "allow"}`. A bare string expands to a single
+    // `{pattern: "*"}` rule that an agent block appends AFTER those defaults,
+    // and rule lookup is a `findLast` over the merged list — so the bare rule
+    // wins for every path and silently revokes OpenCode's access to its own
+    // temp, skill, and reference directories. That is equally true of "deny"
+    // and "ask", which is why all four rulesets omit the key.
+    //
+    // The trade, stated honestly: plan and helper used to hard-DENY every path
+    // outside the worktree, and now they ASK for one. That is a real loosening,
+    // not a no-op. It is acceptable because each ask still has an answer — plan
+    // raises an approval card the user decides, and a helper ask is rejected
+    // immediately by the `permission.asked` responder in `runOpenCodeTextPrompt`,
+    // which is a one-shot with no UI. Change either of those and revisit this.
     question: "allow",
   };
 }
@@ -497,7 +517,10 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     bash: "deny",
     webfetch: "deny",
     doom_loop: "deny",
-    external_directory: "deny",
+    // No `external_directory`, matching every other ADE ruleset — see the
+    // canonical note in `buildPermissionConfig`. The helper has no UI to show an
+    // approval card, so `runOpenCodeTextPrompt` answers any ask by rejecting it
+    // at once, which is what the old bare "deny" achieved.
     question: "deny",
   } as const satisfies OpenCodePermissionConfig;
 
@@ -799,14 +822,35 @@ export function openCodePartUpdatedDelta(properties: unknown): string | undefine
   return typeof candidate === "string" ? candidate : undefined;
 }
 
+/**
+ * The generated SSE client's attempt ceiling for one `/event` subscription.
+ *
+ * Left undefined it reconnects forever, and OpenCode publishes no event ids, so
+ * a reconnect replays nothing: a `session.idle` published while the socket was
+ * down is simply gone and the consuming `for await` never ends. That is a chat
+ * that spins until the user kills it.
+ *
+ * The count includes the FIRST connection, and the client stops once
+ * `attempt >= max` — so 1 would permit no reconnect at all. 2 buys exactly one
+ * real reconnect, which covers a momentary blip; past that the stream must end
+ * so the caller can report a failure.
+ */
+export const OPENCODE_SSE_MAX_RETRY_ATTEMPTS = 2;
+
 export async function openCodeEventStream(args: {
   client: OpencodeClient;
   directory: string;
   signal?: AbortSignal;
+  /** Called for every connection failure, including ones the SDK retries. */
+  onSseError?: (error: unknown) => void;
 }): Promise<AsyncGenerator<OpenCodeRuntimeEvent>> {
   const result = await args.client.event.subscribe(
     { directory: args.directory },
-    { signal: args.signal },
+    {
+      signal: args.signal,
+      sseMaxRetryAttempts: OPENCODE_SSE_MAX_RETRY_ATTEMPTS,
+      onSseError: args.onSseError,
+    },
   );
   return result.stream as AsyncGenerator<OpenCodeRuntimeEvent>;
 }
@@ -876,18 +920,60 @@ export async function runOpenCodeTextPrompt(
     let text = "";
     let inputTokens: number | null = null;
     let outputTokens: number | null = null;
+    // Part events carry no role, so the caller's own prompt streams back through
+    // the same channel. The result of this helper names lanes and titles chats,
+    // so an ungated accumulator put the user's prompt — and the model's chain of
+    // thought — into those names. OpenCode announces every message with its role
+    // before any of its parts, so this map is always populated in time.
+    const roleByMessageId = new Map<string, "assistant" | "user">();
     for await (const event of stream) {
+      if (event.type === "message.updated") {
+        const info = event.properties.info;
+        if (info.sessionID !== handle.sessionId) continue;
+        if (info.role === "assistant" || info.role === "user") {
+          roleByMessageId.set(info.id, info.role);
+        }
+        continue;
+      }
+
       if (event.type === "message.part.updated") {
         const { part } = event.properties;
         const delta = openCodePartUpdatedDelta(event.properties);
         if (part.sessionID !== handle.sessionId) continue;
-        if (part.type === "text" || part.type === "reasoning") {
-          text += typeof delta === "string" ? delta : part.text;
-        }
         if (part.type === "step-finish") {
           inputTokens = part.tokens.input;
           outputTokens = part.tokens.output;
+          continue;
         }
+        // Answer text only: reasoning is the model thinking aloud, and a
+        // synthetic/ignored part is injected context, not output.
+        if (part.type !== "text") continue;
+        if (roleByMessageId.get(part.messageID) !== "assistant") continue;
+        if (part.synthetic || part.ignored) continue;
+        text += typeof delta === "string" ? delta : part.text;
+        continue;
+      }
+
+      // A one-shot prompt has no UI and nobody to ask, so an approval request
+      // must fail fast rather than hang. ADE states no `external_directory`
+      // rule any more, which means OpenCode's default ASKS for a path outside
+      // the worktree instead of denying it outright — without this responder
+      // that ask would sit unanswered until the caller's abort fires, minutes
+      // later. Rejecting immediately reproduces the old hard deny: the tool
+      // call fails and the turn errors or idles on its own.
+      if (event.type === "permission.asked" && event.properties.sessionID === handle.sessionId) {
+        void handle.client.permission.reply(
+          {
+            requestID: event.properties.id,
+            directory: handle.directory,
+            reply: "reject",
+          },
+          { throwOnError: true },
+        ).catch(() => {
+          // Best effort. If the reply never lands the turn still ends through
+          // its own error or idle path, and the caller's abort remains the
+          // backstop.
+        });
         continue;
       }
 

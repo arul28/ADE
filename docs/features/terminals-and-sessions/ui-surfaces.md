@@ -410,7 +410,12 @@ instead of the provider/runtime fallback.
 
 Branches on `session.toolType`:
 
-- chat tool types → `AgentChatPane` for the matching chat session
+- chat tool types → `AgentChatPane` for the matching chat session, mounted with
+  `lockSessionProvider={providerFromChatToolType(session.toolType)}`. The Work
+  row knows the provider synchronously; the pane learns its own only after an
+  IPC summary round trip and is not remounted across a chat switch, so without
+  this the provider-derived accent would paint the *outgoing* chat's colour for
+  a frame. See [Resolving the accent](../chat/composer-and-ui.md#resolving-the-accent-for-the-chat-on-screen).
 - PTY sessions → `TerminalView` wired to the session's `ptyId`
 - lane-scoped terminal tools are opened from the Work sidebar's
   Terminal tab; tracked agent CLI sessions no longer add a separate
@@ -434,7 +439,11 @@ stay live at once; `isActive` only controls focus/input, not whether the
 terminal renderer exists.
 
 For tracked agent CLI sessions that have already exited, `WorkViewArea`
-renders `ClosedCliSessionSurface` instead of `TerminalView`. The surface
+renders `ClosedCliSessionSurface` instead of `TerminalView`. A session
+wrongly marked `detached` by the ownership reconcile lands here too, showing
+frozen "Ended" copy over a live PTY — which is why every activity write repairs
+a stale detach; see
+[Stale-detached repair](README.md#stale-detached-repair). The surface
 fetches `ade.terminal.preview` and decides between a serialized snapshot
 preview and the plain transcript text via `snapshotLooksLikeTui(rows)`:
 when the snapshot contains TUI frame characters (`╭`, `─`, etc.) or

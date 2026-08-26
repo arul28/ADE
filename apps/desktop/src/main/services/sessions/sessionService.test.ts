@@ -1281,6 +1281,117 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("activity writes undo a stale detach left by a liveness sweep", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    const create = (sessionId: string) => {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: `pty-${sessionId}`,
+        tracked: true,
+        title: "Live chat",
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: path.join(projectRoot, `${sessionId}.log`),
+        toolType: "claude",
+      });
+      // What a boot / owner-liveness reconcile leaves behind when it cannot see
+      // the owner of a session that is in fact still streaming.
+      db.run(
+        "update terminal_sessions set status = 'detached', ended_at = ? where id = ?",
+        ["2026-03-17T00:20:00.000Z", sessionId],
+      );
+      expect(service.get(sessionId)?.status).toBe("detached");
+    };
+
+    create("session-undetach-preview");
+    service.setLastOutputPreview("session-undetach-preview", "still working");
+    expect(service.get("session-undetach-preview")).toEqual(expect.objectContaining({
+      status: "running",
+      endedAt: null,
+      lastOutputPreview: "still working",
+    }));
+
+    create("session-undetach-touch");
+    service.touchSessionActivity("session-undetach-touch", "2026-03-17T00:21:00.000Z");
+    expect(service.get("session-undetach-touch")).toEqual(expect.objectContaining({
+      status: "running",
+      endedAt: null,
+      lastActivityAt: "2026-03-17T00:21:00.000Z",
+    }));
+
+    // A genuinely ended session is not resurrected: only `detached` is repaired.
+    service.create({
+      sessionId: "session-really-ended",
+      laneId: "lane-1",
+      ptyId: "pty-really-ended",
+      tracked: true,
+      title: "Ended chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: path.join(projectRoot, "session-really-ended.log"),
+      toolType: "claude",
+    });
+    service.end({
+      sessionId: "session-really-ended",
+      endedAt: "2026-03-17T00:15:00.000Z",
+      exitCode: 0,
+      status: "completed",
+    });
+    const endedStatus = service.get("session-really-ended")?.status ?? null;
+    service.touchSessionActivity("session-really-ended", "2026-03-17T00:22:00.000Z");
+    expect(service.get("session-really-ended")?.status).toBe(endedStatus);
+
+    activeDisposers.push(async () => db.close());
+  });
+
+  it("reopen repairs any non-running row exactly once", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-reopen-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    const events: string[] = [];
+    service.onChanged((event) => events.push(`${event.reason}:${event.sessionId}`));
+
+    service.create({
+      sessionId: "session-reopen-turn",
+      laneId: "lane-1",
+      ptyId: "pty-reopen-turn",
+      tracked: true,
+      title: "Live chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: path.join(projectRoot, "session-reopen-turn.log"),
+      toolType: "claude",
+    });
+    // Wider than the activity repair: a turn repairs `ended` too, not just the
+    // stale `detached` an owner-liveness sweep leaves behind.
+    service.end({
+      sessionId: "session-reopen-turn",
+      endedAt: "2026-03-17T00:15:00.000Z",
+      exitCode: 0,
+      status: "completed",
+    });
+    events.length = 0;
+
+    service.reopen("session-reopen-turn");
+    expect(service.get("session-reopen-turn")).toEqual(expect.objectContaining({
+      status: "running",
+      endedAt: null,
+    }));
+    expect(events).toEqual(["meta-updated:session-reopen-turn"]);
+
+    // Idempotent: a second call over a running row changes nothing and must not
+    // emit again, so callers can invoke it unconditionally.
+    service.reopen("session-reopen-turn");
+    expect(events).toEqual(["meta-updated:session-reopen-turn"]);
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("settles idempotently, records an outcome, clears attention, and unsets", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-settle-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);

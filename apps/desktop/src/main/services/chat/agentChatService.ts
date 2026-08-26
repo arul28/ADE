@@ -396,8 +396,10 @@ import {
   providerSupportsHandoffFork,
 } from "../../../shared/types";
 import {
+  spawnCompletedNoticeMessage,
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
+  waitingOnYouDescription,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
@@ -1885,10 +1887,12 @@ function openCodeTodoId(todo: unknown, index: number): string {
  * OpenCode 1.18.21 — the version ADE pins and bundles — publishes only
  * `permission.asked` and `permission.replied`; `permission.updated` is gone from
  * both its source and the current SDK types. But `resolveOpenCodeBinaryPath`
- * prefers a *user-installed* binary over the bundled one, so an older install
- * can still be the server ADE is talking to, and dropping this handler would
- * leave those users' approvals unanswered forever. It is declared here rather
- * than narrowed from the event union because the union no longer contains it.
+ * falls back to a *user-installed* binary when the tools cache and the bundle
+ * both miss, and `ADE_DISABLE_BUNDLED_OPENCODE=1` selects one outright, so an
+ * older install can still be the server ADE is talking to. Dropping this handler
+ * would leave those users' approvals unanswered forever. It is declared here
+ * rather than narrowed from the event union because the union no longer contains
+ * it.
  */
 type LegacyOpenCodePermissionUpdatedEvent = {
   type: "permission.updated";
@@ -1984,6 +1988,14 @@ type OpenCodeRuntime = {
   modelDescriptor: ModelDescriptor;
   textByPartId: Map<string, string>;
   reasoningByPartId: Map<string, string>;
+  /**
+   * Part id -> OpenCode part kind ("text", "reasoning", "tool", ...), recorded
+   * from the part-start `message.part.updated`. A `message.part.delta` names the
+   * *property* it appends to, not the kind of part: a reasoning part's deltas
+   * arrive with `field: "text"` because a reasoning part's property is also
+   * called `text`. The part kind is therefore the only correct classifier.
+   */
+  partTypeByPartId: Map<string, string>;
   toolStateByPartId: Map<string, string>;
   compactionStartedPartIds: Set<string>;
   /** OpenCode child sessions whose own terminal event has not arrived yet. */
@@ -3423,7 +3435,35 @@ const MAX_TRANSCRIPT_READ_LIMIT = 100;
 const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
 const MAX_TRANSCRIPT_READ_CHARS = 120_000;
 const AUTO_TITLE_MAX_CHARS = 48;
+/**
+ * The new text a closing/updating OpenCode part adds to what was already
+ * rendered. A part update carries the whole part, so it has to diff against the
+ * running text or the answer prints twice.
+ */
+function openCodeFullPartDelta(previous: string, nextText: string, delta: string | undefined): string {
+  if (typeof delta === "string") return delta;
+  if (nextText.startsWith(previous)) return nextText.slice(previous.length);
+  return nextText;
+}
+
+/**
+ * Messages for OpenCode session errors whose payload carries none of its own.
+ * `MessageOutputLengthError.data` is an empty bag, so the generic fallback was
+ * the only thing a user ever saw for a truncated answer. Every other member of
+ * the union declares a required `data.message`.
+ */
+const OPEN_CODE_ERROR_MESSAGES_BY_NAME: Record<string, string | undefined> = {
+  MessageOutputLengthError: "The model hit its output length limit before it finished the answer.",
+};
+
+/** Ceiling on a raw provider response body shown as a chat error message. */
+const MAX_OPEN_CODE_ERROR_BODY_CHARS = 500;
+
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
+/** Shown while OpenCode backs off and retries a failing provider request. */
+const PROVIDER_RETRY_ACTIVITY_DETAIL = "Waiting for the provider";
+/** Minimum gap between two provider-retry notices in the same turn. */
+const PROVIDER_RETRY_NOTICE_MIN_INTERVAL_MS = 10_000;
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
 const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
@@ -8678,9 +8718,12 @@ export function createAgentChatService(args: {
       source: "claude",
       kind: hasStructuredChoices ? "structured_question" : "question",
       title: questions.length === 1 ? "Question from Claude" : "Questions from Claude",
+      // The question itself when there is one to show; otherwise the shared
+      // fallback line — see `waitingOnYouDescription` for why the copy is
+      // single-sourced.
       description: questions.length === 1
-        ? firstQuestion?.question ?? "Claude needs an answer before it can continue."
-        : "Claude needs a few answers before it can continue.",
+        ? firstQuestion?.question ?? waitingOnYouDescription()
+        : waitingOnYouDescription(questions.length),
       questions,
       allowsFreeform: true,
       blocking: true,
@@ -8940,7 +8983,7 @@ export function createAgentChatService(args: {
       const approvalItemId = request.itemId ?? request.requestId;
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
-        description: request.description ?? "Claude needs input before it can continue.",
+        description: request.description ?? waitingOnYouDescription(request.questions.length),
         detail: {
           tool: "AskUserQuestion",
           questionCount: request.questions.length,
@@ -12468,6 +12511,7 @@ export function createAgentChatService(args: {
       modelDescriptor: descriptor,
       textByPartId: new Map(),
       reasoningByPartId: new Map(),
+      partTypeByPartId: new Map(),
       toolStateByPartId: new Map(),
       compactionStartedPartIds: new Set(),
       subagentSessions: new Map(),
@@ -16887,6 +16931,10 @@ export function createAgentChatService(args: {
       type: "approval_request",
       itemId: request.itemId ?? request.requestId,
       kind: args?.kind ?? "tool_call",
+      // What is being asked, alongside the shape of it. `kind` above cannot
+      // say "this is a question", so a question shipped as an approval and
+      // every surface downstream offered Approve/Deny for prose.
+      requestKind: request.kind,
       description,
       detail: {
         ...(args?.detail ?? {}),
@@ -17157,7 +17205,7 @@ export function createAgentChatService(args: {
         input.body?.trim()
         || input.question?.trim()
         || input.questions?.[0]?.question?.trim()
-        || "The agent needs input before it can continue.";
+        || waitingOnYouDescription(input.questions?.length);
       const response = await requestChatInput({
         chatSessionId: managed.session.id,
         title,
@@ -17592,15 +17640,22 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Cancel Pi cards that are still waiting on the user.
+   * Cancel one provider's input cards that are still waiting on the user.
    *
-   * The worker drains its own side when a turn aborts, but the desktop entry
-   * outlives it: without this the chat keeps rendering a card nobody can answer
-   * and `hasPendingInput` keeps reporting the session as blocked.
+   * Both providers park their cards in `managed.localPendingInputs`, and both
+   * leave them stranded when a turn ends early. For Pi, the worker drains its own
+   * side on abort but the desktop entry outlives it. For OpenCode, the interrupt
+   * path drained `pendingApprovals` only, never the question cards. Either way
+   * the chat keeps rendering a card nobody can answer, `hasPendingInput` keeps
+   * reporting the session as blocked so the next send is refused, and a late
+   * answer would reply into a session that is already gone.
    */
-  const cancelPendingPiInputs = (managed: ManagedChatSession): void => {
+  const cancelPendingInputsFrom = (
+    managed: ManagedChatSession,
+    source: "pi" | "opencode",
+  ): void => {
     for (const [itemId, pending] of [...managed.localPendingInputs]) {
-      if (pending.request.source !== "pi") continue;
+      if (pending.request.source !== source) continue;
       managed.localPendingInputs.delete(itemId);
       pending.resolve({ decision: "cancel" });
       emitPendingInputResolved(managed, {
@@ -17760,13 +17815,15 @@ export function createAgentChatService(args: {
       runtime.warmupDone = null;
       // Query is already null, so settle every visible background/native task
       // without trying provider stopTask on the dead control channel.
-      void stopActiveClaudeSubagents(
-        managed,
+      void clearClaudeSubagentStartIdsAfterSettlement(
         runtime,
-        runtime.activeTurnId ?? undefined,
-        "The Claude session ended before this task reported completion.",
+        stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          runtime.activeTurnId ?? undefined,
+          "The Claude session ended before this task reported completion.",
+        ),
       );
-      runtime.emittedSubagentStartIds.clear();
       runtime.taskToolInputByToolUseId.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
@@ -17813,7 +17870,7 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       rt.interrupted = true;
       cancelQueuedSteers(managed, rt, "interrupted");
-      cancelPendingPiInputs(managed);
+      cancelPendingInputsFrom(managed, "pi");
       if (preserveProviderResumeState) persistChatState(managed);
       if (isPiSdkPooledAlive(rt.sdk)) {
         void rt.sdk.abort().catch(() => {});
@@ -19118,26 +19175,50 @@ export function createAgentChatService(args: {
       if (typeof direct === "number" && Number.isFinite(direct)) return direct;
       return readStatusCode(record.cause, seen) ?? readStatusCode(record.error, seen);
     };
-    const collectMessages = (value: unknown, seen = new Set<unknown>()): string[] => {
+    // `isBody` marks a raw provider `responseBody` — a whole JSON payload, not a
+    // sentence — so the display path below can bound it without a second walk.
+    type CollectedMessage = { text: string; isBody: boolean };
+    const collectMessages = (value: unknown, seen = new Set<unknown>()): CollectedMessage[] => {
       if (value == null) return [];
-      if (typeof value === "string") return value.trim().length ? [value.trim()] : [];
+      if (typeof value === "string") {
+        return value.trim().length ? [{ text: value.trim(), isBody: false }] : [];
+      }
       if (typeof value !== "object" || seen.has(value)) return [];
       seen.add(value);
       const record = value as Record<string, unknown>;
       const data = asRecord(record.data);
-      const messages = [
-        typeof record.message === "string" ? record.message : null,
-        typeof data?.message === "string" ? data.message : null,
-        typeof record.responseBody === "string" ? record.responseBody : null,
-        typeof data?.responseBody === "string" ? data.responseBody : null,
-      ].filter((message): message is string => Boolean(message?.trim()));
+      const messages: CollectedMessage[] = [
+        { text: record.message, isBody: false },
+        { text: data?.message, isBody: false },
+        { text: record.responseBody, isBody: true },
+        { text: data?.responseBody, isBody: true },
+      ].flatMap(({ text, isBody }) => (
+        typeof text === "string" && text.trim().length ? [{ text: text.trim(), isBody }] : []
+      ));
       return [
         ...messages,
         ...collectMessages(record.cause, seen),
         ...collectMessages(record.error, seen),
       ];
     };
-    const rawMessage = collectMessages(error).join(" ") || (error instanceof Error ? error.message : String(error));
+    // A thrown OpenCode error carries the structured original as `cause`, so the
+    // walk reaches the same wording from the Error and from the payload. Keeping
+    // both printed the message twice in the chat. A duplicate keeps its first
+    // position but its `isBody` is the OR of every occurrence: the cap belongs to
+    // the value, so a raw payload cannot dodge it by also appearing as `message`.
+    const collectedMessages: CollectedMessage[] = [];
+    const collectedByText = new Map<string, CollectedMessage>();
+    for (const collected of collectMessages(error)) {
+      const existing = collectedByText.get(collected.text);
+      if (existing) {
+        existing.isBody = existing.isBody || collected.isBody;
+        continue;
+      }
+      collectedByText.set(collected.text, collected);
+      collectedMessages.push(collected);
+    }
+    const rawMessage = collectedMessages.map((collected) => collected.text).join(" ")
+      || (error instanceof Error ? error.message : String(error));
     const lower = rawMessage.toLowerCase();
 
     const statusCode = readStatusCode(error);
@@ -19186,8 +19267,20 @@ export function createAgentChatService(args: {
       };
     }
 
+    // Nothing classified it, so `rawMessage` is what the user reads. Classification
+    // above used the full text; the chat gets a bounded version of any raw body.
+    const displayMessage = collectedMessages.length
+      ? collectedMessages
+        .map(({ text, isBody }) => (
+          isBody && text.length > MAX_OPEN_CODE_ERROR_BODY_CHARS
+            ? `${text.slice(0, MAX_OPEN_CODE_ERROR_BODY_CHARS)}…`
+            : text
+        ))
+        .join(" ")
+      : rawMessage;
+
     return {
-      message: rawMessage,
+      message: displayMessage,
       errorInfo: { category: "unknown", provider: providerFamily, model: modelDisplayName },
     };
   };
@@ -19197,10 +19290,14 @@ export function createAgentChatService(args: {
     const data = asRecord(record?.data);
     const nested = asRecord(record?.error);
     const nestedData = asRecord(nested?.data);
+    const byName = typeof record?.name === "string"
+      ? OPEN_CODE_ERROR_MESSAGES_BY_NAME[record.name]
+      : undefined;
     return (
       (typeof data?.message === "string" && data.message.trim())
       || (typeof nestedData?.message === "string" && nestedData.message.trim())
       || (typeof record?.message === "string" && record.message.trim())
+      || byName
       || "OpenCode session failed."
     );
   };
@@ -19432,6 +19529,22 @@ export function createAgentChatService(args: {
       const delivered = await deliverNextQueuedSteer(managed, runtime);
       if (!delivered) startClaudeIdleReader(managed, runtime, "turn_completed");
     }
+  };
+
+  /**
+   * Settlement contract when Claude rejects the plan quota mid-idle-turn: the
+   * rejected quota cannot run queued steers, a bare query reset leaves the open
+   * idle turn wedged busy forever (no reader restart, no finalization), and
+   * only finishing the turn lands the chat idle — and forkable — again.
+   */
+  const settleClaudeQuotaRejectedIdleTurn = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    state: ClaudeIdleTurnState,
+  ): Promise<void> => {
+    cancelQueuedSteers(managed, runtime, "interrupted");
+    await resetClaudeQuerySession(managed, runtime, "session_reset");
+    await finishClaudeIdleTurn(managed, runtime, state, "interrupted");
   };
 
   const handleClaudeIdleTaskMessage = (
@@ -20034,7 +20147,7 @@ export function createAgentChatService(args: {
       if (classified.kind === "ignore") return;
       if (classified.kind === "rejected") {
         noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
-        void resetClaudeQuerySession(managed, runtime, "session_reset");
+        await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
         return;
       }
       if (managed.claudeRateLimitWarningEmitted) return;
@@ -20090,8 +20203,10 @@ export function createAgentChatService(args: {
           const text = typeof block.text === "string" ? block.text : "";
           if (isClaudeSessionQuotaText(text)) {
             noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(text), turnId);
-            void resetClaudeQuerySession(managed, runtime, "session_reset");
-            continue;
+            await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
+            // The turn just settled; later blocks of this message belong to a
+            // finalized turn and must not append to it.
+            break;
           }
           const emittedRecord = providerMessageId && !resumedFromIncompleteThinking
             ? claudeEmittedTextRecord(runtime, providerMessageId)
@@ -23724,6 +23839,7 @@ export function createAgentChatService(args: {
       runtime.eventAbortController = abortController;
       runtime.textByPartId.clear();
       runtime.reasoningByPartId.clear();
+      runtime.partTypeByPartId.clear();
       runtime.toolStateByPartId.clear();
       runtime.compactionStartedPartIds.clear();
 
@@ -23776,6 +23892,19 @@ export function createAgentChatService(args: {
         client: runtime.handle.client,
         directory: runtime.handle.directory,
         signal: abortController.signal,
+        // The stream is bounded now (see OPENCODE_SSE_MAX_RETRY_ATTEMPTS), so a
+        // dropped socket ends the loop instead of hanging the turn forever. Log
+        // the cause: the turn then fails through the "ended before idle" path,
+        // whose message alone does not say the connection broke. Stop aborts the
+        // same socket, and that is the user getting what they asked for.
+        onSseError: (error) => {
+          if (abortController.signal.aborted) return;
+          logger.warn("agent_chat.opencode_event_stream_error", {
+            sessionId: managed.session.id,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
       });
 
       const promptAccepted = runtime.handle.client.session.promptAsync(
@@ -23797,6 +23926,42 @@ export function createAgentChatService(args: {
       // `message.updated` before the first part of a message, so the role is
       // always resolved by the time its parts arrive.
       const openCodeMessageRoleById = new Map<string, "assistant" | "user">();
+      // Assistant messages OpenCode created to hold an auto-compaction summary.
+      // They carry `summary: true` and stream the summary as ordinary text parts
+      // under the assistant role, so the role gate alone lets a recap of the
+      // conversation render as the model's reply to the user. The compaction
+      // part and `session.compacted` already show that compaction happened.
+      const openCodeSummaryMessageIds = new Set<string>();
+      /**
+       * Assistant output is what a message renders as when it is the model
+       * talking to the user — not a user-message part echoing back, and not an
+       * auto-compaction summary.
+       */
+      const rendersAsAssistantOutput = (messageID: string): boolean =>
+        openCodeMessageRoleById.get(messageID) === "assistant"
+        && !openCodeSummaryMessageIds.has(messageID);
+      // Throttle state for provider-retry notices. Turn-local: it has no meaning
+      // outside this loop and nothing else reads it.
+      //
+      // Three primitives rather than one nullable record, deliberately. The
+      // record form is read and then reassigned inside this loop, and the
+      // reassignment is reachable only through a value derived from the read —
+      // which makes TypeScript's control-flow analysis circular. It answers by
+      // pinning the read to its initializer (TS7022, or a `never` on the
+      // non-null branch). Non-nullable primitives make that pessimism harmless:
+      // every comparison below still typechecks whichever way the analysis goes.
+      let hasEmittedRetryNotice = false;
+      let retryNoticeAttempt = 0;
+      let retryNoticeMessage = "";
+      let retryNoticeAtMs = 0;
+      // A ContextOverflowError is usually recoverable — OpenCode compacts and
+      // carries on. It is NOT always: with `compaction.auto` off it idles without
+      // compacting, and the compaction turn can overflow again and stop. Either
+      // way the turn produces no further assistant text, and reporting that as a
+      // completed turn tells the user their question was answered when it was
+      // not. `finalAssistantText` already counts every emitted character, so
+      // marking its length at the overflow costs nothing in the streaming path.
+      let contextOverflow: { message: string; textLengthAtOverflow: number } | null = null;
       const emittedOpenCodeImagePartIds = new Set<string>();
       const emitOpenCodeImagePart = (part: unknown): void => {
         const imageEvent = mapOpenCodeImagePart({
@@ -23822,6 +23987,7 @@ export function createAgentChatService(args: {
               return event.properties.part.sessionID;
             case "message.part.delta":
             case "message.part.removed":
+            case "message.removed":
               return event.properties.sessionID;
             case "permission.asked":
               return event.properties.sessionID;
@@ -23866,7 +24032,44 @@ export function createAgentChatService(args: {
             continue;
           }
           if (!childKey || childKey === runtime.handle.sessionId) {
-            throw new Error(openCodeSessionErrorMessage(event.properties.error));
+            const sessionError = event.properties.error;
+            const errorName = sessionError?.name ?? null;
+
+            // Usually recoverable: OpenCode compacts the conversation itself and
+            // keeps going without idling, so throwing killed a turn that was
+            // about to continue. It is not a promise, though — see
+            // `contextOverflow` at the idle check below.
+            if (errorName === "ContextOverflowError") {
+              contextOverflow = {
+                message: openCodeSessionErrorMessage(sessionError),
+                textLengthAtOverflow: finalAssistantText.length,
+              };
+              emitChatEvent(managed, {
+                type: "system_notice",
+                noticeKind: "provider_health",
+                severity: "info",
+                message: "Context limit reached — OpenCode will try to compact the conversation.",
+                detail: contextOverflow.message,
+                turnId,
+              });
+              continue;
+            }
+
+            // Somebody else stopped this turn: the OpenCode TUI or CLI sharing
+            // this server can abort a session ADE is streaming. That is an
+            // interruption, not a failure, and OpenCode idles right after — so
+            // let the normal idle path render it the way ADE's own stop button
+            // renders.
+            if (errorName === "MessageAbortedError") {
+              runtime.interrupted = true;
+              continue;
+            }
+
+            // Keep the structured error reachable: classifyOpenCodeError walks
+            // `cause` for the status code and the nested messages that decide
+            // auth vs rate-limit vs network, and a bare message string throws
+            // all of that away.
+            throw new Error(openCodeSessionErrorMessage(sessionError), { cause: sessionError });
           }
           continue;
         }
@@ -23986,15 +24189,20 @@ export function createAgentChatService(args: {
         // an empty delta instead of re-emitting the entire message.
         if (event.type === "message.part.delta") {
           const { messageID, partID, field, delta } = event.properties;
-          if (openCodeMessageRoleById.get(messageID) !== "assistant") continue;
+          if (!rendersAsAssistantOutput(messageID)) continue;
           if (typeof delta !== "string" || !delta.length) continue;
-          if (field === "text") {
-            runtime.textByPartId.set(partID, (runtime.textByPartId.get(partID) ?? "") + delta);
-            finalAssistantText += delta;
-            emitChatEvent(managed, { type: "text", text: delta, turnId, itemId: partID });
-            continue;
-          }
-          if (field === "reasoning") {
+          // `field` is the name of the part property being appended to, NOT the
+          // kind of part. OpenCode's processor publishes reasoning deltas with
+          // `field: "text"`, because a reasoning part's property is also called
+          // `text`. Classifying on `field` therefore rendered the whole chain of
+          // thought as the assistant's answer (and re-rendered it as a thought
+          // when the closing full part arrived). The part-start
+          // `message.part.updated` always precedes the first delta of a part, so
+          // the recorded part kind is the correct classifier. Older binaries that
+          // never send the part-start fall back to the previous `field` rule.
+          const partKind = runtime.partTypeByPartId.get(partID)
+            ?? (runtime.reasoningByPartId.has(partID) || field === "reasoning" ? "reasoning" : "text");
+          if (partKind === "reasoning") {
             runtime.reasoningByPartId.set(partID, (runtime.reasoningByPartId.get(partID) ?? "") + delta);
             emitChatEvent(managed, {
               type: "activity",
@@ -24003,14 +24211,111 @@ export function createAgentChatService(args: {
               turnId,
             });
             emitChatEvent(managed, { type: "reasoning", text: delta, turnId, itemId: partID });
+            continue;
+          }
+          if (partKind === "text") {
+            runtime.textByPartId.set(partID, (runtime.textByPartId.get(partID) ?? "") + delta);
+            finalAssistantText += delta;
+            emitChatEvent(managed, { type: "text", text: delta, turnId, itemId: partID });
           }
           continue;
         }
 
         if (event.type === "message.updated") {
-          if (event.properties.info.role === "assistant" || event.properties.info.role === "user") {
-            openCodeMessageRoleById.set(event.properties.info.id, event.properties.info.role);
+          const info = event.properties.info;
+          if (info.role === "assistant" || info.role === "user") {
+            openCodeMessageRoleById.set(info.id, info.role);
           }
+          if (info.role === "assistant" && info.summary === true) {
+            openCodeSummaryMessageIds.add(info.id);
+          }
+          continue;
+        }
+
+        // Revert/undo. Drop the per-part accumulators so a later part id reused
+        // by OpenCode cannot diff against text that no longer exists, and so a
+        // removed reasoning part stops being treated as reasoning. No renderer
+        // event goes out: `transcript_retraction` matches rows by `messageId`,
+        // which OpenCode text events do not carry, and adding one would make
+        // every part of a message merge into a single row.
+        if (event.type === "message.part.removed") {
+          const removedPartId = event.properties.partID;
+          runtime.textByPartId.delete(removedPartId);
+          runtime.reasoningByPartId.delete(removedPartId);
+          runtime.partTypeByPartId.delete(removedPartId);
+          runtime.toolStateByPartId.delete(removedPartId);
+          runtime.compactionStartedPartIds.delete(removedPartId);
+          emittedOpenCodeImagePartIds.delete(removedPartId);
+          continue;
+        }
+
+        if (event.type === "message.removed") {
+          const removedMessageId = event.properties.messageID;
+          openCodeMessageRoleById.delete(removedMessageId);
+          openCodeSummaryMessageIds.delete(removedMessageId);
+          continue;
+        }
+
+        // A failing provider is otherwise invisible: OpenCode retries with
+        // exponential backoff and publishes nothing else, so the chat shows a
+        // spinner for minutes and the user assumes it is wedged. `session.status`
+        // retry events are the only signal, so surface them as a notice.
+        if (event.type === "session.status") {
+          const status = event.properties.status;
+          if (status.type !== "retry") {
+            // Reset on idle ONLY. OpenCode publishes `busy` between every two
+            // retry attempts (retry(1) → busy → retry(2) → …), so clearing the
+            // throttle on `busy` cleared it before every single retry and the
+            // throttle never engaged.
+            if (status.type === "idle") hasEmittedRetryNotice = false;
+            continue;
+          }
+          // The SDK declares these required, but this is the wire: a field that
+          // arrives missing or mistyped must not become "Retrying in NaNs."
+          const { attempt: wireAttempt, message: wireMessage, next: wireNext, action } = status;
+          const attempt = typeof wireAttempt === "number" ? wireAttempt : 0;
+          const providerMessage = typeof wireMessage === "string" ? wireMessage.trim() : "";
+          const nextAtMs = typeof wireNext === "number" ? wireNext : null;
+          const nowMs = Date.now();
+          // Emit the first retry, then only on a changed provider message or on a
+          // new attempt that is at least the throttle interval after the last
+          // notice. Backoff doubles from 2s, so a busy provider would otherwise
+          // post a notice every couple of seconds.
+          const shouldEmit = !hasEmittedRetryNotice
+            || providerMessage !== retryNoticeMessage
+            || (
+              attempt !== retryNoticeAttempt
+              && nowMs - retryNoticeAtMs >= PROVIDER_RETRY_NOTICE_MIN_INTERVAL_MS
+            );
+          if (!shouldEmit) continue;
+          hasEmittedRetryNotice = true;
+          retryNoticeAttempt = attempt;
+          retryNoticeMessage = providerMessage;
+          retryNoticeAtMs = nowMs;
+          const retryInSeconds = nextAtMs === null
+            ? null
+            : Math.max(0, Math.round((nextAtMs - nowMs) / 1000));
+          const detail = [
+            providerMessage.length ? providerMessage : "The provider request failed.",
+            retryInSeconds === null ? null : `Retrying in ${retryInSeconds}s.`,
+            action?.title?.trim() || null,
+            action?.message?.trim() || null,
+            action?.link?.trim() || null,
+          ].filter((line): line is string => Boolean(line)).join(" ");
+          emitChatEvent(managed, {
+            type: "activity",
+            activity: "working",
+            detail: PROVIDER_RETRY_ACTIVITY_DETAIL,
+            turnId,
+          });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "provider_health",
+            severity: "warning",
+            message: `OpenCode hit a provider error and is retrying automatically (attempt ${attempt}).`,
+            detail,
+            turnId,
+          });
           continue;
         }
 
@@ -24038,16 +24343,20 @@ export function createAgentChatService(args: {
           const delta = openCodePartUpdatedDelta(event.properties);
           markFirstStreamEvent(part.type);
 
+          // Record the part kind so the delta branch above can classify by it.
+          // OpenCode publishes this part-start update (with an empty body) before
+          // the first delta of every part.
+          runtime.partTypeByPartId.set(part.id, part.type);
+
           // Compaction begin marker. OpenCode has no dedicated "started" event, but it
           // streams a compaction part as soon as it begins summarizing; the matching
           // session.compacted lands when it finishes. Surface this as a live begin so
           // the chat shows "compacting…" instead of feeling stuck.
           if (part.type === "compaction") {
-            const partId = typeof (part as { id?: unknown }).id === "string" ? (part as { id: string }).id : null;
-            const compactionKey = partId ?? `turn:${turnId}`;
+            const compactionKey = part.id || `turn:${turnId}`;
             if (runtime.compactionStartedPartIds.has(compactionKey)) continue;
             runtime.compactionStartedPartIds.add(compactionKey);
-            const trigger = (part as { auto?: boolean }).auto === false ? "manual" : "auto";
+            const trigger = part.auto === false ? "manual" : "auto";
             runtime.lastCompactionTrigger = trigger;
             emitChatEvent(managed, {
               type: "context_compact",
@@ -24081,34 +24390,28 @@ export function createAgentChatService(args: {
               cacheReadTokens: part.tokens.cache.read,
               cacheCreationTokens: part.tokens.cache.write,
             };
+            // Without this the activity line keeps naming the step's last tool
+            // until the next step-start, so a long gap between steps reads as a
+            // command that never finished.
+            emitChatEvent(managed, {
+              type: "activity",
+              activity: "working",
+              detail: WORKING_ACTIVITY_DETAIL,
+              turnId,
+            });
             continue;
           }
-
-          // Only assistant messages produce rendered content. User-message text
-          // parts stream through the same event; without this role gate the
-          // user's own prompt (or injected system context) would echo into the
-          // transcript as an assistant bubble. OpenCode announces every message
-          // (with its role) before its parts, so an unknown role means "not
-          // announced yet" — those stay unrendered too.
-          const openCodePartMessageRole = openCodeMessageRoleById.get(part.messageID);
 
           if (part.type === "text") {
             // Skip synthetic/ignored prompt parts (e.g. ADE launch directives
             // injected as system context) — they should not be rendered in chat.
-            if ((part as { synthetic?: boolean }).synthetic || (part as { ignored?: boolean }).ignored) {
-              continue;
-            }
-            if (openCodePartMessageRole !== "assistant") {
+            if (part.synthetic || part.ignored) continue;
+            if (!rendersAsAssistantOutput(part.messageID)) {
               continue;
             }
             const previous = runtime.textByPartId.get(part.id) ?? "";
-            const nextText = part.text;
-            const nextDelta = typeof delta === "string"
-              ? delta
-              : nextText.startsWith(previous)
-                ? nextText.slice(previous.length)
-                : nextText;
-            runtime.textByPartId.set(part.id, nextText);
+            const nextDelta = openCodeFullPartDelta(previous, part.text, delta);
+            runtime.textByPartId.set(part.id, part.text);
             if (nextDelta.length) {
               finalAssistantText += nextDelta;
               emitChatEvent(managed, {
@@ -24122,17 +24425,12 @@ export function createAgentChatService(args: {
           }
 
           if (part.type === "reasoning") {
-            if (openCodePartMessageRole !== "assistant") {
+            if (!rendersAsAssistantOutput(part.messageID)) {
               continue;
             }
             const previous = runtime.reasoningByPartId.get(part.id) ?? "";
-            const nextText = part.text;
-            const nextDelta = typeof delta === "string"
-              ? delta
-              : nextText.startsWith(previous)
-                ? nextText.slice(previous.length)
-                : nextText;
-            runtime.reasoningByPartId.set(part.id, nextText);
+            const nextDelta = openCodeFullPartDelta(previous, part.text, delta);
+            runtime.reasoningByPartId.set(part.id, part.text);
             if (nextDelta.length) {
               emitChatEvent(managed, {
                 type: "activity",
@@ -24152,8 +24450,11 @@ export function createAgentChatService(args: {
 
           if (part.type === "file") {
             // Prompt attachments use the same wire part. Only assistant-owned
-            // files are output; tool attachments are handled below directly.
-            if (openCodePartMessageRole === "assistant") {
+            // files are output; tool attachments are handled below directly. Role
+            // alone is the right gate here, not `rendersAsAssistantOutput`: a
+            // compaction summary carries no attachments to suppress, and an
+            // unannounced message has no role yet, so it stays unrendered.
+            if (openCodeMessageRoleById.get(part.messageID) === "assistant") {
               emitOpenCodeImagePart(part);
             }
             continue;
@@ -24257,43 +24558,69 @@ export function createAgentChatService(args: {
           const questionRequest = event.properties;
           const questions = openCodeQuestionsToPendingQuestions(questionRequest.questions ?? []);
           const firstQuestion = questions[0];
-          const response = await requestChatInput({
-            chatSessionId: managed.session.id,
-            title: questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode",
-            body: firstQuestion?.question ?? "OpenCode needs input before it can continue.",
-            source: "opencode",
-            providerMetadata: {
-              openCodeQuestion: true,
-              requestId: questionRequest.id,
-              tool: questionRequest.tool ?? null,
-            },
-            eventDescription: "OpenCode question",
-            eventDetail: { openCodeQuestion: questionRequest },
-            questions: questions.map(({ options, ...question }) => ({
-              ...question,
-              ...(options ? { options } : {}),
-            })),
-          });
-          if (managed.runtime !== runtime) {
-            continue;
-          }
-          if (response.decision === "decline" || response.decision === "cancel") {
+          // Ask on a detached task. Awaiting the user here stalled the whole
+          // event stream: while the modal was open nothing else drained, so a
+          // subagent's approval prompt, its streamed text, and every tool result
+          // sat in the socket until the person answered. On 1.18.x OpenCode's
+          // question tool blocks server-side until it gets a reply, so the parent
+          // session is not expected to idle underneath an open card — see the
+          // completion path, which does NOT cancel these cards for that reason.
+          const rejectOpenCodeQuestion = async (): Promise<void> => {
             await runtime.handle.client.question.reject({
               requestID: questionRequest.id,
               directory: runtime.handle.directory,
             }, { throwOnError: true });
-            continue;
-          }
-          const answerList = questions.map((question) => {
-            const answers = ownQuestionValue(response.answers, question.id) ?? [];
-            if (answers.length > 0) return answers;
-            return response.responseText?.trim() ? [response.responseText.trim()] : [];
+          };
+          const resolveOpenCodeQuestion = async (): Promise<void> => {
+            const response = await requestChatInput({
+              chatSessionId: managed.session.id,
+              title: questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode",
+              body: firstQuestion?.question ?? waitingOnYouDescription(questions.length),
+              source: "opencode",
+              providerMetadata: {
+                openCodeQuestion: true,
+                requestId: questionRequest.id,
+                tool: questionRequest.tool ?? null,
+              },
+              eventDescription: "OpenCode question",
+              eventDetail: { openCodeQuestion: questionRequest },
+              questions: questions.map(({ options, ...question }) => ({
+                ...question,
+                ...(options ? { options } : {}),
+              })),
+            });
+            if (managed.runtime !== runtime) return;
+            if (response.decision === "decline" || response.decision === "cancel") {
+              await rejectOpenCodeQuestion();
+              return;
+            }
+            const answerList = questions.map((question) => {
+              const answers = ownQuestionValue(response.answers, question.id) ?? [];
+              if (answers.length > 0) return answers;
+              return response.responseText?.trim() ? [response.responseText.trim()] : [];
+            });
+            await runtime.handle.client.question.reply({
+              requestID: questionRequest.id,
+              directory: runtime.handle.directory,
+              answers: answerList,
+            }, { throwOnError: true });
+          };
+          void resolveOpenCodeQuestion().catch(async (error) => {
+            // Stop already cancelled this card and aborted the session, so the
+            // rejection would fail against a dead session and the warning would
+            // report the user's own action as a failure.
+            if (runtime.interrupted) return;
+            logger.warn("agent_chat.opencode_question_failed", {
+              sessionId: managed.session.id,
+              turnId,
+              requestId: questionRequest.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            // The turn no longer fails on this path, so reject the question
+            // rather than leave OpenCode waiting for an answer that is not coming.
+            if (managed.runtime !== runtime) return;
+            await rejectOpenCodeQuestion().catch(() => {});
           });
-          await runtime.handle.client.question.reply({
-            requestID: questionRequest.id,
-            directory: runtime.handle.directory,
-            answers: answerList,
-          }, { throwOnError: true });
           continue;
         }
 
@@ -24453,10 +24780,35 @@ export function createAgentChatService(args: {
         throw new Error("OpenCode event stream ended before the parent and child sessions became idle");
       }
 
+      // The overflow did NOT recover: OpenCode went idle without answering. That
+      // happens when the user turned `compaction.auto` off, and when compaction
+      // itself overflows. Reporting it as a completed turn would tell the user
+      // their question was answered.
+      if (
+        contextOverflow
+        && finalAssistantText.length === contextOverflow.textLengthAtOverflow
+        && !runtime.interrupted
+      ) {
+        throw new Error(contextOverflow.message);
+      }
+
       // ── Shared turn completion ──
+      // The invariant for open OpenCode question cards: cancel them on EVERY
+      // turn end except a clean, non-interrupted completion. Only that one case
+      // can still be answered — ADE replies after the turn settles and OpenCode
+      // resumes the session — and it is pinned by "bridges OpenCode question
+      // events through ADE's question UI". Every other ending leaves a card
+      // nobody can answer: `hasLivePendingInput` then refuses the next send, and
+      // a late answer targets a session that is gone.
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted) {
+        // Reached both by ADE's own Stop (which also cancels in the interrupt
+        // branch, making this idempotent) and by an EXTERNAL abort: the OpenCode
+        // TUI or CLI on the same server aborts, `session.error` sets
+        // `interrupted`, and the loop settles here instead of throwing. Without
+        // this call that second route stranded the card.
+        cancelPendingInputsFrom(managed, "opencode");
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
@@ -24471,6 +24823,7 @@ export function createAgentChatService(args: {
         });
         persistChatState(managed);
       } else {
+        // No cancel here — this is the one ending whose card is still answerable.
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
@@ -24513,6 +24866,7 @@ export function createAgentChatService(args: {
       setOpenCodeRuntimeBusy(runtime, false);
       runtime.activeTurnId = null;
       runtime.eventAbortController = null;
+      cancelPendingInputsFrom(managed, "opencode");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
@@ -25459,6 +25813,25 @@ export function createAgentChatService(args: {
     emitChatEvent(managed, event);
     runtime.emittedSubagentStartIds.delete(event.taskId);
     if (event.agentId) runtime.emittedSubagentStartIds.delete(event.agentId);
+  };
+
+  /**
+   * Clear the dedupe-gate ids owned by a torn-down query, but only after its
+   * settlement pass finishes: settlement emissions gate on these ids, so an
+   * earlier synchronous clear silently dropped every stopped subagent_result.
+   * Deleting the snapshot (not the whole set) keeps ids registered by a newer
+   * query generation — started while a live-query settlement was still
+   * stopping tasks — intact.
+   */
+  const clearClaudeSubagentStartIdsAfterSettlement = (
+    runtime: ClaudeRuntime,
+    settlement: Promise<void>,
+  ): Promise<void> => {
+    const staleIds = [...runtime.emittedSubagentStartIds];
+    const removeStale = () => {
+      for (const id of staleIds) runtime.emittedSubagentStartIds.delete(id);
+    };
+    return settlement.then(removeStale, removeStale);
   };
 
   /**
@@ -30043,11 +30416,14 @@ export function createAgentChatService(args: {
     // arrive on THIS query, so settle background shells, native subagents, and
     // workflow agents before clearing their tracking maps. Query is already
     // null, so this performs no provider stopTask calls.
-    void stopActiveClaudeSubagents(
-      managed,
+    void clearClaudeSubagentStartIdsAfterSettlement(
       runtime,
-      runtime.activeTurnId ?? undefined,
-      "The Claude session restarted before this task reported completion.",
+      stopActiveClaudeSubagents(
+        managed,
+        runtime,
+        runtime.activeTurnId ?? undefined,
+        "The Claude session restarted before this task reported completion.",
+      ),
     );
     if (hadOpenBackgroundTasks) {
       emitChatEvent(managed, {
@@ -30058,7 +30434,7 @@ export function createAgentChatService(args: {
     }
     runtime.scheduledWorkKindById.clear();
     runtime.scheduledWorkSignatures.clear();
-    runtime.emittedSubagentStartIds.clear();
+    // emittedSubagentStartIds is cleared by the settlement chain above.
     resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
     runtime.stoppingBackgroundTaskIds.clear();
@@ -30895,7 +31271,7 @@ export function createAgentChatService(args: {
 
   const terminalizeUnsettledClaudeParentTurn = (
     managed: ManagedChatSession,
-    reason: "restart" | "idle_interrupt",
+    reason: "restart" | "idle_interrupt" | "handoff_recovery",
     candidate?: UnsettledParentTurn | null,
   ): string | null => {
     const unsettled = candidate === undefined ? findUnsettledParentTurn(managed) : candidate;
@@ -31539,7 +31915,7 @@ export function createAgentChatService(args: {
         ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
         : assistantSummary;
     } else if (resultStatus === "completed") {
-      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished.";
+      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Chat turn finished.";
     } else if (resultStatus === "stopped") {
       baseSummary = "Stopped before finishing.";
     } else {
@@ -31608,7 +31984,7 @@ export function createAgentChatService(args: {
               type: "system_notice",
               noticeKind: "info",
               status: "spawn_completed",
-              message: `Peer "${childTitle}" turn finished`,
+              message: spawnCompletedNoticeMessage(childTitle),
               detail: { spawnCompletion },
             });
           }
@@ -32138,6 +32514,107 @@ export function createAgentChatService(args: {
   const createSession = async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
     createSessionInternal(args);
 
+  /**
+   * Escape hatch for a claude chat wedged mid-turn with no live query — the
+   * signature a quota session-reset (or any dead query) leaves behind when the
+   * turn was never finalized: busy/activeTurnId stuck or a transcript turn
+   * with no terminal pair, fork refused forever. The quota card explicitly
+   * advertises "Send again after reset, or fork this thread", so settle the
+   * dead run locally instead of refusing the handoff. Requires the live quota
+   * card as proof, and skips runtimes still spawning or holding a live query,
+   * so genuinely streaming chats are never touched.
+   */
+  const recoverWedgedClaudeSessionForHandoff = async (managed: ManagedChatSession): Promise<void> => {
+    const runtime = managed.runtime;
+    if (runtime && runtime.kind !== "claude") return;
+    if (runtime?.query || runtime?.queryStartPromise) return;
+    if (!latestQuotaCardIsLive(managed)) return;
+    const transcriptTurnActive = deriveTranscriptTurnActive(readTranscriptEnvelopes(managed));
+    if (!transcriptTurnActive && !(runtime?.busy || runtime?.activeTurnId)) return;
+    logger.warn("agent_chat.claude_wedged_runtime_recovered_for_handoff", {
+      sessionId: managed.session.id,
+      turnId: runtime?.activeTurnId ?? null,
+      busy: runtime?.busy ?? false,
+      transcriptTurnActive,
+      hadRuntime: Boolean(runtime),
+    });
+    if (runtime) {
+      const interruptedTurnId = runtime.activeTurnId;
+      runtime.interrupted = true;
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      if (interruptedTurnId) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId: interruptedTurnId });
+        emitChatEvent(managed, { type: "done", turnId: interruptedTurnId, status: "interrupted" });
+      }
+      // Approvals registered through canUseTool can only be answered on their
+      // now-dead query; settle them like teardown so the gate below passes.
+      for (const pending of runtime.approvals.values()) {
+        pending.resolve({ decision: "cancel" });
+      }
+      runtime.approvals.clear();
+      await clearClaudeSubagentStartIdsAfterSettlement(
+        runtime,
+        stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          interruptedTurnId ?? undefined,
+          "This chat was handed off while Claude was stuck after a plan-limit reset.",
+        ),
+      );
+    }
+    // Transcript-derived orphans (a post-restart wedge has an empty live map,
+    // so the pass above cannot settle rows recorded only in the transcript).
+    // Buffered events are merged so rows just settled above are not re-emitted.
+    const wedgeEnvelopes = readTranscriptEnvelopes(managed, { includeBuffered: true });
+    const orphanBackground = deriveBackgroundItems(wedgeEnvelopes).filter(
+      (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",
+    );
+    const orphanSubagents = subagentSnapshotsFromEvents(wedgeEnvelopes).filter(
+      (snapshot) => snapshot.kind === "subagent"
+        && snapshot.status === "running"
+        && snapshot.background !== true,
+    );
+    for (const snapshot of orphanBackground) {
+      emitChatEvent(managed, {
+        type: "scheduled_work_update",
+        id: snapshot.id,
+        kind: "background_task",
+        status: "stopped",
+        origin: "background_task",
+        title: snapshot.title,
+        summary: snapshot.summary ?? "lost while Claude was wedged",
+        ...(snapshot.sourceTaskId ? { sourceTaskId: snapshot.sourceTaskId } : {}),
+        ...(snapshot.sourceToolUseId ? { sourceToolUseId: snapshot.sourceToolUseId } : {}),
+      });
+    }
+    for (const snapshot of orphanSubagents) {
+      const summary = snapshot.summary && snapshot.summary !== snapshot.name
+        ? snapshot.summary
+        : "Stopped: Claude was stuck after a plan-limit reset";
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId: snapshot.id,
+        ...(snapshot.parentToolUseId ? { parentToolUseId: snapshot.parentToolUseId } : { parentToolUseId: null }),
+        status: "stopped",
+        summary,
+        finalSummary: summary,
+        ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+      });
+    }
+    // Keep the parent terminal pair last: renderer turn state is derived in
+    // event order, so no later reconciliation row may revive the stopped turn.
+    terminalizeUnsettledClaudeParentTurn(managed, "handoff_recovery");
+    markSessionIdleWithFreshCache(managed);
+    persistChatState(managed);
+    // The handoff gate re-reads the transcript from disk; flush the queued
+    // settlement events so the just-terminalized turn is visible to it.
+    await Promise.all([
+      flushQueuedTranscriptWrite(managed.transcriptPath),
+      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`)),
+    ]);
+  };
+
   const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const sourceId = args.sourceSessionId.trim();
     const targetId = args.targetModelId.trim();
@@ -32157,6 +32634,8 @@ export function createAgentChatService(args: {
     if ((sourceSession.surface ?? managed.session.surface ?? "work") !== "work") {
       throw new Error("Chat handoff is only available for work chats.");
     }
+
+    await recoverWedgedClaudeSessionForHandoff(managed);
 
     ensureSessionIdleForHandoff(managed);
 
@@ -32707,6 +33186,9 @@ export function createAgentChatService(args: {
   };
 
   const requireCrossMachineSourceReady = async (managed: ManagedChatSession) => {
+    // Same wedge settlement as the local handoff: a quota-wedged source must
+    // not refuse the cross-machine send either.
+    await recoverWedgedClaudeSessionForHandoff(managed);
     ensureSessionIdleForHandoff(managed);
     const lane = await laneService.getSummary(managed.session.laneId, { includeStatus: true });
     if (!lane) throw new Error("The source lane could not be loaded.");
@@ -34975,8 +35457,14 @@ export function createAgentChatService(args: {
       throw new Error(cursorRuntimeHealth.message ?? CURSOR_RUNTIME_AUTH_ERROR);
     }
 
+    // Repair the PERSISTED row, not just the in-memory one: a hot chat's
+    // in-memory status is active/idle, so the `=== "ended"` reset below never
+    // fires for a row a liveness reconcile wrongly marked `detached`, and the
+    // session shows "Ended" while the chat keeps streaming. Idempotent, so it
+    // is called unconditionally; the in-memory reset stays separate.
+    sessionService.reopen(sessionId);
+
     if (managed.session.status === "ended") {
-      sessionService.reopen(sessionId);
       setSessionIdle(managed);
       managed.closed = false;
       managed.endedNotified = false;
@@ -35706,7 +36194,7 @@ export function createAgentChatService(args: {
     const body =
       cursorControlString(payload.body)
       ?? cursorControlString(payload.question)
-      ?? "Cursor needs input before it can continue.";
+      ?? waitingOnYouDescription();
     const questions = normalizeCursorControlQuestions(payload.questions) ?? [{
       id: "answer",
       header: "Question 1",
@@ -36240,7 +36728,7 @@ export function createAgentChatService(args: {
       const response = await requestChatInput({
         chatSessionId: managed.session.id,
         title: req.title,
-        body: req.questions[0]?.question ?? "Droid needs input before it can continue.",
+        body: req.questions[0]?.question ?? waitingOnYouDescription(req.questions.length),
         source: "droid",
         providerMetadata: { droidSdk: true, toolCallId: req.toolCallId, raw: req.raw },
         eventDescription: req.title,
@@ -41165,6 +41653,7 @@ export function createAgentChatService(args: {
         rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
+      cancelPendingInputsFrom(managed, "opencode");
       return result;
     }
 
@@ -41218,7 +41707,7 @@ export function createAgentChatService(args: {
         // ignore
       }
       if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
-      cancelPendingPiInputs(managed);
+      cancelPendingInputsFrom(managed, "pi");
       persistChatState(managed);
       return result;
     }
@@ -47641,11 +48130,17 @@ export function createAgentChatService(args: {
     const itemId = randomUUID();
     const fallbackQuestions = inferQuestionsFromBody(args.body) ?? [{ id: "answer", header: "Question 1", question: args.body, allowsFreeform: true }];
     const requestedQuestions = args.questions?.length ? args.questions : fallbackQuestions;
+    // Callers guard the BODY against a missing question with `??`, which does
+    // nothing for a provider that sends `""` — and `questions` wins over the
+    // body below, so a blank question text used to survive all the way to a
+    // card with no prompt on it and a `description` of `""`. Normalized once,
+    // here, because every provider path funnels through this call.
+    const questionFallback = args.body.trim().length ? args.body.trim() : waitingOnYouDescription();
     const questions: PendingInputQuestion[] = requestedQuestions.map(
       (q, i) => ({
         id: q.id ?? `q_${i + 1}`,
         header: q.header?.trim().length ? q.header.trim() : `Question ${i + 1}`,
-        question: q.question.trim(),
+        question: q.question.trim().length ? q.question.trim() : questionFallback,
         ...(q.multiSelect === true ? { multiSelect: true } : {}),
         ...(q.allowsFreeform !== undefined ? { allowsFreeform: q.allowsFreeform } : { allowsFreeform: true }),
         ...(q.isSecret === true ? { isSecret: true } : {}),

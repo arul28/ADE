@@ -4,7 +4,9 @@
 
 The provider SVG marks in
 `Sources/ADEAttentionNotch/Resources/ProviderIcons` are adapted from
-[Lobe Icons](https://github.com/lobehub/lobe-icons), version 1.84.0.
+[Lobe Icons](https://github.com/lobehub/lobe-icons), version 1.84.0 —
+except `droid.svg` and `pi.svg`, which are vendor brand marks and are covered
+below.
 
 MIT License
 
@@ -27,3 +29,33 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Vendor brand marks (permission basis)
+
+`droid.svg` and `pi.svg` are vendor trademarks, not open-source assets: no
+license grant is claimed for them, and none is available to cite. They are
+included on the basis of **nominative fair use** — the mark is displayed solely
+to identify the vendor's own runtime in a list of runtimes ADE can drive, at
+icon size, and never as ADE's own branding. Neither mark is redrawn: `droid.svg`
+is listed in `NotchItemMark.colorMarks` and ships in its own colours, and
+`pi.svg` is drawn as a template glyph tinted to the notch foreground, the same
+treatment the Lobe marks get.
+
+Because that basis is permissive rather than granted, it comes with standing
+conditions: no more of the mark is used than is needed to identify the runtime,
+nothing here implies sponsorship or endorsement by the mark's owner, and either
+mark is removed from this bundle on request from its owner.
+
+### Factory Droid
+
+`Sources/ADEAttentionNotch/Resources/ProviderIcons/droid.svg` is the Factory
+Droid brand mark, adapted from `apps/desktop/src/renderer/assets/provider-logos/`
+where ADE already ships it. Used to identify the Droid runtime; Factory retains
+all rights to the mark.
+
+### Pi
+
+`Sources/ADEAttentionNotch/Resources/ProviderIcons/pi.svg` is the Pi brand mark,
+copied from `apps/desktop/src/renderer/assets/provider-logos/` where ADE already
+ships it. Used to identify the Pi runtime; the mark's owner retains all rights
+to it.

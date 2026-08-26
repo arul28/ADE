@@ -17,6 +17,13 @@ final class ShapeHostingView<Content: View>: NSHostingView<Content> {
         guard interactivePath?().map({ $0.contains(point) }) == true else { return nil }
         return super.hitTest(point)
     }
+
+    /// The panel is a non-activating helper window that is usually not key, so
+    /// without this the first click on the surface is spent activating it and
+    /// the button under the pointer never fires. That is what made the close
+    /// `x` on the takeover card read as dead: it took two clicks, and the card
+    /// had already timed out by the second.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 @MainActor
@@ -169,7 +176,12 @@ final class NotchPanelController {
         } else {
             panel.orderOut(nil)
         }
+        // A takeover carries real controls — close, and the one action button —
+        // so it counts as interactive even though the user never asked for it.
+        // Leaving it non-key meant the card's own buttons were only reachable
+        // through `acceptsFirstMouse`, with nothing to fall back on.
         panel.allowsKeyActivation = model.interaction.isExplicitlyInteractive
+            || model.interaction.presentation.isTakeover
         if !panel.allowsKeyActivation, panel.isKeyWindow {
             panel.resignKey()
         }
@@ -182,10 +194,26 @@ final class NotchPanelController {
             handler: { [weak self] event in
             if event.type == .mouseMoved || event.type == .leftMouseDragged {
                 let now = ProcessInfo.processInfo.systemUptime
-                guard now - lastGlobalMoveAt >= 1 / 30 else { return }
+                // Throttled only while the pointer is away from the surface,
+                // where the sampling is pure hover detection. Once it is on the
+                // surface the panel has stopped ignoring mouse events across
+                // its whole transparent frame, so every move has to be seen: a
+                // sampled exit would leave the window swallowing clicks meant
+                // for the app below for up to a frame after the pointer left.
+                let inside = MainActor.assumeIsolated { self?.lastPointerInside ?? false }
+                if !inside {
+                    guard now - lastGlobalMoveAt >= 1 / 30 else { return }
+                }
                 lastGlobalMoveAt = now
             }
-            Task { @MainActor in
+            // Handled inline, not hopped onto the next main-actor turn. Global
+            // monitors already run on the main thread, and the hop cost us the
+            // click: `ignoresMouseEvents` was still true when the very move
+            // that entered the surface was followed by a mouse-down, so the
+            // press went to whatever app was underneath. Deferring the update
+            // by one turn is the whole race — `assumeIsolated` states the fact
+            // the run loop already guarantees.
+            MainActor.assumeIsolated {
                 self?.handleMouseEvent(event, global: true)
             }
         }) {
@@ -267,9 +295,16 @@ final class NotchPanelController {
         updatePointer(at: location)
     }
 
+    /// The panel is a 760×640 transparent sheet and only a small pill of it is
+    /// drawn, so it may never sit in front of another app's clicks while the
+    /// pointer is off the pill: `hitTest` returning nil does not hand the click
+    /// back to the window below, it eats it. `ignoresMouseEvents` is therefore
+    /// the real hit region, and it has to be recomputed from the pointer's
+    /// actual position on every event rather than a sampled one.
     private func updatePointer(at screenPoint: NSPoint) {
         let inside = model.shouldPresentSurface && isInsideInteractiveShape(screenPoint: screenPoint)
-        panel.ignoresMouseEvents = !inside
+        let shouldIgnore = !inside
+        if panel.ignoresMouseEvents != shouldIgnore { panel.ignoresMouseEvents = shouldIgnore }
         if inside != lastPointerInside {
             lastPointerInside = inside
             model.pointerChanged(isInside: inside)

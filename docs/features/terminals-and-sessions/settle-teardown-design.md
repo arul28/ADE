@@ -271,6 +271,9 @@ losing a settle costs one click; losing background work the user is mid-way
 through is unrecoverable, and ADE cannot re-spawn a shell it stopped. R2 is the
 only race where *both* outcomes are bad, and this rule makes it one-sided.
 
+A *machine-initiated* settle goes further and will not even start against a turn
+that is already running — see [§3c-iv](#3c-iv-who-may-interrupt-a-running-turn).
+
 Concretely: teardown checks an abort signal between each stop call; a turn start
 (C3) trips it. Work already stopped before the abort is lost — that is inherent,
 which is an argument for stopping the **cheapest-to-lose things first** (cloud
@@ -286,7 +289,7 @@ the wrong assumption. The contract, per entry point:
 | `sessions.settle` / `settleMany` (IPC, desktop UI) | Typed outcome; the surface shows a quiet toast — *"Settle canceled — session became active"*. Not an error dialog: nothing went wrong, the user simply started working again. |
 | `session.settleSession` / `session.settleSessions` (sync, iOS + hosted web) | Typed outcome in the reply envelope. Older clients that only understand `{ok}` must still parse it — treat the outcome as **additive**, never a new error shape (see the mobile-compatibility rule in `../sync-and-multi-device/`). |
 | `session.settleSessions` (ADE action registry) | Typed outcome in the result; bulk callers get per-session outcomes, not one aggregate boolean. |
-| PR-merge auto-settle (`prMergeAutoSettlementService`) | Consumes the outcome and does **not** mark the PR handled for an aborted session, so a later pass can retry. Today it marks handled unconditionally. |
+| PR-merge auto-settle (`prMergeAutoSettlementService`) | Consumes the outcome and does **not** mark the PR handled for an aborted session, so a later pass can retry. It also defers *before* asking, whenever the session has a verifiably active chat turn — see §3c-iii. |
 | CTO operator tool | Typed outcome surfaced in the tool result, so the model is told the settle did not take rather than assuming it did. |
 
 The bulk shape is the load-bearing one: `settleSessions` currently returns a
@@ -425,27 +428,75 @@ turned out to be load-bearing for monotonicity rather than merely a fallback.
 
 When `settleSessions` reports an abort, `prMergeAutoSettlementService` leaves the
 merged PR unhandled so a later poll retries it — otherwise the merge is consumed
-by a settle that never landed. Step 2 ships that retry **unconditional**, which
-is correct while teardown is a no-op and is what the code did before the settling
-window existed.
+by a settle that never landed. An unconditional retry is correct while teardown
+is a no-op, but stops being correct the moment teardown is real: a retry fired
+against work that is still running would stop the very work that won the race,
+once per poll.
 
-It stops being correct the moment teardown is real: a retry fired against work
-that is still running would stop the very work that won the race, once per poll.
-Step 3 owns the bound. Three gates were tried in step 2 and each was wrong in a
-different way, so the next attempt should start from why:
+Several gates were tried before the current one and each was wrong in a
+different way, so any future attempt should start from why:
 
 | Gate | Why it fails |
 | --- | --- |
 | Lifecycle revision moved | Never re-arms. A turn *completing* does not touch the settle tuple, so the revision is unchanged and the retry is skipped forever. |
 | Elapsed timer | Re-arms while a long turn is still running — exactly the case the bound exists to prevent. |
 | `session.runtimeState !== "running"` on the persisted row | Never observes turn completion for chat at all. Chat rows deliberately hold `status = "running"` between turns; only `chatSessionProjection` resolves an idle chat to `idle`. |
+| Per-abort-reason bookkeeping (remember which sessions aborted *by activity*, retry only those once at rest) | Two policies for one fact. It had to enumerate which abort reasons "mean something is running", and it forgot everything on restart. |
 
-The workable signal is therefore **projected** chat state. It is wired as a
-narrow injected callback (`getChatLiveness`, matching
-`chatMentionService.listChatSessions`): the chat service answers `status` and
-`awaitingInput`, and only a tracked CLI session — whose row does not lie — falls
-back to the persisted row. Do not re-attempt a gate that reads the raw row for a
-chat.
+**What ships.** The bound is not retry bookkeeping at all; it is a liveness gate
+in front of every attempt, and the answer is re-read each time:
+
+- `hasActiveChatTurn(sessionId)` asks the chat service through the narrow
+  injected `getChatLiveness` callback (matching
+  `chatMentionService.listChatSessions`), built by the exported
+  `chatLivenessReader(agentChatService)` so desktop `main.ts` and the brain's
+  `bootstrap.ts` cannot drift about what "live" means.
+- The callback reports **`status` only**. `awaitingInput` is a resting state,
+  not a running turn, and the gate mirrors teardown's own refusal — which
+  triggers on `before.active` alone — so anything teardown would accept must not
+  be held back here.
+- The persisted row is never consulted for anything, chat or CLI. It holds
+  `running` for the life of a tracked CLI terminal and between chat turns, so
+  reading it defers forever. **Do not re-attempt a gate that reads the raw row.**
+- No liveness (no callback, or nothing for this session) settles immediately.
+  A *thrown* read counts as active and defers, because an unreachable liveness
+  source is not evidence the turn ended.
+
+Because liveness is re-read on every attempt, there is no set of
+previously-aborted sessions and no per-reason classification: every abort reason
+retries as soon as the session is quiet. See
+[Active-turn deferral](../pull-requests/README.md#active-turn-deferral).
+
+### 3c-iv. Who may interrupt a running turn
+
+The gate above is a courtesy in the poller. The enforcement is in teardown, and
+it is keyed on **who asked for the settle**, not on what the session is doing:
+
+```
+settleSourceMayInterruptActiveTurn(source)   // sessionSettleTeardown.ts
+```
+
+| `SessionSettleSource` | May interrupt | Why |
+| --- | --- | --- |
+| `user` | yes | Someone clicked settle. They decided the work is over and can watch what happens. |
+| `operator` | yes | The CTO operator tool acting on a person's direct instruction, one named session at a time, reporting the refusal straight back. A proxy for the user. |
+| `agent_explicit` | yes | The session's own agent declaring itself finished. The only turn it can cancel is its own. |
+| `pr_merge` | **no** | The PR poller. Nobody is watching, no person named the session, and the merge will still be there next pass. |
+
+The switch is exhaustive with no `default`, so a new source has to come back
+here and be classified rather than inherit whichever answer is cheaper.
+`SettleTeardownContext.mayInterruptActiveTurn` is **required**, not optional: a
+default would silently hand an automation the user's privileges.
+
+When `before.active` is true and `mayInterruptActiveTurn` is false, teardown
+returns `abortedBy: "turn_start"` and stops before calling `interrupt`.
+`interrupt` is not selective — it stops the turn and the background work
+together — so the only way to honor the refusal is not to call it. `abortedBy`
+is distinct from `confirmed: false`: `confirmed: false` still settles and
+records residue, whereas `abortedBy` means nothing was stopped and nothing may
+be filed, so `settleMany` reports an abort and leaves the session exactly as it
+found it. Background work *without* an active turn is still stopped — nothing is
+being watched, and that is the work a settle exists to close out.
 
 ### 3d. When teardown cannot confirm
 

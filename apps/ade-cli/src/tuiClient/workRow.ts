@@ -21,7 +21,8 @@ import type {
   TerminalSessionStatus,
   TerminalToolType,
 } from "../../../desktop/src/shared/types/sessions";
-import { preferredSessionLabel } from "../../../desktop/src/renderer/lib/sessions";
+import { CHAT_TOOL_TYPE_BY_PROVIDER, preferredSessionLabel } from "../../../desktop/src/renderer/lib/sessions";
+import type { KnownChatProvider } from "../../../desktop/src/renderer/lib/sessions";
 import { sanitizeTerminalInlineText, sessionFilingBucket } from "../../../desktop/src/renderer/lib/terminalAttention";
 import type { TuiChatSessionSummary } from "./adeApi";
 
@@ -133,23 +134,20 @@ function fallbackRuntimeState(session: TuiChatSessionSummary): TerminalRuntimeSt
   return session.status === "active" ? "running" : "idle";
 }
 
+/**
+ * Reads the desktop's canonical provider → tool-type table rather than
+ * restating it, so a seventh provider cannot land there and leave a TUI row
+ * with no tool type. The one deliberate difference from
+ * `chatToolTypeForProvider` is the unknown case: the desktop falls back to
+ * `opencode-chat`, while a TUI row with an unrecognised provider stays null so
+ * the caller's other sources get a chance before we guess.
+ */
 function fallbackToolType(provider: string | null | undefined): TerminalToolType | null {
-  switch (provider) {
-    case "claude":
-      return "claude-chat";
-    case "codex":
-      return "codex-chat";
-    case "cursor":
-      return "cursor";
-    case "droid":
-      return "droid-chat";
-    case "opencode":
-      return "opencode-chat";
-    case "pi":
-      return "pi-chat";
-    default:
-      return null;
-  }
+  if (typeof provider !== "string") return null;
+  // `Object.hasOwn`, not a plain lookup: the provider is runtime input, so
+  // "constructor" must miss rather than resolve to an Object.prototype member.
+  if (!Object.hasOwn(CHAT_TOOL_TYPE_BY_PROVIDER, provider)) return null;
+  return CHAT_TOOL_TYPE_BY_PROVIDER[provider as KnownChatProvider];
 }
 
 /**

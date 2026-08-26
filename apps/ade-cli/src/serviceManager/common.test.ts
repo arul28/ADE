@@ -371,6 +371,63 @@ describe("readParentPid on win32", () => {
       expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
     }
   });
+
+  // A blown `timeout` budget is the one failure that is purely about the host
+  // being busy: powershell.exe cold start plus the first CIM call of a session
+  // can outrun the budget on a saturated box. Treating that as "ancestry
+  // unknown" refuses a teardown the user is entitled to, so it gets one retry.
+  const timedOut = (): ServiceManagerProcessResult => ({
+    status: null,
+    stdout: null,
+    stderr: null,
+    signal: "SIGTERM",
+    error: Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), {
+      code: "ETIMEDOUT",
+    }),
+  });
+
+  const budgetRecordingRun = (
+    replies: Array<() => ServiceManagerProcessResult>,
+  ): { run: ServiceManagerSpawnSync; timeouts: Array<number | undefined> } => {
+    const timeouts: Array<number | undefined> = [];
+    const run: ServiceManagerSpawnSync = (_command, _args, options) => {
+      const reply = replies[timeouts.length];
+      timeouts.push(options?.timeout);
+      if (!reply) throw new Error("readWindowsParentPid ran more attempts than expected");
+      return reply();
+    };
+    return { run, timeouts };
+  };
+
+  it("retries a timed-out query once, on a longer budget", () => {
+    const { run, timeouts } = budgetRecordingRun([timedOut, () => ({ status: 0, stdout: "77" })]);
+    expect(readParentPid(run, 1234, "win32")).toBe(77);
+    expect(timeouts).toHaveLength(2);
+    // The retry must be strictly more generous, or it just repeats the failure.
+    expect(timeouts[1]).toBeGreaterThan(timeouts[0] ?? 0);
+  });
+
+  it("stops after the retry also times out", () => {
+    const { run, timeouts } = budgetRecordingRun([timedOut, timedOut]);
+    expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
+    expect(timeouts).toHaveLength(2);
+  });
+
+  it("does not retry a query that actually answered", () => {
+    // Every non-timeout outcome is final: a real answer, "no such process", a
+    // real tool failure, and a spawn that never ran (powershell absent, so no
+    // ETIMEDOUT and no SIGTERM) all cost exactly one powershell start.
+    for (const [reply, expected] of [
+      [() => ({ status: 0, stdout: "42" }), 42],
+      [() => ({ status: 3, stdout: "" }), null],
+      [() => ({ status: 1, stdout: "", stderr: "CIM unavailable" }), PARENT_PID_UNKNOWN],
+      [() => ({ status: null, stdout: null, stderr: null }), PARENT_PID_UNKNOWN],
+    ] as const) {
+      const { run, timeouts } = budgetRecordingRun([reply]);
+      expect(readParentPid(run, 1234, "win32")).toBe(expected);
+      expect(timeouts).toHaveLength(1);
+    }
+  });
 });
 
 describe("isCurrentProcessDescendantOfPid on win32", () => {
@@ -425,11 +482,15 @@ describe.runIf(process.platform === "win32")("readParentPid against the real Win
     // process.ppid is an independent oracle for the same fact. Before the win32
     // branch existed this returned null on every Windows host.
     expect(readParentPid(spawnChildSync, process.pid)).toBe(process.ppid);
-  }, 30_000);
+    // 90s, not 30s: the lookup's own worst case is a cold-start timeout plus its
+    // retry, and this suite runs alongside other Windows suites on a 2-core
+    // runner. A test budget under the code's budget turns a slow host into a
+    // failure that reads like a broken parent-pid query.
+  }, 90_000);
 
   it("reports the real parent as an ancestor of this process", () => {
     expect(isCurrentProcessDescendantOfPid({ targetPid: process.ppid })).toBe(true);
-  }, 30_000);
+  }, 90_000);
 });
 
 describe("isStaleChannelServeCommandLine", () => {

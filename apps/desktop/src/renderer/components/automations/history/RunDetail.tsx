@@ -95,6 +95,7 @@ export function RunDetail({ detail, loading }: { detail: AutomationRunDetail | n
                 laneId={detail.chatSession.laneId}
                 initialSessionSummary={detail.chatSession}
                 lockSessionId={detail.chatSession.sessionId}
+                lockSessionProvider={detail.chatSession.provider ?? null}
                 hideSessionTabs
                 modelSelectionLocked
                 permissionModeLocked

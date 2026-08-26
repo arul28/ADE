@@ -131,28 +131,108 @@ public struct AttentionAction: Codable, Equatable, Sendable, Identifiable {
         }
     }
 
-    public var navigationLabel: String {
-        switch kind {
-        case "approve": return "Open to approve"
-        case "deny": return "Open to deny"
-        case "answer": return "Open to answer"
-        case "restart": return "Open to restart"
-        case "rerun_checks": return "Open to rerun checks"
-        case "open": return "Open in ADE"
-        default: return "Open in ADE"
-        }
-    }
+    /// The button's word: what the click is *for*, not how it gets there.
+    ///
+    /// Every one of these navigates — the helper has no authority to approve or
+    /// deny anything on its own — but "Open to approve" made the mechanism the
+    /// label and read as a second, lesser Open beside the real one. The verb is
+    /// the promise; `navigationAccessibilityHint` still says it opens ADE.
+    public var navigationLabel: String { notchNavigationLabel(forActionKind: kind) }
 
     public var navigationAccessibilityHint: String {
         kind == "open"
-            ? "Opens the exact item in ADE"
-            : "\(navigationLabel) in ADE"
+            ? "Opens this item in ADE"
+            : "Opens this item in ADE so you can \(navigationLabel.lowercased())"
     }
 }
 
-/// Actions worth rendering *beside* the surface's own prominent "Open in ADE".
-/// A plain `open` action renders with the identical label, so keeping it here
-/// would draw the same button twice.
+/// The verb an action kind carries, for `AttentionAction.navigationLabel` (the
+/// per-action buttons in the panel). The takeover card's single button has its
+/// own four-case table on `NotchPrimaryAction.label`; the two agree on the
+/// words they share and tests pin both.
+public func notchNavigationLabel(forActionKind kind: String) -> String {
+    switch kind {
+    case "approve": return "Approve"
+    case "deny": return "Deny"
+    case "answer": return "Answer"
+    case "restart": return "Restart"
+    case "rerun_checks": return "Rerun checks"
+    case "open": return "Open"
+    default: return "Open"
+    }
+}
+
+/// What the takeover card's single button is *for* — the one thing the row is
+/// waiting on. A question wants an answer, an approval wants approval, a review
+/// request wants a review, everything else is just somewhere to go.
+///
+/// One case, two renderings: `label` is the button's verb and `waitingLine` is
+/// the subtitle's plain statement of what is outstanding. Keeping them on the
+/// same value means the two can never disagree about which of them is showing.
+public enum NotchPrimaryAction: String, Sendable, CaseIterable {
+    case answer
+    case approve
+    case review
+    case open
+
+    /// Classifies what an item is waiting on.
+    ///
+    /// Falls back to the approve verb for an item whose actions came from a
+    /// publisher older than the question/approval split, which is exactly what
+    /// that build meant by `waiting_for_approval`.
+    public init(item: AttentionItem?) {
+        guard let item else {
+            self = .open
+            return
+        }
+        let kinds = Set(item.actions.map(\.kind))
+        if kinds.contains("answer") {
+            self = .answer
+        } else if kinds.contains("approve") {
+            self = .approve
+        } else if item.kind == "pull_request",
+                  item.phase == "review_requested" || item.phase == "changes_requested" {
+            self = .review
+        } else {
+            self = .open
+        }
+    }
+
+    /// The one word the button carries.
+    ///
+    /// Spelled out rather than derived from `notchNavigationLabel`: only three
+    /// of these four map to an action kind at all (`.review` is inferred from
+    /// the item's kind and phase), and a derivation with an exception carved
+    /// out of it is harder to read than four literals. Two small tables that
+    /// happen to agree on three words, with tests pinning both.
+    public var label: String {
+        switch self {
+        case .answer: return "Answer"
+        case .approve: return "Approve"
+        case .review: return "Review"
+        case .open: return "Open"
+        }
+    }
+
+    /// The subtitle to show when the row has no preview of its own. `nil` for
+    /// `.open`, which names no outstanding ask, so the caller keeps its preview.
+    public var waitingLine: String? {
+        switch self {
+        case .answer: return "Waiting on your answer."
+        case .approve: return "Waiting on your approval."
+        case .review: return "Waiting on your review."
+        case .open: return nil
+        }
+    }
+}
+
+/// Actions worth rendering *beside* the expanded panel's own prominent button.
+/// That button is "Open all in ADE", which opens Activity — so a per-item
+/// `open` next to it is a redundant second Open for a surface the user is one
+/// click from, and it is dropped here.
+///
+/// The takeover card does not use this: it draws one button and takes its verb
+/// from `NotchPrimaryAction`.
 public func notchSecondaryActions(_ actions: [AttentionAction]) -> [AttentionAction] {
     actions.filter { $0.opensDestination && $0.kind != "open" }
 }
@@ -529,7 +609,7 @@ private func problemPresentation(
     let symbolName: String
     switch availability.state {
     case .degraded:
-        fallbackTitle = "Activity is out of sync"
+        fallbackTitle = "ADE is out of sync"
         compactLabel = "Reconnecting"
         tone = .amber
         symbolName = "antenna.radiowaves.left.and.right.slash"
@@ -539,7 +619,7 @@ private func problemPresentation(
         tone = .amber
         symbolName = "person.crop.circle.badge.exclamationmark"
     case .unavailable:
-        fallbackTitle = "Activity is unavailable"
+        fallbackTitle = "ADE can't show your activity"
         compactLabel = "Unavailable"
         tone = .red
         symbolName = "exclamationmark.triangle.fill"
@@ -549,15 +629,15 @@ private func problemPresentation(
         tone = .red
         symbolName = "arrow.up.circle"
     case .unknown, .ready:
-        fallbackTitle = "Activity status unknown"
+        fallbackTitle = "ADE isn't sure what's happening"
         compactLabel = "Degraded"
         tone = .amber
         symbolName = "questionmark.circle"
     }
 
     let fallbackMessage = itemCount > 0
-        ? "Showing the last state ADE received."
-        : "ADE can't reach your account Activity stream."
+        ? "Showing what ADE last heard."
+        : "ADE can't reach your activity."
 
     return NotchStatusPresentation(
         title: availability.title.notchNonEmpty ?? fallbackTitle,
@@ -581,7 +661,7 @@ private func recoveryHint(
     case .retry:
         return "Retry from ADE to reconnect."
     case .signIn:
-        return "Sign in to ADE to restore account Activity."
+        return "Sign in to ADE to see your activity again."
     case .updateHost:
         return host.map { "Update ADE on \($0)." } ?? "Update ADE to continue."
     case .restartHost:
@@ -593,10 +673,22 @@ private func recoveryHint(
 
 extension String {
     /// Trimmed value, or `nil` when the host sent blank copy.
+    ///
+    /// Deliberately internal: a public extension on a stdlib type would put
+    /// `notchNonEmpty` on every `String` in every module that imports this
+    /// library. Cross-module callers use the free function below.
     var notchNonEmpty: String? {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
+}
+
+/// Trimmed value, or `nil` when the host sent blank (or absent) copy.
+///
+/// The cross-module form of `String.notchNonEmpty`, for callers outside this
+/// library that need the same "blank host copy is no copy" rule.
+public func notchNonEmpty(_ value: String?) -> String? {
+    value?.notchNonEmpty
 }
 
 /// Operational state of the account attention stream. Unknown codes decode to
@@ -1143,6 +1235,15 @@ public enum NotchProtocolError: Error, Equatable {
     case missingPayload(String)
 }
 
+/// How hard a `dismiss_item` output means it. Raw values are the wire strings,
+/// so the encoded field is unchanged from when it was a plain `String?`.
+public enum NotchDismissMode: String, Encodable, Sendable {
+    /// The user closed the card: stop interrupting, keep the row in Activity.
+    case seen
+    /// The user filed the row away.
+    case dismiss
+}
+
 public struct NotchOutput: Encodable, Equatable, Sendable {
     public let type: String
     public let itemId: String?
@@ -1153,6 +1254,10 @@ public struct NotchOutput: Encodable, Equatable, Sendable {
     public let displayId: UInt32?
     public let surface: String?
     public let settings: NotchSettings?
+    /// How hard a `dismiss_item` means it: `"seen"` acknowledges the row so it
+    /// stops interrupting, `"dismiss"` files it away. Omitted means `"dismiss"`,
+    /// which is what every build before this one sent.
+    public let mode: NotchDismissMode?
 
     public init(
         type: String,
@@ -1163,7 +1268,8 @@ public struct NotchOutput: Encodable, Equatable, Sendable {
         message: String? = nil,
         displayId: UInt32? = nil,
         surface: String? = nil,
-        settings: NotchSettings? = nil
+        settings: NotchSettings? = nil,
+        mode: NotchDismissMode? = nil
     ) {
         self.type = type
         self.itemId = itemId
@@ -1174,5 +1280,6 @@ public struct NotchOutput: Encodable, Equatable, Sendable {
         self.displayId = displayId
         self.surface = surface
         self.settings = settings
+        self.mode = mode
     }
 }

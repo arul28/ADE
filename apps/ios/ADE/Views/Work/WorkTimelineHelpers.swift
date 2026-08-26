@@ -1658,11 +1658,99 @@ func buildWorkTimeline(
       deduped.append(entry)
     }
   }
+  // The spawn-completion fold runs FIRST, on raw transcript adjacency. The tool
+  // collapse buffers soft-break rows past a cluster, so `notice · tool · notice`
+  // comes out of it as `toolGroup · notice · notice` — folding after that would
+  // join two runs the parent's own work had separated. Desktop folds at the same
+  // point: while rows are being appended, before any grouping.
   return collapseInterruptStoppedSubagentEntries(
     collapseActivityPhaseTimelineEntries(
-      collapseConsecutiveWorkActivityEntries(collapseConsecutiveWorkToolEntries(deduped))
+      collapseConsecutiveWorkActivityEntries(
+        collapseConsecutiveWorkToolEntries(
+          collapseConsecutiveSpawnCompletionEntries(deduped)
+        )
+      )
     )
   )
+}
+
+/// Fold a run of 2+ ADJACENT `spawn_completed` peer notices for the SAME child
+/// chat into one row carrying a trailing `×N` — desktop parity with the
+/// adjacency fold in `collapseTranscriptRows`.
+///
+/// A parent that spawned a peer gets one notice per sibling TURN, so a chatty
+/// child stacks a wall of identical ribbons. Adjacency-only on purpose: anything
+/// the parent said or did in between separates the runs, and two different
+/// children never share a row. The row keeps the FIRST entry's identity (stable
+/// as the run grows) and the LAST entry's timestamp and wording (it reports the
+/// most recent completion).
+func collapseConsecutiveSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var index = 0
+  while index < entries.count {
+    guard let anchor = workSpawnCompletionEntryCard(entries[index]) else {
+      result.append(entries[index])
+      index += 1
+      continue
+    }
+    var end = index + 1
+    var newest = anchor
+    while end < entries.count,
+          let next = workSpawnCompletionEntryCard(entries[end]),
+          next.childId == anchor.childId {
+      newest = next
+      end += 1
+    }
+    let run = Array(entries[index..<end])
+    index = end
+    guard run.count >= 2 else {
+      result.append(contentsOf: run)
+      continue
+    }
+    let anchorCard = anchor.card
+    let newestCard = newest.card
+    // The count trails the host's own sentence. iOS re-states nothing: a legacy
+    // transcript's `Peer "X" turn finished` keeps those words and still gets the
+    // multiplier, because the fold never re-derives the line.
+    let multiplier = "×\(run.count)"
+    let foldedBody = nonEmptyWorkTimelineText(newestCard.body)
+      .map { "\($0) \(multiplier)" } ?? multiplier
+    let folded = WorkEventCardModel(
+      id: anchorCard.id,
+      kind: newestCard.kind,
+      title: newestCard.title,
+      icon: newestCard.icon,
+      tint: newestCard.tint,
+      timestamp: newestCard.timestamp,
+      body: foldedBody,
+      bullets: newestCard.bullets,
+      metadata: newestCard.metadata,
+      spawnCompletionChildId: anchor.childId
+    )
+    result.append(WorkTimelineEntry(
+      id: run[0].id,
+      timestamp: run[run.count - 1].timestamp,
+      rank: run[0].rank,
+      payload: .eventCard(folded)
+    ))
+  }
+  return result
+}
+
+/// The spawn-completion notice an entry carries, if it is one: the child chat it
+/// reports on AND the card itself.
+///
+/// Both halves come back together because only the payload can answer either
+/// question — asking for the child id and then re-matching the payload for the
+/// card left the caller with two `case .eventCard` guards it could never fail,
+/// which read like handled cases and were dead branches.
+private func workSpawnCompletionEntryCard(
+  _ entry: WorkTimelineEntry
+) -> (childId: String, card: WorkEventCardModel)? {
+  guard case .eventCard(let card) = entry.payload,
+        let childId = card.spawnCompletionChildId else { return nil }
+  return (childId, card)
 }
 
 /// Fold a run of 2+ consecutive interrupt-stopped subagent result rows into one
@@ -2648,6 +2736,35 @@ func workHostSleepId(from detail: String?) -> String? {
   return trimmed.isEmpty ? nil : trimmed
 }
 
+/// The child chat a `spawn_completed` notice reports on, read out of the
+/// notice's detail JSON (`AgentChatSpawnCompletion` in
+/// `apps/desktop/src/shared/types/chat.ts`), or `nil` for any other notice.
+/// Desktop parity: `readSpawnCompletionChildId` in `chatTranscriptRows.ts`.
+///
+/// The detail shape is the marker, not the notice `status`: iOS drops `status`
+/// when it normalizes `AgentChatEvent` into `WorkChatEvent` (only the host-sleep
+/// remap survives), so the `spawnCompletion` object — which nothing else emits —
+/// is what identifies these notices here. A notice whose detail lost its
+/// completion returns `nil`, which is the fold's "keep your own row" answer.
+///
+/// Peer completions only. A `subagent` completion never reaches this code: both
+/// decode paths turn it into a `subagent_result` upstream
+/// (`RemoteModels.swift`'s notice branch, `workSpawnCompletionEvent` in
+/// `WorkTranscriptParser.swift`), and folding must not disturb that.
+func workSpawnCompletionChildId(from detail: String?) -> String? {
+  guard let detail,
+        let data = detail.data(using: .utf8),
+        let decoded = try? JSONSerialization.jsonObject(with: data),
+        let object = decoded as? [String: Any],
+        let completion = object["spawnCompletion"] as? [String: Any],
+        let childSessionId = completion["childSessionId"] as? String
+  else {
+    return nil
+  }
+  let trimmed = childSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+  return trimmed.isEmpty ? nil : trimmed
+}
+
 /// Stable identity for ONE host sleep, shared by its paused and resumed halves
 /// so `buildWorkEventCards` folds them into a single chip that resolves in
 /// place — the host's "one sleep, one artifact" contract, and desktop parity
@@ -3132,7 +3249,11 @@ private func eventCard(
         timestamp: envelope.timestamp,
         body: message,
         bullets: detail.map { [$0] } ?? [],
-        metadata: [kind.replacingOccurrences(of: "_", with: " ").capitalized]
+        metadata: [kind.replacingOccurrences(of: "_", with: " ").capitalized],
+        // Resolved here, once per card, rather than re-parsed on every timeline
+        // rebuild by the fold. The wording stays exactly as the host wrote it —
+        // only the child key is lifted out of the detail.
+        spawnCompletionChildId: kind == "info" ? workSpawnCompletionChildId(from: detail) : nil
       )
     case .error(let message, let detail, let category, _):
       let errorStyle = errorPresentation(for: category)

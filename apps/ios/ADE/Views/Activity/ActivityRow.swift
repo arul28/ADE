@@ -59,9 +59,21 @@ struct ActivityRow: View {
     /// `.combine`'s label override, so without them VoiceOver hears strictly
     /// less than a sighted reader sees.
     private var accessibilityLabel: String {
-        var parts = [row.headline, row.phaseLabel, row.scopeLabel]
+        var parts = [row.title, row.phaseLabel, row.scopeLabel]
+        // The provider left `scopeLine` wherever the mark could take over that
+        // line, and a logo is not readable — so it is spoken here instead and
+        // VoiceOver still hears which agent this is.
+        //
+        // `row.providerName` is nil on a pull-request row, which is the same
+        // gate `row.providerMark` applies. The two used to be gated
+        // separately and only the visual half was: a PR row showed no mark and
+        // still SPOKE "GitHub", so VoiceOver heard a provider the screen never
+        // claimed. One rule on the presentation now decides both.
+        if let provider = row.providerName {
+            parts.append(provider)
+        }
         if let connect = connectAccessibilitySuffix { parts.append(connect) }
-        if let note = row.statusNote { parts.append(note) }
+        if let note = row.statusDetail { parts.append(note) }
         if let progress = row.planProgress, progress.total > 0 {
             parts.append("step \(progress.completed) of \(progress.total)")
         }
@@ -138,7 +150,7 @@ struct ActivityRow: View {
     }
 
     private var lineTwo: some View {
-        Text(row.headline)
+        Text(row.title)
             .font(.system(.subheadline, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(1)
@@ -146,31 +158,62 @@ struct ActivityRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The last line: where this is running, or — mid-tap — what the connect is
-    /// doing. The connect line REPLACES it rather than sitting beneath it, so
-    /// the row cannot grow under the finger that just touched it.
+    /// The last line: where this is running and what it is doing, or — mid-tap —
+    /// what the connect is doing, with the provider mark hard against the
+    /// trailing edge. The connect line REPLACES the scope text rather than
+    /// sitting beneath it, so the row cannot grow under the finger that just
+    /// touched it.
+    ///
+    /// The mark matches the one the Work session card puts on its own third
+    /// line, at the same opacity — one branded glyph instead of the provider's
+    /// name in words, which is what used to lead `scopeLine`.
+    ///
+    /// `row.providerMark` decides whether there is one, and it and
+    /// `row.providerName` read one family table (`ADESharedTheme`), so the
+    /// glyph and the VoiceOver word cannot disagree about which providers this
+    /// build knows, and neither appears on a pull-request row.
+    ///
+    /// A provider with no mark of its own renders nothing HERE — but it is not
+    /// silent: `scopeLine` keeps leading with its name in that case, so the row
+    /// always identifies what is running one way or the other. A generic
+    /// terminal glyph standing in for Gemini would be a claim about what is
+    /// running, not an omission.
     @ViewBuilder
     private var lineThree: some View {
-        switch connectState {
-        case .idle:
-            Text(row.scopeLine)
-                .font(.caption2)
-                .foregroundStyle(ADEColor.textMuted)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        case .connecting(let machine):
-            ActivityRowConnectLine(
-                text: "Connecting to \(machine)…",
-                tint: ADEColor.accent,
-                showsSpinner: true
-            )
-        case .unreachable(let machine):
-            ActivityRowConnectLine(
-                text: "Could not reach \(machine). Tap to retry.",
-                tint: activityToneColor(.amber),
-                showsSpinner: false
-            )
+        HStack(spacing: 6) {
+            switch connectState {
+            case .idle:
+                Text(row.scopeLine)
+                    .font(.caption2)
+                    .foregroundStyle(ADEColor.textMuted)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            case .connecting(let machine):
+                ActivityRowConnectLine(
+                    text: "Connecting to \(machine)…",
+                    tint: ADEColor.accent,
+                    showsSpinner: true
+                )
+            case .unreachable(let machine):
+                ActivityRowConnectLine(
+                    text: "Could not reach \(machine). Tap to retry.",
+                    tint: activityToneColor(.amber),
+                    showsSpinner: false
+                )
+            }
+
+            if let assetName = row.providerMark {
+                Image(assetName)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 14, height: 14)
+                    .opacity(0.75)
+                    .fixedSize()
+                    // The row's combined label names the provider in words; a
+                    // nested image element would make VoiceOver say it twice.
+                    .accessibilityHidden(true)
+            }
         }
 
         if let progress = row.planProgress, progress.total > 0 {

@@ -30,7 +30,7 @@ import { createOperationService } from "../../desktop/src/main/services/history/
 import { createLaneService, type LaneDeleteTeardownDeps } from "../../desktop/src/main/services/lanes/laneService";
 import {
   createSessionService,
-  STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
+  STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "../../desktop/src/main/services/sessions/sessionService";
 import { createSettleTeardownWiring } from "../../desktop/src/main/services/sessions/settleTeardownWiring";
 import type {
@@ -79,7 +79,7 @@ import {
   type PrCardDataSource,
 } from "../../desktop/src/main/services/prs/prChatCards";
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
-import { createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
+import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
@@ -1160,7 +1160,6 @@ export async function createAdeRuntime(args: {
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
         knownOwnerPids: processRegistry.listKnownPids(),
         knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
-        freshActivityGraceMs: STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -1173,7 +1172,7 @@ export async function createAdeRuntime(args: {
     reconcileStaleRunningSessions("startup");
     staleSessionReconcileTimer = setTimeout(
       () => reconcileStaleRunningSessions("fresh-activity-grace-expired"),
-      STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS + 1_000,
+      STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
     );
     staleSessionReconcileTimer.unref?.();
     const sessionDeltaService = createSessionDeltaService({
@@ -1962,6 +1961,8 @@ export async function createAdeRuntime(args: {
       db,
       sessionService,
       emitEvent: emitPrEvent,
+      logger,
+      getChatLiveness: agentChatService ? chatLivenessReader(agentChatService) : undefined,
     });
 
     // GitHub polling fallback. Runtime-bound desktop windows route PR reads to

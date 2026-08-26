@@ -70,8 +70,12 @@ and other terminal rows do not acquire lineage from resume metadata.
   tool-type change, and resume metadata refresh. Recomputes
   `resume_command` when either `toolType`, `resumeCommand`, or
   `resumeMetadata` changes.
-- `reopen(sessionId)` — lightweight reset to `running`. Used when a
-  resume is in-flight before the PTY is attached.
+- `reopen(sessionId)` — lightweight reset to `running` from **any**
+  non-running status. Used when a resume is in-flight before the PTY is
+  attached, and by chat lifecycle sites (turn start, restart recovery,
+  keeping a chat open across a runtime close) to undo a row a liveness
+  reconcile wrongly detached. Emits `terminalSessionChanged` only when a
+  row actually moved, so it is idempotent and silent otherwise.
 - `reattach({ sessionId, ptyId, startedAt })` — full reset used by
   `ptyService` during resume: status back to `running`, clears
   `ended_at`, `exit_code`, `summary`, `head_sha_end`, rebinds `pty_id`
@@ -79,7 +83,13 @@ and other terminal rows do not acquire lineage from resume metadata.
   tool type, resume metadata.
 - `setHeadShaStart` / `setHeadShaEnd` — anchors for delta computation.
 - `setLastOutputPreview(sessionId, preview)` — also stamps
-  `last_output_at`.
+  `last_output_at`, and calls the private
+  `repairStaleDetachOnActivity(sessionId)`, which reopens the row **only**
+  from `detached`. Same for `touchLastOutput`. These two are the only
+  activity writers, and they only fire while the live runtime in this
+  process is producing output — so a genuinely dead session can never be
+  resurrected by them. This is the repair PTY / tracked-CLI rows get, and
+  the one that lands between chat turns.
 - `setSummary` / `setResumeCommand` — tight writes used by the
   end-of-session summarizer and resume backfill.
 - `end({ sessionId, endedAt, exitCode, status })` — finalizes and
@@ -92,7 +102,13 @@ and other terminal rows do not acquire lineage from resume metadata.
   both live and known process identities from the local
   `runtime_processes` table. That lets ADE detach sessions owned by a
   crashed local process without rewriting a still-running session that
-  arrived through sync from another machine.
+  arrived through sync from another machine. `freshActivityGraceMs`
+  defaults to `STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS` (2 min) and is
+  overridable for tests only — no host passes it. Hosts schedule exactly one
+  post-startup rescan at the exported
+  `STALE_RUNNING_SESSION_RESCAN_DELAY_MS`, which is the larger of the
+  process-registry liveness window and that grace, plus a second: both have
+  to elapse or the rescan skips the same rows again.
 - `deleteSession(sessionId)` — remove a row outright. Emits
   `terminalSessionChanged` with `reason: "deleted"`. Used by both PTY
   cleanup and `agentChatService.deleteSession`.

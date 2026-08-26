@@ -61,7 +61,29 @@ export type AttentionNotchOutput =
       type: "dismiss_item";
       itemId: string;
       destination?: AttentionDestination | null;
+      /**
+       * How hard the helper means it. `"seen"` acknowledges the row so it stops
+       * interrupting but leaves it in Activity — what closing a takeover card
+       * means. `"dismiss"` files it away, which is what the panel's own dismiss
+       * button has always meant, and what a helper too old to send this field
+       * meant by sending nothing.
+       *
+       * Always one of the two by the time it leaves this module:
+       * `normalizeAttentionNotchOutput` narrows the wire value, so no consumer
+       * has to re-decide what an absent or unrecognised mode meant.
+       */
+      mode: "seen" | "dismiss";
     };
+
+/**
+ * What actually arrives on the wire. Identical to `AttentionNotchOutput` except
+ * that `dismiss_item.mode` is an unnarrowed string: the guard must accept a
+ * word a newer helper knows and this build does not, so the narrowing happens
+ * in `normalizeAttentionNotchOutput` instead of in the type.
+ */
+export type AttentionNotchWireOutput =
+  | Exclude<AttentionNotchOutput, { type: "dismiss_item" }>
+  | (Omit<Extract<AttentionNotchOutput, { type: "dismiss_item" }>, "mode"> & { mode?: string });
 
 type AttentionNotchInput =
   | { type: "settings"; settings: AttentionNotchSettings }
@@ -434,7 +456,7 @@ export class AttentionNotchHelper {
             this.ensureRefreshTimer();
           }
           if (parsed.type === "protocol_error") this.lastProtocolError = parsed.message;
-          this.options.onOutput(parsed);
+          this.options.onOutput(normalizeAttentionNotchOutput(parsed));
         } else {
           this.options.logger.warn("attention.notch_helper_invalid_output");
         }
@@ -500,7 +522,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isAttentionNotchOutput(value: unknown): value is AttentionNotchOutput {
+/**
+ * Resolve the wire form to the contract the rest of ADE reads. Only
+ * `dismiss_item.mode` needs it, and the two unknown cases mean different
+ * things:
+ *
+ * - ABSENT is a helper too old to have the field, and that message has always
+ *   meant "file this away" — so it stays a `"dismiss"`.
+ * - PRESENT BUT UNRECOGNISED is a helper NEWER than this build naming a mode we
+ *   cannot interpret. Guessing `"dismiss"` would file a row away on the user's
+ *   behalf; `"seen"` only stops it interrupting. A future mode degrades to the
+ *   less destructive action.
+ */
+function normalizeAttentionNotchOutput(value: AttentionNotchWireOutput): AttentionNotchOutput {
+  if (value.type !== "dismiss_item") return value;
+  const { mode, ...rest } = value;
+  if (mode == null) return { ...rest, mode: "dismiss" };
+  return { ...rest, mode: mode === "dismiss" ? "dismiss" : "seen" };
+}
+
+function isAttentionNotchOutput(value: unknown): value is AttentionNotchWireOutput {
   if (!isRecord(value) || typeof value.type !== "string") return false;
   if (value.type === "surface") {
     return (
@@ -514,6 +555,9 @@ function isAttentionNotchOutput(value: unknown): value is AttentionNotchOutput {
     || value.type === "refresh"
     || value.type === "open_settings"
   ) return true;
+  // `mode` is additive and is deliberately not gated here: absent, or a word a
+  // newer helper knows and this build does not, must never cost us the whole
+  // acknowledgement. `normalizeAttentionNotchOutput` narrows it instead.
   if (value.type === "dismiss_item") return typeof value.itemId === "string";
   if (value.type === "settings") {
     if (!isRecord(value.settings)) return false;

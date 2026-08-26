@@ -12,6 +12,27 @@ func workFallbackItemID(
   "fallback-\(workStableDigest([sessionId, timestamp, String(sequence ?? -1), type, seed].joined(separator: "|")))"
 }
 
+/// The untyped twin of `agentChatApprovalDetail` (RemoteModels.swift), for the
+/// path that parses persisted transcript JSON instead of decoding it: the
+/// envelope's top-level `requestKind` is authoritative over the embedded
+/// `detail.request.kind`, mirroring `approvalRequestKind()` in
+/// apps/desktop/src/shared/pendingInputAnswers.ts.
+///
+/// Same three refusals as the typed version — a blank kind, a payload with no
+/// `request` object to write into, and any kind the classifiers do not know all
+/// leave the detail exactly as it arrived, which means "approval".
+func workApprovalRequestDetail(applying requestKind: String?, to detail: Any?) -> Any? {
+  guard let trimmed = agentChatRecognizedRequestKind(requestKind),
+        var object = detail as? [String: Any],
+        var request = object["request"] as? [String: Any] else {
+    return detail
+  }
+  if let embedded = request["kind"] as? String, embedded.lowercased() == trimmed { return detail }
+  request["kind"] = trimmed
+  object["request"] = request
+  return object
+}
+
 func optionalWorkInt(_ value: Any?) -> Int? {
   if let value = value as? Int { return value }
   if let value = value as? NSNumber { return value.intValue }
@@ -577,7 +598,16 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "approval_request":
         event = .approvalRequest(
           description: stringValue(eventDict["description"]),
-          detail: optionalString(prettyPrintedJSONString(eventDict["detail"])),
+          // Same precedence the decoded path applies in
+          // `agentChatApprovalDetail`: the envelope's `requestKind` wins over
+          // the embedded `detail.request.kind`, because this parser feeds the
+          // same classifiers. The fallback id seed below deliberately keeps
+          // reading the RAW detail — it is an identity, and it must not shift
+          // for events that already have one on disk.
+          detail: optionalString(prettyPrintedJSONString(workApprovalRequestDetail(
+            applying: eventDict["requestKind"] as? String,
+            to: eventDict["detail"]
+          ))),
           itemId: itemId ?? workFallbackItemID(
             sessionId: sessionId,
             timestamp: timestamp,

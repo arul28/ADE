@@ -8,7 +8,7 @@ import { createSettleTeardownWiring } from "./settleTeardownWiring";
  * background job kept running.
  */
 describe("settle teardown wiring", () => {
-  const neverAborted = { isAborted: () => false };
+  const neverAborted = { isAborted: () => false, mayInterruptActiveTurn: true };
 
   function harness(
     summary: Record<string, unknown> | null,

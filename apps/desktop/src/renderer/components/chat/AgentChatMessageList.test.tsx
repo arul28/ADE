@@ -1608,6 +1608,59 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect((navEvent!.detail as { sessionId?: string }).sessionId).toBe("child-peer-1");
   });
 
+  it("titles a legacy spawn_completed notice from its old message when the detail carries no completion", () => {
+    // Transcripts persisted before the copy change read `Peer "<title>" turn
+    // finished` and some carry no structured completion at all. They are never
+    // re-emitted, so the message parse has to keep working for both formats.
+    renderMessageList([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-14T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "info",
+          status: "spawn_completed",
+          message: 'Peer "Move/Regroup Engine and Undo" turn finished',
+        },
+      },
+    ], { sessionId: "parent-session" });
+
+    const chip = screen.getByRole("button", { name: /Move\/Regroup Engine and Undo/ });
+    expect(chip.textContent).toContain('Chat "Move/Regroup Engine and Undo" finished its turn');
+  });
+
+  it("shows a repeat multiplier on a folded spawn_completed chip", () => {
+    // The count lives on the render row, produced by the adjacency fold — so
+    // the input is what a real transcript holds: one notice per sibling turn.
+    const completion = (timestamp: string, childTurnId: string) => ({
+      sessionId: "parent-session",
+      timestamp,
+      event: {
+        type: "system_notice" as const,
+        noticeKind: "info" as const,
+        status: "spawn_completed",
+        message: 'Chat "Docs" finished its turn',
+        detail: {
+          spawnCompletion: {
+            childSessionId: "child-peer-1",
+            childTitle: "Docs",
+            spawnKind: "peer" as const,
+            childTurnId,
+            status: "completed" as const,
+            summary: "Wrote the docs.",
+          },
+        },
+      },
+    });
+    renderMessageList([
+      completion("2026-07-14T10:00:00.000Z", "turn-1"),
+      completion("2026-07-14T10:00:01.000Z", "turn-2"),
+      completion("2026-07-14T10:00:02.000Z", "turn-3"),
+    ], { sessionId: "parent-session" });
+
+    expect(screen.getByText("×3")).toBeTruthy();
+  });
+
   it("suppresses the legacy subagent_spawned pill for a plain spawn (the unified card replaces it)", () => {
     renderMessageList([
       {

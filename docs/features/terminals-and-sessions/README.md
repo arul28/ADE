@@ -187,7 +187,15 @@ and in tests.
   belongs to a sibling and must be left alone; a row whose owner is known on
   this machine but no longer live can be marked `detached`; a row with an
   unknown owner identity is preserved because it may have synced from another
-  machine. Its transcript-tail read transparently falls back to a
+  machine. Because that ownership answer can still be wrong for a session owned
+  by another ADE process, two repairs undo a bad `detached`: `reopen(sessionId)`
+  (any non-running status → `running`, called from chat lifecycle sites that are
+  about to drive the session themselves) and `repairStaleDetachOnActivity`
+  (`detached` only, ridden by `setLastOutputPreview` / `touchLastOutput`, so a
+  PTY or agent-CLI row is repaired mid-stream between turns) — see
+  [Stale-detached repair](#stale-detached-repair). It also exports
+  `STALE_RUNNING_SESSION_RESCAN_DELAY_MS`, the one delay both hosts use for the
+  post-startup rescan. Its transcript-tail read transparently falls back to a
   `<transcript>.gz` generation (`readHistoryFileSync`) so a compacted chat
   transcript still replays. ~580 lines. Branch rewrite.
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
@@ -1799,6 +1807,18 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    confusion. Ended chat sessions stay in the table and are resumable
    through the SDK (or removable via `ade.agentChat.delete`).
 
+   Both hosts re-run the reconcile once after startup —
+   `setTimeout(…, STALE_RUNNING_SESSION_RESCAN_DELAY_MS)` in desktop `main.ts`
+   and in the brain's `apps/ade-cli/src/bootstrap.ts`. The constant is owned by
+   `sessionService.ts`, next to the grace it is built from, and is
+   `max(DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS, STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS) + 1s`.
+   **Both** windows have to elapse or the rescan just skips the same rows again:
+   the owner is only provably gone once the process registry stops counting it
+   live, and a row with fresh activity is held back until its grace expires.
+   Neither host passes `freshActivityGraceMs` any more; the default lives with
+   the constant. A row wrongly detached anyway is repaired by activity or by a
+   turn — see [Stale-detached repair](#stale-detached-repair) below.
+
 11. **Delete** — `sessionService.deleteSession(sessionId)` removes a
    row outright and emits `terminalSessionChanged` with
    `reason: "deleted"` so renderer caches drop it immediately.
@@ -1808,6 +1828,41 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    transcript (path-safe under `.ade/`), and then calls the session
    service. PTY rows use the same `deleteSession` as their deletion
    primitive.
+
+### Stale-detached repair
+
+The reconcile decides liveness from the process registry, which can be wrong for
+a session whose owner is another ADE process, or whose registry row has not been
+observed yet at boot. Such a session is marked `detached` while it is still
+streaming, and the Work tab paints the frozen `ClosedCliSessionSurface` ("Ended")
+over a live PTY. Two repairs undo it, and the split is deliberate:
+
+| Repair | Reopens from | Fires on |
+|---|---|---|
+| `reopen(sessionId)` | any non-`running` status | chat lifecycle sites about to drive the session themselves — turn start, restart recovery, keeping a chat open across a runtime close. A turn arriving *is* proof the row is wrong. |
+| `repairStaleDetachOnActivity(sessionId)` | `detached` only | every activity write (`setLastOutputPreview`, `touchLastOutput`). This is the repair that lands **between** turns, and the only one PTY / tracked-CLI rows ever get — every `reopen` call site is a chat lifecycle site. |
+
+The narrow one is safe because it only ever fires while the live runtime *in
+this process* is producing output for the session: the caller is by construction
+the owner, and a genuinely dead session produces no activity, so nothing can be
+resurrected here.
+
+Both go through one private `reopenRow(sessionId, scope)`. The scope predicate
+lives in the `WHERE` rather than in a read-modify-write, so a concurrent writer
+cannot lose a race against a value this process read earlier; it is a PK seek
+that matches nothing in the normal case. `status` / `ended_at` / `exit_code` are
+plain CRR columns (not settle-tuple columns, so this stays outside the settle
+chokepoint) and merge last-writer-wins. `terminalSessionChanged` is emitted only
+when a row actually moved, so calling either on an already-running row is
+idempotent and silent — and without that emit the renderer never learns the
+session went back to `running`.
+
+Also on the chat side: `agentChatService` calls `sessionService.reopen` on the
+**persisted** row unconditionally when it opens a session, not only inside the
+`status === "ended"` branch. A hot chat's *in-memory* status is active/idle, so
+that branch never fired for a row a liveness reconcile had wrongly marked
+`detached`, and the session read "Ended" while the chat kept streaming. The
+in-memory reset stays separate.
 
 ## Hot paths worth knowing
 

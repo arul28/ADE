@@ -1888,6 +1888,92 @@ enum AgentChatApprovalRequestKind: String, Codable, Equatable {
   case toolCall = "tool_call"
 }
 
+/// Resolve what an `approval_request` is actually asking for, and write the
+/// answer where every iOS reader already looks.
+///
+/// Two sources are on the wire, the same two the canonical TypeScript reader
+/// `approvalRequestKind()` (apps/desktop/src/shared/pendingInputAnswers.ts)
+/// reads: the top-level `requestKind` a current host sends, and the embedded
+/// `detail.request.kind` that hosts before it sent — and that the sole emitter
+/// still attaches alongside. The top-level field wins; the embedded kind is the
+/// fallback.
+///
+/// The two readers agree on every kind either build knows and diverge on
+/// exactly one case, deliberately: for a kind this build does not recognise,
+/// desktop still prefers the top-level word, and iOS keeps the embedded one.
+/// Desktop can afford that because its classifiers treat an unfamiliar kind as
+/// an approval; on iOS the same unfamiliar word, WRITTEN INTO the payload,
+/// reclassifies a Pi tool gate as a freeform question card — see the third
+/// bullet below. Falling back is the safe direction here, so iOS falls back.
+/// `AgentChatApprovalRequestKind` above is NOT either of them: it
+/// describes the SHAPE being confirmed (command / file change / tool call) and
+/// has no word for "the agent asked you a question", which is why an
+/// AskUserQuestion arrived here as a `tool_call` approval.
+///
+/// The precedence is applied to the payload rather than carried beside it
+/// because iOS's classifiers (`pendingWorkQuestionFromApproval` and its
+/// siblings) read the request out of `detail`, and `WorkEvent.approvalRequest`
+/// — the domain event they receive — has one payload slot and no field for an
+/// envelope. Normalising at the decode boundary means one place decides, and
+/// nothing downstream can disagree with it.
+///
+/// Deliberately conservative in three ways:
+/// - an absent or blank `requestKind` changes nothing, so an older host still
+///   classifies from what it sent;
+/// - a `requestKind` with no embedded `request` object to write into changes
+///   nothing either, rather than SYNTHESISING a request — an envelope with no
+///   payload has no questions to render, and inventing one would turn an
+///   approval into an empty question card;
+/// - a kind this build does not recognise changes nothing, which is stronger
+///   than it sounds. Writing an unknown word into `request.kind` would ERASE
+///   the one word the classifiers understand, and a Pi tool gate
+///   (`kind: "approval"` with a single option-less question) reclassifies as a
+///   freeform question card the moment its kind stops saying "approval" — a
+///   text field whose every submission goes out as `accept`. Unknown must mean
+///   approval, so unknown means "leave the fallback alone".
+func agentChatApprovalDetail(
+  applying requestKind: String?,
+  to detail: RemoteJSONValue?
+) -> RemoteJSONValue? {
+  guard let trimmed = agentChatRecognizedRequestKind(requestKind) else { return detail }
+  guard case .object(var object)? = detail, case .object(var request)? = object["request"] else {
+    return detail
+  }
+  if case .string(let embedded)? = request["kind"], embedded.lowercased() == trimmed { return detail }
+  request["kind"] = .string(trimmed)
+  object["request"] = .object(request)
+  return .object(object)
+}
+
+/// The request kinds iOS's approval classifiers actually branch on, normalised.
+/// Nil for anything blank or unrecognised — see `agentChatApprovalDetail` for
+/// why an unknown kind must not be written into the payload.
+func agentChatRecognizedRequestKind(_ requestKind: String?) -> String? {
+  guard let trimmed = requestKind?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased(),
+    !trimmed.isEmpty else {
+    return nil
+  }
+  // Source of truth: `PendingInputKind` in apps/desktop/src/shared/types/chat.ts
+  // — keep this set in step with it when a kind is added there. `permission`
+  // (singular) is the one member with no counterpart in that union: it is not
+  // on the wire, but iOS's own permission classifier branches on it
+  // (`pendingWorkPermissionFromApproval`, WorkErrorAndMessageHelpers.swift), so
+  // admitting it here keeps the two agreeing rather than leaving a word one
+  // side accepts and the other refuses to write.
+  let recognized: Set<String> = [
+    "question",
+    "structured_question",
+    "approval",
+    "permission",
+    "permissions",
+    "plan_approval",
+    "model_selection",
+  ]
+  return recognized.contains(trimmed) ? trimmed : nil
+}
+
 enum AgentChatSubagentStatus: String, Codable, Equatable {
   case completed
   case failed
@@ -2622,6 +2708,7 @@ extension AgentChatEvent {
     case path
     case diff
     case kind
+    case requestKind
     case command
     case cwd
     case output
@@ -2844,7 +2931,10 @@ extension AgentChatEvent {
         kind: try container.decode(AgentChatApprovalRequestKind.self, forKey: .kind),
         description: try container.decode(String.self, forKey: .description),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail)
+        detail: agentChatApprovalDetail(
+          applying: try container.decodeIfPresent(String.self, forKey: .requestKind),
+          to: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail)
+        )
       )
     case "pending_input_resolved":
       self = .pendingInputResolved(
@@ -3224,7 +3314,25 @@ extension AgentChatEvent {
       )
     case "system_notice":
       let eventTurnId = try container.decodeIfPresent(String.self, forKey: .turnId)
-      if let completion = try container.decodeIfPresent(AgentChatSpawnCompletionContainer.self, forKey: .detail)?.spawnCompletion,
+      // Probe `detail` for a spawn completion WITHOUT letting the probe throw.
+      // The host declares `detail?: string | AgentChatNoticeDetail`
+      // (apps/desktop/src/shared/types/chat.ts), and a plain-string detail is
+      // common — every `provider_health` notice carries one. Decoding a string
+      // as a keyed container raises `typeMismatch`, and a thrown event is
+      // dropped whole: `ADELossyArray` skips the element and
+      // `syncDecodeChatEventEnvelope` returns nil. The notice then never
+      // renders on iOS even though the kind is fully supported. Only an object
+      // detail can carry a spawn completion, so a failed probe means "not one".
+      // The replay path already treats it this way — see
+      // `workSpawnCompletionEvent` in WorkTranscriptParser.swift.
+      // `decode`, not `decodeIfPresent`: a missing key throws `keyNotFound`,
+      // which `try?` turns into the same nil the optional-of-optional flattening
+      // produced. One level of optionality, identical behaviour.
+      let detailSpawnCompletion = (try? container.decode(
+        AgentChatSpawnCompletionContainer.self,
+        forKey: .detail
+      ))?.spawnCompletion
+      if let completion = detailSpawnCompletion,
          completion.spawnKind == .subagent {
         self = completion.event(fallbackTurnId: eventTurnId)
       } else {

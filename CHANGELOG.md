@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.65] - 2026-08-26
+
+### Chats and turns
+
+- A merged pull request no longer settles a chat whose turn is still running, and a machine-initiated settle never interrupts an active turn; user-initiated settles are unchanged (#1160).
+- A still-streaming session can no longer be left marked as ended; any activity repairs the row (#1160).
+- Repeated "chat finished its turn" notices fold into one row with a count, in plain language (#1160).
+- A Claude usage-limit rejection settles the idle turn and its background agents, so the quota card's fork option works instead of refusing (#1162).
+- Chat accent colors resolve on switch instead of showing the previous chat's colors (#1160).
+
+### Attention notch and pill
+
+- Real chat title, provider logo and state dot, one action button labelled Answer / Approve / Review / Open, and a close button that works and marks the item seen (#1160).
+- Questions publish as questions rather than as approvals (#1160).
+
+### OpenCode
+
+- Reasoning is routed by part kind, so thinking no longer leaks into answer text or the transcript (#1161).
+- Provider retries surface as a notice; context overflow and aborts are handled as recoverable; a dropped stream fails the turn instead of hanging; errors are de-duplicated and truncated (#1161).
+- ADE's permission block no longer strips OpenCode's own temp, skill, and reference allowances (#1161).
+
+### Lanes and composer
+
+- Auto-created lanes no longer take branch names from a mentioned lane or a merged PR's deleted branch; lane naming uses the same model chain as chat titles (#1159).
+- The `@` menu ranks rows by match quality with a kind icon per row, and mention chips stay sized to the title (#1158).
+- Manage lane opens in place from Work; restyled dialog with the lane name in its color and a separate Select everything control (#1157).
+
+### iOS and `ade code`
+
+- iOS folds consecutive peer-completion notices with a count, admits an Answer action on question rows, and shows the chat title and provider mark in the activity drawer; a failed open no longer marks a question read (#1163).
+- The TUI counts repeated completion notices instead of dropping them (#1163).
+- Desktop auto-settle setting copy describes the real blocker (#1163).
+
+### Fixes
+
+- The Windows parent-pid query retries once on a cold-start timeout instead of refusing a teardown (#1160).
+
 ## [1.2.64] - 2026-08-25
 
 ### Codex
@@ -1704,7 +1741,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.64...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.65...HEAD
+[1.2.65]: https://github.com/arul28/ADE/compare/v1.2.64...v1.2.65
 [1.2.64]: https://github.com/arul28/ADE/compare/v1.2.63...v1.2.64
 [1.2.63]: https://github.com/arul28/ADE/compare/v1.2.62...v1.2.63
 [1.2.62]: https://github.com/arul28/ADE/compare/v1.2.61...v1.2.62

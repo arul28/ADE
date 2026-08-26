@@ -325,6 +325,12 @@ export type ChatTranscriptRenderEnvelope = {
   key: string;
   timestamp: string;
   event: ChatTranscriptRenderEvent;
+  /**
+   * How many folded events this row stands for. Set only by the adjacency fold
+   * for `spawn_completed` notices, which the chip renders as a trailing `×N`.
+   * Render-side only: nothing persists it and no emitter produces it.
+   */
+  repeatCount?: number;
 };
 
 export type ChatTranscriptGroupedEnvelope = {
@@ -336,6 +342,8 @@ export type ChatTranscriptGroupedEnvelope = {
     | ChatActivityBundleEvent
     | SubagentStoppedGroupEvent
     | BackgroundJobGroupRenderEvent;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `repeatCount`. */
+  repeatCount?: number;
 };
 
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
@@ -1104,6 +1112,26 @@ function resolveSubagentRowPosition(
 
   state[position] = null;
   return null;
+}
+
+/**
+ * The child a `spawn_completed` system notice reports on, or `null` for
+ * anything else — including a notice whose detail lost its `spawnCompletion`
+ * (an old or truncated transcript). An unidentified completion folds into
+ * nothing, so it keeps its own row rather than silently absorbing a different
+ * child's.
+ *
+ * Takes the RENDER event type, not `AgentChatEvent`: the fold compares an
+ * incoming event against one already stored on a row, and a row holds the
+ * render union. Narrowing on `type` rejects the synthetic render-only members
+ * anyway, so widening the parameter costs nothing and removes a cast.
+ */
+function readSpawnCompletionChildId(event: ChatTranscriptRenderEvent): string | null {
+  if (event.type !== "system_notice") return null;
+  if (event.noticeKind !== "info" || event.status !== "spawn_completed") return null;
+  const detail = event.detail;
+  if (!detail || typeof detail === "string") return null;
+  return detail.spawnCompletion?.childSessionId?.trim() || null;
 }
 
 function repairSubagentRowPositionsAfterSplice(
@@ -2377,6 +2405,28 @@ export function appendCollapsedChatTranscriptEvent(
       event: event as ChatTranscriptVisibleEvent,
     });
     return;
+  }
+
+  // ── Spawned-chat turn completions: ONE chip per adjacent run ──
+  // A parent that spawned a peer gets one `spawn_completed` notice per sibling
+  // TURN, which stacks identical rows. Fold an incoming notice into the LAST
+  // row when that row is a completion for the SAME child, carrying a
+  // `repeatCount` the chip renders as `×N`. Adjacency-only on purpose:
+  // anything the parent said or did in between separates the runs, and
+  // consulting only the row just appended is what keeps the incremental and
+  // full collapses byte-identical.
+  const spawnCompletionChildId = readSpawnCompletionChildId(event);
+  if (spawnCompletionChildId) {
+    const last = rows[rows.length - 1];
+    if (last && readSpawnCompletionChildId(last.event) === spawnCompletionChildId) {
+      rows[rows.length - 1] = {
+        ...last,
+        timestamp: envelope.timestamp,
+        event: event as ChatTranscriptVisibleEvent,
+        repeatCount: (last.repeatCount ?? 1) + 1,
+      };
+      return;
+    }
   }
 
   const pendingResolution = event.type === "user_message" && event.steerId?.trim()

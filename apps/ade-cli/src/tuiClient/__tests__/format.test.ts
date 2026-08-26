@@ -260,6 +260,51 @@ describe("renderChatLines", () => {
     expect(lines.map((line) => line.header)).toEqual([undefined, undefined]);
   });
 
+  it("labels an approval_request question as a question, not an approval", () => {
+    // A question and a real approval ride the same event. Rendering both as
+    // "approval needed" put the wrong word — and a meaningless 0 files/+0 -0
+    // count — on prose the agent is waiting to be told.
+    const render = (event: Record<string, unknown>) => renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [{
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: event as never,
+      }],
+    });
+
+    const topLevelKind = render({
+      type: "approval_request",
+      itemId: "ask-1",
+      kind: "tool_call",
+      requestKind: "structured_question",
+      description: "Which database should the worker read from?",
+    });
+    expect(topLevelKind[0]?.body).toBe("[?] Which database should the worker read from?");
+    expect(topLevelKind[0]?.tone).toBe("approval");
+
+    // An older host sends no top-level kind; the embedded request still says so.
+    const embeddedKind = render({
+      type: "approval_request",
+      itemId: "ask-2",
+      kind: "tool_call",
+      description: "Pick a rollout window",
+      detail: { request: { kind: "question", itemId: "ask-2" } },
+    });
+    expect(embeddedKind[0]?.body).toBe("[?] Pick a rollout window");
+
+    // A real approval — and an event with no kind at all, which is what every
+    // build before the split meant — keeps the approval line.
+    for (const event of [
+      { type: "approval_request", itemId: "c-1", kind: "command", requestKind: "permissions", description: "Run the migration" },
+      { type: "approval_request", itemId: "c-2", kind: "command", description: "Run tests" },
+    ]) {
+      expect(render(event)[0]?.body).toBe("approval needed  0 files  +0 -0");
+    }
+  });
+
   it("shows compact image chips for user messages that only carry attachments", () => {
     const lines = renderChatLines({
       activeSession: null,
@@ -1154,6 +1199,188 @@ describe("renderChatLines", () => {
 
     expect(lines).toHaveLength(1);
     expect(lines[0]?.body).toBe("Refreshing provider status.");
+  });
+
+  describe("spawned-chat turn completions", () => {
+    // `spawnCompletedNoticeMessage` produces a BYTE-IDENTICAL sentence per
+    // child turn, so the general notice dedupe used to swallow every repeat
+    // and the user could not tell one finish from twelve. Desktop renders
+    // `×N` on one chip; these pin the TUI to the same presentation.
+    const spawnCompleted = (args: {
+      childTitle: string;
+      childSessionId?: string;
+      timestamp: string;
+      sequence: number;
+    }) => ({
+      sessionId: "s1",
+      timestamp: args.timestamp,
+      sequence: args.sequence,
+      event: {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "spawn_completed",
+        message: `Chat "${args.childTitle}" finished its turn`,
+        ...(args.childSessionId
+          ? { detail: { spawnCompletion: { childSessionId: args.childSessionId, childTitle: args.childTitle } } }
+          : {}),
+      } as never,
+    });
+
+    it("collapses an adjacent run of one child's completions into a counted line", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3 }),
+        ],
+      });
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.body).toBe('Chat "Docs sweep" finished its turn ×3');
+    });
+
+    it("keeps a single completion uncounted", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+        ],
+      });
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.body).toBe('Chat "Docs sweep" finished its turn');
+    });
+
+    it("starts a new line for a different child, even with the same title", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c2", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c2", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual([
+        'Chat "Docs sweep" finished its turn',
+        'Chat "Docs sweep" finished its turn ×2',
+      ]);
+    });
+
+    it("breaks the run on an intervening line", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:02.000Z",
+            sequence: 3,
+            event: { type: "user_message", text: "keep going" } as never,
+          },
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:03.000Z", sequence: 4 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:04.000Z", sequence: 5 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual([
+        'Chat "Docs sweep" finished its turn ×2',
+        "keep going",
+        'Chat "Docs sweep" finished its turn ×2',
+      ]);
+    });
+
+    it("gives each unidentified completion its own line instead of dropping it", () => {
+      // No `spawnCompletion` detail means no child to count by, so these fold
+      // into nothing — matching desktop's `readSpawnCompletionChildId` and
+      // iOS's `spawnCompletionChildId`. The point of the check is that the
+      // shared notice dedupe does NOT swallow the repeat: two finishes stay
+      // two lines rather than collapsing to one.
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs sweep", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual([
+        'Chat "Docs sweep" finished its turn',
+        'Chat "Docs sweep" finished its turn',
+      ]);
+    });
+
+    it("never folds an identified completion into an unidentified neighbour", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:02.000Z", sequence: 3 }),
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual([
+        'Chat "Docs sweep" finished its turn',
+        'Chat "Docs sweep" finished its turn ×2',
+      ]);
+    });
+
+    it("renders the newest body when a child is renamed mid-run", () => {
+      // Desktop swaps the row's event for the incoming one and iOS reads the
+      // last entry, so the ×N must sit on the LATEST title, not the first.
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          spawnCompleted({ childTitle: "Docs sweep", childSessionId: "c1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1 }),
+          spawnCompleted({ childTitle: "Docs rewrite", childSessionId: "c1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2 }),
+        ],
+      });
+
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.body).toBe('Chat "Docs rewrite" finished its turn ×2');
+    });
+
+    it("leaves the shared notice dedupe alone for non-completion notices", () => {
+      const lines = renderChatLines({
+        activeSession: null,
+        notices: [],
+        events: [
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:00.000Z",
+            sequence: 1,
+            event: { type: "system_notice", noticeKind: "info", message: "Refreshing provider status." } as never,
+          },
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:01.000Z",
+            sequence: 2,
+            event: { type: "system_notice", noticeKind: "info", message: "Refreshing provider status." } as never,
+          },
+          {
+            sessionId: "s1",
+            timestamp: "2026-01-01T12:00:02.000Z",
+            sequence: 3,
+            event: { type: "system_notice", noticeKind: "info", status: "spawn_completed", message: "Chat \"Docs sweep\" finished its turn" } as never,
+          },
+        ],
+      });
+
+      expect(lines.map((line) => line.body)).toEqual([
+        "Refreshing provider status.",
+        'Chat "Docs sweep" finished its turn',
+      ]);
+    });
   });
 
   it("routes severity-bearing system_notice variants to tone=error in the TUI", () => {
