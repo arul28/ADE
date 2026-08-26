@@ -8,6 +8,7 @@ const CLI_HELP_BUDGET = 700;
 const RULES_BUDGET = 500;
 const CONTROL_BUDGET = 850;
 const CLOUD_BUDGET = 900;
+const SUBAGENT_ROUTING_BUDGET = 420;
 const TRUNCATED_MARKER = "\n[truncated]";
 
 const SECRET_RE = /[A-Za-z0-9+/=_\-]{40,}/;
@@ -138,10 +139,6 @@ export const buildCursorSdkSystemPrompt = (
     sections.push({ name: "cloud", bytes: cloudT.value.length, truncated: cloudT.truncated });
   }
 
-  const subagentRouting = buildNativeSubagentRoutingGuidance("cursor-sdk");
-  blocks.push(`## Subagent routing\n${subagentRouting}`);
-  sections.push({ name: "subagent-routing", bytes: subagentRouting.length, truncated: false });
-
   blocks.push(ADE_SESSION_STATUS_PROTOCOL_GUIDANCE);
   sections.push({
     name: "session-status",
@@ -167,6 +164,17 @@ export const buildCursorSdkSystemPrompt = (
   const ctrlT = truncateFromEnd(ctrl, CONTROL_BUDGET);
   blocks.push(`## ADE control protocol\n${ctrlT.value}`);
   sections.push({ name: "control", bytes: ctrlT.value.length, truncated: ctrlT.truncated });
+
+  const subagentRouting = truncateFromEnd(
+    buildNativeSubagentRoutingGuidance("cursor-sdk"),
+    SUBAGENT_ROUTING_BUDGET,
+  );
+  blocks.push(`## Subagent routing\n${subagentRouting.value}`);
+  sections.push({
+    name: "subagent-routing",
+    bytes: subagentRouting.value.length,
+    truncated: subagentRouting.truncated,
+  });
 
   const rulesRaw = (inputs.rulesText ?? "").trim();
   if (rulesRaw.length) {

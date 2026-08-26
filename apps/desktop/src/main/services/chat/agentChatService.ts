@@ -25712,7 +25712,7 @@ export function createAgentChatService(args: {
     const merged = { ...previous, ...taskInput };
     runtime.taskToolInputByToolUseId.set(toolUseId, merged);
     const model = merged.model;
-    const agentType = merged.subagentType;
+    const agentType = merged.subagentType ?? merged.name;
     if (!model && !agentType) return;
 
     const correctedIds = new Set<string>();

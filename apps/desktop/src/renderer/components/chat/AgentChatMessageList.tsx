@@ -6472,9 +6472,11 @@ function AgentChatMessageListMain({
 
   // Keep a committed snapshot for each view. Passive cleanup runs after the
   // shared list has already rendered the next view, so reading live refs there
-  // would save the child transcript under the parent's key.
+  // would save the child transcript under the parent's key. Skip until restore
+  // has settled so a key switch cannot store the previous view's scrollTop
+  // under the next key.
   useLayoutEffect(() => {
-    if (!resolvedScrollMemoryKey) return;
+    if (!resolvedScrollMemoryKey || !scrollRestoreSettledRef.current) return;
     const scrollTopAtExit = scrollRef.current?.scrollTop ?? lastScrollTopRef.current;
     rememberBoundedChatScrollMemory(
       scrollMemorySnapshotByKeyRef.current,
@@ -6507,19 +6509,25 @@ function AgentChatMessageListMain({
     const memory = restoredScrollMemoryRef.current;
     if (!memory || memory.wasPinnedToBottom || !memory.anchorRowKey) {
       scrollRestoreSettledRef.current = true;
+    } else if (containerHeight <= 0 || groupedRowKeys.length === 0) {
       return;
+    } else {
+      scrollRestoreSettledRef.current = true;
+      if (applyScrollRestore(memory.anchorRowKey, memory.anchorOffsetPx)) {
+        pendingScrollRestoreRef.current = {
+          anchorRowKey: memory.anchorRowKey,
+          anchorOffsetPx: memory.anchorOffsetPx,
+        };
+      }
     }
-    // The scroll container measures 0 on the first frame; writing scrollTop
-    // against that clamps to 0 and reads as "it forgot where I was".
-    if (containerHeight <= 0 || groupedRowKeys.length === 0) return;
-    scrollRestoreSettledRef.current = true;
-    if (applyScrollRestore(memory.anchorRowKey, memory.anchorOffsetPx)) {
-      pendingScrollRestoreRef.current = {
-        anchorRowKey: memory.anchorRowKey,
-        anchorOffsetPx: memory.anchorOffsetPx,
-      };
-    }
-  }, [applyScrollRestore, containerHeight, groupedRowKeys, resolvedScrollMemoryKey]);
+    if (!scrollRestoreSettledRef.current || !resolvedScrollMemoryKey) return;
+    const scrollTopAtExit = scrollRef.current?.scrollTop ?? lastScrollTopRef.current;
+    rememberBoundedChatScrollMemory(
+      scrollMemorySnapshotByKeyRef.current,
+      resolvedScrollMemoryKey,
+      captureScrollMemory(groupedRowKeys, stickToBottomRef.current, scrollTopAtExit),
+    );
+  }, [applyScrollRestore, captureScrollMemory, containerHeight, groupedRowKeys, resolvedScrollMemoryKey]);
 
   // Exactly one correction once measured heights land: the first pass runs on
   // ESTIMATED_ROW_HEIGHT for anything not yet measured.

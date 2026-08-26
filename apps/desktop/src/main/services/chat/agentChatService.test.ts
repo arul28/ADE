@@ -12270,6 +12270,102 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
+    it("corrects a lifecycle-first subagent row when later Task input only has name", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-name-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-name-1",
+          parent_tool_use_id: "toolu_task_name_1",
+          description: "Scan the repo",
+        };
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-name-1",
+            content: [
+              {
+                type: "tool_use",
+                id: "toolu_task_name_1",
+                name: "Task",
+                input: {
+                  name: "Explore",
+                  description: "Scan the repo",
+                  prompt: "Find the auth module.",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "task-name-1",
+          parent_tool_use_id: "toolu_task_name_1",
+          status: "completed",
+          summary: "Found auth.ts",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-name-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => {
+        expect(warmupComplete).toBe(true);
+      });
+
+      const sendPromise = service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn a named Explore subagent.",
+      });
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "task-name-1",
+      );
+
+      expect(events.some((event) =>
+        event.event.type === "subagent_started"
+        && (event.event as any).taskId === "task-name-1"
+        && (event.event as any).agentType === "Explore",
+      )).toBe(true);
+      expect((events.find((event) =>
+        event.event.type === "subagent_result" && (event.event as any).taskId === "task-name-1",
+      )?.event as any)?.agentType).toBe("Explore");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+
     it("falls back gracefully when Task tool has no subagent_type", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
