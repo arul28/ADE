@@ -71,16 +71,16 @@ export const PrReactionBar = memo(function PrReactionBar({
       return;
     }
 
-    const previous = localReactions;
+    const optimisticId = `optimistic:${subjectId}:${content}:${pendingRef.current + 1}`;
     pendingRef.current += 1;
-    setLocalReactions([
-      ...previous,
-      { id: `optimistic:${subjectId}:${content}`, content, user: viewerLogin },
+    setLocalReactions((current) => [
+      ...current,
+      { id: optimisticId, content, user: viewerLogin },
     ]);
     try {
       await window.ade.prs.reactToComment({ prId, commentId: subjectId, content });
     } catch (error) {
-      setLocalReactions(previous);
+      setLocalReactions((current) => current.filter((reaction) => reaction.id !== optimisticId));
       onError?.(error);
     } finally {
       pendingRef.current = Math.max(0, pendingRef.current - 1);

@@ -117,6 +117,7 @@ export function DescriptionContent({
   repoOwner: string;
   repoName: string;
 }) {
+  const [reactionError, setReactionError] = useState<string | null>(null);
   return (
     <Card author={event.author} avatarUrl={event.avatarUrl} ts={event.timestamp}>
       {event.body ? (
@@ -129,7 +130,13 @@ export function DescriptionContent({
         subjectId={event.subjectId}
         reactions={event.reactions}
         viewerLogin={viewerLogin}
+        onError={(err) => setReactionError(err instanceof Error ? err.message : String(err))}
       />
+      {reactionError ? (
+        <div role="alert" className="text-[11px]" style={{ color: COLORS.danger }}>
+          {reactionError}
+        </div>
+      ) : null}
     </Card>
   );
 }

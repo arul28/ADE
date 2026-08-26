@@ -1896,7 +1896,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs comment-edit <pr> --comment <id> --body "..."
                                                     Edit an issue or review comment
     $ ade prs comment-react <pr> --comment <id> --content +1
-                                                    React to a PR comment
+                                                    React to a PR comment (GraphQL node id or REST database id)
     $ ade prs github-snapshot --include-external-closed --history-page-limit 4
                                                     Include bounded closed PR history in the GitHub snapshot
     $ ade prs github-snapshot --include-state-counts --no-revalidate

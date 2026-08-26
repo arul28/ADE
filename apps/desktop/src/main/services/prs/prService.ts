@@ -212,7 +212,10 @@ import {
 } from "./prTranscriptGists";
 import {
   createPrCommentMutations,
+  reactionGroupsByNodeId,
   reactionToGraphqlEnum,
+  REACTABLE_REACTION_GROUPS_QUERY,
+  resolveReactableSubjectId,
   toPrComment,
   toPrReactions,
   type GithubCommentSource,
@@ -4792,7 +4795,7 @@ export function createPrService({
   const graphqlRequest = async <T>(
     query: string,
     variables: Record<string, unknown>,
-    options: { accept?: string; repo?: GitHubRepoRef } = {},
+    options: { accept?: string; repo?: GitHubRepoRef; capability?: "read" | "write" } = {},
   ): Promise<T> => {
     const owner = typeof variables.owner === "string" ? variables.owner.trim() : "";
     const name = typeof variables.name === "string" ? variables.name.trim() : "";
@@ -4803,7 +4806,8 @@ export function createPrService({
     }>({
       method: "POST",
       path: "/graphql",
-      capability: /^\s*mutation\b/i.test(query) ? "write" : "read",
+      capability: options.capability
+        ?? (/^\s*mutation\b/i.test(query) ? "write" : "read"),
       ...(repo ? { repo } : {}),
       body: { query, variables },
       ...(options.accept ? { accept: options.accept } : {}),
@@ -4821,6 +4825,47 @@ export function createPrService({
       throw new Error("GitHub GraphQL request returned no data.");
     }
     return payload.data;
+  };
+
+  const hydrateReactableReactions = async (
+    nodeIds: Array<string | null | undefined>,
+    repo: GitHubRepoRef,
+  ): Promise<Map<string, ReturnType<typeof toPrReactions>>> => {
+    const unique = [...new Set(nodeIds.map((id) => asString(id).trim()).filter(Boolean))];
+    if (unique.length === 0) return new Map();
+    try {
+      const viewer = await resolveWriteViewerLogin();
+      const mapped = new Map<string, ReturnType<typeof toPrReactions>>();
+      for (let offset = 0; offset < unique.length; offset += 100) {
+        const chunk = unique.slice(offset, offset + 100);
+        const data = await graphqlRequest<unknown>(
+          REACTABLE_REACTION_GROUPS_QUERY,
+          { ids: chunk },
+          { repo, capability: "write" },
+        );
+        for (const [id, reactions] of reactionGroupsByNodeId(data, viewer)) {
+          mapped.set(id, reactions);
+        }
+      }
+      return mapped;
+    } catch {
+      return new Map();
+    }
+  };
+
+  const applyHydratedReactions = async <T extends {
+    nodeId?: string | null;
+    reactions?: ReturnType<typeof toPrReactions>;
+  }>(items: T[], repo: GitHubRepoRef): Promise<T[]> => {
+    const ids = items
+      .filter((item) => (item.reactions ?? []).some((reaction) => reaction.user === "unknown"))
+      .map((item) => item.nodeId);
+    if (ids.length === 0) return items;
+    const hydrated = await hydrateReactableReactions(ids, repo);
+    return items.map((item) => {
+      const reactions = item.nodeId ? hydrated.get(item.nodeId) : undefined;
+      return reactions ? { ...item, reactions } : item;
+    });
   };
 
   const githubPrStateCountsByRepo = new Map<string, GitHubPrProjectionStateCounts>();
@@ -5916,7 +5961,12 @@ export function createPrService({
       if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
       return a.id.localeCompare(b.id);
     });
-    return rememberActivityInput("comments", repo, prNumber, merged);
+    return rememberActivityInput(
+      "comments",
+      repo,
+      prNumber,
+      await applyHydratedReactions<PrComment>(merged, repo),
+    );
   };
 
   const getComments = async (prId: string): Promise<PrComment[]> => {
@@ -5951,7 +6001,8 @@ export function createPrService({
   ): Promise<{ detail: PrDetail; rawPull: any }> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const data = await fetchRawPullMemoized(repo, Number(coords.githubPrNumber));
-    return { detail: prDetailFromGithubPull(data, prId), rawPull: data };
+    const [detail] = await applyHydratedReactions<PrDetail>([prDetailFromGithubPull(data, prId)], repo);
+    return { detail, rawPull: data };
   };
 
   const getDetailSnapshotByCoords = async (coords: PrGithubCoords, prId: string): Promise<PrDetail> => {
@@ -11964,7 +12015,13 @@ export function createPrService({
     async reactToComment(args: ReactToPrCommentArgs): Promise<void> {
       // Node ids are global, but the repository context lets GitHub credential
       // failover skip tokens that cannot write to this PR's repository.
-      const { repo } = resolvePrThreadTarget(args.prId);
+      const { repo, prNumber } = resolvePrThreadTarget(args.prId);
+      const subjectId = await resolveReactableSubjectId({
+        githubService,
+        repo,
+        prNumber,
+        commentId: args.commentId,
+      });
       const contentEnum = reactionToGraphqlEnum(args.content);
       await graphqlRequest(
         `
@@ -11974,7 +12031,7 @@ export function createPrService({
             }
           }
         `,
-        { subjectId: args.commentId, content: contentEnum },
+        { subjectId, content: contentEnum },
         { repo },
       );
     },

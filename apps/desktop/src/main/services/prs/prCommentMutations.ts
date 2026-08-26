@@ -18,7 +18,7 @@ type GithubCommentEndpoint = {
   line: (payload: GithubCommentPayload) => number | null;
 };
 
-type GithubCommentApi = {
+export type GithubCommentApi = {
   apiRequest: <T>(args: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
     path: string;
@@ -72,13 +72,46 @@ function normalizeReactionContent(raw: unknown): PrReactionContent | null {
   return REACTION_CONTENT_ALIASES[value] ?? null;
 }
 
-export function toPrReactions(raw: unknown): PrReviewThreadReaction[] {
+function reactionGroupCount(entry: Record<string, unknown>): number {
+  const reactors = isRecord(entry.reactors) ? entry.reactors : null;
+  const users = isRecord(entry.users) ? entry.users : null;
+  const raw = reactors?.totalCount ?? users?.totalCount ?? entry.totalCount;
+  const count = Number(raw);
+  return Number.isSafeInteger(count) && count > 0 ? count : 0;
+}
+
+function looksLikeReactionGroups(entries: unknown[]): boolean {
+  return entries.some((entry) => isRecord(entry) && typeof entry.viewerHasReacted === "boolean");
+}
+
+export function toPrReactions(
+  raw: unknown,
+  viewerLogin?: string | null,
+): PrReviewThreadReaction[] {
   const entries = Array.isArray(raw)
     ? raw
     : isRecord(raw) && Array.isArray(raw.nodes)
       ? raw.nodes
-      : null;
+      : isRecord(raw) && Array.isArray(raw.reactionGroups)
+        ? raw.reactionGroups
+        : null;
   if (entries) {
+    if (looksLikeReactionGroups(entries)) {
+      const viewer = asString(viewerLogin).trim();
+      return entries.flatMap((entry): PrReviewThreadReaction[] => {
+        if (!isRecord(entry)) return [];
+        const content = normalizeReactionContent(entry.content);
+        const count = reactionGroupCount(entry);
+        if (!content || count <= 0) return [];
+        const mine = entry.viewerHasReacted === true && viewer.length > 0;
+        return [{
+          id: `group:${content}`,
+          content,
+          user: mine ? viewer : "unknown",
+          count,
+        }];
+      });
+    }
     return entries.flatMap((entry): PrReviewThreadReaction[] => {
       if (!isRecord(entry)) return [];
       const content = normalizeReactionContent(entry.content);
@@ -123,6 +156,71 @@ const GITHUB_COMMENT_ENDPOINTS: Record<GithubCommentSource, GithubCommentEndpoin
     },
   },
 };
+
+export const REACTABLE_REACTION_GROUPS_QUERY = `
+  query AdeReactableReactionGroups($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      id
+      ... on Reactable {
+        reactionGroups {
+          content
+          viewerHasReacted
+          reactors { totalCount }
+        }
+      }
+    }
+  }
+`;
+
+export function reactionGroupsByNodeId(
+  data: unknown,
+  viewerLogin?: string | null,
+): Map<string, PrReviewThreadReaction[]> {
+  const nodes = isRecord(data) && Array.isArray(data.nodes) ? data.nodes : [];
+  const mapped = new Map<string, PrReviewThreadReaction[]>();
+  for (const node of nodes) {
+    if (!isRecord(node) || !Array.isArray(node.reactionGroups)) continue;
+    const id = asString(node.id).trim();
+    if (!id) continue;
+    mapped.set(id, toPrReactions(node.reactionGroups, viewerLogin));
+  }
+  return mapped;
+}
+
+function isLikelyGithubNotFound(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\b404\b|not found/i.test(message);
+}
+
+export async function resolveReactableSubjectId(args: {
+  githubService: GithubCommentApi;
+  repo: GitHubRepoRef;
+  prNumber: number;
+  commentId: string;
+}): Promise<string> {
+  const trimmed = args.commentId.trim();
+  if (!trimmed) throw new Error("Invalid comment id.");
+  if (!/^\d+$/.test(trimmed)) return trimmed;
+  const commentId = Number(trimmed);
+  for (const source of ["issue", "review"] as const) {
+    const endpoint = GITHUB_COMMENT_ENDPOINTS[source];
+    try {
+      const { data } = await args.githubService.apiRequest<GithubCommentPayload>({
+        method: "GET",
+        path: endpoint.apiPath(args.repo, commentId),
+        repo: args.repo,
+      });
+      const targetUrl = endpoint.parentPrUrl(data);
+      if (!targetUrl.endsWith(endpoint.expectedPrUrlSuffix(args.prNumber))) continue;
+      const nodeId = asString(data.node_id).trim();
+      if (nodeId) return nodeId;
+    } catch (error) {
+      if (isLikelyGithubNotFound(error)) continue;
+      throw error;
+    }
+  }
+  throw new Error("Comment does not belong to the target PR.");
+}
 
 function positiveGithubId(raw: unknown): number | null {
   const value = Number(raw);
