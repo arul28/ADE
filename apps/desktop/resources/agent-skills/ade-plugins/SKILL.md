@@ -680,6 +680,7 @@ Ship plain `.js` and `.css`. Content types come from a closed map — `.js`, `.m
 |---|---|
 | `adePlugin.version` | Bridge version of the host that attached the page. **1** today. Additive like the SDK — check it before calling anything newer |
 | `adePlugin.pluginId` | The page's own plugin id, from the host. Informational; nothing on the wire carries it |
+| `adePlugin.context` | The subject the host attached this page to, or `null`. `{subject, pointer?}` — see *Where a page can appear* |
 | `collections.get(collection, key)` | One value, or `null` |
 | `collections.put(collection, key, value)` | Write one value — see the note below before relying on it |
 | `collections.list(collection, {keyPrefix?, limit?})` | `{key, value}` rows, at most 500 |
@@ -724,6 +725,34 @@ ade plugin dev board                 # watch + reload on every save
 
 - Write the surface's panel as the honest small version of the page, and give its `fallback` a `deeplink` — that panel is what three of four clients show.
 - `$context` and `{navigate:{…}}` belong to panels; a page navigates itself. To send the user to one of your panels from a page, call `adePlugin.openDeeplink("ade://plugin/<pluginId>/<panelId>?ctx=…")`.
+
+### Where a page can appear
+
+A `webview` surface is not only a whole tab or pane. The same page — the same `entryHtml`, served the same way, in the same sandbox — can also mount in two tighter places on the desktop. Each is single-instance, fills its container, and loads nothing until it is shown. **All three are desktop-only, and every other client renders the surface's `panelId` panel in its place**, exactly as a webview tab does.
+
+1. **A drawer tab.** Declare a `drawer-tab` socket whose `panelId` matches a `webview` surface's `panelId`, and the chat actions drawer draws your page as that tab's body instead of the panel. No new field — the match on `panelId` is the link, and the panel the surface already names is the phone's fallback.
+
+   ```json
+   {
+     "surfaces": [{ "kind": "webview", "id": "mixer", "title": "Mixer",
+                    "entryHtml": "web/mixer.html", "panelId": "mixer" }],
+     "sockets":  [{ "socket": "drawer-tab", "surface": "work", "id": "mixer-tab",
+                    "label": "Mixer", "panelId": "mixer" }]
+   }
+   ```
+
+   The drawer's page reads `adePlugin.context.subject` — a `{kind:"session", …}` for the chat the drawer sits on. (A `work-rail-pane` socket linked to a `webview` surface the same way draws the page in the Work tools rail — same mechanism, same fallback.)
+
+2. **A focused overlay from any button.** Return `{openWebview: {surfaceId, context?}}` from any button action — `toolbar-action`, `composer-action`, `chat-header-action`, `row-menu-item` — and ADE opens that `webview` surface (named by its `surfaces[].id`) as a dismissible full-screen overlay. `context` is an optional small pointer of your own.
+
+   ```js
+   // in your plugin's action handler
+   actions: {
+     openMixer: () => ({ openWebview: { surfaceId: "mixer", context: { drink: 4 } } }),
+   }
+   ```
+
+**The host owns `subject`; you own `pointer`.** `adePlugin.context.subject` is the chat/lane/PR the drawer sat on or the button was pressed on — set by ADE from what it already knows, captured before your page runs, and **not something the page can forge** (rewriting your own URL does not change it). `adePlugin.context.pointer` is the optional object your `openWebview` verb passed — a hint, authored by you. Read the subject to know *what you are attached to*; never trust a page's claim about its own subject, because that is not what `subject` is.
 
 ## Sockets — appearing on core surfaces
 

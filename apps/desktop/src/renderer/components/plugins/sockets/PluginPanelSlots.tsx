@@ -3,8 +3,10 @@ import React from "react";
 import { COLORS, RADII, SANS_FONT } from "../../lanes/laneDesignTokens";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import type { PluginSocketKind, PluginSurfaceId } from "../../../../shared/plugins/sockets";
+import { useRootAppStore } from "../../../state/appStore";
 import { pluginIcon } from "../pluginIcons";
 import { PluginPanelHost } from "../PluginPanelHost";
+import { PluginWebviewHost, supportsPluginWebviews } from "../PluginWebviewHost";
 import { contributionKey } from "./contributionModel";
 import { pluginPanelSlotId } from "./panelSlotId";
 import { SocketBoundary } from "./SocketBoundary";
@@ -46,6 +48,15 @@ export type PluginPanelSlot = {
   icon: ReturnType<typeof pluginIcon>;
   /** The plugin's own name, for the attribution line and the tab tooltip. */
   displayName: string;
+  /**
+   * The plugin-relative HTML page to draw INSTEAD of the panel, when this slot's
+   * `panelId` also names a `webview` surface of the same plugin and this client
+   * can host a guest. Absent on every other client and every ordinary slot, so
+   * its absence is what makes {@link PluginSlotPanel} fall back to the panel —
+   * which is the surface's own declared cross-client fallback. Reveal-gated by
+   * the host's `active` exactly as the panel is: nothing loads until shown.
+   */
+  entryHtml?: string;
 };
 
 /**
@@ -69,6 +80,12 @@ export function usePluginPanelSlots(
     ...(context ? { context } : {}),
   });
   const { identities } = usePluginSurfaceContributions(surface, active);
+  // The plugin registry, for resolving a slot's `panelId` to a `webview`
+  // surface. A slot draws the plugin's own HTML page when it names one AND this
+  // client can host a guest; otherwise it draws the panel, which is the webview
+  // surface's own required fallback. Read once here rather than per slot.
+  const installedPlugins = useRootAppStore((state) => state.installedPlugins);
+  const webviewSupported = supportsPluginWebviews();
 
   return React.useMemo(
     () => {
@@ -86,6 +103,23 @@ export function usePluginPanelSlots(
         if (seen.has(id)) continue;
         seen.add(id);
         const identity = identities.get(contribution.pluginId);
+        // A `webview` surface of the same plugin whose panel this slot names is
+        // what turns the slot into a custom-HTML host. Matched on `panelId`
+        // because that is the link the surface already declares — a webview
+        // surface names the very panel every non-desktop client renders in its
+        // place — so no new manifest field is needed to point a drawer tab at a
+        // page. Resolved only where a guest can run; elsewhere `entryHtml` stays
+        // absent and the panel is drawn.
+        const entryHtml = webviewSupported
+          ? installedPlugins
+            .find((plugin) => plugin.pluginId === contribution.pluginId)
+            ?.tabs.find(
+              (tab) => tab.kind === "webview"
+                && tab.panelId === contribution.payload.panelId
+                && Boolean(tab.entryHtml),
+            )
+            ?.entryHtml ?? undefined
+          : undefined;
         slots.push({
           id,
           key: contributionKey(contribution),
@@ -94,11 +128,12 @@ export function usePluginPanelSlots(
           label: contribution.payload.label,
           icon: pluginIcon(contribution.payload.icon),
           displayName: identity?.displayName ?? contribution.pluginId,
+          ...(entryHtml ? { entryHtml } : {}),
         });
       }
       return slots;
     },
-    [contributions, identities],
+    [contributions, identities, installedPlugins, webviewSupported],
   );
 }
 
@@ -122,26 +157,51 @@ export function PluginSlotPanel({
   /** The subject this panel's actions receive. Omit where there is none. */
   context?: PluginSurfaceContext | null;
 }) {
+  const header = (
+    <header
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "6px 8px",
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+        color: COLORS.textMuted,
+        background: COLORS.recessedBg,
+        border: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: RADII.sm,
+      }}
+    >
+      <SocketIcon size={12} color={COLORS.textMuted} />
+      <span>{slot.displayName}</span>
+    </header>
+  );
+
+  // A webview slot fills the host: the header sits on top and the guest takes
+  // the rest, the same full-container shape a webview tab or pane has. The
+  // subject the host injects is whatever the slot was given — the chat a drawer
+  // tab sits on — and the page reads it as `adePlugin.context.subject`, never
+  // claiming it. `active` reveal-gates the guest exactly as it does the panel.
+  if (slot.entryHtml) {
+    return (
+      <SocketBoundary>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, height: "100%", minHeight: 0 }}>
+          {header}
+          <PluginWebviewHost
+            pluginId={slot.pluginId}
+            entryHtml={slot.entryHtml}
+            active={active}
+            context={{ subject: context ?? null }}
+          />
+        </div>
+      </SocketBoundary>
+    );
+  }
+
   return (
     <SocketBoundary>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <header
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            padding: "6px 8px",
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            color: COLORS.textMuted,
-            background: COLORS.recessedBg,
-            border: `1px solid ${COLORS.borderMuted}`,
-            borderRadius: RADII.sm,
-          }}
-        >
-          <SocketIcon size={12} color={COLORS.textMuted} />
-          <span>{slot.displayName}</span>
-        </header>
+        {header}
         <PluginPanelHost
           pluginId={slot.pluginId}
           panelId={slot.panelId}

@@ -46,7 +46,9 @@ import {
   PLUGIN_WEBVIEW_EVENTS,
   type AdePluginWebviewBridge,
   type PluginWebviewChangeEvent,
+  type PluginWebviewContext,
   type PluginWebviewEventName,
+  type PluginWebviewHandshake,
   type PluginWebviewMethod,
 } from "../shared/plugins/webviewBridge";
 
@@ -81,18 +83,29 @@ async function call(method: PluginWebviewMethod, params: Record<string, unknown>
  * host declines to say, which is the same answer as "this is not a plugin
  * surface" — every method call would be refused on the same grounds.
  */
-function handshakePluginId(): string {
+function readHandshake(): PluginWebviewHandshake {
   try {
     const answer: unknown = ipcRenderer.sendSync(IPC.pluginWebviewHandshake);
-    return typeof answer === "string" ? answer : "";
+    if (answer && typeof answer === "object") {
+      const record = answer as Record<string, unknown>;
+      const pluginId = typeof record.pluginId === "string" ? record.pluginId : "";
+      const context = record.context && typeof record.context === "object"
+        ? (record.context as PluginWebviewContext)
+        : null;
+      return { pluginId, context };
+    }
   } catch {
-    return "";
+    // Fall through to the empty handshake.
   }
+  return { pluginId: "", context: null };
 }
+
+const handshake = readHandshake();
 
 const adePlugin: AdePluginWebviewBridge = {
   version: PLUGIN_WEBVIEW_BRIDGE_VERSION,
-  pluginId: handshakePluginId(),
+  pluginId: handshake.pluginId,
+  context: handshake.context,
 
   collections: {
     get: (collection: string, key: string) => call("collections.get", { collection, key }),

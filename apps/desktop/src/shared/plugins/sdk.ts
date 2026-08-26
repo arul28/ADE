@@ -834,6 +834,72 @@ export function hasPluginActionDialogRequest(result: unknown): boolean {
   return isRecord(result) && isRecord(result.dialog) && isRecord((result.dialog as Record<string, unknown>).setField);
 }
 
+// ---------------------------------------------------------------------------
+// Action-response webview overlay
+// ---------------------------------------------------------------------------
+
+/**
+ * The plugin-authored pointer an `openWebview` action may hand its own page.
+ *
+ * Bounded like {@link PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES}, and for the same
+ * reason: it is a hint the page reads on open — "the drink you just poured is
+ * #4" — not a data channel. The host injects the button's real subject (which
+ * chat/lane/PR) separately and unforgeably; this is only the extra the plugin
+ * chose to add.
+ */
+export const PLUGIN_WEBVIEW_POINTER_MAX_BYTES = PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES;
+
+/**
+ * Where a plugin action asks the client to open one of the plugin's OWN webview
+ * surfaces, as a focused overlay over whatever the button sat on.
+ *
+ * The fourth piece of control flow a plugin has over ADE's own UI, beside
+ * navigate, composer and dialog — and, like navigate, a request rather than a
+ * command: `surfaceId` names a `webview` surface of the SAME plugin, so the
+ * worst a bad value does is open the wrong page of the plugin the user just
+ * pressed a button in. The host supplies the subject; a client that cannot host
+ * a webview (web) shows that surface's required fallback panel instead.
+ */
+export type PluginActionWebview = {
+  /** A `webview` surface of the same plugin. Anything else the host drops. */
+  surfaceId: string;
+  /** An optional pointer handed to the page as its context `pointer`. */
+  context?: Record<string, unknown>;
+};
+
+/**
+ * Read an overlay request out of whatever an action returned.
+ *
+ * Tolerant in the same way as {@link readPluginActionNavigation}: most results
+ * carry no overlay request, so anything unrecognizable is null rather than an
+ * error, and an over-ceiling pointer is dropped while the open is kept.
+ */
+export function readPluginActionWebview(result: unknown): PluginActionWebview | null {
+  if (!isRecord(result)) return null;
+  const request = result.openWebview;
+  if (!isRecord(request)) return null;
+  const surfaceId = request.surfaceId;
+  if (typeof surfaceId !== "string" || !isValidPluginManifestIdentifier(surfaceId)) return null;
+  const context = request.context;
+  if (!isRecord(context)) return { surfaceId };
+  let json: string;
+  try {
+    json = JSON.stringify(context) ?? "";
+  } catch {
+    return { surfaceId };
+  }
+  if (!json || pluginUtf8ByteLength(json) > PLUGIN_WEBVIEW_POINTER_MAX_BYTES) return { surfaceId };
+  return { surfaceId, context };
+}
+
+/**
+ * Whether an action's result asked to open a webview at all, however malformed.
+ * The warning half of the pair, for the same reason the composer verb has one.
+ */
+export function hasPluginActionWebviewRequest(result: unknown): boolean {
+  return isRecord(result) && isRecord(result.openWebview);
+}
+
 /**
  * What a plugin's entry module may export. Both hooks are optional: a plugin
  * that only registers CLI commands and panels needs neither.

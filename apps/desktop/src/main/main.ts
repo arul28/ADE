@@ -328,9 +328,12 @@ import { createAppControlService } from "./services/appControl/appControlService
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import {
+  decodePluginWebviewContext,
   parsePluginWebviewUrl,
   pluginWebviewPartition,
+  PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM,
   PLUGIN_WEBVIEW_PROTOCOL,
+  type PluginWebviewContext,
 } from "../shared/plugins/webviewBridge";
 import {
   createInstalledPluginRootResolver,
@@ -873,7 +876,7 @@ async function createWindow(args: {
    * `preventDefault()`ed never reaches the second — so a FIFO queue joins them.
    * `null` marks an ordinary browser guest, which keeps the queue aligned.
    */
-  const pendingPluginAttaches: (string | null)[] = [];
+  const pendingPluginAttaches: ({ pluginId: string; context: PluginWebviewContext | null } | null)[] = [];
 
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const src = typeof params.src === "string" ? params.src : "";
@@ -902,7 +905,18 @@ async function createWindow(args: {
       webPreferences.webviewTag = false;
       webPreferences.plugins = false;
       webPreferences.experimentalFeatures = false;
-      pendingPluginAttaches.push(pluginSource.pluginId);
+      // The subject the renderer attached this page to, read from the source URL
+      // the host approved above — never from anything the page will later do.
+      // `parsePluginWebviewUrl` returns only the id and path, so the query is
+      // parsed here; a malformed or oversize value decodes to null and the page
+      // simply opens without a subject. See `webviewBridge.ts`.
+      let context: PluginWebviewContext | null = null;
+      try {
+        context = decodePluginWebviewContext(new URL(src).searchParams.get(PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM));
+      } catch {
+        context = null;
+      }
+      pendingPluginAttaches.push({ pluginId: pluginSource.pluginId, context });
       return;
     }
     if (!isAllowedAdeBrowserWebviewSource(src)) {
@@ -926,12 +940,14 @@ async function createWindow(args: {
   // afterward. The setWindowOpenHandler('deny') below also blocks new windows from
   // the attached webview.
   win.webContents.on("did-attach-webview", (_event, attachedWc) => {
-    const attachedPluginId = pendingPluginAttaches.shift() ?? null;
+    const pending = pendingPluginAttaches.shift() ?? null;
+    const attachedPluginId = pending?.pluginId ?? null;
     if (attachedPluginId) {
       const forget = registerPluginWebviewGuest({
         webContentsId: attachedWc.id,
         pluginId: attachedPluginId,
         hostWindowId: win.id,
+        context: pending?.context ?? null,
         send: (channel, payload) => {
           if (attachedWc.isDestroyed()) return;
           attachedWc.send(channel, payload);

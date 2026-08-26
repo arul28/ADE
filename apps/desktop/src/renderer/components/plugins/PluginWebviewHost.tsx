@@ -7,6 +7,7 @@ import {
   PLUGIN_WEBVIEW_PROTOCOL,
   pluginWebviewPartition,
   pluginWebviewUrl,
+  type PluginWebviewContext,
 } from "../../../shared/plugins/webviewBridge";
 
 /**
@@ -45,12 +46,21 @@ export function PluginWebviewHost({
   pluginId,
   entryHtml,
   active,
+  context = null,
 }: {
   pluginId: string;
   /** Plugin-relative path from the manifest surface, already validated there. */
   entryHtml: string;
   /** False while the surface is mounted but not visible. */
   active: boolean;
+  /**
+   * The subject to inject, for a page mounted onto a chat, lane or PR — a drawer
+   * tab or a button-opened overlay. Null for a full tab or pane webview, which
+   * belongs to no subject. Encoded into the guest's source URL and captured
+   * host-side at attach, so the page reads it as `adePlugin.context` and cannot
+   * forge it. A change recreates the guest, the same as a change of page.
+   */
+  context?: PluginWebviewContext | null;
 }) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
   const guestRef = React.useRef<PluginWebviewElement | null>(null);
@@ -68,6 +78,16 @@ export function PluginWebviewHost({
     if (active) setRevealed(true);
   }, [active]);
 
+  // The context rides in the URL, so the source string is the whole dependency:
+  // a change of subject changes the string and recreates the guest, and a parent
+  // that hands a fresh-but-equal context object each render does not, because
+  // the string is what the effect keys on.
+  const src = React.useMemo(
+    () => pluginWebviewUrl(pluginId, entryHtml, context),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- context is folded into the string below.
+    [pluginId, entryHtml, context ? JSON.stringify(context) : ""],
+  );
+
   React.useEffect(() => {
     const host = hostRef.current;
     if (!revealed || !host) return;
@@ -82,7 +102,7 @@ export function PluginWebviewHost({
     // Mirrors what the attach handler enforces. Set here as well so the guest is
     // created in its final partition rather than moved into one.
     guest.setAttribute("partition", pluginWebviewPartition(pluginId));
-    guest.setAttribute("src", pluginWebviewUrl(pluginId, entryHtml));
+    guest.setAttribute("src", src);
 
     const onReady = () => setState({ status: "ready" });
     const onFail = (event: Event) => {
@@ -117,7 +137,7 @@ export function PluginWebviewHost({
       guest.remove();
       guestRef.current = null;
     };
-  }, [entryHtml, pluginId, reloadToken, revealed]);
+  }, [pluginId, src, reloadToken, revealed]);
 
   React.useEffect(() => {
     const guest = guestRef.current;

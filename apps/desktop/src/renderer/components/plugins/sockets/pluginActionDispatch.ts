@@ -2,17 +2,21 @@ import { showToast } from "../../app/toast/toastStore";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import {
   hasPluginActionComposerRequest,
+  hasPluginActionWebviewRequest,
   readPluginActionComposerEdit,
   readPluginActionNavigation,
+  readPluginActionWebview,
 } from "../../../../shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
 import {
   pluginSocketInvokeTimeoutMs,
   type PluginSocketKind,
 } from "../../../../shared/plugins/sockets";
+import { rootAppStoreApi } from "../../../state/appStore";
 import { invokePluginSocketAction } from "./contributionBridge";
 import { applyPluginComposerEdit } from "./composerTarget";
 import { applyPluginDialogEdit } from "./dialogTarget";
+import { openPluginWebviewOverlay } from "./pluginWebviewOverlayStore";
 
 /**
  * One invocation of a plugin action from a socket, response verbs included.
@@ -76,6 +80,31 @@ export function runPluginSocketAction(
       // field of it. `applyPluginDialogEdit` is a no-op for every other
       // context, so this costs a `kind` check on a row menu item.
       applyPluginDialogEdit(result, { context, pluginId, actionId });
+      // An action may ask to open its own webview surface as a focused overlay
+      // over whatever the button sat on. The subject the host injects is THIS
+      // button's context — unforgeable — and the verb's own `context` rides as
+      // the page's plugin-authored pointer. Checked against the plugin's real
+      // surfaces here so an unresolvable id never opens an empty frame.
+      const overlay = readPluginActionWebview(result);
+      if (overlay) {
+        const plugin = rootAppStoreApi.getState().installedPlugins
+          .find((entry) => entry.pluginId === pluginId);
+        const surfaceExists = plugin?.enabled
+          && plugin.tabs.some((tab) => tab.id === overlay.surfaceId);
+        if (surfaceExists) {
+          openPluginWebviewOverlay({
+            pluginId,
+            surfaceId: overlay.surfaceId,
+            subject: context,
+            ...(overlay.context ? { pointer: overlay.context } : {}),
+          });
+        } else {
+          console.warn("[plugin webview] openWebview named an unknown surface", pluginId, overlay.surfaceId);
+        }
+      } else if (hasPluginActionWebviewRequest(result)) {
+        console.warn("[plugin webview] ignored a malformed openWebview request", pluginId, actionId);
+      }
+
       // An action may ask to be followed: "I filed the issue, here it is."
       // Routed through the ordinary navigation target rather than a direct
       // `navigate`, so it passes the same installed-and-enabled gate a `plugin`

@@ -42,6 +42,7 @@ import {
   parsePluginWebviewUrl,
   PLUGIN_WEBVIEW_BRIDGE_VERSION,
   type PluginWebviewChangeEvent,
+  type PluginWebviewHandshake,
   type PluginWebviewMethod,
 } from "../../../shared/plugins/webviewBridge";
 import { subscribeToPluginChanges } from "./pluginEvents";
@@ -91,6 +92,12 @@ export type PluginWebviewBridgeServer = {
   handle(sender: PluginWebviewSender, payload: unknown): Promise<unknown>;
   /** The pinned plugin id for a sender, or null. Exposed for the handshake. */
   resolvePluginId(sender: PluginWebviewSender): string | null;
+  /**
+   * The whole attach-time handshake for a sender: the pinned plugin id and the
+   * subject the host attached the guest to. Null when the sender is not a plugin
+   * surface — the same grounds every method call would be refused on.
+   */
+  resolveHandshake(sender: PluginWebviewSender): PluginWebviewHandshake | null;
   dispose(): void;
 };
 
@@ -255,6 +262,15 @@ export function createPluginWebviewBridgeServer(
     resolvePluginId(sender) {
       try {
         return resolvePluginWebviewSender(sender).pluginId;
+      } catch {
+        return null;
+      }
+    },
+
+    resolveHandshake(sender) {
+      try {
+        const guest = resolvePluginWebviewSender(sender);
+        return { pluginId: guest.pluginId, context: guest.context };
       } catch {
         return null;
       }

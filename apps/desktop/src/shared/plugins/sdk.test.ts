@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   hasPluginActionComposerRequest,
   hasPluginActionDialogRequest,
+  hasPluginActionWebviewRequest,
   isPluginCollectionIfFull,
   PLUGIN_COLLECTION_IF_FULL_MODES,
   PLUGIN_COMPOSER_TEXT_MAX_BYTES,
   PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES,
+  PLUGIN_WEBVIEW_POINTER_MAX_BYTES,
   pluginCollectionPutParams,
   readPluginActionComposerEdit,
   readPluginActionDialogEdit,
+  readPluginActionWebview,
 } from "./sdk";
 
 describe("collections.put wire shape", () => {
@@ -135,5 +138,36 @@ describe("dialog edits in an action response", () => {
     expect(hasPluginActionDialogRequest({ dialog: { setField: { field: "body", value: "x" } } })).toBe(true);
     expect(hasPluginActionDialogRequest({ navigate: { panelId: "main" } })).toBe(false);
     expect(hasPluginActionDialogRequest({ dialog: {} })).toBe(false);
+  });
+});
+
+describe("openWebview in an action response", () => {
+  it("reads a surface id, and a pointer when it is present", () => {
+    expect(readPluginActionWebview({ openWebview: { surfaceId: "mixer" } }))
+      .toEqual({ surfaceId: "mixer" });
+    expect(readPluginActionWebview({ openWebview: { surfaceId: "mixer", context: { drink: 4 } } }))
+      .toEqual({ surfaceId: "mixer", context: { drink: 4 } });
+  });
+
+  it("drops anything that is not a plugin identifier for the surface id", () => {
+    expect(readPluginActionWebview({ openWebview: { surfaceId: "" } })).toBeNull();
+    expect(readPluginActionWebview({ openWebview: { surfaceId: "../escape" } })).toBeNull();
+    expect(readPluginActionWebview({ openWebview: {} })).toBeNull();
+    expect(readPluginActionWebview({ openWebview: 7 })).toBeNull();
+    expect(readPluginActionWebview(null)).toBeNull();
+  });
+
+  // Same rule as navigate's context: over the ceiling drops the pointer and
+  // keeps the open, because the user pressed a button and should still land on
+  // the page it summoned.
+  it("keeps the open but drops an over-large pointer", () => {
+    const big = { blob: "x".repeat(PLUGIN_WEBVIEW_POINTER_MAX_BYTES + 1) };
+    expect(readPluginActionWebview({ openWebview: { surfaceId: "mixer", context: big } }))
+      .toEqual({ surfaceId: "mixer" });
+  });
+
+  it("separates a malformed request from no request at all", () => {
+    expect(hasPluginActionWebviewRequest({ openWebview: { surfaceId: "" } })).toBe(true);
+    expect(hasPluginActionWebviewRequest({ navigate: { panelId: "main" } })).toBe(false);
   });
 });

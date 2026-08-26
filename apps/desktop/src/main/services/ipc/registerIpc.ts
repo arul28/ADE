@@ -6687,13 +6687,14 @@ export function registerIpc({
   });
 
   ipcMain.on(IPC.pluginWebviewHandshake, (event) => {
-    // Synchronous because `adePlugin.pluginId` is a plain property a page reads
-    // while rendering; an empty string means "the host will not vouch for this
-    // page", which is the same answer every method call would get.
-    event.returnValue = pluginWebviewBridgeServer.resolvePluginId({
+    // Synchronous because `adePlugin.pluginId` and `adePlugin.context` are plain
+    // properties a page reads while rendering; a null handshake means "the host
+    // will not vouch for this page", which is the same answer every method call
+    // would get. The preload maps that to an empty id and a null context.
+    event.returnValue = pluginWebviewBridgeServer.resolveHandshake({
       webContentsId: event.sender.id,
       frameUrl: event.senderFrame?.url ?? event.sender.getURL(),
-    }) ?? "";
+    });
   });
 
   ipcMain.handle(IPC.externalSessionsGetDetail, async (_event, arg: unknown): Promise<ExternalSessionDetail> => {

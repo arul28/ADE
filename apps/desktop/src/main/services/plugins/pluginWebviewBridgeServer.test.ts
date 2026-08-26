@@ -55,6 +55,7 @@ function harness(): Harness {
     webContentsId: GUEST_WEB_CONTENTS_ID,
     pluginId: "demo-plugin",
     hostWindowId: 1,
+    context: null,
     send: () => {},
   });
   const domain = {
@@ -129,6 +130,27 @@ describe("createPluginWebviewBridgeServer", () => {
     await expect(
       server.handle({ webContentsId: 999, frameUrl: "ade-plugin://demo-plugin/index.html" }, request("config.get")),
     ).rejects.toMatchObject({ code: "not_permitted" });
+  });
+
+  it("reports the guest's pinned id and injected subject in the handshake", () => {
+    const { server } = harness();
+    // The harness registers a subject-less guest; overwrite it with one carrying
+    // a session subject, the way `main.ts` does for a drawer tab or an overlay.
+    registerPluginWebviewGuest({
+      webContentsId: GUEST_WEB_CONTENTS_ID,
+      pluginId: "demo-plugin",
+      hostWindowId: 1,
+      context: { subject: { kind: "session", id: "sess-1", title: "Fix", provider: null, status: null } },
+      send: () => {},
+    });
+    expect(server.resolveHandshake(SENDER)).toEqual({
+      pluginId: "demo-plugin",
+      context: { subject: { kind: "session", id: "sess-1", title: "Fix", provider: null, status: null } },
+    });
+    // A stranger gets nothing to vouch for — the same grounds every call is
+    // refused on.
+    expect(server.resolveHandshake({ webContentsId: 999, frameUrl: "ade-plugin://demo-plugin/index.html" }))
+      .toBeNull();
   });
 
   it("refuses a sender whose frame origin disagrees with the registry", async () => {

@@ -17,12 +17,22 @@
  * and both halves are testable without a browser.
  */
 
+import type { PluginWebviewContext } from "../../../shared/plugins/webviewBridge";
+
 export type PluginWebviewGuest = {
   /** `webContents.id` of the guest itself. The IPC sender identity. */
   webContentsId: number;
   pluginId: string;
   /** The window hosting the guest, for the calls that need a project scope. */
   hostWindowId: number | null;
+  /**
+   * The subject the host attached this guest to, captured from its source URL at
+   * attach and never from anything the page later does. Null for a full tab or
+   * pane webview, which belongs to no chat, lane or PR. See
+   * `shared/plugins/webviewBridge.ts` — this is what the handshake reports back
+   * as `adePlugin.context`, and it is what makes the subject unforgeable.
+   */
+  context: PluginWebviewContext | null;
   /** Push one frame to the guest. A destroyed guest must make this a no-op. */
   send: (channel: string, payload: unknown) => void;
 };

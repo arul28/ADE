@@ -32,6 +32,13 @@ export {
   usePluginPanelSlots,
   type PluginPanelSlot,
 } from "./PluginPanelSlots";
+export { PluginWebviewOverlayHost } from "./PluginWebviewOverlayHost";
+export {
+  closePluginWebviewOverlay,
+  openPluginWebviewOverlay,
+  usePluginWebviewOverlay,
+  type PluginWebviewOverlayRequest,
+} from "./pluginWebviewOverlayStore";
 export {
   isPluginPanelSlotId,
   parsePluginPanelSlotId,

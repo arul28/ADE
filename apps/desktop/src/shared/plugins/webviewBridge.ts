@@ -36,10 +36,55 @@
  * impersonate.
  */
 
+import type { PluginSurfaceContext } from "./context";
 import { isValidPluginId } from "./manifest";
 
 /** Bumped only for an additive change. See the module header. */
 export const PLUGIN_WEBVIEW_BRIDGE_VERSION = 1;
+
+/**
+ * The host-injected subject a plugin page is attached to.
+ *
+ * A full tab or pane webview carries none of this — it is the plugin's own front
+ * page and belongs to no chat, lane or PR. The drawer tab and the button-opened
+ * overlay do: they mount a page ONTO something the user was already looking at,
+ * and the page needs to know which one.
+ *
+ * The word to hold on to is INJECTED. `subject` is set by the host from what it
+ * already knows — the chat the drawer sits on, the row the button sat on — and
+ * the guest cannot forge it: it is captured from the guest's source URL at
+ * attach, before the page runs a line of script, and stored on the host's own
+ * guest record. A page that later rewrites its own query string does not change
+ * what {@link AdePluginWebviewBridge.context} reports, exactly the way it cannot
+ * change {@link AdePluginWebviewBridge.pluginId}. `pointer` is the one part a
+ * plugin may author itself — a small hint an `openWebview` action chose to pass
+ * — and it is labelled apart precisely so a page never mistakes it for the
+ * host's own word about the subject.
+ */
+export type PluginWebviewContext = {
+  /** What the host attached this page to. Null on a full tab/pane webview. */
+  subject: PluginSurfaceContext | null;
+  /** A plugin-authored hint, e.g. from an `openWebview` action. */
+  pointer?: Record<string, unknown>;
+};
+
+/**
+ * The whole context envelope, as bytes on the source URL, is capped here.
+ *
+ * It rides in the guest's `src` query and is captured host-side at attach, so it
+ * is bounded for the same reason a navigation context is (`sdk.ts`): a pointer,
+ * not a payload. The page reads the plugin's collections for everything else.
+ */
+export const PLUGIN_WEBVIEW_CONTEXT_MAX_BYTES = 4 * 1024;
+
+/**
+ * The query parameter the host reads the injected context out of.
+ *
+ * A double-underscore name so it cannot collide with a query a plugin's own page
+ * cares about, and read only by the host — the file the protocol serves is
+ * chosen by the path, never the query.
+ */
+export const PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM = "__adeCtx";
 
 /**
  * The scheme plugin pages are served on. One origin per plugin, which is what
@@ -52,10 +97,97 @@ export function pluginWebviewOrigin(pluginId: string): string {
   return `${PLUGIN_WEBVIEW_PROTOCOL}://${pluginId}`;
 }
 
-/** The URL a guest loads for one of the plugin's files. */
-export function pluginWebviewUrl(pluginId: string, relativePath: string): string {
+/**
+ * The URL a guest loads for one of the plugin's files.
+ *
+ * A `context` rides as a query parameter, which the host reads at attach and the
+ * protocol handler ignores when it resolves the path. It is the ONE way the
+ * trusted renderer hands a per-instance subject to a page: the renderer knows
+ * which chat the drawer is on, encodes it here, and the host captures it before
+ * the page runs. See {@link PluginWebviewContext}. An oversize context is
+ * dropped rather than truncated — a page opens without a subject rather than
+ * with half of one.
+ */
+export function pluginWebviewUrl(
+  pluginId: string,
+  relativePath: string,
+  context?: PluginWebviewContext | null,
+): string {
   const path = relativePath.replace(/^\/+/, "");
-  return `${pluginWebviewOrigin(pluginId)}/${path}`;
+  const base = `${pluginWebviewOrigin(pluginId)}/${path}`;
+  const encoded = context ? encodePluginWebviewContext(context) : null;
+  return encoded ? `${base}?${PLUGIN_WEBVIEW_CONTEXT_QUERY_PARAM}=${encoded}` : base;
+}
+
+/**
+ * Encode a context for the guest's source URL, or null when it will not fit.
+ *
+ * `encodeURIComponent` of the JSON, so the value is one opaque query token the
+ * host reverses with {@link decodePluginWebviewContext}. Over the ceiling, or
+ * unserializable, yields null and the caller loads the page with no context.
+ */
+export function encodePluginWebviewContext(context: PluginWebviewContext): string | null {
+  let json: string;
+  try {
+    json = JSON.stringify(context);
+  } catch {
+    return null;
+  }
+  if (!json || pluginWebviewByteLength(json) > PLUGIN_WEBVIEW_CONTEXT_MAX_BYTES) return null;
+  return encodeURIComponent(json);
+}
+
+/**
+ * Reverse {@link encodePluginWebviewContext}, refusing anything malformed.
+ *
+ * The value arrives from a URL the host itself set, but it is decoded defensively
+ * anyway: a recycled webContents, a hand-typed address, or a future host writing
+ * a shape this one does not know must degrade to "no context", never to a throw
+ * or a half-built subject. Only the two known fields are kept, each shape-checked.
+ */
+export function decodePluginWebviewContext(raw: string | null | undefined): PluginWebviewContext | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  if (pluginWebviewByteLength(raw) > PLUGIN_WEBVIEW_CONTEXT_MAX_BYTES * 2) return null;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(decodeURIComponent(raw));
+  } catch {
+    return null;
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return null;
+  const record = decoded as Record<string, unknown>;
+  const subject = record.subject;
+  // A subject is one of the typed context objects, every one of which carries a
+  // string `kind`. Anything else — including a page's attempt to smuggle a bare
+  // record — is dropped to null rather than passed through as a subject.
+  const subjectValue = subject && typeof subject === "object" && typeof (subject as Record<string, unknown>).kind === "string"
+    ? (subject as PluginSurfaceContext)
+    : null;
+  const pointer = record.pointer;
+  const pointerValue = pointer && typeof pointer === "object" && !Array.isArray(pointer)
+    ? (pointer as Record<string, unknown>)
+    : undefined;
+  return { subject: subjectValue, ...(pointerValue ? { pointer: pointerValue } : {}) };
+}
+
+/**
+ * UTF-8 byte length without a Node `Buffer`, so this runs in the renderer, the
+ * daemon and iOS's transcription alike. Mirrors `pluginUtf8ByteLength` in
+ * `sdk.ts`, restated here to keep this module free of that file's imports.
+ */
+function pluginWebviewByteLength(value: string): number {
+  if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(value).length;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff) {
+      bytes += 4;
+      index += 1;
+    } else bytes += 3;
+  }
+  return bytes;
 }
 
 /**
@@ -176,6 +308,23 @@ export const PLUGIN_WEBVIEW_EVENTS = ["changed"] as const;
 export type PluginWebviewEventName = (typeof PLUGIN_WEBVIEW_EVENTS)[number];
 
 /**
+ * The host's synchronous answer to the preload's attach-time handshake.
+ *
+ * Both facts a page reads while rendering — its own plugin id and the subject it
+ * was attached to — come back in one `sendSync`, because a second round trip for
+ * the context would make every drawer page await a value the host already knew
+ * before the page loaded. An empty `pluginId` means "this is not a plugin
+ * surface", which is also when `context` is null.
+ *
+ * This shape is internal to one app build (the preload and the host ship
+ * together), not a cross-release wire contract, so it may grow fields freely.
+ */
+export type PluginWebviewHandshake = {
+  pluginId: string;
+  context: PluginWebviewContext | null;
+};
+
+/**
  * `window.adePlugin`, exactly.
  *
  * Every method is async and rejects with an ordinary `Error` whose message is
@@ -187,6 +336,17 @@ export type AdePluginWebviewBridge = {
   readonly version: number;
   /** The page's own plugin id, reported by the host. Informational. */
   readonly pluginId: string;
+  /**
+   * The subject the host attached this page to, or null.
+   *
+   * Null for a full tab or pane webview — the plugin's own front page belongs to
+   * no chat, lane or PR. Present when a plugin page is mounted as a drawer tab or
+   * summoned as an overlay from a button: `subject` is the host's own word about
+   * which chat/lane/PR, unforgeable, and `pointer` is a hint the plugin's own
+   * action chose to pass. See {@link PluginWebviewContext}. Reported at attach
+   * and stable for the life of the guest.
+   */
+  readonly context: PluginWebviewContext | null;
 
   collections: {
     get(collection: string, key: string): Promise<unknown>;
