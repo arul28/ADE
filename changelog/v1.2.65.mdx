@@ -1,0 +1,52 @@
+---
+title: "v1.2.65"
+description: "Release notes for ADE v1.2.65 - August 26, 2026"
+---
+
+Merging a pull request no longer cuts off the agent that merged it, and a chat that is still typing no longer claims it ended. The attention notch says which chat needs you, what it wants, and closes when you close it. OpenCode keeps its thinking out of its answers and tells you when a provider is retrying. Auto-created lanes stop borrowing names that belong to something else.
+
+---
+
+## Chats end when they are actually done
+
+- **Merging a pull request no longer cancels the turn that merged it.** ADE waits for the chat to finish before settling it. An agent that merged its own PR used to have its work cut off seconds later.
+- **Nothing ADE starts on its own interrupts a running turn.** Automatic settling waits; a settle you asked for still happens immediately.
+- **A live chat no longer says "Ended".** A session that was still streaming could get marked finished and stay that way. Any activity now repairs the row.
+- **A usage limit no longer wedges the thread.** When Claude stopped mid-turn for the plan limit, the card offered to fork the thread and then refused, saying it was waiting on a response that had already died. The turn now closes, background agents stop showing as running, and fork works.
+- **"Chat finished its turn" reads like English**, and repeats collapse into one row with a count instead of a wall of identical lines.
+
+## The attention notch and pill
+
+- **It names the chat.** The real title, kept current if the chat is renamed, instead of a placeholder.
+- **You can see whose chat it is** — the provider's logo and a state dot on the card.
+- **One button, labelled for what it wants**: Answer, Approve, Review, or Open.
+- **The close button closes it**, and marks the item seen. It used to swallow the click.
+- **A question arrives as a question.** Questions no longer show up dressed as approvals.
+
+## OpenCode
+
+- **Thinking stays out of the answer.** Reasoning was being written into the reply and saved into the transcript.
+- **A retrying provider says so.** Retries surface as a short notice instead of a spinner that never explains itself.
+- **Turns stop cleanly.** Interruptions, unanswered questions, a context that ran over, and a dropped connection all end the turn instead of leaving it hanging.
+- **Errors are readable** — shorter, no duplicates, no raw response body pasted into the chat.
+- **OpenCode keeps its own defaults** for temp files, skills, and reference material. Work outside the lane folder asks instead of being refused outright.
+
+## Lanes, mentions, and Manage lane
+
+- **A new lane no longer takes a name that belongs to something else.** Auto-created lanes borrowed branch names from a lane you mentioned in the prompt, or from a merged PR whose branch was gone, which left a fresh lane wearing another lane's PR badge.
+- **The `@` menu ranks by best match.** Files, chats, lanes, and terminals interleave by how well they match, each with an icon for what it is, and mention chips stay the width of the title.
+- **Manage lane stays on Work.** Opening it from a Work chat no longer sends you to the Lanes tab. The dialog leads with the lane name in that lane's color, and Select everything on the Delete tab is separate from the targets beneath it.
+
+## iOS and `ade code`
+
+- **Repeated finish notices fold on the phone too**, with a count.
+- **Questions on iOS have an Answer button.** Those rows had no action at all.
+- **The activity drawer shows the chat title and the provider mark**, the way the notch does.
+- **The TUI counts repeats instead of dropping them.** Twelve finishes used to render as a single line with nothing to say there had been twelve.
+- **A question that failed to open no longer counts as read.**
+
+## Fixes
+
+- Chat colors switch the moment you switch chats, instead of showing the previous chat's colors for a few seconds.
+- The auto-settle setting describes what actually holds a settle back: a running turn.
+- On Windows, stopping ADE's background service is no longer refused because a system check ran out of time on a busy machine.
