@@ -9706,6 +9706,20 @@ describe("createAgentChatService", () => {
         },
         {
           sessionId: wedgedId,
+          timestamp: "2026-03-25T00:01:00.200Z",
+          event: {
+            type: "subagent_started",
+            taskId: "sub-wedge-1",
+            agentId: "sub-wedge-1",
+            agentType: "general-purpose",
+            parentToolUseId: null,
+            description: "Root-cause bug 12 disk twins",
+            background: false,
+            turnId: "turn-wedge",
+          } as any,
+        },
+        {
+          sessionId: wedgedId,
           timestamp: "2026-03-25T00:02:00.000Z",
           event: {
             type: "ade_card",
@@ -9726,14 +9740,20 @@ describe("createAgentChatService", () => {
       });
       expect(handoff.session.id).toBeTruthy();
 
-      // The wedge was terminalized from the transcript: status + done pair.
+      // The wedge was terminalized from the transcript: the turn's terminal
+      // pair is exact, and the transcript-derived running subagent row settled.
       const raw = fs.readFileSync(
         path.join(tmpRoot, ".ade", "transcripts", "chat", `${wedgedId}.jsonl`),
         "utf8",
       );
       const settledEvents = raw.trim().split("\n").map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+      const wedgedDone = settledEvents.find((e) => e.event.type === "done" && (e.event as any).turnId === "turn-wedge");
+      expect(wedgedDone?.event).toMatchObject({ type: "done", status: "interrupted", turnId: "turn-wedge" });
       expect(settledEvents.some((e) => e.event.type === "status" && (e.event as any).turnStatus === "interrupted")).toBe(true);
-      expect(settledEvents.some((e) => e.event.type === "done" && (e.event as any).turnId === "turn-wedge")).toBe(true);
+      const orphanResult = settledEvents.find(
+        (e) => e.event.type === "subagent_result" && (e.event as any).taskId === "sub-wedge-1",
+      );
+      expect(orphanResult?.event).toMatchObject({ type: "subagent_result", status: "stopped" });
     });
 
     it("still refuses handoff for a dead claude run when no live quota card proves the wedge", async () => {
@@ -9769,6 +9789,7 @@ describe("createAgentChatService", () => {
       ]);
 
       const debugTranscriptPath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${wedgedId}.jsonl`);
+      const rawBefore = fs.readFileSync(debugTranscriptPath, "utf8");
 
       await expect(
         service.handoffSession({
@@ -9777,7 +9798,8 @@ describe("createAgentChatService", () => {
           mode: "brief",
         }),
       ).rejects.toThrow("Wait for the current response to finish before handing off this chat.");
-      expect(fs.existsSync(debugTranscriptPath)).toBe(true);
+      // A refused handoff must not mutate the transcript.
+      expect(fs.readFileSync(debugTranscriptPath, "utf8")).toBe(rawBefore);
     });
 
     it("surfaces Claude SDK retry, refusal fallback, informational, memory, notification, mirror, and denial events", async () => {

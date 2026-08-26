@@ -32417,6 +32417,47 @@ export function createAgentChatService(args: {
         ),
       );
     }
+    // Transcript-derived orphans (a post-restart wedge has an empty live map,
+    // so the pass above cannot settle rows recorded only in the transcript).
+    // Buffered events are merged so rows just settled above are not re-emitted.
+    const wedgeEnvelopes = readTranscriptEnvelopes(managed, { includeBuffered: true });
+    const orphanBackground = deriveBackgroundItems(wedgeEnvelopes).filter(
+      (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",
+    );
+    const orphanSubagents = subagentSnapshotsFromEvents(wedgeEnvelopes).filter(
+      (snapshot) => snapshot.kind === "subagent"
+        && snapshot.status === "running"
+        && snapshot.background !== true,
+    );
+    for (const snapshot of orphanBackground) {
+      emitChatEvent(managed, {
+        type: "scheduled_work_update",
+        id: snapshot.id,
+        kind: "background_task",
+        status: "stopped",
+        origin: "background_task",
+        title: snapshot.title,
+        summary: snapshot.summary ?? "lost while Claude was wedged",
+        ...(snapshot.sourceTaskId ? { sourceTaskId: snapshot.sourceTaskId } : {}),
+        ...(snapshot.sourceToolUseId ? { sourceToolUseId: snapshot.sourceToolUseId } : {}),
+      });
+    }
+    for (const snapshot of orphanSubagents) {
+      const summary = snapshot.summary && snapshot.summary !== snapshot.name
+        ? snapshot.summary
+        : "Stopped: Claude was stuck after a plan-limit reset";
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId: snapshot.id,
+        ...(snapshot.parentToolUseId ? { parentToolUseId: snapshot.parentToolUseId } : { parentToolUseId: null }),
+        status: "stopped",
+        summary,
+        finalSummary: summary,
+        ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
+      });
+    }
+    // Keep the parent terminal pair last: renderer turn state is derived in
+    // event order, so no later reconciliation row may revive the stopped turn.
     terminalizeUnsettledClaudeParentTurn(managed, "handoff_recovery");
     markSessionIdleWithFreshCache(managed);
     persistChatState(managed);
