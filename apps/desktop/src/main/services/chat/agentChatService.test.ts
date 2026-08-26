@@ -28542,6 +28542,60 @@ describe("createAgentChatService", () => {
       await turn.finish();
     });
 
+    it("cancels an open OpenCode question when an external abort ends the turn", async () => {
+      // The other route to an interrupted turn. The OpenCode TUI or CLI on the
+      // same server aborts the session: `session.error` sets `interrupted` and
+      // the loop keeps going to idle, so the turn settles through the shared
+      // completion path rather than ADE's own interrupt branch. That path did not
+      // cancel, so the card survived a turn nobody could answer any more — and
+      // `hasLivePendingInput` then refused the next send.
+      const turn = await startOpenCodeTurn("Ask me something, then get aborted.");
+      const { sessionID } = turn;
+
+      turn.pushEvents({
+        type: "question.asked",
+        properties: {
+          id: "question-1",
+          sessionID,
+          tool: "ask",
+          questions: [{ question: "Which approach?", header: "Approach", options: [] }],
+        },
+      });
+      const approval = await waitForEvent(
+        turn.events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "approval_request",
+      );
+
+      turn.pushEvents(
+        {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: { name: "MessageAbortedError", data: { message: "aborted" } },
+          },
+        },
+        { type: "session.idle", properties: { sessionID } },
+      );
+
+      const done = await turn.waitForDone();
+      expect((done.event as { status: string }).status).toBe("interrupted");
+
+      const resolved = await waitForEvent(
+        turn.events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "pending_input_resolved"
+          && (event.event as { itemId?: string }).itemId === (approval.event as { itemId: string }).itemId,
+      );
+      expect((resolved.event as { resolution: string }).resolution).toBe("cancelled");
+
+      // And the session is not left reporting itself blocked.
+      await expect(
+        turn.service.sendMessage({ sessionId: turn.session.id, text: "Next question." }),
+      ).resolves.not.toThrow();
+
+      await turn.finish();
+    });
+
     it("shows generic progress after an OpenCode step finishes", async () => {
       // Otherwise the activity line keeps naming the step's last tool until the
       // next step-start, so a long gap between steps reads as a command that

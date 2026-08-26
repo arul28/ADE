@@ -24643,17 +24643,22 @@ export function createAgentChatService(args: {
       }
 
       // ── Shared turn completion ──
-      // No `cancelPendingInputsFrom` here, deliberately and defensively. On
-      // 1.18.x the question tool blocks server-side, so a clean idle with a card
-      // still open is not an expected state. If it ever becomes one — an older
-      // binary, or a future async question API — cancelling here would discard a
-      // card the user may still be reading, and ADE can answer a card after the
-      // turn settles, which resumes the OpenCode session. The exclusion is pinned
-      // by "bridges OpenCode question events through ADE's question UI".
-      // Interrupt and turn failure are the paths where the turn is genuinely dead.
+      // The invariant for open OpenCode question cards: cancel them on EVERY
+      // turn end except a clean, non-interrupted completion. Only that one case
+      // can still be answered — ADE replies after the turn settles and OpenCode
+      // resumes the session — and it is pinned by "bridges OpenCode question
+      // events through ADE's question UI". Every other ending leaves a card
+      // nobody can answer: `hasLivePendingInput` then refuses the next send, and
+      // a late answer targets a session that is gone.
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
       void emitTurnDiffSummaryIfChanged(managed, turnId);
       if (runtime.interrupted) {
+        // Reached both by ADE's own Stop (which also cancels in the interrupt
+        // branch, making this idempotent) and by an EXTERNAL abort: the OpenCode
+        // TUI or CLI on the same server aborts, `session.error` sets
+        // `interrupted`, and the loop settles here instead of throwing. Without
+        // this call that second route stranded the card.
+        cancelPendingInputsFrom(managed, "opencode");
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
@@ -24668,6 +24673,7 @@ export function createAgentChatService(args: {
         });
         persistChatState(managed);
       } else {
+        // No cancel here — this is the one ending whose card is still answerable.
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
