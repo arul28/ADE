@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import type { LaneSummary } from "../../../shared/types";
+import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -9,9 +9,12 @@ import {
   menuItemStyle,
 } from "../lanes/LaneContextMenu";
 import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
+import { OpenInSubmenu } from "../ui/OpenInSubmenu";
+import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
 type ForeignLaneContextMenuProps = {
   lane: LaneSummary;
+  binding: OpenProjectBinding;
   machineName: string;
   /** False disables every action below: they all run on the owning machine. */
   online: boolean;
@@ -29,6 +32,7 @@ function branchNameFromRef(ref: string | null | undefined): string {
 
 export function ForeignLaneContextMenu({
   lane,
+  binding,
   machineName,
   online,
   x,
@@ -65,6 +69,7 @@ export function ForeignLaneContextMenu({
     <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
   );
   const branch = branchNameFromRef(lane.branchRef);
+  const openIn = resolveOpenInTarget({ worktreePath: lane.worktreePath, binding });
 
   return (
     <div
@@ -114,6 +119,20 @@ export function ForeignLaneContextMenu({
       <HoverButton style={menuItemStyle} disabled={!online} onClick={onOpenInLanes}>
         Open in Lanes
       </HoverButton>
+      {online && openIn ? (
+        <OpenInSubmenu
+          rootPath={openIn.rootPath}
+          remote={openIn.remote}
+          onClose={onClose}
+          style={{
+            ...menuItemStyle,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}
+          hoverBackground={COLORS.hoverBg}
+        />
+      ) : null}
       {lane.worktreePath ? (
         <>
           {separator}

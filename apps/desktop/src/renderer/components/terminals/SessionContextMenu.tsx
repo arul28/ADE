@@ -12,6 +12,8 @@ import {
 import { MenuSectionLabel, MenuSeparator, MenuSubmenu } from "../ui/MenuSubmenu";
 import { LaneActionsSubmenu } from "./LaneActionsSubmenu";
 import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
+import { OpenInSubmenu } from "../ui/OpenInSubmenu";
+import type { OpenInTarget } from "../../../shared/editorTargets";
 import {
   setSessionSettleOverride,
   setChatSpawnKind,
@@ -51,10 +53,13 @@ export type SessionContextMenuLaneActions = {
   open: (position: { x: number; y: number }) => void;
 };
 
+export type SessionContextMenuOpenIn = OpenInTarget;
+
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;
   binding?: OpenProjectBinding | null;
   machineName?: string | null;
+  openIn?: SessionContextMenuOpenIn | null;
   /** Present only for a singleton lane's card (see the type above). */
   laneActions?: SessionContextMenuLaneActions | null;
   x: number;
@@ -190,7 +195,7 @@ function SessionContextMenuPanel({
     }
   }, [renaming, tagging]);
 
-  const { session, binding = null, laneActions = null, x, y } = menu;
+  const { session, binding = null, laneActions = null, openIn = null, x, y } = menu;
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
@@ -493,6 +498,15 @@ function SessionContextMenuPanel({
             </button>
           ) : null}
         </MenuSubmenu>
+
+        {openIn ? (
+          <OpenInSubmenu
+            rootPath={openIn.rootPath}
+            remote={openIn.remote}
+            onClose={onClose}
+            className={MENU_ITEM_CLASS}
+          />
+        ) : null}
 
         {/* Lane section — only on a singleton row, which has no lane divider to
             right-click. Appended to THIS menu rather than bound to a second

@@ -198,6 +198,7 @@ export function persistableRecentProjectRemote(
     projectId: remote.projectId,
     runtimeName: remote.runtimeName,
     hostname: remote.hostname,
+    ...(remote.transport ? { transport: remote.transport } : {}),
     ...(gitOriginUrl ? { gitOriginUrl } : {}),
     ...(iconDataUrl ? { iconDataUrl } : {}),
   };
