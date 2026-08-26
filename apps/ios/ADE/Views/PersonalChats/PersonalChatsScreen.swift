@@ -260,7 +260,11 @@ private struct PersonalChatRow: View {
   private var accessibilityStatus: String {
     switch status {
     case "active": return "Working"
-    case "awaiting-input": return "Needs your input"
+    // "Needs you", not "Needs your input": the shared status vocabulary
+    // (ActivityPhaseVocabulary, WorkSessionCanonicalState, the push titles) says
+    // those two words on every other surface, and VoiceOver hearing a third
+    // phrasing for the same state is the same drift in audio.
+    case "awaiting-input": return "Needs you"
     case "idle": return "Ready"
     case "ended": return "Ended"
     default: return status.replacingOccurrences(of: "-", with: " ").capitalized

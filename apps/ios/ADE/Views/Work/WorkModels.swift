@@ -1160,6 +1160,15 @@ struct WorkEventCardModel: Identifiable, Equatable {
   /// of rendering each routine moderation or optional integration event.
   let diagnosticModerationChecks: Int
   let diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure]
+  /// Child chat a `spawn_completed` peer notice reports on, resolved once at
+  /// card-build time out of the notice's `detail` JSON. Only the adjacency fold
+  /// in `collapseConsecutiveSpawnCompletionEntries` reads it — a parent that
+  /// spawned a peer gets one notice per sibling turn, and this is the key that
+  /// tells two runs apart. `nil` for every other card, including a completion
+  /// notice whose detail lost its `spawnCompletion` (old or truncated
+  /// transcript): an unidentified completion folds into nothing and keeps its
+  /// own row rather than silently absorbing a different child's.
+  let spawnCompletionChildId: String?
 
   init(
     id: String,
@@ -1182,7 +1191,8 @@ struct WorkEventCardModel: Identifiable, Equatable {
     recoveryContext: WorkCodexStallContext? = nil,
     recoveryReceipt: WorkCodexRecoveryReceipt? = nil,
     diagnosticModerationChecks: Int = 0,
-    diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = []
+    diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = [],
+    spawnCompletionChildId: String? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -1205,6 +1215,7 @@ struct WorkEventCardModel: Identifiable, Equatable {
     self.recoveryReceipt = recoveryReceipt
     self.diagnosticModerationChecks = diagnosticModerationChecks
     self.diagnosticIntegrationFailures = diagnosticIntegrationFailures
+    self.spawnCompletionChildId = spawnCompletionChildId
   }
 }
 

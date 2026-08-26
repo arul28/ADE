@@ -4755,14 +4755,18 @@ final class ADETests: XCTestCase {
   /// Hosts now stamp `requestKind` on `approval_request` so the PUSH publisher
   /// can tell "the agent asked you something" from "the agent wants
   /// permission" — `kind` only describes the shape of the thing being
-  /// confirmed. The phone does not need it: it has always classified the gate
-  /// from `detail.request.kind`, which carries the same word and more.
+  /// confirmed. The phone reads it too now — `agentChatApprovalDetail` prefers
+  /// it over `detail.request.kind`, mirroring `approvalRequestKind()` on
+  /// desktop — but the two agree on every payload the current host sends, which
+  /// is what this test pins.
   ///
-  /// This pins both halves of the compatibility matrix in one pass. The new
-  /// field must be inert on decode (an unknown key that a stricter future
-  /// decoder must not start rejecting), and its ABSENCE — every host older
-  /// than this one — must keep classifying exactly as before.
-  func testApprovalRequestClassificationIgnoresRequestKindInBothDirections() throws {
+  /// This pins both halves of the compatibility matrix in one pass. An
+  /// agreeing `requestKind` must change nothing (and must never be mistaken for
+  /// the event's own `kind`, which describes the SHAPE being confirmed), and
+  /// its ABSENCE — every host older than this one — must keep classifying
+  /// exactly as before. Disagreement is the interesting case, and it is pinned
+  /// separately by `ApprovalRequestKindPrecedenceTests`.
+  func testAgreeingOrAbsentRequestKindLeavesApprovalClassificationUnchanged() throws {
     let json = """
     {
       "sessionId": "chat-1",

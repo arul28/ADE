@@ -22,10 +22,55 @@ public enum ADESharedTheme {
     /// `ADEColor.purpleAccent` in the main design system.
     public static let neutralAccent = Color(red: 0x8B / 255.0, green: 0x5C / 255.0, blue: 0xF6 / 255.0)
 
+    /// Collapses a wire provider string to the family the three tables below
+    /// are keyed by.
+    ///
+    /// The tables used to match the lowercased slug EXACTLY, which quietly
+    /// assumed the wire only ever sends canonical slugs. It does not. A run
+    /// whose provider is derived from its tool type is published through
+    /// `providerDisplayName` in `apps/ade-cli/src/services/push/`
+    /// (`attentionItemBuilder.ts` capitalises the first letter of anything it
+    /// does not know; `pushPublisherService.ts` falls back to `"CLI"`), so the
+    /// phone really receives `"Codex-chat"`, `"Claude-chat"`, `"Shell"` and
+    /// `"CLI"` — and every one of those missed the exact match and resolved to
+    /// no mark and no brand at all.
+    ///
+    /// Mirrors `providerFamilyKey` in
+    /// `ADE/Views/Work/WorkStatusAndFormattingHelpers.swift`, which the Work
+    /// session card already runs its own mark through; it is restated here
+    /// because the widget extension cannot import main-app sources. The
+    /// `-chat` / `_chat` suffix strip, the `gemini`/`google` fold and the
+    /// `github` fold are additions the Work helper does not carry. `anthropic`
+    /// and `openai` deliberately do NOT fold into `claude`/`codex` the way the
+    /// Work helper folds them: this file's asset table ships a separate mark
+    /// for each, and folding would hand an API-key run the CLI's logo.
+    public static func providerFamilyKey(for providerSlug: String) -> String {
+        var raw = providerSlug
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        for suffix in ["-chat", "_chat", " chat"] where raw.hasSuffix(suffix) && raw.count > suffix.count {
+            raw = String(raw.dropLast(suffix.count))
+            break
+        }
+        if raw == "anthropic" { return "anthropic" }
+        if raw.hasPrefix("claude") { return "claude" }
+        if raw == "openai" { return "openai" }
+        if raw == "openai-codex" || raw.hasPrefix("codex") { return "codex" }
+        if raw == "pi" || raw.hasPrefix("pi/") || raw.hasPrefix("pi-") { return "pi" }
+        if raw.hasPrefix("opencode") { return "opencode" }
+        if raw.hasPrefix("cursor") { return "cursor" }
+        if raw == "factory" || raw.hasPrefix("droid") { return "droid" }
+        if raw == "gemini" || raw.hasPrefix("google") { return "google" }
+        if raw.hasPrefix("github") { return "github" }
+        return raw
+    }
+
     /// Resolves a provider slug (e.g. "claude", "openai", "grok") to its brand
-    /// color. Matches `ADEDesignSystem.swift` `providerBrand(for:)` verbatim.
+    /// color. Same arms as `ADEDesignSystem.swift` `providerBrand(for:)`, but
+    /// keyed by family rather than raw slug, so a `-chat` suffix resolves here
+    /// and does not there.
     public static func brandColor(for providerSlug: String) -> Color {
-        switch providerSlug.lowercased() {
+        switch providerFamilyKey(for: providerSlug) {
         case "claude", "anthropic": return brandClaude
         case "codex", "openai":     return brandCodex
         case "pi":                   return brandPi
@@ -44,9 +89,13 @@ public enum ADESharedTheme {
     /// Bundled provider mark shared by the main app and widget extension.
     /// Unknown providers intentionally return nil so callers can keep a clear
     /// status-symbol fallback without introducing a new image dependency.
+    ///
+    /// Keyed by `providerFamilyKey(for:)`, the same key `providerDisplayName`
+    /// uses, so a surface that draws the mark and speaks the name cannot end up
+    /// resolving the two from different readings of one slug.
     public static func providerAssetName(for providerSlug: String?) -> String? {
         guard let providerSlug else { return nil }
-        switch providerSlug.lowercased() {
+        switch providerFamilyKey(for: providerSlug) {
         case "claude":              return "ProviderClaude"
         case "anthropic":           return "ProviderAnthropic"
         case "codex":               return "ProviderCodex"
@@ -60,9 +109,13 @@ public enum ADESharedTheme {
         }
     }
 
+    /// The provider's name in words. Keyed by the same family as the mark, and
+    /// deliberately total for any non-blank slug: a surface with no mark to draw
+    /// falls back to this, so returning nil here would leave the row saying
+    /// nothing at all about what is running.
     public static func providerDisplayName(for providerSlug: String?) -> String? {
         guard let providerSlug else { return nil }
-        switch providerSlug.lowercased() {
+        switch providerFamilyKey(for: providerSlug) {
         case "claude":              return "Claude"
         case "anthropic":           return "Anthropic"
         case "codex":               return "Codex"

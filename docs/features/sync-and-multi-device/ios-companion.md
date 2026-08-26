@@ -561,7 +561,14 @@ apps/ios/
     ├── ActivityDrawerModelTests.swift # live-host merge, six-group sections,
     │                                   # glyph-strip filter, resting collapse
     ├── ActivityRowPresentationTests.swift # six-group table pinned to
-    │                                   # activityStateGroup.cases.json
+    │                                   # activityStateGroup.cases.json, plus
+    │                                   # the drawer row's headline, provider
+    │                                   # mark and action admission
+    ├── ApprovalRequestKindPrecedenceTests.swift # top-level requestKind over
+    │                                   # detail.request.kind, on both the
+    │                                   # decode and transcript-parse paths
+    ├── WorkSpawnCompletionNoticeFoldTests.swift # adjacent same-child
+    │                                   # spawn_completed notices fold to ×N
     ├── HubProjectPresentationTests.swift # Hub state glyphs, snooze→idle,
     │                                   # runningCount excludes snoozed
     ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
@@ -1933,6 +1940,20 @@ Each row uses the shared item destination and actions:
 - **CI failing / review requested / merge ready** — exact PR tab navigation.
 - **Completed / merged** — retained in Recent until seen or dismissed.
 
+Which of the item's own `actions[]` earn a button is decided by
+`ActivityRowPresentation.visibleActions`, not by the sheet, so the rule can be
+asserted directly rather than inferred from a rendered view. The four inline
+intents (approve, deny, restart, rerun checks) require the row's machine to be
+both this one and reachable. `.answer` is admitted unconditionally because it is
+navigation rather than an inline intent — the host splits a blocked run into
+`waiting_for_approval` and `waiting_for_input`, and a question row carries only
+the latter, so filtering it out left the rows most needing a human with no
+control at all. `.open` is never drawn: the row itself is that tap target.
+Marking a row seen happens when the hand-off actually occurs, not when the tap
+lands — a cross-machine open can end at "could not reach", and acknowledging a
+question the reader never got to would drop it out of the needs-you band on
+every surface while it is still waiting.
+
 Row vocabulary is derived once, in `Shared/ActivityRowPresentation.swift` — a
 pure item-to-label/tone/glyph/elapsed mapper with no SwiftUI in it — and the
 tone-to-colour binding plus the lock-screen ranking live beside it in
@@ -1948,12 +1969,36 @@ to `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the sam
 fixture the renderer, the native notch, and the relay run, because this copy
 drifted on `merge_ready`, on idle-tier demotion, and on how planning is derived
 in the very commit that created it. Its wire spelling is kept separate from the
-Swift case name and decoding accepts aliases. A row leads with a state mark —
+Swift case name and decoding accepts aliases. A row opens with a state mark —
 the group's glyph on a tone-tinted disc, pulsing while the work is live — rather
-than a provider logo plus a separate status dot, and the model renders as a
-compact brand chip. `chatActivityMode` decodes losslessly into `planning` or an
-unrecognized value; no `planning` member was added to the phase enum, which
-stays frozen wire.
+than a provider logo plus a separate status dot. `chatActivityMode` decodes
+losslessly into `planning` or an unrecognized value; no `planning` member was
+added to the phase enum, which stays frozen wire.
+
+Beside that mark the row reads in three lines: the chat's own `title`, then the
+lane and machine, then `scopeLine`. `attentionSessionTitle`
+(`apps/ade-cli/src/services/push/attentionItemBuilder.ts`) sends the session's
+real title first and the lane second, so the drawer leads with the same words
+the lock screen and the Live Activity have always shown instead of the status
+preview. The status text survives as the tail of `scopeLine`, where
+`statusDetail` drops it when it only restates the lane and the title —
+`sanitizeAttentionPreview` collapses whitespace and clips at 160 characters, so
+the comparison normalizes both sides and treats a `…` with a stem of at least
+140 characters as evidence of that clip rather than as prose.
+
+`scopeLine` spends its first slot on the provider mark when one exists and on
+the provider's name when one does not: Pi and Gemini ship no bundled imageset,
+and the publisher also passes through strings this build has no family for
+(`"Shell"`, `pushPublisherService.ts`'s `"CLI"`), so dropping the word for those
+rows would trade a name for nothing. `ADESharedTheme.providerFamilyKey` keys the
+mark, the name, and the brand colour off one reading of the slug, which is what
+lets `"Codex-chat"` and `"Claude-chat"` — real wire values, since
+`attentionItemBuilder` only capitalizes a tool-derived provider — resolve at
+all. A pull-request row draws and speaks no provider: it carries
+`provider: "GitHub"` like every other PR item, so `isPullRequest`, not the
+presence of a slug, is the gate. The model and the status note are exclusive
+because one `lineLimit(1)` caption holds one fact; `accessibilityLabel` speaks
+the model on every row regardless.
 
 The Hub's project → lane → chat tree (`Views/Hub/HubActivityState.swift`) is
 another reader of the same table: each row carries `HubStateGlyph`, and headers
