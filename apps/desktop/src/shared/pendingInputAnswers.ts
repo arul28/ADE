@@ -30,6 +30,47 @@ import type { PendingInputOption, PendingInputQuestion } from "./types/chat";
  */
 
 /**
+ * Is the agent asking you something, or asking you to allow something?
+ *
+ * The distinction is the difference between "Answer" and "Approve" on every
+ * surface that renders a waiting run, so it is decided once, here, rather than
+ * re-derived by each reader. Anything this build does not recognise — including
+ * a kind from a newer runtime, and the absent kind of an older event — is an
+ * approval, which is the safer of the two words to be wrong with.
+ */
+export function isQuestionKind(kind: string | null | undefined): boolean {
+  return kind === "question" || kind === "structured_question";
+}
+
+/**
+ * What an `approval_request` event is actually asking for.
+ *
+ * Two sources because both are on the wire: the top-level `requestKind` a
+ * current host sends, and the embedded `detail.request.kind` that hosts before
+ * it sent (and that the sole emitter still attaches alongside). Reading the
+ * embedded request as the fallback is what keeps an older host's questions from
+ * reading as approvals — which is how the CLI's push publisher shipped
+ * Approve/Deny buttons for prose.
+ *
+ * Looser than `isAskQuestionRequest`, which needs a full `PendingInputRequest`:
+ * this reads whatever the envelope carries and lets `isQuestionKind` decide.
+ * Canonical because two surfaces (the TUI transcript and push) must agree about
+ * the same event.
+ */
+export function approvalRequestKind(
+  event: { requestKind?: string | null; detail?: unknown } | null | undefined,
+): string | null {
+  if (typeof event?.requestKind === "string" && event.requestKind) return event.requestKind;
+  const detail = event?.detail && typeof event.detail === "object"
+    ? event.detail as Record<string, unknown>
+    : null;
+  const request = detail?.request && typeof detail.request === "object"
+    ? detail.request as Record<string, unknown>
+    : null;
+  return typeof request?.kind === "string" ? request.kind : null;
+}
+
+/**
  * Is this request the one the ask-question composer owns?
  *
  * Canonical because the decision is made in two places that must agree: the
@@ -40,7 +81,7 @@ import type { PendingInputOption, PendingInputQuestion } from "./types/chat";
 export function isAskQuestionRequest(
   request: { kind?: string | null } | null | undefined,
 ): boolean {
-  return request?.kind === "question" || request?.kind === "structured_question";
+  return isQuestionKind(request?.kind);
 }
 
 /**

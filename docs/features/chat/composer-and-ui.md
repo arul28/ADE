@@ -64,13 +64,13 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatWorkLogBlock.tsx` | Work-log presentation. The transcript no longer renders `work_log_group` rows, so the exports that matter there are `ChatToolActivityDetails` (the expandable tool-call list on the working indicator and the done divider) and `ChatTurnFilesChangedSummary` — one collapsed `N files changed +A −D` row at the turn's done divider, aggregated from the whole turn's `file_change`/write-tool entries and deduped by path. Expanding shows lane-relative paths (absolute path in the tooltip) that open in the Files tab, per-file diff expansion drawn from the entry payload, and a **Review in Files** action that opens the Files tab for the lane — it is not a revert; revert stays on the checkpoint-backed `turn_diff_summary` panel, which also suppresses this fallback when the turn moved HEAD. Because it reads only work-log entries it works for every runtime and for turns with no git checkpoint. The whole `ChatWorkLogBlock` component survives for the Settings chat-appearance preview: it accepts `animate` so completed groups render a static glyph while in-flight ones pulse, and prefers `waiting` over `working` when any entry is `interrupted`. Web-search work-log rows render provider action details (`query` / `queries`, `title`, `url`, `snippet`) as compact result chips; URL chips route through `openUrlInAdeBrowser()`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
 | `AskQuestionComposer.tsx` | The ask-question surface, anchored **in the composer**: while a question blocks, it replaces the textarea inside the same prompt-box frame (provider mark + verb header, ledger option rows, capped previews, note row, keyboard-first answering, A/B compare, minimize). See [Pending input card](#pending-input-card). |
 | `QuestionReceipts.tsx` | The transcript record for a question: a one-line expandable receipt on the `chatCardPrimitives` / `AdeCard` convention once resolved (`AnsweredQuestionReceipt`), and an "awaiting you" row while the gate is open (`OpenQuestionReceipt`). |
-| `apps/desktop/src/shared/pendingInputAnswers.ts` | The shared answer contract — `answerState`, `sendLabel`, `buildAnswers`, `notePlaceholder`, `foldedSummary`, plus `sanitizeAnswersForTranscript` and `flattenAnswerForSingleStringProvider`. Imported directly by the desktop renderer, the web client (same component), and the TUI; iOS mirrors it in Swift. |
+| `apps/desktop/src/shared/pendingInputAnswers.ts` | The shared answer contract — `answerState`, `sendLabel`, `buildAnswers`, `notePlaceholder`, `foldedSummary`, plus `sanitizeAnswersForTranscript` and `flattenAnswerForSingleStringProvider`. Imported directly by the desktop renderer, the web client (same component), and the TUI; iOS mirrors it in Swift. It also owns `isQuestionKind(kind)` — "is the agent asking you something, or asking you to allow something" — which `isAskQuestionRequest` now delegates to, and which the push publisher imports so the split is decided once. Anything unrecognised, including a kind from a newer runtime and the absent kind of an older event, is an approval: the safer of the two words to be wrong with. |
 | `chatMarkdown.tsx` | The shared agent-markdown renderer (`ChatMarkdown`, `buildChatMarkdownComponents`, `SAFE_PREVIEW_SCHEMA`) used by plan cards, question-option previews, and other non-transcript surfaces. Links route through `ChatMarkdownAnchor`: a resolvable workspace path becomes a button that opens through the chat workspace-path context (the Work tools-pane Files panel when the file is in this chat's own lane on this machine, the Files tab otherwise), a real URL opens in the in-app browser, and anything that is neither (including a bare `file:` href) renders as inert text. A file path must never reach the browser opener — `normalizeBrowserUrlInput` turns `laneService.ts` into `https://laneService.ts` and navigates the built-in browser to a garbage host. `SAFE_PREVIEW_SCHEMA` allows the `file:` protocol and single-letter drive "schemes" (both cases) on `href` because `rehypeSanitize` runs before `urlTransform` and would otherwise strip a Windows `C:\repo\x.ts` before it could be linkified; `javascript:` / `data:` / `vbscript:` stay blocked. `chatMarkdownUrlTransform` decodes the percent-encoded link destination before the drive check, since the markdown pipeline delivers `C:%5Crepo%5Cx.ts`. |
 | `chatWorkspacePaths.tsx` | Workspace-path parsing/resolution plus the React context that carries the opener. See the chat [README](README.md#source-file-map) source map row for the full contract. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `chatTranscriptRows.ts` also owns two message-list helpers: `shouldCollapseUserMessageText` (a user message over 600 characters or 8 lines renders collapsed) and `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
-| `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). |
+| `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). It also single-sources two pieces of user copy so emitter and renderer cannot drift: `spawnCompletedNoticeMessage(childTitle)` → `Chat "<title>" finished its turn`, and `waitingOnYouDescription(count?)` → `Waiting on your answer.` / `Waiting on your answers.` — the fallback line when a chat is blocked on the user and there is no question text to show. That second one is not local to the chat pane: it becomes the ADE Notch card's subtitle, the phone's push body, and the lock-screen preview, so the old per-provider `"<Provider> needs input before it can continue."` variants (a sentence about the agent where the user wanted a sentence about them) are gone from every runtime path. The `approval_request` event additionally carries an optional `requestKind: PendingInputKind` — see [Approval vs question](#approval-vs-question). |
 | `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx` (draggable/snapping gradient slider that stays open on selection), `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `usePerSurfaceModelDefaults` / `useReasoningByFamily` hooks. |
 | `apps/desktop/src/renderer/components/shared/PermissionModePicker.tsx` | The permission-mode pill itself, shared by every surface that lets a user choose how a chat starts: the composer's per-provider controls, `SessionLaunchModelControls`, and the cross-machine handoff modal. Exports the generic `PermissionModePicker`, `PermissionModeGlyph`, the tone/icon enums the provider option tables map into, and `PERMISSION_TRIGGER_CLASS` — the one definition of the trigger chrome, previously hand-copied per surface. That class scales with `calc(var(--chat-font-size,14px)*9/14)`; the fallback is load-bearing, because `--chat-font-size` only exists on a chat appearance root and a bare token would leave the launch and handoff pills inheriting the ambient size. Anything offering permission modes renders this, not a lookalike. Tone colour is deliberately asymmetric between the collapsed trigger and the open popover: only the `red` tone (bypassed permissions — the one mode here that can do damage) keeps colour on the resting trigger, and as a border/text tint rather than a filled pill. Every safe tone renders neutral trigger chrome and lets its tone read from the glyph alone. A toolbar where each control is a saturated pill has no way left to say "this one is different"; the full palette still applies to the popover rows, where there is room. |
 | `apps/desktop/src/renderer/components/shared/BlockedAction.tsx` | The blocked-action primitive: `BlockedActionReason` (id, title, detail, and the optional fix that clears it), `BlockedReasons` to render them inline, `describeBlockedReasons` for tooltip/a11y text, and `BlockedActionButton`, which takes the reasons themselves rather than a `disabled` boolean so a caller cannot disable a control without handing over the explanation. Exists because ADE keeps regrowing the same bug — a surface computes blockers, disables the primary button, and renders none of them. |
@@ -1395,6 +1395,32 @@ full-auto mode does not auto-answer these app/connector consent requests.
 `serverRequest/resolved` emits the usual resolution event so a request
 completed outside the card cannot leave the composer locked.
 
+### Approval vs question
+
+`approval_request.kind` describes the *shape* of the thing being confirmed
+(`tool_call`, `permissions`, `plan_approval`, …) and has no word for "the agent
+asked you a question". Claude's `AskUserQuestion` therefore rode the event as a
+`tool_call` approval, and every surface downstream of the transcript — push, the
+ADE Notch, the lock screen — offered **Approve / Deny** for something that wants
+prose. The answer branches in those surfaces were unreachable code.
+
+So the event carries an additional optional `requestKind: PendingInputKind` —
+what is actually being asked, alongside the shape of it. It is additive: an
+event without it is an approval, which is exactly what every build before this
+one meant by sending one. Readers classify through
+`isQuestionKind(requestKind)` from `shared/pendingInputAnswers.ts` rather than
+re-deriving the split:
+
+- `AgentChatMessageList` uses it directly instead of wrapping the kind in
+  `isAskQuestionRequest({ kind })`.
+- The brain's push publisher (`pushPublisherService.ts`) sets the run phase to
+  `waiting_for_input` for a question and `waiting_for_approval` otherwise, and
+  ships the question **without** the Approve/Deny notification category — a
+  question has nothing for those inline buttons to do. Both flavours share the
+  `alert:<sessionId>:approval` dedupe key, since either way it is one prompt per
+  session, and sharing it keeps a question from re-alerting over an approval it
+  replaced. See [push notifications](../sync-and-multi-device/push-notifications.md).
+
 ### Cross-surface parity
 
 The card's data contract (`PendingInputRequest` / `PendingInputQuestion`
@@ -1522,6 +1548,52 @@ surface's visual treatment:
 
 CTO and resolver surfaces set `profile: "persistent_identity"` and
 override the chips.
+
+### Resolving the accent for the chat on screen
+
+`chatAccentForRenderedChat()` in `chatSurfaceTheme.ts` is the single
+derivation, and it is synchronous — the accent must be right on the frame a
+chat switch renders, not one IPC round trip later. Best evidence first:
+
+1. `sessionProvider` — the rendered chat's own provider.
+2. `lockSessionProvider` — the provider an embedding surface already knows for
+   the locked chat.
+3. `modelFamily` — the composer model's provider family.
+4. `modelColor` — the per-model registry color.
+5. `NEUTRAL_CHAT_ACCENT` (`#A1A1AA`).
+
+**The caller owns staleness.** Pass `null` for anything you cannot vouch for
+this frame, so the answer falls through to a source you can — or to gray —
+rather than landing on a stale color. Neutral gray is the only honest answer
+when nothing trustworthy identifies the chat: a held-over color reads as the
+*previous* chat's provider.
+
+`AgentChatPane` applies that rule twice:
+
+- Its `sessionProvider` comes from `renderedSession`, which is resolved from
+  `renderedSessionId` (with the host's `initialSessionSummary` as the
+  switch-frame fallback), so it already describes the chat on screen and needs
+  no freshness test.
+- The model-derived inputs do need one, because the pane is **not remounted**
+  across a chat switch and the composer's model trails a prop-driven change.
+  They are withheld unless `composerModelDescribesRenderedChat`
+  (`selectedSession?.sessionId ?? null === renderedSessionId`) holds. That is
+  deliberately not `!chatSelectionTransitioning`, which compares the composer id
+  to the rendered id and already agrees in the frame where the incoming id is
+  known but its row has not been listed yet — the frame where `selectedSession`
+  is still null and the stale model args must stay withheld. A draft pane has no
+  session at all, so `null === null` holds and it keeps its composer model color.
+
+`lockSessionProvider` is the never-borrow guard for embedded panes: a host that
+has the Work row in hand supplies the provider directly. `WorkViewArea`'s
+`SessionSurface` passes `providerFromChatToolType(session.toolType)` — the
+inverse of `chatToolTypeForProvider`, both now living in `renderer/lib/sessions.ts`
+as two hand-written literal tables (a `Record<KnownChatProvider, …>` forward map
+keyed on a closed six-member union so adding a seventh provider is a type error,
+plus a `Record<string, …>` reverse map whose agreement is pinned by a round-trip
+test). Both directions look up through `Object.hasOwn`, so a provider or tool
+type literally named `constructor` or `toString` falls back instead of resolving
+to an `Object.prototype` member.
 
 ## State derivation helpers
 

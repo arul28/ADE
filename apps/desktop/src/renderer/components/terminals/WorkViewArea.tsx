@@ -43,7 +43,7 @@ import { WorkStartSurface } from "./WorkStartSurface";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { useChatPrPaneOpen } from "../chat/useChatPrPaneOpen";
-import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
+import { isChatToolType, primarySessionLabel, providerFromChatToolType, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import {
@@ -940,6 +940,9 @@ function SessionSurface({
         laneId={session.laneId}
         laneLabel={session.laneName}
         lockSessionId={session.id}
+        // The row knows the provider on the switch frame; the pane does not (see
+        // AgentChatPane's `lockSessionProvider` doc).
+        lockSessionProvider={providerFromChatToolType(session.toolType)}
         sessionTitleById={sessionTitleById}
         hideSessionTabs
         hideLaneToolDrawers

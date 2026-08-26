@@ -6,6 +6,7 @@ import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "./sessionService";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import type { SettleResidueItem, SettleTeardownContext } from "./sessionSettleTeardown";
+import type { SettleAbortedReason } from "./settlingStateRegistry";
 
 
 /**
@@ -65,6 +66,10 @@ describe("settle race matrix", () => {
     // visible to teardown WHILE it ran rather than only afterwards.
     const teardownContexts: SettleTeardownContext[] = [];
     let residue: SettleResidueItem[] = [];
+    // What a teardown that REFUSED to run reports back (a machine settle over a
+    // running turn). Distinct from residue: nothing was stopped and nothing may
+    // be filed.
+    let teardownAbortedBy: SettleAbortedReason | null = null;
     const remoteWrites: Array<{ columns: string[]; changesetSessionCount: number }> = [];
     const service = createSessionService({
       db,
@@ -72,7 +77,11 @@ describe("settle race matrix", () => {
       runSettleTeardown: async (sessionId, ctx) => {
         teardownContexts.push(ctx);
         await teardown(sessionId);
-        return { residue, confirmed: true };
+        return {
+          residue,
+          confirmed: true,
+          ...(teardownAbortedBy ? { abortedBy: teardownAbortedBy } : {}),
+        };
       },
     });
     const setTeardown = (fn: (sessionId: string) => void | Promise<void>) => {
@@ -80,6 +89,9 @@ describe("settle race matrix", () => {
     };
     const setResidue = (items: SettleResidueItem[]) => {
       residue = items;
+    };
+    const setTeardownAbortedBy = (reason: SettleAbortedReason | null) => {
+      teardownAbortedBy = reason;
     };
     const create = (id: string) =>
       service.create({
@@ -93,7 +105,16 @@ describe("settle race matrix", () => {
         toolType: "codex-chat",
       });
     create("session-1");
-    return { db, service, create, setTeardown, setResidue, teardownContexts, remoteWrites };
+    return {
+      db,
+      service,
+      create,
+      setTeardown,
+      setResidue,
+      setTeardownAbortedBy,
+      teardownContexts,
+      remoteWrites,
+    };
   }
 
   /**
@@ -116,6 +137,37 @@ describe("settle race matrix", () => {
     expect(service.get("session-1")?.settledAt).toBeNull();
     // A leaked window would swallow this session's output forever and leave it
     // permanently unsettleable — the mechanism's worst failure mode.
+    expect(service.settlingSessionIds()).toEqual([]);
+  });
+
+  /**
+   * The interrupt policy, end to end.
+   *
+   * Teardown decides whether it is allowed to cancel a running turn, and it
+   * decides from WHO asked — so the source has to survive the trip from the
+   * caller to the teardown context, and a refusal has to come back as an abort
+   * rather than as a settle that quietly filed a session still doing work.
+   */
+  it("tells teardown whether the caller may cancel a running turn", async () => {
+    const { service, teardownContexts } = await fixture();
+
+    await service.settleSessionsReportingAborts(["session-1"], { source: "pr_merge" });
+    expect(teardownContexts.at(-1)?.mayInterruptActiveTurn).toBe(false);
+
+    service.unsettleSession("session-1");
+    await service.settleSessionsReportingAborts(["session-1"], { source: "user" });
+    expect(teardownContexts.at(-1)?.mayInterruptActiveTurn).toBe(true);
+  });
+
+  it("does not settle a session whose teardown refused to stop its work", async () => {
+    const { service, setTeardownAbortedBy } = await fixture();
+    setTeardownAbortedBy("turn_start");
+
+    const outcome = await service.settleSessionsReportingAborts(["session-1"], { source: "pr_merge" });
+
+    expect(outcome.settled).toEqual([]);
+    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "turn_start" }]);
+    expect(service.get("session-1")?.settledAt).toBeNull();
     expect(service.settlingSessionIds()).toEqual([]);
   });
 

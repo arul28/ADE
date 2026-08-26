@@ -18,6 +18,16 @@ public enum NotchPresentationState: String, Codable, Equatable, Sendable {
     case celebration
 }
 
+extension NotchPresentationState {
+    /// The two states that seize the surface: a card the user never asked for,
+    /// owning the notch on its own timer until it settles or is answered.
+    /// Spelled once here because every caller that treats them alike —
+    /// dismissal, click-through, key activation — has to keep treating them
+    /// alike, and a hand-written `== .flash || == .celebration` is one edit
+    /// away from disagreeing with the others.
+    public var isTakeover: Bool { self == .flash || self == .celebration }
+}
+
 /// How far the surface is allowed to grow, derived from `NotchSettings` so the
 /// interaction machine never has to know about the whole settings payload.
 ///
@@ -115,7 +125,7 @@ public struct NotchInteractionState: Equatable, Sendable {
         }
         // A takeover owns the surface for its own timer; the pointer leaving is
         // not an answer to it.
-        if presentation != .flash && presentation != .celebration {
+        if !presentation.isTakeover {
             presentation = .compact
         }
         return generation

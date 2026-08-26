@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { TerminalSessionSummary } from "../../shared/types";
+import type { KnownChatProvider } from "./sessions";
 import {
+  CHAT_TOOL_TYPE_BY_PROVIDER,
   canBulkDeleteSession,
   canBulkStopSession,
+  chatToolTypeForProvider,
   formatSessionActionError,
   getStaleRunningCliSessionAgeHours,
   isChatToolType,
   normalizeSessionLabel,
   preferredSessionLabel,
+  providerFromChatToolType,
   shortToolTypeLabel,
 } from "./sessions";
 
@@ -206,5 +210,38 @@ describe("formatSessionActionError", () => {
 
   it("falls back to a plain sentence when there is no message at all", () => {
     expect(formatSessionActionError(null, "Delete")).toBe("Delete failed. Try again.");
+  });
+});
+
+describe("providerFromChatToolType", () => {
+  // The forward and reverse tables are both hand-written, so nothing but this
+  // test keeps them exact inverses.
+  it("round-trips every known chat provider through its tool type", () => {
+    for (const provider of Object.keys(CHAT_TOOL_TYPE_BY_PROVIDER) as KnownChatProvider[]) {
+      expect(providerFromChatToolType(CHAT_TOOL_TYPE_BY_PROVIDER[provider])).toBe(provider);
+    }
+  });
+
+  it("returns null for CLI/shell tool types and unknown input", () => {
+    for (const toolType of ["shell", "claude", "codex", "cursor-cli", "droid", "opencode", "not-a-tool", "", null, undefined]) {
+      expect(providerFromChatToolType(toolType)).toBeNull();
+    }
+  });
+
+  it("ignores casing and surrounding whitespace", () => {
+    expect(providerFromChatToolType("  Claude-Chat ")).toBe("claude");
+  });
+
+  // Both tables are plain object literals and both are keyed on arbitrary
+  // runtime strings — a tool type off a session row, a provider off a chat
+  // record. A bare `map[key]` lookup answers these from `Object.prototype`, so
+  // "constructor" resolves to a FUNCTION rather than falling through: the Work
+  // pane would lock a chat to a provider that does not exist, and the forward
+  // direction would hand a function where a tool type belongs.
+  it("resolves nothing for a prototype-chain key, in either direction", () => {
+    for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) {
+      expect(providerFromChatToolType(key), `${key} must not resolve`).toBeNull();
+      expect(chatToolTypeForProvider(key), `${key} must fall back`).toBe("opencode-chat");
+    }
   });
 });

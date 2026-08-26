@@ -28772,6 +28772,32 @@ describe("createAgentChatService", () => {
 
       expect(session.completion).toBeNull();
     });
+
+    it("repairs a persisted row a liveness sweep wrongly detached, on the next turn", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+
+      // What a boot / owner-liveness reconcile does to a chat whose owner it
+      // cannot see. The in-memory session stays idle, so the old
+      // `status === "ended"` check never fired and the row stayed `detached`
+      // forever — the sidebar reads that as "Ended".
+      const persisted = mockState.sessions.get(session.id);
+      persisted.status = "detached";
+      persisted.endedAt = "2026-03-17T00:20:00.000Z";
+
+      await service.sendMessage({ sessionId: session.id, text: "still here" });
+
+      expect(sessionService.reopen).toHaveBeenCalledWith(session.id);
+      expect(mockState.sessions.get(session.id)).toEqual(expect.objectContaining({
+        status: "running",
+        endedAt: null,
+      }));
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -40638,6 +40664,60 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     const result = await requestPromise;
     expect(result.decision).toBe("decline");
     expect(events.filter((event) => event.event.type === "tool_result")).toHaveLength(0);
+  });
+
+  it("replaces blank question text with the body rather than publishing an empty prompt", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    // OpenCode and Droid hand over an EMPTY question rather than omitting it,
+    // which every caller's `??` fallback misses — and `questions` outranks
+    // `body` here, so the card rendered with no prompt on it and a blank
+    // description underneath.
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Blank question",
+      body: "Which database should the worker read from?",
+      questions: [{
+        id: "answer",
+        header: "Question 1",
+        question: "   ",
+        allowsFreeform: true,
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Blank question";
+      },
+    );
+
+    const request = (approvalEvent.event.detail as {
+      request: { description?: string; questions: Array<{ question: string }> };
+    }).request;
+    expect(request.questions[0]?.question).toBe("Which database should the worker read from?");
+    expect(request.description).toBe("Which database should the worker read from?");
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "decline",
+    });
+    await requestPromise;
   });
 
   it("persists awaitingInput while chat input is pending and clears it after resolution", async () => {

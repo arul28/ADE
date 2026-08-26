@@ -7,12 +7,14 @@ export const CHAT_SURFACE_ACCENTS: Record<ChatSurfaceMode, string> = {
   resolver: "#F97316",
 };
 
-/// Per-provider chat-surface accent. Keeps Claude/Codex/etc. visually
-/// consistent across desktop and mobile — Claude is always amber, Codex always
-/// warm-white, regardless of which model variant is selected. Falls back to
-/// the model's own registry color when the provider isn't in the table.
-/// Mirror this map in `apps/ios/ADE/Views/Components/ADEDesignSystem.swift`
-/// (`providerChatAccents`).
+/**
+ * Per-provider chat-surface accent. Keeps Claude/Codex/etc. visually
+ * consistent across desktop and mobile — Claude is always amber, Codex always
+ * warm-white, regardless of which model variant is selected. Falls back to
+ * the model's own registry color when the provider isn't in the table.
+ * Mirror this map in `apps/ios/ADE/Views/Components/ADEDesignSystem.swift`
+ * (`providerChatAccents`).
+ */
 export const PROVIDER_CHAT_ACCENTS: Record<string, string> = {
   claude: "#D97706",
   anthropic: "#D97706",
@@ -32,13 +34,50 @@ export const PROVIDER_CHAT_ACCENTS: Record<string, string> = {
   groq: "#06B6D4",
 };
 
-/// Look up the unified chat accent for a provider id ("claude", "codex",
-/// "anthropic", …). Returns null when the provider isn't recognized so callers
-/// can fall back to per-model color.
+/**
+ * Look up the unified chat accent for a provider id ("claude", "codex",
+ * "anthropic", …). Returns null when the provider isn't recognized so callers
+ * can fall back to per-model color.
+ */
 export function providerChatAccent(provider: string | null | undefined): string | null {
   if (!provider) return null;
   const key = provider.trim().toLowerCase();
   return PROVIDER_CHAT_ACCENTS[key] ?? null;
+}
+
+/**
+ * Accent used when nothing trustworthy identifies the chat on screen. Neutral
+ * gray is the only honest answer there: a stale color would read as the
+ * previous chat's provider.
+ */
+export const NEUTRAL_CHAT_ACCENT = "#A1A1AA";
+
+/**
+ * The accent a chat surface must paint for the chat currently on screen.
+ *
+ * Best evidence first: the rendered chat's own provider, then the provider an
+ * embedding surface knows synchronously for the locked chat, then the composer
+ * model's family, then its registry color, then neutral gray.
+ *
+ * The caller owns staleness: pass `null` for anything you cannot vouch for
+ * this frame, so the answer falls through to a source you can — or to gray —
+ * rather than landing on a stale color.
+ */
+export function chatAccentForRenderedChat(args: {
+  /** Provider of the rendered chat's session, or null if the pane's is stale. */
+  sessionProvider?: string | null;
+  /** Provider the host surface knows synchronously for the locked chat. */
+  lockSessionProvider?: string | null;
+  /** Provider family of the composer's selected model, or null if stale. */
+  modelFamily?: string | null;
+  /** Per-model registry color, used when the family isn't in the accent table. */
+  modelColor?: string | null;
+}): string {
+  return providerChatAccent(args.sessionProvider)
+    ?? providerChatAccent(args.lockSessionProvider)
+    ?? providerChatAccent(args.modelFamily)
+    ?? args.modelColor
+    ?? NEUTRAL_CHAT_ACCENT;
 }
 
 const CHIP_TONE_STYLES: Record<ChatSurfaceChipTone, string> = {
@@ -127,17 +166,21 @@ function isLightChatAccent(accent: string): boolean {
   return chatAccentLuminance(accent) > 0.72;
 }
 
-/// Readable foreground for content painted on top of a `--chat-accent` fill
-/// (e.g. a send-button icon). Light provider accents such as Codex/OpenAI need
-/// a dark glyph; everything else stays white.
+/**
+ * Readable foreground for content painted on top of a `--chat-accent` fill
+ * (e.g. a send-button icon). Light provider accents such as Codex/OpenAI need
+ * a dark glyph; everything else stays white.
+ */
 export function chatAccentContrast(accentColor?: string | null): string {
   const trimmed = accentColor?.trim();
   return trimmed && isLightChatAccent(trimmed) ? "#1c1917" : "#ffffff";
 }
 
-/// The accent the surface actually paints for a given chrome tint — neutral
-/// tint swaps `--chat-accent` to gray, so contrast for content on that fill
-/// must be computed from this, not the raw provider color.
+/**
+ * The accent the surface actually paints for a given chrome tint — neutral
+ * tint swaps `--chat-accent` to gray, so contrast for content on that fill
+ * must be computed from this, not the raw provider color.
+ */
 export function effectiveChatAccent(accentColor: string, chromeTint: ChatChromeTint): string {
   return chromeTint === "neutral" ? NEUTRAL_CHROME_ACCENT : accentColor;
 }

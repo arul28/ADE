@@ -7,6 +7,7 @@ import {
   hostSleepNoticeMergeKey,
   isHostSleepNoticeEvent,
 } from "../../../desktop/src/shared/hostSleepNotice";
+import { approvalRequestKind, isQuestionKind } from "../../../desktop/src/shared/pendingInputAnswers";
 import { renderAdeCardBody } from "./adeCardFormat";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
@@ -979,6 +980,15 @@ export function renderChatLines(args: {
     }
     if (event.type === "approval_request") {
       const record = event as unknown as Record<string, unknown>;
+      // A question and an approval arrive on the same event; only the request
+      // kind tells them apart. Rendering both as "approval needed" put the
+      // wrong word — and a meaningless file/line count — on prose the agent is
+      // waiting to be told. Same kind rule as the pending-input card, so the
+      // two surfaces agree on every event a real host emits.
+      if (isQuestionKind(approvalRequestKind(event))) {
+        lines.push({ id, tone: "approval", body: `[?] ${singleLine(event.description, 160)}` });
+        continue;
+      }
       const files = Array.isArray(record.files) ? record.files : [];
       const additions = typeof record.totalAdditions === "number" ? record.totalAdditions : 0;
       const deletions = typeof record.totalDeletions === "number" ? record.totalDeletions : 0;

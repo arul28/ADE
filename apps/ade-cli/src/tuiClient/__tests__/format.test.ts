@@ -260,6 +260,51 @@ describe("renderChatLines", () => {
     expect(lines.map((line) => line.header)).toEqual([undefined, undefined]);
   });
 
+  it("labels an approval_request question as a question, not an approval", () => {
+    // A question and a real approval ride the same event. Rendering both as
+    // "approval needed" put the wrong word — and a meaningless 0 files/+0 -0
+    // count — on prose the agent is waiting to be told.
+    const render = (event: Record<string, unknown>) => renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [{
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: event as never,
+      }],
+    });
+
+    const topLevelKind = render({
+      type: "approval_request",
+      itemId: "ask-1",
+      kind: "tool_call",
+      requestKind: "structured_question",
+      description: "Which database should the worker read from?",
+    });
+    expect(topLevelKind[0]?.body).toBe("[?] Which database should the worker read from?");
+    expect(topLevelKind[0]?.tone).toBe("approval");
+
+    // An older host sends no top-level kind; the embedded request still says so.
+    const embeddedKind = render({
+      type: "approval_request",
+      itemId: "ask-2",
+      kind: "tool_call",
+      description: "Pick a rollout window",
+      detail: { request: { kind: "question", itemId: "ask-2" } },
+    });
+    expect(embeddedKind[0]?.body).toBe("[?] Pick a rollout window");
+
+    // A real approval — and an event with no kind at all, which is what every
+    // build before the split meant — keeps the approval line.
+    for (const event of [
+      { type: "approval_request", itemId: "c-1", kind: "command", requestKind: "permissions", description: "Run the migration" },
+      { type: "approval_request", itemId: "c-2", kind: "command", description: "Run tests" },
+    ]) {
+      expect(render(event)[0]?.body).toBe("approval needed  0 files  +0 -0");
+    }
+  });
+
   it("shows compact image chips for user messages that only carry attachments", () => {
     const lines = renderChatLines({
       activeSession: null,

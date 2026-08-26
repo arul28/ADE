@@ -10,6 +10,7 @@
  * Deliberately free of Pi imports: the desktop process bundles this file into
  * the worker, which loads the user's Pi installation only after init validation.
  */
+import { waitingOnYouDescription } from "../../../shared/types/chat";
 import { PI_APPROVAL_ALLOW, PI_APPROVAL_ALLOW_SESSION } from "./piSdkEventMapper";
 import {
   PI_SDK_PROTOCOL_VERSION,
@@ -500,7 +501,7 @@ export const PI_ASK_USER_DESCRIPTION = [
 /** Normalize the model's `ask_user` arguments into an ADE card request. */
 export function piAskUserRequestFromArgs(args: unknown): PiSdkUiRequestPayload {
   const record = args && typeof args === "object" ? args as Record<string, unknown> : {};
-  const question = trimmed(record.question) ?? "The agent needs your input before it can continue.";
+  const question = trimmed(record.question) ?? waitingOnYouDescription();
   const rawOptions = Array.isArray(record.options) ? record.options : [];
   const options = rawOptions.flatMap((option, index): PiSdkUiOption[] => {
     const entry = option && typeof option === "object" ? option as Record<string, unknown> : {};

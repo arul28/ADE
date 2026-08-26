@@ -340,6 +340,7 @@ vi.mock("../../lib/sessions", () => ({
   truncateSessionLabel: vi.fn((label: string) => label),
   formatToolTypeLabel: vi.fn((toolType: string | null | undefined) => toolType ?? "Tool"),
   chatToolTypeForProvider: vi.fn(() => "opencode-chat"),
+  providerFromChatToolType: vi.fn(() => null),
 }));
 
 vi.mock("../../lib/terminalAttention", () => ({

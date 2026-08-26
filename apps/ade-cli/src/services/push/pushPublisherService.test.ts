@@ -58,7 +58,7 @@ function run(overrides: Partial<AgentRunState>): AgentRunState {
     backgroundTaskIds: new Set<string>(),
     deferredTerminalPhase: null,
     chatActivityMode: null,
-    chatActivityModeCheckedAt: 0,
+    chatMetaCheckedAt: 0,
     ...overrides,
   };
 }
@@ -3180,6 +3180,109 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("offers Answer for a question and Approve/Deny for an approval", async () => {
+    // Claude's AskUserQuestion rides the same `approval_request` event as a
+    // real tool approval, and only `requestKind` tells them apart. Publishing
+    // both as `waiting_for_approval` put Approve/Deny on something that wants
+    // prose, and left the answer branch of the item builder unreachable.
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+
+    emit({
+      sessionId: "s-question",
+      timestamp: "",
+      event: {
+        type: "approval_request",
+        itemId: "ask-1",
+        kind: "tool_call",
+        requestKind: "structured_question",
+        description: "Which database should the worker read from?",
+      },
+    });
+    emit({
+      sessionId: "s-approval",
+      timestamp: "",
+      event: {
+        type: "approval_request",
+        itemId: "cmd-1",
+        kind: "command",
+        requestKind: "approval",
+        description: "Run the migration",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const sessionItems = (await publisher.getMachineAttentionSnapshot()).items
+      .flatMap((item) =>
+        item.destination.kind === "session"
+          ? [{ item, destination: item.destination }]
+          : []);
+    const question = sessionItems.find((row) => row.destination.sessionId === "s-question")!;
+    const approval = sessionItems.find((row) => row.destination.sessionId === "s-approval")!;
+
+    // Both still need you; only the verb differs.
+    expect(question.item.phase).toBe("needs_you");
+    expect(approval.item.phase).toBe("needs_you");
+    expect(question.item.actions.map((action) => action.kind)).toEqual(["answer", "open"]);
+    expect(approval.item.actions.map((action) => action.kind)).toEqual(["approve", "deny", "open"]);
+    // The question still deep-links to the exact pending item.
+    expect(question.destination.itemId).toBe("ask-1");
+    publisher.dispose();
+  });
+
+  it("reads an approval_request with no requestKind as an approval", async () => {
+    // Wire compatibility: a host older than the question/approval split sends
+    // no `requestKind`, and `waiting_for_approval` is exactly what it meant.
+    const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+
+    emit({
+      sessionId: "s-legacy",
+      timestamp: "",
+      event: {
+        type: "approval_request",
+        itemId: "legacy-1",
+        kind: "command",
+        description: "Run tests",
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(item.actions.map((action) => action.kind)).toEqual(["approve", "deny", "open"]);
+    publisher.dispose();
+  });
+
+  it("treats an embedded question kind as waiting_for_input", async () => {
+    // A host that predates the top-level `requestKind` still carries the kind
+    // in `detail.request` — the same place the TUI transcript reads it from.
+    // Reading only the top-level field published those questions as approvals,
+    // so the phone offered Approve/Deny for prose.
+    const { publisher, publish, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+    await publisher.start();
+
+    emit({
+      sessionId: "s-embedded",
+      timestamp: "",
+      event: {
+        type: "approval_request",
+        itemId: "ask-legacy-1",
+        kind: "tool_call",
+        description: "Which database should the worker read from?",
+        detail: { request: { kind: "structured_question" } },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(item.phase).toBe("needs_you");
+    expect(item.actions.map((action) => action.kind)).toEqual(["answer", "open"]);
+    // ...and the run is waiting for INPUT, with no Approve/Deny category on the
+    // notification: those buttons have nothing to do with a question.
+    const payload = publish.mock.calls.at(-1)![0];
+    expect(payload.liveActivity[0].contentState.runs[0].phase).toBe("waiting_for_input");
+    expect(payload.notifications[0].category ?? null).toBeNull();
+    publisher.dispose();
+  });
+
   it("does not let a scheduled wakeup hold a finished run open", async () => {
     const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
 
@@ -3455,6 +3558,56 @@ describe("createPushPublisherService flush", () => {
     // It is not part of the row's look either, so no delta wave on upgrade —
     // the reconcile that runs at publisher start propagates it instead.
     expect(activityContentFingerprint(withCanonical)).toBe(activityContentFingerprint(base));
+  });
+
+  it("follows a chat that is renamed after its first frame was published", async () => {
+    // A new Claude chat is created with a placeholder title and renamed a few
+    // seconds later. The publisher used to latch the title on first resolve and
+    // never look again, so the notch card, the phone's push and the lock screen
+    // all showed "Claude Chat" for the life of the session.
+    const { publisher, emit, agentChatService } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+    });
+    const summaryTitled = (title: string) => ({
+      sessionId: "s-1",
+      laneId: "auth-lane",
+      title,
+      model: "gpt-5",
+      provider: "claude" as const,
+      status: "active" as const,
+      startedAt: "",
+      endedAt: null,
+      lastActivityAt: "",
+      lastOutputPreview: null,
+      summary: null,
+    });
+    agentChatService.getSessionSummary.mockResolvedValue(summaryTitled("Claude Chat"));
+
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.title).toBe("Claude Chat");
+
+    agentChatService.getSessionSummary.mockResolvedValue(summaryTitled("Fix the login redirect loop"));
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.title)
+      .toBe("Fix the login redirect loop");
+    publisher.dispose();
+  });
+
+  it("keeps the last known title when a summary read fails", async () => {
+    // A failed read is not evidence the chat lost its name.
+    const { publisher, emit, agentChatService } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+    });
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "text", text: "working" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    agentChatService.getSessionSummary.mockRejectedValue(new Error("db is busy"));
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect((await publisher.getMachineAttentionSnapshot()).items[0]!.title).toBe("Fix login");
+    publisher.dispose();
   });
 
   it("publishes chatActivityMode planning for a chat in plan mode", async () => {

@@ -199,6 +199,33 @@ export type AgentChatSpawnCompletion = {
   humanMessageCount?: number;
 };
 
+/**
+ * The `spawn_completed` notice's message text. One definition so the emitted
+ * `message` and the chip that renders it can never drift — the chip re-states
+ * the sentence rather than echoing the stored string, because a stored one may
+ * be older than the current wording.
+ */
+export function spawnCompletedNoticeMessage(childTitle: string): string {
+  return `Chat "${childTitle}" finished its turn`;
+}
+
+/**
+ * The fallback line shown when a chat is blocked on the user and there is no
+ * question text to show instead.
+ *
+ * One definition because this copy is not local to the chat pane: it becomes
+ * the notch card's subtitle, the phone's push body and the lock screen preview.
+ * Every provider used to spell its own variant of "<Provider> needs input
+ * before it can continue" — a sentence about the agent where the user wanted a
+ * sentence about them, and six places to fix when the wording changed.
+ *
+ * @param count how many answers are outstanding; omit or pass 1 for the
+ * singular. Anything above one gets the plural.
+ */
+export function waitingOnYouDescription(count?: number): string {
+  return (count ?? 1) > 1 ? "Waiting on your answers." : "Waiting on your answer.";
+}
+
 export type AgentChatSpawnDispatchMetadata = {
   /** Trusted caller session that dispatched this turn to its direct child. */
   parentSessionId: string;
@@ -724,6 +751,21 @@ export type AgentChatEvent =
       description: string;
       turnId?: string;
       detail?: unknown;
+      /**
+       * What is actually being asked, when this event carries a
+       * `PendingInputRequest`.
+       *
+       * `kind` above describes the *shape* of the thing being confirmed and has
+       * no word for "the agent asked you a question" — so Claude's
+       * AskUserQuestion rode this event as a `tool_call` approval, and every
+       * downstream surface (push, the notch, the lock screen) offered
+       * "Approve/Deny" for something that wants prose. The answer branches were
+       * unreachable code.
+       *
+       * Optional and additive: an event without it is an approval, which is
+       * exactly what every build before this one meant by sending one.
+       */
+      requestKind?: PendingInputKind;
     }
   | {
       type: "pending_input_resolved";

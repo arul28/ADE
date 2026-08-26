@@ -17,7 +17,8 @@ private func adeColor(_ hex: UInt32) -> Color {
     )
 }
 
-private enum ADE {
+/// Shared with `NotchItemMark.swift`, which draws the same tokens.
+enum ADE {
     static let bg = adeColor(0x0C0B10)          // --color-bg
     static let surface = adeColor(0x16141E)     // --color-surface
     static let card = adeColor(0x1A1830)        // --color-card
@@ -40,7 +41,9 @@ private enum ADE {
 }
 
 /// The renderer's dark-theme `.attention-tone-*` values.
-private func notchToneColor(_ tone: NotchStatusTone) -> Color {
+/// Module-scoped rather than file-private: the item mark tints from the same
+/// table.
+func notchToneColor(_ tone: NotchStatusTone) -> Color {
     switch tone {
     case .amber: return adeColor(0xFBBF24)
     case .red: return adeColor(0xF87171)
@@ -329,9 +332,11 @@ struct NotchSurfaceView: View {
             let tone = notchToneColor(toast.resolvedTone)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    NotchStateGlyph(
+                    NotchItemMark(
+                        provider: item?.provider,
+                        hideDetails: model.settings.hideDetails,
                         kind: item.map { notchStripGroupKind(for: $0) } ?? .needsYou,
-                        diameter: 20
+                        diameter: 22
                     )
                     Text(toast.title)
                         .font(.system(size: ADE.fsSm + 1, weight: .semibold))
@@ -346,29 +351,30 @@ struct NotchSurfaceView: View {
                     } label: {
                         Image(systemName: "xmark")
                     }
-                    .buttonStyle(NotchIconButtonStyle(diameter: 18))
-                    .accessibilityLabel("Dismiss \(toast.title)")
+                    // 18pt disc, 28pt target: the card is a timed thing and the
+                    // close has to land first click.
+                    .buttonStyle(NotchIconButtonStyle(diameter: 18, hitDiameter: 28))
+                    .accessibilityLabel("Close")
+                    .accessibilityHint("Marks this as seen and closes the card")
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(toast.subtitle ?? model.visiblePreview)
+                    Text(model.takeoverSubtitle)
                         .font(.system(size: ADE.fsXs, weight: .regular))
                         .foregroundStyle(ADE.secondaryFg)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
-                    HStack(spacing: 6) {
-                        secondaryActionButtons
-                        Button {
-                            model.openSelected()
-                        } label: {
-                            Text("Open")
-                        }
-                        .buttonStyle(NotchButtonStyle(prominent: true))
-                        .accessibilityHint("Opens the exact item in ADE")
+                    // One button, and its verb is the promise.
+                    Button {
+                        model.openSelected()
+                    } label: {
+                        Text(model.primaryAction.label)
                     }
+                    .buttonStyle(NotchButtonStyle(prominent: true))
                     .layoutPriority(1)
+                    .accessibilityHint("Opens this item in ADE")
                 }
-                .padding(.leading, 28)
+                .padding(.leading, 30)
             }
             .padding(.horizontal, 14)
             .padding(.top, 9)
@@ -382,11 +388,13 @@ struct NotchSurfaceView: View {
                     .padding(.vertical, 10)
                     .padding(.leading, 4)
             }
-            // Clicking the card itself is an answer to it: the takeover ends and
-            // the panel opens on what it was about. The buttons above win the
-            // hit test, so this never steals Approve or Open.
+            // The card is one target with one meaning: clicking it does what
+            // its button does — goes to the thing that needs you. It used to
+            // expand the panel instead, so the same card had two different
+            // answers depending on which pixel you hit. The expanded panel is
+            // still one click away from the menu-bar item.
             .contentShape(Rectangle())
-            .onTapGesture { model.toggleExpanded() }
+            .onTapGesture { model.openSelected() }
             .modifier(TakeoverMorph(
                 collapsing: model.isTakeoverCollapsing,
                 anchor: morphAnchor,
@@ -878,36 +886,6 @@ private struct StripGroupBadge: View {
     }
 }
 
-/// The iOS island row mark: a tinted state glyph in a quiet disc, not a
-/// provider logo. One hue, one meaning, the same table the strip counts with.
-private struct NotchStateGlyph: View {
-    let kind: NotchStripGroupKind
-    var diameter: CGFloat = 18
-
-    var body: some View {
-        let tone = notchToneColor(kind.tone)
-        ZStack {
-            Circle()
-                .fill(tone.opacity(0.16))
-            Image(systemName: kind.symbolName)
-                .font(.system(size: glyphSize, weight: .bold))
-                .foregroundStyle(tone)
-        }
-        .frame(width: diameter, height: diameter)
-        .overlay(Circle().strokeBorder(tone.opacity(0.24), lineWidth: 0.5))
-        .accessibilityHidden(true)
-    }
-
-    private var glyphSize: CGFloat {
-        switch kind {
-        case .needsYou: return diameter * 0.40
-        case .working: return diameter * 0.44
-        case .idle, .done: return diameter * 0.50
-        case .failed, .planning: return diameter * 0.47
-        }
-    }
-}
-
 /// What the left wing says with nothing to count: the app's own name, or the
 /// stream's problem when there is one.
 private struct StripIdentity: View {
@@ -967,8 +945,7 @@ private struct TakeoverMorph: ViewModifier {
 // MARK: - Components
 
 /// The Swift mirror of the iOS island row and the desktop Activity card:
-/// state glyph, session title, short elapsed, lane. The provider logo is not
-/// drawn — it is metadata, and this row only has room for status and content.
+/// provider mark with its state dot, session title, short elapsed, lane.
 private struct NotchActivityRow: View {
     let item: AttentionItem
     let hideDetails: Bool
@@ -986,7 +963,12 @@ private struct NotchActivityRow: View {
         let presentation = item.presentation(hideDetails: hideDetails)
         Button(action: onOpen) {
             HStack(alignment: .center, spacing: 9) {
-                NotchStateGlyph(kind: notchStripGroupKind(for: item), diameter: 18)
+                NotchItemMark(
+                    provider: item.provider,
+                    hideDetails: hideDetails,
+                    kind: notchStripGroupKind(for: item),
+                    diameter: 18
+                )
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text(presentation.title)
@@ -1381,11 +1363,15 @@ private struct ElapsedTimeLabel: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            Text(attentionElapsedLabel(since: isoDate, now: timeline.date))
+            let label = attentionElapsedLabel(since: isoDate, now: timeline.date)
+            Text(label)
                 .font(.system(size: ADE.fs2xs, weight: .medium, design: .monospaced))
                 .foregroundStyle(ADE.mutedFg)
+                // "54s" beside a headline is ambiguous read aloud — it is how
+                // long this row has been in the state it is in, not a duration
+                // of work or a countdown on the card.
+                .accessibilityLabel(label == "now" ? "Just now" : "\(label) in this state")
         }
-        .accessibilityLabel("Elapsed time")
     }
 }
 
@@ -1447,19 +1433,31 @@ private struct NotchTabStyle: ButtonStyle {
     }
 }
 
+/// `diameter` is what is drawn; `hitDiameter` is what is clickable.
+///
+/// The extra reach is padded on and taken straight back off, so the hit shape
+/// grows without the row growing with it — the layout must stay unchanged. The
+/// larger target is also what wins the click against the card-wide tap gesture
+/// underneath.
 private struct NotchIconButtonStyle: ButtonStyle {
     var diameter: CGFloat = 24
+    var hitDiameter: CGFloat?
+
+    private var reach: CGFloat { max(0, ((hitDiameter ?? diameter) - diameter) / 2) }
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: diameter * 0.375, weight: .bold))
-            .foregroundStyle(ADE.secondaryFg)
+            .foregroundStyle(configuration.isPressed ? ADE.fg : ADE.secondaryFg)
             .frame(width: diameter, height: diameter)
             .background {
                 Circle()
                     .fill(.white.opacity(configuration.isPressed ? 0.14 : 0.06))
                     .overlay(Circle().stroke(ADE.hairline, lineWidth: 0.8))
             }
+            .padding(reach)
+            .contentShape(Rectangle())
+            .padding(-reach)
     }
 }
 

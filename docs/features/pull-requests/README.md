@@ -165,7 +165,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage, plus the `prMergeAutoSettlementService` regression suite. |
 | `pullRequestRowCleanup.ts` | The only writer of the detach columns. `detachPullRequestRowsForLane` stamps `detached_at` + the frozen lane identity and provenance when a lane is deleted, lifts `commit_count` / `changed_files` off the snapshot, nulls the bulky snapshot JSON columns, drops lane-scoped group membership, and removes live PR↔chat routing edges. `detachPullRequestRowsByIds` remains an explicit cleanup helper for callers that truly need to detach selected rows; ordinary branch switching retains previous-branch PRs as live lane history. `countLaneProvenance` must run *before* the caller deletes the lane's sessions / artifacts / checkpoints. `deletePullRequestRowsByIds` remains for genuinely destructive paths. See [Multi-PR lane ownership](#multi-pr-lane-ownership-and-chat-edges) and [Detached PR rows](#detached-pr-rows). |
 | `prPollingService.ts` | Webhook-first PR freshness plus the direct-GitHub safety net. `reconcilePrs(prIds)` coalesces webhook-linked ids and refreshes only those rows immediately. A healthy relay suppresses hot polling and reduces broad refreshes to a 15-minute safety sweep; an unhealthy relay uses the configurable 60 s fallback (clamped to 5 s–5 min) and user-driven hot windows of 15 s for the first minute, then 30 s until the three-minute cap. Empty-cache discovery runs at most every 30 minutes with a healthy relay or 10 minutes without one. Before every network refresh, the poller honors credential cooldown/reset state and preserves the final 500 core/GraphQL requests for foreground actions. It writes `last_polled_at` per PR for delta polling. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) for runtime-bound windows; the desktop main process owns the local-bound instance. |
-| `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files chat and tracked-agent-CLI sessions for a newly discovered merged PR even when the session has pending input or background work: the merge is the explicit override. **Which** sessions it may file is an explicit `MergeSettlementScope` union rather than an implicit fallthrough — see [Merge settlement scope](#merge-settlement-scope). Each PR is handled once — including when the scope resolves to `ambiguous` and nothing is filed at all, because this merge looked and decided — so user reactivation is not re-filed by that old merge, while another linked PR can file a later lifecycle. It emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
+| `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files chat and tracked-agent-CLI sessions for a newly discovered merged PR even when the session has pending input or background work: the merge is the explicit override. The single exception is a chat turn that is running *right now* — see [Active-turn deferral](#active-turn-deferral). **Which** sessions it may file is an explicit `MergeSettlementScope` union rather than an implicit fallthrough — see [Merge settlement scope](#merge-settlement-scope). Each PR is handled once — including when the scope resolves to `ambiguous` and nothing is filed at all, because this merge looked and decided — so user reactivation is not re-filed by that old merge, while another linked PR can file a later lifecycle. It emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
 | `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, and merged. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `workflowGraph.ts` | `createWorkflowGraph` — reconstructs the CI pipeline DAG (`PrWorkflowGraph`) behind a swappable `WorkflowGraph` interface. GitHub's jobs API does not return `needs:`, so the graph is built by parsing the workflow YAML that actually ran and joining it to live run state. Parses **only** `jobs.<id>.needs` and `jobs.<id>.strategy.matrix`, with the existing `yaml` dep. Source order: lane worktree `git show <headSha>:.github/workflows/<file>` → GitHub Contents API `?ref=<headSha>` (fork PRs / non-local repos) → `source: "none"` with an `unavailableReason`; it never guesses an edge. A single WORKFLOW degrades to flat swimlanes (not the whole graph) when a job uses a reusable workflow (`uses:`), has a `${{ }}` `name:`, or the YAML will not parse. Matrix legs collapse into one node whose state is the worst leg (failed > running > queued > passed > skipped); `tier` is a cycle-safe longest-path rank over `needs`; `criticalPath` is the longest-duration chain. Running nodes report live elapsed. Parsed YAML is cached per `(repo, headSha)` behind a TTL; the graph itself is always recomputed from live run state. |
@@ -813,6 +813,45 @@ session list runs past the page size must not silently drop them. A declared
 link that outlived a lane move is then filtered back to the PR's own lane. The
 sweep keeps the bounded 500-row listing — it is a guess, and a guess should stay
 bounded.
+
+### Active-turn deferral
+
+A merge outranks pending input, background work, and every other ordinary
+settlement blocker. It does **not** outrank a chat turn that is running right
+now, because settle teardown refuses to interrupt one for a machine-initiated
+settle (see
+[`settle-teardown-design.md`](../terminals-and-sessions/settle-teardown-design.md)
+— `mayInterruptActiveTurn`). Attempting anyway would just abort on every poll
+for as long as the turn runs.
+
+So `hasActiveChatTurn(sessionId)` is checked before each `settleSessions…` call
+and is the *only* reason the service defers. It is deliberately narrow:
+
+- Liveness comes from the chat service, through the injected
+  `getChatLiveness` callback built by the exported `chatLivenessReader(agentChatService)`.
+  Both hosts that own a PR poller wire it — desktop `main.ts` and the brain's
+  `apps/ade-cli/src/bootstrap.ts` — and in a normal install it is the brain that
+  polls, so a desktop-only copy would protect nobody.
+- The callback reports **`status` only**. `awaitingInput` is a stable resting
+  state, not a running turn, and deferring on it would mean a chat parked on a
+  question is never settled.
+- No liveness at all — no callback, or nothing for this session, which covers
+  every non-chat and tracked-CLI row — settles immediately, exactly as before
+  the gate existed. The persisted `terminal_sessions` row is never consulted:
+  it holds `running` for the life of a tracked CLI terminal and between chat
+  turns, so reading it would defer forever and no merged PR would ever be
+  settled or announced.
+- A **thrown** liveness read counts as active and defers this poll. An
+  unreachable liveness source is not evidence the turn ended, and teardown is
+  not a backstop here — a `readActiveWork` that fails the same way returns
+  `timedOutResidue` with no `abortedBy`, so the settle would slip through
+  unnoticed.
+
+There is no per-abort-reason bookkeeping and no set of previously-aborted
+sessions. The gate re-reads liveness on every attempt, so *every* abort reason
+retries as soon as the session is quiet, with no time cap. Deferring is never an
+abandonment: the PR stays unhandled and the retry costs one poll. A deferral
+logs `prs.auto_settle_deferred_active_turn` (PR number, lane id, session id).
 
 ## Detached PR rows
 

@@ -11,18 +11,6 @@ import {
   isTrackedAgentCliToolType,
 } from "../../../shared/types";
 import { isChatToolType } from "../sessions/chatSessionProjection";
-import type { SettleAbortedReason } from "../sessions/settlingStateRegistry";
-
-/**
- * The abort reasons that mean "something is running right now". Only these make
- * a retry wait: the others either resolve on their own or, in the case of
- * `teardown_failed`, describe work that is still running and still needs stopping.
- */
-const ACTIVITY_ABORTS: ReadonlySet<SettleAbortedReason> = new Set<SettleAbortedReason>([
-  "turn_start",
-  "turn_failed",
-  "attention_requested",
-]);
 import type { AgentChatSessionSummary } from "../../../shared/types";
 
 function isMergeAtOrAfter(mergedAt: string | null | undefined, enabledSince: string): boolean {
@@ -73,12 +61,42 @@ function resolveMergeSettlementScope(pr: PrSummary, snapshot: PrSummary[]): Merg
   return { kind: "sweep", claimedByOtherPrs };
 }
 
+/**
+ * What a chat's liveness looks like to a caller that is not the chat service.
+ *
+ * Deliberately `status` alone. The sole consumer (`hasActiveChatTurn`) acts on
+ * nothing else — `awaitingInput` is a stable resting state, not a running turn
+ * — so carrying it would only invite a future reader to defer on it.
+ */
+export type ChatLivenessSummary = Pick<AgentChatSessionSummary, "status">;
+
+/**
+ * The one adapter from the chat service to a `getChatLiveness` callback.
+ *
+ * Both hosts that own a PR poller wire it — desktop `main.ts` and the brain's
+ * `bootstrap.ts` — and in a normal install it is the BRAIN that polls, so a
+ * desktop-only copy would protect nobody. Exported so the two cannot drift into
+ * disagreeing about what "live" means.
+ *
+ * Reports `status` and nothing else; what counts as "active" is the consumer's
+ * policy, but no consumer needs any other field to decide it.
+ */
+export function chatLivenessReader(
+  agentChatService: { getSessionSummary: (sessionId: string) => Promise<AgentChatSessionSummary | null> },
+): (sessionId: string) => Promise<ChatLivenessSummary | null> {
+  return async (sessionId: string) => {
+    const summary = await agentChatService.getSessionSummary(sessionId);
+    return summary ? { status: summary.status } : null;
+  };
+}
+
 export function createPrMergeAutoSettlementService(args: {
   db: Pick<AdeDb, "getJson" | "setJson">;
   sessionService: Pick<ReturnType<typeof createSessionService>, "get" | "list" | "settleSessionsReportingAborts">;
   emitEvent: (event: PrEventPayload) => void;
   /**
-   * Liveness for a CHAT session, straight from the chat service.
+   * Liveness for a CHAT session, straight from the chat service — see
+   * `chatLivenessReader`, which is how both hosts build it.
    *
    * A chat's persisted `terminal_sessions` row is not usable for this. It holds
    * `status = "running"` between turns on purpose, and `runtimeState` is derived
@@ -88,12 +106,11 @@ export function createPrMergeAutoSettlementService(args: {
    *
    * Injected as a narrow callback rather than the whole chat service, matching
    * `chatMentionService.listChatSessions` and `laneTeardownDeps.agentChatService`.
-   * Absent (or returning null) means "not a chat" — the caller then falls back
-   * to the persisted row, which IS authoritative for tracked CLI sessions.
+   * Absent, or returning null, means "no evidence of a turn" — see
+   * `hasActiveChatTurn`.
    */
-  getChatLiveness?: (
-    sessionId: string,
-  ) => Promise<Pick<AgentChatSessionSummary, "status" | "awaitingInput"> | null>;
+  getChatLiveness?: (sessionId: string) => Promise<ChatLivenessSummary | null>;
+  logger?: { debug: (event: string, meta?: Record<string, unknown>) => void };
 }) {
 
 
@@ -151,29 +168,34 @@ export function createPrMergeAutoSettlementService(args: {
   };
 
   /**
-   * Sessions whose auto-settle was aborted by activity and that have not been
-   * seen at rest since. Service-scoped on purpose: the retry happens on a LATER
-   * poll, so a per-snapshot set would forget and retry unconditionally.
+   * True only when a chat turn is verifiably running right now.
    *
-   * In-memory only. After a restart the first poll retries once without waiting,
-   * which is the pre-existing behavior and is bounded by the abort itself: if the
-   * work is still running, the settle aborts again and re-arms this.
+   * Deliberately the sole reason to defer. The gate mirrors teardown's own
+   * refusal, which triggers on `before.active` alone, so anything teardown
+   * would accept must not be held back here: `awaitingInput` is a stable
+   * resting state, and no answer to a chat's `terminal_sessions` row is
+   * evidence of a turn — that column holds `running` for the life of a tracked
+   * CLI terminal and between chat turns, so reading it defers forever and no
+   * merged PR is ever settled or announced.
+   *
+   * No liveness (no `getChatLiveness`, or nothing for this session — every
+   * non-chat and tracked-CLI row) therefore settles immediately, as it did
+   * before this gate existed. Teardown's `mayInterruptActiveTurn` policy is the
+   * backstop: if a turn is somehow running it aborts rather than interrupting.
+   *
+   * A THROWN read is the one case that is not "no liveness": an unreachable
+   * liveness source is not evidence the turn ended, so it counts as active and
+   * defers this poll. Teardown fails the same way closed for a machine settle
+   * (a `readActiveWork` that times out aborts rather than files), so the two
+   * halves agree; this gate is still the one that keeps the deferral cheap.
    */
-  const abortedSessionIds = new Set<string>();
-
-  /**
-   * True when a session is not mid-turn, so a previously-aborted settle may
-   * retry. Chat liveness comes from the chat service; everything else reads the
-   * persisted row, which is authoritative for tracked CLI sessions.
-   */
-  const isAtRest = async (sessionId: string): Promise<boolean> => {
-    const chat = await args.getChatLiveness?.(sessionId).catch(() => null);
-    if (chat) return !chat.awaitingInput && chat.status !== "active";
-    const row = args.sessionService.get(sessionId);
-    if (!row) return true;
-    const runtime = (row.runtimeState ?? "").toLowerCase();
-    if (runtime) return runtime !== "running" && runtime !== "waiting-input";
-    return (row.status ?? "").toLowerCase() !== "running";
+  const hasActiveChatTurn = async (sessionId: string): Promise<boolean> => {
+    try {
+      const chat = await args.getChatLiveness?.(sessionId);
+      return chat?.status === "active";
+    } catch {
+      return true;
+    }
   };
 
   const processSnapshot = async ({
@@ -252,22 +274,21 @@ export function createPrMergeAutoSettlementService(args: {
         // session even when it still owns scheduled work, a background task,
         // or another normal settlement blocker. Real activity can unsettle it
         // again, while handledPrIds prevents this PR from filing it twice.
-        // A settle that already lost this race does not retry while the work
-        // that won it is still going. Once step 3 attaches real teardown, an
-        // unconditional retry would stop that work, once per poll.
         //
-        // Three earlier gates were each wrong in a different way, so the
-        // predicate below is deliberately narrow: a lifecycle-revision check
-        // never re-arms (a turn COMPLETING does not touch the settle tuple), a
-        // timer re-arms mid-turn, and the persisted row is blind to chat
-        // liveness. Ask the chat service; fall back to the row only for the
-        // tracked CLI sessions whose row does not lie.
-        if (abortedSessionIds.has(session.id)) {
-          if (!(await isAtRest(session.id))) {
-            abandonedThisPr = true;
-            continue;
-          }
-          abortedSessionIds.delete(session.id);
+        // The one thing a merge does NOT outrank is a chat turn running right
+        // now: teardown refuses to cancel one for a machine-initiated settle,
+        // so attempting anyway would abort every poll for as long as the turn
+        // runs. That — and nothing else — is deferred, on every attempt, with
+        // no time cap. A deferral is never an abandonment; the retry costs one
+        // poll.
+        if (await hasActiveChatTurn(session.id)) {
+          args.logger?.debug("prs.auto_settle_deferred_active_turn", {
+            prNumber: pr.githubPrNumber,
+            laneId: pr.laneId,
+            sessionId: session.id,
+          });
+          abandonedThisPr = true;
+          continue;
         }
         const settleResult = await args.sessionService.settleSessionsReportingAborts([session.id], {
           outcome: `PR #${pr.githubPrNumber} merged`,
@@ -280,16 +301,9 @@ export function createPrMergeAutoSettlementService(args: {
           // the PR unhandled is the point: a later pass retries, instead of this
           // merge being consumed by a settle that never landed.
           abandonedThisPr = true;
-          // ONLY an activity abort waits for the turn to end. `teardown_failed`
-          // means the stop itself failed while the work kept running — making it
-          // wait for inactivity would never stop that work again, because the
-          // work is exactly what it would be waiting on. `lifecycle_changed`,
-          // `joined_in_flight` and `remote_lifecycle_changed` are momentary and
-          // clear on their own; a peer's decision in particular has nothing to
-          // do with LOCAL inactivity, so waiting on it would be meaningless.
-          if (settleResult.aborted.some((entry) => ACTIVITY_ABORTS.has(entry.reason))) {
-            abortedSessionIds.add(session.id);
-          }
+          // No per-reason bookkeeping: the gate above re-reads liveness on
+          // every attempt, so every abort reason retries as soon as the
+          // session is quiet.
         }
       }
 
