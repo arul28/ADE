@@ -173,18 +173,18 @@ final class ActivityRowPresentationTests: XCTestCase {
     /// the two together is what let week-old roster rows fill the Done band.
     func testIdleTierSendsEveryRowToIdle() {
         for phase: AccountAttentionPhase in [.needsYou, .failed, .running, .checksFailing] {
-            let row = ActivityRowPresentation(item: makeItem(phase: phase, activityTier: "idle"))
+            let row = ActivityRowPresentation(item: makeAttentionItem(phase: phase, activityTier: "idle"))
             XCTAssertEqual(row.stateGroup, .idle, "idle \(phase.rawValue)")
         }
-        XCTAssertEqual(ActivityRowPresentation(item: makeItem(phase: .needsYou)).stateGroup, .needsYou)
-        XCTAssertEqual(ActivityRowPresentation(item: makeItem(phase: .failed)).stateGroup, .failed)
+        XCTAssertEqual(ActivityRowPresentation(item: makeAttentionItem(phase: .needsYou)).stateGroup, .needsYou)
+        XCTAssertEqual(ActivityRowPresentation(item: makeAttentionItem(phase: .failed)).stateGroup, .failed)
     }
 
     /// The violet notepad has to be reachable from a real row. It is carried on
     /// the additive `chatActivityMode` field, never on a phase.
     func testPlanningIsDerivedFromChatActivityMode() {
         let planning = ActivityRowPresentation(
-            item: makeItem(phase: .running, chatActivityMode: .planning)
+            item: makeAttentionItem(phase: .running, chatActivityMode: .planning)
         )
 
         XCTAssertEqual(planning.stateGroup, .planning)
@@ -192,7 +192,7 @@ final class ActivityRowPresentationTests: XCTestCase {
         XCTAssertEqual(planning.tone, .violet)
         XCTAssertEqual(planning.glyph, .planning)
 
-        let working = ActivityRowPresentation(item: makeItem(phase: .running))
+        let working = ActivityRowPresentation(item: makeAttentionItem(phase: .running))
         XCTAssertEqual(working.stateGroup, .working)
         XCTAssertEqual(working.phaseLabel, "Working")
     }
@@ -257,7 +257,7 @@ final class ActivityRowPresentationTests: XCTestCase {
         XCTAssertFalse(fixture.cases.isEmpty)
 
         for testCase in fixture.cases {
-            let item = makeItem(
+            let item = makeAttentionItem(
                 phase: AccountAttentionPhase(rawValue: testCase.phase)
                     ?? .unrecognized(testCase.phase),
                 activityTier: testCase.tier,
@@ -397,14 +397,14 @@ final class ActivityRowPresentationTests: XCTestCase {
     /// it under a "Working" heading that was not true of it.
     func testIdleTierFilesInTheDoneBand() {
         for phase: AccountAttentionPhase in [.needsYou, .failed, .running] {
-            let row = ActivityRowPresentation(item: makeItem(phase: phase, activityTier: "idle"))
+            let row = ActivityRowPresentation(item: makeAttentionItem(phase: phase, activityTier: "idle"))
             XCTAssertEqual(row.tier, .idle)
             XCTAssertEqual(row.band, .done, "an idle \(phase.rawValue) row is quiet history")
         }
     }
 
     func testSignalTierNeedsYouStaysInTheNeedsYouBand() {
-        let row = ActivityRowPresentation(item: makeItem(phase: .needsYou))
+        let row = ActivityRowPresentation(item: makeAttentionItem(phase: .needsYou))
 
         XCTAssertEqual(row.tier, .signal)
         XCTAssertEqual(row.band, .needsYou)
@@ -415,7 +415,7 @@ final class ActivityRowPresentationTests: XCTestCase {
     func testElapsedAnchorsOnStatusSinceWhenPresent() {
         let now = Date()
         let row = ActivityRowPresentation(
-            item: makeItem(
+            item: makeAttentionItem(
                 phase: .running,
                 statusSince: now.addingTimeInterval(-42),
                 occurredAt: now.addingTimeInterval(-9_000)
@@ -429,7 +429,7 @@ final class ActivityRowPresentationTests: XCTestCase {
     func testElapsedFallsBackToOccurredAtWithoutStatusSince() {
         let now = Date()
         let row = ActivityRowPresentation(
-            item: makeItem(phase: .running, occurredAt: now.addingTimeInterval(-180))
+            item: makeAttentionItem(phase: .running, occurredAt: now.addingTimeInterval(-180))
         )
 
         XCTAssertEqual(row.elapsedLabel(now: now), "3m")
@@ -438,7 +438,7 @@ final class ActivityRowPresentationTests: XCTestCase {
     func testElapsedIsSuppressedForPhasesWhereAgeIsNoise() {
         let now = Date()
         let row = ActivityRowPresentation(
-            item: makeItem(phase: .failed, occurredAt: now.addingTimeInterval(-180))
+            item: makeAttentionItem(phase: .failed, occurredAt: now.addingTimeInterval(-180))
         )
 
         XCTAssertNil(row.elapsedLabel(now: now))
@@ -458,10 +458,10 @@ final class ActivityRowPresentationTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_754_046_000)
         let extremePast = Date(timeIntervalSince1970: -1e300)
         let elapsed = ActivityRowPresentation(
-            item: makeItem(phase: .running, occurredAt: extremePast)
+            item: makeAttentionItem(phase: .running, occurredAt: extremePast)
         )
         let offline = ActivityRowPresentation(
-            item: makeItem(
+            item: makeAttentionItem(
                 phase: .running,
                 occurredAt: now,
                 machine: AccountAttentionMachine(
@@ -484,7 +484,7 @@ final class ActivityRowPresentationTests: XCTestCase {
     func testOfflineMachineCarriesLastSeenCopyAndStopsPulsing() {
         let now = Date()
         let row = ActivityRowPresentation(
-            item: makeItem(
+            item: makeAttentionItem(
                 phase: .running,
                 machine: AccountAttentionMachine(
                     machineKey: "studio",
@@ -501,7 +501,7 @@ final class ActivityRowPresentationTests: XCTestCase {
     }
 
     func testOnlineMachineHasNoLastSeenCopy() {
-        let row = ActivityRowPresentation(item: makeItem(phase: .running))
+        let row = ActivityRowPresentation(item: makeAttentionItem(phase: .running))
 
         XCTAssertTrue(row.machineOnline)
         XCTAssertNil(row.lastSeenLabel())
@@ -511,29 +511,29 @@ final class ActivityRowPresentationTests: XCTestCase {
 
     func testStatusNoteFallsBackThroughPreviewDetailThenPrivacyPreview() {
         XCTAssertEqual(
-            ActivityRowPresentation(item: makeItem(phase: .running, preview: "Editing the router")).statusNote,
+            ActivityRowPresentation(item: makeAttentionItem(phase: .running, preview: "Editing the router")).statusNote,
             "Editing the router"
         )
         XCTAssertEqual(
-            ActivityRowPresentation(item: makeItem(phase: .running, preview: "  ", detail: "Ran 4 tools")).statusNote,
+            ActivityRowPresentation(item: makeAttentionItem(phase: .running, preview: "  ", detail: "Ran 4 tools")).statusNote,
             "Ran 4 tools"
         )
         XCTAssertEqual(
             ActivityRowPresentation(
-                item: makeItem(phase: .running, preview: "", detail: nil, privacyPreview: "Agent working")
+                item: makeAttentionItem(phase: .running, preview: "", detail: nil, privacyPreview: "Agent working")
             ).statusNote,
             "Agent working"
         )
         XCTAssertNil(
             ActivityRowPresentation(
-                item: makeItem(phase: .running, preview: "", detail: nil, privacyPreview: "")
+                item: makeAttentionItem(phase: .running, preview: "", detail: nil, privacyPreview: "")
             ).statusNote
         )
     }
 
     func testPullRequestItemsCarryTheirNumberAndNoSession() {
         let row = ActivityRowPresentation(
-            item: makeItem(
+            item: makeAttentionItem(
                 phase: .checksFailing,
                 kind: .pullRequest,
                 destination: .pullRequest(
@@ -554,7 +554,7 @@ final class ActivityRowPresentationTests: XCTestCase {
 
     func testModelAndLaneAreProjectedRatherThanDropped() {
         let row = ActivityRowPresentation(
-            item: makeItem(phase: .running, laneName: "activity-revamp", model: "claude-fable-5")
+            item: makeAttentionItem(phase: .running, laneName: "activity-revamp", model: "claude-fable-5")
         )
 
         XCTAssertEqual(row.laneName, "activity-revamp")
@@ -582,49 +582,357 @@ final class ActivityRowPresentationTests: XCTestCase {
         )
     }
 
-    private func makeItem(
-        id: String = "item-1",
-        phase: AccountAttentionPhase,
-        kind: AccountAttentionItemKind = .agent,
-        activityTier: String? = nil,
-        chatActivityMode: AccountChatActivityMode? = nil,
-        statusSince: Date? = nil,
-        occurredAt: Date = Date(),
-        machine: AccountAttentionMachine? = nil,
-        laneName: String? = nil,
-        model: String? = nil,
-        preview: String = "Working",
-        detail: String? = nil,
-        privacyPreview: String = "Agent working",
-        destination: AccountAttentionDestination? = nil
-    ) -> AccountAttentionItem {
-        AccountAttentionItem(
-            id: id,
-            revision: 1,
-            fingerprint: "\(id):1",
-            kind: kind,
-            eventKind: .agentRunning,
-            phase: phase,
-            activityTier: activityTier,
-            chatActivityMode: chatActivityMode,
-            statusSince: statusSince,
-            machine: machine ?? AccountAttentionMachine(
-                machineKey: "studio",
-                name: "Studio Mac",
-                online: true,
-                lastSeenAt: occurredAt
-            ),
-            project: AccountAttentionProject(projectId: "ade", name: "ADE"),
-            laneName: laneName,
-            provider: "claude",
-            model: model,
-            title: "Wire the drawer",
-            preview: preview,
-            privacyPreview: privacyPreview,
-            detail: detail,
-            destination: destination ?? .session(sessionId: "s-1", itemId: nil, eventId: nil),
-            occurredAt: occurredAt,
-            updatedAt: occurredAt
+}
+
+/// The one attention-item fixture for this file.
+///
+/// Both suites below used to carry a near-verbatim private copy of this, thirty
+/// lines apart, and they had already started to drift — only one of them grew a
+/// `provider:` knob — so a fixture change made in the obvious place silently
+/// missed half the tests that depend on it.
+fileprivate func makeAttentionItem(
+    id: String = "item-1",
+    phase: AccountAttentionPhase = .running,
+    kind: AccountAttentionItemKind = .agent,
+    activityTier: String? = nil,
+    chatActivityMode: AccountChatActivityMode? = nil,
+    statusSince: Date? = nil,
+    occurredAt: Date = Date(),
+    machine: AccountAttentionMachine? = nil,
+    laneName: String? = nil,
+    provider: String = "claude",
+    model: String? = nil,
+    preview: String = "Working",
+    detail: String? = nil,
+    privacyPreview: String = "Agent working",
+    destination: AccountAttentionDestination? = nil,
+    actions: [AccountAttentionAction] = []
+) -> AccountAttentionItem {
+    AccountAttentionItem(
+        id: id,
+        revision: 1,
+        fingerprint: "\(id):1",
+        kind: kind,
+        eventKind: .agentRunning,
+        phase: phase,
+        activityTier: activityTier,
+        chatActivityMode: chatActivityMode,
+        statusSince: statusSince,
+        machine: machine ?? AccountAttentionMachine(
+            machineKey: "studio",
+            name: "Studio Mac",
+            online: true,
+            lastSeenAt: occurredAt
+        ),
+        project: AccountAttentionProject(projectId: "ade", name: "ADE"),
+        laneName: laneName,
+        provider: provider,
+        model: model,
+        title: "Wire the drawer",
+        preview: preview,
+        privacyPreview: privacyPreview,
+        detail: detail,
+        destination: destination ?? .session(sessionId: "s-1", itemId: nil, eventId: nil),
+        actions: actions,
+        occurredAt: occurredAt,
+        updatedAt: occurredAt
+    )
+}
+
+/// The drawer half of the attention surface: which line the row leads with, and
+/// which of the host's actions actually reach a button.
+///
+/// Both regressions this covers were introduced by the same host change. When
+/// the publisher split a blocked run into `waiting_for_approval` and
+/// `waiting_for_input`, the drawer's action filter still admitted only the four
+/// inline intents — so a question row, the row most needing a human, rendered
+/// with no control at all. And when `attentionSessionTitle` started sending the
+/// chat's real title, the row was still leading with the status preview, so the
+/// one surface the user reads a list in was the one surface that never showed
+/// what the chat is called.
+final class ActivityDrawerRowSurfaceTests: XCTestCase {
+
+    // MARK: - Headline and scope line
+
+    func testHeadlineIsTheChatTitleNotTheStatusPreview() {
+        let row = ActivityRowPresentation(item: makeAttentionItem(preview: "Editing WorkRow.swift"))
+
+        XCTAssertEqual(
+            row.title,
+            "Wire the drawer",
+            "the row must lead with the chat title the publisher now sends"
+        )
+        XCTAssertEqual(
+            row.scopeLine,
+            "ADE · Editing WorkRow.swift",
+            "and the status note must survive as the tail of the scope line"
         )
     }
+
+    func testScopeLineDropsTheProviderNameTheMarkAlreadyShows() {
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(model: "Opus 5", preview: "", privacyPreview: "")
+        )
+
+        XCTAssertEqual(row.providerSlug, "claude", "the mark needs the slug")
+        XCTAssertEqual(row.providerMark, "ProviderClaude", "and this row has one")
+        XCTAssertEqual(
+            row.scopeLine,
+            "ADE · Opus 5",
+            "the provider's name is a logo on this line now, not a word"
+        )
+    }
+
+    func testStatusNoteThatOnlyRestatesLaneAndTitleIsDropped() {
+        // `laneTitleLine` in attentionItemBuilder.ts is what a run with no
+        // detail of its own publishes as its preview. Both halves of it are
+        // already on the card.
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(laneName: "ade/parity", model: "Opus 5", preview: "ade/parity · Wire the drawer")
+        )
+
+        XCTAssertNil(row.statusDetail)
+        XCTAssertEqual(row.scopeLine, "ADE · Opus 5")
+    }
+
+    func testStatusNoteEqualToTheTitleIsDropped() {
+        let row = ActivityRowPresentation(item: makeAttentionItem(preview: "Wire the drawer"))
+
+        XCTAssertNil(row.statusDetail)
+        XCTAssertEqual(row.scopeLine, "ADE")
+    }
+
+    /// The suppression rule compared exact strings, but the two sides do not
+    /// arrive comparable: `sanitizeAttentionPreview`
+    /// (apps/desktop/src/shared/types/attention.ts) clips `preview` to 160
+    /// characters with a trailing `…` while `title` is only trimmed. A long
+    /// lane therefore escaped the rule and the row printed a truncated copy of
+    /// its own first two lines underneath them.
+    func testTruncatedLaneAndTitleRestatementIsStillDropped() {
+        let lane = "ade/" + String(repeating: "parity-", count: 20)
+        let composed = "\(lane) · Wire the drawer"
+        XCTAssertGreaterThan(composed.count, 160, "the fixture must actually be clipped")
+        let clipped = String(composed.prefix(159)).trimmingCharacters(in: .whitespaces) + "…"
+
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(laneName: lane, model: "Opus 5", preview: clipped)
+        )
+
+        XCTAssertNil(row.statusDetail)
+        XCTAssertEqual(row.scopeLine, "ADE · Opus 5")
+    }
+
+    /// The stem rule is evidence of TRUNCATION, not a general prefix match.
+    ///
+    /// It accepted any length, so a short note a human wrote that happens to end
+    /// in an ellipsis and open the title — "Working…" under "Wire the drawer" —
+    /// was read as a clipped restatement and dropped from `scopeLine` and from
+    /// the row's accessibility label. Nothing the sanitizer produces is that
+    /// short: it cuts at 160 characters.
+    func testAShortNoteEndingInAnEllipsisIsNotMistakenForATruncatedRestatement() {
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(model: "Opus 5", preview: "Wire the…")
+        )
+
+        XCTAssertEqual(
+            row.statusDetail,
+            "Wire the…",
+            "too short to have been clipped, so it is prose and must survive"
+        )
+        XCTAssertEqual(row.scopeLine, "ADE · Wire the…")
+    }
+
+    /// The same sanitizer collapses every run of whitespace to one space, which
+    /// the title side never had done to it.
+    func testWhitespaceIrregularRestatementIsDropped() {
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(
+                laneName: "ade/parity",
+                model: "Opus 5",
+                preview: "ade/parity ·  Wire\nthe  drawer"
+            )
+        )
+
+        XCTAssertNil(row.statusDetail)
+        XCTAssertEqual(row.scopeLine, "ADE · Opus 5")
+    }
+
+    func testAStatusNoteThatSaysSomethingElseSurvivesNormalisation() {
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(laneName: "ade/parity", preview: "ade/parity · Wire the router")
+        )
+
+        XCTAssertEqual(row.statusDetail, "ade/parity · Wire the router")
+    }
+
+    // MARK: - Provider mark
+
+    /// The glyph on line three and the provider word in the row's accessibility
+    /// label read the SAME table (`ADESharedTheme`), which is the point: the two
+    /// used to come from different ones, and a provider present in only the name
+    /// table spoke a brand while showing a generic terminal symbol.
+    ///
+    /// Anything with a mark must therefore have a name. The reverse is allowed
+    /// and deliberate — Gemini has a name and no bundled mark, and the row
+    /// renders no glyph at all rather than one that belongs to something else.
+    func testEveryProviderWithAMarkAlsoHasASpokenName() {
+        for slug in ["claude", "anthropic", "codex", "openai", "cursor", "opencode", "droid", "factory", "github"] {
+            XCTAssertNotNil(ADESharedTheme.providerAssetName(for: slug), "mark for \(slug)")
+            XCTAssertNotNil(ADESharedTheme.providerDisplayName(for: slug), "name for \(slug)")
+        }
+        XCTAssertNil(ADESharedTheme.providerAssetName(for: "gemini"))
+        XCTAssertEqual(ADESharedTheme.providerDisplayName(for: "gemini"), "Gemini")
+        XCTAssertNil(ADESharedTheme.providerAssetName(for: "some-future-agent"))
+    }
+
+    /// The tables matched the lowercased slug EXACTLY, which assumed the wire
+    /// only sends canonical slugs. It does not: a run whose provider is derived
+    /// from its tool type is published through `providerDisplayName` in
+    /// `apps/ade-cli/src/services/push/attentionItemBuilder.ts`, whose default
+    /// branch only capitalises the first letter — so `"Codex-chat"` and
+    /// `"Claude-chat"` reach the phone verbatim and matched nothing.
+    func testToolTypeDerivedProviderStringsStillResolveToTheirMark() {
+        XCTAssertEqual(ADESharedTheme.providerAssetName(for: "Codex-chat"), "ProviderCodex")
+        XCTAssertEqual(ADESharedTheme.providerDisplayName(for: "Codex-chat"), "Codex")
+        XCTAssertEqual(ADESharedTheme.providerAssetName(for: "Claude-chat"), "ProviderClaude")
+        XCTAssertEqual(ADESharedTheme.providerDisplayName(for: "Claude-chat"), "Claude")
+        XCTAssertEqual(ADESharedTheme.providerAssetName(for: "opencode_chat"), "ProviderOpenCode")
+        XCTAssertEqual(ADESharedTheme.providerDisplayName(for: "openai-codex"), "Codex")
+
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(provider: "Codex-chat", model: "GPT-5", preview: "", privacyPreview: "")
+        )
+        XCTAssertEqual(row.providerMark, "ProviderCodex")
+        XCTAssertEqual(
+            row.scopeLine,
+            "ADE · GPT-5",
+            "a row that draws the mark must not also spend the line on the word"
+        )
+    }
+
+    /// A provider with no bundled mark must still identify itself. Removing the
+    /// word from `scopeLine` when the glyph arrived left Pi, Gemini and every
+    /// unrecognised publisher string (`"Shell"`, and `pushPublisherService.ts`'s
+    /// `"CLI"` fallback) showing NOTHING — strictly less than the line it
+    /// replaced.
+    func testProvidersWithNoMarkKeepTheirNameOnTheScopeLine() {
+        for (slug, word) in [("pi", "Pi"), ("Gemini", "Gemini"), ("Shell", "Shell"), ("CLI", "CLI")] {
+            XCTAssertNil(ADESharedTheme.providerAssetName(for: slug), "no mark ships for \(slug)")
+
+            let row = ActivityRowPresentation(
+                item: makeAttentionItem(provider: slug, model: "Opus 5", preview: "", privacyPreview: "")
+            )
+
+            XCTAssertNil(row.providerMark, "nothing to draw for \(slug)")
+            XCTAssertEqual(row.providerName, word, "so the word has to carry it for \(slug)")
+            XCTAssertEqual(row.scopeLine, "\(word) · ADE · Opus 5")
+        }
+    }
+
+    /// `isPullRequest` gates the mark AND the spoken name — and it has to be the
+    /// gate, because "does this row have a provider" is a question every PR row
+    /// answers yes to: the publisher stamps `provider: "GitHub"` on all of them
+    /// (`attentionItemBuilder.ts`), which is what the fixture below pins. A
+    /// slug-presence check therefore admitted every PR row and, with no GitHub
+    /// entry in the table the glyph then used, drew a terminal symbol on it.
+    ///
+    /// The gate was then half-applied: the glyph was suppressed but
+    /// `accessibilityLabel` still appended the provider, so a PR row spoke
+    /// "GitHub" while showing no mark. Both halves are asserted here.
+    func testPullRequestRowsShowAndSpeakNoProvider() {
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(
+                phase: .checksFailing,
+                kind: .pullRequest,
+                provider: "GitHub",
+                model: "Opus 5",
+                preview: "",
+                privacyPreview: "",
+                destination: .pullRequest(
+                    prId: "pr-1",
+                    repoOwner: "arul",
+                    repoName: "ade",
+                    number: 992,
+                    tab: "checks",
+                    eventId: nil
+                )
+            )
+        )
+
+        XCTAssertTrue(row.isPullRequest, "the only usable test, since the slug is always there")
+        XCTAssertEqual(row.providerSlug, "GitHub", "the slug still arrives")
+        XCTAssertNil(row.providerMark, "but a PR row draws no provider mark")
+        XCTAssertNil(row.providerName, "and must not speak one either")
+        XCTAssertEqual(row.scopeLine, "ADE · Opus 5", "nor spend the scope line on it")
+    }
+
+    // MARK: - Action admission
+
+    func testAnswerActionEarnsAButtonOnAQuestionRow() {
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(
+                phase: .needsYou,
+                actions: [
+                    AccountAttentionAction(
+                        id: "answer",
+                        kind: .answer,
+                        label: "Answer",
+                        payload: ["sessionId": .string("s-1")]
+                    ),
+                    AccountAttentionAction(id: "open", kind: .open, label: "Open"),
+                ]
+            ),
+            inlineActionsAllowed: true
+        )
+
+        let visible = row.visibleActions
+        XCTAssertEqual(visible.map(\.kind), [.answer], "`.open` is the row tap; `.answer` is a control")
+        XCTAssertEqual(
+            visible.first?.label,
+            "Answer",
+            "the label is the host's, so the button cannot disagree with the push that raised it"
+        )
+    }
+
+    func testAnswerSurvivesAnOfflineOrOtherMachineBecauseItIsNavigation() {
+        let offline = ActivityRowPresentation(
+            item: makeAttentionItem(
+                phase: .needsYou,
+                machine: AccountAttentionMachine(
+                    machineKey: "studio",
+                    name: "Studio Mac",
+                    online: false,
+                    lastSeenAt: Date()
+                ),
+                actions: [
+                    AccountAttentionAction(id: "answer", kind: .answer, label: "Answer"),
+                    AccountAttentionAction(id: "approve", kind: .approve, label: "Approve"),
+                    AccountAttentionAction(id: "deny", kind: .deny, label: "Deny"),
+                ]
+            ),
+            inlineActionsAllowed: true
+        )
+
+        XCTAssertEqual(
+            offline.visibleActions.map(\.kind),
+            [.answer],
+            "inline intents need a reachable host; opening the session is what wakes it"
+        )
+    }
+
+    func testInlineIntentsStillRequireThisMachine() {
+        let row = ActivityRowPresentation(
+            item: makeAttentionItem(
+                phase: .needsYou,
+                actions: [
+                    AccountAttentionAction(id: "approve", kind: .approve, label: "Approve"),
+                    AccountAttentionAction(id: "deny", kind: .deny, label: "Deny"),
+                ]
+            ),
+            inlineActionsAllowed: false
+        )
+
+        XCTAssertTrue(row.visibleActions.isEmpty)
+    }
+
 }

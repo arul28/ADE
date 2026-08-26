@@ -438,6 +438,24 @@ public enum ActivityPhaseVocabulary {
 /// rows from this so the three surfaces cannot describe one session three ways.
 public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     public let id: String
+    /// What the row leads with: the chat's own name.
+    ///
+    /// The wire `title` USED to be a state sentence the publisher composed —
+    /// "Claude is done" — which is why this line used to be treated as
+    /// worthless and the preview shown in its place. That is no longer true.
+    /// `attentionSessionTitle`
+    /// (apps/ade-cli/src/services/push/attentionItemBuilder.ts) returns the
+    /// session's real title first, the lane name second, and only composes
+    /// "<Agent> <phase>" when the row has neither — and the publisher now
+    /// re-reads it on every build, so a renamed chat is renamed here too. The
+    /// lock screen and the Live Activity have shown that title all along; the
+    /// drawer was the last surface still hiding it behind the status preview,
+    /// which is how the same session read as two different things depending on
+    /// where you looked at it.
+    ///
+    /// The status text is not lost — it is the tail of `scopeLine`, one line
+    /// below, where it can be as specific as it likes without displacing the
+    /// only text that identifies which chat this row is.
     public let title: String
     public let laneName: String?
     public let projectName: String
@@ -454,9 +472,10 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     /// it (immutable for the life of a phase); `occurredAt` otherwise, which is
     /// approximate but never wrong enough to mislead.
     public let elapsedSince: Date?
-    /// The italic one-liner under the title. `nil` when the item carries no
-    /// prose worth the row height — the phase label already says the state.
-    public let statusNote: String?
+    /// The publisher's raw status prose, before the redundancy rule runs.
+    /// `nil` when the item carries none. Read `statusDetail`, which is the
+    /// version any surface should render; this is the input to it.
+    let statusNote: String?
     public let modelLabel: String?
     public let providerSlug: String?
     public let machineKey: String
@@ -544,34 +563,169 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
         }
     }
 
-    /// What the row leads with.
+    /// The publisher's status note, unless it only restates the rest of the row.
     ///
-    /// The wire `title` is a state sentence the publisher composes — "Claude is
-    /// done". Rendered as the headline it says nothing the coloured glyph one
-    /// inch to its left has not already said, and it pushed the only
-    /// identifying text in the row down to third place. The preview is the most
-    /// specific line the publisher has (it already falls back through the
-    /// attention message, the status note, the chat title and finally the lane
-    /// name, so it is never empty), which makes it the thing a reader scanning
-    /// for one session actually recognises.
-    ///
-    /// Falls back to `title` when privacy mode has replaced the preview with a
-    /// generic string.
-    public var headline: String { statusNote ?? title }
+    /// `preview` falls back to `laneTitleLine` ("<lane> · <title>") when a run
+    /// has no detail of its own, and both halves of that are already on the
+    /// card — the lane on line one, the title on line two. Printing it again
+    /// underneath is the redundancy this row was built to avoid, so it is
+    /// dropped and the scope line falls through to the model instead.
+    public var statusDetail: String? {
+        guard let note = Self.nonEmpty(statusNote) else { return nil }
+        if Self.restates(note, title) { return nil }
+        if let lane = laneName, Self.restates(note, "\(lane) · \(title)") { return nil }
+        return note
+    }
 
-    /// The card's last line: who is running this and in which project. The
-    /// machine is deliberately absent — it already sits on line one, next to the
-    /// lane, and printing it twice on a three-line card is the same redundancy
-    /// that made this list unreadable.
+    /// Does `note` say only what `composed` — some arrangement of the lane and
+    /// the title, both already on the card — already says?
+    ///
+    /// Not `==`, because the two sides do not arrive comparable. The host runs
+    /// `preview` through `sanitizeAttentionPreview`
+    /// (apps/desktop/src/shared/types/attention.ts), which collapses every run
+    /// of whitespace to one space AND truncates to 160 characters with a
+    /// trailing `…`, while `title` reaches the phone only trimmed. So the exact
+    /// composition this rule exists to suppress escaped it whenever the lane
+    /// plus the title ran past 160 characters, or whenever either half carried
+    /// a newline or a double space — and the row printed a truncated copy of
+    /// its own first two lines underneath them.
+    ///
+    /// Both sides are therefore normalised the way the sanitizer normalises,
+    /// and an elided note is matched by its stem: a note that ends in `…` and
+    /// whose stem opens the composed string is that string, cut short.
+    private static func restates(_ note: String, _ composed: String) -> Bool {
+        let note = collapsingWhitespace(note)
+        let composed = collapsingWhitespace(composed)
+        if note.caseInsensitiveCompare(composed) == .orderedSame { return true }
+        guard note.hasSuffix("…") else { return false }
+        let stem = String(note.dropLast()).trimmingCharacters(in: .whitespaces)
+        guard stem.count >= Self.minimumElidedStemLength, stem.count < composed.count else {
+            return false
+        }
+        return composed.lowercased().hasPrefix(stem.lowercased())
+    }
+
+    /// How long a stem must be before "ends in `…` and opens the title" is read
+    /// as evidence of truncation rather than as prose.
+    ///
+    /// The stem rule exists for exactly one producer: `sanitizeAttentionPreview`
+    /// (apps/desktop/src/shared/types/attention.ts) cuts at
+    /// `slice(0, 159).trimEnd() + "…"`, so anything it elided arrives with a
+    /// stem of ~159 characters. Without a floor the rule also swallowed notes a
+    /// human wrote — a chat titled "Working on the parser" whose note is
+    /// "Working…" matched the prefix and lost its status line from both
+    /// `scopeLine` and the row's accessibility label. 140 sits below the
+    /// sanitizer's cut with room for whatever `trimEnd` removes, and far above
+    /// any note short enough to have been typed rather than clipped.
+    private static let minimumElidedStemLength = 140
+
+    /// The sanitizer's whitespace rule, applied to this side of the comparison
+    /// too: every run of whitespace becomes exactly one space.
+    private static func collapsingWhitespace(_ value: String) -> String {
+        value.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    /// The branded mark for this row's provider, or nil when the build ships
+    /// none for it.
+    ///
+    /// Only chats get one. A pull-request item carries `provider: "GitHub"`
+    /// from the publisher (`attentionItemBuilder.ts`), so a presence check on
+    /// the slug is NOT the same question as "is this a chat" — `isPullRequest`
+    /// is. The gate lives here rather than in the view so the mark and the
+    /// spoken word below it are decided by one rule and cannot half-apply.
+    public var providerMark: String? {
+        guard !isPullRequest else { return nil }
+        return ADESharedTheme.providerAssetName(for: providerSlug)
+    }
+
+    /// The provider's name in words, for the surfaces that speak rather than
+    /// draw — and for `scopeLine` when there is no mark to draw.
+    public var providerName: String? {
+        guard !isPullRequest else { return nil }
+        return ADESharedTheme.providerDisplayName(for: providerSlug)
+    }
+
+    /// The card's last line: which project this is, then the most specific
+    /// thing known about it — the live status note when the publisher sent one,
+    /// the model otherwise.
+    ///
+    /// The provider's NAME used to lead this line unconditionally. Where a mark
+    /// exists it now sits on the same line and says it in one glyph, so the word
+    /// is gone, exactly as it is on the Work session card this row mirrors.
+    ///
+    /// Where a mark does NOT exist the word stays. Pi and Gemini ship no
+    /// bundled imageset, and the wire also publishes provider strings this build
+    /// has no family for at all — `pushPublisherService.ts` falls back to
+    /// `"CLI"` and `attentionItemBuilder.ts` passes through anything it does not
+    /// recognise, so `"Shell"` reaches the phone verbatim. Dropping the word for
+    /// those rows traded a name for nothing, which is strictly worse than the
+    /// line it replaced. A generic SF Symbol is not the alternative: the Work
+    /// card's fallback resolves two different unknown providers to the SAME
+    /// glyph, so it identifies nothing while still making a claim about what is
+    /// running. The word identifies; that is the whole job of this slot.
+    ///
+    /// The machine is deliberately absent — it already sits on line one, next
+    /// to the lane.
+    ///
+    /// The model and the status note are deliberately EXCLUSIVE, where the
+    /// model used to be unconditional. One `caption2` line clipped at
+    /// `lineLimit(1)` holds about one fact after the project name: appending
+    /// the model behind a status note puts it past the truncation point on any
+    /// real row, so it would read as restored while rendering nothing, and on
+    /// the short notes where it did fit it would stack three unrelated
+    /// registers — where, what, and which model — on the smallest text in the
+    /// drawer. The note is the fact that changes; the model is stable metadata
+    /// the chat header shows in full the moment the row is opened. Nothing is
+    /// lost to a screen reader either: `ActivityRow.accessibilityLabel` speaks
+    /// `modelLabel` on every row, note or no note.
     public var scopeLine: String {
         var parts: [String] = []
-        if let provider = ADESharedTheme.providerDisplayName(for: providerSlug) {
-            parts.append(provider)
-        }
+        if providerMark == nil, let provider = providerName { parts.append(provider) }
         let project = projectName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !project.isEmpty { parts.append(project) }
-        if let model = Self.nonEmpty(modelLabel) { parts.append(model) }
+        if let detail = statusDetail {
+            parts.append(detail)
+        } else if let model = Self.nonEmpty(modelLabel) {
+            parts.append(model)
+        }
         return parts.joined(separator: " · ")
+    }
+
+    /// The subset of the item's own `actions[]` a surface should draw as
+    /// buttons, rendered instead of the per-kind controls the drawer used to
+    /// hardcode. Inline App Intents run against the paired host, so they only
+    /// appear when the row's machine is both this one and reachable —
+    /// otherwise every action degrades to navigation.
+    ///
+    /// `.open` is deliberately NOT included. It used to draw a full-width
+    /// button under every single row, which on a ten-row account was most of
+    /// the sheet's height spent restating that a list row is tappable. The row
+    /// itself is the tap target, so only actions that genuinely do something a
+    /// tap cannot — approve, deny, restart, rerun — earn a button.
+    ///
+    /// `.answer` is the one navigation that does earn one. The host splits a
+    /// blocked run into `waiting_for_approval` (Approve/Deny) and
+    /// `waiting_for_input` (Answer), and a question row carries only the latter
+    /// — so with `.answer` filtered out, the rows that most need the user
+    /// showed no control at all while an approval one row up showed two. It
+    /// routes to the session rather than acting inline, because a drawer row
+    /// cannot compose a reply and the payload the host sends carries only
+    /// `{sessionId}`.
+    public var visibleActions: [AccountAttentionAction] {
+        let canActInline = inlineActionsAllowed && machineOnline
+        return actions.filter { action in
+            switch action.kind {
+            case .approve, .deny, .restart, .rerunChecks:
+                return canActInline
+            // Navigation, not an inline intent: it does not need the machine to
+            // be this one or even to be awake, because opening the session is
+            // what wakes it.
+            case .answer:
+                return true
+            case .open, .markSeen, .dismiss, .unrecognized:
+                return false
+            }
+        }
     }
 
     /// "Studio Mac · ADE" — the row's scope in one line.

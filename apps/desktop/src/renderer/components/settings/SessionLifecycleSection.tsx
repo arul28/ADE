@@ -65,7 +65,7 @@ export function SessionLifecycleSection() {
               Auto-settle sessions when lane PR merges
             </label>
             <p style={{ margin: "6px 0 0", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6 }}>
-              Applies to future verified merges. Sessions with pending input, scheduled work, active subagents, unfinished goals or plans, failures, or incomplete reports stay active.
+              A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later.
             </p>
             {error ? (
               <p role="alert" style={{ margin: "8px 0 0", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11 }}>

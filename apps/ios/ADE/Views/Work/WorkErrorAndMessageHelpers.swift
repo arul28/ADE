@@ -1685,6 +1685,17 @@ func workPendingQuestionEntry(
   )
 }
 
+/// Is this approval envelope actually a question, and if so, what card does it
+/// render?
+///
+/// `request.kind` read below is the RESOLVED kind, not merely the embedded one:
+/// both producers of this event — `agentChatApprovalDetail` on the decoded path
+/// and `workApprovalRequestDetail` on the persisted-transcript path — apply the
+/// envelope's top-level `requestKind` over it first, the same precedence
+/// `approvalRequestKind()` applies in
+/// apps/desktop/src/shared/pendingInputAnswers.ts. An absent or unrecognised
+/// kind falls through every branch here and reads as an approval, which is the
+/// safer of the two words to be wrong with.
 func pendingWorkQuestionFromApproval(
   description: String,
   detail: String?,

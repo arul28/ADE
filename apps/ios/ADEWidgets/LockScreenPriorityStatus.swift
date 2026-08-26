@@ -205,9 +205,16 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .awaitingInput,
                 title: waitingCount == 1 ? "1 chat waiting" : "\(waitingCount) chats waiting",
-                detail: hideDetails
-                    ? "Open ADE to reply or approve"
-                    : (first.map { Self.agentTitle($0) } ?? "Reply or approve in ADE"),
+                // "Reply or approve" was one phrase for two states, written
+                // when they were one state. They are distinct now — a question
+                // is answered, an approval is approved — but this widget reads
+                // a counted snapshot (`awaitingInput` is a Bool, with no kind
+                // beside it), so it cannot honestly name either. It says what
+                // every other privacy branch in this file says instead of
+                // guessing, and the row the user taps through to names the
+                // actual ask.
+                detail: (hideDetails ? nil : first.flatMap { Self.agentTitle($0) })
+                    ?? "Open ADE for details",
                 inlineText: "ADE · \(waitingCount) waiting",
                 count: waitingCount,
                 symbol: "bell.badge.fill",
@@ -220,7 +227,7 @@ struct LockScreenPriorityStatus {
             self = .init(
                 kind: .failed,
                 title: failed.count == 1 ? "Agent failed" : "\(failed.count) agents failed",
-                detail: hideDetails ? "Open ADE for details" : Self.agentTitle(first),
+                detail: (hideDetails ? nil : Self.agentTitle(first)) ?? "Open ADE for details",
                 inlineText: "ADE · \(failed.count) failed",
                 count: failed.count,
                 symbol: "xmark.octagon.fill",
@@ -408,9 +415,17 @@ struct LockScreenPriorityStatus {
         return destination.deepLinkURL(accountMachineKey: owner) ?? workspaceURL
     }
 
-    private static func agentTitle(_ agent: AgentSnapshot) -> String {
-        let title = agent.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return title?.isEmpty == false ? title! : agent.sessionId
+    /// Nil rather than a session id when the run has no usable title. Both
+    /// callers render this straight onto the lock screen, where `session-id`
+    /// is not a name a person recognises — it is an internal identifier that
+    /// happens to be a `String`. A missing title is a missing title; the call
+    /// sites fall through to the same "Open ADE for details" line the privacy
+    /// branch uses, so an untitled run and a hidden one read alike.
+    private static func agentTitle(_ agent: AgentSnapshot) -> String? {
+        guard let title = agent.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty
+        else { return nil }
+        return title
     }
 
     private static func runningDetail(_ agent: AgentSnapshot) -> String {

@@ -12,7 +12,10 @@ enum WorkSessionStatusFilter: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .all: return "All"
-    case .needsInput: return "Needs input"
+    // The filter chip names the state it filters to, so it uses that state's
+    // one canonical name — the same "Needs you" the row badge, the drawer
+    // section header and the push title use.
+    case .needsInput: return "Needs you"
     case .running: return "Live"
     case .ended: return "Ended"
     case .archived: return "Archived"
