@@ -2864,7 +2864,7 @@ export function TopBar({
             </button>
           </SmartTooltip>
 
-          <HelpMenu compact />
+          <HelpMenu />
 
           <div className="inline-flex items-center gap-0">
             <SmartTooltip

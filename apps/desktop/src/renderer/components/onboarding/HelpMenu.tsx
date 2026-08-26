@@ -9,7 +9,7 @@ import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 
 type MenuPosition = { top: number; right: number } | null;
 
-export function HelpMenu({ compact = false }: { compact?: boolean }) {
+export function HelpMenu() {
   const smartTooltipsEnabled = useAppStore((s) => s.smartTooltipsEnabled);
   const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
 
@@ -34,10 +34,9 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      const t = e.target as Node | null;
-      if (!t) return;
-      if (menuRef.current?.contains(t)) return;
-      if (buttonRef.current?.contains(t)) return;
+      if (!(e.target instanceof Node)) return;
+      if (menuRef.current?.contains(e.target)) return;
+      if (buttonRef.current?.contains(e.target)) return;
       close();
     };
     const onKey = (e: KeyboardEvent) => {
@@ -74,10 +73,7 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
         aria-expanded={open}
         title="Help · welcome video, docs, and preferences"
         className={cn(
-          "ade-shell-control inline-flex items-center justify-center",
-          compact
-            ? "ade-shell-header-utility-btn"
-            : "h-[24px] w-[24px]",
+          "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
           "transition-[background-color,color,border-color,box-shadow] duration-150",
         )}
         onClick={() => (open ? close() : openAt())}
@@ -86,7 +82,7 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
           color: open ? "var(--color-accent)" : undefined,
         } as React.CSSProperties}
       >
-        <Question size={compact ? 14 : 16} weight={open ? "fill" : "regular"} />
+        <Question size={14} weight={open ? "fill" : "regular"} />
       </button>
 
       {open && position
@@ -150,49 +146,17 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-type MenuItemProps = {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  weight?: "normal" | "strong";
-  /** When true, clicking does not bubble a close to the menu (for checkbox-style items). */
-  keepOpen?: boolean;
-};
-
-function MenuItem({ children, onClick, disabled, weight = "normal", keepOpen }: MenuItemProps) {
+function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
   return (
     <button
       type="button"
       role="menuitem"
-      disabled={disabled}
-      onClick={(e) => {
-        if (disabled) return;
-        if (keepOpen) e.stopPropagation();
-        onClick?.();
-      }}
+      onClick={onClick}
       className="ade-help-menu-item"
       style={{
-        display: "flex",
         alignItems: "center",
-        width: "100%",
         padding: "6px 10px",
-        background: "transparent",
-        color: "inherit",
-        border: "none",
-        borderRadius: 6,
-        textAlign: "left",
-        font: "inherit",
-        fontWeight: weight === "strong" ? 700 : undefined,
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.6 : 1,
         gap: 6,
-      }}
-      onMouseEnter={(e) => {
-        if (disabled) return;
-        (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.06)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.background = "transparent";
       }}
     >
       {children}
@@ -216,30 +180,12 @@ function CheckboxItem({
       type="button"
       role="menuitemcheckbox"
       aria-checked={checked}
-      onClick={(e) => {
-        e.stopPropagation();
-        onToggle();
-      }}
+      onClick={onToggle}
       className="ade-help-menu-item"
       style={{
-        display: "flex",
         alignItems: "flex-start",
         gap: 8,
-        width: "100%",
         padding: "7px 10px",
-        background: "transparent",
-        color: "inherit",
-        border: "none",
-        borderRadius: 6,
-        textAlign: "left",
-        font: "inherit",
-        cursor: "pointer",
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.06)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.background = "transparent";
       }}
     >
       <span

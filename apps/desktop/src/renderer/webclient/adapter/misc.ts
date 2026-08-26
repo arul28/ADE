@@ -885,7 +885,6 @@ function onboardingStatus(): Record<string, unknown> {
     dismissed: true,
     completedAt: now,
     steps: [],
-    help: { seenTermIds: [] },
   };
 }
 
