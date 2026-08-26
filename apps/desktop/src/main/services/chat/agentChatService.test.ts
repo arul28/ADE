@@ -27937,6 +27937,76 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("session creation edge cases", () => {
+    /**
+     * Drives one OpenCode turn against the mocked event stream.
+     *
+     * Every OpenCode streaming test needs the same six steps before it can assert
+     * anything: gate `streamText`, create the session, send, wait for the started
+     * status, reach into the mocked session state, and wake the stream's waiters
+     * after pushing events. `finish` releases the gate and settles the send.
+     */
+    const startOpenCodeTurn = async (promptText: string) => {
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: promptText });
+      const started = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const [sessionID, state] = [...mockState.openCodeSessions.entries()][0]!;
+      // The casts live here so no test has to spell `as any` on every event.
+      const pushEvents = (...next: any[]): void => {
+        state.events.push(...next);
+        const waiters = [...state.waiters];
+        state.waiters.length = 0;
+        waiters.forEach((waiter) => waiter());
+      };
+      const joined = (type: "text" | "reasoning"): string => events
+        .filter((event) => event.event.type === type)
+        .map((event) => (event.event as { text: string }).text)
+        .join("");
+      const waitForDone = (): Promise<AgentChatEventEnvelope> => waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === started.event.turnId,
+      );
+      const finish = async (): Promise<void> => {
+        releaseStream();
+        await sendPromise;
+      };
+
+      return {
+        service,
+        session,
+        events,
+        sessionID,
+        pushEvents,
+        joined,
+        waitForDone,
+        finish,
+      };
+    };
+
     it("applies automationId and automationRunId when surface is automation", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -28158,6 +28228,350 @@ describe("createAgentChatService", () => {
 
       releaseStream();
       await sendPromise;
+    });
+
+    it("routes OpenCode reasoning deltas (field \"text\") to reasoning, never to assistant text", async () => {
+      // OpenCode's delta events name the part PROPERTY being appended to, not the
+      // kind of part: a reasoning part's property is also called `text`, so its
+      // deltas arrive with `field: "text"`. Classifying on `field` printed the
+      // whole chain of thought as the assistant's answer, ran it together with
+      // the real reply, and then repeated it inside the "Thought" chip when the
+      // closing full part landed. Classify by the part kind instead.
+      const turn = await startOpenCodeTurn("Think, then answer.");
+      const { sessionID } = turn;
+
+      turn.pushEvents(
+        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
+        // reasoning-start: an empty reasoning part.
+        { type: "message.part.updated", properties: { part: { id: "prt-r", type: "reasoning", text: "", messageID: "msg-a", sessionID } } },
+        // reasoning-delta: published with field "text", not "reasoning".
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-r", field: "text", delta: "Let me weigh " } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-r", field: "text", delta: "the options." } },
+        // text-start, then the real answer.
+        { type: "message.part.updated", properties: { part: { id: "prt-t", type: "text", text: "", messageID: "msg-a", sessionID } } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-t", field: "text", delta: "Forty" } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-t", field: "text", delta: "-two." } },
+      );
+
+      await vi.waitFor(() => { expect(turn.joined("text")).toBe("Forty-two."); });
+      expect(turn.joined("reasoning")).toBe("Let me weigh the options.");
+
+      turn.pushEvents(
+        // The closing full parts must diff to nothing, for both kinds.
+        { type: "message.part.updated", properties: { part: { id: "prt-r", type: "reasoning", text: "Let me weigh the options.", messageID: "msg-a", sessionID } } },
+        { type: "message.part.updated", properties: { part: { id: "prt-t", type: "text", text: "Forty-two.", messageID: "msg-a", sessionID } } },
+        { type: "session.idle", properties: { sessionID } },
+      );
+      await turn.waitForDone();
+
+      expect(turn.joined("reasoning")).toBe("Let me weigh the options.");
+      expect(turn.joined("text")).toBe("Forty-two.");
+
+      // The stored assistant message is the answer alone. Before the fix the
+      // reasoning was appended to it, so the transcript replayed thoughts as
+      // the reply.
+      const transcript = await turn.service.getChatTranscript({ sessionId: turn.session.id });
+      const assistantText = transcript.entries
+        .filter((entry) => entry.role === "assistant")
+        .map((entry) => entry.text)
+        .join("");
+      expect(assistantText).toContain("Forty-two.");
+      expect(assistantText).not.toContain("weigh");
+
+      await turn.finish();
+    });
+
+    it("surfaces OpenCode provider retries as a system notice instead of a silent spinner", async () => {
+      // OpenCode retries a failing provider with exponential backoff and
+      // publishes nothing but `session.status`. Without this handler the chat
+      // showed a spinner for minutes and looked wedged.
+      const turn = await startOpenCodeTurn("Ask a flaky provider.");
+      const { sessionID } = turn;
+      const providerMessage = "Upstream request failed: Endpoint is unavailable.";
+
+      turn.pushEvents(
+        {
+          type: "session.status",
+          properties: {
+            sessionID,
+            status: { type: "retry", attempt: 1, message: providerMessage, next: Date.now() + 8000 },
+          },
+        },
+        // The real sequence: OpenCode reports `busy` between two retry attempts.
+        // Resetting the throttle here — as the first version did — meant it never
+        // engaged and every attempt posted its own notice.
+        { type: "session.status", properties: { sessionID, status: { type: "busy" } } },
+        // Same message, next attempt, no time elapsed: throttled away.
+        {
+          type: "session.status",
+          properties: {
+            sessionID,
+            status: { type: "retry", attempt: 2, message: providerMessage, next: Date.now() + 16000 },
+          },
+        },
+        { type: "session.idle", properties: { sessionID } },
+      );
+      await turn.waitForDone();
+
+      const notices = turn.events
+        .map((event) => event.event)
+        .filter((event) => event.type === "system_notice" && event.noticeKind === "provider_health") as Array<{
+          message: string;
+          detail?: unknown;
+        }>;
+      expect(notices).toHaveLength(1);
+      expect(notices[0]!.message).toContain("retrying");
+      expect(String(notices[0]!.detail)).toContain(providerMessage);
+
+      await turn.finish();
+    });
+
+    it("keeps an OpenCode auto-compaction summary message out of the assistant's answer", async () => {
+      // Auto-compaction writes its recap into a REAL assistant message flagged
+      // `summary: true` and streams it as ordinary text parts, so the
+      // assistant-role gate alone let a summary of the whole conversation render
+      // as the model's reply. The compaction part and `session.compacted`
+      // already report that compaction happened.
+      const turn = await startOpenCodeTurn("Long conversation.");
+      const { sessionID } = turn;
+
+      turn.pushEvents(
+        // The compaction summary message.
+        { type: "message.updated", properties: { info: { id: "msg-sum", role: "assistant", sessionID, summary: true } } },
+        { type: "message.part.updated", properties: { part: { id: "prt-sum", type: "text", text: "", messageID: "msg-sum", sessionID } } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-sum", partID: "prt-sum", field: "text", delta: "SUMMARY_OF_EVERYTHING" } },
+        { type: "message.part.updated", properties: { part: { id: "prt-sum", type: "text", text: "SUMMARY_OF_EVERYTHING", messageID: "msg-sum", sessionID } } },
+        // The real reply that follows it.
+        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Here is the answer." } },
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "Here is the answer.", messageID: "msg-a", sessionID } } },
+        { type: "session.idle", properties: { sessionID } },
+      );
+      await turn.waitForDone();
+
+      expect(turn.joined("text")).toBe("Here is the answer.");
+      expect(turn.joined("text")).not.toContain("SUMMARY_OF_EVERYTHING");
+
+      const transcript = await turn.service.getChatTranscript({ sessionId: turn.session.id });
+      const assistantText = transcript.entries
+        .filter((entry) => entry.role === "assistant")
+        .map((entry) => entry.text)
+        .join("");
+      expect(assistantText).not.toContain("SUMMARY_OF_EVERYTHING");
+
+      await turn.finish();
+    });
+
+    it("treats an OpenCode ContextOverflowError as recoverable instead of failing the turn", async () => {
+      // OpenCode usually publishes this error, compacts the conversation itself,
+      // and keeps going — it never idles at that point. Throwing killed a turn
+      // that was about to resume on its own.
+      const turn = await startOpenCodeTurn("Overflow the context.");
+      const { sessionID } = turn;
+
+      turn.pushEvents(
+        {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: { name: "ContextOverflowError", data: { message: "Context window exceeded." } },
+          },
+        },
+        // OpenCode compacts and carries on in the same turn.
+        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Carried on." } },
+        { type: "session.idle", properties: { sessionID } },
+      );
+      const done = await turn.waitForDone();
+
+      expect((done.event as { status: string }).status).toBe("completed");
+      expect(turn.events.filter((event) => event.event.type === "error")).toHaveLength(0);
+      const notices = turn.events
+        .map((event) => event.event)
+        .filter((event) => event.type === "system_notice") as Array<{ message: string; detail?: unknown }>;
+      expect(notices).toHaveLength(1);
+      expect(notices[0]!.message).toContain("Context limit reached");
+      expect(String(notices[0]!.detail)).toContain("Context window exceeded.");
+
+      await turn.finish();
+    });
+
+    it("fails an OpenCode turn whose context overflow never recovered", async () => {
+      // The overflow is not always recoverable: with `compaction.auto` off
+      // OpenCode idles without compacting, and compaction itself can overflow
+      // again and stop. No further assistant text arrives, and calling that a
+      // completed turn tells the user their question was answered.
+      const turn = await startOpenCodeTurn("Overflow with auto-compaction off.");
+      const { sessionID } = turn;
+
+      turn.pushEvents(
+        {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: { name: "ContextOverflowError", data: { message: "Context window exceeded." } },
+          },
+        },
+        // No assistant text follows: OpenCode simply goes idle.
+        { type: "session.idle", properties: { sessionID } },
+      );
+      const done = await turn.waitForDone();
+
+      expect((done.event as { status: string }).status).toBe("failed");
+      const errors = turn.events
+        .map((event) => event.event)
+        .filter((event) => event.type === "error") as Array<{ message: string }>;
+      expect(errors).toHaveLength(1);
+      expect(errors[0]!.message).toContain("Context window exceeded.");
+
+      await turn.finish();
+    });
+
+    it("renders an OpenCode abort from another client as an interruption, not a failure", async () => {
+      // The OpenCode TUI or CLI sharing this server can stop a session ADE is
+      // streaming. OpenCode reports that as MessageAbortedError and then idles;
+      // rendering it red made somebody else's stop look like ADE breaking.
+      const turn = await startOpenCodeTurn("Start something long.");
+      const { sessionID } = turn;
+
+      turn.pushEvents(
+        {
+          type: "session.error",
+          properties: {
+            sessionID,
+            error: { name: "MessageAbortedError", data: { message: "aborted" } },
+          },
+        },
+        { type: "session.idle", properties: { sessionID } },
+      );
+      const done = await turn.waitForDone();
+
+      expect((done.event as { status: string }).status).toBe("interrupted");
+      expect(turn.events.filter((event) => event.event.type === "error")).toHaveLength(0);
+
+      await turn.finish();
+    });
+
+    it("keeps draining OpenCode events while a question waits for the user", async () => {
+      // Awaiting the answer inside the event loop stalled the whole stream: while
+      // the modal was open, nothing else drained — no subagent approval, no
+      // streamed text, no tool result — until the person answered.
+      const turn = await startOpenCodeTurn("Ask me something.");
+      const { sessionID } = turn;
+
+      turn.pushEvents(
+        {
+          type: "question.asked",
+          properties: {
+            id: "question-1",
+            sessionID,
+            tool: "ask",
+            questions: [{ question: "Which approach?", header: "Approach", options: [] }],
+          },
+        },
+        // Published while the question is still open.
+        { type: "message.updated", properties: { info: { id: "msg-a", role: "assistant", sessionID } } },
+        { type: "message.part.updated", properties: { part: { id: "prt-a", type: "text", text: "", messageID: "msg-a", sessionID } } },
+        { type: "message.part.delta", properties: { sessionID, messageID: "msg-a", partID: "prt-a", field: "text", delta: "Streamed while asking." } },
+      );
+
+      const approval = await waitForEvent(
+        turn.events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "approval_request",
+      );
+
+      // This is the assertion that fails when the loop blocks on the answer.
+      await vi.waitFor(() => {
+        expect(turn.joined("text")).toBe("Streamed while asking.");
+      });
+
+      await turn.service.respondToInput({
+        sessionId: turn.session.id,
+        itemId: (approval.event as { itemId: string }).itemId,
+        decision: "decline",
+      });
+
+      turn.pushEvents({ type: "session.idle", properties: { sessionID } });
+      await turn.waitForDone();
+
+      await turn.finish();
+    });
+
+    it("cancels an open OpenCode question when the turn is interrupted", async () => {
+      // `requestChatInput` parks the card in `managed.localPendingInputs`, which
+      // the OpenCode interrupt path never drained. The leftover entry kept the
+      // session reported as blocked, so the next send was refused, and a late
+      // answer would have replied into an aborted session.
+      const turn = await startOpenCodeTurn("Ask me something I will not answer.");
+      const { sessionID } = turn;
+
+      turn.pushEvents({
+        type: "question.asked",
+        properties: {
+          id: "question-1",
+          sessionID,
+          tool: "ask",
+          questions: [{ question: "Which approach?", header: "Approach", options: [] }],
+        },
+      });
+      const approval = await waitForEvent(
+        turn.events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "approval_request",
+      );
+
+      await turn.service.interrupt({ sessionId: turn.session.id });
+
+      // The card is resolved as cancelled rather than left waiting forever.
+      const resolved = await waitForEvent(
+        turn.events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "pending_input_resolved"
+          && (event.event as { itemId?: string }).itemId === (approval.event as { itemId: string }).itemId,
+      );
+      expect((resolved.event as { resolution: string }).resolution).toBe("cancelled");
+
+      // And the session takes a new prompt instead of reporting itself blocked.
+      turn.pushEvents({ type: "session.idle", properties: { sessionID } });
+      await turn.waitForDone();
+      await expect(
+        turn.service.sendMessage({ sessionId: turn.session.id, text: "Next question." }),
+      ).resolves.not.toThrow();
+
+      await turn.finish();
+    });
+
+    it("shows generic progress after an OpenCode step finishes", async () => {
+      // Otherwise the activity line keeps naming the step's last tool until the
+      // next step-start, so a long gap between steps reads as a command that
+      // never finished.
+      const turn = await startOpenCodeTurn("Run a step.");
+      const { sessionID } = turn;
+
+      turn.pushEvents(
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "prt-step",
+              type: "step-finish",
+              messageID: "msg-a",
+              sessionID,
+              tokens: { input: 10, output: 5, cache: { read: 0, write: 0 } },
+            },
+          },
+        },
+        { type: "session.idle", properties: { sessionID } },
+      );
+      await turn.waitForDone();
+
+      const activities = turn.events
+        .map((event) => event.event)
+        .filter((event) => event.type === "activity") as Array<{ activity: string }>;
+      expect(activities.some((activity) => activity.activity === "working")).toBe(true);
+
+      await turn.finish();
     });
 
     it("ignores part deltas that belong to a user message", async () => {
@@ -37330,6 +37744,16 @@ describe("createAgentChatService", () => {
       const request = ((questionEvent.event as any).detail as { request: PendingInputRequest }).request;
       expect(request.questions[0]?.question).toBe("Which surface should I inspect first?");
       expect(request.questions[0]?.options?.map((option) => option.value)).toEqual(["CLI", "Chat"]);
+
+      // Answer only AFTER the turn has completed. The ask runs detached, so the
+      // loop reaches idle without waiting, and this is the interleaving that pins
+      // the completion path's refusal to cancel an open question card: cancel
+      // there and the card is gone before the user answers.
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.status === "completed",
+      );
 
       await service.respondToInput({
         sessionId: session.id,

@@ -199,10 +199,11 @@ function buildPermissionConfig(
       // means no prompts.
       read: "allow",
       task: "allow",
-      // external_directory stays "ask". That boundary is ADE's lane worktree,
-      // not a permission tier the user picked — the same reason the system
-      // prompt confines edits to the lane.
-      external_directory: "ask",
+      // external_directory is deliberately NOT stated here, and "ask" is what
+      // omitting it means. That boundary is ADE's lane worktree, not a
+      // permission tier the user picked — the same reason the system prompt
+      // confines edits to the lane. See the note on the edit ruleset below for
+      // why the key must be absent rather than spelled out.
       question: "allow",
     };
   }
@@ -218,7 +219,10 @@ function buildPermissionConfig(
       // deny), i.e. edit ALLOWED — so leaving `task` open let plan mode write
       // files indirectly through a child session. Plan has to mean plan.
       task: "deny",
-      external_directory: "deny",
+      // No `external_directory` here either — see the note on the edit ruleset
+      // below. Plan's other denials are unaffected: `skill: "deny"` already stops
+      // plan mode reaching into skill directories, so the default's allowances
+      // cost plan nothing.
       question: "allow",
       // Replaces the deprecated agent-level `tools` map. OpenCode desugars that
       // map into exactly these permission entries, and an explicit `permission`
@@ -233,7 +237,16 @@ function buildPermissionConfig(
     bash: "ask",
     webfetch: "allow",
     doom_loop: "ask",
-    external_directory: "ask",
+    // Never state `external_directory` in ANY ADE ruleset — this note is the
+    // canonical one and the other three point at it. OpenCode's own default is
+    // `{"*": "ask", <tmp>: "allow", <skill dirs>: "allow", <reference dirs>:
+    // "allow"}`, and a bare string expands to a single `{pattern: "*"}` rule
+    // that an agent block appends AFTER those defaults. Rule lookup is a
+    // `findLast` over the merged list, so the bare rule wins for every path and
+    // silently revokes OpenCode's access to its own temp, skill, and reference
+    // directories — whether ADE spelled it "ask" or "deny". Omitting the key
+    // leaves the default in place, which already asks for anything outside the
+    // worktree — exactly what ADE wants.
     question: "allow",
   };
 }
@@ -497,7 +510,9 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConf
     bash: "deny",
     webfetch: "deny",
     doom_loop: "deny",
-    external_directory: "deny",
+    // No `external_directory`, matching every other ADE ruleset. The helper
+    // denies edit, bash, and webfetch outright, so there is nothing left for a
+    // directory rule to gate.
     question: "deny",
   } as const satisfies OpenCodePermissionConfig;
 
@@ -799,14 +814,35 @@ export function openCodePartUpdatedDelta(properties: unknown): string | undefine
   return typeof candidate === "string" ? candidate : undefined;
 }
 
+/**
+ * The generated SSE client's attempt ceiling for one `/event` subscription.
+ *
+ * Left undefined it reconnects forever, and OpenCode publishes no event ids, so
+ * a reconnect replays nothing: a `session.idle` published while the socket was
+ * down is simply gone and the consuming `for await` never ends. That is a chat
+ * that spins until the user kills it.
+ *
+ * The count includes the FIRST connection, and the client stops once
+ * `attempt >= max` — so 1 would permit no reconnect at all. 2 buys exactly one
+ * real reconnect, which covers a momentary blip; past that the stream must end
+ * so the caller can report a failure.
+ */
+export const OPENCODE_SSE_MAX_RETRY_ATTEMPTS = 2;
+
 export async function openCodeEventStream(args: {
   client: OpencodeClient;
   directory: string;
   signal?: AbortSignal;
+  /** Called for every connection failure, including ones the SDK retries. */
+  onSseError?: (error: unknown) => void;
 }): Promise<AsyncGenerator<OpenCodeRuntimeEvent>> {
   const result = await args.client.event.subscribe(
     { directory: args.directory },
-    { signal: args.signal },
+    {
+      signal: args.signal,
+      sseMaxRetryAttempts: OPENCODE_SSE_MAX_RETRY_ATTEMPTS,
+      onSseError: args.onSseError,
+    },
   );
   return result.stream as AsyncGenerator<OpenCodeRuntimeEvent>;
 }
@@ -876,18 +912,37 @@ export async function runOpenCodeTextPrompt(
     let text = "";
     let inputTokens: number | null = null;
     let outputTokens: number | null = null;
+    // Part events carry no role, so the caller's own prompt streams back through
+    // the same channel. The result of this helper names lanes and titles chats,
+    // so an ungated accumulator put the user's prompt — and the model's chain of
+    // thought — into those names. OpenCode announces every message with its role
+    // before any of its parts, so this map is always populated in time.
+    const roleByMessageId = new Map<string, "assistant" | "user">();
     for await (const event of stream) {
+      if (event.type === "message.updated") {
+        const info = event.properties.info;
+        if (info.sessionID !== handle.sessionId) continue;
+        if (info.role === "assistant" || info.role === "user") {
+          roleByMessageId.set(info.id, info.role);
+        }
+        continue;
+      }
+
       if (event.type === "message.part.updated") {
         const { part } = event.properties;
         const delta = openCodePartUpdatedDelta(event.properties);
         if (part.sessionID !== handle.sessionId) continue;
-        if (part.type === "text" || part.type === "reasoning") {
-          text += typeof delta === "string" ? delta : part.text;
-        }
         if (part.type === "step-finish") {
           inputTokens = part.tokens.input;
           outputTokens = part.tokens.output;
+          continue;
         }
+        // Answer text only: reasoning is the model thinking aloud, and a
+        // synthetic/ignored part is injected context, not output.
+        if (part.type !== "text") continue;
+        if (roleByMessageId.get(part.messageID) !== "assistant") continue;
+        if (part.synthetic || part.ignored) continue;
+        text += typeof delta === "string" ? delta : part.text;
         continue;
       }
 

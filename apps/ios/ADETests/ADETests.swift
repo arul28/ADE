@@ -4634,6 +4634,66 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testSystemNoticeWithStringDetailDecodesInsteadOfBeingDropped() throws {
+    // Regression: the host declares `detail?: string | AgentChatNoticeDetail`,
+    // and every `provider_health` notice carries a plain string — Codex retry
+    // notices, and now the OpenCode provider-retry and context-overflow notices.
+    // The decoder probed `detail` for a spawn completion with a hard `try`, so a
+    // string raised `typeMismatch`. A thrown event is dropped whole
+    // (`ADELossyArray` skips it, `syncDecodeChatEventEnvelope` returns nil), so
+    // the notice never reached the transcript even though `provider_health` is a
+    // fully supported kind.
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "event": {
+        "type": "system_notice",
+        "noticeKind": "provider_health",
+        "severity": "warning",
+        "message": "OpenCode hit a provider error and is retrying automatically (attempt 2).",
+        "detail": "The provider request failed. Retrying in 4s.",
+        "turnId": "turn-1"
+      }
+    }
+    """
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    guard case .systemNotice(let kind, let message, let detail, let turnId, _) = envelope.event else {
+      return XCTFail("Expected a system notice for a string detail.")
+    }
+    XCTAssertEqual(kind, .providerHealth)
+    XCTAssertEqual(message, "OpenCode hit a provider error and is retrying automatically (attempt 2).")
+    XCTAssertEqual(detail, .string("The provider request failed. Retrying in 4s."))
+    XCTAssertEqual(turnId, "turn-1")
+
+    // The lenient probe must not cost the spawn-completion routing it guards.
+    let spawnJSON = """
+    {
+      "sessionId": "chat-1",
+      "timestamp": "2026-03-17T00:00:01.000Z",
+      "event": {
+        "type": "system_notice",
+        "noticeKind": "info",
+        "message": "Subagent finished",
+        "detail": {
+          "spawnCompletion": {
+            "childSessionId": "child-1",
+            "childTitle": "Child",
+            "spawnKind": "subagent",
+            "status": "completed"
+          }
+        }
+      }
+    }
+    """
+    let spawnEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(spawnJSON.utf8))
+    guard case .subagentResult(_, let agentId, _, _, _, let status, _, _, _, _, _, _) = spawnEnvelope.event else {
+      return XCTFail("Expected an object detail to still route to a subagent result.")
+    }
+    XCTAssertEqual(agentId, "child-1")
+    XCTAssertEqual(status, .completed)
+  }
+
   func testChatEventHistorySnapshotSurvivesWarningNoticeAlongsidePlanApproval() throws {
     // Regression: a single `system_notice` with an out-of-enum noticeKind used to
     // throw during the strict `[AgentChatEventEnvelope]` array decode, discarding

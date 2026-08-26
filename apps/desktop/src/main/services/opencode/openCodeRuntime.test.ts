@@ -7,11 +7,18 @@ const mockState = vi.hoisted(() => {
   let nextSessionId = 1;
   const makeStream = (sessionId: string) => (async function* () {
     yield {
+      type: "message.updated",
+      properties: {
+        info: { id: `msg-${sessionId}`, role: "assistant", sessionID: sessionId },
+      },
+    };
+    yield {
       type: "message.part.updated",
       properties: {
         part: {
           id: `part-${sessionId}`,
           sessionID: sessionId,
+          messageID: `msg-${sessionId}`,
           type: "text",
           text: "pong",
         },
@@ -116,6 +123,7 @@ vi.mock("./openCodeServerManager", () => ({
 
 import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
+  OPENCODE_SSE_MAX_RETRY_ATTEMPTS,
   buildOpenCodeConfig,
   buildOpenCodePromptParts,
   getOpenCodeRuntimeSnapshot,
@@ -141,6 +149,16 @@ function openCodePromptParams(): Record<string, unknown> {
     [Record<string, unknown> | undefined] | undefined;
   return call?.[0] ?? {};
 }
+
+/** The model descriptor the one-shot prompt tests share. */
+const ONE_SHOT_MODEL_DESCRIPTOR = {
+  id: "opencode/openai/gpt-5-mini",
+  family: "openai",
+  providerRoute: "opencode",
+  providerModelId: "openai/gpt-5-mini",
+  openCodeProviderId: "openai",
+  openCodeModelId: "gpt-5-mini",
+} as any;
 
 describe("openCodeRuntime", () => {
   afterEach(() => {
@@ -188,6 +206,40 @@ describe("openCodeRuntime", () => {
 
     await handle.close("handle_close");
     expect(mockState.sharedLease.close).toHaveBeenCalledWith("handle_close");
+  });
+
+  it("never states external_directory on any ADE ruleset", async () => {
+    // OpenCode's own default for this key is
+    // `{"*": "ask", <tmp>: "allow", <skill dirs>: "allow", <reference dirs>: "allow"}`.
+    // A bare string expands to one `{pattern: "*"}` rule, an agent block's rules
+    // are appended after the defaults, and lookup is a `findLast` over the merged
+    // list — so stating `external_directory` at all wins for every path and
+    // silently revokes OpenCode's access to its own temp, skill, and reference
+    // directories, whether ADE spelled it "ask" or "deny". Omitting the key
+    // already means "ask outside the worktree".
+    const config = buildOpenCodeConfig({ projectConfig: { ai: {} } as any }) as Record<string, any>;
+    const agents = config.agent as Record<string, { permission: Record<string, unknown> }>;
+
+    for (const agentName of ["ade-edit", "ade-full-auto", "ade-plan", "ade-helper"]) {
+      expect(agents[agentName]!.permission).not.toHaveProperty("external_directory");
+    }
+    // The rest of each ruleset is unchanged. Plan in particular keeps the denials
+    // that make plan mean plan, and `skill: "deny"` already stops it reaching into
+    // skill directories, so the default's allowances cost it nothing.
+    expect(agents["ade-edit"]!.permission).toMatchObject({ edit: "ask", bash: "ask" });
+    expect(agents["ade-full-auto"]!.permission).toMatchObject({ edit: "allow", bash: "allow" });
+    expect(agents["ade-plan"]!.permission).toMatchObject({
+      edit: "deny",
+      task: "deny",
+      websearch: "deny",
+      skill: "deny",
+    });
+    expect(agents["ade-helper"]!.permission).toMatchObject({
+      edit: "deny",
+      bash: "deny",
+      webfetch: "deny",
+      question: "deny",
+    });
   });
 
   it("passes lead isolation through to a dedicated OpenCode server", async () => {
@@ -246,6 +298,97 @@ describe("openCodeRuntime", () => {
     expect(mockState.promptAsync).toHaveBeenCalledWith(
       expect.not.objectContaining({ tools: expect.anything() }),
       expect.objectContaining({ throwOnError: true }),
+    );
+  });
+
+  it("keeps the caller's prompt, reasoning, and injected context out of a one-shot result", async () => {
+    // This helper names lanes and titles chats. Part events carry no role and the
+    // caller's own prompt streams back through the same channel, so an ungated
+    // accumulator put the user's words — and the model's chain of thought — into
+    // those names.
+    mockState.eventSubscribe.mockImplementationOnce((async () => {
+      const sessionID = "opencode-session-1";
+      return {
+        stream: (async function* () {
+          yield {
+            type: "message.updated",
+            properties: { info: { id: "msg-user", role: "user", sessionID } },
+          };
+          yield {
+            type: "message.part.updated",
+            properties: {
+              part: { id: "p-user", sessionID, messageID: "msg-user", type: "text", text: "PROMPT_ECHO" },
+            },
+          };
+          yield {
+            type: "message.updated",
+            properties: { info: { id: "msg-a", role: "assistant", sessionID } },
+          };
+          yield {
+            type: "message.part.updated",
+            properties: {
+              part: { id: "p-think", sessionID, messageID: "msg-a", type: "reasoning", text: "THOUGHTS" },
+            },
+          };
+          yield {
+            type: "message.part.updated",
+            properties: {
+              part: {
+                id: "p-ctx",
+                sessionID,
+                messageID: "msg-a",
+                type: "text",
+                text: "INJECTED_CONTEXT",
+                synthetic: true,
+              },
+            },
+          };
+          yield {
+            type: "message.part.updated",
+            properties: {
+              part: { id: "p-answer", sessionID, messageID: "msg-a", type: "text", text: "Real answer" },
+            },
+          };
+          yield { type: "session.idle", properties: { sessionID } };
+        })(),
+      };
+    }) as any);
+
+    const result = await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "Name this lane",
+      modelDescriptor: ONE_SHOT_MODEL_DESCRIPTOR,
+      prompt: "PROMPT_ECHO",
+      projectConfig: { ai: {} },
+    });
+
+    expect(result.text).toBe("Real answer");
+    expect(result.text).not.toContain("PROMPT_ECHO");
+    expect(result.text).not.toContain("THOUGHTS");
+    expect(result.text).not.toContain("INJECTED_CONTEXT");
+  });
+
+  it("bounds the event stream's silent reconnects", async () => {
+    // The generated SSE client reconnects forever without this, and OpenCode
+    // sends no event ids — so a reconnect replays nothing and a `session.idle`
+    // published during the gap is lost, leaving the consuming `for await` to
+    // hang the turn permanently.
+    await runOpenCodeTextPrompt({
+      directory: "/repo",
+      title: "Bounded stream",
+      modelDescriptor: ONE_SHOT_MODEL_DESCRIPTOR,
+      prompt: "ping",
+      projectConfig: { ai: {} },
+    });
+
+    // The count includes the first connection and the client stops at
+    // `attempt >= max`, so this must stay above 1 or no reconnect happens at all.
+    expect(OPENCODE_SSE_MAX_RETRY_ATTEMPTS).toBeGreaterThan(1);
+    // And a ceiling: a large value reintroduces the long silent stall this bounds.
+    expect(OPENCODE_SSE_MAX_RETRY_ATTEMPTS).toBeLessThan(5);
+    expect(mockState.eventSubscribe).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sseMaxRetryAttempts: OPENCODE_SSE_MAX_RETRY_ATTEMPTS }),
     );
   });
 

@@ -91,9 +91,9 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/chat/piSessionLease.ts` | The `<session>.ade-lease` live-writer lock: a pid + process-start-keyed cross-process claim (`owner: "sdk" \| "cli"`) removed on release and reclaimable once its owner is gone. `piSessionLeaseIsHeld` is the cheap pre-launch probe; `piSessionCreationLeaseTarget(sessionRoot, cwd)` is the synthetic per-cwd token held while a session has no JSONL yet (hashed per working directory so one lane's starting chat cannot block every other lane's). |
 | `apps/desktop/src/main/services/chat/piSessionOwnership.ts` | The `<session>.ade-owner` durable claim — `{ owner, ownerSessionId }`, never removed, because chat and the tracked CLI share one store and creation-time proximity cannot tell their sessions apart. `piSessionIsAdoptableByTerminal` leaves unclaimed sessions adoptable (a `pi` run started outside ADE) and `piSessionCouldBelongToTerminal` rejects a stored resume pointer at a session older than the terminal itself. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in on a dedicated inventory-only worker: provider enumeration, one flow per provider, prompt/notice fan-out through `addPiAuthStatusListener`, prompt answers, cancellation, and a 10-minute bound. A user-pressed cancel gives Pi `PI_LOGIN_CANCEL_GRACE_MS` to report a login it had already completed; a supersede (a replacement attempt) settles the outgoing flow at once and silently, so it cannot clear the card the newer attempt owns. Relays credentials, never retains them. |
-| `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | Resolves the OpenCode CLI: PATH first, then the bundled `node_modules/.bin/opencode`. Cache entries are re-validated with `canRunBinaryCandidate` on every lookup so user installs after launch are picked up; missing-binary lookups are intentionally not cached. `clearOpenCodeBinaryCache()` is wired into the AI integration's full cache reset. |
+| `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | Resolves the OpenCode CLI, and the order is **pinned runtime first**: the machine tools cache (`cachedToolEntryPath("opencode")`), then the bundled platform package, and only then a user-installed binary on PATH / `~/.opencode/bin`. `ADE_DISABLE_BUNDLED_OPENCODE=1` skips both pinned candidates and selects the user install outright; `ADE_OPENCODE_BUNDLE_ROOT` is a hermetic override that suppresses the cache and the user install as well. `resolveOpenCodeBinary` returns the `OpenCodeBinarySource` that won, so callers can tell a pinned runtime from a user install. Cache entries are re-validated with `canRunBinaryCandidate` on every lookup so user installs after launch are picked up; missing-binary lookups are intentionally not cached. `clearOpenCodeBinaryCache()` is wired into the AI integration's full cache reset. |
 | `apps/desktop/src/main/services/opencode/openCodeInventory.ts` | OpenCode provider/model probe. Now classifies model variants into `reasoningTiers` + `serviceTiers` (alias map covering `minimal`/`mini`/`med`/`xhigh`/`extra-high`), reads `capabilities` (tools/vision/reasoning) into descriptor capabilities, and exposes `modelIds` — the selectable ids for connected providers only. (Descriptors are still registered for every catalog entry, so an id from an unconnected provider resolves; it just is not offered as a pick.) Anthropic rows normalize generic `opus` to Opus 5 with its `high` default reasoning effort and Fast capability; retired Sonnet 4.6 / basic Opus 4.7 ids still resolve to Sonnet 5 / Opus 4.8 so runtime catalogs cannot reintroduce removed picker rows. `OpenCodeProviderInfo.availableModelCount` exposes the connected count separately from `modelCount`. **Cross-launch persistence:** `persistOpenCodeInventory(projectRoot, providers)` writes each successful probe's provider list (keyed by project root, with `savedAt`) to `opencode-inventory-cache.json` under Electron `userData` (override via `ADE_OPENCODE_INVENTORY_CACHE_FILE`); on a cold start the Settings page reloads that persisted list flagged stale (`opencodeProvidersStale`) so the ~160-provider chip cloud renders immediately instead of blanking until the first live probe (stale-while-revalidate). Writes are best-effort and never break the probe. |
-| `apps/desktop/src/main/services/opencode/openCodeRuntime.ts` | OpenCode server session runtime: the single `@opencode-ai/sdk/v2/client` every OpenCode call goes through, session handles over shared/dedicated server leases, the `buildOpenCodeConfig` / `OPENCODE_CONFIG_CONTENT` permission config (`OpenCodePermissionKey`), prompt assembly (`buildOpenCodePromptParts`), and event-stream helpers. Two contracts are load-bearing. **Re-attach is 404-gated:** when a persisted session id fails `session.get`, only a confirmed "session does not exist" (`isOpenCodeNotFoundError`, HTTP 404 / `NotFoundError`, walking a bounded chain of `cause`/`body`/`error`/`data` wrapper shapes with any explicit non-404 status sealing the walk) may fall through to fresh-session creation; any other failure closes the server lease and surfaces, because silently starting an empty session would strand the user's thread. **System prompts ride the prompt body:** ADE's system prompt travels on the prompt body's first-class `system` field and is never injected as a synthetic/ignored text part — OpenCode drops `ignored` parts from model context entirely, so a part-shaped transport silently never reaches the model. |
+| `apps/desktop/src/main/services/opencode/openCodeRuntime.ts` | OpenCode server session runtime: the single `@opencode-ai/sdk/v2/client` every OpenCode call goes through, session handles over shared/dedicated server leases, the `buildOpenCodeConfig` / `OPENCODE_CONFIG_CONTENT` permission config (`OpenCodePermissionKey`), prompt assembly (`buildOpenCodePromptParts`), event-stream helpers, and the one-shot `runOpenCodeTextPrompt` behind `runProviderTask`. Three contracts are load-bearing. **Re-attach is 404-gated:** when a persisted session id fails `session.get`, only a confirmed "session does not exist" (`isOpenCodeNotFoundError`, HTTP 404 / `NotFoundError`, walking a bounded chain of `cause`/`body`/`error`/`data` wrapper shapes with any explicit non-404 status sealing the walk) may fall through to fresh-session creation; any other failure closes the server lease and surfaces, because silently starting an empty session would strand the user's thread. **System prompts ride the prompt body:** ADE's system prompt travels on the prompt body's first-class `system` field and is never injected as a synthetic/ignored text part — OpenCode drops `ignored` parts from model context entirely, so a part-shaped transport silently never reaches the model. **The `/event` subscription is bounded:** `openCodeEventStream` passes `OPENCODE_SSE_MAX_RETRY_ATTEMPTS` and forwards `onSseError`, because the generated SSE client reconnects forever by default and OpenCode sends no event ids, so a reconnect replays nothing. |
 | `apps/desktop/src/main/services/opencode/openCodeAuthService.ts` | Drives the managed OpenCode server's auth API for subscription connect + API-key seeding, reusing the shared inventory server lease (never spawning its own process). `listAuthMethods` reads `GET /provider/auth`; `startOAuth` authorizes (`POST /provider/{id}/oauth/authorize`), opens the returned URL, and polls `provider.list().connected` every 2s until connected or a 5-min timeout, re-probing inventory on success; `cancelOAuth` stops the poller; `setProviderKey` does `PUT /auth/{id}` and mirrors the key into ADE's `apiKeyStore` so it is re-injected on future launches. One flow per `providerId` at a time (a new start supersedes the prior). Transitions are published through `addOpenCodeOAuthStatusListener` (`pending`/`connected`/`cancelled`/`timeout`/`failed`), a multi-sink fan-out so the same event reaches desktop windows and the remote/web runtime event buffer. Seeded credentials land in ADE's isolated managed OpenCode dir (XDG roots under `userData/opencode-runtime/xdg-v*`), never the user's `~/.local/share/opencode`. |
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
 | `apps/desktop/src/shared/chatEventCompaction.ts` | The single compaction policy for heavy chat-event payloads, owned by the two consumers that must never disagree: the stored transcript (`compactChatEventForStorage`, called by `agentChatService`) and the mobile/web sync wire (`compactChatEventForWire`, called by the sync host's `compactChatEventEnvelopeForSync`). It owns the whole cap table — command output (4 KB running / 16 KB completed / 64 KB failed), `tool_result.result` (16 KB, 64 KB when failed or interrupted), `tool_result.structured` (8 KB), file diffs (32 KB), reasoning text (8 KB), and inline `data:image/*` URIs (64 KB) — plus `compactRunningCommandOutput`, exported as a whole operation so no caller re-derives the label/budget pairing. Shortened payloads keep original/omitted byte counts on the event (`outputOriginalBytes`, `resultOmittedBytes`, `diffOmittedBytes`, `textOmittedBytes`, `urlOmittedBytes`, …). The wire variant runs storage compaction first, then drops `structured` and `toolResultMeta` from `tool_result` entirely — no renderer, TUI, web, or iOS client decodes either field, so removing them needs no capability gate. |
@@ -842,7 +842,9 @@ resolve to `null`, so a Pi callback awaiting an answer degrades to "no answer"
 instead of throwing through the SDK's error channel. The desktop side has the
 matching obligation: the worker is holding a Pi callback open, so every path out
 of `presentPiUiRequest` must end in exactly one `respondToUi` — including
-interrupt and teardown, which `cancelPendingPiInputs` drains.
+interrupt and teardown, which `cancelPendingInputsFrom(managed, "pi")` drains.
+That helper is shared: OpenCode passes `"opencode"` to drain its own question
+cards on the same paths.
 
 Requests become ordinary ADE pending inputs with `source: "pi"`, so they reuse
 the existing question-card, approval-card, and `respondToInput` machinery rather
@@ -1937,10 +1939,13 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   transport blips, timeouts, and server-restart failures must surface instead
   of resetting the thread into an empty session. And because
   `message.part.updated` carries no message role, the service keys every seen
-  message id on `message.updated` and renders text/reasoning/file parts only
-  when that map says `assistant` — user-message parts (including synthetic or
-  ignored prompt context) stream through the same channel and would otherwise
-  echo into the transcript as assistant bubbles. Incremental text arrives on a
+  message id on `message.updated` and renders parts only when that map says
+  `assistant` — user-message parts (including synthetic or ignored prompt
+  context) stream through the same channel and would otherwise echo into the
+  transcript as assistant bubbles. Text and reasoning use the stricter
+  `rendersAsAssistantOutput`, which also excludes auto-compaction summary
+  messages (see the bullet below); file parts keep the plain role check, because
+  a summary message carries no attachments to suppress. Incremental text arrives on a
   **different** event: OpenCode's processor calls `updatePartDelta` for every
   `text-delta` and only calls `updatePart` at text-start and text-end, so
   `message.part.updated` carries an empty part and then the finished one with
@@ -1950,6 +1955,131 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   full-part update diffs to an empty delta instead of repeating the whole
   answer. Without that branch the transcript renders nothing until the turn
   ends and the reply lands in one jump.
+- **A delta's `field` names the part property, not the part kind.** OpenCode
+  publishes reasoning deltas with `field: "text"`, because a reasoning part's
+  property is also called `text`. Classify every `message.part.delta` by the
+  **part kind** recorded from the part-start `message.part.updated`
+  (`partTypeByPartId`), never by `field`. Classifying by `field` renders the
+  whole chain of thought as the assistant's answer, runs it together with the
+  real reply, stores it in the assistant transcript message, and then repeats it
+  inside the "Thought" chip when the closing full part arrives. The fallback runs
+  only when no part kind was recorded, which happens on older OpenCode binaries
+  that never send the part-start: it reads the part as reasoning when
+  `reasoningByPartId` already holds text for it or `field` is `"reasoning"`, and
+  as text otherwise.
+- **Auto-compaction summaries arrive as an ordinary assistant message.** OpenCode
+  writes the summary into a real assistant message flagged `summary: true` and
+  streams it as normal text parts, so the assistant-role gate alone lets a recap
+  of the whole conversation render as the model's reply. Track the flag from
+  `message.updated` and suppress that message's text and reasoning; the
+  `compaction` part and `session.compacted` already report the compaction. File
+  parts keep the plain role check — a summary message carries no attachments to
+  suppress.
+- **Not every parent `session.error` ends the turn.** `ContextOverflowError` is
+  *usually* recoverable — OpenCode compacts and continues without idling, so
+  throwing kills a turn that was about to resume. ADE posts an info
+  `provider_health` notice instead and keeps reading the stream. Recovery is not
+  a guarantee, though: with the user's `compaction.auto` off OpenCode idles
+  without compacting, and compaction can itself overflow and stop. So track the
+  overflow and, if the turn reaches
+  idle with no assistant text emitted after it, finish the turn as failed rather
+  than reporting a completed turn that answered nothing. `MessageAbortedError` means
+  something else (the OpenCode TUI or CLI on the same server) stopped the turn,
+  which is an interruption rather than a failure. Everything else throws, and the
+  throw must carry the structured error as `cause`, because
+  `classifyOpenCodeError` reads the status code and nested messages out of it to
+  tell auth from rate-limit from network.
+- **Bound the SSE reconnect.** The generated SSE client reconnects forever unless
+  a request passes `sseMaxRetryAttempts`, and OpenCode's `/event` sends no event
+  ids, so a reconnect replays nothing: a `session.idle` published while the
+  socket was down is lost and the `for await` never ends. `openCodeEventStream`
+  caps the attempts and forwards `onSseError` so a dropped stream fails the turn
+  with a logged cause instead of spinning forever. The count includes the FIRST
+  connection and the client stops at `attempt >= max`, so the ceiling has to be
+  2 to allow one real reconnect — 1 permits none. The `onSseError` log is skipped
+  when the turn's abort signal already fired, because that is the user's Stop.
+- **Cancel OpenCode question cards on interrupt and on turn failure, never on a
+  clean completion.** `requestChatInput` parks the card in
+  `managed.localPendingInputs`, which the interrupt path did not drain — it
+  drained `pendingApprovals` only. A stranded card keeps `hasPendingInput`
+  reporting the session as blocked, so the next send is refused, and a late answer
+  replies into an aborted session. `cancelPendingInputsFrom(managed, "opencode")`
+  runs on the interrupt path and the turn-failure path. It deliberately does NOT
+  run on clean completion: on 1.18.x the question tool blocks server-side, so a
+  clean idle with a card still open is not an expected state, and if it ever
+  became one, cancelling would discard a card the user may still be reading — ADE
+  can answer a card after the turn settles, which resumes the session. The
+  exclusion is pinned by the test "bridges OpenCode question events through ADE's
+  question UI".
+- **Answer an OpenCode question on a detached task, never inline.** The event
+  loop used to await `requestChatInput` while the card was open, so nothing else
+  drained: a subagent's approval prompt, its streamed text, and every tool result
+  sat in the socket until the person answered. `resolveOpenCodeQuestion` runs as a
+  detached promise and the loop keeps reading. Failure handling moves with it —
+  the turn no longer fails on this path, so the catch rejects the request through
+  `question.reject` rather than leaving OpenCode waiting for an answer that is not
+  coming, and it stays silent when `runtime.interrupted` is set, because Stop
+  already cancelled the card and aborted the session. The test is "keeps draining
+  OpenCode events while a question waits for the user".
+- **Handle `message.part.removed` and `message.removed`.** OpenCode publishes
+  both on a revert or an undo. The part event drops that part id from
+  `textByPartId`, `reasoningByPartId`, `partTypeByPartId`, `toolStateByPartId`,
+  `compactionStartedPartIds`, and the emitted-image set, so a part id OpenCode
+  reuses later cannot diff against text that no longer exists, and a removed
+  reasoning part stops classifying as reasoning. The message event drops the id
+  from the role map and the summary set. Neither emits a renderer event:
+  `transcript_retraction` matches rows by `messageId`, which OpenCode text events
+  do not carry, and giving them one would merge every part of a message into a
+  single row.
+- **An unclassified OpenCode error is what the user reads, so bound it and
+  de-duplicate it.** `classifyOpenCodeError` walks `message`, `data.message`, and
+  `responseBody` down the `cause`/`error` chain. A thrown OpenCode error carries
+  the structured original as `cause`, so the walk reaches the same wording twice
+  and the chat printed it twice; a duplicate now keeps its first position only.
+  Classification still reads the full text, but the displayed message truncates
+  any raw `responseBody` to 500 characters, and a duplicate inherits the `isBody`
+  flag from every occurrence, so a payload cannot dodge the cap by also arriving
+  as `message`. `OPEN_CODE_ERROR_MESSAGES_BY_NAME` supplies wording for the one
+  union member with no `data.message` of its own, `MessageOutputLengthError`,
+  which otherwise reached the user as the generic fallback.
+- **Reset the activity line at `step-finish`.** The line otherwise keeps naming
+  the step's last tool until the next step starts, so a long gap between steps
+  reads as a command that never finished. The `step-finish` part emits a generic
+  `working` activity as well as recording token usage.
+- **`runOpenCodeTextPrompt` gates its own accumulator.** Part events carry no
+  role, so the caller's own prompt streams back through the same channel — and
+  this helper's result names lanes and titles chats. It tracks roles from
+  `message.updated` and keeps only non-synthetic, non-ignored `text` parts of
+  assistant messages. Without that gate the user's prompt and the model's chain of
+  thought landed in those names.
+- **Never state `external_directory` in an ADE agent's permission block.**
+  OpenCode's own default is `{"*": "ask", <tmp>: "allow", <skill dirs>: "allow",
+  <reference dirs>: "allow"}`. A bare string expands to a single `{pattern: "*"}`
+  rule, and an agent block's rules are appended after the defaults, with lookup
+  being a `findLast` over the merged list — so `external_directory: "ask"` wins
+  for every path and silently revokes OpenCode's access to its own temp, skill,
+  and reference directories. Omitting the key already means "ask outside the
+  worktree", which is what ADE wants. This binds all four ADE rulesets, `deny`
+  included: `ade-plan` and `ade-helper` state no `external_directory` either,
+  because a bare `"deny"` revokes the same built-in allowances a bare `"ask"`
+  does, and their own `edit`/`bash`/`skill` denials already impose the boundary
+  those rulesets exist for.
+- **`session.status` retry events are the only sign OpenCode is retrying.** When
+  a provider fails, OpenCode retries with exponential backoff (2s, 4s, 8s, …)
+  and publishes nothing else — no error, no text, no activity. A chat therefore
+  shows a spinner for minutes and looks wedged. ADE handles
+  `session.status` with `status.type === "retry"` and shows a
+  `system_notice` with `noticeKind: "provider_health"` that carries the attempt
+  number, the provider message, the wait computed from `status.next` (an epoch
+  ms timestamp), and any `status.action` guidance, plus a `working` activity
+  reading "Waiting for the provider". Every wire field is re-checked here even
+  though the SDK declares it required, so a missing `next` cannot render
+  "Retrying in NaNs." The first retry of a turn always posts a notice; after
+  that a notice needs a changed provider message, or a new attempt at least 10s
+  after the last notice. Reset
+  that throttle on `status.type === "idle"` ONLY: OpenCode publishes `busy`
+  between every two retry attempts (retry(1) → busy → retry(2) → …), so clearing
+  it on `busy` clears it before every retry and the throttle never engages.
 - **One OpenCode client, and it is the v2 one.** ADE talks to OpenCode
   exclusively through `@opencode-ai/sdk/v2/client`; the legacy entry point is
   imported for nothing but the `Config` type. The two clients call the *same*
@@ -1968,9 +2098,10 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
 - **`permission.updated` is gone from OpenCode, but not from ADE.** 1.18.21
   publishes only `permission.asked` / `permission.replied`, so the legacy event
   is absent from the v2 union. ADE still handles it through an explicit runtime
-  guard rather than a union case, because `resolveOpenCodeBinaryPath` prefers a
-  *user-installed* binary over the bundled one — dropping the handler would
-  leave an older install's approvals unanswered forever.
+  guard rather than a union case, because `resolveOpenCodeBinaryPath` falls back
+  to a *user-installed* binary when the tools cache and the bundle both miss (and
+  `ADE_DISABLE_BUNDLED_OPENCODE=1` selects one outright) — dropping the handler
+  would leave an older install's approvals unanswered forever.
 - **New `ai.*` config fields must be added to BOTH `coerceAiConfig` and
   `mergeAiConfig`.** In `projectConfigService.ts`, `coerceAiConfig`
   validates/parses a config field off disk and `mergeAiConfig` folds the
