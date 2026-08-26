@@ -64,9 +64,12 @@ function buildHarness(overrides?: {
     }
     return { exitCode: 0, stdout: "", stderr: "" };
   });
-  const listCursorCloudAgents = vi.fn(async () => ({
-    items: overrides?.agents ?? [],
-  }));
+  const listCursorCloudAgents = vi.fn(
+    async (_args?: { includeArchived?: boolean; limit?: number; cursor?: string | null }) => ({
+      items: overrides?.agents ?? [],
+      nextCursor: null as string | null,
+    }),
+  );
   const listCursorCloudRuns = vi.fn(async (_args: { agentId: string; limit?: number }) => ({
     items: overrides?.runs ?? [],
   }));
@@ -102,6 +105,79 @@ function buildHarness(overrides?: {
 }
 
 describe("cursorCloudFleetService", () => {
+  // Cursor answers a page above 100 rows with "[validation_error] Limit must
+  // be at most 100", which the fleet modal showed as an empty list plus an
+  // error. `limit` is a total row budget here, spent one Cursor page at a time.
+  describe("agent list paging", () => {
+    it("never asks Cursor for a page larger than 100", async () => {
+      const harness = buildHarness({ agents: [agent({ agentId: "bc-1" })] });
+      await harness.service.getFleet({ limit: 200 });
+      expect(harness.listCursorCloudAgents).toHaveBeenCalled();
+      for (const call of harness.listCursorCloudAgents.mock.calls) {
+        expect(call[0]?.limit ?? 0).toBeLessThanOrEqual(100);
+      }
+    });
+
+    it("clamps a caller asking for more than the fleet budget to 100-row pages", async () => {
+      const harness = buildHarness({ agents: [agent({ agentId: "bc-1" })] });
+      await harness.service.getFleet({ limit: 5_000 });
+      for (const call of harness.listCursorCloudAgents.mock.calls) {
+        expect(call[0]?.limit ?? 0).toBeLessThanOrEqual(100);
+      }
+    });
+
+    it("follows nextCursor so a budget above one page returns later rows", async () => {
+      const harness = buildHarness();
+      const firstPage = Array.from({ length: 100 }, (_, index) => agent({ agentId: `page1-${index}` }));
+      harness.listCursorCloudAgents.mockImplementation(async (args) => {
+        if (!args?.cursor) return { items: firstPage, nextCursor: "cursor-2" };
+        return { items: [agent({ agentId: "page2-0" })], nextCursor: null };
+      });
+
+      const result = await harness.service.getFleet({ limit: 200 });
+
+      expect(harness.listCursorCloudAgents).toHaveBeenCalledTimes(2);
+      expect(harness.listCursorCloudAgents.mock.calls[0][0]).toMatchObject({ limit: 100 });
+      expect(harness.listCursorCloudAgents.mock.calls[1][0]).toMatchObject({
+        limit: 100,
+        cursor: "cursor-2",
+      });
+      expect(result.items.map((entry) => entry.agent.agentId)).toContain("page2-0");
+      expect(result.items).toHaveLength(101);
+    });
+
+    it("stops at the row budget instead of crawling every page", async () => {
+      const harness = buildHarness();
+      let page = 0;
+      harness.listCursorCloudAgents.mockImplementation(async () => {
+        page += 1;
+        return {
+          items: Array.from({ length: 100 }, (_, index) => agent({ agentId: `p${page}-${index}` })),
+          nextCursor: `cursor-${page + 1}`,
+        };
+      });
+
+      const result = await harness.service.getFleet({ limit: 200 });
+
+      expect(harness.listCursorCloudAgents).toHaveBeenCalledTimes(2);
+      expect(result.items).toHaveLength(200);
+    });
+
+    it("stops when Cursor repeats a cursor so the crawl cannot spin", async () => {
+      const harness = buildHarness();
+      let page = 0;
+      harness.listCursorCloudAgents.mockImplementation(async () => {
+        page += 1;
+        return { items: [agent({ agentId: `stuck-${page}` })], nextCursor: "same-cursor" };
+      });
+
+      const result = await harness.service.getFleet({ limit: 200 });
+
+      expect(harness.listCursorCloudAgents).toHaveBeenCalledTimes(2);
+      expect(result.items).toHaveLength(2);
+    });
+  });
+
   describe("project scoping", () => {
     it("keeps agents whose repo matches the project origin", async () => {
       const harness = buildHarness({ agents: [agent({ agentId: "bc-1" })] });

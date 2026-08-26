@@ -337,12 +337,8 @@ export function CursorCloudFleetModal({
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3.5 py-2" style={{ background: "rgba(167,139,250,0.055)" }}>
           <div className="flex min-w-0 items-center gap-2.5">
-            <span
-              className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
-              style={{ background: "rgba(167,139,250,0.14)", color: CURSOR_VIOLET }}
-            >
-              <Cursor.Avatar size={14} />
-            </span>
+            {/* Bare glyph, no chrome box: the mark reads at title scale. */}
+            <Cursor size={21} className="shrink-0" style={{ color: CURSOR_VIOLET }} />
             <div className="min-w-0 leading-tight">
               <div className="truncate text-[12.5px] font-medium text-fg/92">Cursor Cloud</div>
               <div className="truncate text-[10.5px] text-fg/45">

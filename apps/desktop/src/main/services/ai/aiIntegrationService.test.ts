@@ -746,4 +746,41 @@ describe("aiIntegrationService", () => {
     expect(cloud).not.toHaveProperty("webhook");
     expect(send).toHaveBeenCalled();
   });
+
+  // Cursor answers a bigger page with "[validation_error] Limit must be at
+  // most 100", which the fleet modal showed as an empty list.
+  it("never sends a limit above 100 to Cursor when listing agents or runs", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const list = vi.fn().mockResolvedValue({ items: [] });
+    const listRuns = vi.fn().mockResolvedValue({ items: [] });
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { list, listRuns } });
+
+    await service.listCursorCloudAgents({ includeArchived: true, limit: 200 });
+    await service.listCursorCloudRuns({ agentId: "agt_1", limit: 500 });
+
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
+    expect(listRuns).toHaveBeenCalledWith("agt_1", expect.objectContaining({ limit: 100 }));
+  });
+
+  it("keeps a limit at or below 100 and leaves an unset limit to the SDK default", async () => {
+    const { service } = makeService({
+      availability: { claude: false, codex: false, cursor: true, droid: false },
+    });
+    mockState.detectAllAuth.mockResolvedValue([
+      { type: "api-key", provider: "cursor", key: "crsr_test", source: "store" },
+    ]);
+    const list = vi.fn().mockResolvedValue({ items: [] });
+    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Agent: { list } });
+
+    await service.listCursorCloudAgents({ limit: 25 });
+    await service.listCursorCloudAgents({});
+
+    expect(list.mock.calls[0]?.[0]).toMatchObject({ limit: 25 });
+    expect(list.mock.calls[1]?.[0]?.limit).toBeUndefined();
+  });
 });

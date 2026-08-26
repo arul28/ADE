@@ -37,6 +37,7 @@ import {
   resolveProviderGroupForModel,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
+import { clampCursorCloudPageLimit } from "../../../shared/cursorCloudApiLimits";
 import {
   detectAllAuth,
   getCachedCliAuthStatuses,
@@ -1174,11 +1175,13 @@ export function createAiIntegrationService(args: {
   }): Promise<CursorCloudListAgentsResult> => {
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
+    // Cursor rejects limit > 100. Clamp here so no caller can push a bigger
+    // page into the API; callers that want more rows must follow `nextCursor`.
     const result = await Agent.list({
       runtime: "cloud",
       apiKey,
       includeArchived: args?.includeArchived,
-      limit: args?.limit,
+      limit: clampCursorCloudPageLimit(args?.limit),
       cursor: args?.cursor?.trim() || undefined,
     });
     return {
@@ -1196,10 +1199,11 @@ export function createAiIntegrationService(args: {
     if (!agentId) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
     const { Agent } = await loadCursorSdk();
+    // Same 100-row ceiling as the agent list above.
     const result = await Agent.listRuns(agentId, {
       runtime: "cloud",
       apiKey,
-      limit: args.limit,
+      limit: clampCursorCloudPageLimit(args.limit),
       cursor: args.cursor?.trim() || undefined,
     });
     return {

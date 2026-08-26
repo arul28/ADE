@@ -22,6 +22,7 @@ import {
   CURSOR_WINDOWS_ARM_BLOCKER,
   isCursorProviderSupported,
 } from "../../desktop/src/shared/providerPlatformSupport";
+import { clampCursorCloudPageLimit } from "../../desktop/src/shared/cursorCloudApiLimits";
 
 type CursorSdk = typeof import("@cursor/sdk");
 
@@ -259,7 +260,8 @@ async function runAgentsGroup(sub: string, rest: Args, opts: CursorCloudOptions)
   const { Agent } = await getSdk();
   if (sub === "list" || sub === "ls") {
     const includeArchived = readFlag(rest, ["--archived", "--include-archived"]);
-    const limit = readIntOption(rest, ["--limit"]);
+    // Cursor caps a page at 100 rows; `--limit 500` must not become a 400.
+    const limit = clampCursorCloudPageLimit(readIntOption(rest, ["--limit"]));
     const cursor = trimWhitespace(readValue(rest, ["--cursor", "--page"]));
     const result = await Agent.list({
       runtime: "cloud",
@@ -365,7 +367,8 @@ async function runRunsGroup(sub: string, rest: Args, opts: CursorCloudOptions): 
   const { Agent } = await getSdk();
   if (sub === "list" || sub === "ls") {
     const agentId = requireValue(readValue(rest, ["--agent", "--agent-id"]), "--agent");
-    const limit = readIntOption(rest, ["--limit"]);
+    // Cursor caps a page at 100 rows here too.
+    const limit = clampCursorCloudPageLimit(readIntOption(rest, ["--limit"]));
     const cursor = trimWhitespace(readValue(rest, ["--cursor", "--page"]));
     const result = await Agent.listRuns(agentId, { runtime: "cloud", apiKey: opts.apiKey, limit, cursor });
     if (opts.output === "text") return success(formatRunTable(result), opts);

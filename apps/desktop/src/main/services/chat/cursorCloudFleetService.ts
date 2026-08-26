@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/types/config";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import { repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
+import { CURSOR_CLOUD_MAX_PAGE_LIMIT } from "../../../shared/cursorCloudApiLimits";
 import type { createLaneService } from "../lanes/laneService";
 
 export type CursorCloudIngressStatusLike = {
@@ -30,7 +31,8 @@ type FleetServiceDeps = {
   listCursorCloudAgents: (args?: {
     includeArchived?: boolean;
     limit?: number;
-  }) => Promise<{ items: CursorCloudAgentSummary[] }>;
+    cursor?: string | null;
+  }) => Promise<{ items: CursorCloudAgentSummary[]; nextCursor?: string | null }>;
   listCursorCloudRuns: (args: {
     agentId: string;
     limit?: number;
@@ -51,6 +53,9 @@ type FleetServiceDeps = {
 };
 
 const ENRICH_CONCURRENCY = 4;
+/** Total agent rows one fleet read walks, across as many Cursor pages as it takes. */
+const FLEET_MAX_AGENTS = 200;
+const FLEET_DEFAULT_AGENTS = 100;
 const ORIGIN_CACHE_TTL_MS = 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -147,6 +152,34 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
     }
   };
 
+  /**
+   * List agents in Cursor-sized pages until `total` rows arrive.
+   *
+   * Cursor rejects a page larger than 100 with a validation error, so a caller
+   * that wants more rows gets several pages instead of one oversized request.
+   * The loop stops at the requested total, at the last page, or at a repeated
+   * cursor, so a misbehaving server can never spin it forever.
+   */
+  const listAgentsPaged = async (total: number): Promise<CursorCloudAgentSummary[]> => {
+    const wanted = Math.max(1, Math.floor(total));
+    const items: CursorCloudAgentSummary[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | null = null;
+    while (items.length < wanted) {
+      const page = await deps.listCursorCloudAgents({
+        includeArchived: true,
+        limit: Math.min(wanted - items.length, CURSOR_CLOUD_MAX_PAGE_LIMIT),
+        ...(cursor ? { cursor } : {}),
+      });
+      items.push(...page.items);
+      const next = page.nextCursor?.trim() || null;
+      if (!next || page.items.length === 0 || seenCursors.has(next)) break;
+      seenCursors.add(next);
+      cursor = next;
+    }
+    return items.length > wanted ? items.slice(0, wanted) : items;
+  };
+
   const buildEntries = async (args: {
     includeArchived: boolean;
     limit: number;
@@ -181,15 +214,12 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
       laneById.set(lane.id, lane);
     }
 
-    // One page is the fleet for an honest project view. Callers can raise
-    // `limit`; unbounded pagination would silently turn a refresh into a
-    // long API crawl.
-    const listed = await deps.listCursorCloudAgents({
-      includeArchived: true,
-      limit: args.limit,
-    });
+    // `limit` is a total row budget, not a page size: the crawl walks
+    // Cursor-sized pages up to that budget. The budget stays bounded so a
+    // refresh never turns into a long API crawl.
+    const listed = await listAgentsPaged(args.limit);
 
-    const scoped = listed.items
+    const scoped = listed
       .map((agent): { agent: CursorCloudAgentSummary; matchedBy: CursorCloudFleetEntry["matchedBy"] } | null => {
         const link = linkByAgentId.get(agent.agentId) ?? null;
         const repoHit = Boolean(originKey)
@@ -285,7 +315,7 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
   }): Promise<CursorCloudFleetResult> => {
     const built = await buildEntries({
       includeArchived: args?.includeArchived !== false,
-      limit: Math.min(Math.max(args?.limit ?? 100, 1), 200),
+      limit: Math.min(Math.max(args?.limit ?? FLEET_DEFAULT_AGENTS, 1), FLEET_MAX_AGENTS),
     });
     return { ...built, fetchedAt: new Date().toISOString() };
   };
@@ -356,8 +386,8 @@ export function createCursorCloudFleetService(deps: FleetServiceDeps) {
    * "could not be found" just because the account has many agents.
    */
   const findAgentById = async (id: string): Promise<CursorCloudAgentSummary | null> => {
-    const listed = await deps.listCursorCloudAgents({ includeArchived: true, limit: 200 });
-    const found = listed.items.find((entry) => entry.agentId === id);
+    const listed = await listAgentsPaged(FLEET_MAX_AGENTS);
+    const found = listed.find((entry) => entry.agentId === id);
     if (found) return found;
     if (!deps.getCursorCloudAgent) return null;
     try {

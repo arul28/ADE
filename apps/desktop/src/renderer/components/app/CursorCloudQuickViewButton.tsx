@@ -168,22 +168,28 @@ export function CursorCloudQuickViewButton() {
         aria-expanded={open}
         title="Cursor Cloud agents"
         data-cursor-cloud-button="true"
-        className="relative inline-flex h-[20px] w-[20px] items-center justify-center rounded-md transition-[background-color,color,box-shadow] duration-150 hover:bg-white/[0.08]"
+        className="relative inline-flex h-7 w-7 items-center justify-center rounded-md transition-[background-color,color] duration-150 hover:bg-white/[0.08]"
         style={{
           WebkitAppRegion: "no-drag",
           color: open ? "#C4B5FD" : "rgba(255,255,255,0.55)",
         } as React.CSSProperties}
         onClick={() => setOpen((current) => !current)}
       >
-        <Cursor.Avatar size={13} />
-        {unreadFinished > 0 ? (
-          <span
-            className="absolute -right-1 -top-1 grid h-[13px] min-w-[13px] place-items-center rounded-full px-[3px] font-mono text-[8px] font-bold leading-none text-white"
-            style={{ background: CURSOR_BADGE_VIOLET, boxShadow: "0 0 6px rgba(167,139,250,0.55)" }}
-          >
-            {unreadFinished > 9 ? "9+" : unreadFinished}
-          </span>
-        ) : null}
+        {/*
+         * Bare glyph, no chrome box: the badge anchors to the mark itself so
+         * it stays on the corner while the button keeps a 28px hit target.
+         */}
+        <span className="relative inline-flex">
+          <Cursor size={17} />
+          {unreadFinished > 0 ? (
+            <span
+              className="absolute -right-1 -top-1 grid h-[13px] min-w-[13px] place-items-center rounded-full px-[3px] font-mono text-[8px] font-bold leading-none text-white"
+              style={{ background: CURSOR_BADGE_VIOLET, boxShadow: "0 0 6px rgba(167,139,250,0.55)" }}
+            >
+              {unreadFinished > 9 ? "9+" : unreadFinished}
+            </span>
+          ) : null}
+        </span>
       </button>
       {open ? createPortal(
         <CursorCloudFleetModal
