@@ -35,6 +35,12 @@ import {
   WORK_LANE_SORT_MODES,
   type WorkLaneSortMode,
 } from "./workLaneOrder";
+import {
+  applySharedBranchAdjacency,
+  consecutiveSharedBranchRuns,
+  inboxIdsKeptForSharedBranch,
+  sharedBranchClusterKey,
+} from "./workLaneBranchClusters";
 import { useWorkLaneReorder } from "./useWorkLaneReorder";
 import {
   EMPTY_WORK_SESSION_FILTERS,
@@ -110,6 +116,8 @@ const BULK_DESTRUCTIVE_BUTTON_CLASS =
  */
 const GROUP_STACK_CLASS = "flex flex-col gap-[18px]";
 const ROW_STACK_CLASS = "flex flex-col gap-1";
+/** Hairline around two-or-more worktree lanes that share a feature branch. */
+const SHARED_BRANCH_CLUSTER_CLASS = "rounded-lg border border-dashed border-white/[0.18] py-1";
 /**
  * A card's hover fill bleeds past the pane's gutter so the row reaches the edge;
  * it defaults to 12px, which is the by-lane inset (scroll `px-1` + stack `px-2`).
@@ -259,6 +267,54 @@ type ForeignLaneEntry = {
   quiet: ReturnType<typeof partitionQuietSessions>;
   shelf: "snoozed" | "settled" | null;
 };
+
+type ClusterableLaneItem =
+  | { id: string; kind: "local"; lane: LaneSummary }
+  | { id: string; kind: "foreign"; entry: ForeignLaneEntry };
+
+function clusterKeyForLaneItem(item: ClusterableLaneItem): string | null {
+  switch (item.kind) {
+    case "local":
+      return sharedBranchClusterKey({ branchRef: item.lane.branchRef, laneType: item.lane.laneType });
+    case "foreign":
+      return sharedBranchClusterKey({
+        branchRef: item.entry.row.lane.branchRef,
+        laneType: item.entry.row.lane.laneType,
+      });
+    default: {
+      const _exhaustive: never = item;
+      return _exhaustive;
+    }
+  }
+}
+
+function renderSharedBranchClusters(
+  items: { id: string; clusterKey: string | null; node: React.ReactNode }[],
+  innerStackClass: string,
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  for (const run of consecutiveSharedBranchRuns(items)) {
+    const first = run[0];
+    if (!first) continue;
+    if (run.length === 1 || !first.clusterKey) {
+      nodes.push(<React.Fragment key={first.id}>{first.node}</React.Fragment>);
+      continue;
+    }
+    nodes.push(
+      <div
+        key={`shared-branch:${first.clusterKey}:${run.map((item) => item.id).join("|")}`}
+        className={cn(innerStackClass, SHARED_BRANCH_CLUSTER_CLASS)}
+        data-testid="shared-branch-cluster"
+        data-branch-cluster={first.clusterKey}
+      >
+        {run.map((item) => (
+          <React.Fragment key={item.id}>{item.node}</React.Fragment>
+        ))}
+      </div>,
+    );
+  }
+  return nodes;
+}
 
 function partitionQuietSessions(sessions: readonly TerminalSessionSummary[]): {
   active: TerminalSessionSummary[];
@@ -2238,6 +2294,22 @@ export const SessionListPane = React.memo(function SessionListPane({
   // "No sessions" must not claim an empty machine when another machine is busy.
   const hasForeignSessions = visibleForeignRows.length > 0;
 
+  const sharedBranchInboxKeepIds = inboxIdsKeptForSharedBranch([
+    ...orderedLanes.map((lane) => ({
+      id: lane.id,
+      clusterKey: sharedBranchClusterKey({ branchRef: lane.branchRef, laneType: lane.laneType }),
+      shelf: laneShelfFor(lane.id),
+    })),
+    ...foreignLaneShelving.map((entry) => ({
+      id: entry.compositeLaneId,
+      clusterKey: sharedBranchClusterKey({
+        branchRef: entry.row.lane.branchRef,
+        laneType: entry.row.lane.laneType,
+      }),
+      shelf: entry.shelf,
+    })),
+  ]);
+
   const renderLaneGroup = (lane: LaneSummary) => {
     const list = sessionsGroupedByLane?.get(lane.id) ?? [];
     const laneHandoffJobs = handoffJobsByLaneId.get(lane.id) ?? [];
@@ -2293,7 +2365,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     const suppressMachineChip = Boolean(machineMarker) && !headerless;
     // A lane already filed into a quiet shelf renders its rows flat: the shelf
     // states the tier once, for everything under it.
-    const inQuietShelf = laneShelfFor(lane.id) !== null;
+    const inQuietShelf = laneShelfFor(lane.id) !== null && !sharedBranchInboxKeepIds.has(lane.id);
     return (
       <StickyGroupHeader
         key={lane.id}
@@ -2526,12 +2598,26 @@ export const SessionListPane = React.memo(function SessionListPane({
    * join the same three destinations: the shelf is about how quiet the work is,
    * never about which machine it happens to be sitting on.
    */
-  const snoozedShelfLanes = orderedLanes.filter((lane) => laneShelfFor(lane.id) === "snoozed");
-  const settledShelfLanes = orderedLanes.filter((lane) => laneShelfFor(lane.id) === "settled");
-  const mainLanes = orderedLanes.filter((lane) => laneShelfFor(lane.id) === null);
-  const mainForeignRows = foreignLaneShelving.filter((entry) => entry.shelf === null);
-  const snoozedShelfForeignRows = foreignLaneShelving.filter((entry) => entry.shelf === "snoozed");
-  const settledShelfForeignRows = foreignLaneShelving.filter((entry) => entry.shelf === "settled");
+  const snoozedShelfLanes = orderedLanes.filter((lane) => (
+    laneShelfFor(lane.id) === "snoozed" && !sharedBranchInboxKeepIds.has(lane.id)
+  ));
+  const settledShelfLanes = orderedLanes.filter((lane) => (
+    laneShelfFor(lane.id) === "settled" && !sharedBranchInboxKeepIds.has(lane.id)
+  ));
+  const mainLanes = orderedLanes.filter((lane) => (
+    laneShelfFor(lane.id) === null || sharedBranchInboxKeepIds.has(lane.id)
+  ));
+  const mainForeignRows = foreignLaneShelving
+    .filter((entry) => entry.shelf === null || sharedBranchInboxKeepIds.has(entry.compositeLaneId))
+    .map((entry) => (
+      sharedBranchInboxKeepIds.has(entry.compositeLaneId) ? { ...entry, shelf: null } : entry
+    ));
+  const snoozedShelfForeignRows = foreignLaneShelving.filter((entry) => (
+    entry.shelf === "snoozed" && !sharedBranchInboxKeepIds.has(entry.compositeLaneId)
+  ));
+  const settledShelfForeignRows = foreignLaneShelving.filter((entry) => (
+    entry.shelf === "settled" && !sharedBranchInboxKeepIds.has(entry.compositeLaneId)
+  ));
   // A lane filtered down to nothing renders nothing, so it must not inflate the
   // shelf's count either. Foreign rows need no such guard: `visibleForeignRows`
   // has already dropped any row the filters emptied out.
@@ -2564,12 +2650,58 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 
+  const clusterLaneItems = (
+    localLanes: LaneSummary[],
+    foreignEntries: ForeignLaneEntry[],
+  ) => applySharedBranchAdjacency(
+    [
+      ...localLanes.map((lane): ClusterableLaneItem => ({ id: lane.id, kind: "local", lane })),
+      ...foreignEntries.map((entry): ClusterableLaneItem => ({
+        id: entry.compositeLaneId,
+        kind: "foreign",
+        entry,
+      })),
+    ],
+    clusterKeyForLaneItem,
+  ).map((entry) => {
+    switch (entry.item.kind) {
+      case "local":
+        return {
+          id: entry.item.id,
+          clusterKey: entry.clusterKey,
+          node: renderLaneGroup(entry.item.lane),
+        };
+      case "foreign":
+        return {
+          id: entry.item.id,
+          clusterKey: entry.clusterKey,
+          node: renderForeignLaneGroup(entry.item.entry),
+        };
+      default: {
+        const _exhaustive: never = entry.item;
+        return _exhaustive;
+      }
+    }
+  });
+
+  const clusteredShelfItems = (
+    localLanes: LaneSummary[],
+    foreignEntries: ForeignLaneEntry[],
+  ) => clusterLaneItems(localLanes, foreignEntries).map((item) => ({
+    ...item,
+    node: shelfRow(
+      item.id,
+      isShelfRowExpanded(item.id, headerlessLaneIds.has(item.id)),
+      item.node,
+    ),
+  }));
+
   const byLaneList = (
     // `pb-2` matches the status/time stacks: the quiet zone closes this column,
     // so any extra bottom padding reads as dead space under the last shelf row
     // rather than as the deliberate breathing room above the footer rule.
     <div className={cn(GROUP_STACK_CLASS, SESSION_LIST_BLEED_CLASS, "px-1 pb-2")}>
-      {mainLanes.map(renderLaneGroup)}
+      {renderSharedBranchClusters(clusterLaneItems(mainLanes, mainForeignRows), GROUP_STACK_CLASS)}
       {missingLaneSessionGroups.map(([laneId, list]) => {
         const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const collapsed = workCollapsedLaneIds.includes(laneId);
@@ -2639,7 +2771,6 @@ export const SessionListPane = React.memo(function SessionListPane({
           </StickyGroupHeader>
         );
       })}
-      {mainForeignRows.map(renderForeignLaneGroup)}
       {/* The two shelves close the column, hidden-for-now above done, inside the
           quiet zone's single heavier rule. A demoted lane keeps its group — a
           quiet header, or none at all for a singleton — so it is filed, not
@@ -2663,23 +2794,13 @@ export const SessionListPane = React.memo(function SessionListPane({
             >
               {/* Row rhythm, not group rhythm — see `SHELF_BODY_STACK_CLASS`;
                   a collapsed shelved lane is a one-line row and only an
-                  expanded one earns the group gap. Local lanes first, then
-                  cross-machine ones — the shelf is one list, but "here" still
-                  reads before "elsewhere". */}
+                  expanded one earns the group gap. Same-branch lanes still
+                  sit together; otherwise local still reads before foreign. */}
               <div className={SHELF_BODY_STACK_CLASS} data-testid="shelf-body-snoozed">
-                {snoozedShelfLanes.map((lane) => shelfRow(
-                  lane.id,
-                  isShelfRowExpanded(lane.id, headerlessLaneIds.has(lane.id)),
-                  renderLaneGroup(lane),
-                ))}
-                {snoozedShelfForeignRows.map((entry) => shelfRow(
-                  entry.compositeLaneId,
-                  isShelfRowExpanded(
-                    entry.compositeLaneId,
-                    headerlessLaneIds.has(entry.compositeLaneId),
-                  ),
-                  renderForeignLaneGroup(entry),
-                ))}
+                {renderSharedBranchClusters(
+                  clusteredShelfItems(snoozedShelfLanes, snoozedShelfForeignRows),
+                  SHELF_BODY_STACK_CLASS,
+                )}
               </div>
             </StickyGroupHeader>
             <StickyGroupHeader
@@ -2694,19 +2815,10 @@ export const SessionListPane = React.memo(function SessionListPane({
               onToggleCollapsed={() => toggleWorkSectionCollapsed(quietShelfOpenMarker("lane-shelf:settled"))}
             >
               <div className={SHELF_BODY_STACK_CLASS} data-testid="shelf-body-settled">
-                {settledShelfLanes.map((lane) => shelfRow(
-                  lane.id,
-                  isShelfRowExpanded(lane.id, headerlessLaneIds.has(lane.id)),
-                  renderLaneGroup(lane),
-                ))}
-                {settledShelfForeignRows.map((entry) => shelfRow(
-                  entry.compositeLaneId,
-                  isShelfRowExpanded(
-                    entry.compositeLaneId,
-                    headerlessLaneIds.has(entry.compositeLaneId),
-                  ),
-                  renderForeignLaneGroup(entry),
-                ))}
+                {renderSharedBranchClusters(
+                  clusteredShelfItems(settledShelfLanes, settledShelfForeignRows),
+                  SHELF_BODY_STACK_CLASS,
+                )}
               </div>
             </StickyGroupHeader>
           </>

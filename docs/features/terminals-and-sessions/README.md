@@ -744,6 +744,12 @@ Renderer surfaces:
   ("Tool context insertion is not available for chats on another machine."),
   because it travels as a DOM window event the chat pane consumes and that
   path carries no machine.
+- `apps/desktop/src/renderer/components/terminals/workLaneBranchClusters.ts` —
+  same-branch adjacency for the Work by-lane list: normalize `branchRef`, skip
+  primaries and `main`/`master`, pull later same-branch lanes (including
+  cross-machine) next to the first, keep a quiet sibling in the inbox when the
+  cluster still has live work, and emit consecutive runs so the pane can wrap
+  two-or-more groups in a dashed hairline.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter, and two quiet tails: Snoozed and
@@ -794,7 +800,14 @@ Renderer surfaces:
   have sessions, after the same search and lane filter the local list applies, so
   the union stays "work in flight" rather than an inventory of every lane
   everywhere; the empty state accounts for them, so "No sessions" cannot claim an
-  empty machine while another is busy. Foreign lanes use the same active /
+  empty machine while another is busy. The by-lane list still groups by lane
+  name. When two or more non-primary worktree lanes share a feature branch
+  (normalized `branchRef`, excluding `main`/`master`), they are parked next to
+  each other and wrapped in a dashed hairline so the uncommon same-branch /
+  two-machine case is visible without reorganizing the rest of the column. A
+  quiet sibling stays in the inbox when the other lane in that cluster still
+  has live work, instead of filing to Snoozed/Settled alone. Primaries never
+  join a cluster — every machine has one, usually on `main`. Foreign lanes use the same active /
   snoozed / settled partition, collapsed-by-default fully quiet header, quiet
   counts, and nested quiet-tail renderer as local lanes. Their persistence keys
   include the owning machine id (`<machineId>:<laneId>`), and an explicit
