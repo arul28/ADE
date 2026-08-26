@@ -3192,7 +3192,25 @@ extension AgentChatEvent {
       )
     case "system_notice":
       let eventTurnId = try container.decodeIfPresent(String.self, forKey: .turnId)
-      if let completion = try container.decodeIfPresent(AgentChatSpawnCompletionContainer.self, forKey: .detail)?.spawnCompletion,
+      // Probe `detail` for a spawn completion WITHOUT letting the probe throw.
+      // The host declares `detail?: string | AgentChatNoticeDetail`
+      // (apps/desktop/src/shared/types/chat.ts), and a plain-string detail is
+      // common — every `provider_health` notice carries one. Decoding a string
+      // as a keyed container raises `typeMismatch`, and a thrown event is
+      // dropped whole: `ADELossyArray` skips the element and
+      // `syncDecodeChatEventEnvelope` returns nil. The notice then never
+      // renders on iOS even though the kind is fully supported. Only an object
+      // detail can carry a spawn completion, so a failed probe means "not one".
+      // The replay path already treats it this way — see
+      // `workSpawnCompletionEvent` in WorkTranscriptParser.swift.
+      // `decode`, not `decodeIfPresent`: a missing key throws `keyNotFound`,
+      // which `try?` turns into the same nil the optional-of-optional flattening
+      // produced. One level of optionality, identical behaviour.
+      let detailSpawnCompletion = (try? container.decode(
+        AgentChatSpawnCompletionContainer.self,
+        forKey: .detail
+      ))?.spawnCompletion
+      if let completion = detailSpawnCompletion,
          completion.spawnKind == .subagent {
         self = completion.event(fallbackTurnId: eventTurnId)
       } else {

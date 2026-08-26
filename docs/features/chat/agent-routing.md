@@ -644,9 +644,23 @@ an index signature, so a misspelled key compiles and silently fails to apply
 - **`full-auto` states `read: "allow"` and `task: "allow"`.** Most ungated keys
   resolve to `allow` from OpenCode's base `*` rule, but `read` does not: the base
   ruleset asks before reading `*.env` / `*.env.*`, so full access still prompted.
-- **`external_directory` stays `ask` even in `full-auto`.** That boundary is
-  ADE's lane worktree, not a permission tier the user picked — the same reason
-  the system prompt confines edits to the lane.
+- **No ADE ruleset states `external_directory` at all.** The boundary itself
+  still holds — it is ADE's lane worktree, not a permission tier the user picked,
+  the same reason the system prompt confines edits to the lane — but omitting the
+  key is how ADE gets it. OpenCode's own default for the key is
+  `{"*": "ask", <tmp>: "allow", <skill dirs>: "allow", <reference dirs>: "allow"}`.
+  A bare string expands to a single `{pattern: "*"}` rule, an agent block's rules
+  are appended *after* the defaults, and lookup is a `findLast` over the merged
+  list — so a bare value wins for every path and silently revokes OpenCode's
+  access to its own temp, skill, and reference directories. That is true of
+  `"deny"` as much as `"ask"`, which is why `ade-plan` and `ade-helper` drop the
+  key too. That does loosen them: both used to hard-deny every outside-worktree
+  path and now ask for one. Each ask has an answer, which is what makes it
+  acceptable — plan raises an approval card the user decides, and a helper ask is
+  rejected on arrival by the `permission.asked` responder in
+  `runOpenCodeTextPrompt`, because a one-shot prompt has no UI and an unanswered
+  ask would hang it until the caller aborts. The rule binds all four rulesets and
+  is pinned by the test "never states external_directory on any ADE ruleset".
 
 ### Pi
 
