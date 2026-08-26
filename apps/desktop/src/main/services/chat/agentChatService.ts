@@ -17686,13 +17686,15 @@ export function createAgentChatService(args: {
       runtime.warmupDone = null;
       // Query is already null, so settle every visible background/native task
       // without trying provider stopTask on the dead control channel.
-      void stopActiveClaudeSubagents(
-        managed,
+      void clearClaudeSubagentStartIdsAfterSettlement(
         runtime,
-        runtime.activeTurnId ?? undefined,
-        "The Claude session ended before this task reported completion.",
+        stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          runtime.activeTurnId ?? undefined,
+          "The Claude session ended before this task reported completion.",
+        ),
       );
-      runtime.emittedSubagentStartIds.clear();
       runtime.taskToolInputByToolUseId.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
@@ -19399,6 +19401,22 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Settlement contract when Claude rejects the plan quota mid-idle-turn: the
+   * rejected quota cannot run queued steers, a bare query reset leaves the open
+   * idle turn wedged busy forever (no reader restart, no finalization), and
+   * only finishing the turn lands the chat idle — and forkable — again.
+   */
+  const settleClaudeQuotaRejectedIdleTurn = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    state: ClaudeIdleTurnState,
+  ): Promise<void> => {
+    cancelQueuedSteers(managed, runtime, "interrupted");
+    await resetClaudeQuerySession(managed, runtime, "session_reset");
+    await finishClaudeIdleTurn(managed, runtime, state, "interrupted");
+  };
+
   const handleClaudeIdleTaskMessage = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -19999,7 +20017,7 @@ export function createAgentChatService(args: {
       if (classified.kind === "ignore") return;
       if (classified.kind === "rejected") {
         noteClaudeSessionQuota(managed, classified.snapshot, state.turnId);
-        void resetClaudeQuerySession(managed, runtime, "session_reset");
+        await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
         return;
       }
       if (managed.claudeRateLimitWarningEmitted) return;
@@ -20055,8 +20073,10 @@ export function createAgentChatService(args: {
           const text = typeof block.text === "string" ? block.text : "";
           if (isClaudeSessionQuotaText(text)) {
             noteClaudeSessionQuota(managed, snapshotFromClaudeSessionQuotaText(text), turnId);
-            void resetClaudeQuerySession(managed, runtime, "session_reset");
-            continue;
+            await settleClaudeQuotaRejectedIdleTurn(managed, runtime, state);
+            // The turn just settled; later blocks of this message belong to a
+            // finalized turn and must not append to it.
+            break;
           }
           const emittedRecord = providerMessageId && !resumedFromIncompleteThinking
             ? claudeEmittedTextRecord(runtime, providerMessageId)
@@ -25666,6 +25686,25 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Clear the dedupe-gate ids owned by a torn-down query, but only after its
+   * settlement pass finishes: settlement emissions gate on these ids, so an
+   * earlier synchronous clear silently dropped every stopped subagent_result.
+   * Deleting the snapshot (not the whole set) keeps ids registered by a newer
+   * query generation — started while a live-query settlement was still
+   * stopping tasks — intact.
+   */
+  const clearClaudeSubagentStartIdsAfterSettlement = (
+    runtime: ClaudeRuntime,
+    settlement: Promise<void>,
+  ): Promise<void> => {
+    const staleIds = [...runtime.emittedSubagentStartIds];
+    const removeStale = () => {
+      for (const id of staleIds) runtime.emittedSubagentStartIds.delete(id);
+    };
+    return settlement.then(removeStale, removeStale);
+  };
+
+  /**
    * Emit one workflow-agent transition (from claudeWorkflowProgress.ts) as
    * the matching legacy `subagent_*` event so Workflow runs flow through the
    * exact snapshot folds, panel, and TUI pane the Task tool already uses.
@@ -30231,11 +30270,14 @@ export function createAgentChatService(args: {
     // arrive on THIS query, so settle background shells, native subagents, and
     // workflow agents before clearing their tracking maps. Query is already
     // null, so this performs no provider stopTask calls.
-    void stopActiveClaudeSubagents(
-      managed,
+    void clearClaudeSubagentStartIdsAfterSettlement(
       runtime,
-      runtime.activeTurnId ?? undefined,
-      "The Claude session restarted before this task reported completion.",
+      stopActiveClaudeSubagents(
+        managed,
+        runtime,
+        runtime.activeTurnId ?? undefined,
+        "The Claude session restarted before this task reported completion.",
+      ),
     );
     if (hadOpenBackgroundTasks) {
       emitChatEvent(managed, {
@@ -30246,7 +30288,7 @@ export function createAgentChatService(args: {
     }
     runtime.scheduledWorkKindById.clear();
     runtime.scheduledWorkSignatures.clear();
-    runtime.emittedSubagentStartIds.clear();
+    // emittedSubagentStartIds is cleared by the settlement chain above.
     resetClaudeProcessBackgroundLevel(runtime);
     runtime.seenBackgroundTaskIds.clear();
     runtime.stoppingBackgroundTaskIds.clear();
@@ -31083,7 +31125,7 @@ export function createAgentChatService(args: {
 
   const terminalizeUnsettledClaudeParentTurn = (
     managed: ManagedChatSession,
-    reason: "restart" | "idle_interrupt",
+    reason: "restart" | "idle_interrupt" | "handoff_recovery",
     candidate?: UnsettledParentTurn | null,
   ): string | null => {
     const unsettled = candidate === undefined ? findUnsettledParentTurn(managed) : candidate;
@@ -32326,6 +32368,66 @@ export function createAgentChatService(args: {
   const createSession = async (args: AgentChatCreateArgs): Promise<AgentChatSession> =>
     createSessionInternal(args);
 
+  /**
+   * Escape hatch for a claude chat wedged mid-turn with no live query — the
+   * signature a quota session-reset (or any dead query) leaves behind when the
+   * turn was never finalized: busy/activeTurnId stuck or a transcript turn
+   * with no terminal pair, fork refused forever. The quota card explicitly
+   * advertises "Send again after reset, or fork this thread", so settle the
+   * dead run locally instead of refusing the handoff. Requires the live quota
+   * card as proof, and skips runtimes still spawning or holding a live query,
+   * so genuinely streaming chats are never touched.
+   */
+  const recoverWedgedClaudeSessionForHandoff = async (managed: ManagedChatSession): Promise<void> => {
+    const runtime = managed.runtime;
+    if (runtime && runtime.kind !== "claude") return;
+    if (runtime?.query || runtime?.queryStartPromise) return;
+    if (!latestQuotaCardIsLive(managed)) return;
+    const transcriptTurnActive = deriveTranscriptTurnActive(readTranscriptEnvelopes(managed));
+    if (!transcriptTurnActive && !(runtime?.busy || runtime?.activeTurnId)) return;
+    logger.warn("agent_chat.claude_wedged_runtime_recovered_for_handoff", {
+      sessionId: managed.session.id,
+      turnId: runtime?.activeTurnId ?? null,
+      busy: runtime?.busy ?? false,
+      transcriptTurnActive,
+      hadRuntime: Boolean(runtime),
+    });
+    if (runtime) {
+      const interruptedTurnId = runtime.activeTurnId;
+      runtime.interrupted = true;
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+      if (interruptedTurnId) {
+        emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId: interruptedTurnId });
+        emitChatEvent(managed, { type: "done", turnId: interruptedTurnId, status: "interrupted" });
+      }
+      // Approvals registered through canUseTool can only be answered on their
+      // now-dead query; settle them like teardown so the gate below passes.
+      for (const pending of runtime.approvals.values()) {
+        pending.resolve({ decision: "cancel" });
+      }
+      runtime.approvals.clear();
+      await clearClaudeSubagentStartIdsAfterSettlement(
+        runtime,
+        stopActiveClaudeSubagents(
+          managed,
+          runtime,
+          interruptedTurnId ?? undefined,
+          "This chat was handed off while Claude was stuck after a plan-limit reset.",
+        ),
+      );
+    }
+    terminalizeUnsettledClaudeParentTurn(managed, "handoff_recovery");
+    markSessionIdleWithFreshCache(managed);
+    persistChatState(managed);
+    // The handoff gate re-reads the transcript from disk; flush the queued
+    // settlement events so the just-terminalized turn is visible to it.
+    await Promise.all([
+      flushQueuedTranscriptWrite(managed.transcriptPath),
+      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`)),
+    ]);
+  };
+
   const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const sourceId = args.sourceSessionId.trim();
     const targetId = args.targetModelId.trim();
@@ -32345,6 +32447,8 @@ export function createAgentChatService(args: {
     if ((sourceSession.surface ?? managed.session.surface ?? "work") !== "work") {
       throw new Error("Chat handoff is only available for work chats.");
     }
+
+    await recoverWedgedClaudeSessionForHandoff(managed);
 
     ensureSessionIdleForHandoff(managed);
 
@@ -32895,6 +32999,9 @@ export function createAgentChatService(args: {
   };
 
   const requireCrossMachineSourceReady = async (managed: ManagedChatSession) => {
+    // Same wedge settlement as the local handoff: a quota-wedged source must
+    // not refuse the cross-machine send either.
+    await recoverWedgedClaudeSessionForHandoff(managed);
     ensureSessionIdleForHandoff(managed);
     const lane = await laneService.getSummary(managed.session.laneId, { includeStatus: true });
     if (!lane) throw new Error("The source lane could not be loaded.");

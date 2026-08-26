@@ -9555,6 +9555,231 @@ describe("createAgentChatService", () => {
       expect(close.mock.calls.length).toBeGreaterThan(0);
     });
 
+    it("settles the idle turn, its subagents, and stays forkable when the idle reader hits a quota rejection", async () => {
+      // Regression (Versic 21559791): a plan-limit rejection received by the
+      // idle reader reset the query but never finalized the open idle turn —
+      // busy/activeTurnId stayed set for two hours and every fork attempt was
+      // refused with "Wait for the current response to finish". The settlement
+      // pass also raced the emittedSubagentStartIds clear, so the running
+      // subagent row never got its stopped result.
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          // Warmup.
+          yield { type: "system", subtype: "init", session_id: "sdk-quota-idle", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // The kick-off turn ends at its result. An unrecognized post-result
+        // frame stops the foreground pump, so the remaining frames — a
+        // background wake opening an idle turn, a native subagent row, then
+        // the plan-limit rejection — are consumed by the idle reader. That is
+        // the exact shape that wedged Versic session 21559791 for two hours.
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        yield { type: "mystery_unrecognized_frame" };
+        yield {
+          type: "assistant",
+          session_id: "sdk-quota-idle",
+          message: {
+            id: "msg-idle-wake",
+            content: [{ type: "text", text: "Resuming background work." }],
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "sub-quota-1",
+          parent_tool_use_id: "toolu_idle_sub_1",
+          subagent_type: "general-purpose",
+          description: "Root-cause bug 12 disk twins",
+        };
+        yield {
+          type: "rate_limit_event",
+          session_id: "sdk-quota-idle",
+          rate_limit_info: {
+            status: "rejected",
+            utilization: 1,
+            resetsAt: 1_770_000_000,
+          },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-quota-idle",
+      } as any);
+
+      const onEvent = vi.fn((event: AgentChatEventEnvelope) => { events.push(event); });
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "kick off background work",
+        timeoutMs: 15_000,
+      });
+
+      let doneInterrupted: AgentChatEventEnvelope | null = null;
+      await vi.waitFor(() => {
+        doneInterrupted = events.find(
+          (e): e is AgentChatEventEnvelope =>
+            e.event.type === "done" && e.event.status === "interrupted",
+        ) ?? null;
+        expect(doneInterrupted).toBeTruthy();
+      }, 3000);
+      // The interrupted turn is the idle turn, not the foreground kick-off.
+      expect(doneInterrupted!.event.turnId).toMatch(/^claude-idle-/);
+
+      const stoppedSubagent = events.find(
+        (e) => e.event.type === "subagent_result" && (e.event as any).taskId === "sub-quota-1",
+      );
+      expect(stoppedSubagent).toBeTruthy();
+      expect((stoppedSubagent!.event as any).status).toBe("stopped");
+      expect((stoppedSubagent!.event as any).finalSummary).toContain("restarted");
+
+      // With the turn settled, the advertised "fork this thread" escape
+      // hatch must actually work instead of refusing the handoff.
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+      const handoff = await service.handoffSession({
+        sourceSessionId: session.id,
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        mode: "brief",
+      });
+      expect(handoff.session.id).toBeTruthy();
+      expect(handoff.session.id).not.toBe(session.id);
+    });
+
+    it("recovers a persisted quota-wedged chat at handoff time when no runtime is attached", async () => {
+      // Post-restart shape of the same wedge: the transcript holds a started
+      // turn with no terminal pair plus a live quota card, and the fresh
+      // process has no runtime for the source yet. Fork must settle it rather
+      // than refuse forever.
+      vi.mocked(streamText).mockReturnValue({
+        fullStream: (async function* () {
+          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+        })(),
+      } as any);
+
+      const wedgedId = "wedged-quota-claude";
+      const { service, sessionService } = createService();
+      installRealTranscriptParser();
+      sessionService.create({
+        sessionId: wedgedId,
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        title: "Wedged claude chat",
+        startedAt: "2026-03-25T00:00:00.000Z",
+      });
+      writePersistedChatState(wedgedId, {
+        version: 2,
+        sessionId: wedgedId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        updatedAt: "2026-03-25T00:05:00.000Z",
+      });
+      writeTestTranscriptEnvelopes(wedgedId, [
+        {
+          sessionId: wedgedId,
+          timestamp: "2026-03-25T00:01:00.000Z",
+          event: { type: "user_message", text: "keep going", turnId: "turn-wedge" } as any,
+        },
+        {
+          sessionId: wedgedId,
+          timestamp: "2026-03-25T00:01:00.100Z",
+          event: { type: "status", turnStatus: "started", turnId: "turn-wedge" } as any,
+        },
+        {
+          sessionId: wedgedId,
+          timestamp: "2026-03-25T00:02:00.000Z",
+          event: {
+            type: "ade_card",
+            cardId: `claude-session-quota:${wedgedId}`,
+            variant: "claude_session_quota",
+            state: "live",
+            title: "Claude session limit · resets 10:20 PM",
+            subtitle: "Send again after reset, or fork this thread.",
+            fallbackText: "Claude session limit reached.",
+          } as any,
+        },
+      ]);
+
+      const handoff = await service.handoffSession({
+        sourceSessionId: wedgedId,
+        targetModelId: "opencode/openai/gpt-5.4-mini",
+        mode: "brief",
+      });
+      expect(handoff.session.id).toBeTruthy();
+
+      // The wedge was terminalized from the transcript: status + done pair.
+      const raw = fs.readFileSync(
+        path.join(tmpRoot, ".ade", "transcripts", "chat", `${wedgedId}.jsonl`),
+        "utf8",
+      );
+      const settledEvents = raw.trim().split("\n").map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+      expect(settledEvents.some((e) => e.event.type === "status" && (e.event as any).turnStatus === "interrupted")).toBe(true);
+      expect(settledEvents.some((e) => e.event.type === "done" && (e.event as any).turnId === "turn-wedge")).toBe(true);
+    });
+
+    it("still refuses handoff for a dead claude run when no live quota card proves the wedge", async () => {
+      const wedgedId = "wedged-no-quota-claude";
+      const { service, sessionService } = createService();
+      installRealTranscriptParser();
+      sessionService.create({
+        sessionId: wedgedId,
+        laneId: "lane-1",
+        toolType: "claude-chat",
+        title: "Wedged claude chat without quota proof",
+        startedAt: "2026-03-25T00:00:00.000Z",
+      });
+      writePersistedChatState(wedgedId, {
+        version: 2,
+        sessionId: wedgedId,
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        updatedAt: "2026-03-25T00:05:00.000Z",
+      });
+      writeTestTranscriptEnvelopes(wedgedId, [
+        {
+          sessionId: wedgedId,
+          timestamp: "2026-03-25T00:01:00.000Z",
+          event: { type: "user_message", text: "keep going", turnId: "turn-wedge" } as any,
+        },
+        {
+          sessionId: wedgedId,
+          timestamp: "2026-03-25T00:01:00.100Z",
+          event: { type: "status", turnStatus: "started", turnId: "turn-wedge" } as any,
+        },
+      ]);
+
+      const debugTranscriptPath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${wedgedId}.jsonl`);
+
+      await expect(
+        service.handoffSession({
+          sourceSessionId: wedgedId,
+          targetModelId: "opencode/openai/gpt-5.4-mini",
+          mode: "brief",
+        }),
+      ).rejects.toThrow("Wait for the current response to finish before handing off this chat.");
+      expect(fs.existsSync(debugTranscriptPath)).toBe(true);
+    });
+
     it("surfaces Claude SDK retry, refusal fallback, informational, memory, notification, mirror, and denial events", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
