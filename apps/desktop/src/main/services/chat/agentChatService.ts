@@ -47668,11 +47668,17 @@ export function createAgentChatService(args: {
     const itemId = randomUUID();
     const fallbackQuestions = inferQuestionsFromBody(args.body) ?? [{ id: "answer", header: "Question 1", question: args.body, allowsFreeform: true }];
     const requestedQuestions = args.questions?.length ? args.questions : fallbackQuestions;
+    // Callers guard the BODY against a missing question with `??`, which does
+    // nothing for a provider that sends `""` — and `questions` wins over the
+    // body below, so a blank question text used to survive all the way to a
+    // card with no prompt on it and a `description` of `""`. Normalized once,
+    // here, because every provider path funnels through this call.
+    const questionFallback = args.body.trim().length ? args.body.trim() : waitingOnYouDescription();
     const questions: PendingInputQuestion[] = requestedQuestions.map(
       (q, i) => ({
         id: q.id ?? `q_${i + 1}`,
         header: q.header?.trim().length ? q.header.trim() : `Question ${i + 1}`,
-        question: q.question.trim(),
+        question: q.question.trim().length ? q.question.trim() : questionFallback,
         ...(q.multiSelect === true ? { multiSelect: true } : {}),
         ...(q.allowsFreeform !== undefined ? { allowsFreeform: q.allowsFreeform } : { allowsFreeform: true }),
         ...(q.isSecret === true ? { isSecret: true } : {}),

@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
-import { isQuestionKind } from "../../../../desktop/src/shared/pendingInputAnswers";
+import { approvalRequestKind, isQuestionKind } from "../../../../desktop/src/shared/pendingInputAnswers";
 import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
@@ -2058,13 +2058,18 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     switch (event.type) {
       case "approval_request": {
-        // An approval and a question both arrive on this event, and only
-        // `requestKind` tells them apart. Without it every AskUserQuestion was
+        // An approval and a question both arrive on this event, and only the
+        // request kind tells them apart. Without it every AskUserQuestion was
         // published as `waiting_for_approval`, so the notch and the phone
         // offered Approve/Deny for something that wants prose — and the answer
-        // branch in the item builder was dead code. An event with no
-        // `requestKind` is an approval, which is what older hosts meant.
-        const isQuestion = isQuestionKind(event.requestKind);
+        // branch in the item builder was dead code.
+        //
+        // Resolved through the shared reader, not `event.requestKind` alone:
+        // the CLI talks to whatever host is installed, and one that predates
+        // the top-level field still carries the kind in `detail.request`. The
+        // TUI transcript reads it the same way. Neither present is an approval,
+        // which is what a host with no question support meant.
+        const isQuestion = isQuestionKind(approvalRequestKind(event));
         setRunPhase(run, isQuestion ? "waiting_for_input" : "waiting_for_approval");
         run.detail = event.description ?? run.detail;
         run.itemId = event.itemId || null;

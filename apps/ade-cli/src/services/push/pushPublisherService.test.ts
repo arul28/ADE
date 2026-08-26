@@ -3251,6 +3251,38 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("treats an embedded question kind as waiting_for_input", async () => {
+    // A host that predates the top-level `requestKind` still carries the kind
+    // in `detail.request` — the same place the TUI transcript reads it from.
+    // Reading only the top-level field published those questions as approvals,
+    // so the phone offered Approve/Deny for prose.
+    const { publisher, publish, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
+    await publisher.start();
+
+    emit({
+      sessionId: "s-embedded",
+      timestamp: "",
+      event: {
+        type: "approval_request",
+        itemId: "ask-legacy-1",
+        kind: "tool_call",
+        description: "Which database should the worker read from?",
+        detail: { request: { kind: "structured_question" } },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    expect(item.phase).toBe("needs_you");
+    expect(item.actions.map((action) => action.kind)).toEqual(["answer", "open"]);
+    // ...and the run is waiting for INPUT, with no Approve/Deny category on the
+    // notification: those buttons have nothing to do with a question.
+    const payload = publish.mock.calls.at(-1)![0];
+    expect(payload.liveActivity[0].contentState.runs[0].phase).toBe("waiting_for_input");
+    expect(payload.notifications[0].category ?? null).toBeNull();
+    publisher.dispose();
+  });
+
   it("does not let a scheduled wakeup hold a finished run open", async () => {
     const { publisher, emit } = makeHarness(device, undefined, { activityProtocol: 2 });
 

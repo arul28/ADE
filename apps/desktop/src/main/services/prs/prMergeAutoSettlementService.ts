@@ -185,9 +185,9 @@ export function createPrMergeAutoSettlementService(args: {
    *
    * A THROWN read is the one case that is not "no liveness": an unreachable
    * liveness source is not evidence the turn ended, so it counts as active and
-   * defers this poll. Teardown is not a backstop here — a `readActiveWork` that
-   * fails the same way returns `timedOutResidue` with no `abortedBy`, so the
-   * settle would go through unnoticed.
+   * defers this poll. Teardown fails the same way closed for a machine settle
+   * (a `readActiveWork` that times out aborts rather than files), so the two
+   * halves agree; this gate is still the one that keeps the deferral cheap.
    */
   const hasActiveChatTurn = async (sessionId: string): Promise<boolean> => {
     try {

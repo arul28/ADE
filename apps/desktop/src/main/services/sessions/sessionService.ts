@@ -919,7 +919,9 @@ export function createSessionService({
             })
             : null;
         } catch (error) {
-          // ONLY a teardown throw is `teardown_failed`. A persistence failure
+          // A teardown throw is `teardown_failed` (as is a first-read timeout
+          // inside teardown, which returns it as `abortedBy` — both mean "not
+          // stopped cleanly, safe to retry"). A persistence failure
           // below must not wear that label: a caller cannot tell "the work is
           // still running" from "the work stopped but the row did not save",
           // and the PR poller would retry a stop that already succeeded. Those

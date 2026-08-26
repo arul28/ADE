@@ -271,6 +271,25 @@ describe("session settle teardown", () => {
     }]);
   });
 
+  it("abandons a MACHINE settle when the liveness read times out", async () => {
+    const readActiveWork = vi.fn(() => new Promise<SessionActiveWork>(() => {}));
+    const { run, interrupt } = harness({
+      readActiveWork,
+      expireProviderCall: async () => {},
+    });
+
+    const outcome = await run("session-1", { isAborted: () => false, mayInterruptActiveTurn: false });
+
+    // The refusal above triggers on `before.active`, which only exists for a
+    // read that ANSWERED — so a hung host was the one way a poller filed a
+    // session over a running turn, consuming the merge that asked for it.
+    // Residue still describes what happened; `abortedBy` is what stops the file.
+    expect(interrupt).not.toHaveBeenCalled();
+    expect(outcome.abortedBy, "unknown liveness must not settle a machine settle").toBe("teardown_failed");
+    expect(outcome.confirmed).toBe(false);
+    expect(outcome.residue[0]?.reason).toBe("timeout");
+  });
+
   it("does not claim a clean teardown when the CONFIRMATION read times out", async () => {
     let call = 0;
     let armed = false;

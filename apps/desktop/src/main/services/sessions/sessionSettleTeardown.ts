@@ -242,7 +242,25 @@ export function createSessionSettleTeardown(
     });
 
     const first = await readWork();
-    if (!first.ok) return timedOutResidue();
+    if (!first.ok) {
+      // A read that never answered is not evidence the session is at rest, and
+      // the refusal below runs only on a read that DID answer — so without this
+      // a hung host is the one way a machine settle files a session over a
+      // running turn, silently consuming the merge that asked for it.
+      //
+      // A settle the user asked for still lands, with the timeout residue
+      // attached: that is the signed-off decision for an explicit request, and
+      // it is the same asymmetry `mayInterruptActiveTurn` already encodes. A
+      // machine settle gives up the pass instead; the poller retries once the
+      // host answers.
+      if (!ctx.mayInterruptActiveTurn) {
+        // The residue payload is informational for callers; `abortedBy` makes
+        // sessionService return before recording it (unlike the `turn_start`
+        // abort below, which returns none).
+        return { ...timedOutResidue(), abortedBy: "teardown_failed" };
+      }
+      return timedOutResidue();
+    }
     const before = first.value;
     // Nothing to stop, or a session this service does not own (a plain
     // terminal). Either way there is no work to lose and no residue to report.

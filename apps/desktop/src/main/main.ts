@@ -7728,6 +7728,20 @@ app.whenReady().then(async () => {
         itemId: resolved.item.id,
         error: error instanceof Error ? error.message : String(error),
       });
+      // The notch already closed the card on click, so the acknowledgement
+      // cannot ride on navigation succeeding: a failed open would leave the
+      // card gone locally with nothing filed, and the next snapshot would toast
+      // the same row again. `seen` and not `dismiss` — the work is still
+      // unhandled, it just is not news any more.
+      void sendAttentionNotchAcknowledge({
+        itemId: resolved.item.id,
+        mode: "seen",
+      }).catch((ackError: unknown) => {
+        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
+          itemId: resolved.item.id,
+          error: ackError instanceof Error ? ackError.message : String(ackError),
+        });
+      });
     });
   };
 

@@ -1287,20 +1287,32 @@ describe("prMergeAutoSettlementService", () => {
     }));
     // The persisted row of a chat holds `running` between turns on purpose. Any
     // gate that reads it never sees the turn end — that is the bug this pins.
-    const get = vi.fn(() => ({ id: "chat-owned", status: "running", runtimeState: "running" }));
+    //
+    // Wired as the REAL lookup rather than handed to `withSessionLookup`, which
+    // defines its own `get` over the spy — leaving the assertion below to
+    // measure a function nothing ever calls.
+    const get = vi.fn((sessionId: string) => ({
+      laneId: "lane-1",
+      id: sessionId,
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "running",
+      archivedAt: null,
+      settledAt: null,
+    }));
     let chatStatus: "active" | "idle" = "active";
     const getChatLiveness = vi.fn(async () => ({ status: chatStatus }));
     const debug = vi.fn();
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: withSessionLookup({
+      sessionService: {
         list: vi.fn(() => [
           { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
         ]),
         get,
         settleSessionsReportingAborts,
-      }) as any,
+      } as any,
       emitEvent,
       getChatLiveness: getChatLiveness as any,
       logger: { debug } as any,
@@ -1333,7 +1345,13 @@ describe("prMergeAutoSettlementService", () => {
     chatStatus = "idle";
     await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:02:00.000Z" });
     expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
-    expect(get, "chat liveness must not come from the persisted row").not.toHaveBeenCalled();
+    // One read per pass, and only to resolve the declared candidate: a gate
+    // that consulted the row for liveness would show up as an extra call here,
+    // and the row it would have read says `running` in both passes.
+    expect(
+      get.mock.calls.length,
+      "the row resolves candidates only, never liveness",
+    ).toBe(2);
     // ...and the deferred merge still announces itself when it finally lands.
     expect(emitEvent).toHaveBeenCalledWith(
       expect.objectContaining({ type: "pr-sessions-auto-settled", prNumber: 101 }),
@@ -1408,7 +1426,19 @@ describe("prMergeAutoSettlementService", () => {
     }));
     // The persisted row of a chat holds `running` between turns on purpose. Any
     // gate that reads it never sees the turn end — that is the bug this pins.
-    const get = vi.fn(() => ({ id: "chat-owned", status: "running", runtimeState: "running" }));
+    //
+    // Wired as the REAL lookup rather than handed to `withSessionLookup`, which
+    // defines its own `get` over the spy — leaving the assertion below to
+    // measure a function nothing ever calls.
+    const get = vi.fn((sessionId: string) => ({
+      laneId: "lane-1",
+      id: sessionId,
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "running",
+      archivedAt: null,
+      settledAt: null,
+    }));
     // Quiet when the pass begins, so the settle is attempted at all — the turn
     // starts underneath it, which is exactly the race this pins.
     let chatStatus: "active" | "idle" = "idle";
@@ -1416,13 +1446,13 @@ describe("prMergeAutoSettlementService", () => {
     const emitEvent = vi.fn();
     const service = createPrMergeAutoSettlementService({
       db: db as any,
-      sessionService: withSessionLookup({
+      sessionService: {
         list: vi.fn(() => [
           { laneId: "lane-1", id: "chat-owned", toolType: "codex-chat", archivedAt: null, settledAt: null },
         ]),
         get,
         settleSessionsReportingAborts,
-      }) as any,
+      } as any,
       emitEvent,
       getChatLiveness: getChatLiveness as any,
     });
@@ -1461,7 +1491,12 @@ describe("prMergeAutoSettlementService", () => {
       settleSessionsReportingAborts,
       "the merge must still be filed once the turn is genuinely over",
     ).toHaveBeenCalledTimes(2);
-    expect(get, "chat liveness must not come from the persisted row").not.toHaveBeenCalled();
+    // Three merged passes, one candidate lookup each: nothing read the row for
+    // liveness, and what it would have read said `running` throughout.
+    expect(
+      get.mock.calls.length,
+      "the row resolves candidates only, never liveness",
+    ).toBe(3);
   });
   it("settles a PR that was already merged when first seen, but announces nothing", async () => {
     // The machine-switch bug. Point the project tab at another machine and that
