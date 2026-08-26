@@ -773,8 +773,6 @@ type PersistedUserPreferences = {
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
-  onboardingEnabled: boolean;
-  didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
@@ -836,12 +834,10 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
     return {
       theme: coerceTheme(parsed.theme) ?? "dark",
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
-      // The help chips / detailed tooltips / did-you-know hints are onboarding
-      // aids that default OFF in the browser web client (clutter for an already
-      // oriented user), and ON on desktop. An explicit toggle is still honored.
+      // Detailed tooltips are an onboarding aid that defaults OFF in the browser
+      // web client (clutter for an already oriented user), and ON on desktop. An
+      // explicit toggle is still honored.
       smartTooltipsEnabled: parsed.smartTooltipsEnabled ?? !isWebClientMode(),
-      onboardingEnabled: parsed.onboardingEnabled ?? !isWebClientMode(),
-      didYouKnowEnabled: parsed.didYouKnowEnabled ?? !isWebClientMode(),
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       promptStashButtonEnabled: parsed.promptStashButtonEnabled !== false,
@@ -886,8 +882,6 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     theme,
     terminalPreferences,
     smartTooltipsEnabled,
-    onboardingEnabled: !isWebClientMode(),
-    didYouKnowEnabled: !isWebClientMode(),
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
     promptStashButtonEnabled: true,
@@ -918,8 +912,6 @@ function persistUserPreferencesFrom(state: {
   theme: ThemeId;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
-  onboardingEnabled: boolean;
-  didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
@@ -939,8 +931,6 @@ function persistUserPreferencesFrom(state: {
     theme: state.theme,
     terminalPreferences: state.terminalPreferences,
     smartTooltipsEnabled: state.smartTooltipsEnabled,
-    onboardingEnabled: state.onboardingEnabled,
-    didYouKnowEnabled: state.didYouKnowEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: state.promptStashButtonEnabled,
@@ -1113,8 +1103,6 @@ export type AppState = {
   terminalAttention: TerminalAttentionSnapshot;
   ctoAttention: CtoAttentionState;
   smartTooltipsEnabled: boolean;
-  onboardingEnabled: boolean;
-  didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
   promptStashButtonEnabled: boolean;
@@ -1265,8 +1253,6 @@ export type AppState = {
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
   setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
-  setOnboardingEnabled: (enabled: boolean) => void;
-  setDidYouKnowEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
   setPromptStashButtonEnabled: (enabled: boolean) => void;
@@ -1556,8 +1542,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
   ctoAttention: EMPTY_CTO_ATTENTION,
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
-  onboardingEnabled: initialUserPreferences.onboardingEnabled,
-  didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
   promptStashButtonEnabled: initialUserPreferences.promptStashButtonEnabled,
@@ -2053,16 +2037,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
       return { smartTooltipsEnabled: enabled };
-    }),
-  setOnboardingEnabled: (enabled) =>
-    set((prev) => {
-      persistUserPreferencesFrom({ ...prev, onboardingEnabled: enabled });
-      return { onboardingEnabled: enabled };
-    }),
-  setDidYouKnowEnabled: (enabled) =>
-    set((prev) => {
-      persistUserPreferencesFrom({ ...prev, didYouKnowEnabled: enabled });
-      return { didYouKnowEnabled: enabled };
     }),
   setLaunchPromptClipboardEnabled: (enabled) =>
     set((prev) => {
@@ -2950,8 +2924,6 @@ export function createProjectAppStore(
     chatChromeTint: rootState.chatChromeTint,
     chatShellGeometry: rootState.chatShellGeometry,
     smartTooltipsEnabled: rootState.smartTooltipsEnabled,
-    onboardingEnabled: rootState.onboardingEnabled,
-    didYouKnowEnabled: rootState.didYouKnowEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
     promptStashButtonEnabled: rootState.promptStashButtonEnabled,
@@ -2969,8 +2941,6 @@ export function createProjectAppStore(
     setChatShellGeometry: rootState.setChatShellGeometry,
     resetThemeAndChatFontDefaults: rootState.resetThemeAndChatFontDefaults,
     setSmartTooltipsEnabled: rootState.setSmartTooltipsEnabled,
-    setOnboardingEnabled: rootState.setOnboardingEnabled,
-    setDidYouKnowEnabled: rootState.setDidYouKnowEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
     setPromptStashButtonEnabled: rootState.setPromptStashButtonEnabled,

@@ -472,7 +472,6 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
-  OnboardingHelpState,
   OnboardingStatus,
   LaneGitHubIssue,
   LaneLinearIssue,
@@ -5019,16 +5018,6 @@ const adeBridge = {
     complete: async (): Promise<OnboardingStatus> =>
       callProjectRuntimeActionOr("onboarding", "complete", {}, () =>
         ipcRenderer.invoke(IPC.onboardingComplete),
-      ),
-    markGlossaryTermSeen: async (
-      termId: string,
-    ): Promise<OnboardingHelpState> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "markGlossaryTermSeen",
-        { arg: termId },
-        () =>
-          ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
       ),
   },
   automations: {

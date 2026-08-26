@@ -42,6 +42,7 @@ import { docs } from "../../onboarding/docsLinks";
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
+import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
 
 export { describeThisComputerMissing, reconnectNeedsFreshSignIn } from "./YourMacsCard";
@@ -262,28 +263,29 @@ export function SignInCard({
               }}
             >
               <span>Sign in to use ADE Relay</span>
-              <button
-                type="button"
-                aria-label="Learn about ADE Relay"
-                title="Learn about ADE Relay"
-                onClick={() => openExternalUrl(docs.adeRelay)}
-                style={{
-                  display: "inline-flex",
-                  width: 18,
-                  height: 18,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: 0,
-                  border: 0,
-                  borderRadius: "50%",
-                  background: "transparent",
-                  color: COLORS.textMuted,
-                  cursor: "pointer",
-                  WebkitAppRegion: "no-drag",
-                } as CSSProperties}
-              >
-                <Question size={13} weight="bold" />
-              </button>
+              <SmartTooltip content={{ label: "ADE Relay", description: "ADE's hosted relay pairs this machine with your account so phones and other Macs can reach it.", docUrl: docs.adeRelay }}>
+                <button
+                  type="button"
+                  aria-label="Learn about ADE Relay"
+                  onClick={() => openExternalUrl(docs.adeRelay)}
+                  style={{
+                    display: "inline-flex",
+                    width: 18,
+                    height: 18,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 0,
+                    border: 0,
+                    borderRadius: "50%",
+                    background: "transparent",
+                    color: COLORS.textMuted,
+                    cursor: "pointer",
+                    WebkitAppRegion: "no-drag",
+                  } as CSSProperties}
+                >
+                  <Question size={13} weight="bold" />
+                </button>
+              </SmartTooltip>
             </div>
           </div>
         )}
@@ -624,14 +626,16 @@ export function AccountPage() {
                 >
                   Connect GitHub
                 </button>
-                <button
-                  type="button"
-                  onClick={dismissRepoBridge}
-                  aria-label="Dismiss"
-                  style={{ ...outlineButton({ height: 26, width: 26, padding: 0 }), border: "none", background: "transparent", flexShrink: 0 }}
-                >
-                  <X size={13} weight="bold" />
-                </button>
+                <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion for this session." }}>
+                  <button
+                    type="button"
+                    onClick={dismissRepoBridge}
+                    aria-label="Dismiss"
+                    style={{ ...outlineButton({ height: 26, width: 26, padding: 0 }), border: "none", background: "transparent", flexShrink: 0 }}
+                  >
+                    <X size={13} weight="bold" />
+                  </button>
+                </SmartTooltip>
               </div>
             ) : null}
 

@@ -471,7 +471,6 @@ import type {
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
   OnboardingDetectionResult,
-  OnboardingHelpState,
   OnboardingStatus,
   LaneGitHubIssue,
   LaneLinearIssue,
@@ -6020,17 +6019,6 @@ export function registerIpc({
     }
     return ctx.onboardingService.complete();
   });
-
-  const emptyHelpState = (): OnboardingHelpState => ({ glossaryTermsSeen: [] });
-
-  ipcMain.handle(
-    IPC.onboardingMarkGlossaryTermSeen,
-    async (_event, arg: { termId: string }): Promise<OnboardingHelpState> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyHelpState();
-      return ctx.onboardingService.markGlossaryTermSeen(arg?.termId ?? "");
-    },
-  );
 
   const ensureAutomationContext = (): AppContextWith<"automationService"> => {
     const ctx = getCtx();

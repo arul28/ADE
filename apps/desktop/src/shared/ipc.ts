@@ -167,7 +167,6 @@ export const IPC = {
   onboardingDetectDefaults: "ade.onboarding.detectDefaults",
   onboardingSetDismissed: "ade.onboarding.setDismissed",
   onboardingComplete: "ade.onboarding.complete",
-  onboardingMarkGlossaryTermSeen: "ade.onboarding.markGlossaryTermSeen",
   lanesList: "ade.lanes.list",
   lanesListSnapshots: "ade.lanes.listSnapshots",
   lanesCreate: "ade.lanes.create",

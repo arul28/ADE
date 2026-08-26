@@ -695,10 +695,6 @@ export type OnboardingDetectionResult = {
   suggestedWorkflows: Array<{ path: string; kind: "github-actions" | "gitlab-ci" | "other" }>;
 };
 
-export type OnboardingHelpState = {
-  glossaryTermsSeen: string[];
-};
-
 export type KeybindingOverride = {
   id: string;
   binding: string;

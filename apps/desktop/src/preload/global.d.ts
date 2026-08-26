@@ -315,7 +315,6 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
-  OnboardingHelpState,
   OnboardingStatus,
   GitActionResult,
   GitBranchSummary,
@@ -1266,9 +1265,6 @@ declare global {
         detectDefaults: () => Promise<OnboardingDetectionResult>;
         setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
-        markGlossaryTermSeen: (
-          termId: string,
-        ) => Promise<OnboardingHelpState>;
       };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;
