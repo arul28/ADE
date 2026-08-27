@@ -10,7 +10,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import { pluginIcon } from "./pluginIcons";
+import { DEFAULT_PLUGIN_ICON, isPluginBrandIconName, pluginIcon } from "./pluginIcons";
 import { EmptyLine, InlineError, TONE_COLOR } from "./vocabularyPrimitives";
 import type { VocabRenderContext } from "./vocabularyPrimitives";
 import type {
@@ -111,7 +111,14 @@ export function VocabText({ node }: { node: VocabTextNode }) {
 
 export function VocabBadge({ node }: { node: VocabBadgeNode }) {
   const tone = node.tone ?? "neutral";
-  const Icon = node.icon ? pluginIcon(node.icon) : null;
+  // Brand tokens deliberately do NOT draw here, and this is a parity contract
+  // rather than a limitation of this file. The phone draws a badge glyph at 8pt
+  // through `ADEGlassChip`, and a vendor's mark at that size is a smudge, not a
+  // logo — so iOS degrades a `brand:` token to the chip's text-only form. A
+  // token that drew the Cursor mark here and nothing there would be exactly the
+  // one-manifest-two-pictures break the token list exists to prevent, so this
+  // side degrades with it.
+  const Icon = node.icon && !isPluginBrandIconName(node.icon) ? pluginIcon(node.icon) : null;
   return (
     <span style={inlineBadge(TONE_COLOR[tone], { gap: 5 })}>
       {Icon ? <Icon size={11} weight="regular" aria-hidden /> : null}
@@ -391,7 +398,11 @@ function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRe
   const [hovered, setHovered] = React.useState(false);
   const { pending, error, run } = useVocabActionRunner(context);
   const Icon = item.icon ? pluginIcon(item.icon) : null;
-  const BadgeIcon = item.badge?.icon ? pluginIcon(item.badge.icon) : null;
+  // Same 8pt chip as a standalone badge on the phone, so the same rule — see
+  // {@link VocabBadge}. The row's own `icon` is a full-size slot and keeps them.
+  const BadgeIcon = item.badge?.icon && !isPluginBrandIconName(item.badge.icon)
+    ? pluginIcon(item.badge.icon)
+    : null;
   const tone = item.tone ?? "neutral";
   const interactive = Boolean(item.onPress);
   const actions = item.actions ?? [];
@@ -929,7 +940,12 @@ export function VocabEmptyState({
   node: VocabEmptyStateNode;
   context: VocabRenderContext;
 }) {
-  const Icon = pluginIcon(node.icon);
+  // The hero mark of a whole empty page. iOS puts a symbol NAME through
+  // `ADEEmptyStateView` and falls a `brand:` token to the puzzle piece rather
+  // than blowing a vendor's logo up to hero size on a page that is about the
+  // panel being empty, not about whose plugin it is. Same answer here, so the
+  // two clients draw the same picture.
+  const Icon = isPluginBrandIconName(node.icon) ? DEFAULT_PLUGIN_ICON : pluginIcon(node.icon);
   return (
     <div
       style={{

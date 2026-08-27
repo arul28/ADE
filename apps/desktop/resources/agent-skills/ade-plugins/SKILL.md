@@ -144,6 +144,8 @@ Say which clients will draw the thing, in the same message as the placement. Two
 
   A brand token draws that vendor's real mark — the same one ADE already draws for the provider elsewhere — instead of a generic glyph. The set is closed and small on purpose: a vendor is only in it when every client already ships artwork for it, so there is no `brand:linear`, and there will be no new one without a logo on desktop AND iOS. `brand:anything-else` is not a special case; it is an unknown token and draws the puzzle piece like any other.
 
+  **Three slots do not honour a brand token, on every client alike.** A `badge` node, a list item's `badge`, and an `emptyState` node all degrade it — the badge chips to their text-only form, the empty state to the puzzle piece. A badge glyph draws at 8pt and an empty-state mark at hero size, and a vendor logo reads as a smudge at one and as branding-the-wrong-thing at the other. Name a generic token for those three and a brand token anywhere else.
+
   Read the live list from `PLUGIN_ICON_NAMES` in `apps/desktop/src/renderer/components/plugins/pluginIcons.tsx` — it is exported for this skill, and `PLUGIN_BRAND_ICON_NAMES` next to it is the brand half on its own. **Name a token and the picture cannot differ between clients**; name anything else and you get the puzzle piece, which is what a plugin looks like when it looks unfinished.
 
 ## Phase 2 — Build, install, verify

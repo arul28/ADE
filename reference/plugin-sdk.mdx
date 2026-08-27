@@ -99,6 +99,8 @@ Five of the tokens are **brand tokens**, for a plugin whose whole subject is one
 
 These draw the vendor's real mark — the same one ADE already draws for that provider in the chat header and the model picker — rather than a generic glyph. The set is small and closed on purpose: a vendor joins it only when every client already ships artwork for it. `brand:` is not a namespace you can extend; anything else after it is an unknown token and draws the puzzle piece.
 
+Three slots do not honour a brand token, on every client alike: a `badge` node, a list item's `badge`, and an `emptyState` node. A badge glyph draws at 8pt and an empty-state mark at hero size, so a vendor logo reads as a smudge at one and as branding the wrong thing at the other. Those slots degrade a brand token to their icon-less or puzzle-piece form. Name a generic token there and a brand token anywhere else.
+
 The live list is `PLUGIN_ICON_NAMES` in `apps/desktop/src/renderer/components/plugins/pluginIcons.tsx`, with `PLUGIN_BRAND_ICON_NAMES` beside it for the brand half.
 
 <Warning>

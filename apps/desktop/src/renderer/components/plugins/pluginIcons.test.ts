@@ -280,6 +280,28 @@ describe("brand icon tokens", () => {
     }
   });
 
+  /**
+   * The three slots where a brand token deliberately does NOT draw.
+   *
+   * `isPluginBrandIconName` is what those slots branch on, and it exists for
+   * exactly that. The phone draws a badge glyph at 8pt and the empty-state mark
+   * at hero size, and a vendor logo has no honest reading at either — so iOS
+   * degrades there, and desktop degrades with it. A token that drew the Cursor
+   * mark on one client and nothing on the other is the one-manifest-two-pictures
+   * break this whole token list exists to prevent.
+   */
+  it("is identifiable, so the slots that cannot honour it can degrade in step", () => {
+    for (const name of PLUGIN_BRAND_ICON_NAMES) {
+      expect(isPluginBrandIconName(name), name).toBe(true);
+      // Case and whitespace are normalised the same way `pluginIcon` does them,
+      // or a slot would honour `Brand:Cursor` while `pluginIcon` resolved it.
+      expect(isPluginBrandIconName(` ${name.toUpperCase()} `), name).toBe(true);
+    }
+    for (const name of ["cloud", "puzzle", "no-such-glyph", "", null, undefined]) {
+      expect(isPluginBrandIconName(name), String(name)).toBe(false);
+    }
+  });
+
   it("lets a manifest name one as its published identity", () => {
     const identity = pluginIdentity({ pluginId: "ade-cursor-cloud", icon: "brand:cursor" });
     expect(identity.Icon).toBe(pluginIcon("brand:cursor"));
