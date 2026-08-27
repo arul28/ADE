@@ -108,7 +108,16 @@ async function fetchJson(url) {
   return response.json();
 }
 
-async function fetchFeed(feed, readIds, fetchImpl = fetchJson) {
+/**
+ * One feed, as rows.
+ *
+ * `resolveRead` is asked for the read set only AFTER the story ids are known,
+ * and is handed exactly those ids. Reading the whole `read` collection instead
+ * would have to name a row limit, and `collections.list` silently clamps one to
+ * 1,000 — so a reader who has marked more than a thousand stories would start
+ * seeing the oldest of them as unread again. Asking by id has no such ceiling.
+ */
+async function fetchFeed(feed, resolveRead, fetchImpl = fetchJson) {
   const ids = await fetchImpl(`${HN_API}/${listPath(feed)}`);
   if (!Array.isArray(ids)) return [];
   const sliced = ids.slice(0, STORY_LIMIT);
@@ -122,9 +131,10 @@ async function fetchFeed(feed, readIds, fetchImpl = fetchJson) {
       return null;
     }
   });
+  const kept = items.filter(Boolean);
+  const readIds = await resolveRead(kept.map((item) => String(item.id)));
   const rows = [];
-  for (const item of items) {
-    if (!item) continue;
+  for (const item of kept) {
     rows.push(storyRow(item, rows.length, readIds));
   }
   return rows;

@@ -134,7 +134,7 @@ Rule of thumb for anything not in the table: **if it is rows of things with butt
 Say which clients will draw the thing, in the same message as the placement. Two facts do most of the damage when they are left out:
 
 - **A kind absent on a client is absent, not degraded.** `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab` and `dialog-section` do not draw on iOS at all. The TUI draws exactly three kinds: `row-badge`, `row-menu-item` and `toolbar-action`. Composer actions draw on desktop, web and iOS — iOS's compact layout draws them labeled — and the TUI draws none. Never read this list from memory: `PLUGIN_SOCKET_CLIENT_SUPPORT` is one boolean per client per kind and it moves as parity lands, so read it at the moment you write the claim.
-- **`icon` is a token, and the token list is the whole namespace.** Both clients resolve it against the same 69 tokens — desktop to a Phosphor glyph or a vendor mark, iOS to an SF Symbol or a bundled logo asset — and anything not on the list draws the puzzle piece on **both**. So an icon that renders anywhere renders everywhere, and an unrecognised string is unrecognised identically. There is no per-client escape hatch: naming a raw SF Symbol does not work on the phone, and never portably did. The generic tokens:
+- **`icon` is a token, and the token list is the whole namespace.** Both clients resolve it against the same 69 tokens (64 generic plus 5 brand marks) — desktop to a Phosphor glyph or a vendor mark, iOS to an SF Symbol or a bundled logo asset — and anything not on the list draws the puzzle piece on **both**. So an icon that renders anywhere renders everywhere, and an unrecognised string is unrecognised identically. There is no per-client escape hatch: naming a raw SF Symbol does not work on the phone, and never portably did. The generic tokens:
 
   `beer` `bell` `bookmark` `brain` `bug` `calendar` `chart` `chart-bar` `chat` `clock` `clock-counter-clockwise` `cloud` `code` `compass` `cube` `currency` `database` `desktop` `device-mobile` `envelope` `eye` `file` `flag` `folder` `gear` `git-branch` `git-commit` `git-pull-request` `globe` `graph` `heart` `image` `kanban` `key` `lightning` `link` `list` `list-checks` `lock` `magic` `microphone` `music` `note` `package` `palette` `play` `plug` `puzzle` `robot` `rocket` `rows` `shield` `sparkle` `star` `storefront` `table` `tag` `terminal` `timer` `toolbox` `trend` `users` `video` `wrench`
 
@@ -297,6 +297,19 @@ Every read-back here is agent-callable — none is operator-gated — so there i
 
 When verifying on iOS in particular, confirm the app you launched was built from this checkout. Launching the App Store build, or the other channel's build, makes every subsequent screenshot meaningless.
 
+### Leave tests behind
+
+The doctor and a round of `plugin.invoke` prove the plugin works *now*, on *this* machine, against *today's* data. Neither survives the next edit, and the failures that hurt most in a plugin are quiet ones — a colour silently dropped, a `list` silently truncated, a socket naming an action nobody exported. Ship a suite with the plugin.
+
+Write it in `test/` beside the entry module, under **`node --test`** in **CommonJS**, so it loads the plugin exactly as the child bootstrap does — a missing export or a syntax error fails in the test rather than at install. `plugins/ade-cursor-cloud/test/` is the worked example. Run it with `node --test plugins/<id>/test/*.test.js`.
+
+What earns its place:
+
+- **Every ceiling you are near.** Stub the host the way the host behaves — a `collections.list` that clamps to 1,000, a `put` that can throw `plugin_budget_exceeded` — not the way it behaves when the store is empty. A stub with no limits proves nothing about the machine your plugin will actually run on.
+- **The cross-file agreements the manifest parser cannot check.** That every `actionId` in a socket, every `refreshAction`, and every id in a binding's `allowActions` is really in `exports.actions`; that every collection the code touches is declared; that the host you `fetch` is the host you declared. Each of these parses clean and contributes nothing at runtime.
+- **The shape of what you return.** One assertion per action on its `{message}` / `{navigate}` / `{openUrl}` / `{resetState}`, and on the value you write to a collection — that value IS the rendered row, so a typo in `subtitle` is a blank line on four clients.
+- **Anything you got wrong once.** Write the test that fails on the old code before you fix it, and check that it does.
+
 ## Phase 3 — Say what you actually delivered
 
 ### The seven layers between "written" and "the agent behaves differently"
@@ -420,6 +433,19 @@ Three shapes that fit the platform well:
 
 One limit that is not about sharing, because it will bite you anyway: the *process* may work for as long as it likes, but the *host round-trip* is supervised. The child has 20s to send `ready` after it is spawned, one `invoke` is capped at 60s and then fails with `plugin_timeout`, and after 5 crashes in a row inside the first minute of life the host stops reviving it until someone reloads. Long work belongs in `activate` or an event handler, with the result stored — never inside the action the user is waiting on. The exceptions are `composer-action`, `slash-command` and `chat-header-action`, which get 15 minutes because the user watches them work the whole time (*Long-running actions*).
 
+**`activate` runs BEFORE `ready`, so start long work there — do not await it.** The bootstrap sends the `ready` frame only once your `activate` resolves, which puts everything you await inside it on the 20s clock above. A first fetch that is quick on your machine is not quick on a hotel network, and a plugin that times out its own startup is restarted, times out again, and is dead after five tries — for a reason no log line names as slowness. So:
+
+```js
+exports.activate = async (ade) => {
+  sdk = ade;
+  const prefs = await ade.collections.get("prefs", "feed"); // fast, local: fine to await
+  void refreshEverything()                                  // slow, remote: started, not awaited
+    .catch((error) => ade.log("warn", `first load failed: ${error.message}`));
+};
+```
+
+Until that work lands, every client renders the schema your manifest already declares, so give `schemaFile` a real loading or empty state rather than a blank card — it is the first thing anyone sees. Nothing is lost by returning early: `panels.update` and `collections.put` work exactly the same from a promise the host is not waiting on.
+
 ## Scaffold and run one
 
 ```bash
@@ -501,7 +527,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?, mobile?, builtin?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI*. `mobile` — see *Mobile*. `builtin` names a compiled-in ADE tab this plugin gates instead of rendering, and is reserved — see *What you can build* |
 | `panels[]` | no | `{id, schemaFile?, title?, icon?, refreshAction?}`. `schemaFile` is the default schema; `sdk.panels.update()` replaces it at runtime. `refreshAction` names one of your actions and turns on a refresh gesture — see *A panel that fetches* |
 | `sockets[]` | no | See *Sockets* below |
-| `collections` | no | `{"<name>": {"sync": true\|false}}`. `sync: true` rides the sync layer to your other devices |
+| `collections` | no | `{"<name>": {"sync": true\|false}}`. Every declared collection must be named here before you may read or write it. `sync: true` is a **disclosure**, not a switch: it is what the install sheet tells the user rides to their other devices, and what uninstall scopes its deletion to. The rows themselves are one CRR table either way, so `sync: false` does not keep a collection on this machine — if data must not leave, keep it in your own files on disk instead |
 | `settings[]` | no | `{key, kind, label, description?, options?, optionsAction?, default?}`; `kind` ∈ `text`, `secret`, `select`, `toggle`, `number` |
 | `cli[]` | no | Subcommand words, `^[a-z][a-z0-9-]{0,31}$`, reachable as `ade <id> <word>` |
 | `skills[]` | no | Relative paths to agent-skill directories this plugin contributes; they join `ADE_AGENT_SKILLS_DIRS` |
@@ -910,6 +936,8 @@ Declare `refreshAction` on the panel and each client grows the refresh gesture i
 
 The action runs first, then the client refetches, so the gesture means "go and get new data". A refresh that fails still refetches and says why. Declare nothing and nothing changes anywhere — no button, no pull, and `r` stays the plain refetch it always was. The action id must be one your manifest declares; a value the host does not recognise costs the gesture, not the panel, and a schema you republish cannot mint one.
 
+A refresh handler is invoked like any other panel action — one args object, carrying the panel's current selections under `state` and its render context under `context`. Read the state rather than a variable you kept from the last press: the reader may have moved a `segmented` since, and refreshing the feed they are no longer looking at is the bug this sentence exists to prevent.
+
 ### Per-surface support
 
 | Component | Desktop / web | iOS | `ade code` TUI |
@@ -1196,6 +1224,7 @@ This is the narrow answer to "I want my button to look like mine". The wide one 
 - The payload carries **one** colour and the **user** picks the theme. There is no per-theme form of this field, so the host cannot re-tint the way a theme plugin can — a colour that only works on dark is a button that is invisible for every user on light.
 - So `color` must clear a **3:1 contrast ratio** (WCAG 2.1 SC 1.4.11, the non-text minimum) against **both** ADE backgrounds, dark and light. In practice that is a mid-tone band: near-white, near-black and the fully saturated primaries at the ends of it do not pass. `#7C6FF0` — ADE's own accent — does, and is the calibration to aim near.
 - A refused colour is **dropped, never nudged**. The host does not darken your brand colour into range: it would paint something you never chose and never tell you, and your next hex would change nothing you could see. Instead the field goes missing and the button wears the platform's own tone — visibly not your colour, which is the signal that sends you back to this rule.
+- **Expect a real brand colour to fail, and check yours before you ship it.** Nothing logs the refusal, `ade plugin doctor` does not report it, and the manifest still parses clean — the button simply is not your colour. A vivid brand orange like `#FF6600` fails on the light background; `#E65C00`, the same hue darkened, passes on both. The gate is `sanitizePluginActionColor`, and it is pure, so the cheapest check is to call it: pass your hex to it in a scratch test and assert it comes back non-null. Then pin the value with an assertion, or the next person to "restore the real brand colour" will land the failing hex without seeing anything go wrong.
 - **A refused colour never costs you the button.** Same bargain as `menu`: the label and the primary press are what the user asked for. `sanitizePluginActionColor` in `sockets.ts` is the single gate, so a declared colour and a published one are judged identically, and a colour arriving over the sync wire is re-judged on arrival rather than trusted.
 - Anything that is not plainly a hex colour is refused before contrast is even considered — no named colours, no `rgb()`, no `var(--…)`. A token value is text that ends up in a stylesheet, and this is the same lesson theme tokens already learned.
 - **While an action runs, the platform takes the button back.** The busy state's own colour outranks yours for the duration, because "this is working" is a signal the user must be able to read on any plugin's button.
@@ -1286,6 +1315,16 @@ One consequence of that worth designing around: a declared `row-badge` draws as 
 **The hosted web client draws sockets too**, as of the round that gave it both reads it was missing. One gap remains and it is per surface rather than per kind: the web build does not mount `automations`, so a contribution declared on that surface draws nowhere there.
 
 Which still points the same way: **design a socket as an enhancement on top of a panel that stands on its own.** The panel renders on all four clients; the socket is what makes it reachable from a row.
+
+**A panel with no `surfaces[]` entry is not reachable everywhere, and nothing warns you.** `panels[]` says a panel *exists*; `surfaces[]` is what gives it a front door. Declaring only the first is legal, parses clean, and leaves a real gap:
+
+| Route in | Needs a surface? |
+|---|---|
+| `{navigate: {panelId}}` from an action, and an `ade://plugin/<id>/<panel>` deeplink | No — desktop and web open `/plugin/<id>?panel=…` and iOS presents the plugin pane sheet, whatever the manifest declares |
+| The rail on desktop and web, and the phone's plugin menu | Yes — a `tab`, or a `pane` for the Work rail |
+| The TUI's `/plugin-view <id>` | Yes. With no surface it falls back to the panel id `"main"`, so a panel named anything else opens nothing at all |
+
+So a plugin reached only through a socket the TUI does not draw (the matrix above) is a plugin `ade code` cannot open. If the panel is meant to be a place rather than a pop-up, declare a `tab` surface for it; if it is genuinely an accessory to a chat, say so and accept that the TUI has no door to it.
 
 The TUI draws your badges on the drawer's lane cards and chat rows, and lists your menu items and toolbar actions through **`/plugin-actions`** — menu items for the focused lane or chat, toolbar actions for the surface itself, on `lanes` and `work` only. `/plugin-view [plugin]` opens a panel in the right pane. Design so a badge is an enhancement, never the only way to learn something — and prefer the panel-shaped kinds (`chat-card`, `drawer-tab`, `settings-section`, `dialog-section`, `work-rail-pane`) for anything that matters on a phone, since they are the kinds a client can draw with the renderer it already has.
 
@@ -1409,7 +1448,7 @@ exports.actions = {
 | `ade.collections.get(collection, key)` | Read one value |
 | `ade.collections.put(collection, key, value, options?)` | Write one value. Budget-checked inside the writer transaction. `{ifFull: "evictOldest"}` drops the oldest entries in that same collection to make room instead of refusing — see *Never stall* |
 | `ade.collections.delete(collection, key)` | Delete one value |
-| `ade.collections.list(collection, {keyPrefix?, limit?})` | Rows as `{collection, key, value, updatedAt}` |
+| `ade.collections.list(collection, {keyPrefix?, limit?})` | Rows as `{collection, key, value, updatedAt}`, ordered by key. **`limit` is clamped to 1,000 and defaults to 200** — a collection may hold 4,000 rows, so a list can never return all of them, and it is silent about the ones it left out. When you need to know about a specific set of keys, `get` them by key; a `list` is for a window, not for the whole store |
 | `ade.secrets.get/set/delete(name)` | Machine credential store, namespaced `plugin:<id>:<NAME>`. Never readable by another plugin |
 | `ade.contributions.publish(entityKind, entityId, socket, payload)` | Publish or clear (`payload: null`) a dynamic contribution |
 | `ade.events.on(event, cb)` | Two families — **change events** `lane.changed`, `pr.changed`, `session.changed`, `install.changed` (debounced; payload `{event, ids[], projectId, overflow?}`, where `overflow: true` means `ids` was truncated at the delivery cap and you should treat it as a bare refetch signal rather than trusting the partial list) and **runtime hooks** `turn.start`, `turn.end`, `tool.before` (told as they happen — see *Runtime hooks* below). Returns an unsubscribe function; call it, because a hook kind nobody subscribed to is never delivered at all |
@@ -1607,6 +1646,8 @@ Only these token namespaces are accepted; anything else is dropped with a warnin
 
 Add the word to `cli`, add a handler of the same name to `exports.actions`, and it is reachable as `ade <pluginId> <word>`. ADE parses none of it — the words are passed through untouched, so the plugin owns its own flags and its own usage text.
 
+**Return plain data from a CLI handler.** The CLI prints your return value as JSON and interprets none of it: `message`, `navigate`, `openUrl` and `resetState` are UI verbs that reach a client, and on this path they are printed as data rather than acted on. Answer with the fields a reader or a script wants, and keep the verbs for the handlers a surface invokes.
+
 **`argv` is a property of the one args object, not the parameter itself.** The handler signature is the same as every other action's — one object — and the words arrive on `args.argv`:
 
 ```js
@@ -1657,6 +1698,7 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 | Plugin shows as `crashed` | The child exited. `ade plugin logs <id> --text` — the crash line carries the exit status and the tail of stderr. It restarts automatically with backoff `min(30s, 1s × 2ⁿ)`; a child that stays up 60s resets the counter. After 5 fast failures in a row the host stops reviving it and the status stays `crashed` — `ade plugin reload <id>` (or the Restart button) clears the counter and tries again |
 | Status stuck at `starting` | The child never sent `ready` within 20s. Usually a top-level throw in the entry module or a `require` of something not installed — check the logs |
 | An action hangs then fails | `plugin_timeout`: one `invoke` round-trip is capped at 60s — 15 minutes for a `composer-action`. Do slow work in `activate` or an event handler and store the result |
+| The plugin restarts over and over, and the logs stop after `activate` | `activate` is awaited before the child may send `ready`, and the deadline for that is 20s. Something you await there — almost always a first network fetch — is slower than it looks on a good connection. Start it without awaiting; see *Budgets and timeouts* |
 | A long composer action's insert wipes what the user typed | Your handler splices against the `context.draft` it captured at the start. Return `insertText` and let ADE place it at the live caret, rather than rebuilding the whole prompt with `replaceText` — see *Long-running actions* |
 | A write fails with `plugin_budget_exceeded` | Working as designed. Read `detail.budget`, `detail.limit`, `detail.actual`, prune with `ade.collections.delete`, retry once, then skip the item. Deletes always succeed, so recovery never needs the user — if the plugin stalled here, fix it against *Never stall* |
 | Panel renders as a fallback card | Panel-fatal: bad JSON, `v` mismatch, missing `fallback`, or over 200 nodes / depth 8 / 64 KiB. Compare against the limits above |

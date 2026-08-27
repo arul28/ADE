@@ -80,7 +80,7 @@ Parsing is strict on keys it knows and tolerant of keys it doesn't: an unknown f
 | `surfaces[]` | `{kind: "tab" \| "pane", id, title, panelId, icon?, order?}` |
 | `panels[]` | `{id, schemaFile?, title?, icon?}` |
 | `sockets[]` | See [Sockets](#sockets) |
-| `collections` | `{"<name>": {"sync": true}}` — `sync: true` carries rows to the user's other devices |
+| `collections` | `{"<name>": {"sync": true}}` — every collection replicates to the user's other devices today; `sync` is a disclosure flag (it appears on the install card and scopes uninstall), not a replication gate |
 | `settings[]` | `{key, kind, label, description?, options?, optionsAction?, default?}`; kinds are `text`, `secret`, `select`, `toggle`, `number` |
 | `cli[]` | Subcommand words, reachable as `ade <id> <word>` |
 | `skills[]` | Relative paths to agent-skill directories; they join `ADE_AGENT_SKILLS_DIRS` |

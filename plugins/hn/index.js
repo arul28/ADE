@@ -24,11 +24,24 @@ async function put(collection, key, value, options) {
   }
 }
 
-async function readIds() {
-  const rows = await sdk.collections.list("read", { limit: 4000 });
-  const ids = new Set();
-  for (const row of rows) ids.add(row.key);
-  return ids;
+/**
+ * Which of THESE story ids the reader has already seen.
+ *
+ * Asked by id rather than by listing the collection: `collections.list` clamps
+ * whatever limit it is given to 1,000 rows, and the `read` collection grows to
+ * the 4,000-row budget, so a list would quietly stop reporting the stories
+ * beyond the first thousand keys and show them as unread again.
+ */
+async function readIdsFor(ids) {
+  const found = new Set();
+  await Promise.all(ids.map(async (id) => {
+    try {
+      if (await sdk.collections.get("read", id)) found.add(id);
+    } catch {
+      // A single unreadable key costs that story its badge, never the feed.
+    }
+  }));
+  return found;
 }
 
 async function replaceStories(rows) {
@@ -111,7 +124,7 @@ async function publishPanel(feed) {
 async function loadFeed(feed) {
   lastFeed = feed;
   await put("prefs", "feed", { feed }, { ifFull: "evictOldest" });
-  const rows = await fetchFeed(feed, await readIds());
+  const rows = await fetchFeed(feed, readIdsFor);
   await replaceStories(rows);
   await publishPanel(feed);
   return rows.length;
@@ -173,21 +186,28 @@ exports.activate = async (ade) => {
   } catch {
     lastFeed = "top";
   }
-  try {
-    await loadFeed(lastFeed);
-    log("info", "hn activated", { feed: lastFeed });
-  } catch (error) {
-    log("warn", "hn failed to load stories on activate", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    try {
-      await publishPanel(lastFeed);
-    } catch (publishError) {
-      log("warn", "hn failed to publish panel", {
-        error: publishError instanceof Error ? publishError.message : String(publishError),
+  // Started, NOT awaited. The child bootstrap sends its `ready` frame only
+  // after `activate` resolves, and the host kills a child that has not become
+  // ready within 20s — so awaiting one list fetch plus thirty item fetches puts
+  // the whole plugin into a crash-restart loop whenever the network is slow.
+  // Until the first feed lands, clients render the manifest's own schema, which
+  // is the "Loading Hacker News…" card.
+  void loadFeed(lastFeed)
+    .then(() => {
+      log("info", "hn activated", { feed: lastFeed });
+    })
+    .catch(async (error) => {
+      log("warn", "hn failed to load stories on activate", {
+        error: error instanceof Error ? error.message : String(error),
       });
-    }
-  }
+      try {
+        await publishPanel(lastFeed);
+      } catch (publishError) {
+        log("warn", "hn failed to publish panel", {
+          error: publishError instanceof Error ? publishError.message : String(publishError),
+        });
+      }
+    });
 };
 
 exports.deactivate = async () => {
