@@ -1045,6 +1045,106 @@ describe("prService repository-scoped GraphQL mutations", () => {
       }));
     }
   });
+
+  it("resolves REST comment database ids to GraphQL node ids before addReaction", async () => {
+    const row = makePrRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string; method?: string; body?: unknown }) => {
+        if (args.method === "GET" && args.path === "/repos/test-owner/test-repo/issues/comments/555") {
+          return {
+            data: {
+              id: 555,
+              node_id: "IC_kwDO123",
+              issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+            },
+          };
+        }
+        if (args.path !== "/graphql") throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+        if (!query.includes("addReaction")) throw new Error("Unexpected GraphQL operation");
+        expect((args.body as { variables?: { subjectId?: unknown } }).variables?.subjectId).toBe("IC_kwDO123");
+        return {
+          data: { data: { addReaction: { reaction: { id: "reaction-1", content: "THUMBS_UP" } } } },
+        };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await service.reactToComment({ prId: row.id, commentId: "555", content: "+1" });
+  });
+});
+
+describe("prService REST reaction hydration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("replaces REST unknown rollups with write-viewer reaction groups", async () => {
+    const row = makePrRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({ userLogin: "octocat" })),
+      apiRequest: vi.fn(async (args: { path: string; capability?: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/issues/90/comments") {
+          return {
+            data: [{
+              id: 555,
+              node_id: "IC_kwDO123",
+              user: { login: "other" },
+              body: "hello",
+              html_url: "https://github.com/test-owner/test-repo/pull/90#issuecomment-555",
+              issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+              created_at: "2026-01-01T00:00:00Z",
+              reactions: {
+                "+1": 2,
+                "-1": 0,
+                laugh: 0,
+                confused: 0,
+                heart: 0,
+                hooray: 0,
+                rocket: 0,
+                eyes: 0,
+                total_count: 2,
+              },
+            }],
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/90/comments") {
+          return { data: [] };
+        }
+        if (args.path === "/graphql") {
+          expect(args.capability).toBe("write");
+          return {
+            data: {
+              data: {
+                nodes: [{
+                  id: "IC_kwDO123",
+                  reactionGroups: [{
+                    content: "THUMBS_UP",
+                    viewerHasReacted: true,
+                    reactors: { totalCount: 2 },
+                  }],
+                }],
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const comments = await service.getComments(row.id);
+    expect(comments[0]?.reactions).toEqual([{
+      id: "group:+1",
+      content: "+1",
+      user: "octocat",
+      count: 2,
+    }]);
+  });
 });
 
 describe("GitHub read failure backoff", () => {
@@ -6995,6 +7095,7 @@ describe("prService.updateComment", () => {
     const db = makeMockDb();
     installPullRequestRowStore(db, [makePrRow()]);
     const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({ userLogin: "ade[bot]" })),
       apiRequest: vi.fn(async (request: { method?: string }) => {
         // The ownership pre-check GETs the comment to confirm it belongs to the
         // target PR; the PATCH then performs the edit.
@@ -7003,6 +7104,7 @@ describe("prService.updateComment", () => {
             data: {
               id: 555,
               issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+              user: { login: "ade[bot]" },
             },
           };
         }
@@ -7051,6 +7153,31 @@ describe("prService.updateComment", () => {
     await expect(
       service.updateComment({ prId: "pr-row-1", commentId: "555", body: "Edited body" }),
     ).rejects.toThrow("Comment does not belong to the target PR.");
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
+  it("rejects a comment authored by another GitHub account", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({ userLogin: "octocat" })),
+      apiRequest: vi.fn(async (request: { method?: string }) => ({
+        data: request.method === "GET"
+          ? {
+              id: 555,
+              issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+              user: { login: "someone-else" },
+            }
+          : { id: 555 },
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(
+      service.updateComment({ prId: "pr-row-1", commentId: "555", body: "Edited body" }),
+    ).rejects.toThrow("only edit comments authored");
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(
       expect.objectContaining({ method: "PATCH" }),
     );

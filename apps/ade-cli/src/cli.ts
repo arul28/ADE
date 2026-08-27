@@ -1926,6 +1926,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs comment-edit <pr> --comment <id> --body "..."
+                                                    Edit an issue or review comment
+    $ ade prs comment-react <pr> --comment <id> --content +1
+                                                    React to a PR comment (GraphQL node id or REST database id)
     $ ade prs github-snapshot --include-external-closed --history-page-limit 4
                                                     Include bounded closed PR history in the GitHub snapshot
     $ ade prs github-snapshot --include-state-counts --no-revalidate
@@ -6445,6 +6449,31 @@ function buildPrPlan(args: string[]): CliPlan {
             commentId: readValue(args, ["--comment", "--comment-id"]),
             content: readValue(args, ["--content"]),
           }),
+        ),
+      ],
+    };
+  }
+  if (sub === "comment-edit" || sub === "update-comment") {
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    const source = readValue(args, ["--source"]);
+    if (source != null && source !== "issue" && source !== "review") {
+      throw new CliUsageError("prs comment-edit --source must be issue or review.");
+    }
+    const input: JsonObject = {
+      prId: id,
+      commentId: readValue(args, ["--comment", "--comment-id"]),
+      body: readValue(args, ["--body"]),
+    };
+    maybePut(input, "source", source);
+    return {
+      kind: "execute",
+      label: "PR comment edit",
+      steps: [
+        actionStep(
+          "result",
+          "pr",
+          "updateComment",
+          collectGenericObjectArgs(args, input),
         ),
       ],
     };

@@ -26,6 +26,7 @@ function resetStore() {
     },
     workViewByProject: {},
     laneWorkViewByScope: {},
+    smartTooltipsEnabled: true,
   });
 }
 
@@ -121,6 +122,59 @@ describe("TabNav", () => {
     expect(screen.getAllByRole("link", { name: "Graph" })).toHaveLength(1);
     expect(screen.queryByRole("link", { name: "Review" })).toBeNull();
     expect(screen.queryByRole("link", { name: "History" })).toBeNull();
+  });
+
+  it("places sidebar tooltips beside navigation rows", () => {
+    useAppStore.setState({ smartTooltipsEnabled: true });
+    vi.useFakeTimers();
+
+    render(
+      <MemoryRouter initialEntries={["/chats"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    const chatsLink = screen.getByRole("link", { name: "Chats" });
+    const wrapper = chatsLink.parentElement;
+    if (!(wrapper instanceof HTMLElement)) throw new Error("sidebar tooltip wrapper is missing");
+    fireEvent.mouseEnter(wrapper);
+    act(() => vi.advanceTimersByTime(320));
+
+    expect(document.querySelector('.ade-smart-tooltip[data-side="right"]')).toBeTruthy();
+  });
+
+  it("does not steal Tab from sidebar rows that have documentation links", () => {
+    useAppStore.setState({ smartTooltipsEnabled: true });
+    vi.useFakeTimers();
+
+    render(
+      <MemoryRouter initialEntries={["/chats"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    const workLink = screen.getByRole("link", { name: "Work" });
+    const wrapper = workLink.parentElement;
+    if (!(wrapper instanceof HTMLElement)) throw new Error("sidebar tooltip wrapper is missing");
+    fireEvent.mouseEnter(wrapper);
+    act(() => vi.advanceTimersByTime(320));
+
+    const tooltip = document.querySelector(".ade-smart-tooltip");
+    expect(tooltip?.getAttribute("role")).toBe("tooltip");
+    expect(workLink.getAttribute("aria-haspopup")).toBeNull();
+    expect(fireEvent.keyDown(wrapper, { key: "Tab" })).toBe(true);
+  });
+
+  it("falls back to a native title when detailed tooltips are disabled", () => {
+    useAppStore.setState({ smartTooltipsEnabled: false });
+
+    render(
+      <MemoryRouter initialEntries={["/chats"]}>
+        <TabNav />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole("link", { name: "Chats" }).getAttribute("title")).toBe("Chats");
   });
 
   it("keeps Activity a header control and a modal, never a nav tab", () => {

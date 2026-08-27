@@ -181,8 +181,9 @@ domains into the hidden runtime.
 - Desktop/web: a global `/chats` route with a conversation rail, focused
   transcript, and shared model/reasoning/access controls. The sidebar entry is
   available even on the welcome screen. Project-only Work, Git, Files, iOS,
-  Electron Control, and CLI-launch affordances are absent. The desktop Browser uses
-  its global profile; terminal commands run in the personal scratch workspace.
+  Electron Control, CLI-launch, lane, repo, PR, and **Open in** editor
+  affordances are absent. The desktop Browser uses its global profile;
+  terminal commands run in the personal scratch workspace.
 - iOS: the Hub is the only entry point. It pushes a native Chats page, then a
   new-chat or existing-chat destination without selecting a project.
 - TUI: deliberately out of scope for the initial release. The regular `ade`
@@ -191,6 +192,9 @@ domains into the hidden runtime.
 ## Gotchas
 
 - Never add the internal personal-chat root to the machine project registry.
+- Never expose lane, repo, PR, or **Open in** editor actions on the
+  projectless surface. The hidden personal lane exists so the chat stack
+  has a lane id; it is not a worktree the user can open in VS Code or Zed.
 - Never route a personal command through the active project as a fallback.
 - Never infer personal scope from a null/missing project id; require the
   personal RPC/action or `chatScope: "personal"` explicitly.

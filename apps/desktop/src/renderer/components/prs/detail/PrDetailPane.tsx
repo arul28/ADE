@@ -40,6 +40,7 @@ import { navigateToAppTarget } from "../../../lib/openExternal";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { PluginDetailSections, pluginPrContext } from "../../plugins/sockets";
+import { SmartTooltip } from "../../ui/SmartTooltip";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -512,6 +513,7 @@ export function PrDetailPane({
     detailDeployments,
     detailLiveDataPrId: ctxDetailPrId,
     viewerLogin,
+    writeViewerLogin,
     setTimelineFilters,
     setAiSummaryDismissed,
     regeneratePrAiSummary,
@@ -1527,14 +1529,16 @@ export function PrDetailPane({
                     : getPrStateBadge(pr.state))} />
                 </span>
                 {pr.laneId ? (
-                  <button
-                    type="button"
-                    onClick={() => { setTitleDraft(pr.title); setEditingTitle(true); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: COLORS.textMuted, flexShrink: 0, opacity: 0.6 }}
-                    title="Edit title"
-                  >
-                    <PencilSimple size={14} />
-                  </button>
+                  <SmartTooltip content={{ label: "Edit title", description: "Rename this pull request on GitHub." }}>
+                    <button
+                      type="button"
+                      onClick={() => { setTitleDraft(pr.title); setEditingTitle(true); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: COLORS.textMuted, flexShrink: 0, opacity: 0.6 }}
+                      aria-label="Edit title"
+                    >
+                      <PencilSimple size={14} />
+                    </button>
+                  </SmartTooltip>
                 ) : null}
               </div>
             )}
@@ -1627,9 +1631,11 @@ export function PrDetailPane({
 
           {/* Right-side action buttons */}
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-            <button type="button" onClick={() => void handleRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} title="Refresh">
-              <ArrowsClockwise size={14} weight="bold" />
-            </button>
+            <SmartTooltip content={{ label: "Refresh", description: "Re-read this pull request's status, checks, and reviews from GitHub." }}>
+              <button type="button" onClick={() => void handleRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} aria-label="Refresh">
+                <ArrowsClockwise size={14} weight="bold" />
+              </button>
+            </SmartTooltip>
             {onUnmap ? (
               <button
                 type="button"
@@ -1715,6 +1721,7 @@ export function PrDetailPane({
             reviewThreads={reviewThreadsForTimeline}
             deployments={deploymentsForTimeline}
             viewerLogin={viewerLogin}
+            writeViewerLogin={writeViewerLogin}
             filters={timelineFilters}
             onFiltersChange={handleTimelineFiltersChange}
             aiSummary={timelineAiSummary}

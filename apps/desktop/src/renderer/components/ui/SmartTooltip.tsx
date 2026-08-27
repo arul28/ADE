@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useAppStore } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -18,16 +18,17 @@ export type SmartTooltipContent = {
   shortcut?: string;
   /** When set, renders a "Learn more →" link opening this URL in a new tab. */
   docUrl?: string;
-  /** Future use — identifies a glossary term for this tooltip. Currently not rendered. */
-  glossaryTermId?: string;
 };
+
+type TooltipSide = "top" | "bottom" | "left" | "right";
+type TooltipCoordinates = { x: number; y: number; side: TooltipSide };
 
 type SmartTooltipProps = {
   children: React.ReactElement;
   content: SmartTooltipContent;
   /** Override the global toggle (used for the toggle button itself) */
   forceEnabled?: boolean;
-  side?: "top" | "bottom";
+  side?: TooltipSide;
   wrapperClassName?: string;
   wrapperStyle?: React.CSSProperties;
 };
@@ -39,6 +40,91 @@ const HOVER_DELAY = 320;
 const HIDE_DELAY = 140;
 const GAP = 6;
 const VIEWPORT_PAD = 10;
+const TOOLTIP_TRANSFORMS: Record<TooltipSide, string> = {
+  top: "translate(-50%, -100%)",
+  bottom: "translate(-50%, 0)",
+  right: "translate(0, -50%)",
+  left: "translate(-100%, -50%)",
+};
+
+function clampToRange(value: number, min: number, max: number, fallback: number): number {
+  if (min > max) return fallback;
+  return Math.min(Math.max(value, min), max);
+}
+
+function flipSide(preferredSide: TooltipSide, fits: {
+  top: boolean;
+  bottom: boolean;
+  right: boolean;
+  left: boolean;
+}): TooltipSide {
+  switch (preferredSide) {
+    case "top":
+      return !fits.top && fits.bottom ? "bottom" : "top";
+    case "bottom":
+      return !fits.bottom && fits.top ? "top" : "bottom";
+    case "right":
+      return !fits.right && fits.left ? "left" : "right";
+    case "left":
+      return !fits.left && fits.right ? "right" : "left";
+    default: {
+      const _exhaustive: never = preferredSide;
+      return _exhaustive;
+    }
+  }
+}
+
+function placeTooltip(
+  preferredSide: TooltipSide,
+  trigger: DOMRect,
+  tooltip: DOMRect,
+  vw: number,
+  vh: number,
+): TooltipCoordinates {
+  const topY = trigger.top - GAP;
+  const bottomY = trigger.bottom + GAP;
+  const rightX = trigger.right + GAP;
+  const leftX = trigger.left - GAP;
+  const cx = trigger.left + trigger.width / 2;
+  const cy = trigger.top + trigger.height / 2;
+  const side = flipSide(preferredSide, {
+    top: topY - tooltip.height >= VIEWPORT_PAD,
+    bottom: bottomY + tooltip.height <= vh - VIEWPORT_PAD,
+    right: rightX + tooltip.width <= vw - VIEWPORT_PAD,
+    left: leftX - tooltip.width >= VIEWPORT_PAD,
+  });
+
+  switch (side) {
+    case "top":
+      return {
+        side,
+        x: clampToRange(cx, VIEWPORT_PAD + tooltip.width / 2, vw - VIEWPORT_PAD - tooltip.width / 2, vw / 2),
+        y: clampToRange(topY, VIEWPORT_PAD + tooltip.height, vh - VIEWPORT_PAD, vh / 2),
+      };
+    case "bottom":
+      return {
+        side,
+        x: clampToRange(cx, VIEWPORT_PAD + tooltip.width / 2, vw - VIEWPORT_PAD - tooltip.width / 2, vw / 2),
+        y: clampToRange(bottomY, VIEWPORT_PAD, vh - VIEWPORT_PAD - tooltip.height, vh / 2),
+      };
+    case "right":
+      return {
+        side,
+        x: clampToRange(rightX, VIEWPORT_PAD, vw - VIEWPORT_PAD - tooltip.width, vw / 2),
+        y: clampToRange(cy, VIEWPORT_PAD + tooltip.height / 2, vh - VIEWPORT_PAD - tooltip.height / 2, vh / 2),
+      };
+    case "left":
+      return {
+        side,
+        x: clampToRange(leftX, VIEWPORT_PAD + tooltip.width, vw - VIEWPORT_PAD, vw / 2),
+        y: clampToRange(cy, VIEWPORT_PAD + tooltip.height / 2, vh - VIEWPORT_PAD - tooltip.height / 2, vh / 2),
+      };
+    default: {
+      const _exhaustive: never = side;
+      return _exhaustive;
+    }
+  }
+}
 
 export function SmartTooltip({
   children,
@@ -53,7 +139,7 @@ export function SmartTooltip({
   const tooltipId = useId();
 
   const [visible, setVisible] = useState(false);
-  const [coords, setCoords] = useState<{ x: number; y: number; side: "top" | "bottom" } | null>(null);
+  const [coords, setCoords] = useState<TooltipCoordinates | null>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -73,28 +159,19 @@ export function SmartTooltip({
     }
   }, []);
 
+  const dismiss = useCallback(() => {
+    setVisible(false);
+    setCoords(null);
+  }, []);
+
   const show = useCallback(() => {
     if (!enabled) return;
     clearHideTimer();
     showTimerRef.current = setTimeout(() => {
-      const el = triggerRef.current;
-      if (!el) return;
-      const r = el.getBoundingClientRect();
-      const cx = r.left + r.width / 2;
-
-      // Pick side: prefer requested, but flip if no room
-      let side = preferredSide;
-      if (side === "top" && r.top < 140) side = "bottom";
-      else if (side === "bottom" && window.innerHeight - r.bottom < 140) side = "top";
-
-      setCoords({
-        x: cx,
-        y: side === "top" ? r.top - GAP : r.bottom + GAP,
-        side,
-      });
+      if (!triggerRef.current) return;
       setVisible(true);
     }, HOVER_DELAY);
-  }, [enabled, preferredSide, clearHideTimer]);
+  }, [enabled, clearHideTimer]);
 
   const hide = useCallback(() => {
     clearShowTimer();
@@ -103,12 +180,12 @@ export function SmartTooltip({
     if (content.docUrl) {
       clearHideTimer();
       hideTimerRef.current = setTimeout(() => {
-        setVisible(false);
+        dismiss();
       }, HIDE_DELAY);
       return;
     }
-    setVisible(false);
-  }, [clearShowTimer, clearHideTimer, content.docUrl]);
+    dismiss();
+  }, [clearShowTimer, clearHideTimer, content.docUrl, dismiss]);
 
   const isTooltipFocusTarget = useCallback((target: EventTarget | null): boolean => {
     if (!content.docUrl || !(target instanceof Node)) return false;
@@ -131,18 +208,22 @@ export function SmartTooltip({
     [],
   );
 
-  // Clamp horizontal position after first paint
-  useEffect(() => {
-    if (!visible || !tooltipRef.current || !coords) return;
-    const tt = tooltipRef.current;
-    const ttRect = tt.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const half = ttRect.width / 2;
-    let x = coords.x;
-    if (x - half < VIEWPORT_PAD) x = half + VIEWPORT_PAD;
-    if (x + half > vw - VIEWPORT_PAD) x = vw - half - VIEWPORT_PAD;
-    if (x !== coords.x) setCoords((prev) => prev ? { ...prev, x } : prev);
-  }, [visible, coords]);
+  useLayoutEffect(() => {
+    if (!visible) return;
+    const trigger = triggerRef.current;
+    const tooltip = tooltipRef.current;
+    if (!trigger || !tooltip) return;
+    const next = placeTooltip(
+      preferredSide,
+      trigger.getBoundingClientRect(),
+      tooltip.getBoundingClientRect(),
+      window.innerWidth,
+      window.innerHeight,
+    );
+    setCoords((prev) => (
+      prev && prev.x === next.x && prev.y === next.y && prev.side === next.side ? prev : next
+    ));
+  }, [visible, preferredSide]);
 
   const hasExtra = Boolean(content.gitCommand || content.effect || content.warning || content.shortcut);
   const childDescribedBy = children.props["aria-describedby"];
@@ -151,6 +232,7 @@ export function SmartTooltip({
     : childDescribedBy;
   const trigger = React.cloneElement(children, {
     "aria-describedby": describedBy,
+    ...(enabled ? {} : { title: children.props.title ?? content.label }),
   });
 
   return (
@@ -166,14 +248,14 @@ export function SmartTooltip({
       >
         {trigger}
       </div>
-      {visible && coords
+      {visible
         ? createPortal(
             <div
               ref={tooltipRef}
               id={tooltipId}
               role="tooltip"
               className="ade-smart-tooltip"
-              data-side={coords.side}
+              data-side={coords?.side}
               // Hover-grace: when the tooltip hosts an actionable link, cancel any pending
               // show/hide timers so moving the cursor trigger → tooltip doesn't dismiss
               // before the link is clicked. onMouseLeave restarts the hide timer so the
@@ -199,9 +281,10 @@ export function SmartTooltip({
               style={{
                 position: "fixed",
                 zIndex: 9999,
-                left: coords.x,
-                top: coords.y,
-                transform: coords.side === "top" ? "translate(-50%, -100%)" : "translate(-50%, 0)",
+                left: coords?.x ?? 0,
+                top: coords?.y ?? 0,
+                transform: coords ? TOOLTIP_TRANSFORMS[coords.side] : undefined,
+                visibility: coords ? "visible" : "hidden",
                 // Only allow pointer events when there's a link to click; otherwise preserve
                 // the original click-through behaviour.
                 pointerEvents: content.docUrl ? "auto" : "none",

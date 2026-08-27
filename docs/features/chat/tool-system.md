@@ -14,7 +14,7 @@ worker to respawn.
 | `apps/desktop/src/main/services/ai/tools/workflowTools.ts` | `createLane`, `createPrFromLane`, `captureScreenshot`, `reportCompletion`, and the four PR issue-resolution tools. |
 | `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. Git reads default their lane (`resolveReadLaneId`); git mutations require an explicit one (`requireMutationLaneId`). |
 | `apps/desktop/src/main/services/ai/tools/linearTools.ts` | Linear-only tools for CTO when Linear is connected. |
-| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on which tool names are present. |
+| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on available tools and the runtime-specific native-subagent versus ADE-child routing contract. |
 | `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
 | `apps/desktop/src/main/services/ai/tools/readFileRange.ts` / `grepSearch.ts` / `globSearch.ts` / `editFile.ts` | Primitive file/search tools used by every agent. |
 | `apps/desktop/src/main/services/ai/tools/webFetch.ts` / `webSearch.ts` | Web access tools. |

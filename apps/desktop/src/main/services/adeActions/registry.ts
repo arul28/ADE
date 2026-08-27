@@ -739,7 +739,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "complete",
     "detectDefaults",
     "getStatus",
-    "markGlossaryTermSeen",
     "setDismissed",
   ],
   automation_planner: ["parseNaturalLanguage", "saveDraft", "simulate", "validateDraft"],

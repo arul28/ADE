@@ -6,7 +6,6 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type {
   OnboardingDetectionIndicator,
   OnboardingDetectionResult,
-  OnboardingHelpState,
   OnboardingStatus,
   ProjectConfigFile
 } from "../../../shared/types";
@@ -14,33 +13,6 @@ import { dirExists, fileExists, nowIso } from "../shared/utils";
 import { buildSuggestedConfig, parseGithubWorkflowRuns } from "./onboardingSuggestedConfig";
 
 const STATUS_KEY = "onboarding:status";
-// Historical storage key retained only so existing glossary terms are not lost
-// when upgrading from the removed tour/tutorial system.
-const HELP_STATE_KEY = "onboarding:tourProgress";
-
-function emptyHelpState(): OnboardingHelpState {
-  return {
-    glossaryTermsSeen: [],
-  };
-}
-
-function normalizeHelpState(raw: unknown): OnboardingHelpState {
-  if (!raw || typeof raw !== "object") return emptyHelpState();
-  const r = raw as Partial<OnboardingHelpState>;
-  const seen = Array.isArray(r.glossaryTermsSeen)
-    ? Array.from(
-        new Set(
-          r.glossaryTermsSeen
-            .filter((v): v is string => typeof v === "string")
-            .map((v) => v.trim())
-            .filter((v) => v.length > 0),
-        ),
-      )
-    : [];
-  return {
-    glossaryTermsSeen: seen,
-  };
-}
 
 export function createOnboardingService(args: {
   db: AdeDb;
@@ -74,27 +46,6 @@ export function createOnboardingService(args: {
     };
     db.setJson(STATUS_KEY, status);
     return status;
-  };
-
-  const getHelpState = (): OnboardingHelpState => {
-    const stored = db.getJson<OnboardingHelpState>(HELP_STATE_KEY);
-    return normalizeHelpState(stored);
-  };
-
-  const writeHelpState = (next: OnboardingHelpState): OnboardingHelpState => {
-    db.setJson(HELP_STATE_KEY, next);
-    return next;
-  };
-
-  const markGlossaryTermSeen = (termId: string): OnboardingHelpState => {
-    const id = termId.trim();
-    if (!id) return getHelpState();
-    const current = getHelpState();
-    if (current.glossaryTermsSeen.includes(id)) return current;
-    return writeHelpState({
-      ...current,
-      glossaryTermsSeen: [...current.glossaryTermsSeen, id],
-    });
   };
 
   const detectDefaults = async (): Promise<OnboardingDetectionResult> => {
@@ -150,8 +101,6 @@ export function createOnboardingService(args: {
     complete,
     setDismissed,
     detectDefaults,
-    getHelpState,
-    markGlossaryTermSeen,
 
     // Convenience hook for UI flows: apply suggested config as local draft.
     applySuggestedConfig: async (suggestedConfig: ProjectConfigFile): Promise<void> => {

@@ -288,7 +288,7 @@ Operations with desktop-only side effects, such as some automation hooks and UI-
 
 Preload also guards two classes of API against remote bindings:
 
-- `assertNotRemoteProjectPathAction` rejects `app.revealPath`, `app.openPath`, `app.openPathInEditor`, `app.getImageDataUrl`, and `app.writeClipboardImage` when the input path is the remote project root or any descendant of it. A remote project's filesystem is not mounted locally, so revealing or opening those paths on the desktop would point at the wrong machine.
+- `assertNotRemoteProjectPathAction` rejects `app.revealPath`, `app.openPath`, `app.openPathInEditor`, `app.getImageDataUrl`, and `app.writeClipboardImage` when the input path is the remote project root or any descendant of it. A remote project's filesystem is not mounted locally, so revealing or opening those paths on the desktop would point at the wrong machine. `openPathInEditor` is the exception when the payload is a valid SSH remote editor request (`isRemoteEditorOpenRequest`: hostname present and `transport !== "paired"`): preload skips the local-path guard and main mints `vscode://vscode-remote/ssh-remote+host/path` or `zed://ssh/host/path` instead of spawning against the laptop path. Paired remotes stay blocked.
 - `assertLocalProjectHostAction` rejects iOS Simulator window-state / window-source lookups on remote-bound windows; those need direct Electron / OS access on the host that owns the simulator.
 
 ## Remote connection pool lifecycle

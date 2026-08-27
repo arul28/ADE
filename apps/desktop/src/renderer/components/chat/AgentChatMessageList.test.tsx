@@ -128,6 +128,7 @@ function renderMessageList(
     showStreamingIndicator?: boolean;
     sessionEnded?: boolean;
     sessionId?: string | null;
+    scrollMemoryKey?: string | null;
     transcriptCollapseCacheKey?: string | null;
     laneId?: string | null;
     onInsertDraft?: (text: string) => void;
@@ -157,6 +158,7 @@ function renderMessageList(
         showStreamingIndicator={options?.showStreamingIndicator}
         sessionEnded={options?.sessionEnded}
         sessionId={options?.sessionId}
+        scrollMemoryKey={options?.scrollMemoryKey}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
         onInsertDraft={options?.onInsertDraft}
@@ -2411,6 +2413,85 @@ describe("AgentChatMessageList transcript rendering", () => {
       // viewport — no visible snap to the bottom first.
       expect(timelinePane().scrollTop).toBe(400);
       expect(screen.queryByRole("button", { name: /jump to latest/i })).toBeTruthy();
+    } finally {
+      restoreScrollBox();
+    }
+  });
+
+  it("preserves parent scroll memory while the mounted list shows a nested transcript", async () => {
+    const restoreScrollBox = stubTimelineScrollBox({ clientHeight: 200, scrollHeight: 1_000 });
+    try {
+      const parentEvents = userMessageEvents(["parent-a", "parent-b", "parent-c", "parent-d"], "scroll-switch");
+      const childEvents = userMessageEvents(["child-a", "child-b"], "scroll-switch");
+      const view = renderMessageList(parentEvents, {
+        sessionId: "scroll-switch",
+        scrollMemoryKey: "parent:scroll-switch",
+      });
+      const transcript = timelinePane();
+      await nextFrame();
+
+      transcript.scrollTop = 400;
+      fireEvent.scroll(transcript);
+      expect(await screen.findByRole("button", { name: "Jump to latest message" })).toBeTruthy();
+      view.rerender(
+        <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+          <AgentChatMessageList
+            events={childEvents}
+            sessionId="scroll-switch"
+            scrollMemoryKey="child:scroll-switch:task-1"
+          />
+          <LocationProbe />
+        </MemoryRouter>,
+      );
+      await nextFrame();
+
+      view.rerender(
+        <MemoryRouter
+          initialEntries={[{ pathname: "/" }]}
+        >
+          <AgentChatMessageList
+            events={parentEvents}
+            sessionId="scroll-switch"
+            scrollMemoryKey="parent:scroll-switch"
+          />
+          <LocationProbe />
+        </MemoryRouter>,
+      );
+      await nextFrame();
+      expect(timelinePane().scrollTop).toBe(400);
+    } finally {
+      restoreScrollBox();
+    }
+  });
+
+  it("follows the nested transcript tail when both views are pinned", async () => {
+    const restoreScrollBox = stubTimelineScrollBox({ clientHeight: 200, scrollHeight: 1_000 });
+    try {
+      const parentEvents = userMessageEvents(["parent"], "pinned-switch");
+      const childEvents = userMessageEvents(["child-a", "child-b", "child-c"], "pinned-switch");
+      const view = renderMessageList(parentEvents, {
+        sessionId: "pinned-switch",
+        scrollMemoryKey: "parent:pinned-switch",
+      });
+      await nextFrame();
+      const transcript = timelinePane();
+      transcript.scrollTop = 120;
+
+      view.rerender(
+        <MemoryRouter
+          initialEntries={[{ pathname: "/" }]}
+        >
+          <AgentChatMessageList
+            events={childEvents}
+            sessionId="pinned-switch"
+            scrollMemoryKey="child:pinned-switch:task-1"
+          />
+          <LocationProbe />
+        </MemoryRouter>,
+      );
+      await nextFrame();
+      await nextFrame();
+      expect(timelinePane().scrollTop).toBe(800);
     } finally {
       restoreScrollBox();
     }

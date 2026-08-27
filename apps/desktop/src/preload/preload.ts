@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
+import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemote, type OpenPathTarget } from "../shared/editorTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
@@ -477,7 +478,6 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
-  OnboardingHelpState,
   OnboardingStatus,
   LaneGitHubIssue,
   LaneLinearIssue,
@@ -3815,6 +3815,7 @@ const adeBridge = {
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
+    getInstalledEditors: async (): Promise<EditorTarget[]> => ipcRenderer.invoke(IPC.appGetInstalledEditors),
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -3946,11 +3947,15 @@ const adeBridge = {
     openPathInEditor: async (args: {
       rootPath: string;
       relativePath?: string;
-      target: "default" | "finder" | "vscode" | "cursor" | "zed";
+      target: OpenPathTarget;
+      remote?: OpenPathInEditorRemote;
     }): Promise<void> => {
-      await assertNotRemoteProjectPathAction("Open path in editor", [
-        args.rootPath,
-      ]);
+      const isRemoteSsh = isRemoteEditorOpenRequest(args.remote);
+      if (!isRemoteSsh) {
+        await assertNotRemoteProjectPathAction("Open path in editor", [
+          args.rootPath,
+        ]);
+      }
       return ipcRenderer.invoke(IPC.appOpenPathInEditor, args);
     },
     logDebugEvent: (
@@ -5047,16 +5052,6 @@ const adeBridge = {
     complete: async (): Promise<OnboardingStatus> =>
       callProjectRuntimeActionOr("onboarding", "complete", {}, () =>
         ipcRenderer.invoke(IPC.onboardingComplete),
-      ),
-    markGlossaryTermSeen: async (
-      termId: string,
-    ): Promise<OnboardingHelpState> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "markGlossaryTermSeen",
-        { arg: termId },
-        () =>
-          ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
       ),
   },
   automations: {

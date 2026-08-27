@@ -44,10 +44,11 @@ import type {
   PrReview,
   PrReviewThread,
 } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrReviewThreadCard } from "./PrReviewThreadCard";
+import { DescriptionContent, IssueCommentContent } from "./PrTimelineCommentCards";
 import { PrBotReviewCard, detectBotProvider } from "./PrBotReviewCard";
 import { PrUserAvatar } from "./PrUserAvatar";
 import { PrAiSummaryCard } from "./PrAiSummaryCard";
@@ -75,6 +76,7 @@ export type PrTimelineProps = {
   repoOwner: string;
   repoName: string;
   viewerLogin: string | null;
+  writeViewerLogin?: string | null;
   filters: PrTimelineFilters;
   onFiltersChange: (next: PrTimelineFilters) => void;
   summary?: PrAiSummary | null;
@@ -322,6 +324,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     repoOwner,
     repoName,
     viewerLogin,
+    writeViewerLogin,
     filters,
     onFiltersChange: _onFiltersChange,
     summary,
@@ -336,6 +339,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     () => applyTimelineFilters(events, filters, viewerLogin),
     [events, filters, viewerLogin],
   );
+  const mutationViewerLogin = writeViewerLogin !== undefined ? writeViewerLogin : viewerLogin;
 
   const renderItems = useMemo(() => buildRenderItems(filtered), [filtered]);
 
@@ -536,7 +540,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
                     laneId={laneId}
                     repoOwner={repoOwner}
                     repoName={repoName}
-                    viewerLogin={viewerLogin}
+                     viewerLogin={mutationViewerLogin}
                     focusedEventId={focusedEventId}
                   />
                 );
@@ -582,7 +586,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
                   laneId={laneId}
                   repoOwner={repoOwner}
                   repoName={repoName}
-                  viewerLogin={viewerLogin}
+                   viewerLogin={mutationViewerLogin}
                   onFocus={setFocusedEventId}
                 />
               );
@@ -1104,16 +1108,16 @@ function TimelineRowContent({
     case "pr_opened":
       return <PrOpenedBanner event={event} />;
     case "description":
-      return (
-        <Card author={event.author} avatarUrl={event.avatarUrl} ts={event.timestamp}>
-          {near && event.body ? (
-            <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
-              {event.body}
-            </PrMarkdown>
-          ) : (
-            <BodySkeleton />
-          )}
-        </Card>
+      return near ? (
+        <DescriptionContent
+          event={event}
+          prId={prId}
+          viewerLogin={viewerLogin}
+          repoOwner={repoOwner}
+          repoName={repoName}
+        />
+      ) : (
+        <BodySkeleton />
       );
     case "commit_push":
       return <CommitDivider event={event} focused={focused} repoOwner={repoOwner} repoName={repoName} />;
@@ -1175,27 +1179,16 @@ function TimelineRowContent({
         <BodySkeleton height={140} />
       );
     case "issue_comment": {
-      // A bot-authored issue comment (e.g. ADE's "## ADE review" summary) can be
-      // huge; collapse long ones so they don't wall off the end of the thread.
-      const collapseBotComment = Boolean(event.isBot && event.body && isLongBotCommentBody(event.body));
-      return (
-        <Card
-          author={event.author}
-          avatarUrl={event.avatarUrl}
-          ts={event.timestamp}
-        >
-          {near && event.body ? (
-            collapseBotComment ? (
-              <CollapsibleCommentBody body={event.body} repoOwner={repoOwner} repoName={repoName} />
-            ) : (
-              <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
-                {event.body}
-              </PrMarkdown>
-            )
-          ) : (
-            <BodySkeleton />
-          )}
-        </Card>
+      return near ? (
+        <IssueCommentContent
+          event={event}
+          prId={prId}
+          viewerLogin={viewerLogin}
+          repoOwner={repoOwner}
+          repoName={repoName}
+        />
+      ) : (
+        <BodySkeleton />
       );
     }
     case "check_update":
@@ -1918,38 +1911,6 @@ function CommitDivider({
   );
 }
 
-/* ══════════════════ Small building blocks ══════════════════ */
-
-function Card({
-  author,
-  avatarUrl,
-  ts,
-  children,
-}: {
-  author: string | null;
-  avatarUrl?: string | null;
-  ts: string;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      className="flex flex-col gap-2 px-4 py-3"
-      style={{
-        background: COLORS.threadCard,
-        border: "none",
-        borderRadius: 12,
-      }}
-    >
-      <div className="flex items-center gap-2 text-[12px]">
-        <PrUserAvatar user={{ login: author ?? "unknown", avatarUrl: avatarUrl ?? null }} size={22} />
-        <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{author ?? "unknown"}</span>
-        <Timestamp ts={ts} />
-      </div>
-      <div className="min-w-0">{children}</div>
-    </div>
-  );
-}
-
 function InlineRow({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
     <div
@@ -1987,70 +1948,6 @@ function BodySkeleton({ height = 72 }: { height?: number }) {
         border: `1px dashed ${COLORS.border}`,
       }}
     />
-  );
-}
-
-const COLLAPSED_BOT_COMMENT_MAX_HEIGHT = 220;
-
-// Roughly a dozen rendered lines. Also treats a very long single block as long so
-// a wall of prose with few newlines still collapses.
-function isLongBotCommentBody(body: string): boolean {
-  return body.split(/\r?\n/).length > 12 || body.length > 900;
-}
-
-// Collapsed-by-default markdown body with an expand affordance, reusing the same
-// collapse idiom as PrBotReviewCard (no new visual style) so a long bot comment
-// shows a clamped preview instead of a wall of text.
-function CollapsibleCommentBody({
-  body,
-  repoOwner,
-  repoName,
-}: {
-  body: string;
-  repoOwner: string;
-  repoName: string;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="flex flex-col gap-2">
-      <div
-        style={{
-          position: "relative",
-          maxHeight: open ? undefined : COLLAPSED_BOT_COMMENT_MAX_HEIGHT,
-          overflow: "hidden",
-        }}
-      >
-        <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
-          {body}
-        </PrMarkdown>
-        {open ? null : (
-          <div
-            aria-hidden
-            style={{
-              position: "absolute",
-              inset: "auto 0 0 0",
-              height: 48,
-              background: `linear-gradient(to bottom, transparent, ${COLORS.threadCard})`,
-            }}
-          />
-        )}
-      </div>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex items-center gap-1 self-start text-[11px] transition-colors"
-        style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}
-      >
-        <CaretRight
-          size={11}
-          weight="bold"
-          className="transition-transform"
-          style={{ transform: open ? "rotate(90deg)" : "rotate(0deg)" }}
-        />
-        {open ? "Show less" : "Show more"}
-      </button>
-    </div>
   );
 }
 

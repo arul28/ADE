@@ -52,6 +52,7 @@ import { ClaudeInputPump } from "./claudeInputPump";
 import {
   normalizeClaudeInterruptReceipt,
   normalizeClaudeRewindSkippedLinks,
+  normalizeClaudeSdkSessionMessageModel,
 } from "./claudeSdkCompat";
 import {
   createClaudeStructuredActivityState,
@@ -1631,6 +1632,14 @@ type ClaudeKnownQueuedMessage = {
   steer?: QueuedSteer;
 };
 
+type ClaudeTaskToolInput = {
+  subagentType?: string;
+  name?: string;
+  description?: string;
+  isBackground?: boolean;
+  model?: string;
+};
+
 type ClaudeRuntime = {
   kind: "claude";
   sdkSessionId: string | null;
@@ -1661,13 +1670,7 @@ type ClaudeRuntime = {
    * path enrich its envelopes with the `subagent_type` the model picked
    * (e.g. "code-reviewer", "Explore") instead of falling back to "subagent".
    */
-  taskToolInputByToolUseId: Map<string, {
-    subagentType?: string;
-    name?: string;
-    description?: string;
-    isBackground?: boolean;
-    model?: string;
-  }>;
+  taskToolInputByToolUseId: Map<string, ClaudeTaskToolInput>;
   /**
    * Per-workflow-task emit state for the SDK's undocumented
    * `workflow_progress` snapshot on system:task_progress. Keyed by the
@@ -4978,13 +4981,7 @@ function isClaudeSubagentToolName(toolName: string | null | undefined): boolean 
   return toolName === "Task" || toolName === "Agent";
 }
 
-function extractTaskToolInput(input: unknown): {
-  subagentType?: string;
-  name?: string;
-  description?: string;
-  isBackground?: boolean;
-  model?: string;
-} | null {
+function extractTaskToolInput(input: unknown): ClaudeTaskToolInput | null {
   if (!input || typeof input !== "object") return null;
   const record = input as Record<string, unknown>;
   const subagentType = typeof record.subagent_type === "string" && record.subagent_type.trim().length
@@ -19907,6 +19904,7 @@ export function createAgentChatService(args: {
         status: finalStatus,
         summary,
         finalSummary: summary,
+        ...optionalSubagentModelFields(existing?.model ?? model),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         turnId,
@@ -19937,6 +19935,7 @@ export function createAgentChatService(args: {
         ...(parentAgentId ? { parentAgentId } : {}),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
+        ...(model ? { model } : {}),
       });
       return true;
     }
@@ -19972,6 +19971,7 @@ export function createAgentChatService(args: {
         status: finalStatus,
         summary,
         finalSummary: summary,
+        ...optionalSubagentModelFields(model),
         ...(taskType ? { taskType } : {}),
         ...(workflowName ? { workflowName } : {}),
         turnId,
@@ -19989,6 +19989,7 @@ export function createAgentChatService(args: {
       ...(parentAgentId ? { parentAgentId } : {}),
       ...(taskType ? { taskType } : {}),
       ...(workflowName ? { workflowName } : {}),
+      ...(model ? { model } : {}),
     });
     emitChatEvent(managed, {
       type: "subagent_progress",
@@ -19999,6 +20000,7 @@ export function createAgentChatService(args: {
       parentToolUseId,
       description,
       summary,
+      ...optionalSubagentModelFields(model),
       ...(taskType ? { taskType } : {}),
       ...(workflowName ? { workflowName } : {}),
       turnId,
@@ -20362,6 +20364,11 @@ export function createAgentChatService(args: {
           // dropped every background-turn TaskUpdate. applyClaudeTodoToolUpdate
           // has its own apply-once dedupe.
           applyClaudeTodoToolUpdate(state.emittedTodoToolIds, managed, runtime, toolName, block.input, itemId, turnId);
+          const toolUseId = compactString(block.id);
+          if (isClaudeSubagentToolName(toolName) && toolUseId) {
+            const taskInput = extractTaskToolInput(block.input);
+            if (taskInput) rememberClaudeTaskToolInput(managed, runtime, toolUseId, taskInput, turnId);
+          }
         }
       }
       const usage = asRecord(betaMessage?.usage);
@@ -21775,6 +21782,7 @@ export function createAgentChatService(args: {
           const description = String(taskMsg.description ?? existing?.description ?? "");
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+          const model = compactString(taskMsg.model) ?? existing?.model ?? stashed?.model;
           const agentType = existing?.agentType
             ?? stashed?.subagentType
             ?? stashed?.name
@@ -21800,6 +21808,7 @@ export function createAgentChatService(args: {
             ...(parentAgentId ? { parentAgentId } : {}),
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...(model ? { model } : {}),
           });
           emitChatEvent(managed, {
             type: "subagent_progress",
@@ -21821,6 +21830,7 @@ export function createAgentChatService(args: {
             lastToolName: typeof taskMsg.last_tool_name === "string" ? taskMsg.last_tool_name : undefined,
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
+            ...optionalSubagentModelFields(model),
             turnId,
           });
           if (workflowProgress && workflowProgress.agents.length > 0) {
@@ -21855,6 +21865,7 @@ export function createAgentChatService(args: {
           const agentId = existing?.agentId;
           const parentAgentId = existing?.parentAgentId ?? null;
           const agentType = existing?.agentType;
+          const model = existing?.model;
           const taskType = existing?.taskType;
           const workflowName = existing?.workflowName;
           const background = patch.is_backgrounded === true || existing?.background === true;
@@ -21920,6 +21931,7 @@ export function createAgentChatService(args: {
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(model ? { model } : {}),
             });
             continue;
           }
@@ -21954,6 +21966,7 @@ export function createAgentChatService(args: {
               status: finalStatus,
               summary,
               finalSummary: summary,
+              ...optionalSubagentModelFields(model),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               turnId,
@@ -21970,6 +21983,7 @@ export function createAgentChatService(args: {
               ...(parentAgentId ? { parentAgentId } : {}),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
+              ...(model ? { model } : {}),
             });
             emitChatEvent(managed, {
               type: "subagent_progress",
@@ -21980,6 +21994,7 @@ export function createAgentChatService(args: {
               parentToolUseId,
               description,
               summary,
+              ...optionalSubagentModelFields(model),
               ...(taskType ? { taskType } : {}),
               ...(workflowName ? { workflowName } : {}),
               turnId,
@@ -22193,6 +22208,7 @@ export function createAgentChatService(args: {
               : taskMsg.summary ?? gatedFinalSummary ?? "",
           );
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
+          const model = existing?.model ?? stashed?.model;
           const agentType = existing?.agentType
             ?? stashed?.subagentType
             ?? stashed?.name
@@ -22248,6 +22264,7 @@ export function createAgentChatService(args: {
             status: finalStatus,
             summary,
             finalSummary: summary,
+            ...optionalSubagentModelFields(model),
             usage: taskMsg.usage ? {
               totalTokens: typeof taskMsg.usage.total_tokens === "number" ? taskMsg.usage.total_tokens : undefined,
               toolUses: typeof taskMsg.usage.tool_uses === "number" ? taskMsg.usage.tool_uses : undefined,
@@ -22435,7 +22452,7 @@ export function createAgentChatService(args: {
                   // arrive later can be enriched with agentType.
                   if (isClaudeSubagentToolName(toolName) && typeof block.id === "string" && block.id.length) {
                     const taskInput = extractTaskToolInput(block.input);
-                    if (taskInput) runtime.taskToolInputByToolUseId.set(block.id, taskInput);
+                    if (taskInput) rememberClaudeTaskToolInput(managed, runtime, block.id, taskInput, turnId);
                   }
                   emitChatEvent(managed, {
                     type: "activity",
@@ -22635,7 +22652,7 @@ export function createAgentChatService(args: {
                 // path: input arrives via input_json_delta and lands in `raw`.
                 if (isClaudeSubagentToolName(meta.toolName) && meta.toolUseId) {
                   const taskInput = extractTaskToolInput(parsed);
-                  if (taskInput) runtime.taskToolInputByToolUseId.set(meta.toolUseId, taskInput);
+                  if (taskInput) rememberClaudeTaskToolInput(managed, runtime, meta.toolUseId, taskInput, turnId);
                 }
                 // The start-time tool_call carried empty args (input streamed
                 // in afterwards). Re-emit it with the parsed args so history
@@ -25877,6 +25894,68 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Task lifecycle frames can arrive before the assistant tool-use block that
+   * contains the selected child metadata. Keep the complete input when it
+   * lands and correct an already-emitted lifecycle row instead of leaving the
+   * UI to inherit the parent metadata forever.
+   */
+  const rememberClaudeTaskToolInput = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    toolUseId: string,
+    taskInput: ClaudeTaskToolInput,
+    turnId?: string,
+  ): void => {
+    const previous = runtime.taskToolInputByToolUseId.get(toolUseId);
+    const merged = { ...previous, ...taskInput };
+    runtime.taskToolInputByToolUseId.set(toolUseId, merged);
+    const model = merged.model;
+    const agentType = merged.subagentType ?? merged.name;
+    if (!model && !agentType) return;
+
+    const correctedIds = new Set<string>();
+    for (const [key, entry] of runtime.activeSubagents) {
+      if (entry.parentToolUseId !== toolUseId) continue;
+      const nextEntry = {
+        ...entry,
+        ...(model ? { model } : {}),
+        ...(agentType ? { agentType } : {}),
+      };
+      runtime.activeSubagents.set(key, nextEntry);
+      const metadataChanged = nextEntry.model !== entry.model || nextEntry.agentType !== entry.agentType;
+      const identity = nextEntry.agentId ?? nextEntry.taskId;
+      if (
+        !metadataChanged
+        ||
+        correctedIds.has(identity)
+        || (
+          !runtime.emittedSubagentStartIds.has(entry.taskId)
+          && (!entry.agentId || !runtime.emittedSubagentStartIds.has(entry.agentId))
+        )
+      ) {
+        continue;
+      }
+      correctedIds.add(identity);
+      const correctionTurnId = turnId ?? runtime.activeTurnId ?? undefined;
+      emitChatEvent(managed, {
+        type: "subagent_started",
+        taskId: entry.taskId,
+        ...(nextEntry.agentId ? { agentId: nextEntry.agentId } : {}),
+        ...(nextEntry.parentAgentId ? { parentAgentId: nextEntry.parentAgentId } : {}),
+        ...(nextEntry.agentType ? { agentType: nextEntry.agentType } : {}),
+        parentToolUseId: nextEntry.parentToolUseId ?? null,
+        description: nextEntry.description || "Subagent task",
+        ...(nextEntry.background !== undefined ? { background: nextEntry.background } : {}),
+        ...(nextEntry.taskType ? { taskType: nextEntry.taskType } : {}),
+        ...(nextEntry.workflowName ? { workflowName: nextEntry.workflowName } : {}),
+        ...optionalSubagentModelFields(nextEntry.model),
+        ...(correctionTurnId ? { turnId: correctionTurnId } : {}),
+        ...(runtime.sdkSessionId ? { providerSessionId: runtime.sdkSessionId } : {}),
+      });
+    }
+  };
+
   const emitClaudeSubagentResult = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -26075,10 +26154,12 @@ export function createAgentChatService(args: {
         type: "subagent_result",
         taskId: subagent.taskId,
         ...(subagent.agentId ? { agentId: subagent.agentId } : {}),
+        ...(subagent.agentType ? { agentType: subagent.agentType } : {}),
         parentToolUseId: subagent.parentToolUseId ?? undefined,
         status: "stopped",
         summary,
         finalSummary: summary,
+        ...optionalSubagentModelFields(subagent.model),
         turnId,
       });
     }));
@@ -30008,13 +30089,21 @@ export function createAgentChatService(args: {
             if (input.hook_event_name === "SubagentStart") {
               const taskId = input.agent_id;
               const model = stringOrNull((input as unknown as Record<string, unknown>).model);
+              const existing = runtime.activeSubagents.get(taskId);
+              const resolvedModel = model ?? existing?.model;
               runtime.activeSubagents.set(taskId, {
-                taskId,
-                description: input.agent_type,
-                parentToolUseId: null,
-                agentId: input.agent_id,
+                taskId: existing?.taskId ?? taskId,
+                description: existing?.description || input.agent_type,
+                parentToolUseId: existing?.parentToolUseId ?? null,
+                ...(existing?.background !== undefined ? { background: existing.background } : {}),
+                ...(existing?.command ? { command: existing.command } : {}),
+                ...(existing?.finalSummary ? { finalSummary: existing.finalSummary } : {}),
+                agentId: existing?.agentId ?? input.agent_id,
                 agentType: input.agent_type,
-                ...(model ? { model } : {}),
+                ...(existing?.parentAgentId ? { parentAgentId: existing.parentAgentId } : {}),
+                ...(existing?.taskType ? { taskType: existing.taskType } : {}),
+                ...(existing?.workflowName ? { workflowName: existing.workflowName } : {}),
+                ...(resolvedModel ? { model: resolvedModel } : {}),
               });
             }
             return { continue: true };
@@ -47604,6 +47693,14 @@ export function createAgentChatService(args: {
     };
   };
 
+  const mapClaudeSdkSessionMessageWithMetadata = (
+    message: ClaudeSdkSessionMessage,
+    metadata: AgentChatSubagentMetadata | null,
+  ): AgentChatClaudeSessionMessage => transcriptMessageWithMetadata(
+    mapClaudeSdkSessionMessage(message),
+    metadata,
+  );
+
   const getClaudeSessionMessages = async ({
     sessionId,
     laneId,
@@ -48342,20 +48439,20 @@ export function createAgentChatService(args: {
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
     });
-    return messages.map((message: ClaudeSdkSessionMessage) => {
-      const parentToolUseId = (message as unknown as { parent_tool_use_id?: unknown }).parent_tool_use_id;
-      const parentAgentId = (message as unknown as { parent_agent_id?: unknown }).parent_agent_id;
-      const text = extractClaudeSessionMessageText(message.message);
-      return {
-        type: message.type,
-        uuid: message.uuid,
-        sessionId: message.session_id,
-        parentToolUseId: typeof parentToolUseId === "string" ? parentToolUseId : null,
-        parentAgentId: typeof parentAgentId === "string" ? parentAgentId : null,
-        message: message.message,
-        ...(text ? { text } : {}),
-      };
-    });
+    const childModel = messages
+      .map(normalizeClaudeSdkSessionMessageModel)
+      .find((candidate): candidate is string => Boolean(candidate))
+      ?? null;
+    const metadata: AgentChatSubagentMetadata | null = childModel
+      ? {
+        threadId: normalizedAgentId,
+        parentThreadId: claudeSessionId,
+        model: childModel,
+      }
+      : null;
+    return messages.map((message: ClaudeSdkSessionMessage) => (
+      mapClaudeSdkSessionMessageWithMetadata(message, metadata)
+    ));
   };
 
   // The byte bound is a response-boundary invariant: enforce it once here so

@@ -9,6 +9,7 @@ import { subscribeFilesOpenInTools } from "../files/v2/filesOpenRequests";
 import {
   SessionContextMenu,
   type SessionContextMenuLaneActions,
+  type SessionContextMenuOpenIn,
   type SessionContextMenuState,
 } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
@@ -401,6 +402,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // Supplied only for a singleton lane's card, where no lane divider exists
       // to right-click; the session menu then also carries the lane section.
       laneActions?: SessionContextMenuLaneActions | null,
+      openIn?: SessionContextMenuOpenIn | null,
     ) => {
       setContextMenu({
         session,
@@ -409,6 +411,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(binding ? { binding } : {}),
         ...(machineName ? { machineName } : {}),
         ...(laneActions ? { laneActions } : {}),
+        ...(openIn ? { openIn } : {}),
       });
     },
     [],

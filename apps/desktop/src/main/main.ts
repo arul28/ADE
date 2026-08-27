@@ -1637,6 +1637,7 @@ app.whenReady().then(async () => {
       key: readString(record, "key") ?? remoteProjectBindingKey(targetId, projectId),
       targetId,
       runtimeName: readString(record, "runtimeName") ?? "Remote",
+      transport: record.transport === "paired" ? "paired" : "ssh",
       ...(hostname ? { hostname } : {}),
       projectId,
       rootPath,
@@ -2439,6 +2440,7 @@ app.whenReady().then(async () => {
           targetId: binding.targetId,
           projectId: binding.projectId,
           runtimeName: binding.runtimeName,
+          transport: binding.transport ?? "ssh",
           hostname: binding.hostname || binding.runtimeName,
           ...(binding.gitOriginUrl
             ? { gitOriginUrl: binding.gitOriginUrl }

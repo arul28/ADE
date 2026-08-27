@@ -124,7 +124,7 @@ import type {
 	  PrLabel,
 	  PrUser,
 	  PrTeam,
-	  PrReviewThread,
+  PrReviewThread,
   PrReviewThreadComment,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
@@ -134,7 +134,6 @@ import type {
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
   ReactToPrCommentArgs,
-  PrReactionContent,
   ReviewFinding,
   ReviewPublication,
   ReviewPublicationDestination,
@@ -211,6 +210,16 @@ import {
   transcriptGistDescription,
   transcriptGistLinkTitle,
 } from "./prTranscriptGists";
+import {
+  createPrCommentMutations,
+  reactionGroupsByNodeId,
+  reactionToGraphqlEnum,
+  REACTABLE_REACTION_GROUPS_QUERY,
+  resolveReactableSubjectId,
+  toPrComment,
+  toPrReactions,
+  type GithubCommentSource,
+} from "./prCommentMutations";
 
 type CreatePrFromLaneInternalArgs = CreatePrFromLaneArgs & {
   skipBranchPush?: boolean;
@@ -334,6 +343,17 @@ function isActivePrState(state: string | null | undefined): boolean {
 
 function isTerminalPrState(state: string | null | undefined): state is "merged" | "closed" {
   return state === "merged" || state === "closed";
+}
+
+function githubWriteLogin(status: GitHubStatus): string | null {
+  if (status.writeUserLogin) return status.writeUserLogin;
+  const effectiveWriteSource = status.writeAuthSource
+    ?? (status.authSource === "app" || status.authSource === "none"
+      ? "none"
+      : status.authSource);
+  return effectiveWriteSource === status.authSource
+    ? status.userLogin ?? null
+    : null;
 }
 
 type IntegrationProposalRow = {
@@ -1448,18 +1468,32 @@ function toDeploymentState(raw: unknown): PrDeploymentState {
   return DEPLOYMENT_STATES.has(s) ? s : "unknown";
 }
 
-function reactionToGraphqlEnum(content: PrReactionContent): string {
-  switch (content) {
-    case "+1": return "THUMBS_UP";
-    case "-1": return "THUMBS_DOWN";
-    case "laugh": return "LAUGH";
-    case "confused": return "CONFUSED";
-    case "heart": return "HEART";
-    case "hooray": return "HOORAY";
-    case "rocket": return "ROCKET";
-    case "eyes": return "EYES";
-  }
-}
+type GraphqlReviewThreadCommentNode = {
+  id?: unknown;
+  databaseId?: unknown;
+  body?: unknown;
+  url?: unknown;
+  diffHunk?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  author?: { login?: unknown; avatarUrl?: unknown } | null;
+  reactions?: unknown;
+};
+
+type GraphqlReviewThreadNode = {
+  id?: unknown;
+  isResolved?: unknown;
+  isOutdated?: unknown;
+  path?: unknown;
+  line?: unknown;
+  originalLine?: unknown;
+  startLine?: unknown;
+  originalStartLine?: unknown;
+  diffSide?: unknown;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+  comments?: { nodes?: GraphqlReviewThreadCommentNode[] | null } | null;
+};
 
 function toUser(raw: any): PrUser {
   return {
@@ -2039,6 +2073,10 @@ export function createPrService({
     if (coords) return { repo: { owner: coords.repoOwner, name: coords.repoName }, prNumber: coords.githubPrNumber };
     const row = requireRow(prId);
     return { repo: repoFromRow(row), prNumber: Number(row.github_pr_number) };
+  };
+
+  const resolveWriteViewerLogin = async (): Promise<string | null> => {
+    return githubWriteLogin(await githubService.getStatus());
   };
 
   // Security guard for thread-state mutations: confirm the thread actually
@@ -4243,6 +4281,12 @@ export function createPrService({
     );
   };
 
+  const { updateGithubCommentByCoords } = createPrCommentMutations({
+    githubService,
+    resolveWriteViewerLogin,
+    forgetActivityInputs,
+  });
+
   const fetchPr = async (
     repo: GitHubRepoRef,
     prNumber: number,
@@ -4751,7 +4795,7 @@ export function createPrService({
   const graphqlRequest = async <T>(
     query: string,
     variables: Record<string, unknown>,
-    options: { accept?: string; repo?: GitHubRepoRef } = {},
+    options: { accept?: string; repo?: GitHubRepoRef; capability?: "read" | "write" } = {},
   ): Promise<T> => {
     const owner = typeof variables.owner === "string" ? variables.owner.trim() : "";
     const name = typeof variables.name === "string" ? variables.name.trim() : "";
@@ -4762,7 +4806,8 @@ export function createPrService({
     }>({
       method: "POST",
       path: "/graphql",
-      capability: /^\s*mutation\b/i.test(query) ? "write" : "read",
+      capability: options.capability
+        ?? (/^\s*mutation\b/i.test(query) ? "write" : "read"),
       ...(repo ? { repo } : {}),
       body: { query, variables },
       ...(options.accept ? { accept: options.accept } : {}),
@@ -4780,6 +4825,47 @@ export function createPrService({
       throw new Error("GitHub GraphQL request returned no data.");
     }
     return payload.data;
+  };
+
+  const hydrateReactableReactions = async (
+    nodeIds: Array<string | null | undefined>,
+    repo: GitHubRepoRef,
+  ): Promise<Map<string, ReturnType<typeof toPrReactions>>> => {
+    const unique = [...new Set(nodeIds.map((id) => asString(id).trim()).filter(Boolean))];
+    if (unique.length === 0) return new Map();
+    try {
+      const viewer = await resolveWriteViewerLogin();
+      const mapped = new Map<string, ReturnType<typeof toPrReactions>>();
+      for (let offset = 0; offset < unique.length; offset += 100) {
+        const chunk = unique.slice(offset, offset + 100);
+        const data = await graphqlRequest<unknown>(
+          REACTABLE_REACTION_GROUPS_QUERY,
+          { ids: chunk },
+          { repo, capability: "write" },
+        );
+        for (const [id, reactions] of reactionGroupsByNodeId(data, viewer)) {
+          mapped.set(id, reactions);
+        }
+      }
+      return mapped;
+    } catch {
+      return new Map();
+    }
+  };
+
+  const applyHydratedReactions = async <T extends {
+    nodeId?: string | null;
+    reactions?: ReturnType<typeof toPrReactions>;
+  }>(items: T[], repo: GitHubRepoRef): Promise<T[]> => {
+    const ids = items
+      .filter((item) => (item.reactions ?? []).some((reaction) => reaction.user === "unknown"))
+      .map((item) => item.nodeId);
+    if (ids.length === 0) return items;
+    const hydrated = await hydrateReactableReactions(ids, repo);
+    return items.map((item) => {
+      const reactions = item.nodeId ? hydrated.get(item.nodeId) : undefined;
+      return reactions ? { ...item, reactions } : item;
+    });
   };
 
   const githubPrStateCountsByRepo = new Map<string, GitHubPrProjectionStateCounts>();
@@ -5039,41 +5125,27 @@ export function createPrService({
   };
 
   const fetchIssueComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const data = await fetchAllPages<any>({
+    const data = await fetchAllPages<Record<string, unknown>>({
       path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/comments`
     });
 
-    return data.map((entry: any) => ({
-      id: `issue:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
-      author: asString(entry?.user?.login) || "unknown",
-      authorAvatarUrl: asString(entry?.user?.avatar_url) || null,
-      body: asString(entry?.body) || null,
-      source: "issue",
-      url: asString(entry?.html_url) || null,
-      path: null,
-      line: null,
-      createdAt: asString(entry?.created_at) || null,
-      updatedAt: asString(entry?.updated_at) || null
-    }));
+    return data.map((entry) => toPrComment(
+      "issue",
+      entry,
+      `issue:${asString(entry.node_id) || asString(entry.id) || randomUUID()}`,
+    ));
   };
 
   const fetchReviewComments = async (repo: GitHubRepoRef, prNumber: number): Promise<PrComment[]> => {
-    const data = await fetchAllPages<any>({
+    const data = await fetchAllPages<Record<string, unknown>>({
       path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/comments`
     });
 
-    return data.map((entry: any) => ({
-      id: `review:${asString(entry?.node_id) || String(entry?.id ?? randomUUID())}`,
-      author: asString(entry?.user?.login) || "unknown",
-      authorAvatarUrl: asString(entry?.user?.avatar_url) || null,
-      body: asString(entry?.body) || null,
-      source: "review",
-      url: asString(entry?.html_url) || null,
-      path: asString(entry?.path) || null,
-      line: Number.isFinite(Number(entry?.line)) ? Number(entry?.line) : null,
-      createdAt: asString(entry?.created_at) || null,
-      updatedAt: asString(entry?.updated_at) || null
-    }));
+    return data.map((entry) => toPrComment(
+      "review",
+      entry,
+      `review:${asString(entry.node_id) || asString(entry.id) || randomUUID()}`,
+    ));
   };
 
   const fetchReviewThreads = async (repo: GitHubRepoRef, prNumber: number): Promise<PrReviewThread[]> => {
@@ -5103,20 +5175,30 @@ export function createPrService({
                 # Threads with more than 50 comments will have truncated data and
                 # thread-level timestamps (createdAt/updatedAt) are derived from this
                 # incomplete slice. Paginating comments requires schema changes.
-                comments(first: 50) {
-                  nodes {
-                    id
-                    body
-                    url
+                 comments(first: 50) {
+                   nodes {
+                     id
+                     databaseId
+                     body
+                     url
                     diffHunk
                     createdAt
                     updatedAt
-                    author {
-                      login
-                      avatarUrl
-                    }
-                  }
-                }
+                     author {
+                       login
+                       avatarUrl
+                     }
+                      # Keep the worst-case nested node count below GitHub's 500k
+                      # response limit: 100 threads × 50 comments × 20 reactions.
+                      reactions(first: 20) {
+                       nodes {
+                         id
+                         content
+                         user { login }
+                       }
+                     }
+                   }
+                 }
               }
             }
           }
@@ -5130,7 +5212,7 @@ export function createPrService({
           pullRequest?: {
             reviewThreads?: {
               pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
-              nodes?: any[];
+              nodes?: GraphqlReviewThreadNode[] | null;
             } | null;
           } | null;
         } | null;
@@ -5143,18 +5225,20 @@ export function createPrService({
 
       const reviewThreads: {
         pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } | null;
-        nodes?: any[];
+        nodes?: GraphqlReviewThreadNode[] | null;
       } | null | undefined = data.repository?.pullRequest?.reviewThreads;
       const nodes = Array.isArray(reviewThreads?.nodes) ? reviewThreads.nodes : [];
       for (const node of nodes) {
         const comments: PrReviewThreadComment[] = Array.isArray(node?.comments?.nodes)
-          ? node.comments.nodes.map((entry: any) => ({
+          ? node.comments.nodes.map((entry: GraphqlReviewThreadCommentNode) => ({
               id: asString(entry?.id) || String(randomUUID()),
+              githubId: Number.isSafeInteger(Number(entry?.databaseId)) ? Number(entry.databaseId) : null,
               author: asString(entry?.author?.login) || "unknown",
               authorAvatarUrl: asString(entry?.author?.avatarUrl) || null,
               body: asString(entry?.body) || null,
               url: asString(entry?.url) || null,
               diffHunk: asString(entry?.diffHunk) || null,
+              reactions: toPrReactions(entry?.reactions),
               createdAt: asString(entry?.createdAt) || null,
               updatedAt: asString(entry?.updatedAt) || null,
             }))
@@ -5877,7 +5961,12 @@ export function createPrService({
       if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
       return a.id.localeCompare(b.id);
     });
-    return rememberActivityInput("comments", repo, prNumber, merged);
+    return rememberActivityInput(
+      "comments",
+      repo,
+      prNumber,
+      await applyHydratedReactions<PrComment>(merged, repo),
+    );
   };
 
   const getComments = async (prId: string): Promise<PrComment[]> => {
@@ -5894,6 +5983,8 @@ export function createPrService({
   const prDetailFromGithubPull = (data: any, prId: string): PrDetail => ({
     prId,
     body: normalizePrDetailBody(asString(data?.body)),
+    nodeId: asString(data?.node_id) || null,
+    reactions: toPrReactions(data?.reactions),
     labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
     assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
     requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
@@ -5910,7 +6001,8 @@ export function createPrService({
   ): Promise<{ detail: PrDetail; rawPull: any }> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const data = await fetchRawPullMemoized(repo, Number(coords.githubPrNumber));
-    return { detail: prDetailFromGithubPull(data, prId), rawPull: data };
+    const [detail] = await applyHydratedReactions<PrDetail>([prDetailFromGithubPull(data, prId)], repo);
+    return { detail, rawPull: data };
   };
 
   const getDetailSnapshotByCoords = async (coords: PrGithubCoords, prId: string): Promise<PrDetail> => {
@@ -9426,15 +9518,7 @@ export function createPrService({
   /** The account that performed the merge is the authenticated viewer. */
   const resolveViewerLoginForMerge = async (): Promise<string | null> => {
     try {
-      const status = await githubService.getStatus();
-      if (status.writeUserLogin) return status.writeUserLogin;
-      const effectiveWriteSource = status.writeAuthSource
-        ?? (status.authSource === "app" || status.authSource === "none"
-          ? "none"
-          : status.authSource);
-      return effectiveWriteSource === status.authSource
-        ? status.userLogin ?? null
-        : null;
+      return await resolveWriteViewerLogin();
     } catch {
       return null;
     }
@@ -9627,6 +9711,7 @@ export function createPrService({
     return {
       repo,
       viewerLogin: githubStatus.userLogin,
+      writeViewerLogin: githubWriteLogin(githubStatus),
       repoPullRequests: projectionRows.map((row) => gitHubItemFromProjection(row, metadata, "repo")),
       externalPullRequests: [],
       syncedAt: projectionRows[0]?.synced_at || nowIso(),
@@ -9655,6 +9740,7 @@ export function createPrService({
       return {
         repo: null,
         viewerLogin: githubStatus.userLogin,
+        writeViewerLogin: githubWriteLogin(githubStatus),
         repoPullRequests: [],
         externalPullRequests: [],
         syncedAt: nowIso(),
@@ -9745,6 +9831,7 @@ export function createPrService({
     return {
       repo,
       viewerLogin: githubStatus.userLogin,
+      writeViewerLogin: githubWriteLogin(githubStatus),
       repoPullRequests,
       externalPullRequests: [],
       syncedAt,
@@ -11705,29 +11792,17 @@ export function createPrService({
     async addComment(args: AddPrCommentArgs): Promise<PrComment> {
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
-      const { data } = await githubService.apiRequest<any>({
+      const { data } = await githubService.apiRequest<Record<string, unknown>>({
         method: "POST",
         path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/comments`,
         body: { body: args.body }
       });
       forgetActivityInputs(repo, Number(row.github_pr_number));
-      const comment: PrComment = {
-        id: String(data?.id ?? ""),
-        author: asString(data?.user?.login) || "",
-        authorAvatarUrl: asString(data?.user?.avatar_url) || null,
-        body: asString(data?.body) || null,
-        source: "issue",
-        url: asString(data?.html_url) || null,
-        path: null,
-        line: null,
-        createdAt: asString(data?.created_at) || null,
-        updatedAt: asString(data?.updated_at) || null
-      };
-      return comment;
+      return toPrComment("issue", data);
     },
 
     /**
-     * Row-independent issue-comment edit by GitHub coordinates. Lets callers
+     * Row-independent comment edit by GitHub coordinates. Lets callers
      * finalize a comment they posted even if the PR's local row was deleted
      * (e.g. unmapped mid-review). In-process only — NOT IPC-exposed — so the
      * authz scoping that `updateComment` performs against a live row does not
@@ -11738,48 +11813,39 @@ export function createPrService({
       repoName: string;
       commentId: string;
       body: string;
+      source?: GithubCommentSource;
     }): Promise<void> {
-      const commentId = Number(args.commentId);
-      if (!Number.isInteger(commentId) || commentId <= 0) throw new Error("Invalid comment id.");
-      await githubService.updateIssueComment(args.repoOwner, args.repoName, commentId, args.body);
+      await updateGithubCommentByCoords({
+        ...args,
+        source: args.source ?? "issue",
+      });
     },
 
     async updateComment(args: UpdatePrCommentArgs): Promise<PrComment> {
+      const source = args.source ?? "issue";
+      const synthetic = parseSyntheticGithubPrId(args.prId);
+      if (synthetic) {
+        return await updateGithubCommentByCoords({
+          repoOwner: synthetic.repoOwner,
+          repoName: synthetic.repoName,
+          prNumber: synthetic.githubPrNumber,
+          commentId: args.commentId,
+          body: args.body,
+          source,
+        });
+      }
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
-      // Validate the comment id and confirm it belongs to this PR before
-      // patching — `commentId` is caller-supplied, and GitHub's issue-comment
-      // PATCH endpoint is repo-scoped (any comment id in the repo would
-      // otherwise be editable).
-      const commentId = Number(args.commentId);
-      if (!Number.isInteger(commentId) || commentId <= 0) throw new Error("Invalid comment id.");
-      const { data: existing } = await githubService.apiRequest<any>({
-        method: "GET",
-        path: `/repos/${repo.owner}/${repo.name}/issues/comments/${commentId}`,
+      // The coordinate helper validates the caller-supplied id, confirms it
+      // belongs to this PR, and checks ownership before issuing the PATCH.
+      return await updateGithubCommentByCoords({
+        repoOwner: repo.owner,
+        repoName: repo.name,
+        prNumber: Number(row.github_pr_number),
+        commentId: args.commentId,
+        body: args.body,
+        source,
       });
-      const issueUrl = asString(existing?.issue_url);
-      if (!issueUrl.endsWith(`/issues/${Number(row.github_pr_number)}`)) {
-        throw new Error("Comment does not belong to the target PR.");
-      }
-      const { data } = await githubService.apiRequest<any>({
-        method: "PATCH",
-        path: `/repos/${repo.owner}/${repo.name}/issues/comments/${commentId}`,
-        body: { body: args.body }
-      });
-      forgetActivityInputs(repo, Number(row.github_pr_number));
-      const comment: PrComment = {
-        id: String(data?.id ?? args.commentId),
-        author: asString(data?.user?.login) || "",
-        authorAvatarUrl: asString(data?.user?.avatar_url) || null,
-        body: asString(data?.body) || null,
-        source: "issue",
-        url: asString(data?.html_url) || null,
-        path: null,
-        line: null,
-        createdAt: asString(data?.created_at) || null,
-        updatedAt: asString(data?.updated_at) || null
-      };
-      return comment;
     },
 
     async replyToReviewThread(args: ReplyToPrReviewThreadArgs): Promise<PrReviewThreadComment> {
@@ -11949,7 +12015,13 @@ export function createPrService({
     async reactToComment(args: ReactToPrCommentArgs): Promise<void> {
       // Node ids are global, but the repository context lets GitHub credential
       // failover skip tokens that cannot write to this PR's repository.
-      const { repo } = resolvePrThreadTarget(args.prId);
+      const { repo, prNumber } = resolvePrThreadTarget(args.prId);
+      const subjectId = await resolveReactableSubjectId({
+        githubService,
+        repo,
+        prNumber,
+        commentId: args.commentId,
+      });
       const contentEnum = reactionToGraphqlEnum(args.content);
       await graphqlRequest(
         `
@@ -11959,7 +12031,7 @@ export function createPrService({
             }
           }
         `,
-        { subjectId: args.commentId, content: contentEnum },
+        { subjectId, content: contentEnum },
         { repo },
       );
     },

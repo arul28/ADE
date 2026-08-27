@@ -37,65 +37,154 @@ import type { GitHubStatus } from "../../../shared/types";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { readStoredProjectSettingsRoute } from "./projectRouteStorage";
 
-const mainItems = [
-  { to: "/work", label: "Work", icon: Terminal },
-  { to: "/lanes", label: "Lanes", icon: GitBranch },
-  { to: "/files", label: "Files", icon: FileCode },
-  { to: "/prs", label: "PRs", icon: GitPullRequest },
-  { to: "/review", label: "Review", icon: MagnifyingGlass },
-  { to: "/cto", label: "CTO", icon: Brain },
-  { to: "/graph", label: "Graph", icon: Graph },
-  { to: "/history", label: "History", icon: ClockCounterClockwise },
-  { to: "/automations", label: "Automations", icon: Robot },
-] as const;
+type TabNavItem = {
+  to: string;
+  label: string;
+  icon: React.ElementType;
+  description: string;
+  docUrl?: string;
+  requiresProject?: boolean;
+  idleEffect?: string;
+  activeEffect?: string;
+  /** Plugin tabs only: the manifest accent, applied as a CSS variable. */
+  accent?: string | null;
+  /** Plugin tabs only: draws the attention dot. */
+  attention?: boolean;
+};
 
-const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;
-const SIDEBAR_ICON_SIZE = 20;
-const SIDEBAR_AVATAR_SIZE_CLASS = "h-5 w-5";
-const TAB_TOOLTIP_BY_PATH: Record<string, Omit<SmartTooltipContent, "label">> = {
-  "/work": {
+const mainItems: TabNavItem[] = [
+  {
+    to: "/work",
+    label: "Work",
+    icon: Terminal,
     description: "Chat with agents, launch CLI sessions, inspect shells, and use the right-side tool drawers.",
     docUrl: docs.chatOverview,
   },
-  "/lanes": {
+  {
+    to: "/lanes",
+    label: "Lanes",
+    icon: GitBranch,
     description: "Create, inspect, stack, rebase, and clean up isolated worktrees for parallel work.",
     docUrl: docs.lanesOverview,
   },
-  "/files": {
+  {
+    to: "/files",
+    label: "Files",
+    icon: FileCode,
     description: "Browse lane workspaces, inspect file changes, and open project files without leaving ADE.",
     docUrl: docs.filesEditor,
   },
-  "/prs": {
+  {
+    to: "/prs",
+    label: "PRs",
+    icon: GitPullRequest,
     description: "Review ADE and GitHub pull requests, queues, integration proposals, checks, and merge readiness.",
     docUrl: docs.prsOverview,
   },
-  "/review": {
+  {
+    to: "/review",
+    label: "Review",
+    icon: MagnifyingGlass,
     description: "Run and inspect AI review passes for the current project and PR workflow.",
     docUrl: docs.prsOverview,
   },
-  "/cto": {
+  {
+    to: "/cto",
+    label: "CTO",
+    icon: Brain,
     description: "Chat with the persistent project CTO and manage its identity and settings.",
     docUrl: docs.ctoOverview,
   },
-  "/graph": {
+  {
+    to: "/graph",
+    label: "Graph",
+    icon: Graph,
     description: "See lane topology, conflict risk, PR overlays, sync presence, and integration proposals on one canvas.",
     docUrl: docs.workspaceGraph,
   },
-  "/history": {
+  {
+    to: "/history",
+    label: "History",
+    icon: ClockCounterClockwise,
     description: "Explore commit history, lane operations, branch links, and recent project movement.",
     docUrl: docs.historyOverview,
   },
-  "/automations": {
+  {
+    to: "/automations",
+    label: "Automations",
+    icon: Robot,
     description: "Manage automation rules that trigger ADE work from events, schedules, and guarded actions.",
     docUrl: docs.automationsOverview,
   },
-  "/settings": {
-    description: "Configure AI providers, GitHub, Linear, voice, lane behavior, templates, keybindings, and local project settings.",
-    docUrl: docs.settingsGeneral,
-  },
+];
+
+const settingsItem: TabNavItem = {
+  to: "/settings",
+  label: "Settings",
+  icon: GearSix,
+  description: "Configure AI providers, GitHub, Linear, voice, lane behavior, templates, keybindings, and local project settings.",
+  docUrl: docs.settingsGeneral,
 };
 
-const marketplaceItem = { to: "/marketplace", label: "Marketplace", icon: MARKETPLACE_ICON } as const;
+const chatsItem: TabNavItem = {
+  to: "/chats",
+  label: "Chats",
+  icon: ChatCircleDots,
+  description: "Chat with ADE agents without opening or linking a project.",
+  requiresProject: false,
+  idleEffect: "Opens projectless chats.",
+  activeEffect: "Already viewing chats.",
+};
+
+/**
+ * Marketplace sits between Chats and Account: like both of them it is a
+ * machine-level surface, so it stays reachable with no project open — which is
+ * exactly when someone is most likely to be adding a plugin.
+ */
+const marketplaceItem: TabNavItem = {
+  to: "/marketplace",
+  label: "Marketplace",
+  icon: MARKETPLACE_ICON,
+  description: "Find plugins, themes, and extra tabs, and manage the ones you have.",
+  requiresProject: false,
+  idleEffect: "Opens the marketplace.",
+  activeEffect: "Already viewing the marketplace.",
+};
+const SIDEBAR_ICON_SIZE = 20;
+const SIDEBAR_AVATAR_SIZE_CLASS = "h-5 w-5";
+
+function tabNavTooltipEffect(args: {
+  hasActiveProject: boolean;
+  showWelcome: boolean;
+  isActive: boolean;
+  label: string;
+}): string {
+  if (!args.hasActiveProject) return "Open or create a project first.";
+  if (args.showWelcome) return "Finish choosing a project before navigating.";
+  if (args.isActive) return "Already viewing this tab.";
+  return `Opens ${args.label}.`;
+}
+
+function tabItemEffect(
+  it: TabNavItem,
+  args: {
+    hasActiveProject: boolean;
+    showWelcome: boolean;
+    isActive: boolean;
+    label: string;
+  },
+): string {
+  if (it.activeEffect && it.idleEffect) {
+    return args.isActive ? it.activeEffect : it.idleEffect;
+  }
+  return tabNavTooltipEffect(args);
+}
+
+function tabNavTarget(to: string, prsRoute: string | null, settingsRoute: string | null): string {
+  if (to === "/prs") return prsRoute ?? to;
+  if (to === "/settings") return settingsRoute ?? to;
+  return to;
+}
 
 function primaryTabPath(pathname: string): string {
   if (pathname === "/chats" || pathname.startsWith("/chats/")) return "/chats";
@@ -172,171 +261,125 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     setContextMenu({ x: event.clientX, y: event.clientY });
   }, []);
 
-  const renderItem = (
-    it: {
-      to: string;
-      label: string;
-      icon: React.ElementType;
-      /** Plugin tabs only: the manifest accent, applied as a CSS variable. */
-      accent?: string | null;
-      /** Plugin tabs only: draws the attention dot. */
-      attention?: boolean;
-      description?: string;
-    },
-  ) => {
+  const renderItem = (it: TabNavItem) => {
     const onWelcomeLanding = showWelcome || !hasActiveProject;
-    const isActive = !onWelcomeLanding && primaryTabPath(location.pathname) === it.to;
-    const isActiveAllowed = !showWelcome && hasActiveProject;
-    const navTarget = it.to === "/prs"
-      ? readStoredPrsRoute(activeProjectRoot) ?? it.to
-      : it.to === "/settings"
-        ? storedSettingsRoute ?? it.to
-        : it.to;
-    const tooltipBase = TAB_TOOLTIP_BY_PATH[it.to];
+    const requiresProject = it.requiresProject !== false;
+    const isActive = requiresProject
+      ? !onWelcomeLanding && primaryTabPath(location.pathname) === it.to
+      : primaryTabPath(location.pathname) === it.to;
+    const isActiveAllowed = !requiresProject || (!showWelcome && hasActiveProject);
+    const navTarget = tabNavTarget(it.to, readStoredPrsRoute(activeProjectRoot), storedSettingsRoute);
     const tooltip: SmartTooltipContent = {
       label: it.label,
-      description: it.description ?? tooltipBase?.description ?? `Open the ${it.label} tab.`,
-      effect: !hasActiveProject
-          ? "Open or create a project first."
-          : showWelcome
-            ? "Finish choosing a project before navigating."
-            : isActive
-              ? "Already viewing this tab."
-              : `Opens ${it.label}.`,
-      docUrl: tooltipBase?.docUrl,
+      description: it.description,
+      effect: tabItemEffect(it, {
+        hasActiveProject,
+        showWelcome,
+        isActive,
+        label: it.label,
+      }),
+      docUrl: it.docUrl,
     };
 
-    if (!isActiveAllowed) {
-      return (
-        <SmartTooltip
-          key={it.to}
-          side="bottom"
-          content={tooltip}
-          wrapperClassName="w-full"
-          wrapperStyle={{ display: "flex" }}
-        >
+    const icon = (
+      <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
+        <span className="relative inline-flex items-center">
+          <it.icon
+            size={SIDEBAR_ICON_SIZE}
+            weight="regular"
+            className="ade-shell-sidebar-icon shrink-0 transition-colors duration-150"
+            {...(it.accent && isActive ? { color: "var(--plugin-accent)" } : {})}
+          />
+          {isActiveAllowed && it.to === "/work" && terminalAttention.indicator !== "none" ? (
+            <span
+              title={
+                terminalAttention.indicator === "running-needs-attention"
+                  ? `${terminalAttention.needsAttentionCount} terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
+                  : "All active terminals running"
+              }
+              className={cn(
+                "absolute -right-1 -top-1 ade-status-dot",
+                terminalAttention.indicator === "running-needs-attention"
+                  ? "ade-status-dot-warning"
+                  : "ade-status-dot-active",
+              )}
+            />
+          ) : null}
+          {isActiveAllowed && it.to === "/cto" && ctoAttention.awaitingInput ? (
+            <span
+              title={ctoWaitingLabel}
+              className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
+            />
+          ) : null}
+          {/* Plugin attention dot. Same socket as Work and CTO above, but driven
+              by the plugin registry rather than a bespoke store field — a plugin
+              sets `attention` and the rail shows a dot. Off unless a plugin asks
+              for it. */}
+          {it.attention ? (
+            <span
+              title={`${it.label} needs your attention`}
+              className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
+            />
+          ) : null}
+        </span>
+      </span>
+    );
+
+    const row = isActiveAllowed ? (
+      <NavLink
+        to={navTarget}
+        data-active={isActive ? "true" : undefined}
+        onClick={() => {
+          logRendererDebugEvent("renderer.tab_nav.click", {
+            projectRoot: activeProjectRoot,
+            from: location.pathname,
+            to: navTarget,
+            showWelcome,
+            hasActiveProject,
+          });
+        }}
+        className="ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100"
+        // A plugin's accent is published as a variable rather than written into
+        // a class, so it participates in the cascade and cannot leak past the
+        // one item it belongs to.
+        style={it.accent ? ({ "--plugin-accent": it.accent } as React.CSSProperties) : undefined}
+      >
+        {/* Active indicator bar. A plugin tab tints it with its own accent;
+            every core tab keeps the neutral overlay. */}
+        {isActive ? (
           <div
-            role="link"
-            aria-disabled="true"
-            tabIndex={0}
-            className={cn(
-              "ade-shell-sidebar-item group relative flex w-full cursor-not-allowed items-center transition-colors duration-100 opacity-40",
-            )}
-          >
-            <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
-              <span className="relative inline-flex items-center">
-                <it.icon
-                  size={SIDEBAR_ICON_SIZE}
-                  weight="regular"
-                  className={cn("ade-shell-sidebar-icon shrink-0 transition-colors duration-150")}
-                />
-              </span>
-            </span>
-            <span className="ade-tab-label whitespace-nowrap">{it.label}</span>
-          </div>
-        </SmartTooltip>
-      );
-    }
+            className="absolute inset-0 bg-white/[0.08]"
+            style={
+              it.accent
+                ? { background: "color-mix(in srgb, var(--plugin-accent) 16%, transparent)" }
+                : undefined
+            }
+          />
+        ) : null}
+        {icon}
+        <span className="ade-tab-label whitespace-nowrap">{it.label}</span>
+      </NavLink>
+    ) : (
+      <div
+        role="link"
+        aria-disabled="true"
+        tabIndex={0}
+        className="ade-shell-sidebar-item group relative flex w-full cursor-not-allowed items-center transition-colors duration-100 opacity-40"
+      >
+        {icon}
+        <span className="ade-tab-label whitespace-nowrap">{it.label}</span>
+      </div>
+    );
 
     return (
       <SmartTooltip
         key={it.to}
-        side="bottom"
+        side="right"
         content={tooltip}
         wrapperClassName="w-full"
         wrapperStyle={{ display: "flex" }}
       >
-        <NavLink
-          to={navTarget}
-          data-active={isActive ? "true" : undefined}
-          onClick={() => {
-            logRendererDebugEvent("renderer.tab_nav.click", {
-              projectRoot: activeProjectRoot,
-              from: location.pathname,
-              to: navTarget,
-              showWelcome,
-              hasActiveProject,
-            });
-          }}
-          className={cn(
-            "ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100",
-          )}
-          // A plugin's accent is published as a variable rather than written
-          // into a class, so it participates in the cascade and cannot leak
-          // past the one item it belongs to.
-          style={it.accent ? ({ "--plugin-accent": it.accent } as React.CSSProperties) : undefined}
-        >
-          {/* Active indicator bar. A plugin tab tints it with its own accent;
-              every core tab keeps the neutral overlay. */}
-          {isActive && (
-            <div
-              className="absolute inset-0 bg-white/[0.08]"
-              style={
-                it.accent
-                  ? { background: "color-mix(in srgb, var(--plugin-accent) 16%, transparent)" }
-                  : undefined
-              }
-            />
-          )}
-
-          {/* Fixed-width icon container - never moves during collapse */}
-          <span className="ade-shell-sidebar-icon-slot flex items-center justify-center shrink-0">
-            <span className="relative inline-flex items-center">
-              <it.icon
-                size={SIDEBAR_ICON_SIZE}
-                weight="regular"
-                className={cn(
-                  "ade-shell-sidebar-icon shrink-0 transition-colors duration-150",
-                )}
-                {...(it.accent && isActive ? { color: "var(--plugin-accent)" } : {})}
-              />
-              {/* Terminal attention dot */}
-              {it.to === "/work" && terminalAttention.indicator !== "none" ? (
-                <span
-                  title={
-                    terminalAttention.indicator === "running-needs-attention"
-                      ? `${terminalAttention.needsAttentionCount} terminal${terminalAttention.needsAttentionCount === 1 ? " needs" : "s need"} input`
-                      : "All active terminals running"
-                  }
-                  className={cn(
-                    "absolute -right-1 -top-1 ade-status-dot",
-                    terminalAttention.indicator === "running-needs-attention"
-                      ? "ade-status-dot-warning"
-                      : "ade-status-dot-active",
-                  )}
-                />
-              ) : null}
-              {/* CTO attention dot. The CTO thread is hidden from every session
-                  roster, so it cannot borrow the Work dot above — without this
-                  a question from the CTO would surface nowhere. */}
-              {it.to === "/cto" && ctoAttention.awaitingInput ? (
-                <span
-                  title={ctoWaitingLabel}
-                  className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
-                />
-              ) : null}
-              {/* Plugin attention dot. Same socket as Work and CTO above, but
-                  driven by the plugin registry rather than a bespoke store
-                  field — a plugin sets `attention` and the rail shows a dot.
-                  Off unless a plugin asks for it. */}
-              {it.attention ? (
-                <span
-                  title={`${it.label} needs your attention`}
-                  className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
-                />
-              ) : null}
-            </span>
-          </span>
-
-          {/* Label - opacity-animated separately from width transition */}
-          <span
-            className={cn(
-              "ade-tab-label whitespace-nowrap",
-            )}
-          >
-            {it.label}
-          </span>
-        </NavLink>
+        {row}
       </SmartTooltip>
     );
   };
@@ -356,6 +399,8 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     : mainItems.slice(4)
   ).filter((it) => builtinTabVisible(it.to));
   const showSettings = !webMode || WEB_CLIENT_TAB_PATHS.has(settingsItem.to);
+  // On the list for web: the marketplace reads and installs through the sync
+  // adapter, so browsing and managing a machine's plugins works from a browser.
   const showMarketplace = !webMode || WEB_CLIENT_TAB_PATHS.has(marketplaceItem.to);
 
   // Plugin tabs form a third group below the tool divider, with their own
@@ -369,7 +414,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   // client never shows a nav item that opens an empty shell.
   const installedPlugins = useRootAppStore((s) => s.installedPlugins);
   const canServePluginTabs = pluginTabsAvailable();
-  const pluginItems = React.useMemo(
+  const pluginItems = React.useMemo<TabNavItem[]>(
     () =>
       canServePluginTabs
         ? installedPlugins
@@ -429,75 +474,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
         {/* Spacer pushes settings to bottom */}
         <div className="mt-auto" />
 
-        <SmartTooltip
-          side="bottom"
-          content={{
-            label: "Chats",
-            description: "Chat with ADE agents without opening or linking a project.",
-            effect: primaryTabPath(location.pathname) === "/chats" ? "Already viewing chats." : "Opens projectless chats.",
-          }}
-          wrapperClassName="w-full"
-          wrapperStyle={{ display: "flex" }}
-        >
-          <NavLink
-            to="/chats"
-            data-active={primaryTabPath(location.pathname) === "/chats" ? "true" : undefined}
-            onClick={() => {
-              logRendererDebugEvent("renderer.tab_nav.click", {
-                projectRoot: activeProjectRoot,
-                from: location.pathname,
-                to: "/chats",
-                showWelcome,
-                hasActiveProject,
-              });
-            }}
-            className="ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100"
-          >
-            {primaryTabPath(location.pathname) === "/chats" ? <div className="absolute inset-0 bg-white/[0.08]" /> : null}
-            <span className="ade-shell-sidebar-icon-slot flex shrink-0 items-center justify-center">
-              <ChatCircleDots size={SIDEBAR_ICON_SIZE} weight="regular" className="ade-shell-sidebar-icon shrink-0" />
-            </span>
-            <span className="ade-tab-label whitespace-nowrap">Chats</span>
-          </NavLink>
-        </SmartTooltip>
+        {renderItem(chatsItem)}
 
-        {/* Marketplace sits between Chats and Account: like both of them it is a
-            machine-level surface, so it stays reachable with no project open —
-            which is exactly when someone is most likely to be adding a plugin.
-            On the list for web: it reads and installs through the sync adapter,
-            so browsing and managing a machine's plugins works from a browser. */}
-        {showMarketplace ? (
-          <SmartTooltip
-            side="bottom"
-            content={{
-              label: marketplaceItem.label,
-              description: "Find plugins, themes, and extra tabs, and manage the ones you have.",
-              effect: primaryTabPath(location.pathname) === marketplaceItem.to
-                ? "Already viewing the marketplace."
-                : "Opens the marketplace.",
-            }}
-            wrapperClassName="w-full"
-            wrapperStyle={{ display: "flex" }}
-          >
-            <NavLink
-              to={marketplaceItem.to}
-              data-active={primaryTabPath(location.pathname) === marketplaceItem.to ? "true" : undefined}
-              className="ade-shell-sidebar-item group relative flex w-full items-center transition-colors duration-100"
-            >
-              {primaryTabPath(location.pathname) === marketplaceItem.to ? (
-                <div className="absolute inset-0 bg-white/[0.08]" />
-              ) : null}
-              <span className="ade-shell-sidebar-icon-slot flex shrink-0 items-center justify-center">
-                <marketplaceItem.icon
-                  size={SIDEBAR_ICON_SIZE}
-                  weight="regular"
-                  className="ade-shell-sidebar-icon shrink-0"
-                />
-              </span>
-              <span className="ade-tab-label whitespace-nowrap">{marketplaceItem.label}</span>
-            </NavLink>
-          </SmartTooltip>
-        ) : null}
+        {showMarketplace ? renderItem(marketplaceItem) : null}
 
         {/* Account avatar — provider-aware image → monogram, routes to /account.
             Always present so account access stays discoverable from the sidebar. */}

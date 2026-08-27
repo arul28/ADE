@@ -183,10 +183,6 @@ vi.mock("../projects/ProjectWelcomePage", () => ({
   ProjectWelcomePage: () => <div data-testid="project-page" />,
 }));
 
-vi.mock("../onboarding/GlossaryPage", () => ({
-  GlossaryPage: () => <div data-testid="glossary-page" />,
-}));
-
 vi.mock("../terminals/TerminalsPage", async () => {
   const ReactModule = await vi.importActual("react") as typeof ReactNamespace;
   const Router = await vi.importActual("react-router-dom") as typeof RouterNamespace;

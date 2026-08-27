@@ -17,7 +17,6 @@ import {
   compareUpdateVersions,
   DEFAULT_RELEASE_REPOSITORY,
 } from "../updates/autoUpdateVersions";
-import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Server as NetServer } from "node:net";
@@ -25,6 +24,18 @@ import type { DiskPressureMonitor, DiskPressureSnapshot } from "../storage/diskP
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import {
+  editorTargetDefinition,
+  isRemoteEditorOpenRequest,
+  type EditorTarget,
+  type OpenPathInEditorRemote,
+  type OpenPathTarget,
+} from "../../../shared/editorTargets";
+import { detectInstalledEditorTargets } from "../editors/editorDetection";
+import {
+  openLocalWorkspaceInEditor,
+  openRemoteWorkspaceInEditor,
+} from "../editors/openPathInEditor";
 import { resolveKnownProjectRoot } from "./knownProjectRoots";
 import type { AttemptedProjectRoots } from "./knownProjectRoots";
 import { redactIpcArgsForChannel } from "./ipcChannelRedaction";
@@ -471,7 +482,6 @@ import type {
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
   OnboardingDetectionResult,
-  OnboardingHelpState,
   OnboardingStatus,
   LaneGitHubIssue,
   LaneLinearIssue,
@@ -867,7 +877,6 @@ import type { ConfigReloadService } from "../projects/configReloadService";
 import type { createProjectScaffoldService } from "../projects/projectScaffoldService";
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
-import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -3964,15 +3973,36 @@ export function registerIpc({
     IPC.appOpenPathInEditor,
     async (
       _event,
-      arg: { rootPath: string; relativePath?: string; target: "default" | "finder" | "vscode" | "cursor" | "zed" }
+      arg: {
+        rootPath: string;
+        relativePath?: string;
+        target: OpenPathTarget;
+        remote?: OpenPathInEditorRemote;
+      },
     ): Promise<void> => {
       const rootRaw = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       const relRaw = typeof arg?.relativePath === "string" ? arg.relativePath.trim() : "";
       const target = arg?.target;
       if (!rootRaw) throw new Error("Missing root path.");
-      if (target !== "default" && target !== "finder" && target !== "vscode" && target !== "cursor" && target !== "zed") {
+      const editor = typeof target === "string" && target !== "default" && target !== "finder"
+        ? editorTargetDefinition(target)
+        : null;
+      if (target !== "default" && target !== "finder" && !editor) {
         throw new Error("Unsupported editor target.");
       }
+
+      if (arg?.remote) {
+        if (!isRemoteEditorOpenRequest(arg.remote)) {
+          throw new Error("Remote editor opening is only supported over SSH.");
+        }
+        await openRemoteWorkspaceInEditor({
+          target,
+          hostname: arg.remote.hostname.trim(),
+          rootPath: rootRaw,
+        });
+        return;
+      }
+
       const rootPath = path.resolve(rootRaw);
 
       // Validate the renderer-supplied root is a known workspace root
@@ -4002,105 +4032,19 @@ export function registerIpc({
         throw resolveError;
       }
 
-      if (target === "default") {
-        const errorMessage = await shell.openPath(targetPath);
-        if (errorMessage) {
-          throw new Error(`Failed to open path: ${errorMessage}`);
-        }
-        return;
-      }
-
-      if (target === "finder") {
-        shell.showItemInFolder(targetPath);
-        return;
-      }
-
-      const launchDetached = async (
-        command: string,
-        args: string[],
-        options?: { windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" },
-      ): Promise<void> => {
-        await new Promise<void>((resolve, reject) => {
-          let settled = false;
-          const resolveOn = options?.resolveOn ?? "spawn";
-          try {
-            const child = spawn(command, args, {
-              detached: true,
-              stdio: "ignore",
-              windowsHide: true,
-              windowsVerbatimArguments: options?.windowsVerbatimArguments,
-            });
-            child.once("error", (error) => {
-              if (settled) return;
-              settled = true;
-              reject(error);
-            });
-            child.once("spawn", () => {
-              if (resolveOn !== "spawn") return;
-              if (settled) return;
-              settled = true;
-              child.unref();
-              resolve();
-            });
-            child.once("exit", (code) => {
-              if (resolveOn !== "exit") return;
-              if (settled) return;
-              settled = true;
-              child.unref();
-              if (code === 0) {
-                resolve();
-              } else {
-                reject(new Error(`exit code ${code}`));
-              }
-            });
-          } catch (error) {
-            reject(error);
+      await openLocalWorkspaceInEditor({
+        target,
+        targetPath,
+        openDefault: async (openPath) => {
+          const errorMessage = await shell.openPath(openPath);
+          if (errorMessage) {
+            throw new Error(`Failed to open path: ${errorMessage}`);
           }
-        });
-      };
-
-      const launchAttempts = async (
-        attempts: Array<{ command: string; args: string[]; windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" }>,
-      ): Promise<void> => {
-        let lastError: unknown = null;
-        for (const attempt of attempts) {
-          try {
-            await launchDetached(attempt.command, attempt.args, {
-              windowsVerbatimArguments: attempt.windowsVerbatimArguments,
-              resolveOn: attempt.resolveOn,
-            });
-            return;
-          } catch (error) {
-            lastError = error;
-          }
-        }
-        throw lastError instanceof Error ? lastError : new Error("Failed to launch external editor.");
-      };
-
-      const attempts: Array<{ command: string; args: string[]; windowsVerbatimArguments?: boolean; resolveOn?: "spawn" | "exit" }> = [];
-      const cliCommand = target === "vscode" ? "code" : target === "cursor" ? "cursor" : "zed";
-
-      if (process.platform === "darwin") {
-        const appName = target === "vscode" ? "Visual Studio Code" : target === "cursor" ? "Cursor" : "Zed";
-        attempts.push({ command: "open", args: ["-a", appName, targetPath] });
-      }
-      if (process.platform === "win32") {
-        // `start "" <command> <args>` — empty title is required when the next token is quoted.
-        const windowsShell = process.env.ComSpec?.trim() || "cmd.exe";
-        attempts.push({
-          command: windowsShell,
-          args: ["/d", "/s", "/c", `start "" ${quoteWindowsCmdArg(cliCommand)} ${quoteWindowsCmdArg(targetPath)}`],
-          windowsVerbatimArguments: true,
-          resolveOn: "exit",
-        });
-      }
-      attempts.push({ command: cliCommand, args: [targetPath] });
-
-      try {
-        await launchAttempts(attempts);
-      } catch {
-        throw new Error(`Unable to open file in ${target}. Ensure it is installed and available.`);
-      }
+        },
+        revealInFolder: (openPath) => {
+          shell.showItemInFolder(openPath);
+        },
+      });
     }
   );
 
@@ -4130,6 +4074,10 @@ export function registerIpc({
       },
       localRuntime: localRuntimeStatus
     };
+  });
+
+  ipcMain.handle(IPC.appGetInstalledEditors, async (): Promise<EditorTarget[]> => {
+    return await detectInstalledEditorTargets();
   });
 
   ipcMain.handle(IPC.appGetResourceUsage, async (): Promise<AppResourceUsageSnapshot> => {
@@ -6064,17 +6012,6 @@ export function registerIpc({
     }
     return ctx.onboardingService.complete();
   });
-
-  const emptyHelpState = (): OnboardingHelpState => ({ glossaryTermsSeen: [] });
-
-  ipcMain.handle(
-    IPC.onboardingMarkGlossaryTermSeen,
-    async (_event, arg: { termId: string }): Promise<OnboardingHelpState> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyHelpState();
-      return ctx.onboardingService.markGlossaryTermSeen(arg?.termId ?? "");
-    },
-  );
 
   const ensureAutomationContext = (): AppContextWith<"automationService"> => {
     const ctx = getCtx();

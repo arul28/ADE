@@ -1886,6 +1886,21 @@ button:active, [role="button"]:active {
   transform: translateY(3px) scale(0.98);
 }
 
+.ade-help-menu-item {
+  display: flex;
+  width: 100%;
+  background: transparent;
+  color: inherit;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.ade-help-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 /* ═══════════════════════════════════════════════════════════
    Smart Tooltips
    ═══════════════════════════════════════════════════════════ */

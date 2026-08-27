@@ -1,4 +1,5 @@
 import type { SmartLinkPreview } from "../shared/smartLinks";
+import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -315,7 +316,6 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
-  OnboardingHelpState,
   OnboardingStatus,
   GitActionResult,
   GitBranchSummary,
@@ -797,6 +797,7 @@ declare global {
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
+        getInstalledEditors: () => Promise<EditorTarget[]>;
         onRuntimeStatusChanged: (
           cb: (status: LocalRuntimeStatus) => void,
         ) => () => void;
@@ -865,7 +866,8 @@ declare global {
         openPathInEditor: (args: {
           rootPath: string;
           relativePath?: string;
-          target: "default" | "finder" | "vscode" | "cursor" | "zed";
+          target: OpenPathTarget;
+          remote?: OpenPathInEditorRemote;
         }) => Promise<void>;
         logDebugEvent: (
           event: string,
@@ -1271,9 +1273,6 @@ declare global {
         detectDefaults: () => Promise<OnboardingDetectionResult>;
         setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
-        markGlossaryTermSeen: (
-          termId: string,
-        ) => Promise<OnboardingHelpState>;
       };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;

@@ -325,22 +325,31 @@ export function FilesExplorer({
             onBlur={(event) => { event.currentTarget.style.borderColor = COLORS.outlineBorder; }}
           />
           {searchQuery.trim() ? (
-            <button
-              type="button"
-              className="absolute"
-              style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 18, height: 18, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
-              onClick={() => onSearchQueryChange("")}
-              title="Clear search"
-              aria-label="Clear search"
+            <SmartTooltip
+              content={{ label: "Clear search", description: "Reset the file search box." }}
+              wrapperStyle={{
+                position: "absolute",
+                right: 4,
+                top: "50%",
+                width: 18,
+                height: 18,
+                transform: "translateY(-50%)",
+              }}
             >
-              <X size={10} />
-            </button>
+              <button
+                type="button"
+                style={{ display: "inline-flex", width: "100%", height: "100%", alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
+                onClick={() => onSearchQueryChange("")}
+                aria-label="Clear search"
+              >
+                <X size={10} />
+              </button>
+            </SmartTooltip>
           ) : null}
         </div>
         <SmartTooltip content={{ label: "New file", description: "Create a new file in the current directory." }}>
           <button
             type="button"
-            title="New file"
             aria-label="New file"
             style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
             onClick={() => onCreateFile(activeContextDir)}
@@ -353,7 +362,6 @@ export function FilesExplorer({
         <SmartTooltip content={{ label: "New folder", description: "Create a new folder in the current directory." }}>
           <button
             type="button"
-            title="New folder"
             aria-label="New folder"
             style={{ ...outlineButton({ height: compact ? 24 : 28, padding: "0 7px", fontSize: 10 }) }}
             onClick={() => onCreateDirectory(activeContextDir)}

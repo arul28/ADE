@@ -25,7 +25,9 @@ Projectless personal chat has a deliberately narrower terminal path. Its
 compact Terminal button creates a PTY through `PersonalChatScope` in the
 machine's personal scratch workspace, records ownership in that scope, and
 streams PTY events through `personalChats.streamEvents`. It does not expose the
-project Work terminal/session inventory or accept an arbitrary lane/cwd. See
+project Work terminal/session inventory, accept an arbitrary lane/cwd, or
+offer lane / repo / PR / **Open in** editor actions — the hidden personal
+lane is an implementation detail, not a user-visible worktree. See
 [Personal chats](../personal-chats/README.md).
 
 These services are large and have been repeatedly rewritten. Treat `ptyService.ts` and `sessionService.ts` as fragile and re-read them whenever wiring changes.
@@ -744,6 +746,12 @@ Renderer surfaces:
   ("Tool context insertion is not available for chats on another machine."),
   because it travels as a DOM window event the chat pane consumes and that
   path carries no machine.
+- `apps/desktop/src/renderer/components/terminals/workLaneBranchClusters.ts` —
+  same-branch adjacency for the Work by-lane list: normalize `branchRef`, skip
+  primaries and `main`/`master`, pull later same-branch lanes (including
+  cross-machine) next to the first, keep a quiet sibling in the inbox when the
+  cluster still has live work, and emit consecutive runs so the pane can wrap
+  two-or-more groups in a dashed hairline.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter, and two quiet tails: Snoozed and
@@ -776,7 +784,7 @@ Renderer surfaces:
   the surrounding Work split, so status/group options wrap in an
   auto-fit grid and the embedded lane selector can fill its parent.
   Lane group headers expose the same lane context menu used by the Work
-  tab so color, manage, split, and batch actions stay reachable without
+  tab so color, manage, split, **Open in**, and batch actions stay reachable without
   leaving the session list. The list is a **cross-machine union**
   (`useCrossMachineLaneUnion` from `renderer/state/crossMachineLanes.ts`): chats
   in flight on every connected machine appear regardless of which machine the
@@ -794,7 +802,14 @@ Renderer surfaces:
   have sessions, after the same search and lane filter the local list applies, so
   the union stays "work in flight" rather than an inventory of every lane
   everywhere; the empty state accounts for them, so "No sessions" cannot claim an
-  empty machine while another is busy. Foreign lanes use the same active /
+  empty machine while another is busy. The by-lane list still groups by lane
+  name. When two or more non-primary worktree lanes share a feature branch
+  (normalized `branchRef`, excluding `main`/`master`), they are parked next to
+  each other and wrapped in a dashed hairline so the uncommon same-branch /
+  two-machine case is visible without reorganizing the rest of the column. A
+  quiet sibling stays in the inbox when the other lane in that cluster still
+  has live work, instead of filing to Snoozed/Settled alone. Primaries never
+  join a cluster — every machine has one, usually on `main`. Foreign lanes use the same active /
   snoozed / settled partition, collapsed-by-default fully quiet header, quiet
   counts, and nested quiet-tail renderer as local lanes. Their persistence keys
   include the owning machine id (`<machineId>:<laneId>`), and an explicit
@@ -850,7 +865,9 @@ Renderer surfaces:
   the right-click menu for a lane owned by another machine. Its `online` prop is
   read live from the store rather than captured at right-click time, so a machine
   that dims while the menu is open disables every action in it — they all run on
-  the owning machine.
+  the owning machine. When the lane is online and `resolveOpenInTarget` returns
+  an SSH `OpenInTarget`, it mounts the same `OpenInSubmenu` as the local lane
+  menu; paired remotes and missing hostnames omit it.
 - `apps/desktop/src/renderer/state/crossMachineLanes.ts` — repository-scoped
   union loader and optimistic foreign-chat ownership bridge. A detached launch
   that targets a binding other than the active project is inserted immediately
@@ -1366,17 +1383,23 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx`
   and `SessionInfoPopover.tsx` — grouped right-click actions and explicit info
   overlay. The context menu sections identity, Lifecycle, Go to, Copy, optional
-  singleton-lane actions, and fenced destructive rows; Copy, Snooze, and Lane
-  are pointer/keyboard submenus. Ended chat sessions get Delete chat wired to
+  **Open in**, optional singleton-lane actions, and fenced destructive rows;
+  Copy, Snooze, Lane, and Open in are pointer/keyboard submenus. `openIn` is an
+  `OpenInTarget` from `resolveOpenInTarget`. Local singleton rows omit
+  session-root Open in because **Lane ▸** already renders it from
+  `buildLaneMenuGroups`; headerless foreign SSH rows keep session-root Open in
+  because the Lane submenu cannot resolve a remote editor from the local store.
+  Ended chat sessions get Delete chat wired to
   `ade.agentChat.delete`. Fixed-position menus measure and clamp to the renderer
   viewport.
 - `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx`,
   `apps/desktop/src/renderer/components/lanes/LanePrHoverCard.tsx`,
   `apps/desktop/src/renderer/lib/lanePrBadge.ts`,
-  `LaneActionsSubmenu.tsx`, and
+  `LaneActionsSubmenu.tsx`, `apps/desktop/src/renderer/components/ui/OpenInSubmenu.tsx`,
+  and
   `apps/desktop/src/renderer/components/ui/MenuSubmenu.tsx` — the shared
   compact PR state badge, its selection/presentation/navigation helpers, the
-  singleton session row's lane submenu, and the pointer-safe/keyboard-accessible
+  singleton session row's lane submenu, the **Open in** editor picker, and the pointer-safe/keyboard-accessible
   submenu primitive. Multi-PR badges choose the newest open/draft PR (or newest
   terminal activity) for the collapsed chip and render their detail list in a
   viewport-clamped portal, so session-card overflow cannot hide it; the list
@@ -1386,7 +1409,8 @@ Renderer surfaces:
   once by `openLanePr`, which sends a PR on the machine you are bound to into
   the PRs tab and a foreign one to GitHub, since a PR id resolves only on the
   machine that owns it. `LaneActionsSubmenu` renders the same
-  `buildLaneMenuGroups()` definitions as the lane divider's context menu, so the
+  `buildLaneMenuGroups()` definitions as the lane divider's context menu
+  (including **Open in** via `resolveOpenInTarget`), so the
   two surfaces cannot drift.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
@@ -2043,6 +2067,13 @@ degrades to "no ADE prompt" rather than a failed launch.
 
 ## Gotchas
 
+- **Open in is SSH-or-local, never paired.** `resolveOpenInTarget` returns
+  null for `transport: "paired"` and for a missing worktree path. Do not
+  spawn a local editor against a remote path, and do not add **Open in**
+  to projectless personal chats — they have no user-visible lane/repo/PR.
+  Local singleton session rows put Open in under **Lane ▸**; headerless
+  foreign SSH rows keep it at session root because the Lane submenu cannot
+  see the remote editor target from the local store.
 - **Snooze must never reach `canonicalSessionState()`.** The moment a phase is
   derived from `snoozed_until`, a snoozed row starts lying about what it is
   doing and every count, badge, and capsule downstream inherits the lie. Snooze

@@ -1123,6 +1123,65 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.appOpenPathInEditor, expect.anything());
   });
 
+  it("allows SSH remote editor opens and rejects paired remotes", async () => {
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.appOpenPathInEditor) return undefined;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(
+      bridge.app.openPathInEditor({
+        rootPath: "/remote/project",
+        target: "vscode",
+        remote: { hostname: "dev.example", transport: "ssh" },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      bridge.app.openPathInEditor({
+        rootPath: "/remote/project",
+        target: "vscode",
+        remote: { hostname: "dev.example", transport: "paired" },
+      }),
+    ).rejects.toThrow(/remote project paths/i);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.appOpenPathInEditor, {
+      rootPath: "/remote/project",
+      target: "vscode",
+      remote: { hostname: "dev.example", transport: "ssh" },
+    });
+  });
+
   it("routes chat image preview reads through the bound or explicitly pinned runtime", async () => {
     const binding = {
       kind: "remote",

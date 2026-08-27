@@ -172,6 +172,21 @@ a chat you do not own:
 Prefer **harness-tracked** delegation and wait on the tracked handle — do not
 background a raw CLI and then guess at its state:
 
+#### Native subagents vs ADE child chats
+
+Use the provider's native subagent tool first when the current chat exposes one
+and the result belongs in the same provider SDK thread. This is especially
+important for Claude: a Claude chat should use its native `Agent`/`Task` tool
+(and its native `model` override for another Anthropic-family model) instead of
+creating a second ADE chat in the same lane with `--type subagent` merely to
+run Opus, Sonnet, or another Claude model.
+
+Use an ADE child chat when the work needs an independent durable transcript,
+its own wake/schedule, cross-provider execution, separate permissions, or a
+user-visible tracked lifecycle. Do not treat `--type subagent` as the generic
+replacement for a provider-native child; it adds a separate ADE session and
+should be intentional.
+
 - **ADE Work-chat subagents:** spawn with `--type subagent`; every completed
   turn wakes or steers the parent while the parent owns the mission. Read the
   bounded transcript after that signal when you need more detail. You never poll

@@ -59,6 +59,8 @@ export type LaneMachineOption = {
   /** Remote-runtime target id; null for the machine ADE runs on. */
   targetId: string | null;
   hostname: string | null;
+  /** Remote transport; legacy target records default to SSH. */
+  transport?: "ssh" | "paired";
   /** ADE version reported by the machine, when known. */
   version: string | null;
   /** Free disk headroom, when the snapshot already carries it. Never fetched. */
@@ -293,6 +295,7 @@ export function deriveLaneMachineOptions(
       name: connection.target.name,
       targetId: connection.target.id,
       hostname: connection.target.hostname ?? null,
+      transport: connection.target.transport ?? "ssh",
       version: connection.version ?? null,
       freeBytes: connectionFreeBytes(connection),
       repoMatch: isBound

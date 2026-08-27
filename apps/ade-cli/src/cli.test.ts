@@ -7141,6 +7141,63 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("maps prs comment-edit and comment-react to pr domain actions", () => {
+    const edit = buildCliPlan([
+      "prs",
+      "comment-edit",
+      "pr-1",
+      "--comment",
+      "555",
+      "--body",
+      "Edited body",
+      "--source",
+      "review",
+    ]);
+    expect(edit.kind).toBe("execute");
+    if (edit.kind !== "execute") throw new Error("Expected prs comment-edit to produce an execute plan");
+    expect(edit.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "updateComment",
+        args: {
+          prId: "pr-1",
+          commentId: "555",
+          body: "Edited body",
+          source: "review",
+        },
+      },
+    });
+
+    const react = buildCliPlan([
+      "prs",
+      "comment-react",
+      "pr-1",
+      "--comment-id",
+      "555",
+      "--content",
+      "+1",
+    ]);
+    expect(react.kind).toBe("execute");
+    if (react.kind !== "execute") throw new Error("Expected prs comment-react to produce an execute plan");
+    expect(react.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "reactToComment",
+        args: {
+          prId: "pr-1",
+          commentId: "555",
+          content: "+1",
+        },
+      },
+    });
+
+    expect(() =>
+      buildCliPlan(["prs", "comment-edit", "pr-1", "--comment", "1", "--body", "x", "--source", "gist"]),
+    ).toThrow(/--source must be issue or review/);
+  });
+
   it("maps git user-identity and prs list-open to typed RPC tools", () => {
     const identity = buildCliPlan(["git", "user-identity"]);
     expect(identity.kind).toBe("execute");
@@ -7955,6 +8012,8 @@ describe("ADE CLI", () => {
     if (prsHelp.kind !== "help") return;
     expect(prsHelp.text).toContain("PR identifiers may be ADE PR ids");
     expect(prsHelp.text).toContain("prs link");
+    expect(prsHelp.text).toContain("prs comment-edit");
+    expect(prsHelp.text).toContain("prs comment-react");
 
     const actionsHelp = buildCliPlan(["actions", "run", "--help"]);
     expect(actionsHelp.kind).toBe("help");
