@@ -36,6 +36,7 @@ function manifest(over: Partial<PluginManifest> = {}): PluginManifest {
     automationSteps: [],
     searchProviders: [],
     keybindings: [],
+    webhookIngress: [],
     official: false,
     ...over,
   } as PluginManifest;

@@ -63,6 +63,24 @@ struct PluginPaneSheet: View {
 
   @ViewBuilder
   private var content: some View {
+    // Pull-to-refresh, but only for a panel whose manifest declared a refresh
+    // action. A panel backed by the plugin's own collections is already live —
+    // the host republishes and the mirror follows — so a pull there would be a
+    // gesture that promises something it cannot do. The built-in Cursor Cloud
+    // list had this and a plugin pane did not, which is the gap it closes.
+    //
+    // Branching on the declaration rather than passing an optional action: a
+    // `.refreshable` that is present and does nothing still draws the spinner,
+    // which is exactly the empty promise this avoids.
+    if store.refreshAction == nil {
+      scrollingContent
+    } else {
+      scrollingContent.refreshable { await store.refresh() }
+    }
+  }
+
+  @ViewBuilder
+  private var scrollingContent: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 16) {
         if store.panels.count > 1 {

@@ -60,7 +60,15 @@ export type SyncPluginRecordRuntimeStatus =
   | "crashed"
   | "none";
 
-/** One `{"kind":"tab"}` surface from a plugin's manifest. */
+/**
+ * One rail surface from a plugin's manifest — `{"kind":"tab"}` or
+ * `{"kind":"webview"}`.
+ *
+ * Both arrive here flattened to the same shape, because no reader of this
+ * record can host a webview guest: each renders the surface's `panelId` panel,
+ * which is the answer that is already correct on the phone, the web client and
+ * the TUI.
+ */
 export type SyncPluginRecordTab = {
   id: string;
   title: string;
@@ -230,6 +238,25 @@ export type SyncPluginInstallRecord = {
    * already dismissed.
    */
   disabledContributions?: string[];
+  /**
+   * Hosts the plugin's child may contact, from its manifest.
+   *
+   * Carried for the same reason `sockets` is: a peer reading this record — the
+   * hosted web client above all — has no manifest on disk, so without it the
+   * Marketplace page there can list everything a plugin adds EXCEPT the one
+   * line that says where the user's data goes. Absent means "this host could
+   * not read the manifest", the same as `tabs`; a plugin that declares no
+   * network sends nothing, because an empty list and no list are the same
+   * permission and the parser already collapses them.
+   */
+  network?: { hosts: string[] };
+  /**
+   * Provider ids whose ADE-stored API key the plugin reads.
+   *
+   * Same contract and same reason as `network`. Ids only — a key value is not
+   * a thing that crosses this wire, or any other.
+   */
+  providerKeys?: string[];
 };
 
 export type SyncPluginInstallService = {

@@ -41,7 +41,14 @@ const MAX_REDIRECTS = 10;
 const REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_ATTEMPTS = 4;
 
-/** Where the model comes from, and what it must hash to. */
+/**
+ * Where the model comes from, and what it must hash to.
+ *
+ * `ADE_VOICE_MODEL_URL` still has to name a host this plugin's manifest
+ * declares under `network.hosts`. A mirror on some other host is refused by the
+ * platform's network guard with a message that names the host, which is the
+ * intended behaviour: the manifest is what the user approved at install.
+ */
 function defaultModelSource(env = process.env) {
   const url = typeof env.ADE_VOICE_MODEL_URL === "string" && env.ADE_VOICE_MODEL_URL.trim()
     ? env.ADE_VOICE_MODEL_URL.trim()

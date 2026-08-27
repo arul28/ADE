@@ -78,6 +78,8 @@ const manifest: PluginManifest = {
   automationSteps: [],
   searchProviders: [],
   keybindings: [],
+  chatRuntimes: [],
+  webhookIngress: [],
   official: false,
 };
 

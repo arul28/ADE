@@ -108,6 +108,11 @@ struct PluginPanelRecord: Equatable, Identifiable {
   /// hid panels it was unsure about would make an ADE upgrade on the desktop
   /// look like plugins disappearing from the phone.
   var mobile = true
+  /// The plugin action this panel's refresh gesture dispatches, when the
+  /// manifest declared one. `nil` means the pane has no pull-to-refresh —
+  /// a panel whose rows come from the plugin's own collections is already live
+  /// and needs no gesture. Mirrors `PluginManifestPanel.refreshAction`.
+  var refreshAction: String?
 
   var displayTitle: String {
     title.isEmpty ? panelId : title
@@ -138,6 +143,21 @@ struct PluginPanelRecord: Equatable, Identifiable {
       return true
     }
     return flag
+  }
+
+  /// Read the refresh action the host stamped into `schema_json`.
+  ///
+  /// Same shape and same fast path as ``mobileFlag(inSchemaJSON:)``, and for
+  /// the same reason: the roster leaves `schema_json` unparsed, and almost no
+  /// row carries this key. A row written before the key existed answers `nil`,
+  /// which is the pane it always had.
+  static func refreshAction(inSchemaJSON schemaJSON: String) -> String? {
+    guard schemaJSON.contains("\"refreshAction\"") else { return nil }
+    guard let data = schemaJSON.data(using: .utf8),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return nil
+    }
+    return PluginPanelParser.cleanString(object["refreshAction"], max: PluginVocabLimits.maxIdChars)
   }
 }
 

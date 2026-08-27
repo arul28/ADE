@@ -25,10 +25,12 @@ import {
   fromPluginStructuralError,
   pluginCollectionPutParams,
   PluginSdkError,
+  readPluginChatDeliveryAction,
   toPluginStructuralError,
   type AdePluginSdk,
   type PluginAnyEventPayload,
   type PluginAudioClip,
+  type PluginChatSessionRef,
   type PluginChildFrame,
   type PluginCollectionRow,
   type PluginEventName,
@@ -41,6 +43,7 @@ import {
 } from "../../../../shared/plugins/sdk";
 import type { PluginManifest } from "../../../../shared/plugins/manifest";
 import type { PluginEntityKind, PluginSocketKind } from "../../../../shared/plugins/sockets";
+import { installPluginNetworkGuard } from "./pluginChildNetworkGuard";
 
 /** One stdin line larger than this is a framing failure, not a message. */
 const PLUGIN_CHILD_MAX_LINE_BYTES = 8 * 1024 * 1024;
@@ -196,6 +199,12 @@ export function runPluginChild(): void {
       delete: async (name) => {
         await callHost("secrets.delete", { name });
       },
+      getProviderKey: async (provider) => (
+        await callHost("secrets.getProviderKey", { provider })
+      ) as string | null,
+      hasProviderKey: async (provider) => (
+        await callHost("secrets.hasProviderKey", { provider })
+      ) as boolean,
     },
     contributions: {
       publish: async (
@@ -261,6 +270,37 @@ export function runPluginChild(): void {
         await callHost("automations.emitTrigger", { input: input ?? {} });
       },
     },
+    webhooks: {
+      url: async (channelId) => (
+        await callHost("webhooks.url", channelId ? { channelId } : {})
+      ) as string,
+      ack: async (deliveryId) => {
+        await callHost("webhooks.ack", { deliveryId });
+      },
+    },
+    chat: {
+      createSession: async (input) => (
+        await callHost("chat.createSession", { input })
+      ) as PluginChatSessionRef,
+      appendAssistant: async (sessionId, chunk) => {
+        await callHost("chat.appendAssistant", { sessionId, chunk });
+      },
+      appendUser: async (sessionId, input) => {
+        await callHost("chat.appendUser", { sessionId, input });
+      },
+      emitStatus: async (sessionId, status) => {
+        await callHost("chat.emitStatus", { sessionId, status });
+      },
+      setArtifacts: async (sessionId, artifacts) => {
+        await callHost("chat.setArtifacts", { sessionId, artifacts });
+      },
+      attachBranch: async (sessionId, input) => {
+        await callHost("chat.attachBranch", { sessionId, input });
+      },
+      hydrate: async (sessionId, transcript) => {
+        await callHost("chat.hydrate", { sessionId, transcript });
+      },
+    },
     clipboard: {
       read: async () => (await callHost("clipboard.read", {})) as string,
       write: async (text) => {
@@ -298,6 +338,16 @@ export function runPluginChild(): void {
     // plugin's own module graph free of a host dependency.
     (globalThis as Record<string, unknown>).ade = sdk;
 
+    // BEFORE the entry is required, for the same reason `captureConsole` is: a
+    // dependency that opens a socket at import time is exactly the case a
+    // guard installed afterwards would miss. A manifest with no `network`
+    // declares no hosts, which is a real answer — that plugin reaches none.
+    installPluginNetworkGuard({
+      pluginId,
+      hosts: frame.manifest.network?.hosts ?? [],
+      onRefused: (message, fields) => emitLog("warn", message, fields),
+    });
+
     const entry = frame.manifest.entry;
     if (entry) {
       const entryPath = resolveEntryPath(frame.pluginRoot, entry);
@@ -311,8 +361,43 @@ export function runPluginChild(): void {
     writeFrame({ type: "ready", actions: Object.keys(pluginModule?.actions ?? {}) });
   };
 
+  /**
+   * Run the plugin's `chat.turn` / `chat.interrupt` listeners and WAIT for them.
+   *
+   * These two arrive as reserved `invoke` actions rather than `event` frames
+   * because the transport's event channel is fire-and-forget by contract — the
+   * host drops frames a wedged child is not draining — and a dropped user
+   * message is a chat that silently stops answering. Reusing `invoke` gets the
+   * request id, the timeout and a structured rejection for free.
+   *
+   * Every listener is awaited, and one that throws fails the turn: the host
+   * turns the rejection into a visible failed turn rather than leaving the
+   * user watching a spinner. A plugin that registered no listener at all is
+   * `unsupported_method`, which is the honest answer — it declared a chat
+   * runtime and never wired it up.
+   */
+  const runChatDelivery = async (event: "chat.turn" | "chat.interrupt", payload: unknown): Promise<null> => {
+    const registered = [...(listeners.get(event) ?? [])];
+    if (!registered.length) {
+      throw new PluginSdkError(
+        "unsupported_method",
+        `Plugin "${pluginId}" declares a chat runtime but registered no "${event}" listener.`,
+      );
+    }
+    await Promise.all(registered.map(async (listener) => {
+      await (listener as (value: unknown) => unknown | Promise<unknown>)(payload);
+    }));
+    return null;
+  };
+
   const handleInvoke = async (frame: Extract<PluginHostFrame, { type: "invoke" }>): Promise<void> => {
     try {
+      const chatEvent = readPluginChatDeliveryAction(frame.action);
+      if (chatEvent) {
+        const delivered = await runChatDelivery(chatEvent, frame.args);
+        writeFrame({ type: "invokeResult", requestId: frame.requestId, result: delivered });
+        return;
+      }
       const handler = pluginModule?.actions?.[frame.action];
       if (!handler) {
         throw new PluginSdkError("unsupported_method", `Plugin "${pluginId}" has no action "${frame.action}".`);

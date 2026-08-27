@@ -36,6 +36,11 @@ const CHAT_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  // The category, not a plugin. A plugin-owned chat carries the runtime's real
+  // name on `session.runtimeLabel`; callers that hold a session should prefer
+  // `chatSessionAgentLabel` in `types/chat.ts`, which reads it. This is what is
+  // left when all somebody has is the provider string.
+  plugin: "Plugin",
 };
 
 export function providerDisplayLabel(

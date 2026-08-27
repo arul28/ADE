@@ -10,7 +10,11 @@ import type {
 } from "../../../shared/types/config";
 import type { LaneSummary } from "../../../shared/types/lanes";
 import { repoMatchKey } from "../../../shared/cursorCloudRepoMatch";
-import { CURSOR_CLOUD_MAX_PAGE_LIMIT } from "../../../shared/cursorCloudApiLimits";
+import {
+  CURSOR_CLOUD_FLEET_DEFAULT_AGENTS,
+  CURSOR_CLOUD_FLEET_MAX_AGENTS,
+  CURSOR_CLOUD_MAX_PAGE_LIMIT,
+} from "../../../shared/cursorCloudApiLimits";
 import type { createLaneService } from "../lanes/laneService";
 
 export type CursorCloudIngressStatusLike = {
@@ -54,8 +58,8 @@ type FleetServiceDeps = {
 
 const ENRICH_CONCURRENCY = 4;
 /** Total agent rows one fleet read walks, across as many Cursor pages as it takes. */
-const FLEET_MAX_AGENTS = 200;
-const FLEET_DEFAULT_AGENTS = 100;
+const FLEET_MAX_AGENTS = CURSOR_CLOUD_FLEET_MAX_AGENTS;
+const FLEET_DEFAULT_AGENTS = CURSOR_CLOUD_FLEET_DEFAULT_AGENTS;
 const ORIGIN_CACHE_TTL_MS = 60_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

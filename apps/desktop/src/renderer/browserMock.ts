@@ -5616,6 +5616,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listContributions: async () => [],
       inspectSource: async () => null,
       usageSummary: async () => [],
+      // Empty, not absent: the mock answers the call and reports that no
+      // plugin here receives a webhook, which is true of a mock host.
+      webhookIngress: async () => [],
       onChanged: () => () => {},
     },
     pty: {

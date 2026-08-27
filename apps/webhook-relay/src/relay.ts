@@ -79,6 +79,29 @@ type CursorWebhookSecretRow = {
   account_id: string | null;
 };
 
+/**
+ * Rows behind the per-plugin ingress namespace. This is the generalization of
+ * the Cursor Cloud tables: the shape is identical except that every row is
+ * scoped by `plugin_id`, and the payload is opaque (an arbitrary third-party
+ * webhook body plus an allowlisted slice of its headers) because the relay has
+ * no idea what any given plugin's provider sends.
+ */
+type PluginEventRow = {
+  event_seq: number;
+  event_id: string;
+  channel: string;
+  event_type: string;
+  received_at: string;
+  headers: string;
+  body: string;
+};
+
+type PluginWebhookSecretRow = {
+  id: string;
+  webhook_secret: string;
+  account_id: string | null;
+};
+
 type AccountMappingRow = {
   account_id: string | null;
 };
@@ -173,6 +196,51 @@ const MAX_CURSOR_WEBHOOK_SECRET_LENGTH = 512;
 const MIN_CURSOR_WEBHOOK_SECRET_LENGTH = 32;
 const CURSOR_WEBHOOK_REPLAY_WINDOW_MS = 5 * 60_000;
 const CURSOR_ENV_SECRET_ID = "env";
+const MAX_PLUGIN_WEBHOOK_BODY_BYTES = 1024 * 1024;
+const MAX_PLUGIN_REGISTRATION_BODY_BYTES = 16 * 1024;
+const MAX_PLUGIN_WEBHOOK_SECRET_LENGTH = 512;
+const MIN_PLUGIN_WEBHOOK_SECRET_LENGTH = 32;
+const PLUGIN_WEBHOOK_REPLAY_WINDOW_MS = 5 * 60_000;
+const DEFAULT_PLUGIN_CHANNEL = "default";
+/**
+ * Plugin ids are namespace keys in a URL and a D1 index, so they stay in the
+ * same conservative alphabet the plugin manifest already enforces. A rejected
+ * id must 404 rather than 400: an unrecognized path shape is indistinguishable
+ * from a typo'd route, and leaking "that plugin id is malformed" tells a prober
+ * which namespaces exist.
+ */
+const PLUGIN_ID_PATTERN = /^[a-z][a-z0-9-]{0,63}$/;
+const PLUGIN_CHANNEL_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+/**
+ * The only request headers persisted with a plugin delivery. The desktop host
+ * re-filters this with its own narrower per-plugin list, so this allowlist
+ * exists to bound what sits at rest in D1: anything a provider sends that is
+ * not here is dropped before the row is written, which keeps stray auth
+ * material (cookies, Authorization, provider API keys) out of the database.
+ * Signature headers are kept because they are HMACs over a body we already
+ * store, not bearer credentials.
+ */
+export const PLUGIN_WEBHOOK_STORED_HEADERS = [
+  "content-type",
+  "user-agent",
+  "x-webhook-id",
+  "x-webhook-event",
+  "x-webhook-signature",
+  "x-webhook-timestamp",
+  "x-hub-signature",
+  "x-hub-signature-256",
+  "x-github-event",
+  "x-github-delivery",
+  "x-event-key",
+  "x-request-id",
+  "x-idempotency-key",
+  "stripe-signature",
+  "x-slack-signature",
+  "x-slack-request-timestamp",
+  "x-linear-event",
+  "x-shopify-hmac-sha256",
+];
+const MAX_PLUGIN_STORED_HEADER_VALUE_LENGTH = 1024;
 const LINEAR_AUTH_CACHE_TTL_MS = 5 * 60_000;
 const MAX_LINEAR_AUTH_CACHE_ENTRIES = 1_000;
 const GITHUB_AUTH_CACHE_TTL_MS = 5 * 60_000;
@@ -322,6 +390,15 @@ export async function signCursorWebhookBody(secret: string, body: string | Array
   return signGitHubWebhookBody(secret, body);
 }
 
+/**
+ * Plugin ingress speaks the GitHub `sha256=<hex>` signature dialect so a plugin
+ * author can point any provider that supports HMAC-SHA256 body signing at it
+ * without a per-provider adapter in the relay.
+ */
+export async function signPluginWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
+  return signGitHubWebhookBody(secret, body);
+}
+
 export async function signLinearWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -447,6 +524,43 @@ function routeRepoWebhookAdmin(pathname: string): { owner: string; name: string;
     }
   }
   return null;
+}
+
+type PluginIngressRoute =
+  | { pluginId: string; action: "register" }
+  | { pluginId: string; action: "events" }
+  | { pluginId: string; action: "webhook"; channel: string };
+
+/**
+ * `/plugin/:pluginId/{register,webhook,webhook/:channelId,events}`. Returning
+ * null for anything that is not an exact match is load-bearing: the router
+ * falls through to the legacy `/cursor/*` and project routes below, so this
+ * helper must never claim a path it does not own.
+ */
+function routePluginIngress(pathname: string): PluginIngressRoute | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] !== "plugin" || parts.length < 3 || parts.length > 4) return null;
+  let pluginId: string;
+  let leaf: string;
+  let channelSegment: string | null;
+  try {
+    pluginId = decodeURIComponent(parts[1] ?? "").trim();
+    leaf = decodeURIComponent(parts[2] ?? "").trim();
+    channelSegment = parts.length === 4 ? decodeURIComponent(parts[3] ?? "").trim() : null;
+  } catch {
+    // A malformed percent-escape is a 404, not a 500.
+    return null;
+  }
+  if (!PLUGIN_ID_PATTERN.test(pluginId)) return null;
+  if (channelSegment == null) {
+    if (leaf === "register") return { pluginId, action: "register" };
+    if (leaf === "events") return { pluginId, action: "events" };
+    if (leaf === "webhook") return { pluginId, action: "webhook", channel: DEFAULT_PLUGIN_CHANNEL };
+    return null;
+  }
+  if (leaf !== "webhook") return null;
+  if (!PLUGIN_CHANNEL_PATTERN.test(channelSegment)) return null;
+  return { pluginId, action: "webhook", channel: channelSegment };
 }
 
 function routeRepoStatus(pathname: string): { projectId: string | null; owner: string; name: string } | null {
@@ -2643,6 +2757,358 @@ async function handleListCursorEvents(request: Request, env: RelayEnv): Promise<
   });
 }
 
+async function listPluginWebhookSecrets(env: RelayEnv, pluginId: string): Promise<PluginWebhookSecretRow[]> {
+  // Scoping the read by plugin_id is what keeps plugin A's secret from ever
+  // authenticating a delivery aimed at plugin B: no caller of this function
+  // sees a secret outside its own namespace, so cross-plugin auth is not a
+  // check that can be forgotten downstream.
+  const rows = (await env.DB
+    .prepare("select id, webhook_secret, account_id from plugin_webhook_secrets where plugin_id = ?")
+    .bind(pluginId)
+    .all<PluginWebhookSecretRow>()).results ?? [];
+  return rows;
+}
+
+/**
+ * Unlike Cursor there is deliberately no worker-level plugin secret. A plugin
+ * is third-party code, so the only credential that can ever authenticate its
+ * deliveries is one that plugin registered and proved possession of.
+ */
+async function matchPluginWebhookSecret(
+  request: Request,
+  env: RelayEnv,
+  pluginId: string,
+  body: ArrayBuffer,
+): Promise<PluginWebhookSecretRow | null> {
+  const registered = await listPluginWebhookSecrets(env, pluginId);
+  if (registered.length === 0) return null;
+
+  const signature = request.headers.get("x-webhook-signature")?.trim() ?? "";
+  if (hasValidGitHubSignatureShape(signature)) {
+    for (const row of registered) {
+      if (await verifyGitHubSignature(row.webhook_secret, body, signature)) return row;
+    }
+  }
+
+  // Providers that cannot sign bodies fall back to presenting the shared secret
+  // directly. Same trust level, weaker replay story, hence still one of the two
+  // accepted paths rather than a separate class of caller.
+  const bearer = readBearerToken(request);
+  if (bearer) {
+    for (const row of registered) {
+      if (constantTimeEqual(bearer, row.webhook_secret)) return row;
+    }
+  }
+  return null;
+}
+
+async function authorizePluginEventsRead(
+  request: Request,
+  env: RelayEnv,
+  pluginId: string,
+): Promise<{ accountId: string | null; secretId: string | null } | Response> {
+  const accountId = await authenticateAccount(request, env);
+  if (accountId) return { accountId, secretId: null };
+
+  const bearer = readBearerToken(request);
+  if (bearer) {
+    const registered = await listPluginWebhookSecrets(env, pluginId);
+    const match = registered.find((row) => constantTimeEqual(bearer, row.webhook_secret));
+    if (match) return { accountId: match.account_id, secretId: match.id };
+  }
+  return json({ ok: false, error: "unauthorized" }, { status: 401 });
+}
+
+async function handlePluginRegister(request: Request, env: RelayEnv, pluginId: string): Promise<Response> {
+  if (request.method !== "POST") return text("method not allowed", 405);
+  if (contentLengthExceedsLimit(request.headers, MAX_PLUGIN_REGISTRATION_BODY_BYTES)) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_PLUGIN_REGISTRATION_BODY_BYTES) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown;
+    if (!isRecord(parsed)) throw new Error("invalid payload");
+    payload = parsed;
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  const secret = typeof payload.secret === "string" ? payload.secret.trim() : "";
+  if (!secret) return json({ ok: false, error: "secret is required" }, { status: 400 });
+  if (secret.length < MIN_PLUGIN_WEBHOOK_SECRET_LENGTH) {
+    return json({ ok: false, error: `secret must be at least ${MIN_PLUGIN_WEBHOOK_SECRET_LENGTH} characters` }, { status: 400 });
+  }
+  if (secret.length > MAX_PLUGIN_WEBHOOK_SECRET_LENGTH) {
+    return json({ ok: false, error: `secret must be at most ${MAX_PLUGIN_WEBHOOK_SECRET_LENGTH} characters` }, { status: 400 });
+  }
+
+  // Either an ADE account vouches for the registration, or the caller proves it
+  // already holds the secret it is registering (self-attestation). The second
+  // path is what lets a desktop with no account credential still claim a
+  // namespace it generated the secret for.
+  const accountId = await authenticateAccount(request, env);
+  const bearer = readBearerToken(request);
+  const bearerMatchesSecret = Boolean(bearer && constantTimeEqual(bearer, secret));
+  if (!accountId && !bearerMatchesSecret) {
+    return json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+
+  const now = new Date().toISOString();
+  // One row per (account, plugin) so a single account can register a distinct
+  // secret for every plugin it runs. Anonymous registrations key on the secret
+  // digest instead, which means re-registering the same secret is idempotent.
+  // A digest id is global, so the same secret reused across two plugins keeps
+  // its first namespace and fails closed for the second rather than widening
+  // the first plugin's reach.
+  const id = accountId && accountId.trim()
+    ? `account:${accountId.trim()}:${pluginId}`
+    : `secret:${await sha256Hex(secret)}`;
+  await env.DB
+    .prepare(`
+      insert into plugin_webhook_secrets(id, plugin_id, webhook_secret, account_id, registered_at, updated_at, unlinked_account_id)
+      values (?, ?, ?, ?, ?, ?, null)
+      on conflict(id) do update set
+        webhook_secret = excluded.webhook_secret,
+        updated_at = excluded.updated_at,
+        account_id = case
+          when excluded.account_id is null then plugin_webhook_secrets.account_id
+          when plugin_webhook_secrets.account_id is not null then plugin_webhook_secrets.account_id
+          when plugin_webhook_secrets.unlinked_account_id = excluded.account_id then null
+          else excluded.account_id
+        end,
+        unlinked_account_id = case
+          when excluded.account_id is null then plugin_webhook_secrets.unlinked_account_id
+          when plugin_webhook_secrets.account_id is not null then plugin_webhook_secrets.unlinked_account_id
+          when plugin_webhook_secrets.unlinked_account_id = excluded.account_id then plugin_webhook_secrets.unlinked_account_id
+          else null
+        end
+    `)
+    .bind(id, pluginId, secret, accountId, now, now)
+    .run();
+  if (accountId) {
+    // Deliveries that landed before the account was known are still this
+    // account's data; adopting them keeps an account-scoped drain from missing
+    // everything received during anonymous bootstrap.
+    await env.DB
+      .prepare(`
+        update plugin_events
+           set account_id = ?
+         where secret_id = ?
+           and account_id is null
+      `)
+      .bind(accountId, id)
+      .run();
+  }
+  return json({ ok: true, secretId: id });
+}
+
+async function prunePluginEvents(env: RelayEnv): Promise<void> {
+  const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
+  const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB
+    .prepare("delete from plugin_events where received_at < ?")
+    .bind(cutoff)
+    .run();
+}
+
+function collectPluginWebhookHeaders(headers: Headers): Record<string, string> {
+  const stored: Record<string, string> = {};
+  for (const name of PLUGIN_WEBHOOK_STORED_HEADERS) {
+    const value = headers.get(name);
+    if (value == null) continue;
+    stored[name] = value.slice(0, MAX_PLUGIN_STORED_HEADER_VALUE_LENGTH);
+  }
+  return stored;
+}
+
+async function handlePluginWebhook(
+  request: Request,
+  env: RelayEnv,
+  pluginId: string,
+  channel: string,
+): Promise<Response> {
+  if (request.method !== "POST") return text("method not allowed", 405);
+  if (contentLengthExceedsLimit(request.headers, MAX_PLUGIN_WEBHOOK_BODY_BYTES)) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+
+  const body = await request.arrayBuffer();
+  if (body.byteLength > MAX_PLUGIN_WEBHOOK_BODY_BYTES) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+
+  const matchedSecret = await matchPluginWebhookSecret(request, env, pluginId, body);
+  if (!matchedSecret) {
+    // One error for every auth failure. Distinguishing "no secret registered"
+    // from "wrong signature" from "bearer rejected" would let a prober map
+    // which plugin namespaces are live.
+    return json({ ok: false, error: "signature mismatch" }, { status: 401 });
+  }
+
+  const rawBody = new TextDecoder().decode(body);
+  let payload: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+    if (!isRecord(parsed)) throw new Error("invalid payload");
+    payload = parsed;
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+
+  // Only providers that put a timestamp in the body get replay protection; the
+  // relay cannot invent one, and rejecting bodies without it would exclude most
+  // real webhooks.
+  const webhookTimestamp = parseCursorWebhookTimestamp(payload);
+  if (webhookTimestamp != null && Math.abs(Date.now() - webhookTimestamp) > PLUGIN_WEBHOOK_REPLAY_WINDOW_MS) {
+    return json({ ok: false, error: "stale webhook timestamp" }, { status: 401 });
+  }
+
+  const eventType = request.headers.get("x-webhook-event")?.trim()
+    || readString(payload, "event")
+    || "webhook";
+  // With no provider-supplied delivery id, the body digest is the dedupe key:
+  // an identical redelivery collapses onto the row it already produced.
+  const eventId = request.headers.get("x-webhook-id")?.trim() || `sha256:${await sha256Hex(body)}`;
+  const existing = await env.DB
+    .prepare("select event_id from plugin_events where event_id = ? limit 1")
+    .bind(eventId)
+    .first<{ event_id: string }>();
+  if (existing) return json({ ok: true, duplicate: true, eventId });
+
+  const receivedAt = new Date().toISOString();
+  await env.DB
+    .prepare(`
+      insert or ignore into plugin_events(event_id, plugin_id, channel, event_type, received_at, headers, body, account_id, secret_id)
+      values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .bind(
+      eventId,
+      pluginId,
+      channel,
+      eventType,
+      receivedAt,
+      JSON.stringify(collectPluginWebhookHeaders(request.headers)),
+      rawBody,
+      matchedSecret.account_id,
+      matchedSecret.id,
+    )
+    .run();
+  await prunePluginEvents(env);
+  return json({ ok: true, duplicate: false, eventId });
+}
+
+function pluginRowToEvent(row: PluginEventRow): Record<string, unknown> {
+  let headers: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(row.headers) as unknown;
+    if (isRecord(parsed)) headers = parsed;
+  } catch {
+    // A row written by an older shape still has a usable body; an unparseable
+    // header blob must not take the whole page down.
+    headers = {};
+  }
+  const cursor = `seq:${Math.max(0, Math.trunc(Number(row.event_seq) || 0))}`;
+  return {
+    cursor,
+    eventId: row.event_id,
+    channel: row.channel,
+    eventType: row.event_type,
+    createdAt: row.received_at,
+    headers,
+    body: row.body,
+  };
+}
+
+function nextPluginCursor(rows: PluginEventRow[], fallback: string): string | null {
+  const latest = rows.reduce((max, row) => Math.max(max, Math.trunc(Number(row.event_seq) || 0)), 0);
+  return latest > 0 ? `seq:${latest}` : fallback || null;
+}
+
+async function handleListPluginEvents(request: Request, env: RelayEnv, pluginId: string): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const auth = await authorizePluginEventsRead(request, env, pluginId);
+  if (auth instanceof Response) return auth;
+
+  const url = new URL(request.url);
+  const limit = parseLimit(url);
+  const after = url.searchParams.get("after")?.trim() || "";
+  // plugin_id leads every predicate so an account that owns rows under several
+  // plugins still drains one namespace at a time.
+  const accountPredicate = auth.accountId ? " and account_id = ?" : auth.secretId ? " and secret_id = ?" : "";
+  const accountBinding = auth.accountId ? [auth.accountId] : auth.secretId ? [auth.secretId] : [];
+  const scopeBinding = [pluginId, ...accountBinding];
+  let rows: PluginEventRow[];
+  let cursorExpired = false;
+
+  if (after) {
+    const sequenceCursor = parseSequenceCursor(after);
+    if (sequenceCursor != null) {
+      rows = (await env.DB
+        .prepare(`
+          select rowid as event_seq, event_id, channel, event_type, received_at, headers, body
+            from plugin_events
+           where plugin_id = ?${accountPredicate} and rowid > ?
+           order by rowid asc
+           limit ?
+        `)
+        .bind(...scopeBinding, sequenceCursor, limit)
+        .all<PluginEventRow>()).results ?? [];
+    } else {
+      const cursor = await env.DB
+        .prepare(`select rowid as event_seq, event_id from plugin_events where plugin_id = ?${accountPredicate} and event_id = ? limit 1`)
+        .bind(...scopeBinding, after)
+        .first<CursorRow>();
+      if (cursor) {
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, channel, event_type, received_at, headers, body
+              from plugin_events
+             where plugin_id = ?${accountPredicate} and rowid > ?
+             order by rowid asc
+             limit ?
+          `)
+          .bind(...scopeBinding, cursor.event_seq, limit)
+          .all<PluginEventRow>()).results ?? [];
+      } else {
+        // The anchor aged out of retention. Hand back the newest page and say
+        // so, rather than silently restarting the drain from the beginning.
+        cursorExpired = true;
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, channel, event_type, received_at, headers, body
+              from plugin_events
+             where plugin_id = ?${accountPredicate}
+             order by rowid desc
+             limit ?
+          `)
+          .bind(...scopeBinding, limit)
+          .all<PluginEventRow>()).results ?? [];
+      }
+    }
+  } else {
+    rows = (await env.DB
+      .prepare(`
+        select rowid as event_seq, event_id, channel, event_type, received_at, headers, body
+          from plugin_events
+         where plugin_id = ?${accountPredicate}
+         order by rowid desc
+         limit ?
+      `)
+      .bind(...scopeBinding, limit)
+      .all<PluginEventRow>()).results ?? [];
+  }
+
+  return json({
+    events: rows.map(pluginRowToEvent),
+    nextCursor: nextPluginCursor(rows, after),
+    cursorExpired,
+  });
+}
+
 async function handleAccountIntegrations(request: Request, env: RelayEnv): Promise<Response> {
   if (request.method !== "GET" && request.method !== "DELETE") return text("method not allowed", 405);
   const accountId = await authenticateAccount(request, env);
@@ -2665,6 +3131,12 @@ async function handleAccountIntegrations(request: Request, env: RelayEnv): Promi
       .bind(accountId)
       .run();
     await env.DB.prepare("update cursor_events set account_id = null where account_id = ?")
+      .bind(accountId)
+      .run();
+    await env.DB.prepare("update plugin_webhook_secrets set unlinked_account_id = account_id, account_id = null where account_id = ?")
+      .bind(accountId)
+      .run();
+    await env.DB.prepare("update plugin_events set account_id = null where account_id = ?")
       .bind(accountId)
       .run();
     return json({ ok: true });
@@ -2706,6 +3178,16 @@ export async function handleRequest(request: Request, env: RelayEnv): Promise<Re
   if (url.pathname === "/cursor/register") return await handleCursorRegister(request, env);
   if (url.pathname === "/cursor/webhook") return await handleCursorWebhook(request, env);
   if (url.pathname === "/cursor/events") return await handleListCursorEvents(request, env);
+
+  // Generalized per-plugin ingress. The Cursor routes above stay as they are
+  // until core Cursor support moves out to a plugin of its own.
+  const pluginIngress = routePluginIngress(url.pathname);
+  if (pluginIngress?.action === "register") return await handlePluginRegister(request, env, pluginIngress.pluginId);
+  if (pluginIngress?.action === "webhook") {
+    return await handlePluginWebhook(request, env, pluginIngress.pluginId, pluginIngress.channel);
+  }
+  if (pluginIngress?.action === "events") return await handleListPluginEvents(request, env, pluginIngress.pluginId);
+
   if (url.pathname === "/linear/orgs/register") return await handleLinearOrganizationRegister(request, env);
   if (url.pathname === "/linear/webhook") return await handleLinearWebhook(request, env);
   if (url.pathname === "/linear/oauth/callback") return handleLinearOAuthCallback(request);

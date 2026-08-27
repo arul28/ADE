@@ -780,6 +780,7 @@ import {
   type PluginSourceInspection,
   type PluginSummary,
   type PluginUsageSummary,
+  type PluginWebhookIngressStatus,
 } from "../../../shared/plugins/sdk";
 import {
   loadExternalSessionDetail,
@@ -6525,6 +6526,12 @@ export function registerIpc({
 
   ipcMain.handle(IPC.pluginUsageSummary, async (_event, arg: unknown): Promise<PluginUsageSummary> => {
     return requirePluginDomainService().usageSummary(normalizePluginUsageSummaryArgs(arg));
+  });
+
+  // Read-only, and it never carries a secret: the drain reports URLs, channel
+  // names and counts, and the relay registration secret is not in the shape.
+  ipcMain.handle(IPC.pluginWebhookIngress, async (_event, arg: unknown): Promise<PluginWebhookIngressStatus[]> => {
+    return requirePluginDomainService().webhookIngress(normalizePluginUsageSummaryArgs(arg));
   });
 
   ipcMain.handle(IPC.pluginSetConfig, async (_event, arg: unknown): Promise<PluginDetail> => {

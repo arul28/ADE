@@ -1,8 +1,11 @@
 import React from "react";
 
+import { ArrowsClockwise } from "@phosphor-icons/react";
+
 import { COLORS, RADII, SANS_FONT } from "../lanes/laneDesignTokens";
 import { PluginFallbackCard, PluginPanelView } from "./VocabularyRenderer";
 import { type VocabActionArgs } from "./vocabularyComponents";
+import { PluginActionBanner } from "./vocabularyPrimitives";
 import {
   invokePluginAction,
   readPluginCollection,
@@ -19,8 +22,14 @@ import {
   vocabContextRows,
   type VocabAction,
 } from "../../../shared/plugins/vocabulary";
-import { readPluginActionNavigation } from "../../../shared/plugins/sdk";
+import {
+  readPluginActionMessage,
+  readPluginActionNavigation,
+  readPluginPanelRefreshAction,
+  type PluginActionMessage,
+} from "../../../shared/plugins/sdk";
 import { applyPluginDialogEdit } from "./sockets/dialogTarget";
+import { applyPluginActionOpenUrl } from "./pluginActionOpenUrl";
 
 /**
  * Data plumbing for one plugin panel.
@@ -57,6 +66,9 @@ const INITIAL_STATE: PanelState = {
   rows: EMPTY_ROWS,
   error: null,
 };
+
+/** How long an action's outcome banner stays up before it dismisses itself. */
+const PLUGIN_ACTION_BANNER_MS = 6_000;
 
 export function PluginPanelHost({
   pluginId,
@@ -97,6 +109,11 @@ export function PluginPanelHost({
   // Bumped to force a refetch: by a host change event, and by a completed
   // action (a plugin that just did something has usually changed its own data).
   const [refreshToken, setRefreshToken] = React.useState(0);
+  // What the last action said about how it went. Held here rather than in the
+  // renderer because it belongs to the dispatch, not to the control that fired
+  // it: a row that navigates away still owes the reader its sentence.
+  const [actionMessage, setActionMessage] = React.useState<PluginActionMessage | null>(null);
+  const [refreshing, setRefreshing] = React.useState(false);
   const activeRef = React.useRef(active);
   activeRef.current = active;
   const contextRef = React.useRef(renderContext ?? null);
@@ -104,7 +121,18 @@ export function PluginPanelHost({
 
   React.useEffect(() => {
     setState(INITIAL_STATE);
+    setActionMessage(null);
   }, [pluginId, panelId]);
+
+  // Auto-dismiss. An outcome is worth reading once; left up it becomes part of
+  // the panel and starts describing a press nobody remembers making. The next
+  // dispatch clears it sooner, and a message that arrives while one is showing
+  // restarts the clock because `actionMessage` is the effect's own dependency.
+  React.useEffect(() => {
+    if (!actionMessage) return;
+    const timer = setTimeout(() => setActionMessage(null), PLUGIN_ACTION_BANNER_MS);
+    return () => clearTimeout(timer);
+  }, [actionMessage]);
 
   // A context that arrives after the panel has loaded — a second deeplink into
   // the same panel — has to re-run the fetch, or `$context` keeps rendering the
@@ -189,11 +217,18 @@ export function PluginPanelHost({
       // was opened with. A panel is never both at once, and sending two shapes
       // under one name would make the plugin guess which it received.
       const context = surfaceContext ?? renderContext ?? null;
+      // Cleared before the call, not after it: the outcome on screen must
+      // belong to the press the reader is waiting on, never to the one before.
+      setActionMessage(null);
       const result = await invokePluginAction(pluginId, action.action, {
         ...action.args,
         ...extraArgs,
         ...(context ? { context } : {}),
       });
+      // What the action said about how it went. iOS and the TUI have shown this
+      // since the verb existed; desktop and the web discarded it, so one line of
+      // plugin copy reached two clients out of four.
+      setActionMessage(readPluginActionMessage(result));
       // The host publishes a change event for anything it wrote, but an action
       // whose only effect is outside the plugin's own tables would otherwise
       // leave a stale panel on screen.
@@ -208,6 +243,10 @@ export function PluginPanelHost({
         pluginId,
         actionId: action.action,
       });
+      // An action may ask to send the reader somewhere on the open web — the
+      // footer link a panel cannot express as a node, because `text` is never
+      // linkified on any client. `https:` only; the reader refuses the rest.
+      applyPluginActionOpenUrl(result, { pluginId, actionId: action.action });
       const navigation = readPluginActionNavigation(result);
       if (navigation) onNavigate?.(navigation);
     },
@@ -218,6 +257,36 @@ export function PluginPanelHost({
     () => ({ pluginId, rowsByBinding: state.rows, dispatch, active }),
     [active, dispatch, pluginId, state.rows],
   );
+
+  // Declared on the manifest and stamped onto the stored schema by the writer,
+  // so a plugin cannot mint the gesture for an action it never declared.
+  const refreshAction = readPluginPanelRefreshAction(state.record?.schema);
+
+  /**
+   * Run the declared refresh action, then refetch.
+   *
+   * The refetch happens either way. A refresh that failed still owes the reader
+   * whatever the panel holds now, and the failure says so in the banner — the
+   * same order iOS uses, so the gesture means one thing on every client.
+   */
+  const refresh = React.useCallback(async () => {
+    if (!refreshAction) return;
+    setRefreshing(true);
+    try {
+      await dispatch({ action: refreshAction });
+    } catch (cause) {
+      // Caught here rather than left to the caller: a refresh gesture has no
+      // control of its own to hang an inline error on, so the failure goes in
+      // the banner — the same place a successful refresh's message goes.
+      setActionMessage({
+        text: cause instanceof Error ? cause.message : "That refresh failed.",
+        ok: false,
+      });
+    } finally {
+      setRefreshing(false);
+      setRefreshToken((token) => token + 1);
+    }
+  }, [dispatch, refreshAction]);
 
   if (state.status === "idle" || (state.status === "loading" && !state.record)) {
     return <PanelSkeleton />;
@@ -245,11 +314,74 @@ export function PluginPanelHost({
   }
 
   return (
-    <PluginPanelView
-      schema={state.record.schema}
-      context={context}
-      recoveryAction={recoveryAction}
-    />
+    <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+      {/* The refresh control, for a panel whose manifest declared a refresh
+          action. Here rather than in `PluginPageShell`'s header because a panel
+          is hosted in six places — a tab, a detail section, a settings section,
+          a file viewer, a chat card, a webview overlay — and only one of them
+          has that header. Rendered by whoever renders the panel, so the gesture
+          exists wherever the panel does. */}
+      {refreshAction ? (
+        <div style={{ display: "flex", justifyContent: "flex-end", minWidth: 0 }}>
+          <PanelRefreshButton
+            pending={refreshing}
+            onRefresh={() => void refresh()}
+          />
+        </div>
+      ) : null}
+      <PluginPanelView
+        schema={state.record.schema}
+        context={context}
+        recoveryAction={recoveryAction}
+      />
+      {/* Under the panel, where iOS puts it — the outcome follows the thing it
+          is about rather than pushing it down the page on every press. */}
+      {actionMessage
+        ? <PluginActionBanner text={actionMessage.text} ok={actionMessage.ok} />
+        : null}
+    </div>
+  );
+}
+
+/**
+ * The refresh gesture on desktop and in the web client.
+ *
+ * A plain button rather than a pull: a pointer surface has no pull, and the
+ * phone's `.refreshable` has no button. Same action, the gesture each client
+ * actually has.
+ */
+function PanelRefreshButton({
+  pending,
+  onRefresh,
+}: {
+  pending: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={pending}
+      onClick={onRefresh}
+      aria-label="Refresh this panel"
+      title="Refresh this panel"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        padding: "3px 8px",
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+        color: COLORS.textMuted,
+        background: "transparent",
+        border: `1px solid ${COLORS.borderMuted}`,
+        borderRadius: RADII.sm,
+        cursor: pending ? "default" : "pointer",
+        opacity: pending ? 0.55 : 1,
+      }}
+    >
+      <ArrowsClockwise size={12} weight="regular" aria-hidden />
+      {pending ? "Refreshing…" : "Refresh"}
+    </button>
   );
 }
 

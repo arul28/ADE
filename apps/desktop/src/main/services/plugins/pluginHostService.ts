@@ -17,14 +17,20 @@ import {
   createPluginRegistryService,
   type PluginRegistryService,
 } from "../../../../../ade-cli/src/services/plugins/pluginRegistryService";
+import { getApiKey } from "../ai/apiKeyStore";
+import type { AgentChatRuntimeRef } from "../../../shared/types/chat";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import {
+  findPluginChatRuntime,
   parsePluginManifestJson,
   pluginHasRuntimeEntry,
   pluginPanelShowsOnMobile,
   type PluginManifest,
+  type PluginManifestChatRuntime,
   type PluginManifestSetting,
+  type PluginManifestWebhookIngressChannel,
+  type PluginProviderKeyId,
 } from "../../../shared/plugins/manifest";
 import { nowIso, writeTextAtomic } from "../shared/utils";
 import { isRecord } from "../../../shared/plugins/parse";
@@ -33,6 +39,7 @@ import {
   assertPluginCollectionKey,
   assertPluginCollectionName,
   isPluginEventName,
+  isPluginPushEventName,
   isPluginRuntimeHookName,
   PluginSdkError,
   type PluginActionInvokeRecord,
@@ -54,6 +61,14 @@ import {
   type PluginSourceInspection,
   type PluginSummary,
   type PluginUsageSummary,
+  type PluginPushEventName,
+  type PluginWebhookIngressStatus,
+  type PluginWebhookPayload,
+  pluginChatDeliveryAction,
+  isReservedPluginActionName,
+  reservedPluginActionMessage,
+  type PluginChatRuntimeEventName,
+  type PluginChatRuntimeEventPayload,
 } from "../../../shared/plugins/sdk";
 import {
   clampPluginInvokeTimeoutMs,
@@ -71,9 +86,16 @@ import {
   createPluginSdkServer,
   pluginAudioCaptureUnavailable,
   pluginAutomationsUnavailable,
+  pluginChatUnavailable,
+  pluginWebhookIngressUnavailable,
   pluginDesktopUnavailable,
   pluginNotificationUnavailable,
 } from "./pluginSdkServer";
+import {
+  findPluginChatRuntimeWriterForProjectRoot,
+  requirePluginChatWriteTarget,
+  setPluginChatRuntimeDelivery,
+} from "../chat/pluginChatRuntime";
 import { createPluginNotificationLimiter } from "./pluginNotificationLimiter";
 import { createPluginScheduleService } from "./pluginScheduleService";
 import { createPluginSecretStore, type PluginSecretStore } from "./pluginSecretStore";
@@ -100,6 +122,28 @@ const PLUGIN_NOTIFICATION_USAGE_FILE = "notification-usage.json";
 
 /** Plugin-owned schedules. Machine-scoped, and survives a plugin upgrade. */
 const PLUGIN_SCHEDULES_FILE = "schedules.json";
+
+/**
+ * How long the host waits for a plugin to DISPATCH a turn.
+ *
+ * Longer than the default action budget because a conversation runtime is
+ * usually a network call to somebody else's API, and short enough that a
+ * wedged plugin fails the turn while the user is still looking at it. It is
+ * not the budget for the ANSWER: the plugin is expected to return as soon as it
+ * has handed the message off and stream the reply back through
+ * `ade.chat.appendAssistant`, which has no timeout at all because the host is
+ * not waiting on it.
+ */
+const PLUGIN_CHAT_TURN_DISPATCH_TIMEOUT_MS = 120_000;
+
+/**
+ * How long the host waits for a plugin to acknowledge a stop.
+ *
+ * Much shorter than a dispatch. The user pressed stop; a runtime that cannot
+ * say "cancelling" within half a minute has already failed at the thing stop
+ * asks for, and reporting that beats a spinner on the stop button.
+ */
+const PLUGIN_CHAT_INTERRUPT_TIMEOUT_MS = 30_000;
 
 export type PluginProjectBinding = {
   projectId: string;
@@ -138,6 +182,24 @@ export type PluginProjectBinding = {
     triggerId: string;
     payload?: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * This project scope's webhook drain — `pluginWebhookIngressService`.
+   *
+   * Bound rather than constructed here for the reason `emitAutomationTrigger`
+   * is: the drain needs a project database, and the host outlives every project
+   * that attaches to it. The drain in turn reads the host's install roster and
+   * writes into the host's children, so the two are built as a pair by whoever
+   * owns the project scope (`main.ts`, `bootstrap.ts`).
+   *
+   * Optional. A scope with no drain answers `sdk.webhooks.*` with
+   * `unsupported_method`, which is the honest reading — a plugin should stop
+   * waiting for events that will never arrive rather than retry forever.
+   */
+  webhookIngress?: {
+    ack: (pluginId: string, deliveryId: string) => void;
+    urlFor: (pluginId: string, channelId: string) => string | null;
+    getStatus: (pluginId?: string) => Promise<PluginWebhookIngressStatus[]>;
+  };
 };
 
 export type PluginHostServiceArgs = {
@@ -208,6 +270,8 @@ export type PluginMachineContext = {
     title: string;
     body?: string;
     target: PluginNotificationTargetRequest;
+    /** Already validated as one of THIS plugin's own panel links, or absent. */
+    deeplink?: string;
   }) => Promise<PluginNotificationResult>;
   /**
    * The Electron-only SDK verbs, when a desktop is attached to lend them.
@@ -224,6 +288,36 @@ export type PluginMachineContext = {
 
 export type PluginHostService = {
   attachProject(binding: PluginProjectBinding): { detach(): void };
+  /**
+   * Installed, enabled plugins that declare webhook channels — what the drain
+   * polls for.
+   *
+   * Read from the host rather than from the install registry directly because
+   * the answer has to follow an enable, a disable and a reload without the
+   * drain being rebuilt, and the host is the one place that knows all three.
+   */
+  listWebhookIngressPlugins(): { pluginId: string; channels: PluginManifestWebhookIngressChannel[] }[];
+  /**
+   * Hand one webhook to a plugin's child. False when nobody could take it —
+   * the child is not running, or it never subscribed to `webhook.received`.
+   *
+   * A false answer is NOT a delivery failure and the drain must not charge an
+   * attempt for it. See `pluginWebhookIngressService`'s `deliver` contract.
+   */
+  deliverWebhookEvent(pluginId: string, payload: PluginWebhookPayload): boolean;
+  /**
+   * The machine plugin secret store, for the webhook drain.
+   *
+   * Handed out rather than re-created by the caller because there must be
+   * exactly ONE writer of the per-plugin secret-name index: two
+   * `EncryptedFileCredentialStore` instances over the same file would race on
+   * it, and a lost index entry is a secret an uninstall never sweeps.
+   *
+   * Narrowed to `get`/`set` deliberately. The drain generates and reads the
+   * relay registration secret and reads a channel's declared `verify` secret;
+   * it has no business deleting a plugin's secrets or enumerating them.
+   */
+  secretsForWebhookIngress(): Pick<PluginSecretStore, "get" | "set">;
   /** Supply (or replace) the machine identity. Merged over what is already set. */
   setMachineContext(context: PluginMachineContext): void;
   /** The `plugin` action-domain service, scoped to one project (null = machine). */
@@ -410,6 +504,13 @@ function toSummary(
       title: surface.title,
       panelId: surface.panelId,
       ...(surface.icon ? { icon: surface.icon } : {}),
+      // The one field a webview guest cannot be mounted without. Every guest
+      // host — the overlay, the plugin tab page, the panel slots — reads the
+      // LIST payload, not the manifest on disk, and each treats an absent
+      // `entryHtml` as "render the panel". Dropping it here therefore drew the
+      // panel over every custom-UI plugin with no error anywhere, and the
+      // author debugged their own HTML instead of this mapper.
+      ...(surface.entryHtml ? { entryHtml: surface.entryHtml } : {}),
       // Passed through, not interpreted: the extraction pilot gates a builtin
       // tab on this, and a summary that drops it makes the gate impossible.
       ...(surface.builtin ? { builtin: surface.builtin } : {}),
@@ -513,6 +614,25 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     beforeReplace: (pluginId: string) => stopSupervisor(pluginId),
   });
   const secrets: PluginSecretStore = createPluginSecretStore();
+  /**
+   * The provider-key broker, guarded.
+   *
+   * `getApiKey` throws when the store has not been initialized — a headless
+   * brain that never opened a project, a unit test that built the host alone —
+   * and that is not a fault the plugin should hear about. It is the same fact
+   * as "no key connected", so it answers the same way and the plugin's remedy
+   * is the same sentence: connect one in Settings.
+   *
+   * Nothing here logs the value. `provider` is the only thing worth recording,
+   * and the doctor already reads that from the manifest.
+   */
+  const readProviderKey = (provider: PluginProviderKeyId): string | null => {
+    try {
+      return getApiKey(provider);
+    } catch {
+      return null;
+    }
+  };
   /**
    * The two per-plugin ledgers that live beside the install registry.
    *
@@ -860,6 +980,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           displayName: manifest.displayName ?? null,
         }),
       readConfig: () => configFor(pluginId, manifest),
+      readProviderKey,
       // Read through `machine` at call time rather than captured here: a
       // supervisor outlives the desktop that lends it a microphone, and a
       // captured `undefined` would keep refusing captures long after one
@@ -897,6 +1018,65 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         const emit = requireProject(emitArgs.pluginId).binding.emitAutomationTrigger;
         if (!emit) throw pluginAutomationsUnavailable();
         await emit(emitArgs);
+      },
+      // Resolved per call through `requireProject` for the same reason the
+      // trigger emitter is: the drain belongs to a project scope, and a
+      // captured one would keep acking into a database the user has closed.
+      webhooks: {
+        url: (webhookPluginId, channelId) => {
+          const ingress = requireProject(webhookPluginId).binding.webhookIngress;
+          if (!ingress) throw pluginWebhookIngressUnavailable();
+          return ingress.urlFor(webhookPluginId, channelId);
+        },
+        ack: (webhookPluginId, deliveryId) => {
+          const ingress = requireProject(webhookPluginId).binding.webhookIngress;
+          if (!ingress) throw pluginWebhookIngressUnavailable();
+          ingress.ack(webhookPluginId, deliveryId);
+        },
+      },
+      // The chat seam. Every verb but `createSession` is addressed by a session
+      // id, which is globally unique, so ownership resolves it to the right
+      // project without anyone naming one — that is why these do NOT go through
+      // `requireProject` the way the trigger emitter does. `createSession` is
+      // the exception: it names a lane, not a session, so it needs the plugin's
+      // currently bound project and refuses when there is none.
+      //
+      // `pluginId` is passed to every call and the gate compares it to the
+      // session's own `runtimeRef.pluginId`. It is the id THIS supervisor was
+      // built for — a plugin cannot reach another plugin's sessions by naming
+      // them, because it never names itself at all.
+      chat: {
+        createSession: async (chatPluginId, input) => {
+          const writer = findPluginChatRuntimeWriterForProjectRoot(
+            resolveProject(chatPluginId)?.binding.projectRoot ?? null,
+          );
+          if (!writer) throw pluginChatUnavailable();
+          return await writer.createSession(chatPluginId, input);
+        },
+        appendAssistant: async (chatPluginId, sessionId, chunk) => {
+          const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
+          await writer.appendAssistant(sessionId, chunk);
+        },
+        appendUser: async (chatPluginId, sessionId, input) => {
+          const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
+          await writer.appendUser(sessionId, input);
+        },
+        emitStatus: async (chatPluginId, sessionId, status) => {
+          const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
+          await writer.emitStatus(sessionId, status);
+        },
+        setArtifacts: async (chatPluginId, sessionId, artifacts) => {
+          const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
+          await writer.setArtifacts(sessionId, artifacts);
+        },
+        attachBranch: async (chatPluginId, sessionId, input) => {
+          const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
+          await writer.attachBranch(sessionId, input);
+        },
+        hydrate: async (chatPluginId, sessionId, transcript) => {
+          const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
+          await writer.hydrate(sessionId, transcript);
+        },
       },
       // Read through `machine` at call time, not captured: a supervisor
       // outlives the desktop that lends it these, and a captured `undefined`
@@ -958,6 +1138,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     // no longer exists.
     hookSubscriptions.delete(pluginId);
     hookQueues.delete(pluginId);
+    pushSubscriptions.delete(pluginId);
     await supervisor.dispose();
   };
 
@@ -1031,6 +1212,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         ...(panel.icon ? { icon: panel.icon } : {}),
         ...(surface ? { surface: surface.id } : {}),
         mobile,
+        refreshAction: panel.refreshAction ?? null,
       };
       for (const attached of projects.values()) {
         try {
@@ -1043,7 +1225,8 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             // republishes, so a stale answer here would be permanent — the flag
             // is rewritten onto the schema the row already holds instead.
             const stored = isRecord(existing.schema) ? existing.schema : null;
-            if (!stored || stored.mobile === mobile) continue;
+            const storedRefresh = typeof stored?.refreshAction === "string" ? stored.refreshAction : null;
+            if (!stored || (stored.mobile === mobile && storedRefresh === (panel.refreshAction ?? null))) continue;
             attached.data.updatePanel(pluginId, panel.id, {
               ...declared,
               schema: existing.schema,
@@ -1152,6 +1335,14 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       root: installed.root,
       logs: supervisor ? supervisor.logs() : ([] as PluginLogEntry[]),
       lastInvokes: lastInvokesFor(installed.record.pluginId),
+      // Presence, never the value. The doctor needs to answer "is the key this
+      // plugin declared actually connected", and that question is answerable
+      // with a boolean — putting the key on a detail record would push a
+      // credential through the action layer and into every reader of it.
+      providerKeys: (installed.manifest?.providerKeys ?? []).map((provider) => ({
+        provider,
+        present: readProviderKey(provider) !== null,
+      })),
     };
   };
 
@@ -1228,6 +1419,17 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         const action = invokeArgs?.action;
         if (typeof action !== "string" || !action) {
           throw new PluginSdkError("invalid_args", '"action" is required.');
+        }
+        // The host's own chat delivery rides this same frame under an `ade:`
+        // action name, and the name is the ONLY thing that tells the two apart
+        // on the child. So no caller through this door may spell one: a
+        // published vocabulary node's `action`, a schedule, a remote command or
+        // an agent tool could otherwise hand a child a forged `chat.turn`
+        // naming any session it chose. The host's delivery does not come
+        // through here — it calls `supervisor.invoke` directly — so closing
+        // this door costs it nothing.
+        if (isReservedPluginActionName(action)) {
+          throw new PluginSdkError("not_permitted", reservedPluginActionMessage(action));
         }
         try {
           const result = await runInvoke(pluginId, action, invokeArgs);
@@ -1581,6 +1783,62 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         };
       },
 
+      /**
+       * Webhook ingress health, for `ade plugin doctor` and the Marketplace
+       * page.
+       *
+       * Answered from the attached project's drain, because that is where the
+       * ledger and the relay cursor live. With NO project attached — a machine
+       * scope, a client that has not opened one — the honest answer is the
+       * declaration without the traffic: the URLs are still correct and still
+       * worth showing, and reporting "nothing has arrived" would be a claim
+       * nobody checked.
+       */
+      async webhookIngress(ingressArgs): Promise<PluginWebhookIngressStatus[]> {
+        const ingress = scopedProject()?.binding.webhookIngress;
+        if (ingress) return await ingress.getStatus(ingressArgs?.pluginId);
+        const relayBaseUrl = "";
+        const declared = listWebhookIngressPlugins();
+        const rows = ingressArgs?.pluginId
+          ? declared.filter((plugin) => plugin.pluginId === ingressArgs.pluginId)
+          : declared;
+        if (ingressArgs?.pluginId && rows.length === 0) {
+          return [{
+            pluginId: ingressArgs.pluginId,
+            state: "undeclared",
+            relayBaseUrl,
+            channels: [],
+            lastReceivedAt: null,
+            lastPolledAt: null,
+            lastError: null,
+            pendingDeliveries: 0,
+            abandonedDeliveries: 0,
+          }];
+        }
+        return rows.map((plugin) => ({
+          pluginId: plugin.pluginId,
+          state: "unconfigured" as const,
+          relayBaseUrl,
+          channels: plugin.channels.map((channel) => ({
+            channelId: channel.id,
+            label: channel.label,
+            ...(channel.description ? { description: channel.description } : {}),
+            // Empty rather than a guessed URL. The relay base is per machine
+            // and only a bound project scope knows which one this machine
+            // uses; a URL invented here would be pasted into a third party and
+            // then be wrong forever.
+            url: "",
+            verified: Boolean(channel.verify),
+            lastReceivedAt: null,
+          })),
+          lastReceivedAt: null,
+          lastPolledAt: null,
+          lastError: null,
+          pendingDeliveries: 0,
+          abandonedDeliveries: 0,
+        }));
+      },
+
       async reload(reloadArgs) {
         await stopSupervisor(reloadArgs.pluginId);
         const before = installs.get(reloadArgs.pluginId)?.record.version ?? null;
@@ -1648,6 +1906,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     if (event.kind === "status" && event.pluginId && event.status !== "running") {
       hookSubscriptions.delete(event.pluginId);
       hookQueues.delete(event.pluginId);
+      pushSubscriptions.delete(event.pluginId);
       return;
     }
     if (event.kind !== "installs") return;
@@ -1687,8 +1946,23 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
    */
   const PLUGIN_RUNTIME_HOOK_QUEUE_MAX = 256;
   /** Per plugin: which hook kinds its current child registered a listener for. */
-  const hookSubscriptions = new Map<string, Set<PluginRuntimeHookName>>();
-  const hookQueues = new Map<string, { frames: PluginRuntimeHookPayload[]; dropped: number }>();
+  /**
+   * Which droppable event kinds each child registered a listener for.
+   *
+   * Holds the runtime hooks AND the two presence events, because they share one
+   * queue and one delivery contract: fire-and-forget, filtered by subscription,
+   * dropped rather than backpressured. The reliable chat events (`chat.turn`,
+   * `chat.interrupt`) are NOT in here — they go out as `invoke` frames, and a
+   * plugin that declared a chat runtime must answer them whether or not it also
+   * asked to hear about presence.
+   */
+  const hookSubscriptions = new Map<string, Set<PluginRuntimeHookName | PluginChatRuntimeEventName>>();
+  /** The same, for the push events. Cleared on a restart alongside the hooks. */
+  const pushSubscriptions = new Map<string, Set<PluginPushEventName>>();
+  const hookQueues = new Map<
+    string,
+    { frames: (PluginRuntimeHookPayload | PluginChatRuntimeEventPayload)[]; dropped: number }
+  >();
   let hookFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
@@ -1705,17 +1979,39 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     if (!isPluginEventName(event)) {
       throw new PluginSdkError("invalid_args", `Unknown event name: ${String(event)}`);
     }
+    // Push events are filtered on the way out for the same reason the hooks
+    // are, and for one more: a webhook delivery is only ACKED by a child that
+    // listens, so writing one to a child with no listener would burn an
+    // attempt against a plugin that could never have answered.
+    if (isPluginPushEventName(event)) {
+      const subscribed = params.subscribed !== false;
+      const existing = pushSubscriptions.get(pluginId);
+      if (subscribed) {
+        if (existing) existing.add(event);
+        else pushSubscriptions.set(pluginId, new Set<PluginPushEventName>([event]));
+        return null;
+      }
+      if (!existing) return null;
+      existing.delete(event);
+      if (!existing.size) pushSubscriptions.delete(pluginId);
+      return null;
+    }
     // The change events are broadcast to every running child and always have
     // been; recording them costs nothing and keeps the child's `events.on` free
     // of a per-kind special case, but only the hooks are filtered on the way
     // out. Narrowing the change events to subscribers would be a behaviour
     // change for shipped plugins, and it is not this one.
-    if (!isPluginRuntimeHookName(event)) return null;
+    // The two presence events join the hooks in the same map: same queue, same
+    // drop-rather-than-wait contract, same "nobody asked, nobody is written to"
+    // rule. `chat.turn` and `chat.interrupt` fall through to the change-event
+    // branch below and record nothing, because their delivery does not consult
+    // this map at all.
+    if (!isPluginRuntimeHookName(event) && event !== "chat.opened" && event !== "chat.closed") return null;
     const subscribed = params.subscribed !== false;
     const existing = hookSubscriptions.get(pluginId);
     if (subscribed) {
       if (existing) existing.add(event);
-      else hookSubscriptions.set(pluginId, new Set<PluginRuntimeHookName>([event]));
+      else hookSubscriptions.set(pluginId, new Set<PluginRuntimeHookName | PluginChatRuntimeEventName>([event]));
       return null;
     }
     if (!existing) return null;
@@ -1749,7 +2045,50 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     }
   };
 
-  const queueRuntimeHook = (pluginId: string, payload: PluginRuntimeHookPayload): void => {
+  /**
+   * Installed, ENABLED plugins that declare at least one webhook channel.
+   *
+   * Enabled matters: a disabled plugin has no child, so a drain that kept
+   * polling for it would accumulate deliveries nobody can ack until they are
+   * abandoned. Its relay registration is left alone — disabling a plugin is
+   * not uninstalling it, and a user who re-enables it should not have to
+   * re-paste the URL into the third party.
+   */
+  const listWebhookIngressPlugins = (): {
+    pluginId: string;
+    channels: PluginManifestWebhookIngressChannel[];
+  }[] => {
+    const rows: { pluginId: string; channels: PluginManifestWebhookIngressChannel[] }[] = [];
+    for (const installed of installs.list()) {
+      if (!installed.record.enabled) continue;
+      const channels = installed.manifest?.webhookIngress ?? [];
+      if (channels.length === 0) continue;
+      rows.push({ pluginId: installed.record.pluginId, channels });
+    }
+    return rows;
+  };
+
+  /**
+   * Write one webhook to a plugin's child.
+   *
+   * Synchronous and unqueued, unlike the runtime hooks: a webhook arrives at
+   * most PLUGIN_WEBHOOK_DELIVERIES_PER_TICK times per plugin per 45 seconds, so
+   * the batching that `tool.before` needs would only add a tick of latency to
+   * the thing the whole feature exists to make fast. The `send` refusal that
+   * matters — a child that has stopped draining its stdin — comes back as
+   * `false` and the drain simply tries again next tick.
+   */
+  const deliverWebhookEvent = (pluginId: string, payload: PluginWebhookPayload): boolean => {
+    if (!pushSubscriptions.get(pluginId)?.has(payload.event)) return false;
+    const supervisor = supervisors.get(pluginId);
+    if (!supervisor || supervisor.status() !== "running") return false;
+    return supervisor.send({ type: "event", payload });
+  };
+
+  const queueRuntimeHook = (
+    pluginId: string,
+    payload: PluginRuntimeHookPayload | PluginChatRuntimeEventPayload,
+  ): void => {
     let queue = hookQueues.get(pluginId);
     if (!queue) {
       queue = { frames: [], dropped: 0 };
@@ -1819,6 +2158,126 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
     }
   });
 
+  /**
+   * The plugin child a bound chat session belongs to, ready to be invoked.
+   *
+   * Every refusal here is a `PluginSdkError` the chat service turns into a
+   * visibly failed turn, because every one of them means the user's message has
+   * nowhere to go: the plugin was uninstalled, disabled, updated with that
+   * runtime removed, or ships no code at all. A silent no-op would leave a
+   * spinner running forever over a conversation nobody is listening to.
+   */
+  const requireChatRuntimeChild = (ref: AgentChatRuntimeRef): {
+    supervisor: PluginChildSupervisor;
+    runtime: PluginManifestChatRuntime;
+  } => {
+    const installed = installs.get(ref.pluginId);
+    if (!installed || !installed.record.enabled) {
+      throw new PluginSdkError(
+        "plugin_not_found",
+        `The plugin that runs this conversation ("${ref.pluginId}") is not installed.`,
+      );
+    }
+    const runtime = findPluginChatRuntime(installed.manifest, ref.runtimeId);
+    if (!runtime) {
+      throw new PluginSdkError(
+        "unsupported_method",
+        `Plugin "${ref.pluginId}" no longer serves the "${ref.runtimeId}" conversation runtime.`,
+      );
+    }
+    return { supervisor: ensureSupervisor(installed), runtime };
+  };
+
+  /**
+   * How the chat service reaches a plugin. See `pluginChatRuntime.ts`.
+   *
+   * Turns and interrupts ride `invoke` — the request/response frame — so a
+   * stopped child is STARTED for them and a failure is a rejection the user
+   * sees. Presence rides the droppable queue beside the runtime hooks, which is
+   * the right contract for a hint: missing one costs a poll interval, and a
+   * plugin that has stopped draining its stdin must not be able to hold a
+   * mounting chat pane open while the host waits on it.
+   */
+  const detachChatRuntimeDelivery = setPluginChatRuntimeDelivery({
+    async deliverTurn(turn) {
+      if (disposed) throw new PluginSdkError("plugin_crashed", "ADE is shutting down.");
+      const { supervisor, runtime } = requireChatRuntimeChild(turn.ref);
+      if (turn.followUp && !runtime.capabilities.followUp) {
+        throw new PluginSdkError(
+          "not_permitted",
+          `"${runtime.displayName}" conversations do not take follow-up messages.`,
+        );
+      }
+      await supervisor.invoke(pluginChatDeliveryAction("chat.turn"), {
+        event: "chat.turn",
+        sessionId: turn.sessionId,
+        projectId: projectIdForRoot(turn.projectRoot),
+        runtimeId: turn.ref.runtimeId,
+        externalId: turn.ref.externalId,
+        turnId: turn.turnId,
+        message: turn.message,
+        attachments: turn.attachments,
+        followUp: turn.followUp,
+      } satisfies Extract<PluginChatRuntimeEventPayload, { event: "chat.turn" }> & Record<string, unknown>, {
+        // A conversation runtime is usually a network call to somebody else's
+        // API, so the default action budget is too tight. The plugin is
+        // expected to return as soon as it has DISPATCHED the turn and stream
+        // the reply back through `ade.chat.appendAssistant`, not to hold this
+        // open for the whole answer.
+        timeoutMs: PLUGIN_CHAT_TURN_DISPATCH_TIMEOUT_MS,
+      });
+    },
+    async deliverInterrupt(interrupt) {
+      if (disposed) return;
+      const { supervisor, runtime } = requireChatRuntimeChild(interrupt.ref);
+      if (!runtime.capabilities.interrupt) {
+        throw new PluginSdkError(
+          "not_permitted",
+          `"${runtime.displayName}" conversations cannot be stopped from ADE.`,
+        );
+      }
+      await supervisor.invoke(pluginChatDeliveryAction("chat.interrupt"), {
+        event: "chat.interrupt",
+        sessionId: interrupt.sessionId,
+        projectId: projectIdForRoot(interrupt.projectRoot),
+        runtimeId: interrupt.ref.runtimeId,
+        externalId: interrupt.ref.externalId,
+        turnId: interrupt.turnId,
+      } satisfies Extract<PluginChatRuntimeEventPayload, { event: "chat.interrupt" }> & Record<string, unknown>, {
+        timeoutMs: PLUGIN_CHAT_INTERRUPT_TIMEOUT_MS,
+      });
+    },
+    notifyPresence(presence) {
+      if (disposed) return;
+      const kinds = hookSubscriptions.get(presence.ref.pluginId);
+      const event = presence.watching ? "chat.opened" : "chat.closed";
+      // Same subscription rule the runtime hooks follow: a child that never
+      // registered a listener is never written to. A plugin that polls on a
+      // schedule instead of on presence costs the host nothing.
+      if (!kinds?.has(event)) return;
+      queueRuntimeHook(presence.ref.pluginId, {
+        event,
+        sessionId: presence.sessionId,
+        projectId: projectIdForRoot(presence.projectRoot),
+        runtimeId: presence.ref.runtimeId,
+        externalId: presence.ref.externalId,
+        watching: presence.watching,
+      } as PluginChatRuntimeEventPayload);
+    },
+    describe(ref) {
+      const installed = installs.get(ref.pluginId);
+      if (!installed || !installed.record.enabled) return null;
+      const runtime = findPluginChatRuntime(installed.manifest, ref.runtimeId);
+      if (!runtime) return null;
+      return {
+        displayName: runtime.displayName,
+        ...(runtime.icon ? { icon: runtime.icon } : {}),
+        pluginDisplayName: installed.manifest?.displayName ?? ref.pluginId,
+        capabilities: runtime.capabilities,
+      };
+    },
+  });
+
   const storeFor = (binding: PluginProjectBinding): PluginDataStore => createPluginDataStore({
     db: binding.db,
     ...(binding.onPluginDataChanged ? { onCollectionChanged: binding.onPluginDataChanged } : {}),
@@ -1850,6 +2309,12 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       reconcile();
       return { detach: () => detachProject(binding.projectId) };
     },
+    listWebhookIngressPlugins,
+    deliverWebhookEvent,
+    secretsForWebhookIngress: () => ({
+      get: (pluginId, name) => secrets.get(pluginId, name),
+      set: (pluginId, name, value) => secrets.set(pluginId, name, value),
+    }),
     domainService,
     rootFor(pluginId) {
       const installed = installs.get(pluginId);
@@ -1895,6 +2360,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       disposed = true;
       unsubscribePluginChanges();
       unsubscribeRuntimeHooks();
+      detachChatRuntimeDelivery();
       if (installEventTimer) {
         clearTimeout(installEventTimer);
         installEventTimer = null;

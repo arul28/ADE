@@ -51,6 +51,11 @@ const PROVIDER_LABELS: Record<AgentChatProvider, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  // One label for every plugin-owned chat, because `"plugin"` is one provider
+  // value for every plugin. The runtime's real name lives on the session's
+  // `runtimeLabel`; this palette filters by provider and has no session in
+  // hand, so it says the category rather than guessing a plugin.
+  plugin: "Plugin",
 };
 
 function providerLabel(provider?: AgentChatProvider | null): string {

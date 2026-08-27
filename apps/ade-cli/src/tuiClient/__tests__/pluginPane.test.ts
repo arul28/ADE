@@ -132,6 +132,124 @@ describe("plugin pane model", () => {
     expect(titles).toEqual(["Fix login", "Ship plugins"]);
   });
 
+  it("makes a bound row selectable only for an action its binding allowed", () => {
+    // Without the allowlist a bound row carried no action at all here, so a
+    // collection-driven fleet was inert in the TUI while it was live on iOS.
+    const collections: PluginPaneCollectionMap = new Map([
+      [
+        bindingKey({ collection: "fleet" }),
+        [
+          { key: "1", value: { title: "allowed", onPress: { action: "open-agent" } } },
+          { key: "2", value: { title: "refused", onPress: { action: "delete-everything" } } },
+        ],
+      ],
+    ]);
+
+    const allowed = build(
+      panel([{ component: "list", bind: { collection: "fleet", allowActions: ["open-agent"] } }]),
+      { collections },
+    );
+    const selectable = allowed.rows.flatMap((row) =>
+      row.kind === "listItem" && row.selection !== null ? [row.title] : [],
+    );
+    expect(selectable).toEqual(["allowed"]);
+    expect(allowed.interactives.flatMap((entry) => (entry.kind === "action" ? [entry.action.action] : [])))
+      .toEqual(["open-agent"]);
+
+    // No allowlist keeps the old answer: a bound row names nothing.
+    const bare = build(panel([{ component: "list", bind: { collection: "fleet" } }]), { collections });
+    expect(bare.rows.every((row) => row.kind !== "listItem" || row.selection === null)).toBe(true);
+  });
+
+  it("carries the panel's refresh action so `r` can dispatch it before refetching", () => {
+    // Stamped onto the stored schema by the writer, off the manifest. A panel
+    // with no declaration keeps `r` the plain refetch it always was.
+    expect(build(panel([], { refreshAction: "refresh-fleet" })).refreshAction).toBe("refresh-fleet");
+    expect(build(panel([])).refreshAction).toBeNull();
+
+    // Read even when the schema is one this build cannot render: a refresh may
+    // be what turns it into one it can, and refusing there strands the reader
+    // on the fallback card.
+    const unreadable = build(panel([], { v: 99, refreshAction: "refresh-fleet" }));
+    expect(unreadable.status).toBe("fallback");
+    expect(unreadable.refreshAction).toBe("refresh-fleet");
+
+    // No row at all means no schema to read a declaration off.
+    expect(build({ state: "missing" }).refreshAction).toBeNull();
+  });
+
+  it("draws a rich row's badge and mono line, and its actions as numbered keys", () => {
+    const model = build(panel([{
+      component: "list",
+      items: [{
+        title: "bc-1",
+        subtitle: "Fix the login redirect",
+        mono: "origin/fix-login-redirect",
+        badge: { text: "Running", tone: "accent" },
+        onPress: { action: "open-agent" },
+        actions: [{ action: "stop", label: "Stop", confirm: "Stop this agent?" }],
+        // `overflow` degrades into the same numbered list as `actions`: a
+        // terminal pane has no menu, and showing what the row can do beats
+        // hiding half of it behind a control the reader cannot open.
+        overflow: [{ action: "archive", label: "Archive" }],
+      }],
+    }]));
+
+    const item = model.rows.find((row) => row.kind === "listItem");
+    expect(item?.kind === "listItem" ? item.badge : null).toEqual({ text: "Running", tone: "accent" });
+    expect(item?.kind === "listItem" ? item.mono : null).toBe("origin/fix-login-redirect");
+
+    const buttons = model.rows.find((row) => row.kind === "buttons");
+    expect(buttons?.kind === "buttons" ? buttons.buttons.map((entry) => entry.label) : [])
+      .toEqual(["Stop", "Archive"]);
+    // Each one is a real interactive, so `confirm` and the dispatch path are
+    // the ones a `button` node already uses.
+    expect(model.interactives.map((entry) => (entry.kind === "action" ? entry.action.action : entry.kind)))
+      .toEqual(["open-agent", "stop", "archive"]);
+    const stop = model.interactives[1];
+    expect(stop.kind === "action" ? stop.action.confirm : null).toBe("Stop this agent?");
+  });
+
+  it("keeps a hundred rich rows in one list without spending the node budget", () => {
+    // The pane draws a row, its mono line and its buttons; the SCHEMA is still
+    // one node, which is what the widening bought.
+    const items = Array.from({ length: 100 }, (_, index) => ({
+      title: `bc-${index}`,
+      mono: `origin/agent-${index}`,
+      badge: { text: "Running" },
+      actions: [{ action: "open", label: "Open", args: { id: `bc-${index}` } }],
+    }));
+    const model = build(panel([{ component: "list", items }]));
+    expect(model.rows.filter((row) => row.kind === "listItem")).toHaveLength(100);
+    expect(model.interactives).toHaveLength(100);
+    expect(model.status).toBe("ok");
+  });
+
+  it("gates a bound row's trailing actions through the binding's allowlist", () => {
+    const collections: PluginPaneCollectionMap = new Map([
+      [
+        bindingKey({ collection: "fleet" }),
+        [{
+          key: "1",
+          value: {
+            title: "bc-1",
+            actions: [
+              { action: "open-agent", label: "Open" },
+              { action: "delete-everything", label: "Delete" },
+            ],
+          },
+        }],
+      ],
+    ]);
+    const model = build(
+      panel([{ component: "list", bind: { collection: "fleet", allowActions: ["open-agent"] } }]),
+      { collections },
+    );
+    const buttons = model.rows.find((row) => row.kind === "buttons");
+    expect(buttons?.kind === "buttons" ? buttons.buttons.map((entry) => entry.label) : [])
+      .toEqual(["Open"]);
+  });
+
   it("shows the node's own empty text when a binding has no rows", () => {
     const model = build(panel([
       { component: "list", bind: { collection: "issues" }, emptyText: "No issues assigned." },

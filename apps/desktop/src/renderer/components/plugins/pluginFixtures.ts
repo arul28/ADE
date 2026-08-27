@@ -93,6 +93,55 @@ export const PLUGIN_FIXTURES: PluginFixture[] = [
     },
   },
   {
+    id: "rich-rows",
+    label: "Rich list rows",
+    note: "A fleet row: status chip, monospace branch, two trailing buttons and an overflow menu. One node for the whole list.",
+    schema: {
+      v: VOCAB_VERSION,
+      title: "Rich rows",
+      fallback,
+      body: [
+        {
+          component: "list",
+          items: [
+            {
+              title: "bc-1f4a",
+              subtitle: "Fix the login redirect on the marketing site",
+              mono: "origin/fix-login-redirect",
+              badge: { text: "Running", tone: "accent", icon: "play" },
+              onPress: { action: "open-agent", args: { id: "bc-1f4a" } },
+              actions: [
+                { action: "pull-into-lane", label: "Pull", kind: "primary", icon: "git-branch" },
+                { action: "stop-agent", label: "Stop", confirm: "Stop this agent?" },
+              ],
+              overflow: [
+                { action: "open-on-cursor", label: "Open on cursor.com", icon: "globe" },
+                { action: "archive-agent", label: "Archive", icon: "package" },
+              ],
+            },
+            {
+              title: "bc-90de",
+              subtitle: "Add the plugin refresh contract",
+              mono: "origin/plugin-refresh",
+              badge: { text: "Finished", tone: "success" },
+              meta: "4m",
+              actions: [{ action: "pull-into-lane", label: "Pull", kind: "primary", icon: "git-branch" }],
+            },
+            {
+              title: "bc-77b2",
+              subtitle: "Could not resolve the repository",
+              mono: "origin/unknown",
+              badge: { text: "Error", tone: "warning", icon: "bug" },
+              tone: "warning",
+              meta: "1h",
+              overflow: [{ action: "archive-agent", label: "Archive", icon: "package" }],
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     id: "table",
     label: "Table",
     note: "Right-aligned numerics get tabular figures. A missing cell reads as an em dash.",

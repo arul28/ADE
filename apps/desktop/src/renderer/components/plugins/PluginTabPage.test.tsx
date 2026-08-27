@@ -21,6 +21,8 @@ import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
 const registry = {
   plugins: [] as InstalledPlugin[],
   loaded: true,
+  /** What the store remembers per plugin, which outlives the manifest that set it. */
+  lastPanelByPlugin: {} as Record<string, string>,
 };
 
 let webviewsSupported = true;
@@ -30,7 +32,7 @@ vi.mock("../../state/appStore", () => ({
     select({
       installedPlugins: registry.plugins,
       pluginsLoaded: registry.loaded,
-      pluginViewState: { lastPanelByPlugin: {} },
+      pluginViewState: { lastPanelByPlugin: registry.lastPanelByPlugin },
       setLastPluginPanel: () => {},
       refreshInstalledPlugins: async () => {},
     }),
@@ -83,6 +85,7 @@ afterEach(() => {
   cleanup();
   registry.plugins = [];
   registry.loaded = true;
+  registry.lastPanelByPlugin = {};
   webviewsSupported = true;
 });
 
@@ -144,5 +147,63 @@ describe("plugin tab page", () => {
     mount();
 
     expect(screen.queryByText("Not installed here")).toBeNull();
+  });
+});
+
+/**
+ * Which panel a rail click opens, when the store remembers one.
+ *
+ * The remembered id outlives the manifest that earned it, and the page used to
+ * prefer it over anything the plugin currently declares. A plugin that publishes
+ * only `dashboard` therefore opened at a remembered `main`, matched no surface,
+ * and hosted a panel it had never published — a tab that looks like it does
+ * nothing (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §4).
+ */
+describe("plugin tab page panel resolution", () => {
+  it("ignores a remembered panel the current manifest does not declare", () => {
+    registry.lastPanelByPlugin = { "acme-notes": "main" };
+    registry.plugins = [installed({
+      tabs: [{ id: "dashboard", title: "Dashboard", kind: "webview", panelId: "dashboard", entryHtml: "web/index.html" }],
+    })];
+    mount("");
+
+    // The plugin's own first surface wins, so the guest mounts instead of the
+    // page hosting an unpublished `main`.
+    expect(screen.getByTestId("webview-host")).toBeTruthy();
+  });
+
+  it("falls back to the first declared tab rather than to a literal main", () => {
+    registry.plugins = [installed({
+      tabs: [{ id: "dashboard", title: "Dashboard", kind: "tab", panelId: "dashboard" }],
+    })];
+    mount("");
+
+    expect(screen.getByTestId("panel-host").textContent).toBe("dashboard");
+  });
+
+  it("still restores a remembered panel the manifest does declare", () => {
+    registry.lastPanelByPlugin = { "acme-notes": "archive" };
+    registry.plugins = [installed({
+      tabs: [
+        { id: "overview", title: "Overview", kind: "tab", panelId: "overview" },
+        { id: "archive", title: "Archive", kind: "tab", panelId: "archive" },
+      ],
+    })];
+    mount("");
+
+    expect(screen.getByTestId("panel-host").textContent).toBe("archive");
+  });
+
+  it("lets an explicit ?panel= win over both the memory and the first tab", () => {
+    registry.lastPanelByPlugin = { "acme-notes": "archive" };
+    registry.plugins = [installed({
+      tabs: [
+        { id: "overview", title: "Overview", kind: "tab", panelId: "overview" },
+        { id: "archive", title: "Archive", kind: "tab", panelId: "archive" },
+      ],
+    })];
+    mount("?panel=overview");
+
+    expect(screen.getByTestId("panel-host").textContent).toBe("overview");
   });
 });

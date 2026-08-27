@@ -209,6 +209,7 @@ import {
   PLUGIN_CHANGED_EVENT_TYPE,
   subscribeToPluginChanges,
 } from "../../desktop/src/main/services/plugins/pluginEvents";
+import { createPluginWebhookIngressService } from "../../desktop/src/main/services/plugins/pluginWebhookIngressService";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -2111,7 +2112,7 @@ export async function createAdeRuntime(args: {
        * desktop exactly as intended, so `delivered` carries what landed and only
        * an empty result is a refusal.
        */
-      postNotification: async ({ pluginId, label, title, body, target }) => {
+      postNotification: async ({ pluginId, label, title, body, target, deeplink }) => {
         const delivered: PluginNotificationTarget[] = [];
         if (target !== "mobile") {
           try {
@@ -2137,6 +2138,11 @@ export async function createAdeRuntime(args: {
               pluginLabel: label,
               title,
               ...(body ? { body } : {}),
+              // The desktop leg carries no destination: its bridge message has
+              // no field for one, and adding it would be a cross-process
+              // contract change for a notification the user is already looking
+              // at ADE to see. The phone is where a tap has somewhere to go.
+              ...(deeplink ? { deeplink } : {}),
             });
             if (queued) delivered.push("mobile");
           } catch (error) {
@@ -2654,12 +2660,37 @@ export async function createAdeRuntime(args: {
       pushEvent("runtime", { type: PLUGIN_CHANGED_EVENT_TYPE, ...event });
     });
 
+    // The generic webhook drain: one poll for every installed plugin that
+    // declares `webhookIngress`, replacing what `cursorCloudIngressService`
+    // does for exactly one feature. Constructed HERE rather than inside the
+    // machine-scoped host because its ledger and relay cursor live in this
+    // project's database; the host lends it the install roster and the child
+    // it delivers into, so the two are built as a pair.
+    const pluginWebhookIngressService = createPluginWebhookIngressService({
+      db,
+      projectId,
+      logger,
+      listPlugins: () => pluginHostService.listWebhookIngressPlugins(),
+      secrets: pluginHostService.secretsForWebhookIngress(),
+      deliver: (webhookPluginId, payload) =>
+        pluginHostService.deliverWebhookEvent(webhookPluginId, payload),
+      getAccountAccessToken,
+    });
+    teardown.push(() => pluginWebhookIngressService.stop());
+
     detachPluginHostBinding = (() => {
       const attachment = pluginHostService.attachProject({
         projectId,
         projectRoot,
         db,
         syncMeter: pluginSyncMeter,
+        webhookIngress: {
+          ack: (webhookPluginId, deliveryId) =>
+            pluginWebhookIngressService.ack(webhookPluginId, deliveryId),
+          urlFor: (webhookPluginId, channelId) =>
+            pluginWebhookIngressService.urlFor(webhookPluginId, channelId),
+          getStatus: (webhookPluginId) => pluginWebhookIngressService.getStatus(webhookPluginId),
+        },
         // Panels on a phone or another computer otherwise wait out the host's
         // poll; this is a no-op when nobody has one open.
         onPluginDataChanged: () => {
@@ -2739,8 +2770,13 @@ export async function createAdeRuntime(args: {
           );
         },
       });
+      // Started only after the binding exists: the drain's first tick reaches
+      // straight back into the host for the install roster, and a tick that
+      // beat the attach would find no project scope to ack into.
+      pluginWebhookIngressService.start();
       return () => {
         unsubscribePluginChanges();
+        pluginWebhookIngressService.stop();
         attachment.detach();
       };
     })();

@@ -8,6 +8,7 @@ import { PluginPanelView, VocabularyBoundary } from "./VocabularyRenderer";
 import type { VocabRenderContext } from "./vocabularyComponents";
 import { PLUGIN_FIXTURES } from "./pluginFixtures";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
+import { bindingKey } from "../../../shared/plugins/vocabulary";
 
 /**
  * These cover the one promise the renderer makes that a type system cannot:
@@ -109,6 +110,161 @@ describe("PluginPanelView", () => {
       expect(screen.getByText("The plugin refused that action.")).toBeTruthy();
     });
     expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks before running a list row's action, the way a button already does", async () => {
+    // A row used to dispatch straight through, so the same destructive action
+    // prompted behind a button and ran silently behind a row.
+    const dispatch = vi.fn(async () => {});
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const row = {
+      title: "bc-1",
+      onPress: { action: "delete-agent", confirm: "Delete this agent?" },
+    };
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{ component: "list", items: [row] }],
+        }}
+        context={makeContext({ dispatch })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /bc-1/ }));
+    expect(confirm).toHaveBeenCalledWith("Delete this agent?");
+    expect(dispatch).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /bc-1/ }));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+  });
+
+  it("makes a collection-driven row pressable only for an action its binding allowed", async () => {
+    const dispatch = vi.fn(async () => {});
+    const rowsByBinding = new Map<string, PluginCollectionRow[]>([
+      [bindingKey({ collection: "fleet" }), [
+        { key: "1", value: { title: "allowed row", onPress: { action: "open-agent" } } } as PluginCollectionRow,
+        { key: "2", value: { title: "refused row", onPress: { action: "delete-everything" } } } as PluginCollectionRow,
+      ]],
+    ]);
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{ component: "list", bind: { collection: "fleet", allowActions: ["open-agent"] } }],
+        }}
+        context={makeContext({ dispatch, rowsByBinding })}
+      />,
+    );
+
+    // Both rows render; only the allowed one is a control.
+    expect(screen.getByText("refused row")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /refused row/ })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /allowed row/ }));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ action: "open-agent" }));
+  });
+
+  it("draws a rich row and keeps its trailing buttons out of the row's own press", async () => {
+    const dispatch = vi.fn(async () => {});
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "list",
+            items: [{
+              title: "bc-1",
+              subtitle: "Fix the login redirect",
+              mono: "origin/fix-login-redirect",
+              badge: { text: "Running", tone: "accent" },
+              onPress: { action: "open-agent" },
+              actions: [{ action: "stop", label: "Stop" }],
+            }],
+          }],
+        }}
+        context={makeContext({ dispatch })}
+      />,
+    );
+
+    expect(screen.getByText("Running")).toBeTruthy();
+    expect(screen.getByText("origin/fix-login-redirect")).toBeTruthy();
+    // The row's press and its trailing button are two separate controls. A
+    // button nested inside the row button would not render at all.
+    const rowPress = () => screen.getByRole("button", { name: /bc-1/ }) as HTMLButtonElement;
+    fireEvent.click(screen.getByRole("button", { name: /Stop/ }));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ action: "stop" }));
+    // One runner for the whole row: while an action is in flight the rest of
+    // the row is held, so a reader cannot start a second action against data
+    // the first one is already changing.
+    expect(rowPress().disabled).toBe(true);
+
+    await waitFor(() => expect(rowPress().disabled).toBe(false));
+    fireEvent.click(rowPress());
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(2));
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ action: "open-agent" }));
+  });
+
+  it("asks before running a row's trailing action, the way the row's own press does", async () => {
+    const dispatch = vi.fn(async () => {});
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "list",
+            items: [{
+              title: "bc-1",
+              actions: [{ action: "delete-agent", label: "Delete", confirm: "Delete this agent?" }],
+            }],
+          }],
+        }}
+        context={makeContext({ dispatch })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    expect(confirm).toHaveBeenCalledWith("Delete this agent?");
+    expect(dispatch).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /Delete/ }));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps a row's overflow actions behind a menu until it is opened", async () => {
+    const dispatch = vi.fn(async () => {});
+    render(
+      <PluginPanelView
+        schema={{
+          v: 1,
+          fallback: { title: "T", text: "B" },
+          body: [{
+            component: "list",
+            items: [{
+              title: "bc-1",
+              overflow: [{ action: "archive", label: "Archive" }],
+            }],
+          }],
+        }}
+        context={makeContext({ dispatch })}
+      />,
+    );
+
+    expect(screen.queryByRole("menuitem", { name: /Archive/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Archive/ }));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ action: "archive" })));
+    // Pressing an item closes the menu: one left open over the row below it
+    // reads as belonging to the wrong row.
+    expect(screen.queryByRole("menuitem", { name: /Archive/ })).toBeNull();
   });
 
   it("withholds a video source until the hosting surface is visible", () => {

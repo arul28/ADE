@@ -10,6 +10,8 @@ import type {
   AgentChatCodexSandbox,
   AgentChatCliLaunchProvider,
   AgentChatSpawnKind,
+  AgentChatRuntimeRef,
+  AgentChatRuntimeLabel,
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
 import type { OrchestrationRole } from "./orchestration";
@@ -307,6 +309,20 @@ export type TerminalSessionSummary = {
   spawnKind?: AgentChatSpawnKind;
   /** Cursor Cloud agent id when this chat is a live view of a cloud agent. */
   cursorCloudAgentId?: string | null;
+  /**
+   * Set when a PLUGIN owns this chat's turns. See `AgentChatRuntimeRef`.
+   *
+   * On the row rather than only on the chat because a client sending presence,
+   * or drawing a name for a chat it is listing, has this shape in hand and not
+   * the chat summary.
+   */
+  runtimeRef?: AgentChatRuntimeRef | null;
+  /**
+   * The owning plugin runtime's own name and icon, resolved by the host from
+   * the plugin's manifest. `toolType` cannot carry which plugin a chat belongs
+   * to, so without this a plugin-owned row reads as a generic "Session".
+   */
+  runtimeLabel?: AgentChatRuntimeLabel | null;
 };
 
 export type SessionAttentionSource = "agent_explicit" | "provider_structured" | "user";

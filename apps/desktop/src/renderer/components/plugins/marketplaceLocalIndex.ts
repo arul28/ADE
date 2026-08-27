@@ -54,6 +54,8 @@ function manifest(partial: Partial<PluginManifest> & Pick<PluginManifest,
     automationSteps: [],
     searchProviders: [],
     keybindings: [],
+    chatRuntimes: [],
+    webhookIngress: [],
     official: true,
     ...partial,
   };

@@ -214,6 +214,14 @@ export type PushPluginNotificationRequest = {
   pluginLabel: string;
   title: string;
   body?: string;
+  /**
+   * Where tapping it lands, when the plugin named a panel of its own.
+   *
+   * Validated before it reaches here (`readPluginNotificationDeeplink`), so
+   * this leg treats it as a string and nothing more. Absent keeps the default
+   * below — the plugin itself.
+   */
+  deeplink?: string;
 };
 
 type PendingAlert = {
@@ -2756,8 +2764,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         dedupeKey: `alert:plugin:${request.pluginId}:${pluginNotificationSequence}`,
         render: () => ({ title, body: request.body ?? null }),
         // Tapping it opens the plugin that sent it, which is the only place the
-        // user could act on whatever it said.
-        deepLink: `ade://plugin/${request.pluginId}`,
+        // user could act on whatever it said. A plugin may name a panel of its
+        // own instead — "the agent that finished is bc-1" — which is a better
+        // landing than its front door and cannot be anywhere else: the link is
+        // checked against the posting plugin's own id before it gets here.
+        deepLink: request.deeplink ?? `ade://plugin/${request.pluginId}`,
         // Grouped per plugin so a chatty package collapses into one thread on
         // the phone instead of interleaving with ADE's own session alerts.
         threadId: `plugin:${request.pluginId}`,

@@ -829,6 +829,26 @@ enum AgentChatSpawnKind: Equatable, Codable {
   }
 }
 
+/// Which plugin owns a chat's turns. Mirrors `AgentChatRuntimeRef` in
+/// `apps/desktop/src/shared/types/chat.ts`.
+struct AgentChatRuntimeRef: Codable, Equatable, Hashable {
+  var pluginId: String
+  var runtimeId: String
+  /// The plugin's own identifier for the conversation. Opaque to ADE.
+  var externalId: String
+}
+
+/// What to call a plugin-owned chat, and what to draw beside it. Mirrors
+/// `AgentChatRuntimeLabel` in `apps/desktop/src/shared/types/chat.ts`.
+struct AgentChatRuntimeLabel: Codable, Equatable, Hashable {
+  /// "Cursor Cloud". Shown in the chat header and the session row.
+  var displayName: String
+  /// Phosphor icon name from the plugin's manifest, when it declared one.
+  var icon: String? = nil
+  /// The owning plugin's own display name, for "from <plugin>" attributions.
+  var pluginDisplayName: String? = nil
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var id: String { sessionId }
   var sessionId: String
@@ -862,6 +882,17 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var cursorConfigValues: [String: RemoteJSONValue]?
   /// Cursor Cloud agent id when this chat is a live cloud mirror. Older hosts omit it.
   var cursorCloudAgentId: String? = nil
+  /// Set when a PLUGIN owns this chat's turns. Older hosts omit it.
+  ///
+  /// Presence is sent for such a chat exactly as it is for a cloud mirror, so
+  /// the plugin can poll fast while the phone is on the conversation and stop
+  /// when it leaves.
+  var runtimeRef: AgentChatRuntimeRef? = nil
+  /// How that plugin runtime wants to be named and drawn, resolved by the host
+  /// from the plugin's manifest. The phone cannot read a manifest, and a chat
+  /// whose plugin was uninstalled keeps the last label rather than going
+  /// nameless. Older hosts omit it.
+  var runtimeLabel: AgentChatRuntimeLabel? = nil
   var identityKey: String?
   var surface: String?
   var automationId: String?
@@ -929,6 +960,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
       && lhs.cursorConfigValues == rhs.cursorConfigValues
       && lhs.cursorCloudAgentId == rhs.cursorCloudAgentId
+      && lhs.runtimeRef == rhs.runtimeRef
+      && lhs.runtimeLabel == rhs.runtimeLabel
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
       && lhs.claudeGoal == rhs.claudeGoal

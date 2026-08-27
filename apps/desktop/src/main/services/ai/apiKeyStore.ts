@@ -39,7 +39,17 @@ export type ApiKeyStoreStatus = {
   decryptionFailed: boolean;
 };
 
-const ENV_KEY_PROVIDERS: Record<string, string> = {
+/**
+ * Every provider this store holds a key for, and the environment variable that
+ * stands in when it holds none.
+ *
+ * Exported so `PLUGIN_PROVIDER_KEY_IDS` in `shared/plugins/manifest.ts` can be
+ * pinned to it by a test. That list is what a plugin manifest may name in
+ * `providerKeys`, and it cannot import this module — this one reaches for
+ * `electron` — so without the pin a provider added here becomes a key no
+ * plugin is allowed to ask for, silently.
+ */
+export const ENV_KEY_PROVIDERS: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
   google: "GOOGLE_API_KEY",

@@ -193,8 +193,26 @@ enum PluginPanelParser {
     return PluginVocabBinding(
       collection: collection,
       keyPrefix: cleanString(object["keyPrefix"], max: PluginVocabLimits.maxIdChars),
-      limit: (limit ?? 0) > 0 ? limit : nil
+      limit: (limit ?? 0) > 0 ? limit : nil,
+      allowActions: parseAllowActions(object["allowActions"])
     )
+  }
+
+  /// The action ids a binding's rows may name.
+  ///
+  /// Deduplicated so a repeated id does not spend the ceiling twice, and `nil`
+  /// when empty, because an empty allowlist and an absent one mean the same
+  /// thing: no bound row acts.
+  static func parseAllowActions(_ raw: Any?) -> [String]? {
+    guard let entries = raw as? [Any] else { return nil }
+    var seen: [String] = []
+    for entry in entries {
+      guard let id = cleanString(entry, max: PluginVocabLimits.maxIdChars) else { continue }
+      if seen.contains(id) { continue }
+      seen.append(id)
+      if seen.count >= PluginVocabLimits.maxBindingAllowActions { break }
+    }
+    return seen.isEmpty ? nil : seen
   }
 
   static func invalid(

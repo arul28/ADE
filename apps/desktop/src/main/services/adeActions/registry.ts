@@ -256,10 +256,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // reachable from the surfaces the user drives (desktop renderer, `ade code`,
   // a plain terminal) and never performed on an agent's own authority.
   //
-  // `install` is nonetheless listed in ADE_ACTION_APPROVAL_GATED below: a
-  // session-bound agent may ATTEMPT it, which raises an approval card in that
-  // agent's chat and installs — on the host's authority — only if the person
-  // says yes. The caller's role is unchanged either way.
+  // All four are nonetheless listed in ADE_ACTION_APPROVAL_GATED below: a
+  // session-bound agent may ATTEMPT them, which raises an approval card in that
+  // agent's chat and acts — on the host's authority — only if the person says
+  // yes. The caller's role is unchanged either way.
   plugin: ["install", "uninstall", "enable", "disable"],
 };
 
@@ -287,7 +287,16 @@ export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boo
  * exists.
  */
 export const ADE_ACTION_APPROVAL_GATED: Partial<Record<AdeActionDomain, string[]>> = {
-  plugin: ["install"],
+  // The whole lifecycle, and symmetrically. An agent that can put a plugin on
+  // the machine with the user's consent must be able to ask to take it off
+  // again with the same consent: the alternative — install carded, removal a
+  // flat refusal — left a diagnostic run unable to clean up after itself and a
+  // stopped plugin unable to be restarted from the chat that noticed
+  // (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §5, §9).
+  //
+  // Approval of an install never carries over to a removal; see
+  // `requestPluginRemovalApproval`.
+  plugin: ["install", "uninstall", "enable", "disable"],
 };
 
 export function isApprovalGatedAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -1338,6 +1347,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Re-read a plugin's manifest from disk and restart its child. The `ade plugin dev` loop.",
       input: "object { pluginId: string }",
       example: "ade plugin reload graph",
+    },
+    webhookIngress: {
+      description: "Webhook ingress health for plugins that declare `webhookIngress`: the relay URL to paste into the third party, whether the channel verifies a signature, when a delivery last arrived, and how many are waiting to be acknowledged. Never returns the relay secret.",
+      input: "object { pluginId?: string }",
+      example: "ade actions run plugin.webhookIngress --input-json '{\"pluginId\":\"ade-cursor-cloud\"}' --text",
     },
   },
 };

@@ -57,9 +57,22 @@ function toRecordStatus(status: PluginRuntimeStatus): SyncPluginRecordRuntimeSta
   }
 }
 
+/**
+ * The rail surfaces, as the wire record carries them.
+ *
+ * `webview` joins `tab` for the same reason the desktop preload keeps both:
+ * they are one rail entry at `/plugin/<id>` and only the page itself cares
+ * which one it draws. Filtering on `kind === "tab"` alone gave a plugin whose
+ * only full-page surface is a `webview` ZERO tabs on the wire, so the phone and
+ * the web client did not list it at all while the desktop rail showed it.
+ *
+ * `entryHtml` is deliberately NOT carried: no reader of this record can host a
+ * guest, and every one of them renders the surface's panel. That is the
+ * cross-surface fallback working as designed, not a field lost in transit.
+ */
 function toRecordTabs(installed: PluginInstalledPlugin): SyncPluginRecordTab[] {
   return (installed.manifest?.surfaces ?? [])
-    .filter((surface) => surface.kind === "tab")
+    .filter((surface) => surface.kind === "tab" || surface.kind === "webview")
     .map((surface) => ({
       id: surface.id,
       title: surface.title,
@@ -126,6 +139,11 @@ function toSyncRecord(
         // plugin declares no sockets, when the truth is that this host could
         // not read whether it does.
         sockets: toRecordSockets(installed),
+        // Sent only when declared. An empty list and an absent field are the
+        // same permission — no outbound network, no provider key — so the
+        // record spells it one way and every reader has one thing to check.
+        ...(manifest.network ? { network: { hosts: [...manifest.network.hosts] } } : {}),
+        ...(manifest.providerKeys?.length ? { providerKeys: [...manifest.providerKeys] } : {}),
       }
       : {}),
     // NOT guarded by `manifest` — the toggles live in the install registry, not

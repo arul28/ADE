@@ -31,6 +31,8 @@ function manifestFor(pluginId: string): PluginManifest {
     automationSteps: [],
     searchProviders: [],
     keybindings: [],
+    chatRuntimes: [],
+    webhookIngress: [],
     official: false,
   };
 }

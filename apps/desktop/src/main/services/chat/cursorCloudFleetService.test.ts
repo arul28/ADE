@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { createCursorCloudFleetService } from "./cursorCloudFleetService";
 import { isCursorCloudFleetEntryActive } from "../../../shared/cursorCloudFleetStatus";
+import {
+  CURSOR_CLOUD_FLEET_DEFAULT_AGENTS,
+  CURSOR_CLOUD_FLEET_MAX_AGENTS,
+} from "../../../shared/cursorCloudApiLimits";
 import type { CursorCloudAgentSummary } from "../../../shared/types/config";
 import type { LaneSummary } from "../../../shared/types/lanes";
 
@@ -175,6 +179,34 @@ describe("cursorCloudFleetService", () => {
 
       expect(harness.listCursorCloudAgents).toHaveBeenCalledTimes(2);
       expect(result.items).toHaveLength(2);
+    });
+
+    // The phone sent `ai.cursorCloudFleet` with no arguments while the desktop
+    // sent an explicit budget, so the two clients showed different fleets off
+    // the same host. Both now send `CURSOR_CLOUD_FLEET_MAX_AGENTS`. Keep the
+    // two budgets apart here so the divergence cannot come back unnoticed.
+    it("gives an argument-less caller a smaller budget than the explicit fleet maximum", async () => {
+      const makePages = (harness: ReturnType<typeof buildHarness>) => {
+        let page = 0;
+        harness.listCursorCloudAgents.mockImplementation(async () => {
+          page += 1;
+          return {
+            items: Array.from({ length: 100 }, (_, index) => agent({ agentId: `p${page}-${index}` })),
+            nextCursor: `cursor-${page + 1}`,
+          };
+        });
+      };
+
+      const bare = buildHarness();
+      makePages(bare);
+      const bareResult = await bare.service.getFleet();
+      expect(bareResult.items).toHaveLength(CURSOR_CLOUD_FLEET_DEFAULT_AGENTS);
+
+      const explicit = buildHarness();
+      makePages(explicit);
+      const explicitResult = await explicit.service.getFleet({ limit: CURSOR_CLOUD_FLEET_MAX_AGENTS });
+      expect(explicitResult.items).toHaveLength(CURSOR_CLOUD_FLEET_MAX_AGENTS);
+      expect(CURSOR_CLOUD_FLEET_MAX_AGENTS).toBeGreaterThan(CURSOR_CLOUD_FLEET_DEFAULT_AGENTS);
     });
   });
 

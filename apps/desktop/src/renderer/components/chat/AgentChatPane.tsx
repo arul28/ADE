@@ -62,6 +62,7 @@ import {
   supportsActiveTurnDispatchMode,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
+import { chatSessionAgentLabel, isPluginOwnedChatSession } from "../../../shared/types/chat";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
 import {
@@ -182,11 +183,6 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
-// CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR.
-// import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
-// The inline "Send to Cursor Cloud" strip is superseded by composer-native cloud mode: the repo
-// comes from the lane, the branch from the lane picker, the model from the model picker.
-// CursorCloudInlineLaunch.tsx stays in the tree with its export intact.
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
@@ -3631,9 +3627,11 @@ export function AgentChatPane({
   // whatever the user had on screen. It now only offers: a chip appears while a
   // simulator session is live and the drawer is closed.
   const [iosSimulatorSessionChip, setIosSimulatorSessionChip] = useState<{ deviceName: string | null } | null>(null);
-  // CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR. The state
-  // and its `setCursorCloudPaneOpen(false)` call sites stay wired so the panel can be restored by
-  // uncommenting the mount below — nothing sets it true while the panel is off.
+  // CURSOR-CLOUD-PANEL: the panel component itself is GONE — `ChatCursorCloudPanel.tsx` and
+  // `CursorCloudInlineLaunch.tsx` were deleted, so the commented mounts below cannot be restored by
+  // uncommenting them; recover the components from git history first. The state and its
+  // `setCursorCloudPaneOpen(false)` call sites stay wired because the close calls are harmless and
+  // the panel is being rebuilt as a plugin surface. Nothing sets it true.
   const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
   void cursorCloudPaneOpen;
   // Subagent drill-in: when set, the chat surface renders the named subagent's
@@ -3654,8 +3652,6 @@ export function AgentChatPane({
   const [cloudOverlayArmed, setCloudOverlayArmed] = useState(false);
   const [cloudHydrateFailed, setCloudHydrateFailed] = useState(false);
   const [cloudBackfillNonce, setCloudBackfillNonce] = useState(0);
-  // CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR.
-  // const cursorCloudPanelRef = useRef<ChatCursorCloudPanelHandle | null>(null);
   const rewindConfirmResolveRef = useRef<((confirmed: boolean) => void) | null>(null);
   const [laneGitRemote, setLaneGitRemote] = useState<string | null>(null);
   const [laneGitBranch, setLaneGitBranch] = useState<string | null>(null);
@@ -5504,8 +5500,13 @@ export function AgentChatPane({
   const chatHeaderLane = laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null;
   const chatHeaderLaneName = chatHeaderLane?.name ?? laneId ?? "lane";
   const chatHeaderLaneColor = getLaneAccent(chatHeaderLane, 0);
+  // A plugin-owned chat names its runtime — "Cursor Cloud" — ahead of the
+  // model descriptor, because the model this conversation runs on is the
+  // plugin's business and the descriptor knows nothing about it.
   const assistantLabel = presentation?.assistantLabel?.trim()
-    || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
+    || (isPluginOwnedChatSession(selectedSession)
+      ? chatSessionAgentLabel(selectedSession, "Assistant")
+      : resolveAssistantLabel(selectedModelDesc, selectedSession?.provider));
   const defaultMessagePlaceholder =
     orchestratorEnabled && !selectedSessionId
       ? "Describe the orchestration goal..."
@@ -12338,27 +12339,6 @@ export function AgentChatPane({
       sessionStatus={selectedSession?.status ?? null}
     />
   );
-  /* CURSOR-CLOUD-PANEL: temporarily disabled; returns in the dedicated cloud-panel PR.
-  const cursorCloudPanelContent = (
-    <ChatCursorCloudPanel
-      ref={cursorCloudPanelRef}
-      cursorCloudAgentId={selectedSession?.cursorCloudAgentId ?? null}
-      cursorRuntime={cursorRuntime}
-      cursorModelIds={cursorCloudModelIds}
-      defaultRepoUrl={null}
-      defaultBranch={laneGitBranch}
-      defaultModelSdkId={modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : null}
-      laneGitRemote={laneGitRemote}
-      laneId={laneId ?? null}
-      onClose={() => setCursorCloudPaneOpen(false)}
-      onOpened={(result) => {
-        setCursorCloudPaneOpen(false);
-        adoptCursorCloudChatSession(result);
-      }}
-      onMissingFields={(message) => setError(message)}
-    />
-  );
-  */
   const terminalPanelContent = chatTerminalVisible ? (
     <ChatTerminalDrawer
       variant="panel"

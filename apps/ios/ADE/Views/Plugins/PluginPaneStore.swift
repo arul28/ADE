@@ -101,17 +101,24 @@ final class PluginPaneStore: ObservableObject {
 
   private let sync: PluginPaneSyncing
   private var presenceCatalog = PluginPresenceCatalog()
+  /// How the `{openUrl}` verb reaches the system browser.
+  ///
+  /// Injected so a test can assert what a plugin asked to open without Safari
+  /// coming to the front. Every real caller takes the default.
+  private let openExternalURL: (URL) -> Void
 
   init(
     pluginId: String,
     panelId: String? = nil,
     context: [String: RemoteJSONValue] = [:],
-    sync: PluginPaneSyncing
+    sync: PluginPaneSyncing,
+    openExternalURL: @escaping (URL) -> Void = { UIApplication.shared.open($0) }
   ) {
     self.pluginId = pluginId
     self.selectedPanelId = panelId
     self.context = context
     self.sync = sync
+    self.openExternalURL = openExternalURL
   }
 
   var canInvoke: Bool { sync.canInvokePluginActions }
@@ -140,6 +147,29 @@ final class PluginPaneStore: ObservableObject {
     }
     presentation = resolvePresentation()
     phase = .loaded
+  }
+
+  /// The action a refresh gesture on the selected panel dispatches, when the
+  /// plugin's manifest declared one. `nil` hides the gesture: a panel backed by
+  /// the plugin's own collections is already live, so offering a pull that does
+  /// nothing would be a promise the pane cannot keep.
+  /// Deliberately independent of ``canInvoke``: whether the gesture EXISTS is
+  /// the manifest's answer and whether it can run right now is the socket's.
+  /// Folding the two would make the pane's shape change when a connection
+  /// drops, which resets the reader's scroll position for no reason.
+  var refreshAction: String? { selectedPanel?.refreshAction }
+
+  /// Run the declared refresh action, then re-read the mirror.
+  ///
+  /// Awaited rather than fired, so SwiftUI's `.refreshable` holds its spinner
+  /// until the plugin has actually answered and the new rows are on screen.
+  /// `load()` runs either way: a refresh that failed still owes the reader
+  /// whatever the mirror holds now, and the failure says so in the banner.
+  func refresh() async {
+    if let actionId = refreshAction, canInvoke {
+      await runAction(PluginVocabAction(action: actionId), extraArgs: [:])
+    }
+    load()
   }
 
   func selectPanel(_ panelId: String) {
@@ -197,7 +227,9 @@ final class PluginPaneStore: ObservableObject {
     case var .list(list):
       guard let bind = list.bind else { return node }
       let rows = entries(for: bind, limit: PluginVocabLimits.maxListItems)
-      list.items = (list.items ?? []) + rows.compactMap { PluginPanelParser.parseListItem($0.value) }
+      list.items = (list.items ?? []) + rows.compactMap {
+        PluginPanelParser.parseBoundListItem($0.value, allowActions: bind.allowActions)
+      }
       list.bind = nil
       return .list(list)
 
@@ -310,40 +342,56 @@ final class PluginPaneStore: ObservableObject {
   }
 
   private func dispatch(_ action: PluginVocabAction, extraArgs: [String: Any]) {
+    Task { [weak self] in
+      await self?.runAction(action, extraArgs: extraArgs)
+    }
+  }
+
+  /// One dispatch, awaited.
+  ///
+  /// Split out of ``dispatch(_:extraArgs:)`` so a refresh gesture can hold its
+  /// spinner until the plugin has answered. A control that fires and forgets
+  /// still goes through here, so there is exactly one definition of what
+  /// running an action does to the pane.
+  private func runAction(_ action: PluginVocabAction, extraArgs: [String: Any]) async {
     guard !inFlightActionIds.contains(action.action) else { return }
     inFlightActionIds.insert(action.action)
-    Task { [weak self] in
-      guard let self else { return }
-      // The defer clears the in-flight flag on every exit — success, throw, or
-      // cancellation — which is what keeps a control from stranding in its
-      // spinner when the socket drops mid-call (the `runSessionAction` rule).
-      defer { self.inFlightActionIds.remove(action.action) }
-      do {
-        var payload = action.argsJSON.merging(extraArgs) { _, override in override }
-        if !self.context.isEmpty {
-          // Under `context`, the same field `PluginPanelHost.tsx` sends and the
-          // same place a socket's surface context rides. Last so a schema
-          // cannot name an argument that would quietly replace it.
-          payload["context"] = PluginPanelContext.payload(self.context)
-        }
-        let result = try await self.sync.invokePluginAction(
-          pluginId: self.pluginId,
-          actionId: action.action,
-          payload: payload
-        )
-        self.actionMessage = PluginActionMessage(
-          text: result.message ?? "Done",
-          isFailure: !result.ok
-        )
-        if let navigation = result.navigate {
-          self.navigate(to: navigation)
-        }
-      } catch {
-        self.actionMessage = PluginActionMessage(
-          text: (error as NSError).localizedDescription,
-          isFailure: true
-        )
+    // The defer clears the in-flight flag on every exit — success, throw, or
+    // cancellation — which is what keeps a control from stranding in its
+    // spinner when the socket drops mid-call (the `runSessionAction` rule).
+    defer { inFlightActionIds.remove(action.action) }
+    do {
+      var payload = action.argsJSON.merging(extraArgs) { _, override in override }
+      if !context.isEmpty {
+        // Under `context`, the same field `PluginPanelHost.tsx` sends and the
+        // same place a socket's surface context rides. Last so a schema
+        // cannot name an argument that would quietly replace it.
+        payload["context"] = PluginPanelContext.payload(context)
       }
+      let result = try await sync.invokePluginAction(
+        pluginId: pluginId,
+        actionId: action.action,
+        payload: payload
+      )
+      actionMessage = PluginActionMessage(
+        text: result.message ?? "Done",
+        isFailure: !result.ok
+      )
+      // Before the navigation, the way desktop orders the two verbs: an
+      // action that opens a link and then moves the pane should do both.
+      // `https:` only — `PluginInvokeResult` refuses every other scheme, so
+      // nothing else can reach here.
+      if let url = result.openURL {
+        openExternalURL(url)
+      }
+      if let navigation = result.navigate {
+        navigate(to: navigation)
+      }
+    } catch {
+      actionMessage = PluginActionMessage(
+        text: (error as NSError).localizedDescription,
+        isFailure: true
+      )
     }
   }
 }

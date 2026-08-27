@@ -1023,8 +1023,11 @@ struct WorkSessionDestinationView: View {
   var cursorCloudMirrorWatchKey: String {
     let agentId = composerChatSummary?.cursorCloudAgentId?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    // The owning plugin is part of the key: a session that gains an owner has
+    // to restart the watch, or the plugin is never told anybody is looking.
+    let pluginId = composerChatSummary?.runtimeRef?.pluginId ?? ""
     let active = scenePhase == .active ? "active" : "inactive"
-    return "\(sessionId)|\(agentId)|\(active)"
+    return "\(sessionId)|\(agentId)|\(pluginId)|\(active)"
   }
 
   var subagentProvider: String? {
@@ -1590,7 +1593,11 @@ struct WorkSessionDestinationView: View {
         let watchId = sessionId
         let agentId = composerChatSummary?.cursorCloudAgentId?
           .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard scenePhase == .active, !agentId.isEmpty else { return }
+        // Also for a plugin-owned chat: the same signal becomes `chat.opened` /
+        // `chat.closed` for the plugin that runs the conversation, which is how
+        // it knows to poll while somebody is reading and stop when nobody is.
+        let pluginOwned = !(composerChatSummary?.runtimeRef?.pluginId.isEmpty ?? true)
+        guard scenePhase == .active, !agentId.isEmpty || pluginOwned else { return }
         await syncService.watchCursorCloudMirror(sessionId: watchId, watching: true)
         await withTaskCancellationHandler {
           while !Task.isCancelled {

@@ -400,7 +400,37 @@ import {
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
+  isAgentChatRuntimeRef,
+  isPluginOwnedChatSession,
+  PLUGIN_CHAT_PROVIDER,
 } from "../../../shared/types/chat";
+import type { AgentChatRuntimeLabel, AgentChatRuntimeRef } from "../../../shared/types/chat";
+import { AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX } from "../../../shared/types/chat";
+import {
+  createPluginChatPresenceRegistry,
+  describePluginChatRuntime,
+  getPluginChatRuntimeDelivery,
+  registerPluginChatRuntimeWriter,
+  type PluginChatRuntimeWriter,
+} from "./pluginChatRuntime";
+import {
+  PLUGIN_BUDGET_EXCEEDED_CODE,
+  PLUGIN_CHAT_HYDRATE_MAX_ENTRIES,
+  PLUGIN_CHAT_PARTS_MAX,
+  PLUGIN_CHAT_TEXT_MAX_BYTES,
+  PLUGIN_CHAT_ARTIFACTS_MAX,
+  PLUGIN_CHAT_WRITES_PER_SESSION_BURST,
+  PLUGIN_CHAT_WRITE_BURST_WINDOW_MS,
+  PluginSdkError,
+  type PluginChatArtifact,
+  type PluginChatAssistantChunk,
+  type PluginChatPart,
+  type PluginChatSessionCreateInput,
+  type PluginChatSessionRef,
+  type PluginChatStatus,
+  type PluginChatTranscriptEntry,
+  type PluginChatUserAppend,
+} from "../../../shared/plugins/sdk";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   flattenAnswerForSingleStringProvider,
@@ -1130,6 +1160,23 @@ type PersistedChatState = {
   cursorRuntime?: AgentChatRuntime;
   /** First turn id at which the session flipped to cloud (renders the system bubble). */
   cursorPromotedTurnId?: string;
+  /**
+   * The plugin that owns this session's turns, when one does.
+   *
+   * Durable for the same reason `cursorCloudAgentId` is: the conversation
+   * lives on somebody else's server, and after a restart the only way back to
+   * it is the pointer we wrote down. Losing this would leave a chat that
+   * renders its history and can never take another turn.
+   */
+  runtimeRef?: AgentChatRuntimeRef;
+  /**
+   * The last label the host resolved for that runtime.
+   *
+   * Kept beside the ref rather than re-derived, because the plugin may be
+   * uninstalled by the time anybody reads this session and a chat that once
+   * said "Cursor Cloud" should not decay into "plugin".
+   */
+  runtimeLabel?: AgentChatRuntimeLabel;
   recentConversationEntries?: PersistedRecentConversationEntry[];
   continuitySummary?: string | null;
   continuitySummaryUpdatedAt?: string | null;
@@ -13397,6 +13444,12 @@ export function createAgentChatService(args: {
       ...(managed.session.cursorCloudAgentId
         ? { cursorCloudAgentId: managed.session.cursorCloudAgentId }
         : prevPersisted?.cursorCloudAgentId ? { cursorCloudAgentId: prevPersisted.cursorCloudAgentId } : {}),
+      ...(managed.session.runtimeRef
+        ? { runtimeRef: managed.session.runtimeRef }
+        : prevPersisted?.runtimeRef ? { runtimeRef: prevPersisted.runtimeRef } : {}),
+      ...(managed.session.runtimeLabel
+        ? { runtimeLabel: managed.session.runtimeLabel }
+        : prevPersisted?.runtimeLabel ? { runtimeLabel: prevPersisted.runtimeLabel } : {}),
       ...(managed.session.cursorRuntime
         ? { cursorRuntime: managed.session.cursorRuntime }
         : prevPersisted?.cursorRuntime ? { cursorRuntime: prevPersisted.cursorRuntime } : {}),
@@ -13689,6 +13742,27 @@ export function createAgentChatService(args: {
       const cursorPromotedTurnId = typeof record.cursorPromotedTurnId === "string" && record.cursorPromotedTurnId.trim().length
         ? record.cursorPromotedTurnId.trim()
         : undefined;
+      // Validated on the way IN, not merely cast. This pointer decides which
+      // plugin a later turn is handed to, and a hand-edited or truncated
+      // metadata file must degrade to "no owner" rather than to an owner id
+      // nobody checked.
+      const runtimeRef = isAgentChatRuntimeRef(record.runtimeRef) ? record.runtimeRef : undefined;
+      const runtimeLabel = ((): AgentChatRuntimeLabel | undefined => {
+        const raw = record.runtimeLabel;
+        if (typeof raw !== "object" || raw === null) return undefined;
+        const label = raw as Record<string, unknown>;
+        const displayName = typeof label.displayName === "string" ? label.displayName.trim() : "";
+        if (!displayName.length) return undefined;
+        const icon = typeof label.icon === "string" && label.icon.trim().length ? label.icon.trim() : undefined;
+        const pluginDisplayName = typeof label.pluginDisplayName === "string" && label.pluginDisplayName.trim().length
+          ? label.pluginDisplayName.trim()
+          : undefined;
+        return {
+          displayName,
+          ...(icon ? { icon } : {}),
+          ...(pluginDisplayName ? { pluginDisplayName } : {}),
+        };
+      })();
       const codexTerminalTurnIds = Array.isArray(record.codexTerminalTurnIds)
         ? uniqueNonEmpty(
             record.codexTerminalTurnIds.map((turnId) => typeof turnId === "string" ? turnId : null),
@@ -13785,6 +13859,8 @@ export function createAgentChatService(args: {
         ...(cursorCloudAgentId ? { cursorCloudAgentId } : {}),
         ...(cursorRuntime ? { cursorRuntime } : {}),
         ...(cursorPromotedTurnId ? { cursorPromotedTurnId } : {}),
+        ...(runtimeRef ? { runtimeRef } : {}),
+        ...(runtimeLabel ? { runtimeLabel } : {}),
         ...(approvalOverrides?.length ? { approvalOverrides } : {}),
         ...(pendingSteers?.length ? { pendingSteers } : {}),
         ...(recentConversationEntries?.length ? { recentConversationEntries } : {}),
@@ -18179,6 +18255,8 @@ export function createAgentChatService(args: {
         ...(persisted?.cursorCloudAgentId ? { cursorCloudAgentId: persisted.cursorCloudAgentId } : {}),
         ...(persisted?.cursorRuntime ? { cursorRuntime: persisted.cursorRuntime } : {}),
         ...(persisted?.cursorPromotedTurnId ? { cursorPromotedTurnId: persisted.cursorPromotedTurnId } : {}),
+        ...(persisted?.runtimeRef ? { runtimeRef: persisted.runtimeRef } : {}),
+        ...(persisted?.runtimeLabel ? { runtimeLabel: persisted.runtimeLabel } : {}),
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
         ...(persisted?.surface ? { surface: persisted.surface } : {}),
@@ -32646,6 +32724,16 @@ export function createAgentChatService(args: {
 
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
     const handoffMode = args.mode ?? "brief";
+    // A plugin-owned conversation can be handed OFF: `targetProvider` comes
+    // from a MODEL descriptor, so it is always one of ADE's own runtimes, and
+    // the source never appears in `HANDOFF_FORK_PROVIDERS` — which makes every
+    // fork of one a transcript replay into a real ADE runtime. That works, and
+    // it is the honest outcome.
+    //
+    // It cannot be handed INTO, and nothing here has to enforce that: no model
+    // resolves to the plugin provider, because binding a session to a plugin
+    // runtime is the plugin's own act (`ade.chat.createSession`) and only the
+    // plugin knows the external conversation the new session would point at.
     const requestedTargetLaneId = typeof args.targetLaneId === "string" ? args.targetLaneId.trim() : "";
     const sourceLaneId = managed.session.laneId;
     let resolvedTargetLaneId = sourceLaneId;
@@ -38448,6 +38536,888 @@ export function createAgentChatService(args: {
     }
   };
 
+  // -------------------------------------------------------------------------
+  // Plugin-owned conversations (PX-10)
+  // -------------------------------------------------------------------------
+
+  /**
+   * What the plugin's manifest currently says this runtime is called.
+   *
+   * Null when the plugin is uninstalled, disabled, or no longer declares the
+   * runtime. Callers keep the label already written on the session in that
+   * case, so a chat that once said "Cursor Cloud" never decays into "plugin".
+   */
+  const resolvePluginRuntimeLabel = (
+    ref: AgentChatRuntimeRef | null | undefined,
+  ): AgentChatRuntimeLabel | null => {
+    const descriptor = describePluginChatRuntime(ref);
+    if (!descriptor) return null;
+    return {
+      displayName: descriptor.displayName,
+      ...(descriptor.icon ? { icon: descriptor.icon } : {}),
+      ...(descriptor.pluginDisplayName ? { pluginDisplayName: descriptor.pluginDisplayName } : {}),
+    };
+  };
+
+  /**
+   * What a plugin-owned turn looks like while it is open.
+   *
+   * A plugin turn is ASYNCHRONOUS in a way no built-in runtime's is: dispatch
+   * returns as soon as the plugin has accepted the message, and the answer
+   * arrives later through `ade.chat.appendAssistant`, possibly minutes later,
+   * possibly after ADE restarted. So the turn's identity has to live somewhere
+   * other than a promise's stack frame — here.
+   *
+   * In memory only, deliberately. A turn open when the process dies is a turn
+   * whose plugin child also died; on the next start the plugin re-reads its own
+   * conversation and calls `emitStatus`, which reopens or settles it. Persisting
+   * this would only let a stale record claim a turn is running when nothing is.
+   */
+  type PluginOwnedTurn = {
+    turnId: string;
+    ref: AgentChatRuntimeRef;
+    /** Assistant text already streamed, so `appendAssistant` can emit deltas. */
+    streamedText: string;
+    /** True once a terminal status or `done: true` closed it. */
+    closed: boolean;
+  };
+
+  const pluginOwnedTurns = new Map<string, PluginOwnedTurn>();
+
+  /** Per-session write budget for `ade.chat.*`. See PLUGIN_CHAT_WRITES_PER_SESSION_BURST. */
+  const pluginChatWriteBudget = new Map<string, { windowStartedAt: number; count: number }>();
+
+  /**
+   * Fingerprints this process has already written, per session.
+   *
+   * Bounded, and a miss is cheap: `appendUserFingerprintSeen` also compares
+   * against the durable recent-conversation entries, so a restart does not
+   * duplicate the last turns of a re-read foreign conversation. It can
+   * duplicate one much older than the retained window, which is the trade a
+   * plugin avoids entirely by paging its hydrate from the newest end.
+   */
+  const pluginChatFingerprints = new Map<string, Set<string>>();
+  const PLUGIN_CHAT_FINGERPRINT_CACHE_MAX = 512;
+
+  const pluginChatWriteRefused = (sessionId: string): PluginSdkError => new PluginSdkError(
+    "not_permitted",
+    `This plugin does not own chat session "${sessionId}".`,
+  );
+
+  /**
+   * Resolve a session this writer may write to.
+   *
+   * Ownership was already checked by `requirePluginChatWriteTarget` before the
+   * call reached here, so this only re-establishes the managed session — but it
+   * refuses with the SAME message on a session that vanished in between, rather
+   * than throwing an internal error a plugin would report as a crash.
+   */
+  const requirePluginManagedSession = (sessionId: string): ManagedChatSession => {
+    let managed: ManagedChatSession | null = null;
+    try {
+      managed = managedSessions.get(sessionId)
+        ?? (sessionService.get(sessionId) ? ensureManagedSession(sessionId) : null);
+    } catch {
+      managed = null;
+    }
+    if (!managed || managed.closed || !isPluginOwnedChatSession(managed.session)) {
+      throw pluginChatWriteRefused(sessionId);
+    }
+    return managed;
+  };
+
+  /**
+   * Charge one transcript write against the session's burst budget.
+   *
+   * Called AFTER a verb has validated its arguments, everywhere: a refused
+   * malformed write costs the plugin an error, not one of the writes it is
+   * allowed this minute. The budget exists to stop a runaway child writing an
+   * unbounded transcript to the user's disk, and a call that wrote nothing did
+   * not do that.
+   */
+  const chargePluginChatWrite = (sessionId: string): void => {
+    const now = Date.now();
+    const window = pluginChatWriteBudget.get(sessionId);
+    if (!window || now - window.windowStartedAt >= PLUGIN_CHAT_WRITE_BURST_WINDOW_MS) {
+      pluginChatWriteBudget.set(sessionId, { windowStartedAt: now, count: 1 });
+      return;
+    }
+    if (window.count >= PLUGIN_CHAT_WRITES_PER_SESSION_BURST) {
+      throw new PluginSdkError(
+        PLUGIN_BUDGET_EXCEEDED_CODE,
+        `This conversation has taken ${PLUGIN_CHAT_WRITES_PER_SESSION_BURST} writes in the last minute. Slow down.`,
+      );
+    }
+    window.count += 1;
+  };
+
+  const assertPluginChatTextSize = (text: string, label: string): void => {
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (bytes > PLUGIN_CHAT_TEXT_MAX_BYTES) {
+      throw new PluginSdkError(
+        "invalid_args",
+        `${label} is ${bytes} bytes; the limit is ${PLUGIN_CHAT_TEXT_MAX_BYTES}. Stream it in chunks.`,
+      );
+    }
+  };
+
+  /**
+   * Normalize `{text, parts}` into the parts the transcript actually renders.
+   *
+   * `text` is shorthand for one text part and combines with `parts` rather than
+   * replacing it, so a plugin that sets both gets both in the order it wrote
+   * them — the text first, because that is the shorthand's whole reading.
+   */
+  const pluginChatChunkParts = (chunk: PluginChatAssistantChunk): PluginChatPart[] => {
+    const parts: PluginChatPart[] = [];
+    if (typeof chunk.text === "string" && chunk.text.length) {
+      parts.push({ kind: "text", text: chunk.text });
+    }
+    if (Array.isArray(chunk.parts)) {
+      if (chunk.parts.length > PLUGIN_CHAT_PARTS_MAX) {
+        throw new PluginSdkError(
+          "invalid_args",
+          `An assistant chunk may carry at most ${PLUGIN_CHAT_PARTS_MAX} parts.`,
+        );
+      }
+      for (const part of chunk.parts) {
+        if (!part || typeof part !== "object") continue;
+        if (part.kind === "text" || part.kind === "thinking") {
+          if (typeof part.text !== "string") continue;
+          assertPluginChatTextSize(part.text, `A ${part.kind} part`);
+          parts.push({ kind: part.kind, text: part.text });
+        } else if (part.kind === "tool") {
+          if (typeof part.name !== "string" || !part.name.trim().length) continue;
+          parts.push({
+            kind: "tool",
+            name: part.name.trim().slice(0, 200),
+            ...(typeof part.detail === "string" && part.detail.length
+              ? { detail: part.detail.slice(0, 2_000) }
+              : {}),
+          });
+        }
+      }
+    }
+    for (const part of parts) {
+      if (part.kind === "text") assertPluginChatTextSize(part.text, "Assistant text");
+    }
+    return parts;
+  };
+
+  /**
+   * The turn a plugin write lands on.
+   *
+   * A plugin may write with nothing open — a webhook fired, the cloud run
+   * finished on its own, nobody typed. That is a real conversation event, not
+   * an error, so an unsolicited write OPENS a turn rather than being dropped.
+   * The user sees an answer arrive in a chat they were not looking at, which is
+   * exactly what a cloud agent finishing overnight should look like.
+   */
+  const ensurePluginOwnedTurn = (
+    managed: ManagedChatSession,
+    requestedTurnId?: string,
+  ): PluginOwnedTurn => {
+    const ref = managed.session.runtimeRef;
+    if (!ref) throw pluginChatWriteRefused(managed.session.id);
+    const open = pluginOwnedTurns.get(managed.session.id);
+    if (open && !open.closed && (!requestedTurnId || requestedTurnId === open.turnId)) return open;
+    const turnId = requestedTurnId?.trim() || randomUUID();
+    const next: PluginOwnedTurn = { turnId, ref, streamedText: "", closed: false };
+    pluginOwnedTurns.set(managed.session.id, next);
+    if (!open || open.turnId !== turnId) {
+      setSessionActive(managed);
+      emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+      emitChatEvent(managed, {
+        type: "activity",
+        ...initialTurnActivity(managed.session),
+        turnId,
+        runtime: "cloud",
+      });
+    }
+    return next;
+  };
+
+  /**
+   * Close an open plugin turn, settling the session the way every runtime does.
+   *
+   * The emissions are deliberately the SAME three `runCursorCloudTurn` makes on
+   * its terminal path — status, then `done`, with the session marked idle — so
+   * an owned session inherits the settled lifecycle, the attention ladder and
+   * the "waiting on you" treatment without any of them learning a new provider.
+   */
+  const closePluginOwnedTurn = (
+    managed: ManagedChatSession,
+    outcome: { status: "completed" | "failed" | "interrupted"; detail?: string },
+  ): void => {
+    const open = pluginOwnedTurns.get(managed.session.id);
+    if (!open || open.closed) {
+      markSessionIdleWithFreshCache(managed);
+      persistChatState(managed);
+      return;
+    }
+    open.closed = true;
+    flushBufferedText(managed);
+    if (outcome.status === "failed" && outcome.detail) {
+      emitChatEvent(managed, {
+        type: "error",
+        message: outcome.detail,
+        turnId: open.turnId,
+        errorInfo: { category: "unknown" },
+      });
+    }
+    markSessionIdleWithFreshCache(managed);
+    emitChatEvent(managed, { type: "status", turnStatus: outcome.status, turnId: open.turnId });
+    emitChatEvent(managed, {
+      type: "done",
+      turnId: open.turnId,
+      status: outcome.status === "completed" ? "completed" : outcome.status,
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      runtime: "cloud",
+    });
+    appendCtoTurnJournal(managed);
+    if (managed.session.status === "active") setSessionIdle(managed);
+    persistChatState(managed);
+  };
+
+  /**
+   * Has this session already seen this user text?
+   *
+   * Suffix-tolerant on purpose, and the tolerance is the point: a plugin
+   * re-reading a foreign conversation gets the same message back with a
+   * different prefix (a system preamble ADE injected, a provider's own
+   * framing), and an exact-match dedupe would double every turn on every
+   * reconnect. The host does this once so no plugin has to.
+   */
+  const pluginChatUserAlreadyPresent = (
+    managed: ManagedChatSession,
+    text: string,
+    fingerprint?: string,
+  ): boolean => {
+    const seen = pluginChatFingerprints.get(managed.session.id);
+    const key = fingerprint?.trim() || text.trim();
+    if (!key.length) return true;
+    if (seen?.has(key)) return true;
+    const normalized = key.replace(/\s+/g, " ").trim();
+    for (const entry of managed.recentConversationEntries) {
+      if (entry.role !== "user") continue;
+      const candidate = entry.text.replace(/\s+/g, " ").trim();
+      if (!candidate.length) continue;
+      if (candidate === normalized || candidate.endsWith(normalized) || normalized.endsWith(candidate)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const rememberPluginChatFingerprint = (sessionId: string, key: string): void => {
+    let seen = pluginChatFingerprints.get(sessionId);
+    if (!seen) {
+      seen = new Set<string>();
+      pluginChatFingerprints.set(sessionId, seen);
+    }
+    if (seen.size >= PLUGIN_CHAT_FINGERPRINT_CACHE_MAX) {
+      const oldest = seen.values().next();
+      if (!oldest.done) seen.delete(oldest.value);
+    }
+    seen.add(key);
+  };
+
+  /** Write one assistant chunk into the transcript. Shared by append and hydrate. */
+  const emitPluginAssistantParts = (
+    managed: ManagedChatSession,
+    turn: PluginOwnedTurn,
+    parts: PluginChatPart[],
+  ): void => {
+    for (const part of parts) {
+      if (part.kind === "text") {
+        if (!part.text.length) continue;
+        turn.streamedText += part.text;
+        emitChatEvent(managed, {
+          type: "text",
+          text: part.text,
+          turnId: turn.turnId,
+          runtime: "cloud",
+        });
+      } else if (part.kind === "thinking") {
+        if (!part.text.length) continue;
+        emitChatEvent(managed, {
+          type: "reasoning",
+          text: part.text,
+          turnId: turn.turnId,
+          runtime: "cloud",
+        });
+      } else {
+        const itemId = `plugin-tool-${turn.turnId}-${randomUUID()}`;
+        emitChatEvent(managed, {
+          type: "tool_call",
+          tool: part.name,
+          args: part.detail ? { detail: part.detail } : {},
+          itemId,
+          turnId: turn.turnId,
+          runtime: "cloud",
+        });
+        emitChatEvent(managed, {
+          type: "tool_result",
+          tool: part.name,
+          result: part.detail ?? "",
+          itemId,
+          turnId: turn.turnId,
+          status: "completed",
+          runtime: "cloud",
+        });
+      }
+    }
+  };
+
+  /**
+   * Dispatch a user turn to the plugin that owns the conversation.
+   *
+   * Unlike every other runtime path in this file, this returns as soon as the
+   * plugin has ACCEPTED the message. The turn stays open, and the reply arrives
+   * through the writer below. That is not a shortcut: a cloud conversation can
+   * take twenty minutes, and holding a send promise open for it would make
+   * every caller — the composer, the automation runner, a scheduled wake —
+   * wait on somebody else's server.
+   */
+  const runPluginChatTurn = async (
+    managed: ManagedChatSession,
+    args: {
+      promptText: string;
+      userText?: string;
+      displayText: string;
+      attachments: AgentChatFileRef[];
+      contextAttachments: AgentChatContextAttachment[];
+      resolvedAttachments: ResolvedAgentChatFileRef[];
+      metadata?: AgentChatEventMetadata | null | undefined;
+      laneDirectiveKey?: string | null;
+      turnId?: string;
+      onDispatched?: () => void;
+      onBackendDispatched?: () => void;
+    },
+  ): Promise<void> => {
+    const ref = managed.session.runtimeRef;
+    if (!ref) throw new Error("This conversation is not bound to a plugin runtime.");
+    if (managed.closed) throw new Error("Session is disposed");
+    if (hasLivePendingInput(managed)) throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
+
+    const delivery = getPluginChatRuntimeDelivery();
+    const descriptor = delivery?.describe(ref) ?? null;
+    const runtimeName = descriptor?.displayName
+      ?? managed.session.runtimeLabel?.displayName
+      ?? ref.pluginId;
+    if (!delivery || !descriptor) {
+      throw new Error(
+        `${runtimeName} is not available on this machine. Install or enable the plugin that runs this conversation.`,
+      );
+    }
+
+    const open = pluginOwnedTurns.get(managed.session.id);
+    if (open && !open.closed) throw new Error("Turn already active");
+
+    // Durable, not a counter: after a restart the transcript is the only honest
+    // record of whether this conversation has been spoken to before.
+    const followUp = managed.recentConversationEntries.some((entry) => entry.role === "user");
+    if (followUp && !descriptor.capabilities.followUp) {
+      throw new Error(`${runtimeName} conversations do not take follow-up messages.`);
+    }
+
+    const turnId = args.turnId ?? randomUUID();
+    const displayText = args.displayText.trim().length ? args.displayText.trim() : args.promptText;
+    const userText = args.userText?.trim().length ? args.userText.trim() : displayText;
+
+    setSessionActive(managed);
+    emitPreparedUserMessage(managed, {
+      text: userText,
+      displayText,
+      attachments: args.attachments,
+      contextAttachments: args.contextAttachments,
+      metadata: args.metadata,
+      turnId,
+      laneDirectiveKey: args.laneDirectiveKey,
+      onDispatched: args.onDispatched,
+    });
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    captureTurnBeforeSha(managed);
+    emitChatEvent(managed, {
+      type: "activity",
+      ...initialTurnActivity(managed.session),
+      turnId,
+      runtime: "cloud",
+    });
+    rememberPluginChatFingerprint(managed.session.id, userText.trim());
+    pluginOwnedTurns.set(managed.session.id, { turnId, ref, streamedText: "", closed: false });
+    persistChatState(managed);
+
+    logger.info("agent_chat.plugin_turn_dispatch", {
+      sessionId: managed.session.id,
+      turnId,
+      pluginId: ref.pluginId,
+      runtimeId: ref.runtimeId,
+      followUp,
+    });
+
+    try {
+      await delivery.deliverTurn({
+        ref,
+        sessionId: managed.session.id,
+        projectRoot,
+        turnId,
+        message: args.promptText,
+        attachments: args.resolvedAttachments.map((attachment) => ({
+          path: attachment._resolvedPath,
+          name: path.basename(attachment._resolvedPath),
+        })),
+        followUp,
+      });
+      args.onBackendDispatched?.();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("agent_chat.plugin_turn_dispatch_failed", {
+        sessionId: managed.session.id,
+        turnId,
+        pluginId: ref.pluginId,
+        error: message,
+      });
+      closePluginOwnedTurn(managed, {
+        status: "failed",
+        detail: `${runtimeName} could not accept this message: ${message}`,
+      });
+      throw error;
+    }
+  };
+
+  /**
+   * Stop an in-flight plugin turn.
+   *
+   * Returns false when there is nothing to stop or the runtime says it cannot
+   * be stopped, so the shared `interrupt` path can fall through to its ordinary
+   * bookkeeping rather than pretending it cancelled something.
+   */
+  const interruptPluginChatTurn = async (managed: ManagedChatSession): Promise<void> => {
+    const ref = managed.session.runtimeRef;
+    const open = pluginOwnedTurns.get(managed.session.id);
+    if (!ref) return;
+    const delivery = getPluginChatRuntimeDelivery();
+    if (delivery) {
+      try {
+        await delivery.deliverInterrupt({
+          ref,
+          sessionId: managed.session.id,
+          projectRoot,
+          turnId: open && !open.closed ? open.turnId : null,
+        });
+      } catch (error) {
+        // A runtime that declares no `interrupt` capability rejects here. The
+        // user still asked ADE to stop waiting, so the local turn is settled
+        // either way — what ADE cannot promise is that the plugin stopped.
+        logger.info("agent_chat.plugin_interrupt_refused", {
+          sessionId: managed.session.id,
+          pluginId: ref.pluginId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    closePluginOwnedTurn(managed, { status: "interrupted" });
+  };
+
+  /**
+   * Bind a chat session to a plugin runtime, creating or adopting one.
+   *
+   * Adoption refuses a session that already belongs to somebody — including
+   * another runtime of the SAME plugin — because a conversation with two owners
+   * has no answer to "where does the next turn go".
+   */
+  const createPluginOwnedSession = async (
+    pluginId: string,
+    input: PluginChatSessionCreateInput,
+  ): Promise<PluginChatSessionRef> => {
+    const runtimeId = input.runtimeId.trim();
+    const externalId = input.externalId.trim();
+    const laneId = input.laneId.trim();
+    if (!runtimeId.length || !externalId.length) {
+      throw new PluginSdkError("invalid_args", "runtimeId and externalId are required.");
+    }
+    if (externalId.length > AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX) {
+      throw new PluginSdkError(
+        "invalid_args",
+        `externalId is longer than ${AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX} characters.`,
+      );
+    }
+    const ref: AgentChatRuntimeRef = { pluginId, runtimeId, externalId };
+    const label = resolvePluginRuntimeLabel(ref);
+
+    // Idempotent on {runtimeId, externalId}: a webhook that fires twice, or one
+    // that beats the user to opening the chat, must not mint a second
+    // conversation for the same external run.
+    for (const candidate of managedSessions.values()) {
+      const existing = candidate.session.runtimeRef;
+      if (!existing) continue;
+      if (existing.pluginId !== pluginId) continue;
+      if (existing.runtimeId !== runtimeId || existing.externalId !== externalId) continue;
+      if (label) {
+        candidate.session.runtimeLabel = label;
+        persistChatState(candidate);
+      }
+      return { sessionId: candidate.session.id, runtimeId, externalId, created: false };
+    }
+
+    const requestedId = input.sessionId?.trim() || "";
+    if (requestedId) {
+      let adopted: ManagedChatSession | null = null;
+      try {
+        adopted = managedSessions.get(requestedId)
+          ?? (sessionService.get(requestedId) ? ensureManagedSession(requestedId) : null);
+      } catch {
+        adopted = null;
+      }
+      if (!adopted) {
+        throw new PluginSdkError("invalid_args", `Chat session "${requestedId}" was not found.`);
+      }
+      if (adopted.session.runtimeRef) {
+        throw new PluginSdkError(
+          "not_permitted",
+          `Chat session "${requestedId}" is already owned by another conversation runtime.`,
+        );
+      }
+      adopted.session.runtimeRef = ref;
+      if (label) adopted.session.runtimeLabel = label;
+      persistChatState(adopted);
+      return { sessionId: adopted.session.id, runtimeId, externalId, created: false };
+    }
+
+    if (!laneId.length) throw new PluginSdkError("invalid_args", "laneId is required.");
+    const created = await createSession({
+      laneId,
+      provider: PLUGIN_CHAT_PROVIDER,
+      // Free text in the model slot. ADE never resolves it to a real model,
+      // because the model this conversation runs on is the plugin's business.
+      model: input.modelLabel?.trim() || label?.displayName || runtimeId,
+      ...(input.title?.trim() ? { title: input.title.trim() } : {}),
+    });
+    const managed = managedSessions.get(created.id) ?? ensureManagedSession(created.id);
+    managed.session.runtimeRef = ref;
+    if (label) managed.session.runtimeLabel = label;
+    persistChatState(managed);
+    return { sessionId: managed.session.id, runtimeId, externalId, created: true };
+  };
+
+  /**
+   * The transcript-write side of the chat seam, registered on the shared bus.
+   *
+   * Ownership is NOT re-checked here — `requirePluginChatWriteTarget` is the one
+   * door and it ran before any of this. What these do check is shape and
+   * budget, because a plugin that owns a session can still send a hundred
+   * megabytes or a malformed part.
+   */
+  const pluginChatWriter: PluginChatRuntimeWriter = {
+    projectRoot,
+    ownerOf(sessionId) {
+      try {
+        const managed = managedSessions.get(sessionId)
+          ?? (sessionService.get(sessionId) ? ensureManagedSession(sessionId) : null);
+        const ref = managed?.session.runtimeRef;
+        return ref && isAgentChatRuntimeRef(ref) ? ref : null;
+      } catch {
+        return null;
+      }
+    },
+    createSession: (pluginId, input) => createPluginOwnedSession(pluginId, input),
+    async appendAssistant(sessionId, chunk) {
+      const managed = requirePluginManagedSession(sessionId);
+      // Shape first, budget second: a refused malformed write costs the plugin
+      // an error, not one of the writes it is allowed this minute.
+      const parts = pluginChatChunkParts(chunk);
+      chargePluginChatWrite(sessionId);
+      const turn = ensurePluginOwnedTurn(managed, chunk.turnId);
+      emitPluginAssistantParts(managed, turn, parts);
+      if (chunk.done === true) {
+        closePluginOwnedTurn(managed, { status: "completed" });
+      } else {
+        persistChatState(managed);
+      }
+    },
+    async appendUser(sessionId, input) {
+      const managed = requirePluginManagedSession(sessionId);
+      const text = typeof input.text === "string" ? input.text : "";
+      if (!text.trim().length) return;
+      assertPluginChatTextSize(text, "User text");
+      chargePluginChatWrite(sessionId);
+      const key = input.fingerprint?.trim() || text.trim();
+      if (pluginChatUserAlreadyPresent(managed, text, input.fingerprint)) return;
+      rememberPluginChatFingerprint(sessionId, key);
+      emitChatEvent(managed, {
+        type: "user_message",
+        text,
+        attachments: [],
+        deliveryState: "processed",
+        processed: true,
+        ...(input.turnId?.trim() ? { turnId: input.turnId.trim() } : {}),
+        runtime: "cloud",
+      });
+      persistChatState(managed);
+    },
+    async emitStatus(sessionId, status) {
+      const managed = requirePluginManagedSession(sessionId);
+      chargePluginChatWrite(sessionId);
+      const detail = typeof status.detail === "string" && status.detail.trim().length
+        ? status.detail.trim().slice(0, 500)
+        : undefined;
+      switch (status.state) {
+        case "running": {
+          ensurePluginOwnedTurn(managed, status.turnId);
+          if (detail) {
+            emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: detail });
+          }
+          persistChatState(managed);
+          return;
+        }
+        case "failed": {
+          ensurePluginOwnedTurn(managed, status.turnId);
+          closePluginOwnedTurn(managed, {
+            status: "failed",
+            detail: detail ?? "The conversation runtime reported a failure.",
+          });
+          return;
+        }
+        case "finished": {
+          // Terminal for the EXTERNAL run, not merely for this turn: say so in
+          // the transcript before settling, because "the cloud agent is done"
+          // is the fact the user came back to find out.
+          if (detail) {
+            emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: detail });
+          }
+          closePluginOwnedTurn(managed, { status: "completed" });
+          return;
+        }
+        case "idle":
+        default: {
+          if (detail) {
+            emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: detail });
+          }
+          closePluginOwnedTurn(managed, { status: "completed" });
+        }
+      }
+    },
+    async setArtifacts(sessionId, artifacts) {
+      const managed = requirePluginManagedSession(sessionId);
+      if (!Array.isArray(artifacts) || !artifacts.length) return;
+      if (artifacts.length > PLUGIN_CHAT_ARTIFACTS_MAX) {
+        throw new PluginSdkError(
+          "invalid_args",
+          `A session may list at most ${PLUGIN_CHAT_ARTIFACTS_MAX} artifacts at a time.`,
+        );
+      }
+      chargePluginChatWrite(sessionId);
+      const rows: AdeCardRow[] = [];
+      for (const artifact of artifacts as PluginChatArtifact[]) {
+        const safeRel = sanitizeArtifactRelativePath(artifact?.path ?? "");
+        // Refused rather than clamped: an absolute or escaping path means the
+        // plugin believes it wrote somewhere this card would point the user,
+        // and silently rewriting it would show them the wrong file.
+        if (!safeRel) continue;
+        rows.push({
+          text: artifact.label?.trim().slice(0, 120) || safeRel,
+          detail: safeRel,
+        });
+      }
+      if (!rows.length) return;
+      const turn = pluginOwnedTurns.get(sessionId);
+      const first = rows[0]!;
+      await emitAdeCard({
+        sessionId,
+        card: {
+          cardId: `plugin-artifacts:${managed.session.runtimeRef?.externalId ?? sessionId}`,
+          variant: "proof_artifact",
+          state: "terminal",
+          title: "Files from this run",
+          metrics: [
+            { label: rows.length === 1 ? "file" : "files", value: String(rows.length), tone: "accent" },
+          ],
+          rows: rows.slice(-5),
+          navTarget: first.detail
+            ? { kind: "file", path: first.detail, laneId: managed.session.laneId ?? null }
+            : null,
+          fallbackText: `${rows.length} file${rows.length === 1 ? "" : "s"} from this run`,
+          ...(turn && !turn.closed ? { turnId: turn.turnId } : {}),
+        },
+      });
+    },
+    async attachBranch(sessionId, input) {
+      const managed = requirePluginManagedSession(sessionId);
+      const branch = input.branch.replace(/^refs\/heads\//, "").trim();
+      if (!branch.length) throw new PluginSdkError("invalid_args", "A branch name is required.");
+      chargePluginChatWrite(sessionId);
+      const worktree = managed.laneWorktreePath?.trim() || "";
+      if (!worktree.length) {
+        throw new PluginSdkError("unsupported_method", "This conversation has no lane worktree to fetch into.");
+      }
+      const checked = await runGit(["check-ref-format", "--branch", branch], {
+        cwd: worktree,
+        timeoutMs: 8_000,
+      });
+      if (checked.exitCode !== 0) {
+        throw new PluginSdkError("invalid_args", `"${branch}" is not a valid branch name.`);
+      }
+      const remote = input.remote?.trim() || "origin";
+      if (!/^[A-Za-z][A-Za-z0-9._-]{0,63}$/.test(remote)) {
+        throw new PluginSdkError("invalid_args", `"${remote}" is not a valid remote name.`);
+      }
+      const fetched = await runGit(["fetch", remote, branch], { cwd: worktree, timeoutMs: 60_000 });
+      if (fetched.exitCode !== 0) {
+        logger.warn("agent_chat.plugin_branch_fetch_failed", {
+          sessionId,
+          branch,
+          remote,
+          error: fetched.stderr.trim() || "unknown Git error",
+        });
+      }
+      // `cloud_status` is turn-scoped, and a branch can be attached with no
+      // turn open — the run finished while nobody was looking. A synthetic id
+      // keeps the event well-formed and groups it with nothing, which is what
+      // "this happened outside a turn" should look like.
+      const turn = pluginOwnedTurns.get(sessionId);
+      emitChatEvent(managed, {
+        type: "cloud_status",
+        turnId: turn && !turn.closed ? turn.turnId : `plugin-branch-${randomUUID()}`,
+        runId: managed.session.runtimeRef?.externalId ?? sessionId,
+        status: "finished",
+        gitBranch: branch,
+      });
+      persistChatState(managed);
+    },
+    async hydrate(sessionId, transcript) {
+      const managed = requirePluginManagedSession(sessionId);
+      if (!Array.isArray(transcript) || !transcript.length) return;
+      if (transcript.length > PLUGIN_CHAT_HYDRATE_MAX_ENTRIES) {
+        throw new PluginSdkError(
+          "invalid_args",
+          `A hydrate call may carry at most ${PLUGIN_CHAT_HYDRATE_MAX_ENTRIES} entries. Page it.`,
+        );
+      }
+      chargePluginChatWrite(sessionId);
+      // Backfill never opens a turn and never settles the session: it is
+      // history, and a chat that lit up "running" because somebody re-read the
+      // past would be lying about the present.
+      for (const entry of transcript as PluginChatTranscriptEntry[]) {
+        if (!entry || typeof entry !== "object") continue;
+        const parts = pluginChatChunkParts({
+          ...(typeof entry.text === "string" ? { text: entry.text } : {}),
+          ...(Array.isArray(entry.parts) ? { parts: entry.parts } : {}),
+        });
+        if (!parts.length) continue;
+        if (entry.role === "user") {
+          const text = parts.filter((part) => part.kind === "text").map((part) => part.text).join("");
+          if (!text.trim().length) continue;
+          if (pluginChatUserAlreadyPresent(managed, text, entry.fingerprint)) continue;
+          rememberPluginChatFingerprint(sessionId, entry.fingerprint?.trim() || text.trim());
+          emitChatEvent(managed, {
+            type: "user_message",
+            text,
+            attachments: [],
+            deliveryState: "processed",
+            processed: true,
+            runtime: "cloud",
+          });
+          continue;
+        }
+        const historyTurnId = `plugin-history-${randomUUID()}`;
+        emitPluginAssistantParts(
+          managed,
+          { turnId: historyTurnId, ref: managed.session.runtimeRef!, streamedText: "", closed: true },
+          parts,
+        );
+      }
+      persistChatState(managed);
+    },
+  };
+
+  const detachPluginChatWriter = registerPluginChatRuntimeWriter(pluginChatWriter);
+
+  /**
+   * Presence for plugin-owned chats: tell the plugin who is looking.
+   *
+   * The whole reason this exists rather than `ade.schedules` is the poll
+   * ladder. A cloud conversation the user is staring at wants a 3-second poll;
+   * the same conversation with nobody on it wants none at all, and a schedule
+   * floored at 60 seconds can express neither.
+   */
+  const pluginChatPresence = createPluginChatPresenceRegistry({
+    onChange: (sessionId, watching) => {
+      let ref: AgentChatRuntimeRef | null = null;
+      try {
+        const managed = managedSessions.get(sessionId)
+          ?? (sessionService.get(sessionId) ? ensureManagedSession(sessionId) : null);
+        ref = managed?.session.runtimeRef ?? null;
+      } catch {
+        ref = null;
+      }
+      if (!ref) return;
+      getPluginChatRuntimeDelivery()?.notifyPresence({
+        ref,
+        sessionId,
+        projectRoot,
+        watching,
+      });
+    },
+  });
+
+  /**
+   * A client mounted or unmounted a plugin-owned chat.
+   *
+   * Ref-counted, so a desktop pane and a phone on the same conversation produce
+   * one `chat.opened` between them. Safe to call for any session: one that no
+   * plugin owns resolves to no ref and notifies nobody.
+   */
+  const watchPluginChat = (args: { sessionId: string; watching: boolean }): void => {
+    const sessionId = args.sessionId?.trim();
+    if (!sessionId) return;
+    pluginChatPresence.watch({ sessionId, watching: args.watching === true });
+  };
+
+  /**
+   * Give a Cursor Cloud session a plugin owner. The migration hook for PX-10.
+   *
+   * NOT run against anything today, and that is deliberate: the built-in Cursor
+   * Cloud path keeps working untouched until the extracted plugin can take
+   * every one of its conversations. What this proves is that the transition is
+   * a field write on an existing session rather than a re-import — the external
+   * id a cloud session already carries (`cursorCloudAgentId`) is exactly the
+   * `externalId` the plugin runtime addresses it by.
+   *
+   * Refuses a session that already has an owner, and one with no cloud agent
+   * id, so running it twice or over the wrong session changes nothing.
+   */
+  const adoptSessionIntoPluginRuntime = (args: {
+    sessionId: string;
+    pluginId: string;
+    runtimeId: string;
+    externalId?: string;
+  }): AgentChatRuntimeRef | null => {
+    const managed = ensureManagedSession(args.sessionId);
+    if (managed.session.runtimeRef) return null;
+    const externalId = args.externalId?.trim() || managed.session.cursorCloudAgentId?.trim() || "";
+    if (!externalId.length) return null;
+    if (externalId.length > AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX) return null;
+    const ref: AgentChatRuntimeRef = {
+      pluginId: args.pluginId.trim(),
+      runtimeId: args.runtimeId.trim(),
+      externalId,
+    };
+    if (!isAgentChatRuntimeRef(ref)) return null;
+    managed.session.runtimeRef = ref;
+    managed.session.provider = PLUGIN_CHAT_PROVIDER;
+    const label = resolvePluginRuntimeLabel(ref);
+    if (label) managed.session.runtimeLabel = label;
+    persistChatState(managed);
+    logger.info("agent_chat.plugin_runtime_adopted", {
+      sessionId: managed.session.id,
+      pluginId: ref.pluginId,
+      runtimeId: ref.runtimeId,
+    });
+    return ref;
+  };
+
   const cancelCursorCloudRun = async (args: {
     agentId: string;
     runId: string;
@@ -39102,7 +40072,26 @@ export function createAgentChatService(args: {
   const cursorCloudMirror = createCursorCloudMirrorWatch({
     refresh: refreshWatchedCursorCloudMirror,
   });
-  const watchCursorCloudMirror = cursorCloudMirror.watch;
+  /**
+   * "A client is (or is no longer) looking at this chat."
+   *
+   * Kept under the Cursor-Cloud name because every client already calls it on
+   * mount and unmount of a chat pane — desktop, the phone, the TUI, the web
+   * adapter — and the action name is a wire contract those clients ship
+   * independently. Renaming it would mean a version of ADE where the phone
+   * sends presence nobody receives.
+   *
+   * What it does is now two things. A Cursor Cloud session drives the mirror
+   * refresh ladder exactly as before. A plugin-owned session drives
+   * `chat.opened` / `chat.closed` into the plugin child, which is the whole
+   * reason presence exists in the plugin seam: it lets a plugin poll fast while
+   * somebody is reading and not at all when nobody is. Both are ref-counted, so
+   * a desktop pane and a phone on the same chat produce one signal.
+   */
+  const watchCursorCloudMirror = (args: { sessionId: string; watching: boolean }): void => {
+    cursorCloudMirror.watch(args);
+    watchPluginChat(args);
+  };
   const clearCursorCloudMirrorWatches = cursorCloudMirror.clearAll;
 
   const openCursorCloudChat = async (args: {
@@ -39616,6 +40605,29 @@ export function createAgentChatService(args: {
 
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
+
+    // A plugin-owned conversation routes by its `runtimeRef`, BEFORE the
+    // provider ladder below. Keyed on the ref rather than on
+    // `provider === "plugin"` on purpose: the ref is what names a destination,
+    // and a session that somehow carries one without the other must still reach
+    // its owner instead of falling into a built-in runtime that has no thread
+    // for it. See `isPluginOwnedChatSession`.
+    if (isPluginOwnedChatSession(managed.session)) {
+      await runPluginChatTurn(managed, {
+        promptText,
+        userText: submittedText,
+        displayText: visibleText,
+        attachments,
+        contextAttachments,
+        resolvedAttachments,
+        metadata,
+        laneDirectiveKey,
+        turnId,
+        onDispatched,
+        onBackendDispatched,
+      });
+      return;
+    }
 
     // OpenCode runtime dispatch
     if (managed.session.provider === "opencode") {
@@ -41628,6 +42640,15 @@ export function createAgentChatService(args: {
     };
     abortActiveBashControllers(managed, "Session interrupt requested.");
 
+    // Plugin-owned conversations first, for the same reason the send path puts
+    // them first: they have no `managed.runtime`, so every branch below would
+    // fall through to the Claude runtime at the tail and try to interrupt a
+    // thread that was never started.
+    if (isPluginOwnedChatSession(managed.session)) {
+      await interruptPluginChatTurn(managed);
+      return result;
+    }
+
     // OpenCode runtime interrupt
     if (managed.runtime?.kind === "opencode") {
       if (managed.runtime.interrupted) return result;
@@ -43131,6 +44152,18 @@ export function createAgentChatService(args: {
       ...(liveSession?.cursorPromotedTurnId || persisted?.cursorPromotedTurnId
         ? { cursorPromotedTurnId: liveSession?.cursorPromotedTurnId ?? persisted?.cursorPromotedTurnId }
         : {}),
+      ...(liveSession?.runtimeRef || persisted?.runtimeRef
+        ? { runtimeRef: (liveSession?.runtimeRef ?? persisted?.runtimeRef)! }
+        : {}),
+      // Refreshed from the live manifest when the plugin is still installed, so
+      // a renamed runtime relabels its old conversations; falls back to the
+      // last label written down when it is not.
+      ...((): { runtimeLabel?: AgentChatRuntimeLabel } => {
+        const ref = liveSession?.runtimeRef ?? persisted?.runtimeRef;
+        const resolved = ref ? resolvePluginRuntimeLabel(ref) : null;
+        const label = resolved ?? liveSession?.runtimeLabel ?? persisted?.runtimeLabel;
+        return label ? { runtimeLabel: label } : {};
+      })(),
       ...(liveSession?.permissionMode || persisted?.permissionMode
         ? { permissionMode: liveSession?.permissionMode ?? persisted?.permissionMode }
         : {}),
@@ -45437,6 +46470,13 @@ export function createAgentChatService(args: {
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
+    // Told, not merely forgotten: a plugin left believing somebody is watching
+    // polls a conversation nobody is looking at until its child restarts.
+    pluginChatPresence.clearAll();
+    detachPluginChatWriter();
+    pluginOwnedTurns.clear();
+    pluginChatWriteBudget.clear();
+    pluginChatFingerprints.clear();
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
@@ -45462,6 +46502,13 @@ export function createAgentChatService(args: {
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     clearCursorCloudMirrorWatches();
+    // Told, not merely forgotten: a plugin left believing somebody is watching
+    // polls a conversation nobody is looking at until its child restarts.
+    pluginChatPresence.clearAll();
+    detachPluginChatWriter();
+    pluginOwnedTurns.clear();
+    pluginChatWriteBudget.clear();
+    pluginChatFingerprints.clear();
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
@@ -48922,6 +49969,10 @@ export function createAgentChatService(args: {
     handleCursorCloudStatusChange,
     openCursorCloudChat,
     watchCursorCloudMirror,
+    /** A client mounted or unmounted a plugin-owned chat. See `watchPluginChat`. */
+    watchPluginChat,
+    /** Migration hook. See `adoptSessionIntoPluginRuntime`. */
+    adoptSessionIntoPluginRuntime,
     subscribeToEvents(callback: (event: AgentChatEventEnvelope) => void) {
       eventSubscribers.add(callback);
       return () => {

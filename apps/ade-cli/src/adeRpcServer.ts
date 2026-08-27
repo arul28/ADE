@@ -30,6 +30,7 @@ import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseRe
 import {
   isValidPluginId,
   isValidPluginManifestIdentifier,
+  type PluginManifest,
 } from "../../desktop/src/shared/plugins/manifest";
 import { PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES, PluginSdkError } from "../../desktop/src/shared/plugins/sdk";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
@@ -62,6 +63,7 @@ import { subscribeToPluginChanges } from "../../desktop/src/main/services/plugin
 import {
   recordPluginInstallApproval,
   requestPluginInstallApproval,
+  requestPluginRemovalApproval,
 } from "../../desktop/src/main/services/plugins/pluginInstallApproval";
 import {
   buildTrackedCliLaunchCommand,
@@ -95,6 +97,13 @@ import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrows
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+
+/** Stamped by the bundler; empty in a source run, where it is simply omitted. */
+declare const __ADE_VERSION__: string | undefined;
+const RPC_SERVER_ADE_VERSION = (
+  process.env.ADE_CLI_VERSION?.trim()
+  || (typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "")
+);
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -1526,6 +1535,16 @@ function sleep(ms: number): Promise<void> {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
+
+/**
+ * The plugin verbs a session-bound agent may ask for with a removal card.
+ *
+ * `install` is not here because it asks with a different card — it has a source
+ * to resolve and a disclosure to build before anything is on the machine, and
+ * its approval is remembered. These three describe a plugin that is already
+ * installed, and none of them is ever remembered.
+ */
+const PLUGIN_REMOVAL_ACTIONS = new Set(["uninstall", "enable", "disable"]);
 
 function safeObject(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
@@ -3856,7 +3875,21 @@ async function runTool(args: {
     const services = getAdeActionDomainServices(runtime);
     const service = services[domain];
     if (disabledAdeActionDomainSet().has(domain) || !service) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Domain '${domain}' is unavailable in this runtime.`);
+      // Named as a BUILD fact rather than a universe fact. The old wording —
+      // "unavailable in this runtime" — read as "ADE has no such thing", and an
+      // agent whose PATH `ade` was the stable app while its chat ran in ADE
+      // Alpha concluded exactly that and told the user plugins did not exist
+      // (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §1, §8).
+      // Already-released CLIs still print the old sentence; this is for the
+      // next one.
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `Domain '${domain}' is unavailable in this runtime`
+        + `${RPC_SERVER_ADE_VERSION ? ` (ADE ${RPC_SERVER_ADE_VERSION})` : ""}.`
+        + ` This ADE build has no '${domain}' support — another ADE app on this computer may.`
+        + " Run 'ade doctor --text' to see which binary, version and ADE_HOME answered,"
+        + " and whether it is the app this chat belongs to.",
+      );
     }
     let callable = service[action];
     if (typeof callable !== "function") {
@@ -3865,20 +3898,20 @@ async function runTool(args: {
     if (!isAllowedAdeAction(domain, action)) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Action '${domain}.${action}' is not exposed through ADE actions.`);
     }
-    let pluginInstallApproved = false;
+    let pluginLifecycleApproved = false;
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
-      // `install` is the one verb in this group whose refusal became a
-      // QUESTION. An agent that has just written a plugin should not have to
-      // hand its user a paragraph of shell ceremony — a packaged Electron
-      // path, an `ADE_HOME`, six inherited environment variables to unset — to
-      // install the thing the agent already built. The gate is not relaxed: the
-      // caller's role never changes, the host raises an approval card in the
-      // caller's own chat, and the install runs on the host's authority only
-      // after the person answers.
+      // The whole plugin lifecycle is a group whose refusal became a QUESTION.
+      // An agent that has just written a plugin should not have to hand its
+      // user a paragraph of shell ceremony — a packaged Electron path, an
+      // `ADE_HOME`, six inherited environment variables to unset — to install
+      // the thing the agent already built, nor to take it off again afterwards.
+      // The gate is not relaxed: the caller's role never changes, the host
+      // raises an approval card in the caller's own chat, and the verb runs on
+      // the host's authority only after the person answers.
       //
-      // The other three stay flat refusals. Removing a plugin or stopping its
-      // child is not a thing to interrupt someone for mid-turn, and an
-      // uninstall prompt is exactly the kind of card people learn to dismiss.
+      // A caller with no chat session — an operator's own terminal — never
+      // reaches any of this: it connects at `cto` and the whole branch is
+      // skipped, so nothing on that path grew a card.
       if (domain === "plugin" && action === "install"
         && callerCtx.chatSessionId && runtime.agentChatService) {
         const approval = await requestPluginInstallApproval({
@@ -3902,14 +3935,63 @@ async function runTool(args: {
             projectId: runtime.projectId,
             pluginId: approval.pluginId,
             canonicalSource: approval.canonicalSource,
+            // Part of the key, so a later save that widens the plugin's
+            // declared hosts or provider keys asks again instead of inheriting
+            // an approval the person gave to a narrower manifest.
+            grant: approval.grant,
           });
         }
-        pluginInstallApproved = true;
+        pluginLifecycleApproved = true;
+      } else if (domain === "plugin" && PLUGIN_REMOVAL_ACTIONS.has(action)
+        && callerCtx.chatSessionId && runtime.agentChatService) {
+        // Removal, disable and enable ask the same way install does — and,
+        // unlike install, they are never remembered. An approved install does
+        // not pre-approve taking the plugin off again: that is its own consent
+        // every time, and `requestPluginRemovalApproval` reads nothing from the
+        // approved-pair record and writes nothing back to it.
+        const pluginId = asOptionalTrimmedString(safeObject(toolArgs.args).pluginId) ?? "";
+        if (!pluginId) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            `Action '${domain}.${action}' needs a pluginId.`,
+          );
+        }
+        // Read from the HOST, never from the call: the name, version and
+        // manifest on the card describe what is actually installed under this
+        // id, so nothing the agent typed reaches the reader as prose. A read
+        // that fails leaves the card honest rather than silent — it says ADE
+        // cannot list what changes, which is itself worth knowing.
+        const readDetail = service.get;
+        let installed: unknown = null;
+        if (typeof readDetail === "function") {
+          try {
+            installed = await (readDetail as (readArgs: { pluginId: string }) => unknown)({ pluginId });
+          } catch {
+            installed = null;
+          }
+        }
+        const detail = isRecord(installed) ? installed : null;
+        const approval = await requestPluginRemovalApproval({
+          chat: runtime.agentChatService,
+          chatSessionId: callerCtx.chatSessionId,
+          kind: action as "uninstall" | "enable" | "disable",
+          pluginId,
+          displayName: typeof detail?.displayName === "string" ? detail.displayName : pluginId,
+          version: typeof detail?.version === "string" ? detail.version : null,
+          manifest: (isRecord(detail?.manifest) ? detail.manifest : null) as PluginManifest | null,
+        });
+        if (!approval.allow) {
+          throw new JsonRpcError(JsonRpcErrorCode.policyDenied, approval.message, {
+            ...approval.data,
+            method: `${domain}.${action}`,
+          });
+        }
+        pluginLifecycleApproved = true;
       }
-      if (pluginInstallApproved) {
-        // Fall through to the ordinary dispatch, so an approved install runs
-        // the exact code path a CTO caller takes — one invocation site, one set
-        // of error mappings.
+      if (pluginLifecycleApproved) {
+        // Fall through to the ordinary dispatch, so an approved verb runs the
+        // exact code path a CTO caller takes — one invocation site, one set of
+        // error mappings.
       } else if (domain === "plugin") {
         // The plugin bridge is new, so it starts out obeying the rule the
         // generic branch below still breaks: a role refusal is policy, not a

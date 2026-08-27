@@ -45,6 +45,7 @@ import type {
   PluginPresenceMachineRow,
   PluginSummary,
   PluginUsageSummary,
+  PluginWebhookIngressStatus,
 } from "../../../desktop/src/shared/plugins/sdk";
 import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "../../../desktop/src/shared/plugins/clientRendering";
 import {
@@ -274,7 +275,7 @@ export type PluginListEntry = {
   installedAt: string;
   root: string;
   cli: string[];
-  surfaces: { kind: string; id: string; title: string; panelId: string }[];
+  surfaces: { kind: string; id: string; title: string; panelId: string; entryHtml?: string }[];
   /** Socket contributions the user switched off, as the registry stores them. */
   disabledContributions: string[];
   errors: string[];
@@ -299,6 +300,10 @@ function toListEntry(entry: InstalledPlugin): PluginListEntry {
       id: surface.id,
       title: surface.title,
       panelId: surface.panelId,
+      // Read off the manifest on disk, so this is the "declared" half an author
+      // compares against what the running app serves. `ade plugin doctor` makes
+      // the same comparison and says which half is wrong.
+      ...(surface.entryHtml ? { entryHtml: surface.entryHtml } : {}),
     })) ?? [],
     disabledContributions: entry.record.disabledContributions ?? [],
     errors: entry.errors,
@@ -700,11 +705,28 @@ async function readPluginDoctorLive(
     }
   }
 
+  // Asked only when the manifest declares a channel: on a plugin that receives
+  // nothing this is a round trip whose answer the rung would discard, and the
+  // sentinel below has to keep meaning "the host has no such action" rather
+  // than "we did not bother".
+  const ingress = (manifest?.webhookIngress.length ?? 0) > 0
+    ? await askHost<PluginWebhookIngressStatus[] | null>(
+      () => invoke("webhookIngress", { pluginId }),
+      null,
+    )
+    : [];
+
   return {
     detail: detail ?? null,
     presence: presenceRows.filter((row) => row?.pluginId === pluginId),
     contributions,
     usage: usageSummary?.entries?.find((entry) => entry.pluginId === pluginId) ?? null,
+    // `undefined` — the field absent — is what an older host looks like, and
+    // the rung reads it as "nobody could check". `null` is a host that HAS the
+    // action and reports nothing for this plugin.
+    webhookIngress: ingress === null
+      ? undefined
+      : ingress.find((row) => row.pluginId === pluginId) ?? null,
   };
 }
 

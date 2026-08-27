@@ -245,22 +245,41 @@ private struct PluginVocabListView: View {
   }
 }
 
+/// One list row.
+///
+/// A row can carry a press of its own AND trailing buttons, so the press is a
+/// button around the reading area only and the actions are its siblings. A
+/// button inside a button would swallow the taps meant for the inner one.
 private struct PluginVocabListRow: View {
   let item: PluginVocabListItem
   @ObservedObject var store: PluginPaneStore
 
   var body: some View {
-    if let action = item.onPress {
-      Button {
-        ADEHaptics.light()
-        store.perform(action)
-      } label: {
+    VStack(alignment: .leading, spacing: 0) {
+      if let action = item.onPress {
+        Button {
+          ADEHaptics.light()
+          store.perform(action)
+        } label: {
+          content
+        }
+        .buttonStyle(.plain)
+        .disabled(!store.canInvoke || store.isInFlight(action))
+      } else {
         content
       }
-      .buttonStyle(.plain)
-      .disabled(!store.canInvoke || store.isInFlight(action))
-    } else {
-      content
+      if !item.actions.isEmpty || !item.overflow.isEmpty {
+        HStack(spacing: 8) {
+          ForEach(item.actions) { entry in
+            PluginVocabRowActionButton(entry: entry, store: store)
+          }
+          if !item.overflow.isEmpty {
+            PluginVocabRowOverflowMenu(actions: item.overflow, store: store)
+          }
+          Spacer(minLength: 0)
+        }
+        .padding(.bottom, 9)
+      }
     }
   }
 
@@ -273,17 +292,32 @@ private struct PluginVocabListRow: View {
           .frame(width: 18)
       }
       VStack(alignment: .leading, spacing: 2) {
-        Text(item.title)
-          .font(.subheadline.weight(.medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-          .multilineTextAlignment(.leading)
+        HStack(spacing: 6) {
+          Text(item.title)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+          if let badge = item.badge {
+            PluginVocabBadgeView(badge: badge)
+          }
+        }
         if let subtitle = item.subtitle {
           Text(subtitle)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
+        }
+        // Monospace, under the subtitle: the one place a row can put a value
+        // meant to be COMPARED against the row above it — an id, a branch, a
+        // short sha. One line, because a wrapped id is not comparable.
+        if let mono = item.mono {
+          Text(mono)
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.middle)
         }
       }
       Spacer(minLength: 8)
@@ -300,6 +334,99 @@ private struct PluginVocabListRow: View {
     }
     .padding(.vertical, 9)
     .contentShape(Rectangle())
+  }
+}
+
+/// A trailing button on a list row.
+///
+/// Smaller and quieter than a `button` node: up to three sit beside a row, and
+/// at the weight of a real button the row would read as a toolbar with a label
+/// attached. `primary` still tints, for the one action a row is about.
+private struct PluginVocabRowActionButton: View {
+  let entry: PluginVocabListItemAction
+  @ObservedObject var store: PluginPaneStore
+
+  private var isBusy: Bool { store.isInFlight(entry.action) }
+  private var isDisabled: Bool { isBusy || !store.canInvoke }
+
+  var body: some View {
+    Button {
+      ADEHaptics.light()
+      store.perform(entry.action)
+    } label: {
+      HStack(spacing: 5) {
+        if isBusy {
+          ProgressView().controlSize(.mini)
+        } else if let icon = PluginSymbol.symbol(entry.icon) {
+          Image(systemName: icon)
+            .font(.system(size: 10, weight: .semibold))
+        }
+        Text(entry.label)
+          .font(.caption2.weight(.semibold))
+      }
+      .foregroundStyle(foreground)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background(background, in: Capsule())
+      .overlay(Capsule().stroke(ADEColor.border.opacity(entry.kind == .quiet ? 0 : 0.18), lineWidth: 0.5))
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+    .disabled(isDisabled)
+    .opacity(isDisabled && !isBusy ? 0.5 : 1)
+  }
+
+  private var foreground: Color {
+    switch entry.kind {
+    case .primary: return ADEColor.accent
+    case .default: return ADEColor.textPrimary
+    case .quiet: return ADEColor.textSecondary
+    }
+  }
+
+  private var background: Color {
+    switch entry.kind {
+    case .primary: return ADEColor.accent.opacity(0.14)
+    case .default: return ADEColor.surfaceBackground.opacity(0.5)
+    case .quiet: return .clear
+    }
+  }
+}
+
+/// The rest of a row's actions, behind the system menu.
+///
+/// A `Menu` rather than more capsules: six controls on a phone row is not a
+/// row. Each item still goes through ``PluginPaneStore/perform(_:extraArgs:)``,
+/// so an overflow action confirms exactly as a visible one does.
+private struct PluginVocabRowOverflowMenu: View {
+  let actions: [PluginVocabListItemAction]
+  @ObservedObject var store: PluginPaneStore
+
+  var body: some View {
+    Menu {
+      ForEach(actions) { entry in
+        Button {
+          ADEHaptics.light()
+          store.perform(entry.action)
+        } label: {
+          if let icon = PluginSymbol.symbol(entry.icon) {
+            Label(entry.label, systemImage: icon)
+          } else {
+            Text(entry.label)
+          }
+        }
+        .disabled(!store.canInvoke || store.isInFlight(entry.action))
+      }
+    } label: {
+      Image(systemName: "ellipsis")
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(ADEColor.surfaceBackground.opacity(0.5), in: Capsule())
+        .overlay(Capsule().stroke(ADEColor.border.opacity(0.18), lineWidth: 0.5))
+    }
+    .accessibilityLabel("More actions")
+    .disabled(!store.canInvoke)
   }
 }
 

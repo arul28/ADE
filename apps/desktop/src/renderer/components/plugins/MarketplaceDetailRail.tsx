@@ -1,8 +1,10 @@
 import React from "react";
 
-import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { formatRelativeTime } from "../lanes/branchPickerSearch";
 import { setPluginContributionEnabled, type PluginUsageRow } from "../../lib/pluginRuntimeBridge";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
+import type { PluginWebhookIngressStatus } from "../../../shared/plugins/sdk";
 import {
   PLUGIN_SKILL_NEXT_TURN_NOTE,
   describePluginClientRendering,
@@ -511,4 +513,143 @@ export function UsageRail({ usage }: { usage: PluginUsageRow }) {
       </details>
     </RailSection>
   );
+}
+
+/**
+ * The relay URLs a plugin's webhooks arrive on, and whether any have.
+ *
+ * This is a SETUP surface before it is a health surface. A plugin that declares
+ * a channel is useless until somebody pastes its URL into the third party that
+ * sends the webhooks, and that person is standing in front of this page with a
+ * browser tab open next to it. So the URL is the loudest thing here, Copy is
+ * one click, and the health line underneath is a short sentence rather than a
+ * meter.
+ *
+ * Rendered only for a plugin that declares at least one channel, and only when
+ * the host can answer. A host that drains no webhooks omits the section instead
+ * of drawing "nothing has arrived", which would read as a broken integration
+ * rather than a capability this copy of ADE does not have.
+ */
+export function WebhooksRail({ status }: { status: PluginWebhookIngressStatus }) {
+  const [copied, setCopied] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(null), 1600);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  if (status.channels.length === 0) return null;
+
+  const health = describeWebhookIngress(status);
+
+  return (
+    <RailSection title={status.channels.length > 1 ? "Webhook URLs" : "Webhook URL"}>
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "grid", gap: 8 }}>
+        {status.channels.map((channel) => (
+          <li key={channel.channelId} style={{ display: "grid", gap: 4 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 11.5,
+                  color: COLORS.textSecondary,
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {channel.label}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  void copyPluginText(channel.url);
+                  setCopied(channel.channelId);
+                }}
+                style={outlineButton({ height: 24, padding: "0 9px", fontSize: 11 })}
+              >
+                {copied === channel.channelId ? "Copied" : "Copy"}
+              </button>
+            </div>
+            <code
+              // Selectable as well as copyable: a reader checking a URL they
+              // already pasted wants to compare it, not copy it again.
+              style={{
+                fontFamily: MONO_FONT,
+                fontSize: 10.5,
+                lineHeight: 1.5,
+                color: COLORS.textDim,
+                background: COLORS.recessedBg,
+                borderRadius: RADII.sm,
+                padding: "5px 7px",
+                overflowWrap: "anywhere",
+                userSelect: "text",
+              }}
+            >
+              {channel.url}
+            </code>
+            {channel.missingSecretRef ? (
+              <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.warning }}>
+                {`Add the secret ${channel.missingSecretRef} in this plugin's settings, or its webhooks are refused.`}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <span style={{ fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5, color: health.tone }}>
+        {health.summary}
+      </span>
+    </RailSection>
+  );
+}
+
+/**
+ * One sentence for the whole drain.
+ *
+ * Deliberately not a count of everything the ledger knows: "4 waiting, 1
+ * abandoned, last polled 12s ago" is the drain's own vocabulary, and the reader
+ * of this page is asking one question — is my integration working. Numbers
+ * appear only when they change that answer.
+ */
+function describeWebhookIngress(status: PluginWebhookIngressStatus): { summary: string; tone: string } {
+  if (status.lastError) {
+    return { summary: `ADE could not reach the webhook relay: ${status.lastError}`, tone: COLORS.danger };
+  }
+  if (status.state === "unconfigured") {
+    return { summary: "Setting up this plugin's relay registration…", tone: COLORS.textDim };
+  }
+  if (!status.lastReceivedAt) {
+    return {
+      summary: "Nothing has arrived yet. Paste the URL above into the service that sends the webhooks.",
+      tone: COLORS.textDim,
+    };
+  }
+  const ago = formatRelativeTime(status.lastReceivedAt);
+  const waiting = status.pendingDeliveries > 0 ? ` ${status.pendingDeliveries} still being handled.` : "";
+  return { summary: `Last webhook ${ago} ago.${waiting}`, tone: COLORS.textSecondary };
+}
+
+/**
+ * Copy one short string, host clipboard first.
+ *
+ * The renderer's other copy path is `copyLaunchPromptToClipboard`, which trims
+ * and is named for the thing it copies. A webhook URL is neither, so this is
+ * the same two-step fallback without the prompt semantics.
+ */
+async function copyPluginText(text: string): Promise<void> {
+  try {
+    if (typeof window !== "undefined" && window.ade?.app?.writeClipboardText) {
+      await window.ade.app.writeClipboardText(text);
+      return;
+    }
+  } catch {
+    // Fall through to the browser clipboard below.
+  }
+  try {
+    await navigator.clipboard?.writeText(text);
+  } catch {
+    // Best effort. The URL is on screen and selectable either way.
+  }
 }

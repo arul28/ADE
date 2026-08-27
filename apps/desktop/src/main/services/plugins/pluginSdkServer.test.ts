@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { Logger } from "../logging/logger";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
-import { PluginSdkError, type PluginCollectionPutOptions } from "../../../shared/plugins/sdk";
+import {
+  PluginSdkError,
+  PLUGIN_WEBHOOK_SECRET_NAME,
+  type PluginCollectionPutOptions,
+} from "../../../shared/plugins/sdk";
 import type { PluginDataStore } from "./pluginDataStore";
 import type { PluginSecretStore } from "./pluginSecretStore";
 import { createPluginSdkServer } from "./pluginSdkServer";
@@ -29,6 +33,8 @@ const MANIFEST: PluginManifest = {
   automationSteps: [],
   searchProviders: [],
   keybindings: [],
+  chatRuntimes: [],
+  webhookIngress: [],
   official: false,
 };
 
@@ -167,7 +173,14 @@ describe("createPluginSdkServer collections.put", () => {
 });
 
 describe("createPluginSdkServer notifications.post", () => {
-  type Posted = { pluginId: string; label: string; title: string; body?: string; target: string };
+  type Posted = {
+    pluginId: string;
+    label: string;
+    title: string;
+    body?: string;
+    target: string;
+    deeplink?: string;
+  };
 
   function withNotifications(): { handle: ReturnType<typeof createServer>["handle"]; posted: Posted[] } {
     const posted: Posted[] = [];
@@ -202,6 +215,23 @@ describe("createPluginSdkServer notifications.post", () => {
       input: { title: "Done", target: "Mobile" },
     }))).toBe("invalid_args");
     expect(posted).toHaveLength(1);
+  });
+
+  it("carries a link to one of its own panels, and costs only the link otherwise", async () => {
+    const { handle, posted } = withNotifications();
+
+    await handle("notifications.post", {
+      input: { title: "Agent finished", deeplink: "ade://plugin/graph/detail" },
+    });
+    expect(posted[0]?.deeplink).toBe("ade://plugin/graph/detail");
+
+    // A link somewhere else must not silence the news the user needed: the post
+    // goes, and the tap falls back to opening the plugin that sent it.
+    await handle("notifications.post", {
+      input: { title: "Agent finished", deeplink: "ade://plugin/other/detail" },
+    });
+    expect(posted[1]?.title).toBe("Agent finished");
+    expect(posted[1]?.deeplink).toBeUndefined();
   });
 
   it("refuses a title or body past the render ceiling instead of truncating", async () => {
@@ -413,5 +443,310 @@ describe("createPluginSdkServer automations.emitTrigger", () => {
       input: { triggerId: "issueMoved", payload: { blob: "x".repeat(4 * 1024 + 1) } },
     }))).toBe("plugin_budget_exceeded");
     expect(calls).toBe(0);
+  });
+});
+
+/* ── Host-brokered provider keys ────────────────────────────────────────── */
+
+describe("createPluginSdkServer secrets.getProviderKey", () => {
+  /** A manifest that asked for the Cursor key and nothing else. */
+  function declaringCursor(): PluginManifest {
+    return { ...MANIFEST, providerKeys: ["cursor"] };
+  }
+
+  it("hands a declared provider's key to the plugin", async () => {
+    const { handle } = createServer({
+      manifest: declaringCursor(),
+      readProviderKey: (provider) => (provider === "cursor" ? "key-abc" : null),
+    });
+
+    expect(await handle("secrets.getProviderKey", { provider: "cursor" })).toBe("key-abc");
+  });
+
+  it("refuses a provider the manifest never declared", async () => {
+    const { handle } = createServer({
+      manifest: declaringCursor(),
+      readProviderKey: () => "key-abc",
+    });
+
+    // `not_permitted`, the same code an undeclared collection gets: the
+    // manifest is the plugin's declared surface and the host does not widen it
+    // at runtime.
+    expect(await codeOf(() => handle("secrets.getProviderKey", { provider: "openai" })))
+      .toBe("not_permitted");
+  });
+
+  it("refuses every provider for a manifest that declared none", async () => {
+    const { handle } = createServer({ readProviderKey: () => "key-abc" });
+
+    expect(await codeOf(() => handle("secrets.getProviderKey", { provider: "cursor" })))
+      .toBe("not_permitted");
+  });
+
+  it("separates a typo from a missing declaration", async () => {
+    const { handle } = createServer({ manifest: declaringCursor() });
+
+    expect(await codeOf(() => handle("secrets.getProviderKey", { provider: "cursour" })))
+      .toBe("invalid_args");
+  });
+
+  it("answers null when the provider is declared and no key is connected", async () => {
+    const { handle } = createServer({
+      manifest: declaringCursor(),
+      readProviderKey: () => null,
+    });
+
+    // Not an error: "connect a key in Settings" is a sentence the plugin should
+    // draw, not a failure it should report.
+    expect(await handle("secrets.getProviderKey", { provider: "cursor" })).toBeNull();
+  });
+
+  it("answers null on a host with no key store at all", async () => {
+    const { handle } = createServer({ manifest: declaringCursor() });
+
+    expect(await handle("secrets.getProviderKey", { provider: "cursor" })).toBeNull();
+  });
+
+  it("never reaches the plugin's own secret store", async () => {
+    const touched: string[] = [];
+    const { handle } = createServer({
+      manifest: declaringCursor(),
+      readProviderKey: () => "key-abc",
+      secrets: {
+        get: async (_id: string, name: string) => {
+          touched.push(name);
+          return null;
+        },
+        set: async (_id: string, name: string) => {
+          touched.push(name);
+        },
+        delete: async () => {},
+        removeAll: async () => {},
+      } as PluginSecretStore,
+    });
+
+    await handle("secrets.getProviderKey", { provider: "cursor" });
+
+    // The whole point of the broker: one key, one store. A copy written here
+    // would drift the moment the user rotated the key in Settings.
+    expect(touched).toEqual([]);
+  });
+
+  it("takes the provider case-insensitively, like the key store does", async () => {
+    const seen: string[] = [];
+    const { handle } = createServer({
+      manifest: declaringCursor(),
+      readProviderKey: (provider) => {
+        seen.push(provider);
+        return "key-abc";
+      },
+    });
+
+    expect(await handle("secrets.getProviderKey", { provider: "Cursor" })).toBe("key-abc");
+    expect(seen).toEqual(["cursor"]);
+  });
+});
+
+describe("createPluginSdkServer secrets.hasProviderKey", () => {
+  it("says whether a key is there without reading it", async () => {
+    const manifest: PluginManifest = { ...MANIFEST, providerKeys: ["cursor"] };
+    const present = createServer({ manifest, readProviderKey: () => "key-abc" });
+    const absent = createServer({ manifest, readProviderKey: () => null });
+
+    expect(await present.handle("secrets.hasProviderKey", { provider: "cursor" })).toBe(true);
+    expect(await absent.handle("secrets.hasProviderKey", { provider: "cursor" })).toBe(false);
+  });
+
+  it("obeys the same declaration rule as the read", async () => {
+    const { handle } = createServer({ readProviderKey: () => "key-abc" });
+
+    expect(await codeOf(() => handle("secrets.hasProviderKey", { provider: "cursor" })))
+      .toBe("not_permitted");
+  });
+});
+
+describe("createPluginSdkServer webhooks", () => {
+  function declaringIngress(): PluginManifest {
+    return {
+      ...MANIFEST,
+      webhookIngress: [
+        { id: "default", label: "Default" },
+        { id: "billing", label: "Billing" },
+      ],
+    };
+  }
+
+  it("answers the drain's URL for a declared channel, defaulting the channel id", async () => {
+    const asked: { pluginId: string; channelId: string }[] = [];
+    const { handle } = createServer({
+      manifest: declaringIngress(),
+      webhooks: {
+        url: (pluginId, channelId) => {
+          asked.push({ pluginId, channelId });
+          return `https://relay.example/plugin/${pluginId}/webhook`;
+        },
+        ack: () => {},
+      },
+    });
+
+    expect(await handle("webhooks.url", {})).toBe("https://relay.example/plugin/graph/webhook");
+    expect(await handle("webhooks.url", { channelId: "billing" })).toBe(
+      "https://relay.example/plugin/graph/webhook",
+    );
+    expect(asked).toEqual([
+      { pluginId: "graph", channelId: "default" },
+      { pluginId: "graph", channelId: "billing" },
+    ]);
+  });
+
+  // A URL for a channel the manifest never declared is a URL the relay accepts
+  // posts on and the drain then throws away — worse than no URL at all.
+  it("refuses a channel the manifest does not declare", async () => {
+    const { handle } = createServer({
+      manifest: declaringIngress(),
+      webhooks: { url: () => "https://relay.example/plugin/graph/webhook", ack: () => {} },
+    });
+
+    expect(await codeOf(() => handle("webhooks.url", { channelId: "payroll" }))).toBe("invalid_args");
+  });
+
+  it("refuses rather than guessing when the drain cannot resolve a declared channel", async () => {
+    const { handle } = createServer({
+      manifest: declaringIngress(),
+      webhooks: { url: () => null, ack: () => {} },
+    });
+
+    expect(await codeOf(() => handle("webhooks.url", {}))).toBe("unsupported_method");
+  });
+
+  it("says so plainly on a host with no drain", async () => {
+    const { handle } = createServer({ manifest: declaringIngress() });
+
+    expect(await codeOf(() => handle("webhooks.url", {}))).toBe("unsupported_method");
+    expect(await codeOf(() => handle("webhooks.ack", { deliveryId: "d-1" }))).toBe("unsupported_method");
+  });
+
+  it("acks by delivery id, scoped to the calling plugin", async () => {
+    const acked: { pluginId: string; deliveryId: string }[] = [];
+    const { handle } = createServer({
+      manifest: declaringIngress(),
+      webhooks: {
+        url: () => "https://relay.example/plugin/graph/webhook",
+        ack: (pluginId, deliveryId) => {
+          acked.push({ pluginId, deliveryId });
+        },
+      },
+    });
+
+    expect(await handle("webhooks.ack", { deliveryId: "d-1" })).toBeNull();
+    expect(acked).toEqual([{ pluginId: "graph", deliveryId: "d-1" }]);
+    expect(await codeOf(() => handle("webhooks.ack", {}))).toBe("invalid_args");
+  });
+
+  // A plugin that could read the relay secret could hand its own ingress to
+  // anyone; one that could write it would deauthorize itself silently.
+  it("keeps the relay registration secret out of every secret verb", async () => {
+    const { handle } = createServer({ manifest: declaringIngress() });
+
+    expect(await codeOf(() => handle("secrets.get", { name: PLUGIN_WEBHOOK_SECRET_NAME })))
+      .toBe("not_permitted");
+    expect(await codeOf(() => handle("secrets.set", { name: PLUGIN_WEBHOOK_SECRET_NAME, value: "x" })))
+      .toBe("not_permitted");
+    expect(await codeOf(() => handle("secrets.delete", { name: PLUGIN_WEBHOOK_SECRET_NAME })))
+      .toBe("not_permitted");
+  });
+});
+
+describe("createPluginSdkServer chat", () => {
+  const CHAT_MANIFEST: PluginManifest = {
+    ...MANIFEST,
+    chatRuntimes: [{
+      id: "cloud",
+      displayName: "Cursor Cloud",
+      capabilities: { followUp: true, interrupt: true, hydrate: true, artifacts: true },
+    }],
+  };
+
+  function chatServer(overrides: Record<string, unknown> = {}) {
+    const calls: { verb: string; args: unknown[] }[] = [];
+    const record = (verb: string) => async (...args: unknown[]) => {
+      calls.push({ verb, args });
+      return verb === "createSession"
+        ? { sessionId: "session-1", runtimeId: "cloud", externalId: "bc-1", created: true }
+        : undefined;
+    };
+    const { handle } = createServer({
+      manifest: CHAT_MANIFEST,
+      chat: {
+        createSession: record("createSession"),
+        appendAssistant: record("appendAssistant"),
+        appendUser: record("appendUser"),
+        emitStatus: record("emitStatus"),
+        setArtifacts: record("setArtifacts"),
+        attachBranch: record("attachBranch"),
+        hydrate: record("hydrate"),
+      },
+      ...overrides,
+    } as never);
+    return { handle, calls };
+  }
+
+  it("binds a session to a runtime the manifest declares", async () => {
+    const { handle, calls } = chatServer();
+    const result = await handle("chat.createSession", {
+      input: { runtimeId: "cloud", externalId: "bc-1", laneId: "lane-1" },
+    });
+    expect(result).toMatchObject({ sessionId: "session-1", created: true });
+    // The plugin id is the one the server was BUILT for; the plugin never
+    // states its own.
+    expect(calls[0]?.args[0]).toBe("graph");
+  });
+
+  it("refuses a runtime the manifest never declared", async () => {
+    const { handle, calls } = chatServer();
+    // `invalid_args`, not `not_permitted`: nothing was withheld, the id is wrong.
+    expect(await codeOf(() => handle("chat.createSession", {
+      input: { runtimeId: "ghost", externalId: "bc-1", laneId: "lane-1" },
+    }))).toBe("invalid_args");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("refuses every runtime for a manifest that declared none", async () => {
+    const { handle } = chatServer({ manifest: MANIFEST });
+    expect(await codeOf(() => handle("chat.createSession", {
+      input: { runtimeId: "cloud", externalId: "bc-1", laneId: "lane-1" },
+    }))).toBe("invalid_args");
+  });
+
+  it("says so plainly on a host that runs no chat service", async () => {
+    const { handle } = createServer({ manifest: CHAT_MANIFEST });
+    expect(await codeOf(() => handle("chat.appendAssistant", {
+      sessionId: "session-1",
+      chunk: { text: "hi" },
+    }))).toBe("unsupported_method");
+  });
+
+  it("passes the calling plugin's id to every write verb", async () => {
+    const { handle, calls } = chatServer();
+    await handle("chat.appendAssistant", { sessionId: "session-1", chunk: { text: "hi" } });
+    await handle("chat.appendUser", { sessionId: "session-1", input: { text: "hello" } });
+    await handle("chat.emitStatus", { sessionId: "session-1", status: { state: "idle" } });
+    await handle("chat.hydrate", { sessionId: "session-1", transcript: [{ role: "user", text: "a" }] });
+    expect(calls.map((call) => call.verb)).toEqual([
+      "appendAssistant",
+      "appendUser",
+      "emitStatus",
+      "hydrate",
+    ]);
+    // Ownership is decided against this value, and it is never one the plugin
+    // supplied.
+    expect(calls.every((call) => call.args[0] === "graph")).toBe(true);
+  });
+
+  it("refuses a write with no session id rather than guessing one", async () => {
+    const { handle, calls } = chatServer();
+    expect(await codeOf(() => handle("chat.appendAssistant", { chunk: { text: "hi" } })))
+      .toBe("invalid_args");
+    expect(calls).toHaveLength(0);
   });
 });

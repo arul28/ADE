@@ -132,6 +132,22 @@ struct CursorCloudFleetEntry: Codable, Equatable, Hashable, Identifiable {
   }
 }
 
+/// The argument shape every client sends with `ai.cursorCloudFleet`.
+///
+/// The host applies a smaller default when a caller sends nothing, so a phone
+/// that sent no arguments saw a shorter fleet than the desktop did. Mirrors
+/// `CURSOR_CLOUD_FLEET_MAX_AGENTS` in
+/// `apps/desktop/src/shared/cursorCloudApiLimits.ts`. This is a total row
+/// budget, not a page size: the host pages the Cursor API at 100 per request.
+enum CursorCloudFleetRequest {
+  static let maxAgents = 200
+  static let includeArchived = true
+
+  static var args: [String: Any] {
+    ["includeArchived": includeArchived, "limit": maxAgents]
+  }
+}
+
 struct CursorCloudFleetResult: Codable, Equatable {
   var items: [CursorCloudFleetEntry]
   /// "unconfigured", "ready", or "error".

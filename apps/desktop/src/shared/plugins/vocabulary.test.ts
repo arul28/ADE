@@ -345,6 +345,208 @@ describe("bound rows", () => {
     expect(coerceBoundListItem({ subtitle: "no title" })).toBeNull();
   });
 
+  it("lets a bound row act only when the panel's binding allowed that action id", () => {
+    // The panel author still chooses every action a reader can press. The data
+    // decides only which of them a given row offers.
+    const allowed = coerceBoundListItem(
+      { title: "bc-1", onPress: { action: "open-agent", args: { id: "bc-1" }, confirm: "Open it?" } },
+      ["open-agent", "stop-agent"],
+    );
+    expect(allowed).toEqual({
+      title: "bc-1",
+      onPress: { action: "open-agent", args: { id: "bc-1" }, confirm: "Open it?" },
+    });
+
+    expect(coerceBoundListItem(
+      { title: "bc-1", onPress: { action: "delete-everything" } },
+      ["open-agent"],
+    )).toEqual({ title: "bc-1" });
+
+    expect(coerceBoundListItem({ title: "bc-1", onPress: { action: "open-agent" } }, []))
+      .toEqual({ title: "bc-1" });
+  });
+
+  it("reads an allowlist off a binding, deduplicating and capping it", () => {
+    const parsed = parsePluginPanel({
+      v: 1,
+      fallback: FALLBACK,
+      body: [{
+        component: "list",
+        bind: {
+          collection: "fleet",
+          allowActions: ["open", "open", "  stop  ", 7, "", ...Array.from({ length: 40 }, (_, i) => `a${i}`)],
+        },
+      }],
+    });
+    expect(parsed.ok).toBe(true);
+    const node = parsed.ok ? parsed.panel.body[0] : null;
+    const allow = node && node.component === "list" ? node.bind?.allowActions : undefined;
+    expect(allow?.slice(0, 3)).toEqual(["open", "stop", "a0"]);
+    expect(allow).toHaveLength(VOCAB_LIMITS.maxBindingAllowActions);
+  });
+
+  it("drops an empty or absent allowlist rather than storing one", () => {
+    const parsed = parsePluginPanel({
+      v: 1,
+      fallback: FALLBACK,
+      body: [
+        { component: "list", bind: { collection: "a", allowActions: [] } },
+        { component: "list", bind: { collection: "b" } },
+        { component: "list", bind: { collection: "c", allowActions: "open" } },
+      ],
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    for (const node of parsed.panel.body) {
+      expect(node.component === "list" ? node.bind?.allowActions : "n/a").toBeUndefined();
+    }
+  });
+
+  it("reads the rich half of a row: a badge, a mono line, actions and overflow", () => {
+    const parsed = parsePluginPanel(panel([{
+      component: "list",
+      items: [{
+        title: "bc-1",
+        subtitle: "Fix the login redirect",
+        mono: "origin/fix-login-redirect",
+        badge: { text: "Running", tone: "accent", icon: "play" },
+        actions: [
+          { action: "open", label: "Open", kind: "primary", icon: "arrow-right" },
+          { action: "stop", label: "Stop", confirm: "Stop this agent?" },
+        ],
+        overflow: [{ action: "archive", label: "Archive" }],
+      }],
+    }]));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const node = parsed.panel.body[0];
+    expect(node.component).toBe("list");
+    if (node.component !== "list") return;
+    expect(node.items?.[0]).toEqual({
+      title: "bc-1",
+      subtitle: "Fix the login redirect",
+      mono: "origin/fix-login-redirect",
+      badge: { text: "Running", tone: "accent", icon: "play" },
+      actions: [
+        { action: "open", label: "Open", kind: "primary", icon: "arrow-right" },
+        { action: "stop", confirm: "Stop this agent?", label: "Stop" },
+      ],
+      overflow: [{ action: "archive", label: "Archive" }],
+    });
+
+    // The whole list is ONE node however rich its rows are — the reason these
+    // live on the item instead of being a hand-built stack per row.
+    expect(countVocabNodes(parsed.panel.body)).toBe(1);
+  });
+
+  it("drops a row action that cannot say what it does", () => {
+    const parsed = parsePluginPanel(panel([{
+      component: "list",
+      items: [{
+        title: "bc-1",
+        badge: { tone: "accent" },
+        actions: [
+          { label: "No action id" },
+          { action: "no-label" },
+          "not an object",
+          { action: "ok", label: "Fine" },
+        ],
+      }],
+    }]));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const node = parsed.panel.body[0];
+    if (node.component !== "list") return expect.fail("expected a list");
+    // A refused entry does not spend a slot the valid one needed, and a badge
+    // with no text is dropped whole rather than drawn empty.
+    expect(node.items?.[0]).toEqual({ title: "bc-1", actions: [{ action: "ok", label: "Fine" }] });
+  });
+
+  it("caps a row's actions and overflow, counting what survived", () => {
+    const many = (count: number, prefix: string) =>
+      Array.from({ length: count }, (_, index) => ({ action: `${prefix}${index}`, label: `${prefix}${index}` }));
+    const parsed = parsePluginPanel(panel([{
+      component: "list",
+      items: [{
+        title: "bc-1",
+        // Two refusals first: if the cap counted offers rather than survivors,
+        // the third and fourth valid entries would never be reached.
+        actions: [{ action: "x" }, "nope", ...many(6, "a")],
+        overflow: many(12, "o"),
+      }],
+    }]));
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const node = parsed.panel.body[0];
+    if (node.component !== "list") return expect.fail("expected a list");
+    expect(node.items?.[0]?.actions?.map((entry) => entry.action))
+      .toEqual(["a0", "a1", "a2"]);
+    expect(node.items?.[0]?.actions).toHaveLength(VOCAB_LIMITS.maxListItemActions);
+    expect(node.items?.[0]?.overflow).toHaveLength(VOCAB_LIMITS.maxListItemOverflow);
+  });
+
+  it("holds a hundred rich rows in one node and under the schema budget", () => {
+    // The acceptance the widening exists for. Hand-built out of stack, badge,
+    // text and button nodes this row was about seven nodes, so `maxNodes` (200)
+    // capped the panel near 27 rows.
+    const rows = Array.from({ length: VOCAB_LIMITS.maxListItems }, (_, index) => ({
+      title: `bc-${index}`,
+      subtitle: "Fix the login redirect on the marketing site",
+      mono: `origin/agent-${index}`,
+      badge: { text: "Running", tone: "accent" },
+      actions: [
+        { action: "open", label: "Open", args: { id: `bc-${index}` } },
+        { action: "pull", label: "Pull" },
+        { action: "stop", label: "Stop", confirm: "Stop this agent?" },
+      ],
+      overflow: [{ action: "archive", label: "Archive", args: { id: `bc-${index}` } }],
+    }));
+    const schema = panel([{ component: "list", items: rows }]);
+    const parsed = parsePluginPanel(schema);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    const node = parsed.panel.body[0];
+    if (node.component !== "list") return expect.fail("expected a list");
+    expect(node.items).toHaveLength(VOCAB_LIMITS.maxListItems);
+    expect(countVocabNodes(parsed.panel.body)).toBe(1);
+    expect(Buffer.byteLength(JSON.stringify(schema), "utf8"))
+      .toBeLessThan(VOCAB_LIMITS.maxSchemaBytes);
+  });
+
+  it("gates every action on a bound row through the binding's allowlist", () => {
+    // Not just `onPress`: a collection that could reach an undeclared action
+    // through a trailing button would have made `onPress` the only guarded door.
+    const row = {
+      title: "bc-1",
+      mono: "origin/fix-login",
+      badge: { text: "Running", tone: "accent" },
+      onPress: { action: "open" },
+      actions: [
+        { action: "open", label: "Open" },
+        { action: "delete-everything", label: "Delete" },
+      ],
+      overflow: [
+        { action: "delete-everything", label: "Delete" },
+        { action: "stop", label: "Stop" },
+      ],
+    };
+    expect(coerceBoundListItem(row, ["open", "stop"])).toEqual({
+      title: "bc-1",
+      mono: "origin/fix-login",
+      badge: { text: "Running", tone: "accent" },
+      onPress: { action: "open" },
+      actions: [{ action: "open", label: "Open" }],
+      overflow: [{ action: "stop", label: "Stop" }],
+    });
+
+    // No allowlist keeps the old answer for the whole row, not only its press.
+    expect(coerceBoundListItem(row)).toEqual({
+      title: "bc-1",
+      mono: "origin/fix-login",
+      badge: { text: "Running", tone: "accent" },
+    });
+  });
+
   it("shapes a table row to the declared columns and nothing else", () => {
     const columns = [{ key: "name", label: "Name" }, { key: "n", label: "Count" }];
     expect(coerceBoundTableRow({ name: "a", n: 2, secret: "x" }, columns))

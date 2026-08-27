@@ -942,6 +942,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "github_webhook_deliveries",
   "lane_detail_snapshots",
   "lane_list_snapshots",
+  // Webhook deliveries to plugin children are processed by ONE machine — the
+  // one that registered the relay secret and runs the drain — and the ack state
+  // in these rows describes that machine's own child process. Replicating them
+  // would tell a phone about a delivery it can neither hand to a child nor ack.
+  "plugin_ingress_events",
   "pr_auto_link_ignores",
   // Config snapshots rebuilt from ade.yaml are local-derived state. Remote
   // clients read effective config through RPC, never from a synced replica,
@@ -3496,6 +3501,43 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
   db.run("create index if not exists idx_cursor_cloud_ingress_events_project_created on cursor_cloud_ingress_events(project_id, created_at desc)");
   db.run("create index if not exists idx_cursor_cloud_ingress_events_project_event on cursor_cloud_ingress_events(project_id, event_id)");
+
+  // The generic plugin webhook ledger: replay guard AND delivery state for
+  // `pluginWebhookIngressService`. Its own table rather than a `plugin_id`
+  // column on `cursor_cloud_ingress_events` because the two carry different
+  // facts — that one records a Cursor statusChange, this one records a delivery
+  // that is pending, acked or abandoned — and because the Cursor table is
+  // scheduled to be dropped a release after Cursor Cloud becomes a plugin.
+  // Sharing a table would make that drop impossible.
+  //
+  // UNLIKE the two ingress tables above, this one IS pruned. The 2026-07 daemon
+  // wedge came from an ingress log with no retention at all, and the exemption
+  // those two rely on is only safe because the relay's own retention is shorter
+  // than anything the drain would re-serve. `pluginWebhookIngressService` holds
+  // rows to PLUGIN_WEBHOOK_LEDGER_RETENTION_DAYS (14) — twice the relay's seven
+  // — and to PLUGIN_WEBHOOK_LEDGER_ROWS_MAX per plugin, so a replay is
+  // impossible in both directions: nothing the relay can still serve has been
+  // pruned, and nothing pruned can come back.
+  db.run(`
+    create table if not exists plugin_ingress_events (
+      id text primary key,
+      project_id text not null,
+      plugin_id text not null,
+      channel text not null,
+      delivery_id text not null,
+      event_type text not null,
+      received_at text not null,
+      stored_at text not null,
+      headers_json text,
+      body text,
+      attempts integer not null default 0,
+      acked_at text,
+      abandoned_at text
+    )
+  `);
+  db.run("create index if not exists idx_plugin_ingress_events_delivery on plugin_ingress_events(project_id, plugin_id, delivery_id)");
+  db.run("create index if not exists idx_plugin_ingress_events_pending on plugin_ingress_events(project_id, plugin_id, acked_at, abandoned_at)");
+  db.run("create index if not exists idx_plugin_ingress_events_stored on plugin_ingress_events(plugin_id, stored_at desc)");
 
   // Phase 4 W2: Worker agent config revisions (audit trail)
   db.run(`

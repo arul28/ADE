@@ -121,6 +121,10 @@ function PluginRow({
     case "listItem": {
       const selected = row.selection !== null && row.selection === selectionIndex;
       const meta = row.meta ? ` · ${row.meta}` : "";
+      // The badge is bracketed rather than coloured on its own, because the
+      // title line is already one `Text` and splitting it would cost the
+      // truncation that keeps a long title from wrapping the pane.
+      const badge = row.badge ? ` [${row.badge.text}]` : "";
       return (
         <Box flexDirection="column">
           <Text
@@ -130,11 +134,16 @@ function PluginRow({
           >
             {lead}
             <Rail on={selected} />
-            {` ${endTruncate(`${row.title}${meta}`, Math.max(4, inner - 2))}`}
+            {` ${endTruncate(`${row.title}${badge}${meta}`, Math.max(4, inner - 2))}`}
           </Text>
           {row.subtitle ? (
             <Text color={theme.color.t4} dimColor wrap="truncate-end">
               {`${lead}   ${endTruncate(row.subtitle, Math.max(4, inner - 3))}`}
+            </Text>
+          ) : null}
+          {row.mono ? (
+            <Text color={theme.color.t4} dimColor wrap="truncate-end">
+              {`${lead}   ${endTruncate(row.mono, Math.max(4, inner - 3))}`}
             </Text>
           ) : null}
         </Box>

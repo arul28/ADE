@@ -326,6 +326,172 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertEqual(list.bind?.collection, "rows")
   }
 
+  // MARK: - Bound rows may act
+
+  func testBindingAllowlistIsDeduplicatedAndCapped() throws {
+    let extra = (0..<40).map { "\"a\($0)\"" }.joined(separator: ", ")
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "list",
+        "bind": {
+          "collection": "fleet",
+          "allowActions": ["open", "open", "  stop  ", 7, "", \#(extra)]
+        }
+      }]
+    }
+    """#))
+    guard case let .list(list) = schema.body[0] else { return XCTFail("expected a list") }
+    XCTAssertEqual(Array(list.bind?.allowActions?.prefix(3) ?? []), ["open", "stop", "a0"])
+    XCTAssertEqual(list.bind?.allowActions?.count, PluginVocabLimits.maxBindingAllowActions)
+  }
+
+  func testAnEmptyOrAbsentAllowlistIsNotStored() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [
+        { "component": "list", "bind": { "collection": "a", "allowActions": [] } },
+        { "component": "list", "bind": { "collection": "b" } },
+        { "component": "list", "bind": { "collection": "c", "allowActions": "open" } }
+      ]
+    }
+    """#))
+    for node in schema.body {
+      guard case let .list(list) = node else { return XCTFail("expected a list") }
+      XCTAssertNil(list.bind?.allowActions)
+    }
+  }
+
+  /// The phone used to accept any action a collection row named while desktop,
+  /// web and the TUI accepted none. Both halves of the allowlist are asserted
+  /// here so the divergence cannot come back from either side.
+  func testABoundRowActsOnlyForAnActionItsBindingAllowed() {
+    let allowed = PluginPanelParser.parseBoundListItem(
+      ["title": "bc-1", "onPress": ["action": "open-agent", "confirm": "Open it?"]],
+      allowActions: ["open-agent", "stop-agent"]
+    )
+    XCTAssertEqual(allowed?.onPress?.action, "open-agent")
+    XCTAssertEqual(allowed?.onPress?.confirm, "Open it?", "A confirmation still gates the press.")
+
+    let refused = PluginPanelParser.parseBoundListItem(
+      ["title": "bc-1", "onPress": ["action": "delete-everything"]],
+      allowActions: ["open-agent"]
+    )
+    XCTAssertNotNil(refused, "A refused action must not drop the row.")
+    XCTAssertNil(refused?.onPress)
+
+    let noAllowlist = PluginPanelParser.parseBoundListItem(
+      ["title": "bc-1", "onPress": ["action": "open-agent"]],
+      allowActions: nil
+    )
+    XCTAssertNil(noAllowlist?.onPress, "No allowlist keeps the old answer: a bound row names nothing.")
+
+    // A row without a title is not a row, allowlist or not.
+    XCTAssertNil(PluginPanelParser.parseBoundListItem(["subtitle": "no title"], allowActions: ["open-agent"]))
+  }
+
+  // MARK: - Rich list rows
+
+  func testARowCarriesABadgeAMonoLineActionsAndOverflow() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "T", "text": "t" },
+      "body": [{
+        "component": "list",
+        "items": [{
+          "title": "bc-1",
+          "subtitle": "Fix the login redirect",
+          "mono": "origin/fix-login-redirect",
+          "badge": { "text": "Running", "tone": "accent", "icon": "play" },
+          "actions": [
+            { "action": "open", "label": "Open", "kind": "primary", "icon": "arrow.right" },
+            { "action": "stop", "label": "Stop", "confirm": "Stop this agent?" }
+          ],
+          "overflow": [{ "action": "archive", "label": "Archive" }]
+        }]
+      }]
+    }
+    """#))
+    guard case let .list(list) = schema.body[0], let item = list.items?.first else {
+      return XCTFail("expected a list item")
+    }
+    XCTAssertEqual(item.mono, "origin/fix-login-redirect")
+    XCTAssertEqual(item.badge?.text, "Running")
+    XCTAssertEqual(item.badge?.tone, .accent)
+    XCTAssertEqual(item.actions.map(\.label), ["Open", "Stop"])
+    XCTAssertEqual(item.actions.first?.kind, .primary)
+    XCTAssertEqual(item.actions.last?.action.confirm, "Stop this agent?")
+    XCTAssertEqual(item.overflow.map(\.action.action), ["archive"])
+  }
+
+  func testARowActionNeedsBothAnIdAndALabel() {
+    let item = PluginPanelParser.parseListItem([
+      "title": "bc-1",
+      "badge": ["tone": "accent"],
+      "actions": [
+        ["label": "No action id"],
+        ["action": "no-label"],
+        "not an object",
+        ["action": "ok", "label": "Fine"]
+      ]
+    ])
+    // A refused entry does not spend a slot the valid one needed, and a badge
+    // with no text is dropped whole rather than drawn empty.
+    XCTAssertNil(item?.badge)
+    XCTAssertEqual(item?.actions.map(\.label), ["Fine"])
+  }
+
+  func testARowsActionsAndOverflowAreCappedByWhatSurvived() {
+    let many = { (count: Int, prefix: String) -> [[String: Any]] in
+      (0..<count).map { ["action": "\(prefix)\($0)", "label": "\(prefix)\($0)"] }
+    }
+    var actions: [Any] = [["action": "x"], "nope"]
+    actions.append(contentsOf: many(6, "a"))
+    let item = PluginPanelParser.parseListItem([
+      "title": "bc-1",
+      "actions": actions,
+      "overflow": many(12, "o")
+    ])
+    XCTAssertEqual(item?.actions.map(\.action.action), ["a0", "a1", "a2"])
+    XCTAssertEqual(item?.actions.count, PluginVocabLimits.maxListItemActions)
+    XCTAssertEqual(item?.overflow.count, PluginVocabLimits.maxListItemOverflow)
+  }
+
+  func testEveryActionOnABoundRowGoesThroughTheAllowlist() {
+    // Not just `onPress`: a collection that could reach an undeclared action
+    // through a trailing button would have made `onPress` the only guarded door.
+    let row: [String: Any] = [
+      "title": "bc-1",
+      "mono": "origin/fix-login",
+      "onPress": ["action": "open"],
+      "actions": [
+        ["action": "open", "label": "Open"],
+        ["action": "delete-everything", "label": "Delete"]
+      ],
+      "overflow": [
+        ["action": "delete-everything", "label": "Delete"],
+        ["action": "stop", "label": "Stop"]
+      ]
+    ]
+
+    let gated = PluginPanelParser.parseBoundListItem(row, allowActions: ["open", "stop"])
+    XCTAssertEqual(gated?.onPress?.action, "open")
+    XCTAssertEqual(gated?.actions.map(\.action.action), ["open"])
+    XCTAssertEqual(gated?.overflow.map(\.action.action), ["stop"])
+    XCTAssertEqual(gated?.mono, "origin/fix-login")
+
+    // No allowlist keeps the old answer for the whole row, not only its press.
+    let bare = PluginPanelParser.parseBoundListItem(row, allowActions: nil)
+    XCTAssertNil(bare?.onPress)
+    XCTAssertTrue(bare?.actions.isEmpty == true)
+    XCTAssertTrue(bare?.overflow.isEmpty == true)
+  }
+
   func testAstronomicalActionArgStaysADoubleWhenSentBack() throws {
     let schema = try panel(parse(#"""
     {
@@ -1837,5 +2003,77 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     )
 
     XCTAssertEqual(record.disabledContributions, ["risk", "age"])
+  }
+}
+
+/// The response verbs and the panel refresh contract, on the phone.
+///
+/// Split from the decoder tests above because the subject is different: not
+/// what a panel schema means, but what a plugin's ANSWER means and what a
+/// panel row says the pane may do. Both are places where a client silently
+/// dropping something the other three honour is the whole failure mode.
+final class PluginActionResponseTests: XCTestCase {
+  private func result(_ json: String) throws -> PluginInvokeResult {
+    let data = Data(json.utf8)
+    return try JSONDecoder().decode(PluginInvokeResult.self, from: data)
+  }
+
+  func testOpenURLReadsBothShapesAPluginMightWrite() throws {
+    let object = try result(#"{"ok":true,"result":{"openUrl":{"url":"https://cursor.com/agents"}}}"#)
+    XCTAssertEqual(object.openURL?.absoluteString, "https://cursor.com/agents")
+
+    let bare = try result(#"{"ok":true,"result":{"openUrl":"  https://cursor.com/agents  "}}"#)
+    XCTAssertEqual(bare.openURL?.absoluteString, "https://cursor.com/agents")
+  }
+
+  /// The whole point of the verb having a reader: a link is the one thing a
+  /// plugin returns that leaves ADE, and two of these schemes turn a link into
+  /// a local-file read or a script.
+  func testOpenURLOpensHTTPSAndRefusesEveryOtherScheme() {
+    for refused in [
+      "http://cursor.com",
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "data:text/html,<script>1</script>",
+      "ade://lane/abc",
+      "//cursor.com/agents",
+      "cursor.com/agents",
+      "",
+      "   ",
+    ] {
+      XCTAssertNil(PluginInvokeResult.parseOpenURL(refused), "\(refused) was allowed")
+    }
+    XCTAssertEqual(
+      PluginInvokeResult.parseOpenURL("HTTPS://cursor.com/agents")?.scheme?.lowercased(),
+      "https",
+      "Case is not a way in."
+    )
+    XCTAssertNil(PluginInvokeResult.parseOpenURL("JavaScript:alert(1)"))
+  }
+
+  func testOpenURLDropsAPayloadWearingAURL() {
+    let long = "https://cursor.com/?q=" + String(repeating: "x", count: PluginInvokeResult.maxOpenURLChars)
+    XCTAssertNil(PluginInvokeResult.parseOpenURL(long))
+  }
+
+  func testAResultWithNoLinkCarriesNone() throws {
+    XCTAssertNil(try result(#"{"ok":true,"result":{"navigate":{"panelId":"main"}}}"#).openURL)
+    XCTAssertNil(try result(#"{"ok":true,"result":{"openUrl":7}}"#).openURL)
+    XCTAssertNil(try result(#"{"ok":true,"result":null}"#).openURL)
+  }
+
+  /// The refresh action rides inside `schema_json` because `plugin_panels` is a
+  /// CRR with a frozen SQL shape. A row written before the key existed answers
+  /// `nil`, which is the pane it always had.
+  func testRefreshActionIsReadOffTheStoredSchema() {
+    XCTAssertEqual(
+      PluginPanelRecord.refreshAction(inSchemaJSON: #"{"v":1,"body":[],"refreshAction":"refresh-fleet"}"#),
+      "refresh-fleet"
+    )
+    XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: #"{"v":1,"body":[]}"#))
+    XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: #"{"v":1,"refreshAction":""}"#))
+    XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: #"{"v":1,"refreshAction":7}"#))
+    XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: "not json"))
+    XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: "[1,2]"))
   }
 }

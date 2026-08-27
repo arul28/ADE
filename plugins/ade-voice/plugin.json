@@ -24,5 +24,6 @@
   "extraDownloads": [
     { "label": "Speech model", "bytes": 147964211 }
   ],
+  "network": { "hosts": ["huggingface.co", "*.huggingface.co", "*.hf.co"] },
   "official": true
 }

@@ -39,11 +39,16 @@ import type {
   SyncListenerPortDiagnosis,
 } from "../services/sync/sharedSyncListener";
 
+/** Stamped by the bundler; empty in a source run, which reads as "unknown". */
+declare const __ADE_VERSION__: string | undefined;
+const BUNDLED_DOCTOR_ADE_VERSION = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
+
 export type DoctorRowStatus = "ok" | "warn" | "fail";
 
 export type DoctorRow = {
   key:
     | "app"
+    | "cli"
     | "brain"
     | "wedge"
     | "sync_port"
@@ -78,6 +83,35 @@ export type DoctorBrainInput = {
   error: string | null;
 };
 
+/**
+ * Which `ade` answered, and whether it belongs to the app the reader is in.
+ *
+ * One computer can hold ADE and ADE Alpha side by side. They are two apps, two
+ * CLIs and two `ADE_HOME`s, and the only thing that says which one a command
+ * reached is the binary that ran it. An agent session hit this hard: its PATH
+ * `ade` was stable ADE 1.2.64 while its chat was running in ADE Alpha, so
+ * `ade plugin list` answered `Unknown command 'plugin'` and the agent told the
+ * user they were not on Alpha while they were looking at it
+ * (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §1).
+ *
+ * The chat's own app is knowable: it injects `ADE_CLI_PATH` into every runtime
+ * it spawns. This row prints both and says when they disagree.
+ */
+export type DoctorCliInput = {
+  /** The binary running this check, when it can be resolved. */
+  path: string | null;
+  /** Its version, as the build stamped it. */
+  version: string | null;
+  /** The machine directory it reads — `$ADE_HOME`, or the default. */
+  adeHome: string;
+  /** Whether this build ships the `plugin` command and action domain. */
+  hasPluginDomain: boolean;
+  /** `$ADE_CHAT_SESSION_ID`: set when an ADE chat launched this process. */
+  chatSessionId: string | null;
+  /** `$ADE_CLI_PATH`: the CLI the app behind that chat ships. */
+  sessionCliPath: string | null;
+};
+
 export type DoctorPublishHealth = Pick<
   SyncAccountDirectoryHealth,
   "state" | "failingSinceMs" | "lastLegDurations"
@@ -91,6 +125,7 @@ export type DoctorInput = {
     path: string | null;
     online: boolean;
   };
+  cli: DoctorCliInput;
   brain: DoctorBrainInput;
   wedge: BrainLoopWatchdogBreadcrumb | null;
   syncPort: number | null;
@@ -197,6 +232,7 @@ export type DoctorCommandResult = {
   online: boolean;
   rows: DoctorRow[];
   app: DoctorInput["app"];
+  cli: DoctorInput["cli"];
   brain: DoctorInput["brain"];
   wedge: DoctorInput["wedge"];
   syncPort: number | null;
@@ -625,6 +661,55 @@ function appRow(input: DoctorInput["app"]): DoctorRow {
     status: comparison != null && comparison < 0 ? "warn" : "ok",
     detail: `installed ${input.installedVersion} · latest ${input.latestKnownVersion}`,
   };
+}
+
+/**
+ * The `/Applications/Name.app` a path sits inside, or null.
+ *
+ * Two CLIs inside the SAME bundle (the shim in `ADE_HOME/bin` and the binary in
+ * `Contents/Resources`) are the same app and must not read as a mismatch, so
+ * the comparison below is by bundle rather than by file.
+ */
+function appBundleOf(binaryPath: string | null): string | null {
+  if (!binaryPath) return null;
+  const match = /^(.*?\.app)(?:[/\\]|$)/.exec(binaryPath);
+  return match?.[1] ?? null;
+}
+
+function cliRow(input: DoctorCliInput): DoctorRow {
+  const label = "CLI";
+  const facts = [
+    input.path ?? "path unknown",
+    input.version ? `version ${input.version}` : "version unknown",
+    `ADE_HOME ${input.adeHome}`,
+    input.hasPluginDomain ? "plugin commands: yes" : "plugin commands: no",
+  ].join(" · ");
+
+  if (!input.chatSessionId) {
+    return { key: "cli", label, status: "ok", detail: facts };
+  }
+  if (!input.sessionCliPath) {
+    // An ADE chat launched this and did not say which CLI it ships. That is an
+    // older app, and the reader has to check by hand rather than be told wrong.
+    return {
+      key: "cli",
+      label,
+      status: "ok",
+      detail: `${facts} · in an ADE chat, which did not name its own CLI`,
+    };
+  }
+  const running = appBundleOf(input.path);
+  const session = appBundleOf(input.sessionCliPath);
+  if (running && session && running !== session) {
+    return {
+      key: "cli",
+      label,
+      status: "warn",
+      detail: `${facts} · THIS CHAT BELONGS TO ${session} — run ${input.sessionCliPath}`
+        + " for anything that reads or writes that app's state",
+    };
+  }
+  return { key: "cli", label, status: "ok", detail: `${facts} · matches this chat's app` };
 }
 
 function brainRow(input: DoctorBrainInput): DoctorRow {
@@ -1104,9 +1189,36 @@ function diagnosticsRow(sharing: DoctorInput["diagnostics"]): DoctorRow {
   };
 }
 
+/**
+ * What this process can say about itself, read from its own environment.
+ *
+ * `argv[1]` before `$ADE_CLI_PATH`, because the question the row answers is
+ * "which binary is running", not "which binary should be". They differ in
+ * exactly the case worth reporting.
+ */
+function readDoctorCliIdentity(
+  layout: MachineAdeLayout,
+  env: NodeJS.ProcessEnv = process.env,
+): DoctorCliInput {
+  const argv = typeof process.argv[1] === "string" ? process.argv[1].trim() : "";
+  const sessionCliPath = env.ADE_CLI_PATH?.trim() || null;
+  return {
+    path: argv ? path.resolve(argv) : sessionCliPath,
+    version: env.ADE_CLI_VERSION?.trim() || BUNDLED_DOCTOR_ADE_VERSION || null,
+    adeHome: layout.adeDir,
+    // A constant, and a useful one: a build without the plugin domain prints no
+    // such row at all, so "plugin commands: yes" beside a version is what tells
+    // a reader comparing two CLIs which of them is the one with plugins.
+    hasPluginDomain: true,
+    chatSessionId: env.ADE_CHAT_SESSION_ID?.trim() || null,
+    sessionCliPath,
+  };
+}
+
 export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
   return [
     appRow(input.app),
+    cliRow(input.cli),
     brainRow(input.brain),
     wedgeRow(input.wedge, input.nowMs),
     syncPortRow(input),
@@ -1177,6 +1289,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
       path: installedApp.path,
       online,
     },
+    cli: readDoctorCliIdentity(layout),
     brain: startupState
       ? {
         ...brainProbe.brain,
@@ -1201,6 +1314,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     online,
     rows,
     app: input.app,
+    cli: input.cli,
     brain: input.brain,
     wedge,
     syncPort,

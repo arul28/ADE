@@ -39,6 +39,21 @@ export const VOCAB_LIMITS = {
   maxTableRows: 100,
   maxTableColumns: 8,
   maxListItems: 100,
+  /**
+   * Trailing buttons on one list row.
+   *
+   * Three, because a row is read at a glance and a fourth button is where a row
+   * stops being a row. Anything past three belongs under
+   * {@link VOCAB_LIMITS.maxListItemOverflow}, which is what it is for.
+   *
+   * A row's actions are NOT nodes — they cost nothing against `maxNodes`, which
+   * is the whole point of putting them on the item instead of asking a panel to
+   * hand-build a stack of buttons per row. A hundred rows of three buttons is
+   * one node.
+   */
+  maxListItemActions: 3,
+  /** Actions behind a row's overflow control. */
+  maxListItemOverflow: 6,
   maxKeyValueRows: 60,
   maxChartSeries: 3,
   maxChartPoints: 200,
@@ -48,6 +63,12 @@ export const VOCAB_LIMITS = {
   maxValueChars: 1_000,
   maxIdChars: 120,
   maxActionArgs: 16,
+  /**
+   * Action ids one binding may allow its rows to name. Large enough for a row
+   * that offers a press plus a full set of trailing and overflow actions,
+   * small enough that the allowlist stays something a reader could audit.
+   */
+  maxBindingAllowActions: 16,
   /**
    * A media `src` or `poster`. Its own ceiling, and its own reader — see
    * {@link vocabMediaSrc}.
@@ -129,6 +150,19 @@ export type VocabBinding = {
   keyPrefix?: string;
   /** Client-side cap on rows pulled. Clamped to the component's own limit. */
   limit?: number;
+  /**
+   * The action ids a row from this collection may name.
+   *
+   * A bound row used to carry no action at all, because stored data that could
+   * mint one would let a collection introduce a button the panel never showed
+   * the reader. The allowlist keeps that invariant and makes the row usable:
+   * the panel author still chooses every action a reader can press, and the
+   * data decides only which of those a given row offers. A row naming an id
+   * outside this list is coerced to no action, exactly as before.
+   *
+   * Absent means the old behaviour — a bound row carries no action.
+   */
+  allowActions?: string[];
 };
 
 /**
@@ -178,7 +212,45 @@ export type VocabButtonNode = {
   disabled?: boolean;
 };
 
-/** One row of a `list`. Also the row shape a `list` binding must materialize. */
+/**
+ * A chip beside a list row's title.
+ *
+ * The same shape as a `badge` node without its component name, so a status chip
+ * reads and renders identically whether it stands alone or rides on a row.
+ */
+export type VocabListItemBadge = {
+  text: string;
+  tone?: VocabTone;
+  icon?: string;
+};
+
+/**
+ * A trailing or overflow button on a list row: a {@link VocabAction} plus how to
+ * draw it.
+ *
+ * A `label` is required — a button on a row has no other way to say what it
+ * does, and an icon alone is a guess. `confirm` rides on the action half, so a
+ * destructive row button asks first exactly as a `button` node does.
+ */
+export type VocabListItemAction = VocabAction & {
+  label: string;
+  kind?: "primary" | "default" | "quiet";
+  icon?: string;
+};
+
+/**
+ * One row of a `list`. Also the row shape a `list` binding must materialize.
+ *
+ * A row is deliberately richer than the sum of nodes it would take to build one
+ * by hand. A panel that drew a status chip, a monospace id and three buttons per
+ * row out of `stack`, `badge`, `text` and `button` nodes spent about seven nodes
+ * a row, which meant `maxNodes: 200` capped the panel at roughly 27 rows. As one
+ * item it is one node's worth of budget for the whole list, so `maxListItems`
+ * (100) becomes the real ceiling — see {@link VOCAB_LIMITS.maxListItemActions}.
+ *
+ * Every field past `title` is optional, so a row written before any of them
+ * existed still parses to exactly what it always did.
+ */
 export type VocabListItem = {
   title: string;
   subtitle?: string;
@@ -186,6 +258,14 @@ export type VocabListItem = {
   tone?: VocabTone;
   icon?: string;
   onPress?: VocabAction;
+  /** A chip beside the title. */
+  badge?: VocabListItemBadge;
+  /** Monospace, under `subtitle`. For an id, a branch, a commit — a thing to compare. */
+  mono?: string;
+  /** Trailing buttons, up to {@link VOCAB_LIMITS.maxListItemActions}. */
+  actions?: VocabListItemAction[];
+  /** Behind an overflow control, up to {@link VOCAB_LIMITS.maxListItemOverflow}. */
+  overflow?: VocabListItemAction[];
 };
 
 export type VocabListNode = {
@@ -445,26 +525,42 @@ export function vocabCellText(value: unknown): string {
 }
 
 /**
+ * The action a bound row may carry, or `null`.
+ *
+ * An action is something a panel schema declares. A collection row that could
+ * mint one freely would let stored data introduce a button the panel never
+ * showed the reader, so a row's action survives only when the binding's
+ * `allowActions` names its id. A binding that declares no allowlist yields no
+ * action at all, which is what every bound row did before the allowlist
+ * existed.
+ *
+ * Every client applies this one function, so a bound row cannot be live on one
+ * client and inert on another.
+ */
+export function boundRowAction(
+  raw: unknown,
+  allowActions: readonly string[] | undefined,
+): VocabAction | null {
+  if (!allowActions || allowActions.length === 0) return null;
+  const action = parseAction(raw);
+  if (!action) return null;
+  return allowActions.includes(action.action) ? action : null;
+}
+
+/**
  * A bound row as a `list` item.
  *
- * `onPress` is deliberately not read: an action is something a panel schema
- * declares, and a collection row that could mint one would let stored data
- * introduce a button the panel never showed the reader.
+ * Every action on the row — `onPress`, `actions` and `overflow` alike — is read
+ * only through {@link boundRowAction}, so a row can press exactly the ids the
+ * panel's binding allowed and nothing else. One gate rather than three, because
+ * a collection that could reach an undeclared action through a trailing button
+ * would have made `onPress` the only door anybody guarded.
  */
-export function coerceBoundListItem(value: unknown): VocabListItem | null {
-  if (!isRecord(value)) return null;
-  const title = vocabString(value.title, VOCAB_LIMITS.maxLabelChars);
-  if (title === undefined) return null;
-  const subtitle = vocabString(value.subtitle, VOCAB_LIMITS.maxValueChars);
-  const meta = vocabString(value.meta, VOCAB_LIMITS.maxLabelChars);
-  const icon = vocabString(value.icon, VOCAB_LIMITS.maxIdChars);
-  return {
-    title,
-    ...(subtitle !== undefined ? { subtitle } : {}),
-    ...(meta !== undefined ? { meta } : {}),
-    ...(value.tone !== undefined ? { tone: normalizeVocabTone(value.tone) } : {}),
-    ...(icon !== undefined ? { icon } : {}),
-  };
+export function coerceBoundListItem(
+  value: unknown,
+  allowActions?: readonly string[],
+): VocabListItem | null {
+  return readListItem(value, (raw) => boundRowAction(raw, allowActions));
 }
 
 /** A bound row as a `keyValue` row. A row with no key is not a row. */
@@ -547,14 +643,94 @@ function parseAction(raw: unknown): VocabAction | null {
   };
 }
 
-function parseListItem(raw: unknown): VocabListItem | null {
+/**
+ * How a list row's actions are admitted.
+ *
+ * The one difference between a row a panel declared and a row a collection
+ * supplied. A declared row's actions are the panel author's own words, so they
+ * pass through {@link parseAction}; a bound row's are stored data, so they pass
+ * through {@link boundRowAction} and survive only when the binding allowed the
+ * id. Everything else about reading a row is identical, and shared, so the two
+ * kinds of row cannot drift into different shapes.
+ */
+type VocabActionGate = (raw: unknown) => VocabAction | null;
+
+/** A row's status chip. Dropped whole when it has no text to show. */
+function parseListItemBadge(raw: unknown): VocabListItemBadge | null {
+  if (!isRecord(raw)) return null;
+  const text = vocabString(raw.text, VOCAB_LIMITS.maxLabelChars);
+  if (text === undefined) return null;
+  const icon = vocabString(raw.icon, VOCAB_LIMITS.maxIdChars);
+  return {
+    text,
+    ...(raw.tone !== undefined ? { tone: normalizeVocabTone(raw.tone) } : {}),
+    ...(icon !== undefined ? { icon } : {}),
+  };
+}
+
+/** One trailing or overflow button. Needs both an admitted action and a label. */
+function parseListItemAction(raw: unknown, gate: VocabActionGate): VocabListItemAction | null {
+  if (!isRecord(raw)) return null;
+  const action = gate(raw);
+  if (action === null) return null;
+  const label = vocabString(raw.label, VOCAB_LIMITS.maxLabelChars);
+  if (label === undefined) return null;
+  const kind = enumValue(raw.kind, ["primary", "default", "quiet"] as const);
+  const icon = vocabString(raw.icon, VOCAB_LIMITS.maxIdChars);
+  return {
+    ...action,
+    label,
+    ...(kind !== undefined ? { kind } : {}),
+    ...(icon !== undefined ? { icon } : {}),
+  };
+}
+
+/**
+ * A row's `actions` or `overflow`, capped at `max`.
+ *
+ * The cap counts what SURVIVED rather than what was offered, so a refused entry
+ * does not spend a slot a later valid one needed. That matters most for a bound
+ * row, where an action the binding did not allow would otherwise silently take
+ * the place of one it did. Every client counts the same way.
+ *
+ * `undefined` rather than `[]` when nothing survived, so a row with an empty
+ * `actions` array is indistinguishable from a row that declared none — which is
+ * what it is.
+ */
+function parseListItemActions(
+  raw: unknown,
+  max: number,
+  gate: VocabActionGate,
+): VocabListItemAction[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed: VocabListItemAction[] = [];
+  for (const entry of raw) {
+    const action = parseListItemAction(entry, gate);
+    if (action === null) continue;
+    parsed.push(action);
+    if (parsed.length >= max) break;
+  }
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+/**
+ * One list row, however it arrived.
+ *
+ * Shared by {@link parseListItem} and {@link coerceBoundListItem} so a declared
+ * row and a bound row read every field the same way and differ only in `gate`.
+ */
+function readListItem(raw: unknown, gate: VocabActionGate): VocabListItem | null {
   if (!isRecord(raw)) return null;
   const title = vocabString(raw.title, VOCAB_LIMITS.maxLabelChars);
   if (title === undefined) return null;
   const subtitle = vocabString(raw.subtitle, VOCAB_LIMITS.maxValueChars);
   const meta = vocabString(raw.meta, VOCAB_LIMITS.maxLabelChars);
   const icon = vocabString(raw.icon, VOCAB_LIMITS.maxIdChars);
-  const onPress = parseAction(raw.onPress);
+  const mono = vocabString(raw.mono, VOCAB_LIMITS.maxValueChars);
+  const onPress = gate(raw.onPress);
+  const badge = parseListItemBadge(raw.badge);
+  const actions = parseListItemActions(raw.actions, VOCAB_LIMITS.maxListItemActions, gate);
+  const overflow = parseListItemActions(raw.overflow, VOCAB_LIMITS.maxListItemOverflow, gate);
   return {
     title,
     ...(subtitle !== undefined ? { subtitle } : {}),
@@ -562,7 +738,15 @@ function parseListItem(raw: unknown): VocabListItem | null {
     ...(raw.tone !== undefined ? { tone: normalizeVocabTone(raw.tone) } : {}),
     ...(icon !== undefined ? { icon } : {}),
     ...(onPress !== null ? { onPress } : {}),
+    ...(badge !== null ? { badge } : {}),
+    ...(mono !== undefined ? { mono } : {}),
+    ...(actions !== undefined ? { actions } : {}),
+    ...(overflow !== undefined ? { overflow } : {}),
   };
+}
+
+function parseListItem(raw: unknown): VocabListItem | null {
+  return readListItem(raw, parseAction);
 }
 
 function parseField(raw: unknown): VocabField | null {
@@ -942,11 +1126,32 @@ function parseBinding(raw: unknown, path: string, state: VocabParseState): Vocab
   }
   const keyPrefix = vocabString(raw.keyPrefix, VOCAB_LIMITS.maxIdChars);
   const limit = finiteNumber(raw.limit);
+  const allowActions = parseAllowActions(raw.allowActions);
   return {
     collection,
     ...(keyPrefix !== undefined ? { keyPrefix } : {}),
     ...(limit !== undefined && limit > 0 ? { limit: Math.floor(limit) } : {}),
+    ...(allowActions !== undefined ? { allowActions } : {}),
   };
+}
+
+/**
+ * The action ids a binding's rows may name.
+ *
+ * Deduplicated so a repeated id does not spend the ceiling twice, and dropped
+ * entirely when it is empty, because an empty allowlist and an absent one mean
+ * the same thing: no bound row acts.
+ */
+function parseAllowActions(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const id = vocabString(entry, VOCAB_LIMITS.maxIdChars);
+    if (id === undefined) continue;
+    seen.add(id);
+    if (seen.size >= VOCAB_LIMITS.maxBindingAllowActions) break;
+  }
+  return seen.size > 0 ? [...seen] : undefined;
 }
 
 /**

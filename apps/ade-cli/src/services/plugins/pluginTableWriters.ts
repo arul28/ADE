@@ -297,39 +297,61 @@ export type PutPluginPanelArgs = {
    * existed means.
    */
   mobile?: boolean;
+  /**
+   * The manifest's `refreshAction` for this panel, when it declared one.
+   *
+   * The host's answer, not the plugin's: it comes off the manifest, so a
+   * plugin cannot publish a refresh gesture for an action it never declared.
+   * Absent or null means the panel has no refresh gesture on any client.
+   */
+  refreshAction?: string | null;
   nowIso: string;
 };
 
 /**
- * Stamp the resolved mobile flag onto the stored schema.
+ * Stamp the host's own answers onto the stored schema.
  *
- * Inside the JSON rather than in a new column, because the plugin tables are
+ * Inside the JSON rather than in new columns, because the plugin tables are
  * CRR and their SQL shapes are frozen: a column added here would have to be
  * added to every mirror that already exists, while a key inside the payload
  * reaches an old reader as something it ignores. Both vocabulary parsers walk
  * only the roots they know (`v`, `title`, `fallback`, `body`), so a client that
- * predates the key renders the panel exactly as before.
+ * predates a key renders the panel exactly as before.
  *
  * Written on every update, never merged: the host's resolution wins over
- * anything the plugin put under the same name, and flipping the flag back to
- * true has to actually remove the false from the row.
+ * anything the plugin put under the same names, and clearing one has to
+ * actually remove it from the row rather than leaving the previous answer
+ * standing. `refreshAction` is dropped rather than written as null for the same
+ * reason — an absent key and a null one would then differ on the wire while
+ * meaning the same thing.
  */
-function withPanelMobileFlag(schemaJson: string, mobile: boolean): string {
+function withPanelHostKeys(
+  schemaJson: string,
+  host: { mobile: boolean; refreshAction: string | null },
+): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(schemaJson) as unknown;
   } catch {
     return schemaJson;
   }
-  // A schema that is not an object has nowhere to carry the key. It is also a
+  // A schema that is not an object has nowhere to carry the keys. It is also a
   // panel no client can render, so leaving it byte-identical is the honest
   // answer rather than wrapping it in a shape it never had.
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return schemaJson;
-  return JSON.stringify({ ...(parsed as Record<string, unknown>), mobile });
+  const { refreshAction: _dropped, ...rest } = parsed as Record<string, unknown>;
+  return JSON.stringify({
+    ...rest,
+    mobile: host.mobile,
+    ...(host.refreshAction ? { refreshAction: host.refreshAction } : {}),
+  });
 }
 
 export function putPluginPanel(db: PluginWriterDb, args: PutPluginPanelArgs): void {
-  const schemaJson = withPanelMobileFlag(args.schemaJson, args.mobile ?? true);
+  const schemaJson = withPanelHostKeys(args.schemaJson, {
+    mobile: args.mobile ?? true,
+    refreshAction: args.refreshAction ?? null,
+  });
   // Measured after stamping: the cap is a promise about the bytes that land in
   // the row, and the clients check it against exactly those bytes.
   const schemaBytes = byteLength(schemaJson);

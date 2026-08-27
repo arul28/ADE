@@ -11,6 +11,7 @@ import type {
   PluginContributionRecord,
   PluginDetail,
   PluginInstallRecord,
+  PluginWebhookIngressStatus,
 } from "../../../desktop/src/shared/plugins/sdk";
 
 /**
@@ -47,6 +48,7 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     automationSteps: [],
     searchProviders: [],
     keybindings: [],
+    webhookIngress: [],
     official: false,
     ...overrides,
   };
@@ -269,9 +271,21 @@ describe("buildPluginDoctorReport", () => {
     // Last run reads "unknown", not "no": ADE answered, but it has no plugin
     // to have run anything, and claiming "nothing ran" would be an assertion
     // about code that is not on this computer.
-    expect(report.layers.map((entry) => entry.state)).toEqual([
-      "no", "no", "no", "na", "unknown", "na", "no", "na",
-    ]);
+    // Keyed rather than positional, and `toMatchObject` rather than `toEqual`:
+    // this case is about what each rung ANSWERS, and a new rung on the ladder
+    // should not fail a test that says nothing about it.
+    expect(Object.fromEntries(report.layers.map((entry) => [entry.key, entry.state])))
+      .toMatchObject({
+        source: "no",
+        installed: "no",
+        running: "no",
+        places: "na",
+        customPage: "na",
+        lastRun: "unknown",
+        panels: "na",
+        synced: "no",
+        skills: "na",
+      });
   });
 
   it("separates an action that never fired from one that fired and did nothing", () => {
@@ -370,5 +384,303 @@ describe("formatPluginDoctorReport", () => {
     })));
     expect(text).toContain("✗ Installed here");
     expect(text).toContain("– Agent skills");
+  });
+});
+
+/**
+ * The webview rungs — the pair the alpha run needed and did not have.
+ *
+ * Tipsy declared a `webview` surface with an `entryHtml`, and the app drew its
+ * panel. Doctor said "Places: chat-header-action in work" and "Panels: 1
+ * published of 1", both true, neither about the tab, so the author rewrote the
+ * plugin instead of reading the host's list payload
+ * (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §2, §6).
+ */
+describe("webview surfaces on the ladder", () => {
+  const dashboard = {
+    kind: "webview" as const,
+    id: "dashboard",
+    title: "Dashboard",
+    panelId: "main",
+    entryHtml: "web/index.html",
+  };
+
+  /** Manifest and live summary agreeing, which is the fixed host. */
+  const withPage = (surfaces: PluginDetail["surfaces"]): PluginDoctorSnapshot =>
+    healthy({
+      manifest: manifest({ surfaces: [dashboard] }),
+      live: { ...healthy().live!, detail: detail({ surfaces }) },
+    });
+
+  it("names a webview tab in Places, beside the sockets", () => {
+    const places = layer(withPage([dashboard]), "places");
+    expect(places.state).toBe("ok");
+    expect(places.detail).toContain("webview tab in the sidebar");
+    expect(places.detail).toContain("composer-action in work");
+  });
+
+  it("names an ordinary tab in Places too", () => {
+    const snapshot = healthy({
+      manifest: manifest({ surfaces: [{ kind: "tab", id: "log", title: "Log", panelId: "main" }] }),
+    });
+    expect(layer(snapshot, "places").detail).toContain("tab in the sidebar");
+  });
+
+  it("keeps a plugin's place when every socket is off but a tab remains", () => {
+    const snapshot = healthy({
+      manifest: manifest({ surfaces: [dashboard] }),
+      record: record({ disabledContributions: ["drink", "sober"] }),
+    });
+    expect(layer(snapshot, "places").state).toBe("ok");
+  });
+
+  it("FAILS when the manifest declares a page and the live summary has none", () => {
+    // The exact shape of the bug: `plugin.get`'s `manifest.surfaces` carries
+    // `entryHtml` and its `surfaces` does not, so every guest host draws the
+    // panel. It is the HOST that is wrong here, and the line has to say so.
+    const stripped = layer(
+      withPage([{ kind: "webview", id: "dashboard", title: "Dashboard", panelId: "main" }]),
+      "customPage",
+    );
+    expect(stripped.state).toBe("no");
+    expect(stripped.detail).toContain('"dashboard"');
+    expect(stripped.detail).toContain("older than this manifest");
+    expect(stripped.detail).toContain("reload cannot change what the running app serves");
+  });
+
+  it("FAILS the same way when the live summary omits the surface entirely", () => {
+    expect(layer(withPage([]), "customPage").state).toBe("no");
+  });
+
+  it("passes when the summary carries the page, and says what other clients draw", () => {
+    const ok = layer(withPage([dashboard]), "customPage");
+    expect(ok.state).toBe("ok");
+    expect(ok.detail).toContain("dashboard → web/index.html");
+    expect(ok.detail).toContain("draw its panel instead, by design");
+  });
+
+  it("does not apply to a plugin that declares no page", () => {
+    expect(layer(healthy(), "customPage").state).toBe("na");
+  });
+
+  it("says nobody could check when ADE is not answering", () => {
+    const unreachable = layer(
+      healthy({ manifest: manifest({ surfaces: [dashboard] }), live: null }),
+      "customPage",
+    );
+    expect(unreachable.state).toBe("unknown");
+    expect(unreachable.detail).toContain("could not ask ADE");
+  });
+
+  /**
+   * "Renders on" named only sockets, so an author whose whole plugin was a tab
+   * got no such line at all and one with a chat button got a line that named
+   * only the button — the reading that sent them debugging a tab the doctor
+   * never mentioned (the diagnostic report's §6).
+   */
+  it("names rail surfaces on the Renders-on line beside the sockets", () => {
+    const withTab = buildPluginDoctorReport(healthy({
+      manifest: manifest({ surfaces: [dashboard] }),
+    }));
+    expect(withTab.renders).toContain("composer-action");
+    expect(withTab.renders).toContain("1 custom-UI tab");
+    expect(withTab.renders).toContain("its page on desktop, its panel on web, iPhone and terminal");
+  });
+
+  it("still answers for a plugin whose only presence is a tab", () => {
+    const tabOnly = buildPluginDoctorReport(healthy({
+      manifest: manifest({
+        sockets: [],
+        surfaces: [{ kind: "tab", id: "board", title: "Board", panelId: "board" }],
+      }),
+    }));
+    expect(tabOnly.renders).toBe("1 sidebar tab on every client");
+  });
+});
+
+/* ── Network and provider keys ──────────────────────────────────────────── */
+
+describe("buildPluginDoctorReport network rung", () => {
+  it("says a plugin that declares no host reaches nothing", () => {
+    const found = layer(healthy(), "network");
+    expect(found.state).toBe("na");
+    expect(found.detail).toContain("reaches nothing");
+  });
+
+  it("lists the declared hosts", () => {
+    const snapshot = healthy({ manifest: manifest({ network: { hosts: ["api.cursor.com"] } }) });
+    const found = layer(snapshot, "network");
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("api.cursor.com");
+  });
+
+  it("counts refusals off the plugin's own log and points at the logs", () => {
+    const snapshot = healthy({
+      manifest: manifest({ network: { hosts: ["api.cursor.com"] } }),
+      live: {
+        ...healthy().live!,
+        detail: detail({
+          logs: [
+            {
+              at: "2026-08-25T11:59:00.000Z",
+              level: "warn",
+              message: "refused",
+              fields: { code: "network_host_not_declared", host: "evil.test" },
+            },
+          ],
+        }),
+      },
+    });
+    const found = layer(snapshot, "network");
+    // ✗, not ✓: the plugin IS being stopped from doing something it tried to
+    // do, and the reader is here because it does not work.
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("1 request refused");
+    expect(found.detail).toContain("ade plugin logs");
+  });
+
+  it("says nothing about the network for a plugin that runs no code", () => {
+    const snapshot = healthy({ manifest: { ...manifest(), entry: undefined } });
+    expect(layer(snapshot, "network").state).toBe("na");
+  });
+});
+
+describe("buildPluginDoctorReport provider-keys rung", () => {
+  it("stays out of the way for a plugin that reads none of ADE's keys", () => {
+    expect(layer(healthy(), "providerKeys").state).toBe("na");
+  });
+
+  it("passes when every declared key is connected", () => {
+    const snapshot = healthy({
+      manifest: manifest({ providerKeys: ["cursor"] }),
+      live: {
+        ...healthy().live!,
+        detail: detail({ providerKeys: [{ provider: "cursor", present: true }] }),
+      },
+    });
+    const found = layer(snapshot, "providerKeys");
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("Cursor");
+  });
+
+  it("names the missing key and where to add it", () => {
+    const snapshot = healthy({
+      manifest: manifest({ providerKeys: ["cursor"] }),
+      live: {
+        ...healthy().live!,
+        detail: detail({ providerKeys: [{ provider: "cursor", present: false }] }),
+      },
+    });
+    const found = layer(snapshot, "providerKeys");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("no Cursor key is connected");
+    expect(found.detail).toContain("Settings");
+  });
+
+  it("says it cannot tell on a host that does not report presence", () => {
+    const snapshot = healthy({ manifest: manifest({ providerKeys: ["cursor"] }) });
+    // `detail()` carries no `providerKeys`, which is what an older host sends.
+    expect(layer(snapshot, "providerKeys").state).toBe("unknown");
+  });
+
+  it("says it cannot tell when ADE is not answering at all", () => {
+    const snapshot = healthy({ manifest: manifest({ providerKeys: ["cursor"] }), live: null });
+    const found = layer(snapshot, "providerKeys");
+    expect(found.state).toBe("unknown");
+    expect(found.detail).toContain("could not ask ADE");
+  });
+});
+
+/**
+ * "I pasted the URL into Stripe and nothing happens" has four causes that look
+ * identical from outside. Each case below is one of them, and the assertion is
+ * that the rung names THAT one rather than a generic failure.
+ */
+describe("buildPluginDoctorReport webhooks rung", () => {
+  const channels = [{ id: "default", label: "Build events" }];
+
+  function ingress(
+    overrides: Partial<PluginWebhookIngressStatus> = {},
+  ): PluginWebhookIngressStatus {
+    return {
+      pluginId: "ade-tipsy",
+      state: "ready",
+      relayBaseUrl: "https://relay.example",
+      channels: [{
+        channelId: "default",
+        label: "Build events",
+        url: "https://relay.example/plugin/ade-tipsy/webhook",
+        verified: false,
+        lastReceivedAt: null,
+      }],
+      lastReceivedAt: null,
+      lastPolledAt: null,
+      lastError: null,
+      pendingDeliveries: 0,
+      abandonedDeliveries: 0,
+      ...overrides,
+    };
+  }
+
+  function withIngress(status: PluginWebhookIngressStatus | null | undefined): PluginDoctorSnapshot {
+    return healthy({
+      manifest: manifest({ webhookIngress: channels }),
+      live: { ...healthy().live!, webhookIngress: status },
+    });
+  }
+
+  it("stays out of the way for a plugin that receives no webhooks", () => {
+    expect(layer(healthy(), "ingress").state).toBe("na");
+  });
+
+  it("prints the URL so the reader can compare it with what they pasted", () => {
+    const found = layer(withIngress(ingress()), "ingress");
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("nothing has arrived yet");
+    expect(found.detail).toContain("https://relay.example/plugin/ade-tipsy/webhook");
+  });
+
+  it("names an unfinished relay registration rather than blaming the sender", () => {
+    const found = layer(withIngress(ingress({ state: "unconfigured" })), "ingress");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("not registered with the relay yet");
+  });
+
+  it("names the missing signing secret, the one failure where events do arrive", () => {
+    const found = layer(withIngress(ingress({
+      channels: [{
+        channelId: "default",
+        label: "Build events",
+        url: "https://relay.example/plugin/ade-tipsy/webhook",
+        verified: true,
+        missingSecretRef: "STRIPE_SIGNING_SECRET",
+        lastReceivedAt: "2026-08-25T11:59:00.000Z",
+      }],
+    })), "ingress");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("STRIPE_SIGNING_SECRET");
+    expect(found.detail).toContain("being refused");
+  });
+
+  // Abandoned means ADE handed the delivery over five times and the plugin
+  // never acked. That is the plugin's bug, and the rung says so.
+  it("reports deliveries the plugin never acknowledged", () => {
+    const found = layer(withIngress(ingress({
+      lastReceivedAt: "2026-08-25T11:59:00.000Z",
+      abandonedDeliveries: 2,
+    })), "ingress");
+    expect(found.state).toBe("no");
+    expect(found.detail).toContain("given up on");
+  });
+
+  it("says nobody could check on a host that predates the feature", () => {
+    const found = layer(withIngress(undefined), "ingress");
+    expect(found.state).toBe("unknown");
+    expect(found.detail).toContain("does not receive webhooks");
+  });
+
+  it("says nobody could check when ADE is not answering at all", () => {
+    const snapshot = healthy({ manifest: manifest({ webhookIngress: channels }), live: null });
+    expect(layer(snapshot, "ingress").state).toBe("unknown");
   });
 });

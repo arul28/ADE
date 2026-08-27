@@ -42,6 +42,7 @@ import {
   type PluginSurfaceId,
 } from "./sockets";
 import { isValidPluginKeybinding } from "./keybindings";
+import { isValidPluginNetworkHost, PLUGIN_NETWORK_HOSTS_MAX } from "./network";
 import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
 
 /**
@@ -211,6 +212,20 @@ export type PluginManifestPanel = {
   schemaFile?: string;
   title?: string;
   icon?: string;
+  /**
+   * The plugin action a client's refresh gesture dispatches.
+   *
+   * A panel whose rows come from the plugin's own collections is already live —
+   * the host republishes and every client refetches. A panel whose rows come
+   * from somewhere else (an API the plugin polls) has no such signal, and a
+   * reader looking at stale rows had no way to ask for new ones. Declaring this
+   * is how a plugin says "a refresh gesture means something here".
+   *
+   * When it is declared, the desktop and web header grow a refresh control,
+   * iOS adds pull-to-refresh to the pane, and the TUI's `r` dispatches it
+   * before refetching. When it is absent, nothing changes on any client.
+   */
+  refreshAction?: string;
 };
 
 export type PluginManifestSocket = {
@@ -400,6 +415,161 @@ export type PluginManifestSearchProvider = {
   action: string;
 };
 
+/**
+ * The hosts this plugin's own process may contact.
+ *
+ * Absent means NO outbound network, which is the default every plugin that has
+ * never thought about it gets. The matching rule and the validator live in
+ * `shared/plugins/network.ts`, shared with the child that enforces it.
+ */
+export type PluginManifestNetwork = {
+  /** Lowercase hostnames, each optionally prefixed with one `*.` wildcard. */
+  hosts: string[];
+};
+
+/**
+ * Provider ids ADE's own API-key store holds a key for.
+ *
+ * The list mirrors `ENV_KEY_PROVIDERS` in `main/services/ai/apiKeyStore.ts`,
+ * which is the store's own authority and cannot be imported here — it reaches
+ * for `electron`, and this module is parsed by the CLI, the child runtime and
+ * the renderer. `apiKeyStore.test.ts` pins the two lists together, so a
+ * provider added there fails a test here rather than becoming a key no plugin
+ * can ask for.
+ */
+export const PLUGIN_PROVIDER_KEY_IDS = [
+  "anthropic",
+  "cursor",
+  "deepseek",
+  "google",
+  "groq",
+  "mistral",
+  "moonshotai",
+  "openai",
+  "openrouter",
+  "together",
+  "xai",
+] as const;
+
+export type PluginProviderKeyId = (typeof PLUGIN_PROVIDER_KEY_IDS)[number];
+
+export function isPluginProviderKeyId(value: unknown): value is PluginProviderKeyId {
+  return PLUGIN_PROVIDER_KEY_IDS.some((provider) => provider === value);
+}
+
+/** How a provider is written in a sentence a user reads. */
+export const PLUGIN_PROVIDER_KEY_LABELS: Readonly<Record<PluginProviderKeyId, string>> = {
+  anthropic: "Anthropic",
+  cursor: "Cursor",
+  deepseek: "DeepSeek",
+  google: "Google",
+  groq: "Groq",
+  mistral: "Mistral",
+  moonshotai: "Moonshot",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  together: "Together",
+  xai: "xAI",
+};
+
+/**
+ * One named webhook channel this plugin receives at ADE's relay.
+ *
+ * A channel is a URL, not a subscription: declaring `{ id: "status" }` makes
+ * `{relay}/plugin/<pluginId>/webhook/status` accept posts for this plugin, and
+ * the user pastes that URL into whatever third party sends them. The channel id
+ * is what tells a plugin which of its integrations spoke, so a plugin watching
+ * two products declares two channels rather than sniffing the body.
+ *
+ * Declared in the manifest, like every other engine registration, because the
+ * URL has to be shown on the Marketplace page and printed by `ade plugin
+ * doctor` for a plugin that is installed and NOT running — which is exactly
+ * when the user is trying to set the integration up.
+ *
+ * The relay authenticates every post with the per-plugin secret ADE registered.
+ * `verify` is a SECOND, independent check for a third party that signs with its
+ * own secret (a Stripe signing secret, a Slack app secret): the host verifies
+ * that signature itself, constant-time, before the delivery is allowed anywhere
+ * near the plugin child. Absent means the relay's own check is the only one,
+ * which is the Cursor Cloud arrangement — ADE generates the secret and the
+ * third party signs with it.
+ */
+export type PluginManifestWebhookIngressChannel = {
+  /** Stable id. It is IN the URL, so renaming one breaks a live integration. */
+  id: string;
+  label: string;
+  description?: string;
+  /**
+   * Verify the third party's own signature over the raw body, host-side.
+   *
+   * `secretRef` names one of this plugin's own secrets (`ade.secrets`), never a
+   * literal — a signing secret in a manifest would ship in the package.
+   */
+  verify?: {
+    kind: "hmac-sha256";
+    /** A `ade.secrets` name holding the shared signing secret. */
+    secretRef: string;
+    /**
+     * Header carrying the signature. Defaults to `x-webhook-signature`.
+     *
+     * It must be one the relay keeps: `PLUGIN_WEBHOOK_STORED_HEADERS` in
+     * `apps/webhook-relay/src/relay.ts` lists them, and everything else is
+     * dropped before the delivery is written, so a header outside it can never
+     * be verified. The list already carries the signature headers of the
+     * providers a plugin is likely to receive.
+     */
+    header?: string;
+    /** Prefix stripped before the hex compare. Defaults to `sha256=`. */
+    prefix?: string;
+  };
+};
+
+/**
+ * What one declared chat runtime can actually do, so the host can refuse the
+ * rest honestly instead of half-doing it.
+ *
+ * Every flag is required rather than optional-defaulting-true. A capability
+ * this platform assumed and the plugin never implemented fails at the moment
+ * the user reaches for it — mid-conversation, with a turn already sent — and
+ * "the plugin did not declare interrupt" is a sentence the composer can show
+ * BEFORE the user presses stop. Saying `false` is cheap; discovering it is not.
+ */
+export type PluginManifestChatRuntimeCapabilities = {
+  /** The user may send a second turn into an existing conversation. */
+  followUp: boolean;
+  /** The user may stop a running turn, and the plugin will act on it. */
+  interrupt: boolean;
+  /** The plugin can backfill a conversation that started outside ADE. */
+  hydrate: boolean;
+  /** The plugin materializes files or branches into the lane. */
+  artifacts: boolean;
+};
+
+/**
+ * A conversation source this plugin serves — the seam that lets a plugin own
+ * an ADE chat rather than merely put cards in one.
+ *
+ * Declared in the manifest, never registered at runtime, for the reason every
+ * other engine registration gives: a session created last week must render
+ * with its runtime's name today, on a client whose plugin child is not
+ * running and may never run on that machine at all.
+ *
+ * A session bound to one of these carries `provider: "plugin"` and a
+ * `runtimeRef` naming `{pluginId, runtimeId, externalId}`. The ID is stored on
+ * every such session, so renaming one orphans its conversations exactly the
+ * way renaming an automation trigger orphans rules.
+ */
+export type PluginManifestChatRuntime = {
+  /** Stable id. Sessions store it; renaming one orphans its conversations. */
+  id: string;
+  /** "Cursor Cloud". The name the chat header and session row show. */
+  displayName: string;
+  /** Phosphor icon name, drawn beside the display name. */
+  icon?: string;
+  /** See {@link PluginManifestChatRuntimeCapabilities}. */
+  capabilities: PluginManifestChatRuntimeCapabilities;
+};
+
 /** A keyboard shortcut invoking one of this plugin's actions. */
 export type PluginManifestKeybinding = {
   /** The plugin handler `plugin.invoke` calls. */
@@ -442,6 +612,45 @@ export type PluginManifest = {
   searchProviders: PluginManifestSearchProvider[];
   /** Keyboard shortcuts invoking this plugin's actions. */
   keybindings: PluginManifestKeybinding[];
+  /**
+   * Conversation sources this plugin owns. See {@link PluginManifestChatRuntime}.
+   *
+   * Optional, and read it as `manifest.chatRuntimes ?? []`. The parser always
+   * emits an array, but the type stays optional so the manifest literals
+   * scattered through tests and fixtures — none of which owns a conversation —
+   * do not each have to write `chatRuntimes: []`. Same reading as `network`
+   * and `providerKeys`: absent means none, which is the safe answer.
+   */
+  chatRuntimes?: PluginManifestChatRuntime[];
+  /**
+   * Webhook channels this plugin receives at ADE's relay.
+   *
+   * `[]` — never `undefined` — for the overwhelming majority that receive
+   * nothing, so every reader can ask `.length` without a guard. A plugin with
+   * one or more channels gets a relay registration, a drain and a
+   * `webhook.received` event; one with none costs the host nothing at all.
+   */
+  webhookIngress: PluginManifestWebhookIngressChannel[];
+  /**
+   * Hosts this plugin's child process may contact.
+   *
+   * Optional, and its absence is the SECURE reading rather than an unknown: a
+   * manifest that says nothing about the network gets none. Normalized to
+   * absent when the declared list is empty, so "no network" has one spelling.
+   */
+  network?: PluginManifestNetwork;
+  /**
+   * Providers whose ADE-stored API key this plugin asks to read.
+   *
+   * Optional for the same reason `theme` is: the overwhelming majority of
+   * manifests declare none, and `undefined` keeps them out of every reader's
+   * way. Read it as `manifest.providerKeys ?? []`.
+   *
+   * This is a genuine widening of what a plugin can reach — the key was given
+   * to ADE, not to the plugin — so it is disclosed at install beside everything
+   * else the package adds, and brokered one call at a time by the host.
+   */
+  providerKeys?: PluginProviderKeyId[];
   theme?: PluginManifestTheme;
   official: boolean;
 };
@@ -668,11 +877,16 @@ function parsePanels(raw: unknown, ctx: ParseContext): PluginManifestPanel[] {
     if (schemaFile !== null && !isSafePluginRelativePath(schemaFile)) {
       return ctx.drop(`${label}.schemaFile must be a relative path inside the plugin`);
     }
+    // A malformed refresh action drops to no refresh rather than dropping the
+    // panel: a panel that cannot be refreshed by gesture is still a perfectly
+    // good panel, and the same judgement `menu` and `color` get on a socket.
+    const refreshAction = parseIdentifier(entry.refreshAction);
     return {
       id,
       ...(schemaFile !== null ? { schemaFile: schemaFile as string } : {}),
       ...(trimmedString(entry.title) ? { title: trimmedString(entry.title)! } : {}),
       ...(trimmedString(entry.icon) ? { icon: trimmedString(entry.icon)! } : {}),
+      ...(refreshAction ? { refreshAction } : {}),
     };
   });
 }
@@ -830,6 +1044,39 @@ const PLUGIN_SEARCH_PROVIDERS_PER_PLUGIN = 2;
 const PLUGIN_KEYBINDINGS_PER_PLUGIN = 6;
 
 /**
+ * Ingress channels are capped low because each one is a public URL the relay
+ * answers forever and a row the host polls for on every drain tick. A plugin
+ * that needs to tell six integrations apart puts the discriminator in the path
+ * it gives them, not in six registrations.
+ */
+const PLUGIN_WEBHOOK_CHANNELS_PER_PLUGIN = 4;
+
+/**
+ * A channel id is a relay path segment, so it is narrower than an ADE
+ * identifier: lowercase, digits and hyphens, starting with a letter. Kept in
+ * step with `PLUGIN_CHANNEL_PATTERN` in `apps/webhook-relay/src/relay.ts`, which
+ * is the side that returns the 404.
+ */
+export const PLUGIN_WEBHOOK_CHANNEL_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+
+/**
+ * Mirrors `PLUGIN_SECRET_NAME_PATTERN` in `sdk.ts`, which cannot be imported
+ * here — `sdk.ts` imports THIS module, and the cycle would be real at runtime.
+ * `manifest.test.ts` pins the two together, so a change there fails a test here
+ * rather than letting a `secretRef` this parser accepts be refused by the
+ * secret store that has to read it.
+ */
+const PLUGIN_SECRET_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
+
+/**
+ * Mirrors `PLUGIN_WEBHOOK_SECRET_NAME` in `sdk.ts`, for the same cycle reason
+ * as the pattern above. It is the name the host generates the relay
+ * registration secret under, and no plugin may read, write or point `verify`
+ * at it. `manifest.test.ts` pins the two spellings together.
+ */
+const PLUGIN_RESERVED_WEBHOOK_SECRET_NAME = "ADE_WEBHOOK_RELAY_SECRET";
+
+/**
  * Drop entries past a per-plugin ceiling, and entries whose key repeats.
  *
  * Both refusals are warnings rather than errors: a plugin that declares one
@@ -905,10 +1152,183 @@ function parseAutomationSteps(raw: unknown, ctx: ParseContext): PluginManifestAu
   return limitDeclarations(entries, "automationSteps", PLUGIN_AUTOMATION_STEPS_PER_PLUGIN, (e) => e.id, ctx);
 }
 
+/**
+ * The most conversation sources one plugin may own.
+ *
+ * Two, not eight. A chat runtime is not a placement — it is a claim on the
+ * user's chat surface, and a plugin declaring a shelf of them is describing a
+ * platform rather than a product. Cursor Cloud, the plugin this seam was built
+ * for, declares exactly one.
+ */
+const PLUGIN_CHAT_RUNTIMES_PER_PLUGIN = 2;
+
+/**
+ * Read `capabilities`, refusing an absent or partial one.
+ *
+ * A missing flag is an error rather than a default, because both defaults are
+ * wrong: defaulting true promises the user something the plugin never wrote,
+ * and defaulting false silently disables a capability the author believed they
+ * had shipped. The manifest is the contract, so it has to say all four.
+ */
+function parseChatRuntimeCapabilities(
+  raw: unknown,
+  label: string,
+  ctx: ParseContext,
+): PluginManifestChatRuntimeCapabilities | null {
+  if (!isRecord(raw)) {
+    ctx.drop(`${label}.capabilities is missing or not an object`);
+    return null;
+  }
+  const flags: (keyof PluginManifestChatRuntimeCapabilities)[] = ["followUp", "interrupt", "hydrate", "artifacts"];
+  const parsed: Partial<PluginManifestChatRuntimeCapabilities> = {};
+  for (const flag of flags) {
+    const value = raw[flag];
+    if (typeof value !== "boolean") {
+      ctx.drop(`${label}.capabilities.${flag} must be true or false`);
+      return null;
+    }
+    parsed[flag] = value;
+  }
+  return parsed as PluginManifestChatRuntimeCapabilities;
+}
+
+function parseChatRuntimes(raw: unknown, ctx: ParseContext): PluginManifestChatRuntime[] {
+  const entries = parseArray(raw, "chatRuntimes", ctx, (entry, label) => {
+    if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
+    const id = parseIdentifier(entry.id);
+    if (!id) return ctx.drop(`${label}.id is missing or not an identifier`);
+    const displayName = singleLine(entry.displayName, PLUGIN_DECLARATION_LABEL_MAX);
+    if (!displayName) return ctx.drop(`${label}.displayName is required`);
+    const capabilities = parseChatRuntimeCapabilities(entry.capabilities, label, ctx);
+    if (!capabilities) return null;
+    const icon = trimmedString(entry.icon);
+    return {
+      id,
+      displayName,
+      ...(icon ? { icon } : {}),
+      capabilities,
+    } satisfies PluginManifestChatRuntime;
+  });
+  return limitDeclarations(entries, "chatRuntimes", PLUGIN_CHAT_RUNTIMES_PER_PLUGIN, (entry) => entry.id, ctx);
+}
+
 function parseSearchProviders(raw: unknown, ctx: ParseContext): PluginManifestSearchProvider[] {
   const entries = parseLabelledDeclarations(raw, "searchProviders", ctx, { action: true })
     .map(({ id, label, action }) => ({ id, label, action }));
   return limitDeclarations(entries, "searchProviders", PLUGIN_SEARCH_PROVIDERS_PER_PLUGIN, (e) => e.id, ctx);
+}
+
+/**
+ * The most providers one plugin may ask for.
+ *
+ * Low on purpose. A plugin that names one provider is describing what it is; a
+ * plugin that names six is asking for the user's whole wallet, and the install
+ * card would read as a list nobody finishes.
+ */
+const PLUGIN_PROVIDER_KEYS_PER_PLUGIN = 4;
+
+/**
+ * `network: { hosts: [...] }`.
+ *
+ * A malformed CONTAINER is an error, because a plugin that meant to declare a
+ * host and mistyped the shape would otherwise install with no network and fail
+ * at its first request with a refusal that names the wrong cause. A malformed
+ * ENTRY is a dropped warning like every other list here: the plugin still
+ * installs, and the host it got wrong is refused at runtime by name.
+ */
+function parseNetwork(raw: unknown, ctx: ParseContext): PluginManifestNetwork | null {
+  if (raw === undefined || raw === null) return null;
+  if (!isRecord(raw)) {
+    ctx.errors.push("network must be an object with a hosts array");
+    return null;
+  }
+  const hosts = parseStringList(raw.hosts, "network.hosts", ctx, isValidPluginNetworkHost);
+  const limited = limitDeclarations(
+    hosts,
+    "network.hosts",
+    PLUGIN_NETWORK_HOSTS_MAX,
+    (host) => host,
+    ctx,
+  );
+  // An empty list and an absent field are the same permission, and giving them
+  // one representation means no reader has to know both.
+  return limited.length > 0 ? { hosts: limited } : null;
+}
+
+/** `providerKeys: ["cursor"]`, checked against the store's own provider ids. */
+function parseProviderKeys(raw: unknown, ctx: ParseContext): PluginProviderKeyId[] {
+  const providers = parseStringList(raw, "providerKeys", ctx, isPluginProviderKeyId);
+  return limitDeclarations(
+    providers as PluginProviderKeyId[],
+    "providerKeys",
+    PLUGIN_PROVIDER_KEYS_PER_PLUGIN,
+    (provider) => provider,
+    ctx,
+  );
+}
+
+/**
+ * `webhookIngress: [{ id, label, verify? }]`.
+ *
+ * The `verify` frame is dropped rather than fatal when it is malformed, and the
+ * CHANNEL goes with it — not the channel kept unverified. A plugin that asked
+ * for a signature check and got none would be told nothing and would trust
+ * bodies nobody authenticated, which is the one failure mode this field exists
+ * to prevent. Losing the channel is loud (its URL stops working); silently
+ * dropping the check is not.
+ */
+function parseWebhookIngress(raw: unknown, ctx: ParseContext): PluginManifestWebhookIngressChannel[] {
+  const entries = parseArray(raw, "webhookIngress", ctx, (entry, label) => {
+    if (!isRecord(entry)) return ctx.drop(`${label} is not an object`);
+    const id = parseIdentifier(entry.id);
+    if (!id) return ctx.drop(`${label}.id is missing or not an identifier`);
+    // The id is a path segment at the relay, which accepts a narrower alphabet
+    // than an ADE identifier does. Checked here rather than at registration so
+    // the manifest is refused on the machine that wrote it, not by an HTTP 404
+    // months later on a URL the user already pasted into a third party.
+    if (!PLUGIN_WEBHOOK_CHANNEL_PATTERN.test(id)) {
+      return ctx.drop(`${label}.id "${id}" must be lowercase letters, digits and hyphens`);
+    }
+    const entryLabel = singleLine(entry.label, PLUGIN_DECLARATION_LABEL_MAX);
+    if (!entryLabel) return ctx.drop(`${label}.label is required`);
+    const entryDescription = singleLine(entry.description, PLUGIN_DECLARATION_DESCRIPTION_MAX);
+
+    let verify: PluginManifestWebhookIngressChannel["verify"];
+    if (entry.verify !== undefined && entry.verify !== null) {
+      if (!isRecord(entry.verify)) return ctx.drop(`${label}.verify is not an object`);
+      if (entry.verify.kind !== "hmac-sha256") {
+        return ctx.drop(`${label}.verify.kind must be "hmac-sha256"`);
+      }
+      const secretRef = trimmedString(entry.verify.secretRef);
+      if (!secretRef || !PLUGIN_SECRET_NAME_PATTERN.test(secretRef)) {
+        return ctx.drop(`${label}.verify.secretRef must name one of this plugin's secrets`);
+      }
+      // The relay registration secret is ADE's, not the plugin's. A manifest
+      // that pointed `verify` at it would make the host check a third party's
+      // signature against a credential the plugin never chose and cannot read,
+      // which is a confusing failure at best and a way to exercise a reserved
+      // secret at worst.
+      if (secretRef === PLUGIN_RESERVED_WEBHOOK_SECRET_NAME) {
+        return ctx.drop(`${label}.verify.secretRef must not be the reserved "${PLUGIN_RESERVED_WEBHOOK_SECRET_NAME}"`);
+      }
+      const header = singleLine(entry.verify.header, 64);
+      const prefix = typeof entry.verify.prefix === "string" ? entry.verify.prefix.trim() : "";
+      verify = {
+        kind: "hmac-sha256",
+        secretRef,
+        ...(header ? { header: header.toLowerCase() } : {}),
+        ...(prefix ? { prefix } : {}),
+      };
+    }
+
+    return {
+      id,
+      label: entryLabel,
+      ...(entryDescription ? { description: entryDescription } : {}),
+      ...(verify ? { verify } : {}),
+    };
+  });
+  return limitDeclarations(entries, "webhookIngress", PLUGIN_WEBHOOK_CHANNELS_PER_PLUGIN, (e) => e.id, ctx);
 }
 
 function parseKeybindings(raw: unknown, ctx: ParseContext): PluginManifestKeybinding[] {
@@ -1297,6 +1717,10 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const automationSteps = parseAutomationSteps(raw.automationSteps, ctx);
   const searchProviders = parseSearchProviders(raw.searchProviders, ctx);
   const keybindings = parseKeybindings(raw.keybindings, ctx);
+  const chatRuntimes = parseChatRuntimes(raw.chatRuntimes, ctx);
+  const webhookIngress = parseWebhookIngress(raw.webhookIngress, ctx);
+  const network = parseNetwork(raw.network, ctx);
+  const providerKeys = parseProviderKeys(raw.providerKeys, ctx);
 
   // Identity must be VALID here, not merely present: `manifest.name` is joined
   // into a filesystem path and a secret namespace, so a caller that ignores
@@ -1331,6 +1755,10 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
       automationSteps,
       searchProviders,
       keybindings,
+      chatRuntimes,
+      webhookIngress,
+      ...(network ? { network } : {}),
+      ...(providerKeys.length > 0 ? { providerKeys } : {}),
       ...(theme ? { theme } : {}),
       official,
     },
@@ -1357,6 +1785,22 @@ export function parsePluginManifestJson(text: string): PluginManifestParseResult
 /** True when the plugin ships code the host must run in a child process. */
 export function pluginHasRuntimeEntry(manifest: PluginManifest): boolean {
   return typeof manifest.entry === "string" && manifest.entry.length > 0;
+}
+
+/**
+ * One declared chat runtime by id, or null.
+ *
+ * The single reader for "does this plugin still serve the runtime this session
+ * was bound to". A session outlives an install: the plugin can be updated with
+ * that runtime removed, or uninstalled entirely, and both answer null here so
+ * the caller shows a dead-conversation state rather than dispatching a turn
+ * into nothing.
+ */
+export function findPluginChatRuntime(
+  manifest: PluginManifest | null | undefined,
+  runtimeId: string,
+): PluginManifestChatRuntime | null {
+  return (manifest?.chatRuntimes ?? []).find((runtime) => runtime.id === runtimeId) ?? null;
 }
 
 /**

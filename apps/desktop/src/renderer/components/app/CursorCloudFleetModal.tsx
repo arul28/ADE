@@ -17,6 +17,7 @@ import type {
   CursorCloudFleetResult,
 } from "../../../shared/types";
 import { isCursorCloudFleetEntryActive } from "../../../shared/cursorCloudFleetStatus";
+import { CURSOR_CLOUD_FLEET_MAX_AGENTS } from "../../../shared/cursorCloudApiLimits";
 import { openExternalUrl } from "../../lib/openExternal";
 import { cursorCloudErrorMessage, repoMatchKey, cursorCloudRepoLabel, formatCursorCloudAge } from "../../lib/cursorCloudUtils";
 import { announceWorkChatSessionCreated } from "../../lib/chatSessionEvents";
@@ -76,7 +77,10 @@ export function CursorCloudFleetModal({
     else setLoading(true);
     setError(null);
     try {
-      const next = await window.ade.ai.cursorCloudFleet({ includeArchived: true, limit: 200 });
+      const next = await window.ade.ai.cursorCloudFleet({
+        includeArchived: true,
+        limit: CURSOR_CLOUD_FLEET_MAX_AGENTS,
+      });
       if (generation !== requestGeneration.current) return;
       setResult(next);
       setKeyMissing(false);

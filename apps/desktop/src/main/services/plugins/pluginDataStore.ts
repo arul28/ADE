@@ -75,6 +75,11 @@ export type PluginDataStore = {
       vocabVersion: number;
       /** Whether the phone lists this panel. Omitted means yes — see the writer. */
       mobile?: boolean;
+      /**
+       * The manifest's refresh action for this panel. Omitted means the panel
+       * has no refresh gesture — see {@link PluginManifestPanel.refreshAction}.
+       */
+      refreshAction?: string | null;
     },
   ): void;
   /** The materialized panel row, which is what every client actually renders. */
@@ -277,6 +282,7 @@ export function createPluginDataStore(deps: {
           schemaJson: encodePluginJson(args.schema),
           vocabVersion: Math.trunc(args.vocabVersion),
           ...(args.mobile === undefined ? {} : { mobile: args.mobile }),
+          ...(args.refreshAction === undefined ? {} : { refreshAction: args.refreshAction }),
           nowIso: nowIso(),
         });
       });

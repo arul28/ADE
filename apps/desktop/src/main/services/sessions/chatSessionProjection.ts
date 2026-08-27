@@ -94,6 +94,11 @@ export function projectChatOntoSession(
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     lastActivityAt: chat.lastActivityAt ?? session.lastActivityAt ?? null,
     ...(chat.cursorCloudAgentId ? { cursorCloudAgentId: chat.cursorCloudAgentId } : {}),
+    // Which plugin owns this chat's turns, and what to call it. The row is what
+    // a client has in hand when it lists a chat or sends presence for one, and
+    // `toolType` cannot carry either fact.
+    ...(chat.runtimeRef ? { runtimeRef: chat.runtimeRef } : {}),
+    ...(chat.runtimeLabel ? { runtimeLabel: chat.runtimeLabel } : {}),
   };
   if (chat.awaitingInput) {
     return {

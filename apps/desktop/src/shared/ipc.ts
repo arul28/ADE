@@ -479,6 +479,7 @@ export const IPC = {
   pluginListContributions: "ade.plugin.listContributions",
   pluginInspectSource: "ade.plugin.inspectSource",
   pluginReload: "ade.plugin.reload",
+  pluginWebhookIngress: "ade.plugin.webhookIngress",
   // The sandboxed webview tier. Separate from the channels above because the
   // sender is a plugin's own page, not the renderer: these three are the only
   // ones a guest can reach, and the host answers them against the sender's

@@ -763,6 +763,7 @@ import type {
   PluginPanelRecord,
   PluginSourceInspection,
   PluginClientUsageRow as PluginUsageRow,
+  PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
 
 export {};
@@ -2504,6 +2505,8 @@ declare global {
         }) => Promise<PluginContributionRecord[]>;
         inspectSource: (args: { source: string }) => Promise<PluginSourceInspection | null>;
         usageSummary: (args?: { pluginId?: string }) => Promise<PluginUsageRow[]>;
+        /** Webhook ingress health. Never carries the relay secret. */
+        webhookIngress: (args?: { pluginId?: string }) => Promise<PluginWebhookIngressStatus[]>;
         /**
          * Whether this host can act on a machine other than this one. A plain
          * value, not a shape probe: `install` and `presence` are both present

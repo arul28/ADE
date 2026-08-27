@@ -1557,3 +1557,82 @@ describe("plugin.get reports the last invoke per action", () => {
     expect(await lastInvokes(plugins)).toEqual([]);
   });
 });
+
+/**
+ * `entryHtml` on the summary surfaces — the field a guest cannot mount without.
+ *
+ * Every webview host in the app (the chat-header overlay, the plugin tab page,
+ * the panel slots) reads the LIST payload rather than the manifest on disk, and
+ * each treats an absent `entryHtml` as "render the panel". So a mapper that
+ * dropped it did not fail: it silently drew the plugin's panel over its page,
+ * on every surface, with no error for the author to find
+ * (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §2).
+ */
+describe("plugin.list / plugin.get carry a webview surface's entryHtml", () => {
+  afterEach(closeScratch);
+
+  /** The fixture with its `surfaces[]` replaced, at a writable source folder. */
+  const fixtureWithSurfaces = (surfaces: unknown[]): string => {
+    const dir = copyFixture();
+    const manifestPath = path.join(dir, "plugin.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.surfaces = surfaces;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    return dir;
+  };
+
+  const webviewSurface = {
+    kind: "webview",
+    id: "dashboard",
+    title: "Dashboard",
+    panelId: "main",
+    entryHtml: "web/index.html",
+  };
+
+  it("round-trips entryHtml through list and get", async () => {
+    const { plugins } = await hostWithFixture({ source: fixtureWithSurfaces([webviewSurface]) });
+
+    const listed = (await plugins.list({})).find((entry) => entry.pluginId === "hello-plugin");
+    expect(listed?.surfaces).toEqual([
+      expect.objectContaining({ kind: "webview", id: "dashboard", entryHtml: "web/index.html" }),
+    ]);
+
+    const detail = await plugins.get({ pluginId: "hello-plugin" });
+    // The summary half and the manifest half must agree: the diagnostic run
+    // read `manifest.surfaces` with the field and `surfaces` without it, and
+    // concluded the plugin was wrong.
+    expect(detail?.surfaces[0]).toMatchObject({ entryHtml: "web/index.html" });
+    expect(detail?.manifest?.surfaces[0]).toMatchObject({ entryHtml: "web/index.html" });
+  });
+
+  it("omits entryHtml on an ordinary tab, which is how a client reads 'draw the panel'", async () => {
+    const { plugins } = await hostWithFixture({
+      source: fixtureWithSurfaces([{ kind: "tab", id: "log", title: "Log", panelId: "main" }]),
+    });
+
+    const detail = await plugins.get({ pluginId: "hello-plugin" });
+    expect(detail?.surfaces[0]).not.toHaveProperty("entryHtml");
+  });
+
+  it("serves the NEW manifest's entryHtml after a reload", async () => {
+    // The reload path re-copies a `local` source and then re-reads it, so an
+    // author who adds a webview surface and reloads must see the field without
+    // restarting ADE — the diagnostic's §9 "reload cannot change toSummary".
+    const source = fixtureWithSurfaces([{ kind: "tab", id: "log", title: "Log", panelId: "main" }]);
+    const { plugins } = await hostWithFixture({ source });
+    expect((await plugins.get({ pluginId: "hello-plugin" }))?.surfaces[0]).not.toHaveProperty("entryHtml");
+
+    const manifestPath = path.join(source, "plugin.json");
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.surfaces = [webviewSurface];
+    manifest.version = "0.2.0";
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    const reloaded = await plugins.reload({ pluginId: "hello-plugin" });
+
+    expect(reloaded.version).toBe("0.2.0");
+    expect(reloaded.surfaces).toEqual([
+      expect.objectContaining({ kind: "webview", entryHtml: "web/index.html" }),
+    ]);
+  });
+});

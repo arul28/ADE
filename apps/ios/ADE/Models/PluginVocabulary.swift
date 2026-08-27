@@ -81,6 +81,11 @@ enum PluginVocabLimits {
   static let maxValueChars = 1_000
   static let maxIdChars = 120
   static let maxActionArgs = 16
+  static let maxBindingAllowActions = 16
+  /// Trailing buttons on one list row. Three, and the rest go to `overflow`.
+  static let maxListItemActions = 3
+  /// Actions behind a row's overflow control.
+  static let maxListItemOverflow = 6
 }
 
 /// Semantic tone. No red: a failure is amber, the house rule stated at the top
@@ -144,6 +149,10 @@ struct PluginVocabBinding: Equatable {
   var collection: String
   var keyPrefix: String?
   var limit: Int?
+  /// The action ids a row from this collection may name. A row naming anything
+  /// else carries no action, and a binding with no allowlist yields no action
+  /// at all. Mirrors `VocabBinding.allowActions` in `vocabularyNodes.ts`.
+  var allowActions: [String]?
 }
 
 // MARK: - Nodes
@@ -185,14 +194,39 @@ struct PluginVocabButton: Equatable {
   var disabled = false
 }
 
+/// A trailing or overflow button on a list row: an action plus how to draw it.
+/// Mirrors `VocabListItemAction` in `vocabularyNodes.ts`.
+struct PluginVocabListItemAction: Equatable, Identifiable {
+  var id: String { "\(action.action)|\(label)" }
+  var action: PluginVocabAction
+  var label: String
+  var kind: PluginVocabButton.Kind = .default
+  var icon: String?
+}
+
+/// One row of a `list`, and the row shape a `list` binding must materialize.
+///
+/// Richer than the nodes it would take to build one by hand, on purpose: a row
+/// drawn out of `stack`, `badge`, `text` and `button` nodes spent about seven
+/// nodes, which capped a panel at roughly 27 rows against `maxNodes`. As one
+/// item the whole list is one node's worth of budget, so `maxListItems` becomes
+/// the real ceiling. Mirrors `VocabListItem` in `vocabularyNodes.ts`.
 struct PluginVocabListItem: Equatable, Identifiable {
-  var id: String { "\(title)|\(subtitle ?? "")|\(meta ?? "")" }
+  var id: String { "\(title)|\(subtitle ?? "")|\(meta ?? "")|\(mono ?? "")" }
   var title: String
   var subtitle: String?
   var meta: String?
   var tone: PluginVocabTone = .neutral
   var icon: String?
   var onPress: PluginVocabAction?
+  /// A chip beside the title.
+  var badge: PluginVocabBadge?
+  /// Monospace, under `subtitle`. An id, a branch, a short sha — a thing to compare.
+  var mono: String?
+  /// Trailing buttons, up to `PluginVocabLimits.maxListItemActions`.
+  var actions: [PluginVocabListItemAction] = []
+  /// Behind the row's overflow menu, up to `PluginVocabLimits.maxListItemOverflow`.
+  var overflow: [PluginVocabListItemAction] = []
 }
 
 struct PluginVocabList: Equatable {

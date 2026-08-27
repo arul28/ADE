@@ -38,10 +38,12 @@ import {
   type VocabFieldKind,
   type VocabKeyValueRow,
   type VocabListItem,
+  type VocabListItemAction,
   type VocabNode,
   type VocabTableColumn,
   type VocabTone,
 } from "../../../desktop/src/shared/plugins/vocabulary";
+import { readPluginPanelRefreshAction } from "../../../desktop/src/shared/plugins/sdk";
 import type {
   PluginCollectionRow,
   PluginPanelRecord as HostPluginPanelRecord,
@@ -138,6 +140,19 @@ export type PluginPaneRow =
       meta: string | null;
       tone: VocabTone;
       selection: number | null;
+      /**
+       * The row's status chip, bracketed after the title. No icon: a terminal
+       * has no glyph set to promise, and a chip that said `[● Running]` on one
+       * font and `[? Running]` on another is worse than one that says
+       * `[Running]` everywhere.
+       */
+      badge: { text: string; tone: VocabTone } | null;
+      /**
+       * The row's monospace line. Every line here is already monospace, so this
+       * is drawn as its own dim line under the subtitle rather than styled —
+       * the position is what carries the meaning in a terminal.
+       */
+      mono: string | null;
     }
   | { kind: "tableHead"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
   | { kind: "tableRow"; key: string; indent: number; cells: string[]; widths: number[]; aligns: ("left" | "right")[] }
@@ -215,6 +230,16 @@ export type PluginPaneModel = {
   fallback: VocabFallback | null;
   /** `fallback` means the schema could not be rendered and the card is showing. */
   status: "ok" | "fallback";
+  /**
+   * The plugin action `r` dispatches before it refetches, when the panel's
+   * manifest declared one. `null` keeps `r` a plain refetch, which is what it
+   * always was.
+   *
+   * Read off the stored schema even on the fallback path: a panel this build
+   * cannot parse may still be one the plugin can refresh into something it can,
+   * and refusing the gesture there would strand the reader on the card.
+   */
+  refreshAction: string | null;
 };
 
 /** Form values live in app.tsx as one flat string map, like every other TUI form. */
@@ -426,7 +451,9 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
     case "list": {
       const bound = boundValues(node.bind, ctx.collections);
       const items = bound
-        ? bound.map(coerceBoundListItem).filter((item): item is VocabListItem => item !== null)
+        ? bound
+            .map((row) => coerceBoundListItem(row, node.bind?.allowActions))
+            .filter((item): item is VocabListItem => item !== null)
         : (node.items ?? []);
       if (items.length === 0) {
         push(ctx, { kind: "note", key, indent, text: node.emptyText ?? "Nothing here yet." });
@@ -445,7 +472,22 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
           meta: item.meta ?? null,
           tone: item.tone ?? "neutral",
           selection,
+          badge: item.badge ? { text: item.badge.text, tone: item.badge.tone ?? "neutral" } : null,
+          mono: item.mono ?? null,
         });
+        // The row's buttons, on their own indented line beneath it.
+        //
+        // `overflow` is drawn in the same line as `actions`, not behind a
+        // chevron: a terminal pane has no menu, and the honest degradation is
+        // to show what the row can do rather than hide half of it behind a
+        // control the reader cannot open. They keep their declared order, so a
+        // reader comparing the TUI against the desktop sees the same sequence.
+        pushRowActions(
+          [...(item.actions ?? []), ...(item.overflow ?? [])],
+          `${key}.item[${index}].actions`,
+          indent + 1,
+          ctx,
+        );
       });
       return;
     }
@@ -603,6 +645,30 @@ function pushButtons(nodes: readonly VocabNode[], key: string, indent: number, c
   if (buttons.length > 0) push(ctx, { kind: "buttons", key, indent, buttons });
 }
 
+/**
+ * A list row's trailing and overflow actions, as the same numbered pills a
+ * `button` node draws.
+ *
+ * Reuses the `buttons` row rather than inventing a row kind, so a row's action
+ * is selected, confirmed and dispatched by exactly the code that already runs a
+ * button — including the `confirm` gate and the interactive identity that
+ * survives a refresh.
+ */
+function pushRowActions(
+  actions: readonly VocabListItemAction[],
+  key: string,
+  indent: number,
+  ctx: WalkContext,
+): void {
+  const buttons: PluginPaneButton[] = actions.map((action) => ({
+    label: action.label,
+    kind: action.kind ?? "default",
+    disabled: false,
+    selection: addInteractive(ctx, { kind: "action", label: action.label, action }),
+  }));
+  if (buttons.length > 0) push(ctx, { kind: "buttons", key, indent, buttons });
+}
+
 /* ── Build ──────────────────────────────────────────────────────────────── */
 
 export type PluginPaneInput = {
@@ -640,6 +706,9 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     panelId: input.panelId,
     interactives: [] as PluginPaneInteractive[],
     warnings: [] as string[],
+    // No row means no schema to read a declaration off, so `r` stays the plain
+    // refetch it has always been.
+    refreshAction: null as string | null,
   };
 
   if (input.fetch.state !== "ok") {
@@ -680,6 +749,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
       status: "fallback",
       fallback,
       rows,
+      refreshAction: readPluginPanelRefreshAction(record.schema),
     };
   }
 
@@ -706,6 +776,7 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     warnings: parsed.warnings.map((warning) => warning.message),
     fallback: parsed.panel.fallback,
     status: "ok",
+    refreshAction: readPluginPanelRefreshAction(record.schema),
   };
 }
 

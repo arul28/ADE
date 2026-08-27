@@ -27,7 +27,7 @@
  */
 
 import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "./clientRendering";
-import type { PluginManifest } from "./manifest";
+import { PLUGIN_PROVIDER_KEY_LABELS, type PluginManifest } from "./manifest";
 import { PLUGIN_SURFACE_IDS, type PluginSurfaceId } from "./sockets";
 
 /** The surface names a reader sees, canonical across the modal and the card. */
@@ -42,6 +42,11 @@ export const PLUGIN_SURFACE_LABELS: Record<PluginSurfaceId, string> = {
   settings: "Settings",
 };
 
+/**
+ * `a`, `a and b`, `a, b and c`. Named for its first caller and used by every
+ * list on this card since — hosts and provider names included — because one
+ * spelling of the Oxford-comma question is the point.
+ */
 export function joinSurfaceNames(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -93,6 +98,19 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
     lines.push(synced > 0 ? "Stores data, and syncs it to your other devices" : "Stores data on this machine");
   }
   if (manifest.entry) lines.push("Runs code on this machine");
+  // The two capability lines go last, together, because they are the two things
+  // on this card that leave the machine: where the plugin's code talks to, and
+  // whose credential it reads. A reader who stops early has still seen the
+  // sockets; a reader who stops before these has seen everything cheaper.
+  const hosts = manifest.network?.hosts ?? [];
+  if (hosts.length > 0) lines.push(`Talks to ${joinSurfaceNames(hosts)}`);
+  const providers = manifest.providerKeys ?? [];
+  if (providers.length > 0) {
+    const named = joinSurfaceNames(providers.map((provider) => PLUGIN_PROVIDER_KEY_LABELS[provider]));
+    lines.push(providers.length === 1
+      ? `Uses your ${named} API key`
+      : `Uses your ${named} API keys`);
+  }
   return lines;
 }
 
@@ -237,4 +255,169 @@ export function buildPluginInstallApprovalTitle(disclosure: PluginInstallDisclos
     ? `${disclosure.displayName} ${disclosure.version}`
     : disclosure.displayName;
   return `Install ${versioned}?`;
+}
+
+/* ── Removal disclosure ─────────────────────────────────────────────────── */
+
+/**
+ * The three lifecycle verbs an agent may ASK for, beside install.
+ *
+ * They share a card because they share a question: something the reader can
+ * see is about to stop being there. They keep separate words because the three
+ * are not equally reversible — `enable` restores what `disable` stopped, and
+ * nothing restores what `uninstall` deleted.
+ */
+export type PluginRemovalKind = "uninstall" | "disable" | "enable";
+
+export type PluginRemovalDisclosure = {
+  kind: PluginRemovalKind;
+  pluginId: string;
+  displayName: string;
+  version: string | null;
+  /**
+   * What stops (or starts) being there.
+   *
+   * Empty when ADE has no readable manifest for the installed plugin, which is
+   * a real state — a plugin whose `plugin.json` broke since it was installed is
+   * exactly the one a reader is most likely to be removing.
+   */
+  items: string[];
+  /** The plugin stores rows an uninstall deletes. Drives the warning line. */
+  storesData: boolean;
+  /** Those rows also ride sync, so the deletion reaches the other devices. */
+  syncsData: boolean;
+};
+
+/**
+ * The "Removes:" lines — {@link describeManifestAdds} read backwards.
+ *
+ * Deliberately the same facts in the same order as the install card, because
+ * the person answering this one very often approved that one. A list that
+ * re-groups or re-words what they agreed to would make the two impossible to
+ * compare, and comparing them is the whole of the decision.
+ *
+ * The two lines the install card ends on — where the plugin's code talks to,
+ * whose API key it reads — are NOT repeated. They describe access that is going
+ * away, and a card headed "Removes:" that lists "Talks to api.example.com"
+ * reads as a threat rather than as a reassurance.
+ */
+export function describeManifestRemoves(manifest: PluginManifest): string[] {
+  const lines: string[] = [];
+  for (const surface of manifest.surfaces) {
+    lines.push(surface.kind === "pane" ? `${surface.title} pane` : `${surface.title} tab`);
+  }
+
+  const bySurface = new Map<PluginSurfaceId, number>();
+  for (const socket of manifest.sockets) {
+    bySurface.set(socket.surface, (bySurface.get(socket.surface) ?? 0) + 1);
+  }
+  for (const surface of PLUGIN_SURFACE_IDS) {
+    const total = bySurface.get(surface);
+    if (!total) continue;
+    lines.push(total === 1
+      ? `Its addition to ${PLUGIN_SURFACE_LABELS[surface]}`
+      : `Its ${total} additions to ${PLUGIN_SURFACE_LABELS[surface]}`);
+  }
+
+  // Panels are named here and not on the install card because a panel is only
+  // ever reached THROUGH a surface, so adding one is not news. Losing one is:
+  // it is where the reader's own rows are drawn.
+  if (manifest.panels.length > 0) {
+    lines.push(manifest.panels.length === 1 ? "One panel" : `${manifest.panels.length} panels`);
+  }
+  if (manifest.cli.length > 0) {
+    lines.push(`Terminal commands: ${manifest.cli.map((word) => `ade ${manifest.name} ${word}`).join(", ")}`);
+  }
+  if (manifest.skills.length > 0) {
+    lines.push(manifest.skills.length === 1 ? "One agent skill" : `${manifest.skills.length} agent skills`);
+  }
+  if (manifest.theme) lines.push("A colour theme");
+  return lines;
+}
+
+export function buildPluginRemovalDisclosure(args: {
+  kind: PluginRemovalKind;
+  pluginId: string;
+  displayName: string;
+  version: string | null;
+  manifest: PluginManifest | null;
+}): PluginRemovalDisclosure {
+  const collections = Object.values(args.manifest?.collections ?? {});
+  return {
+    kind: args.kind,
+    pluginId: args.pluginId,
+    displayName: args.displayName || args.pluginId,
+    version: args.version,
+    items: args.manifest ? describeManifestRemoves(args.manifest) : [],
+    storesData: collections.length > 0,
+    syncsData: collections.some((collection) => collection.sync),
+  };
+}
+
+/** `Remove Tipsy 0.2.0?` · `Turn off Tipsy?` · `Turn on Tipsy?` */
+export function buildPluginRemovalApprovalTitle(disclosure: PluginRemovalDisclosure): string {
+  const versioned = disclosure.version
+    ? `${disclosure.displayName} ${disclosure.version}`
+    : disclosure.displayName;
+  switch (disclosure.kind) {
+    case "uninstall":
+      return `Remove ${versioned}?`;
+    case "disable":
+      return `Turn off ${disclosure.displayName}?`;
+    case "enable":
+      return `Turn on ${disclosure.displayName}?`;
+  }
+}
+
+/** The heading over the item list, in the verb's own words. */
+function removalListHeading(kind: PluginRemovalKind): string {
+  switch (kind) {
+    case "uninstall":
+      return "Removes:";
+    case "disable":
+      return "Turns off:";
+    case "enable":
+      return "Turns on:";
+  }
+}
+
+/**
+ * The card body: what stops being there, and what happens to the data.
+ *
+ * The data sentence is the one that decides whether a reader can say yes
+ * quickly. "Turn off" keeps everything and is undone by turning it back on;
+ * "Remove" deletes the plugin's stored rows and — when it synced them — the
+ * copies on the other devices. Neither is inferable from the item list, and a
+ * reader who guesses wrong guesses in the expensive direction.
+ */
+export function buildPluginRemovalApprovalBody(disclosure: PluginRemovalDisclosure): string {
+  const lines: string[] = [];
+  if (disclosure.items.length > 0) {
+    lines.push(removalListHeading(disclosure.kind));
+    for (const item of disclosure.items) lines.push(`- ${item}`);
+    lines.push("");
+  } else if (disclosure.kind !== "enable") {
+    // No manifest to read. Said plainly rather than as an empty list, because
+    // "this plugin adds nothing" and "ADE can't read what it adds" are very
+    // different things to be agreeing to.
+    lines.push(`ADE can't read ${disclosure.pluginId}'s plugin.json, so it can't list what this changes.`);
+    lines.push("");
+  }
+  switch (disclosure.kind) {
+    case "uninstall":
+      lines.push(disclosure.storesData
+        ? disclosure.syncsData
+          ? "Its stored data is deleted here and on your other devices. This can't be undone."
+          : "Its stored data on this machine is deleted. This can't be undone."
+        : "The plugin's files are deleted from this machine.");
+      lines.push("Installing it again is a separate request, and will ask you again.");
+      break;
+    case "disable":
+      lines.push("Its stored data and settings stay. Turning it back on restores everything above.");
+      break;
+    case "enable":
+      lines.push(`${disclosure.displayName} starts running again with the data and settings it already had.`);
+      break;
+  }
+  return lines.join("\n");
 }

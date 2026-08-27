@@ -105,7 +105,67 @@ extension PluginPanelParser {
     ))
   }
 
-  static func parseListItem(_ raw: Any?) -> PluginVocabListItem? {
+  /// How a list row's actions are admitted.
+  ///
+  /// The one difference between a row a panel declared and a row a collection
+  /// supplied. A declared row's actions are the panel author's own words, so
+  /// they pass through ``parseAction``; a bound row's are stored data, so they
+  /// pass through ``boundRowAction`` and survive only when the binding allowed
+  /// the id. Everything else about reading a row is shared, so the two kinds of
+  /// row cannot drift into different shapes. Mirrors `VocabActionGate` in
+  /// `vocabularyNodes.ts`.
+  typealias ActionGate = (Any?) -> PluginVocabAction?
+
+  /// A row's status chip. Dropped whole when it has no text to show.
+  static func parseListItemBadge(_ raw: Any?) -> PluginVocabBadge? {
+    guard let object = raw as? [String: Any],
+          let text = cleanString(object["text"], max: PluginVocabLimits.maxLabelChars) else {
+      return nil
+    }
+    return PluginVocabBadge(
+      text: text,
+      tone: PluginVocabTone.normalize(object["tone"]),
+      icon: cleanString(object["icon"], max: PluginVocabLimits.maxIdChars)
+    )
+  }
+
+  /// One trailing or overflow button. Needs both an admitted action and a label.
+  static func parseListItemAction(_ raw: Any?, gate: ActionGate) -> PluginVocabListItemAction? {
+    guard let object = raw as? [String: Any],
+          let action = gate(object),
+          let label = cleanString(object["label"], max: PluginVocabLimits.maxLabelChars) else {
+      return nil
+    }
+    let kind = cleanString(object["kind"], max: PluginVocabLimits.maxIdChars)
+      .flatMap(PluginVocabButton.Kind.init(rawValue:)) ?? .default
+    return PluginVocabListItemAction(
+      action: action,
+      label: label,
+      kind: kind,
+      icon: cleanString(object["icon"], max: PluginVocabLimits.maxIdChars)
+    )
+  }
+
+  /// A row's `actions` or `overflow`, capped at `max`.
+  ///
+  /// The cap counts what SURVIVED rather than what was offered, so a refused
+  /// entry does not spend a slot a later valid one needed. Every client counts
+  /// the same way.
+  static func parseListItemActions(_ raw: Any?, max: Int, gate: ActionGate) -> [PluginVocabListItemAction] {
+    guard let entries = raw as? [Any] else { return [] }
+    var parsed: [PluginVocabListItemAction] = []
+    for entry in entries {
+      guard let action = parseListItemAction(entry, gate: gate) else { continue }
+      parsed.append(action)
+      if parsed.count >= max { break }
+    }
+    return parsed
+  }
+
+  /// One list row, however it arrived. Shared by ``parseListItem`` and
+  /// ``parseBoundListItem`` so a declared row and a bound row read every field
+  /// the same way and differ only in `gate`.
+  static func readListItem(_ raw: Any?, gate: ActionGate) -> PluginVocabListItem? {
     guard let object = raw as? [String: Any],
           let title = cleanString(object["title"], max: PluginVocabLimits.maxLabelChars) else {
       return nil
@@ -116,8 +176,47 @@ extension PluginPanelParser {
       meta: cleanString(object["meta"], max: PluginVocabLimits.maxLabelChars),
       tone: PluginVocabTone.normalize(object["tone"]),
       icon: cleanString(object["icon"], max: PluginVocabLimits.maxIdChars),
-      onPress: parseAction(object["onPress"])
+      onPress: gate(object["onPress"]),
+      badge: parseListItemBadge(object["badge"]),
+      mono: cleanString(object["mono"], max: PluginVocabLimits.maxValueChars),
+      actions: parseListItemActions(
+        object["actions"],
+        max: PluginVocabLimits.maxListItemActions,
+        gate: gate
+      ),
+      overflow: parseListItemActions(
+        object["overflow"],
+        max: PluginVocabLimits.maxListItemOverflow,
+        gate: gate
+      )
     )
+  }
+
+  static func parseListItem(_ raw: Any?) -> PluginVocabListItem? {
+    readListItem(raw, gate: { parseAction($0) })
+  }
+
+  /// The action a bound row may carry, or `nil`.
+  ///
+  /// A collection row that could mint an action freely would let stored data
+  /// introduce a button the panel never showed the reader, so a row's action
+  /// survives only when the binding's `allowActions` names its id. A binding
+  /// with no allowlist yields no action at all. Mirrors `boundRowAction` in
+  /// `vocabularyNodes.ts`; the phone used to accept any action here while the
+  /// other three clients accepted none.
+  static func boundRowAction(_ raw: Any?, allowActions: [String]?) -> PluginVocabAction? {
+    guard let allowActions, !allowActions.isEmpty else { return nil }
+    guard let action = parseAction(raw) else { return nil }
+    return allowActions.contains(action.action) ? action : nil
+  }
+
+  /// A bound collection row as a list item.
+  ///
+  /// Every action on the row — `onPress`, `actions` and `overflow` alike —
+  /// passes through ``boundRowAction``, so a row can press exactly the ids the
+  /// panel's binding allowed and nothing else.
+  static func parseBoundListItem(_ raw: Any?, allowActions: [String]?) -> PluginVocabListItem? {
+    readListItem(raw, gate: { boundRowAction($0, allowActions: allowActions) })
   }
 
   static func parseTable(

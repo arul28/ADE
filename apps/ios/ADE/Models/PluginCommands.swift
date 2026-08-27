@@ -140,21 +140,62 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// pane: the verb belongs to the RESPONSE, not to the socket, and a client
   /// that cannot honour one simply does not.
   var composer: PluginInvokeComposerEdit?
+  /// Where on the open web the action asked to send the reader.
+  ///
+  /// The one verb that leaves ADE. `https:` only, and the URL is validated
+  /// before it is stored, so a caller opens what was checked rather than what
+  /// was sent. Mirrors `readPluginActionOpenUrl` in
+  /// `apps/desktop/src/shared/plugins/sdk.ts`.
+  var openURL: URL?
 
   private enum CodingKeys: String, CodingKey {
-    case ok, message, error, result, navigate, composer
+    case ok, message, error, result, navigate, composer, openUrl
   }
 
   init(
     ok: Bool = true,
     message: String? = nil,
     navigate: PluginInvokeNavigation? = nil,
-    composer: PluginInvokeComposerEdit? = nil
+    composer: PluginInvokeComposerEdit? = nil,
+    openURL: URL? = nil
   ) {
     self.ok = ok
     self.message = message
     self.navigate = navigate
     self.composer = composer
+    self.openURL = openURL
+  }
+
+  /// Mirrors `PLUGIN_OPEN_URL_MAX_CHARS`.
+  static let maxOpenURLChars = 2_048
+
+  /// The `{openUrl}` verb, read the way every client reads it.
+  ///
+  /// Accepts both the object form `{"openUrl": {"url": "…"}}` and the bare
+  /// string, because a tolerant reader is what keeps four clients agreeing
+  /// about a value a plugin wrote by hand.
+  ///
+  /// Refuses everything that is not `https:`. `file:` would make a link a local
+  /// read, `javascript:` and `data:` would make it script, and `ade:` belongs to
+  /// `navigate`, which passes the installed-and-enabled gate this would bypass.
+  static func parseOpenURL(_ raw: Any?) -> URL? {
+    let text: String?
+    if let string = raw as? String {
+      text = string
+    } else if let object = raw as? [String: Any] {
+      text = object["url"] as? String
+    } else {
+      text = nil
+    }
+    guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty,
+          trimmed.count <= maxOpenURLChars,
+          let url = URL(string: trimmed),
+          url.scheme?.lowercased() == "https",
+          let host = url.host, !host.isEmpty else {
+      return nil
+    }
+    return url
   }
 
   init(from decoder: Decoder) throws {
@@ -177,8 +218,20 @@ struct PluginInvokeResult: Decodable, Equatable {
     if let handlerResult = try? container.nestedContainer(keyedBy: CodingKeys.self, forKey: .result) {
       navigate = (try? handlerResult.decodeIfPresent(PluginInvokeNavigation.self, forKey: .navigate)) ?? nil
       composer = (try? handlerResult.decodeIfPresent(PluginInvokeComposerEdit.self, forKey: .composer)) ?? nil
+      // Both shapes the tolerant reader accepts, tried in the same order.
+      if let object = (try? handlerResult.decodeIfPresent(PluginOpenURLPayload.self, forKey: .openUrl)) ?? nil {
+        openURL = Self.parseOpenURL(object.url)
+      } else if let bare = (try? handlerResult.decodeIfPresent(String.self, forKey: .openUrl)) ?? nil {
+        openURL = Self.parseOpenURL(bare)
+      }
     }
   }
+}
+
+/// The object form of the `{openUrl}` verb. Its own type only so `Decodable`
+/// can tell it apart from the bare-string form.
+private struct PluginOpenURLPayload: Decodable, Equatable {
+  var url: String
 }
 
 /// What a plugin action asked the composer to do with the user's unsent draft.

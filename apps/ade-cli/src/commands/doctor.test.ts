@@ -63,6 +63,14 @@ function healthyInput(): DoctorInput {
       path: "/Applications/ADE.app",
       online: false,
     },
+    cli: {
+      path: "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade",
+      version: "1.2.35",
+      adeHome: "/Users/tester/.ade",
+      hasPluginDomain: true,
+      chatSessionId: null,
+      sessionCliPath: null,
+    },
     brain: {
       running: true,
       version: "1.2.35",
@@ -221,6 +229,7 @@ describe("doctor row evaluation", () => {
 
     expect(rows.map((row) => [row.key, row.status])).toEqual([
       ["app", "ok"],
+      ["cli", "ok"],
       ["brain", "ok"],
       ["wedge", "ok"],
       ["sync_port", "ok"],
@@ -673,5 +682,61 @@ describe("doctor row evaluation", () => {
     expect(compareDoctorVersions("1.2.35", "v1.2.35")).toBe(0);
     expect(compareDoctorVersions("1.2.34", "1.2.35")).toBe(-1);
     expect(compareDoctorVersions("next", "1.2.35")).toBeNull();
+  });
+});
+
+/**
+ * The CLI row: which `ade` answered, and whether it is this chat's `ade`.
+ *
+ * The row exists because an agent could not tell. Its PATH `ade` was stable
+ * ADE 1.2.64 while its chat ran in ADE Alpha, so `ade plugin list` failed and
+ * the agent told the user they were not on Alpha — with the Alpha window open
+ * in front of them (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §1).
+ */
+describe("doctor CLI row", () => {
+  const cliRowOf = (cli: Partial<DoctorInput["cli"]>) => {
+    const input = healthyInput();
+    input.cli = { ...input.cli, ...cli };
+    const row = evaluateDoctorRows(input).find((entry) => entry.key === "cli");
+    if (!row) throw new Error("no cli row");
+    return row;
+  };
+
+  it("prints the binary, the version, the home and whether plugins are here", () => {
+    const row = cliRowOf({});
+    expect(row.status).toBe("ok");
+    expect(row.detail).toContain("/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade");
+    expect(row.detail).toContain("version 1.2.35");
+    expect(row.detail).toContain("ADE_HOME /Users/tester/.ade");
+    expect(row.detail).toContain("plugin commands: yes");
+  });
+
+  it("WARNS when the running binary belongs to a different app than this chat", () => {
+    const row = cliRowOf({
+      chatSessionId: "bbca6866-ffc5-4d8a-9d04-8073f2e92cb6",
+      sessionCliPath: "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade",
+    });
+    expect(row.status).toBe("warn");
+    expect(row.detail).toContain("/Applications/ADE Alpha.app");
+    // Actionable: the reader is handed the binary to run, not just the problem.
+    expect(row.detail).toContain("/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade");
+  });
+
+  it("says the two agree when they are the same app bundle", () => {
+    // The shim in ADE_HOME and the binary in the bundle are the same app, so a
+    // file-by-file comparison would cry wolf on every ordinary session.
+    const row = cliRowOf({
+      chatSessionId: "chat-1",
+      sessionCliPath: "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade",
+    });
+    expect(row.status).toBe("ok");
+    expect(row.detail).toContain("matches this chat's app");
+  });
+
+  it("stays quiet outside a chat, and says so when the app named no CLI", () => {
+    expect(cliRowOf({}).detail).not.toContain("chat");
+    const older = cliRowOf({ chatSessionId: "chat-1", sessionCliPath: null });
+    expect(older.status).toBe("ok");
+    expect(older.detail).toContain("did not name its own CLI");
   });
 });

@@ -1,6 +1,7 @@
 /** Shared session/terminal utilities for the renderer. */
 
 import type { AgentChatProvider, AgentChatSession, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import { chatSessionAgentLabel, PLUGIN_CHAT_PROVIDER } from "../../shared/types/chat";
 import { isProviderSlashCommandInput } from "../../shared/chatSlashCommands";
 
 /** Returns true if the tool type represents an AI chat session. */
@@ -114,6 +115,13 @@ export function chatToolTypeForProvider(provider: AgentChatProvider | string | n
   if (typeof provider === "string" && Object.hasOwn(CHAT_TOOL_TYPE_BY_PROVIDER, provider)) {
     return CHAT_TOOL_TYPE_BY_PROVIDER[provider as KnownChatProvider];
   }
+  // A plugin-owned chat has no ADE tool behind it, so it gets the neutral tool
+  // type rather than somebody else's. `"other"` is absent from `LOGO_MAP`, so
+  // `ToolLogo` draws its generic mark, and `CHAT_PROVIDER_BY_TOOL_TYPE` has no
+  // entry for it, so nothing tries to lock the pane to a built-in provider.
+  // Without this the fallback below dressed a Cursor Cloud conversation in the
+  // OpenCode logo.
+  if (provider === PLUGIN_CHAT_PROVIDER) return "other";
   return "opencode-chat";
 }
 
@@ -192,11 +200,16 @@ export function buildOptimisticChatSessionSummary(args: {
     | "orchestrationRunId"
     | "orchestrationRole"
     | "orchestrationTag"
+    | "runtimeRef"
+    | "runtimeLabel"
   >;
   laneName?: string | null;
 }): TerminalSessionSummary {
   const toolType = chatToolTypeForProvider(args.session.provider);
   const isEnded = args.session.status === "ended";
+  // A plugin-owned row says the runtime's own name — "Cursor Cloud", not
+  // "Session" — because `toolType` cannot carry which plugin it is.
+  const optimisticTitle = chatSessionAgentLabel(args.session, defaultSessionLabel(toolType));
 
   return {
     id: args.session.id,
@@ -207,7 +220,7 @@ export function buildOptimisticChatSessionSummary(args: {
     pinned: false,
     goal: null,
     toolType,
-    title: defaultSessionLabel(toolType),
+    title: optimisticTitle,
     status: isEnded ? "completed" : "running",
     startedAt: args.session.createdAt,
     endedAt: isEnded ? args.session.lastActivityAt : null,
@@ -387,6 +400,12 @@ export function isGenericSessionTitle(session: TerminalSessionSummary, value: st
 export function primarySessionLabel(session: TerminalSessionSummary): string {
   const title = preferredSessionLabel(session.title);
   if (title && !isGenericSessionTitle(session, title)) return title;
+  // A plugin-owned chat with no title of its own says the runtime's name —
+  // "Cursor Cloud" — ahead of the goal and the summary, because that is the
+  // identity of the thing the user is talking to. `toolType` cannot say it:
+  // there is one tool type for every plugin.
+  const runtimeName = session.runtimeLabel?.displayName?.trim();
+  if (runtimeName) return runtimeName;
 
   const goal = preferredSessionLabel(session.goal);
   if (goal) return goal;

@@ -32,7 +32,12 @@ import {
   formatPluginClientRendering,
   type PluginClientRenderAnswer,
 } from "../../../desktop/src/shared/plugins/clientRendering";
-import type { PluginManifest } from "../../../desktop/src/shared/plugins/manifest";
+import {
+  PLUGIN_PROVIDER_KEY_LABELS,
+  type PluginManifest,
+} from "../../../desktop/src/shared/plugins/manifest";
+import { PLUGIN_NETWORK_REFUSAL_LOG_CODE } from "../../../desktop/src/shared/plugins/network";
+import { PLUGIN_WEBHOOK_DELIVERY_ATTEMPTS_MAX } from "../../../desktop/src/shared/plugins/sdk";
 import type {
   PluginActionInvokeRecord,
   PluginContributionRecord,
@@ -40,6 +45,7 @@ import type {
   PluginInstallRecord,
   PluginPresenceMachineRow,
   PluginUsageSummaryEntry,
+  PluginWebhookIngressStatus,
 } from "../../../desktop/src/shared/plugins/sdk";
 
 /**
@@ -59,6 +65,15 @@ export type PluginDoctorLive = {
   contributions: PluginContributionRecord[];
   /** `plugin.usageSummary`'s entry. Null when the plugin has no stored rows. */
   usage: PluginUsageSummaryEntry | null;
+  /**
+   * `plugin.webhookIngress`'s row for this plugin.
+   *
+   * Optional on the wire, and `undefined` is NOT `null`: a host that predates
+   * the action answers without the field, and the rung then says nobody could
+   * check rather than drawing "no webhooks arrive" over a host that never
+   * looked. The same rule `lastInvokes` follows.
+   */
+  webhookIngress?: PluginWebhookIngressStatus | null;
 };
 
 export type PluginDoctorSnapshot = {
@@ -85,10 +100,14 @@ export type PluginDoctorLayerKey =
   | "installed"
   | "running"
   | "places"
+  | "customPage"
   | "lastRun"
+  | "ingress"
   | "panels"
   | "synced"
-  | "skills";
+  | "skills"
+  | "network"
+  | "providerKeys";
 
 /**
  * `ok` / `no` / `na` print as ✓ / ✗ / –. `unknown` prints as – too, and says in
@@ -240,8 +259,56 @@ function runningLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
 }
 
 /** `composer-action in work`, `2× row-badge in lanes` — kind and surface, counted. */
+/**
+ * The full-page surfaces: one rail entry each, at `/plugin/<id>`.
+ *
+ * `tab` and `webview` together, because the rail treats them as one thing and
+ * only the page itself cares which it draws.
+ */
+function railSurfaces(manifest: PluginManifest | null): PluginManifest["surfaces"] {
+  return (manifest?.surfaces ?? []).filter(
+    (surface) => surface.kind === "tab" || surface.kind === "webview",
+  );
+}
+
+/**
+ * The rail half of "Renders on", which the socket half cannot answer.
+ *
+ * `formatPluginClientRendering` derives its sentence from the socket support
+ * matrix, so a plugin whose whole presence is a tab produced NO line at all and
+ * a plugin with one chat button produced a line that named only the button —
+ * the exact reading that sent an author debugging a tab the doctor never
+ * mentioned (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §6).
+ *
+ * A `tab` draws on every client. A `webview` draws its own page on desktop and
+ * its panel everywhere else, which is the cross-surface fallback and not a
+ * fault — said here in one clause so the reader meets it before they meet it as
+ * a surprise on their phone.
+ */
+function describeRailRendering(manifest: PluginManifest | null): string {
+  const rails = railSurfaces(manifest);
+  if (rails.length === 0) return "";
+  const webviews = rails.filter((surface) => surface.kind === "webview").length;
+  const tabs = rails.length - webviews;
+  const clauses: string[] = [];
+  if (tabs > 0) clauses.push(`${plural(tabs, "sidebar tab")} on every client`);
+  if (webviews > 0) {
+    clauses.push(`${plural(webviews, "custom-UI tab")}: its page on desktop, its panel on web, iPhone and terminal`);
+  }
+  return clauses.join(" · ");
+}
+
 function describeDeclaredPlaces(manifest: PluginManifest): string[] {
   const counts = new Map<string, number>();
+  // Rail surfaces are named FIRST, and they used to be named nowhere. A tab is
+  // the largest place a plugin takes, so an author whose tab drew nothing read
+  // `chat-header-action in work` — a true sentence about the wrong surface —
+  // and had to find "Panels" to learn a tab was declared at all
+  // (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §6).
+  for (const surface of railSurfaces(manifest)) {
+    const key = surface.kind === "webview" ? "webview tab in the sidebar" : "tab in the sidebar";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
   for (const socket of manifest.sockets) {
     const key = `${socket.socket} in ${socket.surface}`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
@@ -252,7 +319,8 @@ function describeDeclaredPlaces(manifest: PluginManifest): string[] {
 function placesLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   const label = "Places";
   const sockets = snapshot.manifest?.sockets ?? [];
-  if (sockets.length === 0) {
+  const rails = railSurfaces(snapshot.manifest);
+  if (sockets.length === 0 && rails.length === 0) {
     return {
       key: "places",
       label,
@@ -274,9 +342,77 @@ function placesLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
 
   // Every declared socket is switched off, so nothing this plugin asks for can
   // draw anywhere. That reads as ✗ rather than ✓, because the reader is here
-  // asking why they cannot see it.
-  const state: PluginDoctorState = switchedOff >= sockets.length ? "no" : "ok";
+  // asking why they cannot see it. A rail surface is not a socket and cannot be
+  // switched off, so a plugin that still has one keeps its place.
+  const state: PluginDoctorState = sockets.length > 0 && switchedOff >= sockets.length && rails.length === 0
+    ? "no"
+    : "ok";
   return { key: "places", label, state, detail: `${declared}${offNote}${published}` };
+}
+
+/**
+ * Does the page a `webview` surface promises actually reach a guest host?
+ *
+ * The rung the ladder was missing, and it is the one that would have ended the
+ * alpha run in a sentence. Every guest host in the desktop mounts a `<webview>`
+ * only when the surface it reads carries `entryHtml`, and each treats its
+ * absence as "render the panel". The host's own summary mapper dropped the
+ * field, so a plugin with a perfectly good page drew its panel everywhere with
+ * no error to find, and the author debugged their HTML
+ * (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §2, §6).
+ *
+ * So this compares the two halves `plugin.get` already returns: the manifest
+ * ADE parsed, and the summary ADE serves. They disagreeing is a HOST fault and
+ * prints as ✗ — the one state where the plugin is not the thing to fix.
+ */
+function customPageLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
+  const label = "Custom page";
+  const declared = (snapshot.manifest?.surfaces ?? []).filter(
+    (surface) => surface.kind === "webview" && surface.entryHtml,
+  );
+  if (declared.length === 0) {
+    return { key: "customPage", label, state: "na", detail: "this plugin draws no page of its own" };
+  }
+  // Said on the passing line as well as the failing one: "my page shows the
+  // panel on my phone" is a correct observation about a working plugin, and a
+  // doctor that only mentions it when something is broken leaves the author to
+  // discover the fallback by being surprised at it.
+  const fallbackNote = "the phone, the web client and `ade code` draw its panel instead, by design";
+  if (!snapshot.live) {
+    return {
+      key: "customPage",
+      label,
+      state: "unknown",
+      detail: `${plural(declared.length, "page")} in the manifest; ${UNREACHABLE}`,
+    };
+  }
+  const detail = snapshot.live.detail;
+  if (!detail) {
+    return { key: "customPage", label, state: "no", detail: "ADE does not have this plugin installed" };
+  }
+  const served = detail.surfaces ?? [];
+  const missing = declared.filter((surface) => {
+    const match = served.find((entry) => entry.id === surface.id);
+    return !match?.entryHtml;
+  });
+  if (missing.length > 0) {
+    return {
+      key: "customPage",
+      label,
+      state: "no",
+      detail: `ADE lists ${missing.map((surface) => `"${surface.id}"`).join(", ")} without its page,`
+        + " so every surface draws the panel instead"
+        + " — the running copy of ADE is older than this manifest; update and restart it,"
+        + " and note that a reload cannot change what the running app serves",
+    };
+  }
+  return {
+    key: "customPage",
+    label,
+    state: "ok",
+    detail: `${declared.map((surface) => `${surface.id} → ${surface.entryHtml}`).join(", ")}`
+      + ` · ${fallbackNote}`,
+  };
 }
 
 /**
@@ -406,6 +542,93 @@ function lastRunLayer(
   };
 }
 
+/**
+ * Is anything actually arriving from outside?
+ *
+ * The rung the ingress feature needs for the same reason "Last run" was added:
+ * "I pasted the URL into Stripe and nothing happens" has four different causes
+ * — the plugin was never registered with the relay, the third party is posting
+ * somewhere else, the signature check is rejecting every delivery, or the
+ * plugin's own handler never acks — and without this line all four look
+ * identical from outside. Each one gets its own sentence, and the URL is
+ * printed so the reader can compare it against what they pasted rather than
+ * take anyone's word for it.
+ */
+function ingressLayer(snapshot: PluginDoctorSnapshot, now: number): PluginDoctorLayer {
+  const label = "Webhooks";
+  const declared = snapshot.manifest?.webhookIngress ?? [];
+  if (declared.length === 0) {
+    return {
+      key: "ingress",
+      label,
+      state: "na",
+      detail: snapshot.manifest
+        ? "this plugin receives no webhooks"
+        : "no readable plugin.json here, so nothing declares a webhook",
+    };
+  }
+  if (!snapshot.live) return { key: "ingress", label, state: "unknown", detail: UNREACHABLE };
+  if (snapshot.live.webhookIngress === undefined) {
+    return {
+      key: "ingress",
+      label,
+      state: "unknown",
+      detail: "this copy of ADE does not receive webhooks for plugins",
+    };
+  }
+  const status = snapshot.live.webhookIngress;
+  const urls = declared
+    .map((channel) => {
+      const live = status?.channels.find((row) => row.channelId === channel.id);
+      return live?.url ? `${channel.id} → ${live.url}` : channel.id;
+    })
+    .join("; ");
+
+  if (!status || status.state === "undeclared" || status.state === "unconfigured") {
+    return {
+      key: "ingress",
+      label,
+      state: "no",
+      detail: `not registered with the relay yet — it registers within a minute of the plugin starting; ${urls}`,
+    };
+  }
+  if (status.state === "error") {
+    return { key: "ingress", label, state: "no", detail: `${status.lastError ?? "the last poll failed"}; ${urls}` };
+  }
+  // A channel that verifies with a secret this machine does not hold refuses
+  // every delivery. Named first: it is the one failure where events ARE
+  // arriving and the reader would otherwise blame the sender.
+  const missing = status.channels.filter((channel) => channel.missingSecretRef);
+  if (missing.length > 0) {
+    const names = missing.map((channel) => `${channel.channelId} needs ${channel.missingSecretRef!}`).join(", ");
+    return {
+      key: "ingress",
+      label,
+      state: "no",
+      detail: `arriving and being refused — the signing secret is not on this computer: ${names}`,
+    };
+  }
+  const received = status.lastReceivedAt
+    ? `last arrived ${describeAge(status.lastReceivedAt, now)}`
+    : "nothing has arrived yet";
+  const waiting = status.pendingDeliveries > 0
+    ? `; ${plural(status.pendingDeliveries, "delivery", "deliveries")} waiting to be handled`
+    : "";
+  // Abandoned means the plugin was handed the delivery and never acked it,
+  // PLUGIN_WEBHOOK_DELIVERY_ATTEMPTS_MAX times. That is a plugin bug, and
+  // saying so is the whole point of counting them.
+  const dropped = status.abandonedDeliveries > 0
+    ? `; ${plural(status.abandonedDeliveries, "delivery", "deliveries")} given up on after`
+      + ` ${PLUGIN_WEBHOOK_DELIVERY_ATTEMPTS_MAX} tries`
+    : "";
+  return {
+    key: "ingress",
+    label,
+    state: status.abandonedDeliveries > 0 ? "no" : "ok",
+    detail: `${received}${waiting}${dropped}; ${urls}`,
+  };
+}
+
 function panelsLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   const label = "Panels";
   const declared = snapshot.manifest?.panels.length ?? 0;
@@ -477,6 +700,102 @@ function skillsLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
 }
 
 /**
+ * Where this plugin is allowed to talk to, and whether it has been refused.
+ *
+ * Two facts on one line because they answer one question. The declaration comes
+ * from the manifest, which is readable with ADE closed; the refusals come from
+ * the plugin's own log ring, which the child writes a `warn` line to every time
+ * the network guard turns a request away. "It declares api.cursor.com and has
+ * been refused twice" is the shape of the answer somebody debugging a plugin
+ * that will not load its list actually needs.
+ */
+function networkLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
+  const label = "Network";
+  const hosts = snapshot.manifest?.network?.hosts ?? [];
+  if (snapshot.manifest && !snapshot.manifest.entry) {
+    return { key: "network", label, state: "na", detail: "this plugin runs no code of its own" };
+  }
+  const refusals = (snapshot.live?.detail?.logs ?? []).filter(
+    (entry) => entry.fields?.code === PLUGIN_NETWORK_REFUSAL_LOG_CODE,
+  );
+  if (hosts.length === 0) {
+    return {
+      key: "network",
+      label,
+      state: refusals.length > 0 ? "no" : "na",
+      detail: refusals.length > 0
+        ? `declares no hosts, and ${plural(refusals.length, "request")} was refused`
+          + ` — run: ade plugin logs ${snapshot.pluginId}`
+        : "declares no hosts, so it reaches nothing on the internet",
+    };
+  }
+  const refusalNote = refusals.length > 0
+    ? `; ${plural(refusals.length, "request")} refused — run: ade plugin logs ${snapshot.pluginId}`
+    : "";
+  return {
+    key: "network",
+    label,
+    state: refusals.length > 0 ? "no" : "ok",
+    detail: `may contact ${hosts.join(", ")}${refusalNote}`,
+  };
+}
+
+/**
+ * Which of ADE's own API keys this plugin reads, and whether they are there.
+ *
+ * The rung exists because a missing key looks exactly like a broken plugin from
+ * the outside: the panel is empty, the action fails, and nothing on any other
+ * rung says the reason is a credential the user never connected. The live half
+ * is presence only — `plugin.get` carries a boolean per provider and never the
+ * key.
+ */
+function providerKeysLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
+  const label = "Provider keys";
+  const declared = snapshot.manifest?.providerKeys ?? [];
+  if (declared.length === 0) {
+    return { key: "providerKeys", label, state: "na", detail: "this plugin reads none of ADE's API keys" };
+  }
+  const named = declared.map((provider) => PLUGIN_PROVIDER_KEY_LABELS[provider] ?? provider);
+  if (!snapshot.live) {
+    return {
+      key: "providerKeys",
+      label,
+      state: "unknown",
+      detail: `reads your ${named.join(", ")} key; ${UNREACHABLE}`,
+    };
+  }
+  const presence = snapshot.live.detail?.providerKeys;
+  // An older host answers `plugin.get` without the field, which is not the same
+  // as answering "no keys" — same distinction `lastRun` makes.
+  if (!presence) {
+    return {
+      key: "providerKeys",
+      label,
+      state: "unknown",
+      detail: `reads your ${named.join(", ")} key; this copy of ADE does not report whether it is connected`,
+    };
+  }
+  const missing = declared.filter(
+    (provider) => !presence.some((entry) => entry.provider === provider && entry.present),
+  );
+  if (missing.length === 0) {
+    return {
+      key: "providerKeys",
+      label,
+      state: "ok",
+      detail: `${named.join(", ")} — connected`,
+    };
+  }
+  const missingNames = missing.map((provider) => PLUGIN_PROVIDER_KEY_LABELS[provider] ?? provider);
+  return {
+    key: "providerKeys",
+    label,
+    state: "no",
+    detail: `no ${missingNames.join(", ")} key is connected — add one in Settings → AI`,
+  };
+}
+
+/**
  * The ladder, in the order a plugin actually climbs it.
  *
  * Pure, and takes a snapshot rather than a transport, so every branch here is
@@ -491,6 +810,8 @@ export function buildPluginDoctorReport(
     (snapshot.manifest?.sockets ?? []).map((socket) => socket.socket),
   );
   const actions = buildDoctorActions(snapshot);
+  const socketClause = formatPluginClientRendering(clients);
+  const railClause = describeRailRendering(snapshot.manifest);
   return {
     pluginId: snapshot.pluginId,
     displayName: snapshot.manifest?.displayName ?? snapshot.live?.detail?.displayName ?? snapshot.pluginId,
@@ -500,13 +821,24 @@ export function buildPluginDoctorReport(
       installedLayer(snapshot),
       runningLayer(snapshot),
       placesLayer(snapshot),
+      customPageLayer(snapshot),
       lastRunLayer(snapshot, actions, now),
+      ingressLayer(snapshot, now),
       panelsLayer(snapshot),
       syncedLayer(snapshot),
       skillsLayer(snapshot),
+      // Last, because they are the two rungs about what the plugin reaches
+      // OUTSIDE ADE. A reader scanning for the first ✗ has passed everything
+      // internal by the time they get here.
+      networkLayer(snapshot),
+      providerKeysLayer(snapshot),
     ],
     clients,
-    renders: formatPluginClientRendering(clients),
+    // Sockets first, because that sentence is the one the module derives from
+    // the support matrix. The rail clause is appended rather than folded in:
+    // a rail surface is not a socket, has no per-client support row, and the
+    // one thing worth saying about it varies by KIND rather than by client.
+    renders: [socketClause, railClause].filter(Boolean).join(" · "),
     actions,
   };
 }

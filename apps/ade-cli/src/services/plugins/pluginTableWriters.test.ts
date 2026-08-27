@@ -431,6 +431,48 @@ describe("plugin table writers", () => {
     expect(JSON.parse(schema("desktop-only"))).toEqual({ v: 1, body: [], mobile: true });
   });
 
+  it("stamps the manifest's refresh action, and never the plugin's own", () => {
+    const schema = (panelId: string) => JSON.parse(db.get<{ schema_json: string }>(
+      "select schema_json from plugin_panels where plugin_id = ? and panel_id = ?",
+      ["graph", panelId],
+    )?.schema_json ?? "null") as Record<string, unknown>;
+    const put = (panelId: string, args: { schemaJson?: string; refreshAction?: string | null }) =>
+      putPluginPanel(db, {
+        pluginId: "graph",
+        panelId,
+        title: "Panel",
+        icon: "graph",
+        surface: "work",
+        schemaJson: args.schemaJson ?? '{"v":1,"body":[]}',
+        vocabVersion: 1,
+        ...(args.refreshAction === undefined ? {} : { refreshAction: args.refreshAction }),
+        nowIso: NOW,
+      });
+
+    put("fleet", { refreshAction: "refresh-fleet" });
+    expect(schema("fleet")).toEqual({ v: 1, body: [], mobile: true, refreshAction: "refresh-fleet" });
+
+    // Absent stays absent rather than being written as null: an absent key and
+    // a null one would differ on the wire while meaning the same thing.
+    put("plain", {});
+    expect(schema("plain")).toEqual({ v: 1, body: [], mobile: true });
+
+    // Dropping the declaration has to REMOVE the key, not leave a gesture that
+    // dispatches an action the manifest no longer names.
+    put("fleet", { refreshAction: null });
+    expect(schema("fleet")).toEqual({ v: 1, body: [], mobile: true });
+
+    // A plugin republishing a panel cannot mint the gesture: the key it wrote
+    // is stripped and the host's answer takes its place.
+    put("forged", { schemaJson: '{"v":1,"body":[],"refreshAction":"delete-everything"}' });
+    expect(schema("forged")).toEqual({ v: 1, body: [], mobile: true });
+    put("forged", {
+      schemaJson: '{"v":1,"body":[],"refreshAction":"delete-everything"}',
+      refreshAction: "refresh-fleet",
+    });
+    expect(schema("forged")).toEqual({ v: 1, body: [], mobile: true, refreshAction: "refresh-fleet" });
+  });
+
   it("keeps a schema it cannot stamp byte-identical", () => {
     // Not an object: there is nowhere to put the key, and inventing a wrapper
     // would turn an unrenderable panel into a differently unrenderable one.

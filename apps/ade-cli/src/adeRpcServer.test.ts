@@ -6545,14 +6545,13 @@ describe("run_ade_action plugin domain", () => {
     expect(names).toContain("plugin.list");
     expect(names).toContain("plugin.invoke");
     expect(names).toContain("plugin.usageSummary");
-    // `install` stays listed for a lesser caller now that its refusal is a
-    // QUESTION rather than a dead end: an agent cannot ask permission for a
-    // verb it was never told exists. The other three are still hidden, because
-    // for them the refusal really is the end of the road.
+    // The whole lifecycle stays listed for a lesser caller now that every one
+    // of its refusals is a QUESTION rather than a dead end: an agent cannot ask
+    // permission for a verb it was never told exists.
     expect(names).toContain("plugin.install");
-    expect(names).not.toContain("plugin.uninstall");
-    expect(names).not.toContain("plugin.enable");
-    expect(names).not.toContain("plugin.disable");
+    expect(names).toContain("plugin.uninstall");
+    expect(names).toContain("plugin.enable");
+    expect(names).toContain("plugin.disable");
   });
 
   /**
@@ -6755,12 +6754,12 @@ describe("run_ade_action plugin domain", () => {
       expect(service.install).not.toHaveBeenCalled();
     });
 
-    it("leaves uninstall a flat refusal even for a chat-bound agent", async () => {
+    it("keeps uninstall a flat refusal for an agent with no chat to raise a card in", async () => {
       const { service, host } = pluginHostMock();
       const fixture = withPluginHost(host);
       const calls = withApprovalChat(fixture);
       const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent" });
 
       const denied = await callTool(handler, "run_ade_action", {
         domain: "plugin",
@@ -6773,10 +6772,164 @@ describe("run_ade_action plugin domain", () => {
         code: JsonRpcErrorCode.policyDenied,
         data: { kind: "plugin_role_denied", method: "plugin.uninstall" },
       });
-      // Removing a plugin is not a thing to interrupt someone for mid-turn, and
-      // an uninstall prompt is exactly the card people learn to dismiss.
       expect(calls).toHaveLength(0);
       expect(service.uninstall).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The other half of the install card, and deliberately symmetric.
+     *
+     * An agent that can put a plugin on the machine with the user's consent has
+     * to be able to ask to take it off with the same consent — the alternative
+     * left a diagnostic run unable to clean up after itself and a stopped
+     * plugin unable to be restarted from the chat that noticed
+     * (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md §5, §9).
+     */
+    describe("agent-initiated removal, disable and enable", () => {
+      function withRemovalChat(
+        fixture: RuntimeFixture,
+        answer: { decision?: string; answers?: Record<string, string[]> } = {},
+      ): ChatInputArgs[] {
+        return withApprovalChat(fixture, {
+          answers: { plugin_lifecycle: ["proceed"] },
+          ...answer,
+        });
+      }
+
+      it("removes on the host's authority once the person in the chat says yes", async () => {
+        const { service, host } = pluginHostMock({
+          get: vi.fn(async () => ({
+            pluginId: "hello",
+            displayName: "Hello",
+            version: "1.2.0",
+            manifest: null,
+          })),
+        });
+        const fixture = withPluginHost(host);
+        const calls = withRemovalChat(fixture);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        const result = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "uninstall",
+          args: { pluginId: "hello" },
+        });
+
+        expect(result?.isError).toBeUndefined();
+        expect(calls).toHaveLength(1);
+        expect(calls[0]!.chatSessionId).toBe("chat-1");
+        expect(calls[0]!.operatorOnly).toBe(true);
+        // Named from what the HOST knows about the installed plugin, not from
+        // anything the caller passed.
+        expect(String(calls[0]!.title)).toBe("Remove Hello 1.2.0?");
+        expect(service.uninstall).toHaveBeenCalledWith({ pluginId: "hello" });
+      });
+
+      it("refuses with a verb-specific denial and does not touch the plugin", async () => {
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        withRemovalChat(fixture, { decision: "decline", answers: { plugin_lifecycle: ["keep"] } });
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        const denied = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "uninstall",
+          args: { pluginId: "hello" },
+        });
+
+        expect(denied?.isError).toBe(true);
+        expect(denied.error).toMatchObject({
+          code: JsonRpcErrorCode.policyDenied,
+          data: { kind: "plugin_uninstall_denied", method: "plugin.uninstall" },
+        });
+        expect(service.uninstall).not.toHaveBeenCalled();
+      });
+
+      it("cards enable and disable too, in their own words", async () => {
+        const { service, host } = pluginHostMock({
+          get: vi.fn(async () => ({ pluginId: "hello", displayName: "Hello", version: "1.2.0", manifest: null })),
+        });
+        const fixture = withPluginHost(host);
+        const calls = withRemovalChat(fixture);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        await callTool(handler, "run_ade_action", { domain: "plugin", action: "disable", args: { pluginId: "hello" } });
+        await callTool(handler, "run_ade_action", { domain: "plugin", action: "enable", args: { pluginId: "hello" } });
+
+        expect(calls.map((call) => String(call.title))).toEqual(["Turn off Hello?", "Turn on Hello?"]);
+        expect(service.disable).toHaveBeenCalledWith({ pluginId: "hello" });
+        expect(service.enable).toHaveBeenCalledWith({ pluginId: "hello" });
+      });
+
+      it("asks every single time — an approved install never pre-approves a removal", async () => {
+        const source = pluginSourceDir();
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        const calls = withApprovalChat(fixture, {
+          // One chat mock answering both cards: each reads its own question id,
+          // and an unanswered id is simply absent rather than a refusal.
+          answers: { plugin_install: ["install"], plugin_lifecycle: ["proceed"] },
+        });
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        await callTool(handler, "run_ade_action", { domain: "plugin", action: "install", args: { source } });
+        // A second install of the same directory rides the remembered approval.
+        await callTool(handler, "run_ade_action", { domain: "plugin", action: "install", args: { source } });
+        await callTool(handler, "run_ade_action", {
+          domain: "plugin", action: "uninstall", args: { pluginId: "ade-tipsy" },
+        });
+        await callTool(handler, "run_ade_action", {
+          domain: "plugin", action: "uninstall", args: { pluginId: "ade-tipsy" },
+        });
+
+        // One install card, then one card for EACH removal.
+        expect(calls).toHaveLength(3);
+        expect(String(calls[0]!.title)).toContain("Install");
+        expect(String(calls[1]!.title)).toContain("Remove");
+        expect(String(calls[2]!.title)).toContain("Remove");
+        expect(service.uninstall).toHaveBeenCalledTimes(2);
+      });
+
+      it("never raises a card for the machine operator", async () => {
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        const calls = withRemovalChat(fixture);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "operator", role: "cto" });
+
+        const result = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "uninstall",
+          args: { pluginId: "hello" },
+        });
+
+        expect(result?.isError).toBeUndefined();
+        expect(calls).toHaveLength(0);
+        expect(service.uninstall).toHaveBeenCalledTimes(1);
+      });
+
+      it("refuses a removal with no pluginId before it asks anybody anything", async () => {
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        const calls = withRemovalChat(fixture);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        const denied = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "uninstall",
+          args: {},
+        });
+
+        expect(denied?.isError).toBe(true);
+        expect(denied.error).toMatchObject({ code: JsonRpcErrorCode.invalidParams });
+        expect(calls).toHaveLength(0);
+        expect(service.uninstall).not.toHaveBeenCalled();
+      });
     });
 
     it("never raises a card for the machine operator", async () => {

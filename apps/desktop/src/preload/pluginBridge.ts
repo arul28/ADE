@@ -40,6 +40,7 @@ import type {
   PluginSourceInspection,
   PluginSummary,
   PluginUsageSummary,
+  PluginWebhookIngressStatus,
 } from "../shared/plugins/sdk";
 
 /**
@@ -374,6 +375,12 @@ export function createPluginBridge(deps: PluginBridgeDeps) {
         invoke(IPC.pluginUsageSummary, args),
       );
       return toPluginUsageRows(summary);
+    },
+    // Webhook ingress health. The rows carry channel URLs and counts and never
+    // the relay secret, which is why this can cross to a renderer at all.
+    webhookIngress: async (input: { pluginId?: string } = {}): Promise<PluginWebhookIngressStatus[]> => {
+      const args = input.pluginId ? { pluginId: input.pluginId } : {};
+      return callStrictOr("webhookIngress", args, () => invoke(IPC.pluginWebhookIngress, args));
     },
     onChanged: (cb: (event: PluginClientChangeEvent) => void): (() => void) =>
       subscribeChanges(cb),

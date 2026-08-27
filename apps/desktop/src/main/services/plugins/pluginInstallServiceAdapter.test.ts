@@ -25,6 +25,8 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     automationSteps: [],
     searchProviders: [],
     keybindings: [],
+    chatRuntimes: [],
+    webhookIngress: [],
     official: false,
     ...overrides,
   };
@@ -270,7 +272,7 @@ describe("record detail for peers", () => {
 
     const [record] = await adapter.list();
 
-    // Panes are not tabs; only tab surfaces become navigable entries.
+    // A pane is not a rail entry; only full-page surfaces become navigable.
     expect(record.tabs).toEqual([
       { id: "graph", title: "Graph", panelId: "main", icon: "network" },
     ]);
@@ -278,6 +280,43 @@ describe("record detail for peers", () => {
       displayName: "Graph",
       tokens: { dark: { "--color-accent": "#5b8def" } },
     });
+  });
+
+  /**
+   * A `webview` surface is a rail entry, on the wire as well as on the desktop.
+   *
+   * The adapter kept only `kind === "tab"`, so a plugin whose only full-page
+   * surface is a webview reached the phone and the web client with ZERO tabs —
+   * invisible there while the desktop rail, which reads the preload's own
+   * mapping, listed it (docs/reports/ade-plugins-agent-diagnostic-2026-08-26.md
+   * §3). `entryHtml` stays off the record on purpose: no reader of it can host a
+   * guest, and each renders the surface's panel instead.
+   */
+  it("carries a webview surface as a rail tab, without its entryHtml", async () => {
+    const { service } = stubInstallService({
+      list: () => [installed({
+        manifest: manifest({
+          surfaces: [
+            {
+              kind: "webview",
+              id: "dashboard",
+              title: "Dashboard",
+              panelId: "main",
+              icon: "beer",
+              entryHtml: "web/index.html",
+            },
+            { kind: "pane", id: "side", title: "Side", panelId: "side" },
+          ],
+        }),
+      })],
+    });
+    const adapter = createPluginInstallServiceAdapter({ install: service });
+
+    const [record] = await adapter.list();
+
+    expect(record.tabs).toEqual([
+      { id: "dashboard", title: "Dashboard", panelId: "main", icon: "beer" },
+    ]);
   });
 
   it("carries manifest sockets whole, so a peer can render what a plugin adds to core surfaces", async () => {

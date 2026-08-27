@@ -2609,6 +2609,32 @@ describe("createPushPublisherService flush", () => {
       publisher.dispose();
     });
 
+    it("lands a tap on the panel the plugin named, or on the plugin itself", async () => {
+      const { publisher, publish } = makeHarness();
+      await publisher.start();
+
+      publisher.publishPluginNotification({
+        ...pluginPost,
+        deeplink: "ade://plugin/acme/fleet?ctx=%7B%22id%22%3A%22bc-1%22%7D",
+      });
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(publish.mock.calls[0][0].notifications[0]).toMatchObject({
+        deepLink: "ade://plugin/acme/fleet?ctx=%7B%22id%22%3A%22bc-1%22%7D",
+        threadId: "plugin:acme",
+      });
+
+      // No link keeps the front door, which is what every post did before the
+      // field existed.
+      publish.mockClear();
+      publisher.publishPluginNotification(pluginPost);
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(publish.mock.calls[0][0].notifications[0]).toMatchObject({
+        deepLink: "ade://plugin/acme",
+      });
+
+      publisher.dispose();
+    });
+
     it("refuses a post while notifications are switched off", async () => {
       const off = { ...device, prefs: { ...device.prefs, enabled: false } };
       const { publisher } = makeHarness(off);

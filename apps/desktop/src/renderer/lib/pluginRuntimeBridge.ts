@@ -62,9 +62,11 @@ export type {
   PluginClientInstallRequest as PluginInstallRequest,
   PluginClientInstallResult as PluginInstallResult,
   PluginClientSourceInspection as PluginSourceInspection,
+  PluginWebhookIngressStatus,
 } from "../../shared/plugins/sdk";
 
 import type {
+  PluginWebhookIngressStatus,
   PluginClientInstallRequest as PluginInstallRequest,
   PluginClientInstallResult as PluginInstallResult,
   PluginClientMarketplaceIndex as MarketplaceIndexPayload,
@@ -123,6 +125,11 @@ type PluginBridge = {
    * neither side has to move first.
    */
   usageSummary?: (input?: { pluginId?: string }) => Promise<unknown>;
+  /**
+   * Webhook ingress health. Absent on a host that drains no webhooks, which is
+   * a real answer and not a failure — see {@link readPluginWebhookIngress}.
+   */
+  webhookIngress?: (input?: { pluginId?: string }) => Promise<unknown>;
   getManifest?: (input: { pluginId: string }) => Promise<unknown | null>;
   /** Full detail record; the fallback source for manifest, config and readme. */
   get?: (input: { pluginId: string }) => Promise<unknown | null>;
@@ -353,6 +360,8 @@ export type PluginMarketplaceCapabilities = {
   config: boolean;
   contributions: boolean;
   usage: boolean;
+  /** Webhook ingress health can be read, so the page can show relay URLs. */
+  webhookIngress: boolean;
   /** A source can be read before installing, so the modal can list what it adds. */
   inspect: boolean;
 };
@@ -367,6 +376,7 @@ export const NO_PLUGIN_MARKETPLACE_CAPABILITIES: PluginMarketplaceCapabilities =
   config: false,
   contributions: false,
   usage: false,
+  webhookIngress: false,
   inspect: false,
 };
 
@@ -398,6 +408,7 @@ export function pluginMarketplaceCapabilities(): PluginMarketplaceCapabilities {
       || typeof plugins?.get === "function",
     contributions: typeof plugins?.setContributionEnabled === "function",
     usage: typeof plugins?.usageSummary === "function",
+    webhookIngress: typeof plugins?.webhookIngress === "function",
     inspect: typeof plugins?.inspectSource === "function",
   };
 }
@@ -527,6 +538,28 @@ export async function readPluginUsage(pluginId?: string): Promise<PluginUsageRow
   try {
     const result = await usageSummary(pluginId ? { pluginId } : {});
     return Array.isArray(result) ? (result as PluginUsageRow[]) : [];
+  } catch (error) {
+    noteUnavailable(error);
+    return [];
+  }
+}
+
+/**
+ * Webhook ingress health for one plugin, or for every plugin that declares a
+ * channel.
+ *
+ * Empty — never a throw — on a host that drains no webhooks or cannot reach the
+ * drain. The rail that reads this omits itself in that case rather than drawing
+ * "no webhooks arrive" over a host that never looked.
+ */
+export async function readPluginWebhookIngress(
+  pluginId?: string,
+): Promise<PluginWebhookIngressStatus[]> {
+  const webhookIngress = bridge()?.webhookIngress;
+  if (!webhookIngress) return [];
+  try {
+    const rows = await webhookIngress(pluginId ? { pluginId } : {});
+    return Array.isArray(rows) ? (rows as PluginWebhookIngressStatus[]) : [];
   } catch (error) {
     noteUnavailable(error);
     return [];

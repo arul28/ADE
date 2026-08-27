@@ -1,5 +1,12 @@
+import path from "node:path";
+
 import type { Logger } from "../logging/logger";
-import { pluginPanelShowsOnMobile, type PluginManifest } from "../../../shared/plugins/manifest";
+import {
+  isPluginProviderKeyId,
+  pluginPanelShowsOnMobile,
+  type PluginManifest,
+  type PluginProviderKeyId,
+} from "../../../shared/plugins/manifest";
 import { isRecord } from "../../../shared/plugins/parse";
 import {
   isPluginEntityKind,
@@ -18,11 +25,21 @@ import {
   PLUGIN_PANELS_MAX_PER_PLUGIN,
   PLUGIN_PANEL_SCHEMA_MAX_BYTES,
   isPluginAudioCaptureErrorCode,
+  isReservedPluginSecretName,
+  PLUGIN_WEBHOOK_DEFAULT_CHANNEL,
   isPluginNotificationTargetRequest,
   isReservedPluginCollection,
   PLUGIN_AUTOMATION_TRIGGER_BURST_WINDOW_MS,
   PLUGIN_AUTOMATION_TRIGGER_PAYLOAD_MAX_BYTES,
   PLUGIN_AUTOMATION_TRIGGERS_PER_BURST,
+  isPluginChatStatusState,
+  PLUGIN_CHAT_ARTIFACTS_MAX,
+  PLUGIN_CHAT_HYDRATE_MAX_ENTRIES,
+  PLUGIN_CHAT_PARTS_MAX,
+  PLUGIN_CHAT_STATUS_STATES,
+  PLUGIN_CHAT_TEXT_MAX_BYTES,
+  PLUGIN_CHAT_WRITE_BURST_WINDOW_MS,
+  PLUGIN_CHAT_WRITES_PER_SESSION_BURST,
   PLUGIN_CLIPBOARD_TEXT_MAX_BYTES,
   PLUGIN_MEMORY_COLLECTION,
   PLUGIN_NOTIFICATION_BODY_MAX_CHARS,
@@ -30,8 +47,17 @@ import {
   PLUGIN_NOTIFICATION_TITLE_MAX_CHARS,
   pluginUtf8ByteLength,
   type PluginAudioClip,
+  type PluginChatArtifact,
+  type PluginChatAssistantChunk,
+  type PluginChatPart,
+  type PluginChatSessionCreateInput,
+  type PluginChatSessionRef,
+  type PluginChatStatus,
+  type PluginChatTranscriptEntry,
+  type PluginChatUserAppend,
   type PluginCollectionPutOptions,
   type PluginFilePickerOptions,
+  readPluginNotificationDeeplink,
   type PluginNotificationInput,
   type PluginNotificationResult,
   type PluginSchedule,
@@ -142,6 +168,22 @@ export function pluginSchedulesUnavailable(): PluginSdkError {
 }
 
 /**
+ * The refusal when this host serves no chat sessions.
+ *
+ * `unsupported_method` rather than `not_permitted`: nothing was withheld from
+ * the plugin. A host with no project bound — a machine-scoped call, a headless
+ * build with no chat service — has no transcript for anybody to write to, and a
+ * plugin should stop trying rather than read a permission failure as "this
+ * session belongs to someone else" and go looking for a different one.
+ */
+export function pluginChatUnavailable(): PluginSdkError {
+  return new PluginSdkError(
+    "unsupported_method",
+    "This copy of ADE cannot host plugin chat runtimes.",
+  );
+}
+
+/**
  * The refusal when nothing here runs automation rules.
  *
  * `unsupported_method` for the same reason schedules use it: a host with no
@@ -153,6 +195,20 @@ export function pluginAutomationsUnavailable(): PluginSdkError {
   return new PluginSdkError(
     "unsupported_method",
     "This copy of ADE cannot run plugin automation triggers.",
+  );
+}
+
+/**
+ * The refusal when nothing here drains plugin webhooks.
+ *
+ * `unsupported_method`, like schedules and automations: a host with no project
+ * scope bound has no ledger to hold a delivery in and no relay cursor to
+ * advance, and it will not grow either because the plugin asked twice.
+ */
+export function pluginWebhookIngressUnavailable(): PluginSdkError {
+  return new PluginSdkError(
+    "unsupported_method",
+    "This copy of ADE cannot receive webhooks for plugins.",
   );
 }
 
@@ -178,6 +234,96 @@ export function asPluginAudioCaptureError(error: unknown): unknown {
     ? error.message
     : "The recording could not be completed.";
   return new PluginSdkError(code, message);
+}
+
+/**
+ * Read one text field against the per-call transcript ceiling.
+ *
+ * Measured in UTF-8 BYTES, not characters, because the ceiling exists to bound
+ * a wire frame and a disk write, and both count bytes. A plugin whose reply is
+ * genuinely longer streams it — that is what `appendAssistant` chunking is for
+ * — so this refuses a frame, never a conversation.
+ */
+function requireChatText(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new PluginSdkError("invalid_args", `"${field}" must be a string.`);
+  const bytes = pluginUtf8ByteLength(value);
+  if (bytes > PLUGIN_CHAT_TEXT_MAX_BYTES) {
+    throw budgetExceeded("chat_text", PLUGIN_CHAT_TEXT_MAX_BYTES, bytes);
+  }
+  return value;
+}
+
+function readChatParts(value: unknown, field: string): PluginChatPart[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new PluginSdkError("invalid_args", `"${field}" must be an array.`);
+  if (value.length > PLUGIN_CHAT_PARTS_MAX) {
+    throw budgetExceeded("chat_parts", PLUGIN_CHAT_PARTS_MAX, value.length);
+  }
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) throw new PluginSdkError("invalid_args", `"${field}[${index}]" must be an object.`);
+    if (entry.kind === "text" || entry.kind === "thinking") {
+      return { kind: entry.kind, text: requireChatText(entry.text, `${field}[${index}].text`) };
+    }
+    if (entry.kind === "tool") {
+      const detail = entry.detail === undefined || entry.detail === null
+        ? undefined
+        : requireChatText(entry.detail, `${field}[${index}].detail`);
+      return {
+        kind: "tool" as const,
+        name: requireString(entry, "name"),
+        ...(detail !== undefined ? { detail } : {}),
+      };
+    }
+    throw new PluginSdkError("invalid_args", `"${field}[${index}].kind" must be "text", "thinking" or "tool".`);
+  });
+}
+
+/**
+ * Refuse an artifact path that leaves the lane.
+ *
+ * The plugin already has the filesystem, so this is not a containment boundary
+ * — it is an honesty one. The proof-artifact card renders these as "files this
+ * run produced in your lane", and a path that is absolute or climbs out of the
+ * worktree would put a sentence on screen that is not true. A plugin that
+ * genuinely wrote elsewhere should say so in its own card.
+ */
+function requireLaneRelativePath(value: unknown, field: string): string {
+  const raw = value;
+  if (typeof raw !== "string" || raw.length === 0) {
+    throw new PluginSdkError("invalid_args", `"${field}" must be a non-empty string.`);
+  }
+  if (raw.length > 1024) throw new PluginSdkError("invalid_args", `"${field}" is too long.`);
+  if (path.isAbsolute(raw) || /^[A-Za-z]:[\\/]/.test(raw)) {
+    throw new PluginSdkError("invalid_args", `"${field}" must be relative to the lane worktree.`);
+  }
+  const normalized = raw.replace(/\\/g, "/");
+  if (normalized.split("/").some((segment) => segment === "..")) {
+    throw new PluginSdkError("invalid_args", `"${field}" must not climb out of the lane worktree.`);
+  }
+  return normalized;
+}
+
+/**
+ * A git branch name, checked here rather than at the git call.
+ *
+ * The branch reaches `git fetch` as an argv element, so the shell is not the
+ * risk — an argument that git reads as a FLAG is. Refusing a leading dash and
+ * the characters `check-ref-format` rejects anyway keeps a plugin from turning
+ * a branch field into an option, and does it before the value has travelled
+ * three layers to somewhere the refusal reads as a git error.
+ */
+function requireBranchName(value: unknown, field: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) throw new PluginSdkError("invalid_args", `"${field}" must be a non-empty string.`);
+  if (raw.length > 255) throw new PluginSdkError("invalid_args", `"${field}" is too long.`);
+  if (raw.startsWith("-") || /[\s~^:?*[\\]/.test(raw) || raw.includes("..") || raw.endsWith(".lock")) {
+    throw new PluginSdkError("invalid_args", `"${field}" is not a valid branch name.`);
+  }
+  // eslint-disable-next-line no-control-regex -- a control character in a ref name is exactly what this rejects.
+  if (/[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new PluginSdkError("invalid_args", `"${field}" is not a valid branch name.`);
+  }
+  return raw;
 }
 
 export function createPluginSdkServer(deps: {
@@ -220,7 +366,27 @@ export function createPluginSdkServer(deps: {
     title: string;
     body?: string;
     target: (typeof PLUGIN_NOTIFICATION_TARGETS)[number];
+    /** Already validated as one of THIS plugin's own panel links, or absent. */
+    deeplink?: string;
   }) => Promise<PluginNotificationResult>;
+  /**
+   * Read one provider API key out of ADE's own key store.
+   *
+   * The broker behind `ade.secrets.getProviderKey`. It is deliberately a
+   * NARROW function rather than the store itself: this module decides which
+   * provider a plugin may ask for, and handing it the store would put that
+   * decision in two places.
+   *
+   * Returns null both for "no key stored" and for a store this host cannot
+   * read (an uninitialized key store on a headless brain). Those are the same
+   * fact to the plugin — there is no key here — and it should not be able to
+   * tell which layer said so, exactly like {@link pluginAudioCaptureUnavailable}.
+   *
+   * The value returned here goes into ONE place: the SDK reply frame. It is
+   * never logged, never written to the plugin secret store, and never put in a
+   * collection or a panel schema.
+   */
+  readProviderKey?: (provider: PluginProviderKeyId) => string | null;
   /**
    * This plugin's own schedules. Absent on a host with no scheduler, which is
    * `unsupported_method` rather than a silent success — a plugin told its
@@ -241,6 +407,41 @@ export function createPluginSdkServer(deps: {
     triggerId: string;
     payload?: Record<string, unknown>;
   }) => Promise<void>;
+  /**
+   * This project scope's webhook drain. Absent on a host that runs none, which
+   * is `unsupported_method` for the same reason schedules are: no amount of
+   * waiting grows one, and a plugin should stop expecting deliveries rather
+   * than retry.
+   */
+  webhooks?: {
+    url: (pluginId: string, channelId: string) => string | null;
+    ack: (pluginId: string, deliveryId: string) => void;
+  };
+  /**
+   * The chat sessions this plugin owns, for `ade.chat.*`.
+   *
+   * **Every method here is already ownership-checked by the supplier.** This
+   * module validates SHAPES and applies BUDGETS; it does not decide whose
+   * session is whose, because that answer lives with the chat service that
+   * holds the sessions and a second copy of it here would be a second copy to
+   * drift. `pluginId` rides along on every call so the supplier's check has the
+   * host-derived identity and never a value the plugin passed in.
+   *
+   * Absent on a host with no chat service — see {@link pluginChatUnavailable}.
+   */
+  chat?: {
+    createSession: (pluginId: string, input: PluginChatSessionCreateInput) => Promise<PluginChatSessionRef>;
+    appendAssistant: (pluginId: string, sessionId: string, chunk: PluginChatAssistantChunk) => Promise<void>;
+    appendUser: (pluginId: string, sessionId: string, input: PluginChatUserAppend) => Promise<void>;
+    emitStatus: (pluginId: string, sessionId: string, status: PluginChatStatus) => Promise<void>;
+    setArtifacts: (pluginId: string, sessionId: string, artifacts: PluginChatArtifact[]) => Promise<void>;
+    attachBranch: (
+      pluginId: string,
+      sessionId: string,
+      input: { branch: string; remote?: string },
+    ) => Promise<void>;
+    hydrate: (pluginId: string, sessionId: string, transcript: PluginChatTranscriptEntry[]) => Promise<void>;
+  };
   /** Electron-only verbs, served over the daemon→desktop bridge. */
   desktopHost?: {
     readClipboard: () => Promise<string>;
@@ -268,6 +469,45 @@ export function createPluginSdkServer(deps: {
   let triggerBurst: number[] = [];
 
   /**
+   * Transcript-write timestamps in the current burst window, PER SESSION.
+   *
+   * Per session rather than per plugin, matching the ade-card limiter: a plugin
+   * serving three busy conversations is doing three normal things, and a
+   * plugin-wide ceiling would make its third chat stutter because the first two
+   * are streaming. The map is pruned on every check, so a plugin that opened a
+   * thousand conversations over a week holds only the live ones.
+   */
+  const chatWriteBursts = new Map<string, number[]>();
+
+  const chargeChatWrite = (sessionId: string): void => {
+    const since = Date.now() - PLUGIN_CHAT_WRITE_BURST_WINDOW_MS;
+    const recent = (chatWriteBursts.get(sessionId) ?? []).filter((at) => at > since);
+    if (recent.length >= PLUGIN_CHAT_WRITES_PER_SESSION_BURST) {
+      chatWriteBursts.set(sessionId, recent);
+      throw budgetExceeded(
+        "chat_writes_per_minute",
+        PLUGIN_CHAT_WRITES_PER_SESSION_BURST,
+        recent.length + 1,
+      );
+    }
+    recent.push(Date.now());
+    chatWriteBursts.set(sessionId, recent);
+    // Bounded bookkeeping: a window with nothing in it is a session that has
+    // gone quiet, and holding its empty array forever would be a slow leak on a
+    // long-lived host.
+    if (chatWriteBursts.size > 256) {
+      for (const [key, stamps] of [...chatWriteBursts]) {
+        if (!stamps.some((at) => at > since)) chatWriteBursts.delete(key);
+      }
+    }
+  };
+
+  const requireChat = (): NonNullable<typeof deps.chat> => {
+    if (!deps.chat) throw pluginChatUnavailable();
+    return deps.chat;
+  };
+
+  /**
    * The manifest is the plugin's declared data surface. A collection it never
    * declared is refused rather than created, so `plugin.json` stays an honest
    * description of what the plugin stores and the settings UI can enumerate it.
@@ -291,6 +531,72 @@ export function createPluginSdkServer(deps: {
       );
     }
     return collection;
+  };
+
+  /**
+   * The provider this call may read, or a refusal.
+   *
+   * Two different refusals on purpose. A provider ADE does not store keys for
+   * is `invalid_args` — the plugin asked for something that does not exist. A
+   * real provider the manifest never declared is `not_permitted`, the same code
+   * an undeclared collection or panel gets, because it is the same fact: the
+   * manifest is the plugin's declared surface and the host does not widen it at
+   * runtime. Keeping them apart matters to the author, who otherwise cannot
+   * tell a typo from a missing declaration.
+   */
+  const requireDeclaredProvider = (params: Record<string, unknown>): PluginProviderKeyId => {
+    const provider = requireString(params, "provider").trim().toLowerCase();
+    if (!isPluginProviderKeyId(provider)) {
+      throw new PluginSdkError("invalid_args", `ADE stores no API key for provider "${provider}".`);
+    }
+    if (!(manifest.providerKeys ?? []).includes(provider)) {
+      throw new PluginSdkError(
+        "not_permitted",
+        `Provider key "${provider}" is not declared in ${pluginId}'s manifest.`
+          + ` Add it to "providerKeys" and install the plugin again.`,
+      );
+    }
+    return provider;
+  };
+
+  /**
+   * A secret name the plugin owns.
+   *
+   * The relay registration secret is written by the host into the plugin's own
+   * namespace, so it is reachable by name from every secret verb. Refused for
+   * all three — read included — because a plugin that could read it could hand
+   * its own ingress to anyone, and one that could write it would deauthorize
+   * itself while the relay went on accepting posts nobody could drain.
+   */
+  const requireHostFreeSecretName = (params: Record<string, unknown>): string => {
+    const name = requireString(params, "name");
+    if (isReservedPluginSecretName(name)) {
+      throw new PluginSdkError(
+        "not_permitted",
+        `Secret "${name}" belongs to ADE's webhook relay registration and is not readable or writable by a plugin.`,
+      );
+    }
+    return name;
+  };
+
+  /**
+   * A webhook channel this plugin's manifest declares.
+   *
+   * Same rule and same reasoning as `automations.emitTrigger`'s trigger check:
+   * a URL for an undeclared channel would be a URL the relay accepts posts on
+   * and the drain then throws away, which is worse than no URL at all.
+   */
+  const requireDeclaredChannel = (params: Record<string, unknown>): string => {
+    const channelId = typeof params.channelId === "string" && params.channelId
+      ? params.channelId
+      : PLUGIN_WEBHOOK_DEFAULT_CHANNEL;
+    if (!manifest.webhookIngress.some((channel) => channel.id === channelId)) {
+      throw new PluginSdkError(
+        "invalid_args",
+        `"${channelId}" is not declared in ${pluginId}'s webhookIngress.`,
+      );
+    }
+    return channelId;
   };
 
   const requireDeclaredPanel = (params: Record<string, unknown>): string => {
@@ -365,18 +671,33 @@ export function createPluginSdkServer(deps: {
         }
 
         case "secrets.get":
-          return await deps.secrets.get(pluginId, requireString(params, "name"));
+          return await deps.secrets.get(pluginId, requireHostFreeSecretName(params));
 
         case "secrets.set": {
           const value = params.value;
           if (typeof value !== "string") throw new PluginSdkError("invalid_args", '"value" must be a string.');
-          await deps.secrets.set(pluginId, requireString(params, "name"), value);
+          await deps.secrets.set(pluginId, requireHostFreeSecretName(params), value);
           return null;
         }
 
         case "secrets.delete": {
-          await deps.secrets.delete(pluginId, requireString(params, "name"));
+          await deps.secrets.delete(pluginId, requireHostFreeSecretName(params));
           return null;
+        }
+
+        case "secrets.getProviderKey": {
+          // Straight from the store to the reply frame. Nothing between the two
+          // lines below may log, cache or copy the value — the plugin secret
+          // store in particular, which is a DIFFERENT store and would leave the
+          // user with two copies of one key that drift apart when they rotate
+          // it in Settings.
+          const provider = requireDeclaredProvider(params);
+          return deps.readProviderKey?.(provider) ?? null;
+        }
+
+        case "secrets.hasProviderKey": {
+          const provider = requireDeclaredProvider(params);
+          return (deps.readProviderKey?.(provider) ?? null) !== null;
         }
 
         case "contributions.publish": {
@@ -410,6 +731,10 @@ export function createPluginSdkServer(deps: {
             ...(declared?.icon ? { icon: declared.icon } : {}),
             ...(surface ? { surface: surface.id } : {}),
             ...(surface ? { mobile: pluginPanelShowsOnMobile(surface) } : {}),
+            // Off the manifest, never off the payload: a plugin republishing a
+            // panel cannot mint a refresh gesture for an action it did not
+            // declare, and a panel that dropped the declaration loses it here.
+            refreshAction: declared?.refreshAction ?? null,
             schema: params.schema,
             vocabVersion: manifest.vocabVersion,
           });
@@ -483,12 +808,22 @@ export function createPluginSdkServer(deps: {
           // The label is the manifest's display name, never something the
           // plugin passes in — the same rule the audio pill follows. A
           // notification that could name itself could name ADE.
+          // A link that is not one of this plugin's own panels costs the
+          // destination, not the notification: the post still goes, and tapping
+          // it opens the plugin — the default every post had before the field
+          // existed. Refusing the whole post would let one bad link silence the
+          // news the user actually needed.
+          const deeplink = readPluginNotificationDeeplink(input.deeplink, pluginId);
+          if (input.deeplink !== undefined && !deeplink) {
+            deps.logger.warn("plugin.notification_deeplink_refused", { pluginId });
+          }
           return await deps.postNotification({
             pluginId,
             label: manifest.displayName || pluginId,
             title,
             ...(body !== undefined ? { body } : {}),
             target: (input.target as PluginNotificationInput["target"]) ?? "both",
+            ...(deeplink ? { deeplink } : {}),
           });
         }
 
@@ -505,6 +840,24 @@ export function createPluginSdkServer(deps: {
         case "schedules.delete": {
           if (!deps.schedules) throw pluginSchedulesUnavailable();
           deps.schedules.delete(pluginId, requireString(params, "scheduleId"));
+          return null;
+        }
+
+        case "webhooks.url": {
+          if (!deps.webhooks) throw pluginWebhookIngressUnavailable();
+          const channelId = requireDeclaredChannel(params);
+          const url = deps.webhooks.url(pluginId, channelId);
+          // Declared in the manifest and still unresolvable means the drain and
+          // the manifest disagree — a reload mid-call, a plugin disabled under
+          // it. Refused rather than answered with a guessed URL: a wrong
+          // webhook URL is pasted into a third party and is then wrong forever.
+          if (!url) throw pluginWebhookIngressUnavailable();
+          return url;
+        }
+
+        case "webhooks.ack": {
+          if (!deps.webhooks) throw pluginWebhookIngressUnavailable();
+          deps.webhooks.ack(pluginId, requireString(params, "deliveryId"));
           return null;
         }
 
@@ -554,6 +907,184 @@ export function createPluginSdkServer(deps: {
             triggerId,
             ...(payload !== undefined ? { payload } : {}),
           });
+          return null;
+        }
+
+        case "chat.createSession": {
+          const chat = requireChat();
+          const input = optionalRecord(params.input, "input");
+          const runtimeId = requireString(input, "runtimeId");
+          // Refused unless the manifest declares it, for the same reason an
+          // undeclared automation trigger is: the clients draw a chat's label
+          // and icon from the manifest, so a session bound to a runtime nobody
+          // declared would render as an unnamed provider forever. `invalid_args`
+          // rather than `not_permitted` — nothing was withheld, the id is wrong.
+          if (!(manifest.chatRuntimes ?? []).some((declared) => declared.id === runtimeId)) {
+            throw new PluginSdkError(
+              "invalid_args",
+              `"${runtimeId}" is not declared in ${pluginId}'s chatRuntimes.`,
+            );
+          }
+          const create: PluginChatSessionCreateInput = {
+            runtimeId,
+            externalId: requireString(input, "externalId"),
+            laneId: requireString(input, "laneId"),
+            ...(typeof input.sessionId === "string" && input.sessionId ? { sessionId: input.sessionId } : {}),
+            ...(typeof input.title === "string" ? { title: input.title.slice(0, 200) } : {}),
+            ...(typeof input.modelLabel === "string" ? { modelLabel: input.modelLabel.slice(0, 80) } : {}),
+          };
+          return await chat.createSession(pluginId, create) satisfies PluginChatSessionRef;
+        }
+
+        case "chat.appendAssistant": {
+          const chat = requireChat();
+          const sessionId = requireString(params, "sessionId");
+          const raw = optionalRecord(params.chunk, "chunk");
+          const text = raw.text === undefined || raw.text === null
+            ? undefined
+            : requireChatText(raw.text, "chunk.text");
+          const parts = readChatParts(raw.parts, "chunk.parts");
+          // A chunk that says nothing and closes nothing is a wasted write, and
+          // accepting it would let a loop burn the session's budget on silence.
+          if (text === undefined && !parts?.length && raw.done !== true) {
+            throw new PluginSdkError("invalid_args", '"chunk" must carry "text", "parts" or "done".');
+          }
+          chargeChatWrite(sessionId);
+          const chunk: PluginChatAssistantChunk = {
+            ...(text !== undefined ? { text } : {}),
+            ...(parts?.length ? { parts } : {}),
+            ...(typeof raw.turnId === "string" && raw.turnId ? { turnId: raw.turnId } : {}),
+            ...(raw.done === true ? { done: true } : {}),
+          };
+          await chat.appendAssistant(pluginId, sessionId, chunk);
+          return null;
+        }
+
+        case "chat.appendUser": {
+          const chat = requireChat();
+          const sessionId = requireString(params, "sessionId");
+          const raw = optionalRecord(params.input, "input");
+          chargeChatWrite(sessionId);
+          const input: PluginChatUserAppend = {
+            text: requireChatText(raw.text, "input.text"),
+            ...(typeof raw.fingerprint === "string" && raw.fingerprint
+              ? { fingerprint: raw.fingerprint.slice(0, 512) }
+              : {}),
+            ...(typeof raw.turnId === "string" && raw.turnId ? { turnId: raw.turnId } : {}),
+          };
+          await chat.appendUser(pluginId, sessionId, input);
+          return null;
+        }
+
+        case "chat.emitStatus": {
+          const chat = requireChat();
+          const sessionId = requireString(params, "sessionId");
+          const raw = optionalRecord(params.status, "status");
+          // An unknown state is refused, never rounded to "idle": a plugin whose
+          // typo settled every conversation would look correct right up to the
+          // moment a user waits forever for a turn the host already closed.
+          if (!isPluginChatStatusState(raw.state)) {
+            throw new PluginSdkError(
+              "invalid_args",
+              `"status.state" must be one of ${PLUGIN_CHAT_STATUS_STATES.map((s) => `"${s}"`).join(", ")}.`,
+            );
+          }
+          chargeChatWrite(sessionId);
+          const status: PluginChatStatus = {
+            state: raw.state,
+            ...(typeof raw.detail === "string" && raw.detail ? { detail: raw.detail.slice(0, 240) } : {}),
+            ...(typeof raw.turnId === "string" && raw.turnId ? { turnId: raw.turnId } : {}),
+          };
+          await chat.emitStatus(pluginId, sessionId, status);
+          return null;
+        }
+
+        case "chat.setArtifacts": {
+          const chat = requireChat();
+          const sessionId = requireString(params, "sessionId");
+          const raw = params.artifacts;
+          if (!Array.isArray(raw)) throw new PluginSdkError("invalid_args", '"artifacts" must be an array.');
+          if (raw.length > PLUGIN_CHAT_ARTIFACTS_MAX) {
+            throw budgetExceeded("chat_artifacts", PLUGIN_CHAT_ARTIFACTS_MAX, raw.length);
+          }
+          const artifacts: PluginChatArtifact[] = raw.map((entry, index) => {
+            if (!isRecord(entry)) {
+              throw new PluginSdkError("invalid_args", `"artifacts[${index}]" must be an object.`);
+            }
+            const bytes = typeof entry.bytes === "number" && Number.isFinite(entry.bytes) && entry.bytes >= 0
+              ? Math.trunc(entry.bytes)
+              : undefined;
+            return {
+              path: requireLaneRelativePath(entry.path, `artifacts[${index}].path`),
+              ...(typeof entry.label === "string" && entry.label ? { label: entry.label.slice(0, 120) } : {}),
+              ...(bytes !== undefined ? { bytes } : {}),
+            };
+          });
+          chargeChatWrite(sessionId);
+          await chat.setArtifacts(pluginId, sessionId, artifacts);
+          return null;
+        }
+
+        case "chat.attachBranch": {
+          const chat = requireChat();
+          const sessionId = requireString(params, "sessionId");
+          const raw = optionalRecord(params.input, "input");
+          const remote = raw.remote === undefined || raw.remote === null
+            ? undefined
+            : requireBranchName(raw.remote, "input.remote");
+          chargeChatWrite(sessionId);
+          await chat.attachBranch(pluginId, sessionId, {
+            branch: requireBranchName(raw.branch, "input.branch"),
+            ...(remote !== undefined ? { remote } : {}),
+          });
+          return null;
+        }
+
+        case "chat.hydrate": {
+          const chat = requireChat();
+          const sessionId = requireString(params, "sessionId");
+          const raw = params.transcript;
+          if (!Array.isArray(raw)) throw new PluginSdkError("invalid_args", '"transcript" must be an array.');
+          if (raw.length > PLUGIN_CHAT_HYDRATE_MAX_ENTRIES) {
+            throw budgetExceeded("chat_hydrate_entries", PLUGIN_CHAT_HYDRATE_MAX_ENTRIES, raw.length);
+          }
+          const transcript: PluginChatTranscriptEntry[] = raw.map((entry, index) => {
+            if (!isRecord(entry)) {
+              throw new PluginSdkError("invalid_args", `"transcript[${index}]" must be an object.`);
+            }
+            if (entry.role !== "user" && entry.role !== "assistant") {
+              throw new PluginSdkError(
+                "invalid_args",
+                `"transcript[${index}].role" must be "user" or "assistant".`,
+              );
+            }
+            const text = entry.text === undefined || entry.text === null
+              ? undefined
+              : requireChatText(entry.text, `transcript[${index}].text`);
+            const parts = readChatParts(entry.parts, `transcript[${index}].parts`);
+            if (text === undefined && !parts?.length) {
+              throw new PluginSdkError(
+                "invalid_args",
+                `"transcript[${index}]" must carry "text" or "parts".`,
+              );
+            }
+            const at = typeof entry.at === "number" && Number.isFinite(entry.at) ? Math.trunc(entry.at) : undefined;
+            return {
+              role: entry.role,
+              ...(text !== undefined ? { text } : {}),
+              ...(parts?.length ? { parts } : {}),
+              ...(at !== undefined ? { at } : {}),
+              ...(typeof entry.fingerprint === "string" && entry.fingerprint
+                ? { fingerprint: entry.fingerprint.slice(0, 512) }
+                : {}),
+            };
+          });
+          // One charge for the whole page, not one per entry: hydration is a
+          // bounded backfill already capped above, and charging it per turn
+          // would let a legitimate reconnect exhaust the streaming budget the
+          // conversation needs immediately afterwards.
+          chargeChatWrite(sessionId);
+          await chat.hydrate(pluginId, sessionId, transcript);
           return null;
         }
 

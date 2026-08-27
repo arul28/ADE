@@ -72,8 +72,10 @@ import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/s
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
 import {
   hasPluginActionComposerRequest,
+  hasPluginActionOpenUrlRequest,
   readPluginActionComposerEdit,
   readPluginActionNavigation,
+  readPluginActionOpenUrl,
 } from "../../../desktop/src/shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
@@ -1196,6 +1198,8 @@ export function chatSessionToOptimisticSummary(
     ...(session.cursorCloudAgentId ? { cursorCloudAgentId: session.cursorCloudAgentId } : {}),
     ...(session.cursorRuntime ? { cursorRuntime: session.cursorRuntime } : {}),
     ...(session.cursorPromotedTurnId ? { cursorPromotedTurnId: session.cursorPromotedTurnId } : {}),
+    ...(session.runtimeRef ? { runtimeRef: session.runtimeRef } : {}),
+    ...(session.runtimeLabel ? { runtimeLabel: session.runtimeLabel } : {}),
     ...(session.identityKey ? { identityKey: session.identityKey } : {}),
     ...(session.surface ? { surface: session.surface } : {}),
     ...(session.automationId ? { automationId: session.automationId } : {}),
@@ -4579,12 +4583,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     const sessionId = activeSession?.sessionId;
     const agentId = activeSession?.cursorCloudAgentId?.trim();
-    if (!connection || !sessionId || !agentId) return;
+    // Also for a plugin-owned chat: the same signal drives `chat.opened` /
+    // `chat.closed` into the plugin that runs the conversation, which is how it
+    // knows to poll fast while somebody is reading and stop when nobody is.
+    const pluginOwned = Boolean(activeSession?.runtimeRef?.pluginId);
+    if (!connection || !sessionId || (!agentId && !pluginOwned)) return;
     void watchCursorCloudMirror(connection, sessionId, true).catch(() => undefined);
     return () => {
       void watchCursorCloudMirror(connection, sessionId, false).catch(() => undefined);
     };
-  }, [activeSession?.cursorCloudAgentId, activeSession?.sessionId, connection]);
+  }, [
+    activeSession?.cursorCloudAgentId,
+    activeSession?.runtimeRef?.pluginId,
+    activeSession?.sessionId,
+    connection,
+  ]);
   const activeTerminalSession = useMemo(
     () => terminalSessions.find((session) => session.terminalId === activeSessionId) ?? null,
     [activeSessionId, terminalSessions],
@@ -10501,16 +10514,54 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (options.announce) addNotice(`${target.displayName} refreshed.`, "info");
   }, [addNotice, pluginPaneContent, prospectiveRightPaneWidth]);
 
-  const refreshPluginPane = useCallback(async (options: { announce?: boolean } = {}): Promise<void> => {
+  /**
+   * The `{openUrl}` verb, in a terminal.
+   *
+   * The TUI hands the URL to the same external opener a PR link uses, which has
+   * a Windows path. When there is no opener — a bare Linux box, a remote shell —
+   * the URL is printed instead, because a link the reader can copy is the honest
+   * degradation and a button that silently did nothing is not.
+   *
+   * `https:` only. The refusal is a notice rather than silence, for the same
+   * reason a malformed composer edit is.
+   */
+  const applyPluginOpenUrl = useCallback((result: unknown, label: string): void => {
+    if (!hasPluginActionOpenUrlRequest(result)) return;
+    const request = readPluginActionOpenUrl(result);
+    if (!request) {
+      addNotice(`${label} sent a link that is not an https URL.`, "info");
+      return;
+    }
+    if (!openExternalUrl(request.url, addNotice)) addNotice(request.url, "info");
+  }, [addNotice]);
+
+  const refreshPluginPane = useCallback(async (options: { announce?: boolean; runDeclared?: boolean } = {}): Promise<void> => {
     const current = rightPaneRef.current;
     if (current.kind !== "plugin-panel") return;
+    // A panel whose manifest declared a refresh action gets it dispatched
+    // BEFORE the refetch, so `r` means "go and get new data" rather than "read
+    // the same rows again". Only the explicit key press does this: the 10s poll
+    // must stay a read, or a plugin polling an API would be driven by a timer
+    // nobody asked for.
+    const declared = options.runDeclared ? current.model.refreshAction : null;
+    const conn = connectionRef.current;
+    if (declared && conn) {
+      try {
+        const result = await invokePluginAction(conn, current.state.pluginId, declared, {
+          ...(current.state.context ? { context: current.state.context } : {}),
+        });
+        applyPluginOpenUrl(result, current.state.displayName);
+      } catch (error) {
+        addNotice(error instanceof Error ? error.message : String(error), "error");
+      }
+    }
     await loadPluginPane({
       pluginId: current.state.pluginId,
       displayName: current.state.displayName,
       panelId: current.state.panelId,
       context: current.state.context ?? null,
     }, options);
-  }, [loadPluginPane]);
+  }, [addNotice, applyPluginOpenUrl, loadPluginPane]);
 
   useEffect(() => {
     if (rightPane.kind !== "plugin-panel" || !rightOpen || !connection) return;
@@ -10620,6 +10671,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setPromptValue(`${draft.slice(0, caret)}${edit.text}${draft.slice(caret)}`, caret + edit.text.length);
   }, [addNotice, setPromptValue]);
 
+
   /**
    * Run a contributed row/toolbar action and follow whatever it answers with.
    *
@@ -10642,6 +10694,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         context: entry.socket === "toolbar-action" ? pane.surfaceContext : pane.context,
       });
       addNotice(`${entry.label} ran.`, "success");
+      applyPluginOpenUrl(result, entry.label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
         setRightSelectionIndex(0);
@@ -10657,7 +10710,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
-  }, [addNotice, applyPluginComposerEdit, loadPluginPane]);
+  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, loadPluginPane]);
 
   /**
    * The TUI's row menu: what plugins contribute for the focused lane or chat,
@@ -10818,6 +10871,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     try {
       const result = await invokePluginAction(conn, current.state.pluginId, action.action, args);
       addNotice(`${interactive.label} ran.`, "success");
+      applyPluginOpenUrl(result, interactive.label);
       // An action may ask to be followed to another panel of its own plugin.
       // Reload rather than refresh: the destination is a different panel, and
       // it arrives with the context the action handed us.
@@ -10838,7 +10892,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setRightPane((pane) => (pane.kind === "plugin-panel" ? { ...pane, error: message } : pane));
       addNotice(message, "error");
     }
-  }, [addNotice, loadPluginPane, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
+  }, [addNotice, applyPluginOpenUrl, loadPluginPane, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
 
   const activateRightPaneListItem = useCallback((selectedId: string, actionKind: NonNullable<Extract<RightPaneContent, { kind: "list" }>["action"]>["kind"]) => {
     if (actionKind === "copy-secret") {
@@ -14518,6 +14572,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     try {
       const result = await invokePluginAction(conn, pluginId, actionId, {});
       addNotice(`${who} · ${label} ran.`, "success");
+      applyPluginOpenUrl(result, label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
         setRightSelectionIndex(0);
@@ -14533,7 +14588,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
-  }, [addNotice, applyPluginComposerEdit, loadPluginPane]);
+  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, loadPluginPane]);
 
   const runKeybindingAction = useCallback((action: TuiResolvedKeybindingAction): boolean => {
     // The parameterized plugin escape, checked before the closed union: a
@@ -17010,7 +17065,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         if (input.toLowerCase() === "r" && !key.ctrl && !key.meta) {
-          void refreshPluginPane({ announce: true });
+          void refreshPluginPane({ announce: true, runDeclared: true });
           return;
         }
       }

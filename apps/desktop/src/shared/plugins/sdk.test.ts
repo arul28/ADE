@@ -3,16 +3,21 @@ import { describe, expect, it } from "vitest";
 import {
   hasPluginActionComposerRequest,
   hasPluginActionDialogRequest,
+  hasPluginActionOpenUrlRequest,
   hasPluginActionWebviewRequest,
   isPluginCollectionIfFull,
   PLUGIN_COLLECTION_IF_FULL_MODES,
   PLUGIN_COMPOSER_TEXT_MAX_BYTES,
   PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES,
+  PLUGIN_NOTIFICATION_DEEPLINK_MAX_CHARS,
+  PLUGIN_OPEN_URL_MAX_CHARS,
   PLUGIN_WEBVIEW_POINTER_MAX_BYTES,
   pluginCollectionPutParams,
   readPluginActionComposerEdit,
   readPluginActionDialogEdit,
+  readPluginActionOpenUrl,
   readPluginActionWebview,
+  readPluginNotificationDeeplink,
 } from "./sdk";
 
 describe("collections.put wire shape", () => {
@@ -169,5 +174,90 @@ describe("openWebview in an action response", () => {
   it("separates a malformed request from no request at all", () => {
     expect(hasPluginActionWebviewRequest({ openWebview: { surfaceId: "" } })).toBe(true);
     expect(hasPluginActionWebviewRequest({ navigate: { panelId: "main" } })).toBe(false);
+  });
+});
+
+describe("openUrl in an action response", () => {
+  it("reads both shapes a plugin might write", () => {
+    expect(readPluginActionOpenUrl({ openUrl: { url: "https://cursor.com/agents" } }))
+      .toEqual({ url: "https://cursor.com/agents" });
+    expect(readPluginActionOpenUrl({ openUrl: "  https://cursor.com/agents  " }))
+      .toEqual({ url: "https://cursor.com/agents" });
+  });
+
+  // The whole point of the verb having a reader: a link is the one thing a
+  // plugin returns that leaves ADE, and two of these schemes turn a link into
+  // a local-file read or a script.
+  it("opens https and refuses every other scheme", () => {
+    for (const refused of [
+      "http://cursor.com",
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "data:text/html,<script>1</script>",
+      "ade://lane/abc",
+      "//cursor.com/agents",
+      "cursor.com/agents",
+      "",
+      "   ",
+    ]) {
+      expect(readPluginActionOpenUrl({ openUrl: refused }), `${refused} was allowed`).toBeNull();
+    }
+    // Case is not a way in: the parser lowercases a protocol before it is read.
+    expect(readPluginActionOpenUrl({ openUrl: "HTTPS://cursor.com/agents" }))
+      .toEqual({ url: "https://cursor.com/agents" });
+    expect(readPluginActionOpenUrl({ openUrl: "JavaScript:alert(1)" })).toBeNull();
+  });
+
+  it("drops a URL past the ceiling rather than handing a system API a payload", () => {
+    const long = `https://cursor.com/?q=${"x".repeat(PLUGIN_OPEN_URL_MAX_CHARS)}`;
+    expect(readPluginActionOpenUrl({ openUrl: long })).toBeNull();
+  });
+
+  it("is null for a result that carries no link at all", () => {
+    expect(readPluginActionOpenUrl({ navigate: { panelId: "main" } })).toBeNull();
+    expect(readPluginActionOpenUrl({ openUrl: 7 })).toBeNull();
+    expect(readPluginActionOpenUrl(null)).toBeNull();
+  });
+
+  it("separates a refused link from no link at all", () => {
+    expect(hasPluginActionOpenUrlRequest({ openUrl: "file:///etc/passwd" })).toBe(true);
+    expect(hasPluginActionOpenUrlRequest({ openUrl: { url: "x" } })).toBe(true);
+    expect(hasPluginActionOpenUrlRequest({ navigate: { panelId: "main" } })).toBe(false);
+    expect(hasPluginActionOpenUrlRequest(null)).toBe(false);
+  });
+});
+
+describe("a deeplink on a plugin notification", () => {
+  it("accepts a panel link the posting plugin owns", () => {
+    expect(readPluginNotificationDeeplink("ade://plugin/acme/fleet", "acme"))
+      .toBe("ade://plugin/acme/fleet");
+    expect(readPluginNotificationDeeplink('  ade://plugin/acme/fleet?ctx={"id":"bc-1"}  ', "acme"))
+      .toBe('ade://plugin/acme/fleet?ctx={"id":"bc-1"}');
+  });
+
+  // A notification is the one thing a plugin puts in front of the user outside
+  // ADE's window, and the link in it is the one thing they tap without reading.
+  it("refuses a link to anywhere but the posting plugin's own panels", () => {
+    for (const refused of [
+      "ade://plugin/other/fleet",
+      "ade://lane/lane-1",
+      "ade://plugin/acme",
+      "ade://plugin/acme/fleet/extra",
+      "ade://plugin/acme/../escape",
+      "https://cursor.com/agents",
+      "javascript:alert(1)",
+      "not a url",
+      "",
+      7,
+      null,
+    ]) {
+      expect(readPluginNotificationDeeplink(refused, "acme"), `${String(refused)} was allowed`)
+        .toBeNull();
+    }
+  });
+
+  it("drops a link long enough to blow the push payload", () => {
+    const long = `ade://plugin/acme/fleet?ctx=${"x".repeat(PLUGIN_NOTIFICATION_DEEPLINK_MAX_CHARS)}`;
+    expect(readPluginNotificationDeeplink(long, "acme")).toBeNull();
   });
 });

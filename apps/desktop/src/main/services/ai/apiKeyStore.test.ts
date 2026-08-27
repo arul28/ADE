@@ -454,3 +454,23 @@ describe("apiKeyStore", () => {
     });
   });
 });
+
+describe("provider list, pinned to the plugin manifest", () => {
+  it("offers plugins exactly the providers this store holds keys for", async () => {
+    const { ENV_KEY_PROVIDERS } = await import("./apiKeyStore");
+    const { PLUGIN_PROVIDER_KEY_IDS, PLUGIN_PROVIDER_KEY_LABELS } =
+      await import("../../../shared/plugins/manifest");
+
+    // `providerKeys` in a plugin.json is validated against the second list, and
+    // the second list cannot import the first — this module reaches for
+    // `electron`. Adding a provider above without adding it there would make it
+    // a key ADE stores and no plugin is allowed to ask for, with no error
+    // anywhere to say so.
+    expect([...PLUGIN_PROVIDER_KEY_IDS].sort()).toEqual(Object.keys(ENV_KEY_PROVIDERS).sort());
+    // And every one of them has a name a person recognizes, because it is
+    // printed on the install card as "Uses your <name> API key".
+    for (const provider of PLUGIN_PROVIDER_KEY_IDS) {
+      expect(PLUGIN_PROVIDER_KEY_LABELS[provider]).toBeTruthy();
+    }
+  });
+});

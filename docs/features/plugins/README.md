@@ -38,6 +38,7 @@ Node built-ins:
 | `apps/desktop/src/shared/plugins/sdk.ts` | SDK v0 surface, budgets, error codes, NDJSON child frames, install-registry records, the `plugin` action domain, action-response navigation (`readPluginActionNavigation`, `PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES`) |
 | `apps/desktop/src/shared/deeplinks.ts` | The `plugin` deeplink target (`ade://plugin/<plugin-id>/<panel-id>[?ctx=…]`) and its lenient `ctx` reader |
 | `apps/desktop/src/shared/plugins/registryIndex.ts` | Marketplace index contract and checksum verification |
+| `apps/desktop/src/shared/plugins/network.ts` | Declared-host rules: what a manifest may name, how a live host is matched against it, the refusal sentence |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Registers the bundled `ade-plugins` authoring skill |
 
 Host (daemon / main process):
@@ -48,10 +49,12 @@ Host (daemon / main process):
 | `apps/desktop/src/main/services/plugins/pluginChildSupervisor.ts` | Child spawn, env denylist, NDJSON framing, ready/invoke timeouts, stderr ring, exponential restart backoff, crash containment, two-stage kill |
 | `apps/desktop/src/main/services/plugins/pluginSdkServer.ts` | Serves the child's `sdk` frames — the host half of every SDK method |
 | `apps/desktop/src/main/services/plugins/childRuntime/pluginChildBootstrap.ts` | The child process: loads the entry module, installs the `ade` global, dispatches `invoke` |
+| `apps/desktop/src/main/services/plugins/childRuntime/pluginChildNetworkGuard.ts` | Patches `fetch`, `WebSocket`, `http`/`https` and `net`/`tls` in the child, before the entry loads, so an undeclared host is refused and audited |
 | `apps/desktop/src/main/services/plugins/pluginInstallService.ts` | Install from local path or git URL, `state.json` registry, plugin skill roots |
 | `apps/desktop/src/main/services/plugins/pluginDataStore.ts` | Collections/contributions/panels reads and writes; delegates budget enforcement |
 | `apps/desktop/src/main/services/plugins/pluginSecretStore.ts` | `plugin:<id>:<NAME>` namespace in the machine credential store |
 | `apps/desktop/src/main/services/plugins/pluginEvents.ts` | Debounced `lane/pr/session/install.changed` fan-out to children |
+| `apps/desktop/src/main/services/plugins/pluginWebhookIngressService.ts` | One relay drain for every plugin that declares `webhookIngress`: secret registration, the 45s poll, the pruned `plugin_ingress_events` ledger, signature verification, delivery and ack |
 | `apps/desktop/src/main/services/plugins/pluginWebviewProtocol.ts` | Serves `ade-plugin://<pluginId>/…` from the install directory: containment, directory rule, closed MIME map, CSP + `nosniff` on every response including refusals |
 | `apps/desktop/src/main/services/plugins/pluginWebviewBridgeServer.ts` | The host half of `window.adePlugin`: sender-pinned plugin id, the declared-collection rule, the write path that bypasses the action domain |
 | `apps/desktop/src/main/services/plugins/pluginWebviewGuests.ts` | Which attached guests are plugin pages, and whose |
@@ -85,6 +88,7 @@ Renderer (desktop and web share this code):
 | `apps/desktop/src/renderer/lib/pluginRuntimeBridge.ts` | `window.ade.plugins` bridge |
 | `apps/desktop/src/renderer/components/app/pluginDeeplinkRoute.ts` | Where an `ade://plugin/…` link goes: the same hide-everything gate the compiled surfaces use, or a plain refusal |
 | `apps/desktop/src/renderer/components/chat/PluginInstallChatCard.tsx` | The `plugin_install` `ade_card` variant for agent-built install flows |
+| `apps/desktop/src/main/services/plugins/pluginInstallApproval.ts` | Turns an agent's `plugin.install`, `uninstall`, `enable` and `disable` into a card in that agent's own chat. Install approvals are remembered per `(pluginId, resolved source, disclosed grant)`; removals never are |
 
 iOS and TUI:
 
@@ -172,6 +176,209 @@ one supervised child process:
   action never fired" from "it fired and published nothing", which the ladder
   could not do before.
 
+### Outbound network is declared, disclosed and enforced
+
+The child is an ordinary Node process, so before this it could reach any host on
+the internet with nothing declaring it, disclosing it at install, allowlisting it
+or auditing it — the webview tier was strictly stricter than the child tier that
+holds the plugin's secrets.
+
+- A manifest declares `network: { hosts: [...] }`. **Absent means no outbound
+  network at all.** Max 8, lowercase hostnames; no scheme, port, path or IP; one
+  leading `*.` wildcard, which matches any subdomain depth but never the apex.
+  The rules and the match live in `shared/plugins/network.ts`, shared by the
+  parser, the disclosure and the child so the three cannot disagree.
+- The install disclosure prints "Talks to api.cursor.com" in the same "Adds:"
+  list as everything else — the Marketplace modal, the Marketplace detail page
+  and the in-chat approval card all read `describeManifestAdds`, so there is one
+  copy of the sentence.
+- `pluginChildNetworkGuard.ts` patches `fetch`, `WebSocket`, `http`/`https`
+  `request`/`get` and `net`/`tls` `connect` **before the plugin entry is
+  required**, because a dependency that dials at import time is exactly what a
+  later guard would miss. An undeclared host throws (or rejects)
+  `network_host_not_declared` and writes one `warn` line with `{ code, host,
+  via }` to the plugin's log ring.
+- `ade plugin doctor` grows a **Network** rung: the declared hosts, and a count
+  of refusals read back off that log.
+
+**This is a guard-rail, not a sandbox.** `pluginChildBootstrap.ts` already
+assumes the plugin is buggy rather than malicious-proof, and `child_process`
+walks around every door above. What the declaration buys is that an official
+plugin sending the user's key somewhere has to say so first, and that a
+dependency which quietly gains a telemetry call fails loudly. Do not write copy
+that claims more.
+
+`ade-voice` is the one bundled plugin that needs it: it declares
+`huggingface.co`, `*.huggingface.co` and `*.hf.co`, because the model download
+answers 302 to a four-label CDN host.
+
+### Provider keys are brokered, never copied
+
+`sdk.secrets` is a per-plugin namespace in a separate encrypted file. ADE's own
+API keys live in the keychain-backed store as `ai.api_key.<provider>.v1`, and
+they also power core features — local Cursor chat, for one. Without a broker a
+user pastes the same key twice and rotating one silently breaks the other.
+
+- A manifest declares `providerKeys: ["cursor"]`, validated against
+  `PLUGIN_PROVIDER_KEY_IDS`, which a test pins to the key store's own
+  `ENV_KEY_PROVIDERS`.
+- The install card says "Uses your Cursor API key", beside the network line.
+- `ade.secrets.getProviderKey(provider)` returns the key for a **declared**
+  provider only. Undeclared is `not_permitted` — the same refusal an undeclared
+  collection gets; a provider ADE stores no key for is `invalid_args`; declared
+  with nothing connected is `null`, which is a state to draw rather than an
+  error to report. `hasProviderKey` answers the same question without the value.
+- The key goes from `apiKeyStore` to the SDK reply frame and nowhere else. It is
+  never written to the plugin secret store, never put in a collection, a panel
+  schema or the sync layer, and never logged. `plugin.get` carries **presence
+  only**, as `providerKeys: [{ provider, present }]`, which is what the doctor's
+  **Provider keys** rung reads.
+- The remembered install approval is keyed on the declared hosts and provider
+  keys as well as the source, so a later save that widens either raises the card
+  again instead of riding an approval given for something narrower.
+
+### Webhooks arrive through the relay, and only to a plugin that asked
+
+A plugin could always *emit* an automation trigger. Nothing could *receive* a
+webhook: the relay's routes, the registered secret, the paged drain and the
+replay guard were all spelled "cursor". They are now spelled per plugin.
+
+- A manifest declares `webhookIngress: [{ id, label, description?, verify? }]`
+  — max 4 channels, ids lowercase-hyphen because the id is a path segment at the
+  relay. `[]` is the value for the overwhelming majority, never `undefined`.
+- The relay answers `POST /plugin/:pluginId/register`,
+  `POST /plugin/:pluginId/webhook[/:channelId]` and
+  `GET /plugin/:pluginId/events` (`apps/webhook-relay/src/relay.ts`, migration
+  `0008_plugin_ingress.sql`). Every read and every post is scoped by
+  `plugin_id`, so one plugin's secret can never authenticate another's traffic.
+  The Cursor Cloud routes stay exactly as they are until Cursor Cloud itself
+  moves out to a plugin.
+- The host generates a 32-byte secret per plugin, stores it in that plugin's own
+  secret namespace under the reserved name `ADE_WEBHOOK_RELAY_SECRET`, and
+  registers it. A plugin can neither read, write nor delete that name, and no
+  SDK verb, action or status row returns it.
+- One drain polls every declared plugin every 45 seconds and elects a single
+  owner per plugin across open projects, because the relay stream is per plugin
+  while the ledger is per project.
+- `verify: { kind: "hmac-sha256", secretRef, header?, prefix? }` checks a THIRD
+  party's own signature over the raw body, constant-time, host-side, before
+  anything crosses into the child. A channel whose declared secret is missing on
+  this machine fails closed and says which secret by name.
+- Delivery is at-least-once with an id: the child gets
+  `ade.events.on("webhook.received", …)` and calls `ade.webhooks.ack(id)`.
+  Unacked deliveries are redelivered on later ticks and abandoned after five,
+  because a poison body must not wake a plugin forever. A child that is not
+  running is not charged an attempt.
+- Only an allowlisted slice of the headers reaches the child, and a body past
+  64 KiB arrives clamped with `truncated: true`.
+- The ledger **is pruned** — 14 days and 5,000 rows per plugin. The two older
+  ingress tables are exempt from retention, and the 2026-07 daemon wedge is what
+  an unpruned one costs. Pruning cannot resurrect a delivery here because the
+  relay's own retention is shorter than the ledger's.
+- `ade.webhooks.url(channelId?)` answers the URL to hand the third party, for a
+  declared channel only. The Marketplace detail page shows the same URLs with a
+  Copy button, and `ade plugin doctor` grows a **Webhooks** rung, because the
+  person setting the integration up is usually looking at a plugin that is
+  installed and not running.
+
+### A plugin can own a conversation
+
+The largest thing a plugin can be is not a panel — it is the agent on the other
+end of a chat. A plugin declares a **chat runtime** in its manifest, binds ADE
+chat sessions to it, and from then on the user's turns are delivered to the
+plugin and its answers stream back into the transcript. Cursor Cloud is the
+plugin this seam was built for: a cloud agent *is* an ADE chat.
+
+```jsonc
+"chatRuntimes": [{
+  "id": "cloud",                    // sessions store this; renaming orphans them
+  "displayName": "Cursor Cloud",    // the name the chat header shows
+  "icon": "Cloud",                  // Phosphor name, optional
+  "capabilities": {                 // all four are required, no defaults
+    "followUp": true,               // the user may send a second turn
+    "interrupt": true,              // the user may stop a running turn
+    "hydrate": true,                // history from outside ADE can be backfilled
+    "artifacts": true               // files land in the lane
+  }
+}]
+```
+
+At most two per plugin. All four capability flags are required, and a missing
+one drops the runtime rather than defaulting: defaulting true promises the user
+something the plugin never wrote, and defaulting false silently disables what
+the author believed they had shipped.
+
+**The session side.** A bound session carries `provider: "plugin"` — one value
+for every plugin, never one per plugin — and a `runtimeRef` naming
+`{pluginId, runtimeId, externalId}`. `externalId` is the plugin's own name for
+the conversation: a cloud agent id, a thread id, a ticket. ADE stores it and
+never interprets it. The host also writes a `runtimeLabel` (`displayName`,
+`icon`, `pluginDisplayName`) onto the session, because every client needs a name
+for the chat and none of them can read another machine's manifests; a session
+whose plugin was uninstalled keeps the last label rather than reading as an
+unnamed provider.
+
+**Events into the plugin.**
+
+| event | delivery | payload |
+| --- | --- | --- |
+| `chat.turn` | reliable (`invoke`) — starts a stopped child, rejects visibly | `{sessionId, projectId, runtimeId, externalId, turnId, message, attachments, followUp}` |
+| `chat.interrupt` | reliable | `{sessionId, …, turnId}` |
+| `chat.opened` / `chat.closed` | droppable queue, subscription-gated | `{sessionId, …, watching}` |
+
+The split matters. `chat.turn` **is** the user's message, and a message the host
+quietly dropped is a chat that silently stops answering — so it rides the
+request/response frame with a request id, a timeout and a rejection the chat
+service turns into a visibly failed turn. Presence is a hint by nature: missing
+one costs a poll interval, never a message.
+
+**Presence, not a schedule.** `ade.schedules` is floored at 60 seconds and knows
+nothing about who is looking, so it cannot express a poll ladder that runs fast
+while the user is reading and stops when they navigate away. `chat.opened` /
+`chat.closed` say exactly that, ref-counted across clients: a desktop pane and a
+phone on the same conversation produce one signal between them. The plugin owns
+its own timer inside the child; the host only says when it matters.
+
+**Writing back.** `ade.chat` on the child:
+
+| method | what it does |
+| --- | --- |
+| `createSession(input)` | Bind a session. Idempotent on `{runtimeId, externalId}`, or adopts an unowned `sessionId`. |
+| `appendAssistant(sessionId, chunk)` | Stream a piece of the reply. Chunks coalesce into one turn; `done: true` closes it. |
+| `appendUser(sessionId, input)` | Append a user turn ADE did not originate. Deduped by `fingerprint`, suffix-tolerantly. |
+| `emitStatus(sessionId, status)` | `running` \| `idle` \| `failed` \| `finished`. This is what settles the session. |
+| `setArtifacts(sessionId, artifacts)` | Lane-relative files, drawn as a proof-artifact card. |
+| `attachBranch(sessionId, {branch, remote?})` | Fetch the branch into the lane so the ordinary branch and PR affordances light up. |
+| `hydrate(sessionId, transcript)` | Backfill history, oldest first, ≤ 500 entries per call. |
+
+`emitStatus` is not decoration. A plugin that never reports leaves a chat
+spinning forever; `idle` and `finished` settle it, and settling is what feeds
+ADE's attention ladder and the "waiting on you" treatment. The host closes an
+open turn on the child's crash rather than trusting it to.
+
+**Ownership is host-injected, and it is the whole security story.** A plugin can
+write words the user will read as an agent's, so the only question that matters
+is *which conversation* — and the plugin does not get to answer it. It never
+states its own `pluginId`: the host reads it off the child connection that
+asked, compares it to the session's `runtimeRef.pluginId`, and refuses on a
+mismatch. One function
+(`requirePluginChatWriteTarget` in `main/services/chat/pluginChatRuntime.ts`),
+one door, every verb but `createSession` through it. The refusal is worded
+identically for "no such session", "unowned session", "somebody else's session"
+and "no project open", because a caller that could tell them apart could
+enumerate the machine's conversations and their owners by probing.
+
+**Budgets.** 128 KiB per write (frame size, not a cap on how much a plugin may
+ultimately say — stream it), 900 writes per session per minute, 64 parts per
+chunk, 50 artifacts per call.
+
+**Limits today.** A plugin-owned chat can be handed *off* — the transcript
+replays into an ADE runtime like any other source — but nothing can be handed
+*into* one: binding a session to a plugin runtime is the plugin's own act,
+because only the plugin knows the external conversation the new session would
+point at. Native (thread-copying) fork is not available for one; a fork is
+always the ADE-side transcript replay.
+
 ### Storage: four tables, frozen shapes
 
 All plugin state lives in four synced tables with composite primary keys and no
@@ -253,6 +460,41 @@ actions name a plugin action id. There are no expressions, no conditionals, and
 no host callbacks — anything a plugin wants computed, it computes on its own
 machine and stores as data.
 
+A `list` item is deliberately richer than the nodes it would take to build one.
+Beside `title`, `subtitle`, `meta`, `tone`, `icon` and `onPress`, a row carries a
+`badge` chip, a `mono` line for a value meant to be compared against the row
+above it, up to three trailing `actions` and up to six more in `overflow`. Each
+action is a `VocabAction` plus a required `label`, `kind` and `icon`. The reason
+is the node budget: a row hand-assembled out of `stack`, `badge`, `text` and
+`button` nodes cost about seven nodes, so `maxNodes: 200` capped a panel near 27
+rows. A list is one node however rich its rows are, which makes `maxListItems`
+(100) the ceiling that actually applies. The caps on `actions` and `overflow`
+count what survived parsing rather than what was offered, so a refused entry does
+not spend a slot a valid one needed — and every client counts the same way.
+Desktop, web and iOS draw the overflow behind a menu; the TUI draws `actions` and
+`overflow` as one numbered key list, because a terminal has no menu and showing
+what a row can do beats hiding half of it.
+
+A bound row acts only through the binding's `allowActions`, an explicit list of
+the action ids a row from that collection may name. The rule it protects is that
+a panel author chose every action a reader can press: stored data that could mint
+an action freely would put a button in front of the reader the panel never
+declared. With the allowlist the author still chooses the set, and the data
+chooses only which member of it a given row offers. A row naming an id outside
+the list renders and is not pressable, and a binding with no allowlist yields no
+row actions at all. `boundRowAction` in `vocabularyNodes.ts` is the one
+implementation; iOS mirrors it in `PluginPanelParser.boundRowAction`, because the
+phone once accepted every action a row named while the other three clients
+accepted none. The gate applies to `onPress`, `actions` and `overflow` alike: a
+collection that could reach an undeclared action through a trailing button would
+have made `onPress` the only door anybody guarded.
+
+A `confirm` on an action is honoured on every client and by every control. On
+desktop and web that is structural: `useVocabActionRunner` in
+`vocabularyComponents.tsx` is the only path from a control to `dispatch`, so a
+list row cannot skip the prompt a button asks. iOS holds the same shape in
+`PluginPaneStore.perform`.
+
 ### Context and navigation
 
 A panel can arrive carrying a small object — its *render context*. It reaches
@@ -277,6 +519,59 @@ everything else, and a context large enough to carry a page would be a second,
 unversioned data channel no budget accounts for. Over the cap, the navigation
 still happens and the context is dropped — the user pressed a button and should
 still land where it sent them.
+
+### The other things an action may answer with
+
+`navigate` is one of several verbs a client reads out of an action's return
+value, each with a tolerant reader in `sdk.ts` and each honoured identically on
+all four clients:
+
+- **`openUrl`** (`readPluginActionOpenUrl`) sends the reader to the open web —
+  the footer link a panel cannot express, because `text` is plain text on every
+  client and never linkified, and `fallback.deeplink` draws only on the failure
+  card. **`https:` only**, capped at `PLUGIN_OPEN_URL_MAX_CHARS`. The scheme
+  rule is not a defence against the plugin, which is code the user installed; it
+  closes the two abuses that do not need one — `file:` would make a link a local
+  read, `javascript:` and `data:` would make it script — and refuses `ade:`
+  because in-app destinations belong to `navigate` and `fallback.deeplink`,
+  which pass an installed-and-enabled gate this would bypass. Every open is
+  logged with the plugin id.
+- **`message`** (`readPluginActionMessage`) is one sentence about how it went.
+  Two shapes reach the renderer and both are normal: over sync the host wraps a
+  handler's return as `{ok, message?, result}`, while the desktop's local IPC
+  hands the return back untouched. Reading both is what stopped "Created lane
+  'x'." from appearing in the web client and vanishing on desktop, from one line
+  of plugin code. iOS and the TUI have shown it since the verb existed; desktop
+  and web draw the same banner, auto-dismissing after six seconds or on the next
+  dispatch.
+
+### The panel refresh contract
+
+A panel bound to the plugin's own `plugin_collections` is already live: the host
+publishes a change and every client refetches. A panel whose rows come from
+somewhere else — an API the plugin polls — has no such signal, so a manifest
+panel may declare `refreshAction` (`PluginManifestPanel.refreshAction`), and each
+client then offers the refresh gesture it actually has: a button on desktop and
+web, pull-to-refresh on an iOS pane, and the TUI's existing `r`. The action is
+dispatched *before* the refetch, so the gesture means "go and get new data"; a
+refresh that fails still refetches and reports why. Absent, nothing changes on
+any client.
+
+It reaches the clients inside `schema_json` rather than in a column, because
+`plugin_panels` is a CRR table with a frozen SQL shape — the same reason the
+resolved `mobile` flag lives there, and the reason a client that predates the key
+renders the panel exactly as before. The writer re-stamps it from the manifest on
+every update and strips whatever a republished schema carried under that name, so
+a plugin cannot mint a refresh gesture for an action it never declared.
+
+A notification may carry a deeplink for the same reason a panel may declare a
+refresh: the default landing is the plugin's front door, and "the agent that
+finished is bc-1" has a better one. `readPluginNotificationDeeplink` accepts only
+`ade://plugin/<the-posting-plugin>/<panel>[?ctx=…]` — a notification is the one
+thing a plugin puts in front of the user outside ADE's window, and the link in it
+is the one thing they tap without reading, so naming another plugin's panel is
+refused. A refused link costs the destination and never the notification. It
+rides to the phone; the desktop notification bridge has no destination field.
 
 ### The webview tier
 
@@ -510,7 +805,7 @@ official plugins and layers a live index on top when one becomes reachable.
 | iOS | Read and action-invoke only — no local CRR writes to `plugin_*`. Panes mount as a sheet from an overflow menu and the machine screen |
 | TUI | `/plugin-view [plugin]` opens a panel in the right pane; forms go through the composer prompt line; `Ctrl+Y` copies an `ade://plugin/<id>/<panel>` link to the open panel (and still copies a lane or PR link when one of those rows is focused) |
 | CLI | `ade plugin …`, `ade <pluginId> <cmd>` for manifest-declared CLI words, and `ade link plugin <plugin-id> <panel-id> [--ctx '<json>']` to mint a panel link |
-| Chat | The `plugin_install` `ade_card` variant, for agent-built install flows |
+| Chat | The `plugin_install` `ade_card` variant, for agent-built install flows. The whole lifecycle is reachable this way: `install` asks once per source, and `uninstall`/`enable`/`disable` ask every time |
 
 A plugin panel is addressable: `ade://plugin/<plugin-id>/<panel-id>[?ctx=<json>]`,
 with the `https://ade-app.dev/open?type=plugin&plugin=…&panel=…` form alongside

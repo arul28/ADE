@@ -14,7 +14,23 @@ import type { RuntimeProcessSummary } from "./sessions";
 import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 
-export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | "pi" | (string & {});
+/**
+ * `"plugin"` is one value, not one per plugin. A session owned by a plugin
+ * chat runtime says so with `provider: "plugin"` and names WHICH plugin in
+ * {@link AgentChatSession.runtimeRef}. Minting a provider string per installed
+ * plugin would put an unbounded, install-time-discovered set into a union that
+ * ~20 provider-keyed maps across four clients close over, and every one of them
+ * would have to grow a case that no client could enumerate ahead of time.
+ */
+export type AgentChatProvider =
+  | "codex"
+  | "claude"
+  | "cursor"
+  | "droid"
+  | "opencode"
+  | "pi"
+  | "plugin"
+  | (string & {});
 
 export type AgentChatSessionStatus = "active" | "idle" | "ended";
 export type AgentChatSessionProfile = "light" | "workflow";
@@ -532,6 +548,125 @@ export type AgentChatCompletionReport = {
 };
 
 export type AgentChatRuntime = "local" | "cloud";
+
+/**
+ * The provider value every plugin-owned chat session carries.
+ *
+ * One value for every plugin, deliberately — see {@link AgentChatProvider}.
+ * Which plugin, and which of its declared runtimes, is
+ * {@link AgentChatRuntimeRef}.
+ */
+export const PLUGIN_CHAT_PROVIDER = "plugin";
+
+/**
+ * Who owns a chat session's turns, when it is not one of ADE's own runtimes.
+ *
+ * Every field is HOST-INJECTED. A plugin never states its own `pluginId`: the
+ * host reads it from the child connection that asked, and a write aimed at a
+ * session whose `runtimeRef.pluginId` is somebody else is refused rather than
+ * relabelled. That is the whole security story of the plugin chat seam — a
+ * plugin can write into a transcript, so the only question that matters is
+ * WHICH transcript, and the plugin does not get to answer it.
+ *
+ * `externalId` is the plugin's own name for the conversation — a cloud agent
+ * id, a thread id, a ticket. ADE stores it, indexes it, and never interprets
+ * it.
+ */
+export type AgentChatRuntimeRef = {
+  /** The plugin that owns this session's turns. */
+  pluginId: string;
+  /** Which of that plugin's declared `chatRuntimes` owns it. */
+  runtimeId: string;
+  /** The plugin's own identifier for the conversation. Opaque to ADE. */
+  externalId: string;
+};
+
+/** Longest `externalId` the host stores. A pointer, never a payload. */
+export const AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX = 256;
+
+/**
+ * What a client puts on a plugin-owned chat: the runtime's own name, and the
+ * icon its manifest declared.
+ *
+ * Resolved by the host from the manifest and carried on the session, because
+ * every client needs it and none of them can read a manifest. `icon` is a
+ * Phosphor name, the same vocabulary a plugin's panels and sockets already
+ * draw from, so a client that cannot resolve it falls back to the plugin
+ * glyph rather than to another provider's logo.
+ */
+export type AgentChatRuntimeLabel = {
+  /** "Cursor Cloud". Shown in the chat header and the session row. */
+  displayName: string;
+  /** Phosphor icon name from the plugin's manifest, when it declared one. */
+  icon?: string;
+  /** The owning plugin's own display name, for "from <plugin>" attributions. */
+  pluginDisplayName?: string;
+};
+
+export function isAgentChatRuntimeRef(value: unknown): value is AgentChatRuntimeRef {
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.pluginId === "string" && record.pluginId.length > 0
+    && typeof record.runtimeId === "string" && record.runtimeId.length > 0
+    && typeof record.externalId === "string"
+    && record.externalId.length > 0
+    && record.externalId.length <= AGENT_CHAT_RUNTIME_EXTERNAL_ID_MAX;
+}
+
+/**
+ * True when this session's turns belong to a plugin.
+ *
+ * Read `runtimeRef`, not `provider`. The provider value is what the clients
+ * render; the ref is what decides where a turn goes, and a session that
+ * somehow carries one without the other must still route to its owner rather
+ * than fall through to an ADE runtime that has no thread for it.
+ */
+/**
+ * What to call the agent on the other end of a chat, on any client.
+ *
+ * The ONE function every surface should ask, rather than each of them keying a
+ * map off `provider`. For ADE's own runtimes it is the provider's name, exactly
+ * as before. For a plugin-owned session it is the runtime's own name — "Cursor
+ * Cloud", not "Plugin" — because the person opened a conversation with that
+ * thing and the word "plugin" tells them nothing about which one.
+ *
+ * Falls back through the last label the host resolved, then the provider name,
+ * then `fallback`, so an uninstalled plugin's old conversations keep reading
+ * the way they always did.
+ */
+export function chatSessionAgentLabel(
+  session: {
+    provider?: AgentChatProvider;
+    runtimeRef?: AgentChatRuntimeRef | null;
+    runtimeLabel?: AgentChatRuntimeLabel | null;
+  } | null | undefined,
+  fallback: string,
+): string {
+  const declared = session?.runtimeLabel?.displayName?.trim();
+  if (declared?.length) return declared;
+  return providerDisplayLabel(session?.provider, fallback);
+}
+
+/**
+ * The icon a client should draw beside {@link chatSessionAgentLabel}.
+ *
+ * A Phosphor name for a plugin-owned session, or null for everything else —
+ * for which the client keeps using the provider logo it already has. Null is
+ * also the answer for a plugin that declared no icon, and the client falls
+ * back to its generic plugin glyph rather than to another provider's mark.
+ */
+export function chatSessionAgentIcon(
+  session: { runtimeLabel?: AgentChatRuntimeLabel | null } | null | undefined,
+): string | null {
+  const icon = session?.runtimeLabel?.icon?.trim();
+  return icon?.length ? icon : null;
+}
+
+export function isPluginOwnedChatSession(
+  session: { provider?: AgentChatProvider; runtimeRef?: AgentChatRuntimeRef | null } | null | undefined,
+): boolean {
+  return isAgentChatRuntimeRef(session?.runtimeRef);
+}
 
 export type AgentChatImportProvider = "claude" | "codex";
 
@@ -1638,6 +1773,13 @@ export type AgentChatSession = {
   cursorRuntime?: AgentChatRuntime;
   /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
   cursorPromotedTurnId?: string;
+  /**
+   * Set when a plugin owns this session's turns. See {@link AgentChatRuntimeRef}.
+   * Present implies `provider === "plugin"`.
+   */
+  runtimeRef?: AgentChatRuntimeRef;
+  /** How the owning plugin's runtime is named and drawn. See {@link AgentChatRuntimeLabel}. */
+  runtimeLabel?: AgentChatRuntimeLabel;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -1698,6 +1840,22 @@ export type AgentChatSessionSummary = {
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
+  /**
+   * The plugin that owns this session's turns, mirrored onto the summary so a
+   * client can label and route a chat without opening it. See
+   * {@link AgentChatRuntimeRef}.
+   */
+  runtimeRef?: AgentChatRuntimeRef;
+  /**
+   * How the owning plugin's runtime wants to be named and drawn, resolved by
+   * the host from the plugin's manifest at projection time.
+   *
+   * Denormalized on purpose: every client needs a label for a chat it is
+   * listing, and none of them can read another machine's plugin manifests. A
+   * session whose plugin has since been uninstalled keeps the last label the
+   * host resolved rather than rendering as an unnamed provider.
+   */
+  runtimeLabel?: AgentChatRuntimeLabel;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;

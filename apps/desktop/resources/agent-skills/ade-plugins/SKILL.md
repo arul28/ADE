@@ -32,20 +32,50 @@ rg -n "PLUGIN_SOCKET_KINDS|PLUGIN_SOCKET_CLIENT_SUPPORT" -A 40 apps/desktop/src/
 
 That file is the authority for which socket kinds exist and which clients draw them. The tables below are its prose and can lag it.
 
-**2. Which app, and which channel, you are about to test against.**
+**2. Which app you are about to test against — YOUR chat's app, not `PATH`.**
+
+A machine routinely has more than one ADE. They are separate apps with separate CLIs, separate `ADE_HOME`s and separate install registries:
+
+| App | CLI inside it | `ADE_HOME` |
+|---|---|---|
+| `/Applications/ADE.app` | `/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade` | `~/.ade` |
+| `/Applications/ADE Alpha.app` | `/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade` | `~/.ade-alpha` |
+| `/Applications/ADE Beta.app` | `/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade` | `~/.ade-beta` |
+
+**`PATH` does not decide which app your chat belongs to, and it is regularly the wrong one.** A user's shell profile puts `~/.local/bin/ade` — a symlink to whichever app installed the Terminal command, usually stable ADE — ahead of everything, and a login shell re-applies that on every command you run. So `which ade` can answer stable ADE while your chat is running inside ADE Alpha.
+
+The app that launched your chat tells you which CLI is its own. Resolve it FIRST, and use it for every `ade plugin` command:
 
 ```bash
-which ade && ade --version
-ade plugin list --text       # "Unknown command 'plugin'" = this CLI has no plugin platform
+echo "${ADE_CLI_PATH:-unset}"      # your chat's own CLI, injected by the app that spawned you
+echo "${ADE_HOME:-unset}"          # that app's machine home
+ADE="${ADE_CLI_PATH:-$(command -v ade)}"
+"$ADE" --version
+"$ADE" plugin list --text
 ```
 
-A machine routinely has more than one ADE. `/Applications/ADE.app` and `/Applications/ADE Alpha.app` ship separate CLIs with separate `ADE_HOME`s and separate install registries, and the shell's `PATH` picks one of them regardless of which worktree you are standing in. **A lane changes the checkout. It does not change which app the user's `ade` runs.** If `ade plugin list` answers `Unknown command 'plugin'`, name that in your next message rather than after an install has already failed.
+If `$ADE_CLI_PATH` is unset, derive it before giving up, in this order:
+
+1. `ade doctor --text` — its `CLI` row names the binary, the version and the `ADE_HOME` that answered, so you can match it against the table above (and it warns outright when the binary belongs to a different app than your chat).
+2. `ls -d /Applications/ADE*.app` and take the CLI from the bundle whose `ADE_HOME` matches `$ADE_HOME`.
+3. Ask the user which app their window is, and name both candidates from the table.
+
+**Never end a turn on "the `ade` on PATH has no `plugin` command".** That sentence has already been wrong in a real run: the agent reported it as "you are not on Alpha, plugins cannot be installed" while the user was looking at the Alpha window with a working Alpha CLI on disk, and the user had to contradict it. `Unknown command 'plugin'` and `Domain 'plugin' is unavailable in this runtime` are facts about ONE BINARY, never about ADE, this machine, or the request.
 
 Report both results in one line before going further:
 
-> This checkout has the plugin host (`sockets.ts`, 16 socket kinds). `ade` here resolves to the alpha CLI and `ade plugin list` answers. Building against that.
+> This checkout has the plugin host (`sockets.ts`, 16 socket kinds). My chat's CLI is `$ADE_CLI_PATH` (ADE Alpha, `ADE_HOME=~/.ade-alpha`) and `plugin list` answers there. Building against that.
 
-If either check fails, that sentence is the entire reply.
+If **check 1** fails, that sentence is the entire reply — there is no platform to describe. If check 2 fails, keep going down the list above; a missing `plugin` command is a binary to find, not a task to refuse.
+
+**One more thing to know before you debug a `webview` surface.** The guest host reads the **list payload**, not the manifest on disk. If your overlay or tab shows the panel where you expected your page, compare the two halves of one answer before you touch the plugin:
+
+```bash
+"$ADE" actions run plugin.get --input-json '{"pluginId":"<id>"}' \
+  | jq '{summary: .surfaces, manifest: .manifest.surfaces}'
+```
+
+`manifest.surfaces[]` carrying `entryHtml` while `surfaces[]` does not is a HOST fault, not yours — the running app is older than the fix that copies the field. `ade plugin doctor <id> --text` makes the same comparison and fails its **Custom page** rung when it finds it. Note that `plugin.reload` cannot change what the already-running app serves; that needs a newer app and a restart.
 
 ## Phase 1 — Place it before you build it
 
@@ -128,7 +158,7 @@ ade plugin dev my-thing                       # watch + reload on every save
 |---|---|---|
 | `plugin.install` | **Yes — the user is asked** | Raises an approval card in your own chat and blocks until answered. The install then runs on the host's authority, and you get the normal install result |
 | `plugin.reload` | **Yes, ungated** | Re-copies a `local` source over the installed copy, re-reads `plugin.json`, restarts the child, reconciles panels and contributions. Your authoring loop |
-| `plugin.uninstall`, `enable`, `disable` | **No — operator only** | Flat refusals with `kind: "plugin_role_denied"`. Removing a plugin or stopping its child is not worth interrupting someone for mid-turn, and an uninstall prompt is the kind people learn to dismiss |
+| `plugin.uninstall`, `enable`, `disable` | **Yes — the user is asked** | The same mechanism as `install`, symmetrically: a card in your own chat ("Remove Tipsy 0.2.0?", "Turn off Tipsy?", "Turn on Tipsy?") listing what stops being there, and the verb runs on the host's authority only if they say yes. **Never remembered** — an approved install does not pre-approve a removal, so every one of these asks again |
 | `plugin.list`, `get`, `getPanel`, `getManifest`, `listContributions`, `openLogs`, `presence`, `usageSummary` | **Yes** | Every read-back in the verify section below |
 | `plugin.invoke` | **Yes** | Call an installed plugin's own handlers |
 
@@ -150,18 +180,33 @@ Four things to know before you call `install`:
 - **The same plugin from the same directory does not re-ask** for the life of the ADE process, so a build-test-fix loop runs uninterrupted after the first approval. The memo is keyed on what the *host* resolved, not on what you passed — a different directory, a different plugin id at that directory, or any git URL asks again.
 - **`ade plugin dev` is the user's watcher, not yours.** It blocks until interrupted, so an agent cannot run it inside a turn. Edit files, then call `plugin.reload`.
 
+**You can clean up after yourself.** A diagnostic run that installs a plugin can take it off again in the same conversation, and a plugin that has stopped working can be turned back on from the chat that noticed:
+
+```bash
+ade actions run plugin.uninstall --input-json '{"pluginId":"my-thing"}'            # asks: Remove my-thing?
+ade actions run plugin.disable   --input-json '{"pluginId":"my-thing"}'            # asks: Turn off my-thing?
+ade actions run plugin.enable    --input-json '{"pluginId":"my-thing"}'            # asks: Turn on my-thing?
+```
+
+`ade plugin remove <id>`, `ade plugin disable <id>` and `ade plugin enable <id>` raise the same card and wait on the same answer. Four things they do NOT share with `install`:
+
+- **Nothing is remembered.** Every removal, disable and enable asks, every time. Approving an install is not approving its deletion.
+- **The refusals are named for the verb:** `plugin_uninstall_denied` / `_cancelled` / `_approval_timed_out`, and the same three for `plugin_enable_*` and `plugin_disable_*`. All are answers, not errors to retry.
+- **Removing deletes the plugin's stored data**, and its synced copies on the user's other devices. The card says so. Disabling deletes nothing.
+- **Never unset `ADE_CHAT_SESSION_ID`** to get around any of this. It is the thing that makes the card reachable at all; without it your call is an unattributed operator command, and the skill's rule against unsetting it has not changed.
+
 Two trapdoors worth knowing before you run any of it:
 
 - **Lifecycle commands need the brain.** `install`, `remove`, `enable`, `disable`, `reload`, `logs` and `dev` all go through it. `list` and `create` do not.
-- **A terminal ADE launched is not the user's own terminal.** It inherits `ADE_CHAT_SESSION_ID`, `ADE_RUN_ID` and friends, and the role code treats a chat-session binding as an authority boundary — so a shell that would otherwise be `cto` is clamped to `agent`, and passing `--role cto` does not lift it. The refusal is specific, and it is `policyDenied` rather than a missing method:
+- **A terminal ADE launched is not the user's own terminal.** It inherits `ADE_CHAT_SESSION_ID`, `ADE_RUN_ID` and friends, and the role code treats a chat-session binding as an authority boundary — so a shell that would otherwise be `cto` is clamped to `agent`, and passing `--role cto` does not lift it. For the four lifecycle verbs that clamp is what routes you to a card rather than to a refusal, so it is working for you, not against you. A caller that is neither `cto` **nor** attached to a chat — an external client, a runtime with no chat service — has nobody to ask, and gets the flat `policyDenied` refusal instead:
 
-  > Action 'plugin.uninstall' is limited to the machine operator. This terminal carries an ADE agent session (ADE_CHAT_SESSION_ID is set), so --role cto is clamped to agent. Run from a terminal you opened yourself, or unset ADE_CHAT_SESSION_ID ADE_RUN_ID ADE_STEP_ID ADE_ATTEMPT_ID ADE_OWNER_ID ADE_DEFAULT_ROLE.
+  > Action 'plugin.uninstall' is limited to the machine operator. Run it from ADE, `ade code`, or your own terminal.
 
-  carrying `{kind: "plugin_role_denied", requiredRole: "cto", sessionBound: true}`. The second sentence appears **only** when the caller carries a chat session; a caller with no session binding gets *"Run it from ADE, `ade code`, or your own terminal"* instead, and no `sessionBound` flag. That difference is the point — the old wording told a session-bound agent to do the thing it believed it had already done.
+  carrying `{kind: "plugin_role_denied", requiredRole: "cto"}`. If you ever see that with `sessionBound: true`, the ADE you are talking to predates the removal card — read the **CLI** row of `ade doctor --text` before you conclude anything about this machine.
 
-  **Detect the branch from `sessionBound`, not from the sentence.** The flag is the programmatic discriminator; matching on the prose breaks the moment the wording is improved again, which it already has been once.
+  **Detect the branch from `kind`, not from the sentence.** `data.kind` is the programmatic discriminator; matching on the prose breaks the moment the wording is improved again, which it already has been twice.
 
-  **Read it as an authority boundary, not an obstacle.** The refusal names the unset as the human's escape hatch, not yours: hand the user the command for their own terminal rather than clearing those variables on their behalf. Clearing them to reach an operator-only action is laundering a permission decision the user never made.
+  **Read it as an authority boundary, not an obstacle.** Never clear `ADE_CHAT_SESSION_ID` and its friends to reach an operator action: that is laundering a permission decision the user never made, and on a current ADE it also throws away the card that would have asked them properly. Hand the user the command for their own terminal instead.
 
 ### Verify — every surface you plan to claim
 
@@ -427,6 +472,9 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
   "cli": ["issues", "open"],
   "skills": ["skills/using-graph"],
   "theme": { "tokens": { "dark": { "--color-accent": "#7C6FF0" }, "light": {} } },
+  "network": { "hosts": ["api.cursor.com"] },
+  "providerKeys": ["cursor"],
+  "webhookIngress": [{ "id": "default", "label": "Build events" }],
   "official": false
 }
 ```
@@ -442,7 +490,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `vocabVersion` | no | Panel-schema vocabulary version. Positive integer, defaults to `1` |
 | `entry` | no | Relative path to the entry module. **Omit for UI-only plugins** (themes, static panels) — they run no code at all |
 | `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?, mobile?, builtin?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI*. `mobile` — see *Mobile*. `builtin` names a compiled-in ADE tab this plugin gates instead of rendering, and is reserved — see *What you can build* |
-| `panels[]` | no | `{id, schemaFile?, title?, icon?}`. `schemaFile` is the default schema; `sdk.panels.update()` replaces it at runtime |
+| `panels[]` | no | `{id, schemaFile?, title?, icon?, refreshAction?}`. `schemaFile` is the default schema; `sdk.panels.update()` replaces it at runtime. `refreshAction` names one of your actions and turns on a refresh gesture — see *A panel that fetches* |
 | `sockets[]` | no | See *Sockets* below |
 | `collections` | no | `{"<name>": {"sync": true\|false}}`. `sync: true` rides the sync layer to your other devices |
 | `settings[]` | no | `{key, kind, label, description?, options?, optionsAction?, default?}`; `kind` ∈ `text`, `secret`, `select`, `toggle`, `number` |
@@ -453,6 +501,9 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `searchProviders[]` | no | `{id, label, action?}`. Max **2** — see *Engine registrations* |
 | `keybindings[]` | no | `{binding, label, action}`. Max **6** — see *Engine registrations* |
 | `theme` | no | Token sets — see *Themes* |
+| `network` | no | `{"hosts": ["api.cursor.com"]}`. Hosts your plugin's process may contact. Max **8**, lowercase, no scheme, no port, no IP. One leading `*.` wildcard is allowed and matches any subdomain depth. **Omit it and your plugin reaches nothing** — see *Outbound network* |
+| `providerKeys` | no | `["cursor"]`. Providers whose ADE-stored API key you read through `ade.secrets.getProviderKey`. Max **4**, from the api-key store's own ids — see *Provider keys* |
+| `webhookIngress[]` | no | `{id, label, description?, verify?}`. Webhook channels ADE receives for you at its relay. Max **4**; `id` is a URL path segment, so `^[a-z][a-z0-9-]{0,31}$` — see *Webhooks* |
 | `official` | no | **Not a trust claim.** The Official badge and the checksum rule come from the registry's curated file, never from the manifest. Locally the field does exactly one thing: a surface may carry `builtin` only on a manifest that sets it — see *What you can build* |
 
 Every path in a manifest (`entry`, `schemaFile`, `skills[]`) must be relative, inside the plugin directory, and free of `..` — absolute paths and traversal are refused at parse time.
@@ -464,6 +515,78 @@ Manifest-level rules the parser enforces (a violation drops that entry, not the 
 - `file-viewer` requires at least one `".ext"` extension.
 - A `webview` surface requires `entryHtml`, and it must name an `.html` (or `.htm`) file inside the plugin. A `webview` with no page is dropped, not warned about. `entryHtml` on any other kind is ignored.
 
+### Outbound network
+
+Your plugin's process reaches **no host on the internet** unless the manifest says which ones:
+
+```json
+"network": { "hosts": ["api.cursor.com", "*.hf.co"] }
+```
+
+- `api.cursor.com` matches that host and nothing else.
+- `*.hf.co` matches any subdomain at any depth (`us.aws.cdn.hf.co`), and **not** the apex `hf.co`. Declare both when you need both — a redirect to a CDN is the usual reason.
+- `localhost` is the one single-label name allowed. IP literals, ports, schemes and paths are refused at parse time.
+
+Declared hosts are printed on the install card as "Talks to api.cursor.com", before the person agrees. Widening the list in a later version asks them again.
+
+Enforcement is inside your child process: `fetch`, `WebSocket`, `http`/`https` and the `net`/`tls` sockets under them refuse an undeclared host with a `network_host_not_declared` error and write one `warn` line to your plugin log. `ade plugin doctor <id>` shows the declared hosts and counts refusals.
+
+**It is a guard-rail, not a sandbox.** Your child is an ordinary Node process, so `child_process` walks around all of it. The declaration exists so the person installing you knows where their data goes; do not describe it to them as containment.
+
+### Provider keys
+
+ADE stores the user's API keys for the model providers it talks to. A plugin may read one — and only one it declared:
+
+```json
+"providerKeys": ["cursor"]
+```
+
+```js
+const key = await ade.secrets.getProviderKey("cursor");
+if (!key) return { text: "Add a Cursor API key in Settings to use this." };
+```
+
+- `getProviderKey` resolves `null` when the provider is declared and the user has connected no key. That is a normal state — say so, do not throw.
+- `hasProviderKey(provider)` answers the same question without reading the key, for a panel that only needs to draw the empty state.
+- An undeclared provider rejects with `not_permitted`; one ADE stores no key for rejects with `invalid_args`.
+- The install card says "Uses your Cursor API key". Adding a provider in a later version asks the person again.
+
+This is the user's credential, given to ADE and lent to you. Hold it for the call that needs it. Do not copy it into `ade.secrets`, a collection, a panel schema or a log — the user rotates it in Settings, and a second copy is a copy that goes stale and a credential in a place they cannot see.
+
+### Webhooks
+
+A third party can post to your plugin. Declare the channels it posts to:
+
+```json
+"webhookIngress": [
+  { "id": "default", "label": "Build events" },
+  { "id": "billing", "label": "Billing",
+    "verify": { "kind": "hmac-sha256", "secretRef": "STRIPE_SIGNING_SECRET" } }
+]
+```
+
+ADE registers a secret with its own Cloudflare relay for you and gives you a URL per channel:
+
+```js
+const url = await ade.webhooks.url();          // the "default" channel
+const billing = await ade.webhooks.url("billing");
+
+ade.events.on("webhook.received", async (event) => {
+  // { id, channel, eventType, receivedAt, headers, body, truncated?, attempt }
+  if (event.channel === "default") await ade.automations.emitTrigger({ triggerId: "build_finished" });
+  await ade.webhooks.ack(event.id);            // acked, or you get it again
+});
+```
+
+- **The URL is the setup step.** Show it to the person, or let them copy it from your plugin's Marketplace page, which lists every declared channel. `ade plugin doctor <id>` prints the same URLs, which is what to use when the plugin is installed and not running.
+- **Delivery is at-least-once, and `ack` is not optional.** A delivery you do not ack is redelivered on the next drain, and abandoned after five attempts. `event.id` is stable across redeliveries, so it is the key to dedupe on if your handler is not idempotent.
+- **`body` is a string, capped at 64 KiB.** Past that it arrives with `truncated: true` rather than not at all — parse defensively.
+- **`headers` is a short allowlist.** Content type, user agent and the common webhook/delivery-id headers. Authorization, cookies and anything else the sender attached never reach you.
+- **`verify` checks the sender's own signature**, host-side and constant-time, over the raw body, before your code sees it. `secretRef` names one of *your* secrets (`ade.secrets.set("STRIPE_SIGNING_SECRET", …)`), never a literal — a signing secret in a manifest ships in the package. A channel whose secret is missing on the machine refuses every delivery and says so in the doctor; that is the safe reading of "the manifest says check this and I cannot".
+- **Without `verify`**, the relay's own registration secret is the only check, so the URL is the credential: treat it as one and do not print it in a log or a panel anybody screenshots.
+- `ADE_WEBHOOK_RELAY_SECRET` is reserved. It is ADE's registration secret in your namespace, and `ade.secrets` refuses to read, write or delete it.
+- **Renaming a channel id breaks a live integration** — the id is in the URL somebody already pasted somewhere. Add a channel instead.
+
 ### Mobile
 
 Every surface says whether it belongs on the phone. Set `"mobile": false` on a surface that only makes sense on a big screen, and ADE's iOS app leaves it out of the plugin menu and will not open it.
@@ -474,6 +597,65 @@ Every surface says whether it belongs on the phone. Set `"mobile": false` on a s
 - **`mobile` only ever takes a surface away.** It cannot add one. A value that is not `true` or `false` is ignored with a warning, and the default applies.
 
 Set it per surface, not per plugin: a plugin with a summary pane and a settings tab can keep the first and drop the second.
+
+### Owning a conversation
+
+The biggest thing your plugin can be is the agent on the other end of a chat.
+Declare a `chatRuntimes` entry, and ADE sessions can be bound to you: the user's
+turns arrive as `chat.turn`, and your answers stream back into the transcript.
+
+```jsonc
+"chatRuntimes": [{
+  "id": "cloud",
+  "displayName": "Cursor Cloud",
+  "icon": "Cloud",
+  "capabilities": { "followUp": true, "interrupt": true, "hydrate": true, "artifacts": true }
+}]
+```
+
+Two per plugin, and **all four capability flags are required** — a missing one
+drops the runtime, because both defaults lie. Then:
+
+```js
+const { sessionId } = await ade.chat.createSession({
+  runtimeId: "cloud", externalId: agentId, laneId,
+});
+
+ade.events.on("chat.turn", async ({ sessionId, message, turnId }) => {
+  const run = await startRun(message);              // return as soon as you have DISPATCHED
+  for await (const chunk of run) {
+    await ade.chat.appendAssistant(sessionId, { text: chunk, turnId });
+  }
+  await ade.chat.emitStatus(sessionId, { state: "idle" });
+});
+
+// Poll fast while somebody is reading, and not at all when nobody is.
+ade.events.on("chat.opened", ({ sessionId }) => startLadder(sessionId));
+ade.events.on("chat.closed", ({ sessionId }) => stopLadder(sessionId));
+```
+
+Four things to get right:
+
+- **Return from `chat.turn` when the turn is dispatched, not when it is
+  answered.** The reply comes back through `appendAssistant`. Holding the
+  listener open for a twenty-minute run blocks the host's dispatch budget.
+- **Always call `emitStatus`.** A plugin that never reports leaves a chat
+  spinning forever. `idle` and `finished` settle it; settling is what feeds the
+  attention ladder and the "waiting on you" treatment. `failed` marks the turn
+  failed with your sentence in `detail`.
+- **Use `chat.opened` / `chat.closed`, not `ade.schedules`,** for a poll ladder.
+  Schedules are floored at 60 seconds and know nothing about who is looking.
+- **You can only write to sessions you own.** The host reads your plugin id off
+  your own connection and compares it to the session's; every `ade.chat.*` verb
+  but `createSession` is refused otherwise. There is no way to name your way
+  into somebody else's transcript, so do not try to handle that error.
+
+`appendUser` backfills a turn ADE did not originate and `hydrate` backfills a
+whole history (≤ 500 entries, oldest first); both dedupe on `fingerprint`
+suffix-tolerantly, so re-reading a conversation after a reconnect adds only what
+is new. `setArtifacts` draws lane-relative files as a proof card, and
+`attachBranch` fetches a branch into the lane so the ordinary branch and PR
+affordances light up.
 
 ### Engine registrations
 
@@ -550,7 +732,7 @@ A panel is a JSON document. `v` is the vocabulary version, `fallback` is **requi
 | `text` | **`text`**, `variant` (`title`\|`subtitle`\|`body`\|`caption`\|`code`), `tone`. `code` is the only monospace affordance |
 | `badge` | **`text`**, `tone`, `icon` |
 | `button` | **`label`**, **`onPress`** (a `VocabAction`), `kind` (`primary`\|`default`\|`quiet`), `icon`, `disabled` |
-| `list` | **`items[]` or `bind`**, `emptyText`. Item: **`title`**, `subtitle`, `meta`, `tone`, `icon`, `onPress` |
+| `list` | **`items[]` or `bind`**, `emptyText`. Item: **`title`**, `subtitle`, `meta`, `tone`, `icon`, `onPress`, `badge` `{text, tone?, icon?}`, `mono`, `actions[]` (≤3), `overflow[]` (≤6) |
 | `table` | **`columns[]`** and **`rows[]` or `bind`**, `emptyText`. Column: **`key`**, **`label`**, `align` |
 | `form` | **`fields[]`**, **`submit`** `{label, onPress}`. Field kinds: `text`, `secret`, `select`, `toggle`, `number` |
 | `chart` | **`kind`** (`line`\|`bar`), **`series[]`** of `{id, label?, tone?, points:[{x,y}]}`, `title`, `emptyText` |
@@ -562,9 +744,50 @@ A panel is a JSON document. `v` is the vocabulary version, `fallback` is **requi
 
 Tones are `neutral`, `accent`, `success`, `warning`. **There is no red.** Any red-ish value you write (`danger`, `error`, `fail`) folds to `warning` — the house rule cannot be bypassed by a payload.
 
-`bind` reads your own `plugin_collections` rows: `{collection, keyPrefix?, limit?}`. The rows must **already be in render shape** for the component that binds them — a `list` binding reads `{title, subtitle?, …}` values, a `table` binding reads column-keyed records. The renderer does no reshaping.
+`bind` reads your own `plugin_collections` rows: `{collection, keyPrefix?, limit?, allowActions?}`. The rows must **already be in render shape** for the component that binds them — a `list` binding reads `{title, subtitle?, …}` values, a `table` binding reads column-keyed records. The renderer does no reshaping.
 
-`onPress` is `{action, args?, confirm?}`. `args` is flat scalars only (nested objects are dropped — that is where "data, never code" would start to leak). `confirm` makes the client ask before dispatching.
+`onPress` is `{action, args?, confirm?}`. `args` is flat scalars only (nested objects are dropped — that is where "data, never code" would start to leak). `confirm` makes the client ask before dispatching, on **every** client — a list row asks exactly as a button does.
+
+**Put a row's whole story on the row.** A `list` item carries a status chip (`badge`), a monospace line for a value meant to be compared (`mono` — an id, a branch, a short sha), up to three trailing buttons (`actions`) and up to six more behind an overflow control (`overflow`). Each action is `{action, args?, confirm?, label, kind?, icon?}` — an `onPress` plus a required `label`, since a button on a row has no other way to say what it does.
+
+```json
+{ "component": "list", "items": [{
+  "title": "bc-1", "subtitle": "Fix the login redirect",
+  "mono": "origin/fix-login-redirect",
+  "badge": { "text": "Running", "tone": "accent" },
+  "onPress": { "action": "open-agent", "args": { "id": "bc-1" } },
+  "actions": [{ "action": "stop", "label": "Stop", "confirm": "Stop this agent?" }],
+  "overflow": [{ "action": "archive", "label": "Archive" }] }] }
+```
+
+Build the row this way rather than hand-assembling one out of `stack`, `badge`, `text` and `button` nodes. A hand-built row costs about seven nodes, and `maxNodes` is 200 — so the panel caps out near 27 rows. **A list is one node however rich its rows are**, which makes `maxListItems` (100) the real ceiling. The cap on `actions` counts what survived parsing, so a malformed entry does not spend a slot.
+
+Per-client: desktop, the web client and iOS draw all of it, with `overflow` behind a menu. The TUI draws the badge bracketed after the title (`bc-1 [Running]`), the mono line under the subtitle, and `actions` **and** `overflow` together as one numbered key list — a terminal has no menu, and showing what a row can do beats hiding half of it.
+
+**A bound row acts only through `allowActions`.** A collection row carries no action by default, because stored data that could mint one would put a button in front of the reader that the panel never declared. Name the action ids in the binding and a row may choose among them:
+
+```json
+{ "component": "list",
+  "bind": { "collection": "fleet", "allowActions": ["open-agent", "stop-agent"] } }
+```
+
+A row naming anything outside that list still renders; it is simply not pressable. Max **16** ids, deduplicated. An empty `allowActions` means the same as none.
+
+### A panel that fetches
+
+A panel bound to your own `plugin_collections` is already live: you write rows, the host publishes a change, and every client refetches. A panel whose rows come from somewhere else — an API you poll — has no such signal, and a reader looking at stale rows has no way to ask for new ones.
+
+Declare `refreshAction` on the panel and each client grows the refresh gesture it actually has:
+
+```json
+{ "panels": [{ "id": "fleet", "schemaFile": "panels/fleet.json", "refreshAction": "refresh-fleet" }] }
+```
+
+- **Desktop and web** — a Refresh button above the panel.
+- **iOS** — pull-to-refresh on the pane.
+- **TUI** — `r` dispatches it before it refetches, instead of only refetching.
+
+The action runs first, then the client refetches, so the gesture means "go and get new data". A refresh that fails still refetches and says why. Declare nothing and nothing changes anywhere — no button, no pull, and `r` stays the plain refetch it always was. The action id must be one your manifest declares; a value the host does not recognise costs the gesture, not the panel, and a schema you republish cannot mint one.
 
 ### Per-surface support
 
@@ -586,7 +809,7 @@ Two consequences worth designing around: **put a `deeplink` in every `fallback`*
 
 ### Vocabulary limits
 
-`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000.
+`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxBindingAllowActions` 16.
 
 These are part of the contract, not a client's private defence — a schema over any of them is invalid everywhere, identically.
 
@@ -609,6 +832,17 @@ exports.actions = {
 ```
 
 `panelId` must be a panel of the same plugin — anything else is ignored, and a return value with no `navigate` key behaves exactly as before. The context is capped at **2 KiB**; over the cap the navigation still happens and the context is dropped, so keep it a pointer ("the issue is ISS-14") and read the rest from your own collections.
+
+### What else an action may answer with
+
+Beside `{navigate}`, `{composer}`, `{dialog}` and `{openWebview}`, an action's return value may carry:
+
+| Key | What it does |
+|---|---|
+| `openUrl` | Sends the reader to the open web. `{openUrl: "https://…"}` or `{openUrl: {url: "https://…"}}`. **`https:` only**, max 2,048 chars: `http:`, `file:`, `data:`, `javascript:` and `ade:` are all refused, and `ade:` because in-app destinations are what `navigate` and `fallback.deeplink` are for. Opens in the system browser on desktop, a new tab on the web, Safari on iOS; the TUI opens it through the same path a PR link uses and prints it when it has no opener. |
+| `message` | One sentence about how it went, max 400 chars. Every client shows it: a banner under the panel on desktop, web and iOS, a notice in the TUI. Write it once and all four say it. `ok: false` beside it colours the banner as a failure. |
+
+Both are read tolerantly: a result carrying neither behaves exactly as before, and a refused `openUrl` is logged rather than passed on silently.
 
 The same destination has a link:
 
@@ -1060,7 +1294,7 @@ exports.actions = {
 | `ade.panels.update(panelId, schema)` | Replace a panel's schema. Refused for a panel the manifest never declared |
 | `ade.config.get()` | Current values for `manifest.settings`, defaults applied. `secret` kinds are redacted |
 | `ade.memory.get/set/delete(key)` / `list({keyPrefix?, limit?})` | Your own durable memory: a reserved slice of your collections, no manifest declaration needed. Shares the collection budget and is dropped on uninstall. **Not** ADE's CTO memory — nothing you write here reaches any agent's prompt. `ade.memory` is refused as a `collections` name in both directions, so this slice has exactly one door |
-| `ade.notifications.post({title, body?, target?})` | Tell the user outside ADE's window. `target` is `"desktop"`, `"mobile"` or `"both"` (default). Your **display name is stamped on by the host** and cannot be set, spoofed or omitted. Resolves `{delivered: [...]}` with what actually landed; rejects `notification_unavailable` only when nothing was reached. Rate-limited — see *Budgets* |
+| `ade.notifications.post({title, body?, target?, deeplink?})` | Tell the user outside ADE's window. `target` is `"desktop"`, `"mobile"` or `"both"` (default). Your **display name is stamped on by the host** and cannot be set, spoofed or omitted. `deeplink` decides where a tap lands and must be `ade://plugin/<your-own-id>/<panel-id>[?ctx=…]`, max 1,024 chars — anything else costs the destination, not the notification, and the tap opens your plugin as before. It reaches the phone; the desktop notification has no destination field. Resolves `{delivered: [...]}` with what actually landed; rejects `notification_unavailable` only when nothing was reached. Rate-limited — see *Budgets* |
 | `ade.schedules.create({action, cron\|runAt\|delaySeconds, args?, note?})` | Ask ADE to call one of **your own** actions later. `cron` is five-field local time and recurs; `runAt`/`delaySeconds` fire once and are then dropped. Rejects `plugin_budget_exceeded` past the quota |
 | `ade.schedules.list()` / `delete(scheduleId)` | Your schedules, never another plugin's. `delete` is idempotent |
 | `ade.clipboard.read()` / `write(text)` | Machine clipboard, text only. A read returns whatever the user last copied — often a password they were moving between apps — so read it in response to something the user just did, never on a timer |
@@ -1315,10 +1549,12 @@ This gates ADE's premium layer for a capability, not the capability. An agent on
 | Composer button is there but nothing lands in the draft | Look for `[plugin composer]` in the renderer console. "no composer on screen" means the action was invoked from a surface with no composer; "malformed" means the verb was not a string, was an empty `insertText`, or was over the 32 KiB ceiling |
 | Composer button never appears in the TUI | Expected — see the support table. It DOES appear on the phone and on the web, declared or published. Give the same action a panel button if it has to be reachable everywhere |
 | The icon draws as a puzzle piece | The name is not one of the 64 tokens. Both clients resolve `icon` against the same list and puzzle-piece anything else, so this reproduces everywhere rather than on one client — pick a token from *Per-client honesty*. A raw SF Symbol name is not a token and does not work on the phone |
-| `ade plugin <cmd>` says `Unknown command 'plugin'` | The shell resolved `ade` to a build without the plugin platform — usually the stable app's CLI while the platform is only in the alpha's. The worktree does not decide this; `PATH` does. `which ade` and re-run Phase 0 |
+| `ade plugin <cmd>` says `Unknown command 'plugin'`, or `Domain 'plugin' is unavailable in this runtime` | Both are facts about ONE BINARY. `PATH` resolved `ade` to a build without the plugin platform — usually the stable app's CLI while your chat is in the alpha's. Run `$ADE_CLI_PATH` instead, or `ade doctor --text` and read its **CLI** row. Never report this as "this machine has no plugins"; re-run Phase 0 |
+| The tab or the overlay shows your PANEL where you expected your `webview` page | The guest host reads the LIST payload, not the manifest on disk. Compare `plugin.get`'s `.surfaces` against its `.manifest.surfaces` for `entryHtml`: present in the manifest and absent from the summary is a HOST fault (an app older than the fix), and `ade plugin doctor <id> --text` fails its **Custom page** rung on it. `plugin.reload` cannot change what the running app serves |
 | `plugin.install` refuses with `plugin_install_denied` or `plugin_install_cancelled` | The person said no. **Do not retry** — it is an answer, not a transient failure. Ask what they would rather do |
 | `plugin.install` refuses with `plugin_install_approval_timed_out` | Nobody answered the card within ten minutes. Say the install is still pending their decision rather than calling it a failure |
 | `plugin.install` refuses with `plugin_install_source_unreadable` | This one is yours, not theirs. `source` must be a directory containing a `plugin.json`, a bundled plugin id, or a git URL |
+| `plugin.uninstall` / `enable` / `disable` refuses with `plugin_uninstall_denied`, `plugin_enable_cancelled`, `plugin_disable_approval_timed_out`, … | Same reading as the install refusals, verb by verb: `_denied` and `_cancelled` are the person's answer, `_approval_timed_out` means nobody was at the keyboard. **Do not retry.** None of these is ever pre-approved by an earlier install |
 | A plugin action refuses with *limited to the machine operator* | The shell carries an ADE chat-session binding (`ADE_CHAT_SESSION_ID` and friends), and a session-bound caller is clamped to `agent` no matter what `--role` says. This is an authority boundary, not a flag to work around: hand the user the command for their own terminal |
 | `ade plugin <cmd>` says it needs the brain | `install`/`remove`/`enable`/`disable`/`reload`/`logs`/`dev` are daemon-backed. Start ADE or run `ade brain start`. `list` and `create` never need it |
 | `ade <pluginId> <word>` says unknown command | The plugin must be installed, **enabled**, and declare that exact word in `cli` — otherwise the CLI treats it as a typo, which is what you want |

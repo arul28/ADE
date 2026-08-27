@@ -1,5 +1,5 @@
 import React from "react";
-import { WarningCircle } from "@phosphor-icons/react";
+import { CaretDown, WarningCircle } from "@phosphor-icons/react";
 
 import {
   COLORS,
@@ -14,6 +14,7 @@ import { pluginIcon } from "./pluginIcons";
 import { EmptyLine, InlineError, TONE_COLOR } from "./vocabularyPrimitives";
 import type { VocabRenderContext } from "./vocabularyPrimitives";
 import type {
+  VocabAction,
   VocabBadgeNode,
   VocabButtonNode,
   VocabDividerNode,
@@ -23,6 +24,7 @@ import type {
   VocabKeyValueNode,
   VocabKeyValueRow,
   VocabListItem,
+  VocabListItemAction,
   VocabListNode,
   VocabTableNode,
   VocabTextNode,
@@ -138,6 +140,40 @@ export function VocabDivider({ node }: { node: VocabDividerNode }) {
   );
 }
 
+/* ── Action dispatch ────────────────────────────────────────────────────── */
+
+/**
+ * The one path from a control to `context.dispatch`, so a confirmation cannot
+ * be skipped by a control that forgot about it.
+ *
+ * A list row used to call `dispatch` directly and so ran a destructive action
+ * with no prompt, while the same action behind a button asked first. iOS routes
+ * every action through one `perform` for this reason
+ * (`PluginPaneStore.swift`); this is the desktop and web equivalent.
+ */
+function useVocabActionRunner(context: VocabRenderContext) {
+  const [pending, setPending] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const run = React.useCallback(
+    async (action: VocabAction) => {
+      if (action.confirm && !window.confirm(action.confirm)) return;
+      setPending(true);
+      setError(null);
+      try {
+        await context.dispatch(action);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "That action failed.");
+      } finally {
+        setPending(false);
+      }
+    },
+    [context],
+  );
+
+  return { pending, error, run };
+}
+
 /* ── Button ─────────────────────────────────────────────────────────────── */
 
 /**
@@ -153,8 +189,7 @@ export function VocabButton({
   node: VocabButtonNode;
   context: VocabRenderContext;
 }) {
-  const [pending, setPending] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+  const { pending, error, run } = useVocabActionRunner(context);
   const Icon = node.icon ? pluginIcon(node.icon) : null;
   const kind = node.kind ?? "default";
   const disabled = node.disabled === true || pending;
@@ -169,25 +204,12 @@ export function VocabButton({
       }
     : base;
 
-  const run = async () => {
-    if (node.onPress.confirm && !window.confirm(node.onPress.confirm)) return;
-    setPending(true);
-    setError(null);
-    try {
-      await context.dispatch(node.onPress);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "That action failed.");
-    } finally {
-      setPending(false);
-    }
-  };
-
   return (
     <span style={{ display: "inline-flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
       <button
         type="button"
         disabled={disabled}
-        onClick={() => void run()}
+        onClick={() => void run(node.onPress)}
         data-tour={`plugin:${context.pluginId}.action-${node.onPress.action}`}
         style={{ ...style, opacity: disabled ? 0.55 : 1, cursor: disabled ? "default" : "pointer" }}
       >
@@ -220,7 +242,9 @@ export function VocabList({
 }) {
   const bound = boundRows(node, context);
   const items = bound
-    ? bound.map(coerceBoundListItem).filter((item): item is VocabListItem => item !== null)
+    ? bound
+        .map((row) => coerceBoundListItem(row, node.bind?.allowActions))
+        .filter((item): item is VocabListItem => item !== null)
     : (node.items ?? []);
 
   if (items.length === 0) {
@@ -240,11 +264,28 @@ export function VocabList({
   );
 }
 
+/**
+ * One list row.
+ *
+ * A row is a container rather than a single control, because it can carry a
+ * press of its own AND trailing buttons, and a button inside a button is not
+ * something a browser will render. The press area is the button when the row
+ * declares `onPress`; the trailing actions are its siblings.
+ *
+ * One action runner for the whole row. Pressing anything on a row holds the
+ * rest of it until the answer arrives, and one failure line under the row says
+ * what went wrong. Two runners would let a reader start a second action against
+ * data the first one is already changing.
+ */
 function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRenderContext }) {
   const [hovered, setHovered] = React.useState(false);
+  const { pending, error, run } = useVocabActionRunner(context);
   const Icon = item.icon ? pluginIcon(item.icon) : null;
+  const BadgeIcon = item.badge?.icon ? pluginIcon(item.badge.icon) : null;
   const tone = item.tone ?? "neutral";
   const interactive = Boolean(item.onPress);
+  const actions = item.actions ?? [];
+  const overflow = item.overflow ?? [];
 
   const body = (
     <>
@@ -252,18 +293,33 @@ function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRe
         <Icon size={14} weight="regular" color={TONE_COLOR[tone]} aria-hidden style={{ flexShrink: 0 }} />
       ) : null}
       <span style={{ minWidth: 0, display: "grid", gap: 1 }}>
-        <span
-          style={{
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            fontWeight: 500,
-            color: tone === "neutral" ? COLORS.textPrimary : TONE_COLOR[tone],
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {item.title}
+        <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+          <span
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              fontWeight: 500,
+              color: tone === "neutral" ? COLORS.textPrimary : TONE_COLOR[tone],
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.title}
+          </span>
+          {item.badge ? (
+            <span
+              style={inlineBadge(TONE_COLOR[item.badge.tone ?? "neutral"], {
+                gap: 4,
+                padding: "1px 6px",
+                fontSize: 10,
+                flexShrink: 0,
+              })}
+            >
+              {BadgeIcon ? <BadgeIcon size={10} weight="regular" aria-hidden /> : null}
+              {item.badge.text}
+            </span>
+          ) : null}
         </span>
         {item.subtitle ? (
           <span
@@ -279,12 +335,30 @@ function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRe
             {item.subtitle}
           </span>
         ) : null}
+        {/* Monospace, under the subtitle: the one place a row can put a value
+            meant to be COMPARED against the row above it — an id, a branch, a
+            short sha. `text` has `variant: "code"` for the same reason. */}
+        {item.mono ? (
+          <span
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 10.5,
+              color: COLORS.textDim,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {item.mono}
+          </span>
+        ) : null}
       </span>
       {item.meta ? (
         <span
           style={{
             marginLeft: "auto",
             flexShrink: 0,
+            paddingLeft: 8,
             fontFamily: SANS_FONT,
             fontSize: 11,
             color: COLORS.textDim,
@@ -296,34 +370,231 @@ function VocabListRow({ item, context }: { item: VocabListItem; context: VocabRe
     </>
   );
 
-  const rowStyle: React.CSSProperties = {
+  const readingStyle: React.CSSProperties = {
     display: "flex",
     alignItems: "center",
     gap: 8,
-    width: "100%",
+    flex: 1,
+    minWidth: 0,
     padding: "7px 8px",
     textAlign: "left",
     background: hovered && interactive ? COLORS.hoverBg : "transparent",
     border: "none",
     borderRadius: RADII.sm,
-    minWidth: 0,
   };
 
-  if (!interactive) {
-    return <li style={rowStyle}>{body}</li>;
-  }
   return (
-    <li style={{ display: "contents" }}>
+    <li style={{ display: "grid", gap: 2, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, width: "100%", minWidth: 0 }}>
+        {interactive ? (
+          <button
+            type="button"
+            disabled={pending}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            onClick={() => void run(item.onPress!)}
+            data-tour={`plugin:${context.pluginId}.action-${item.onPress!.action}`}
+            style={{
+              ...readingStyle,
+              cursor: pending ? "default" : "pointer",
+              opacity: pending ? 0.55 : 1,
+            }}
+          >
+            {body}
+          </button>
+        ) : (
+          <div style={readingStyle}>{body}</div>
+        )}
+        {actions.map((action, index) => (
+          <VocabRowAction
+            key={`${action.action}:${index}`}
+            action={action}
+            context={context}
+            disabled={pending}
+            onRun={run}
+          />
+        ))}
+        {overflow.length > 0 ? (
+          <VocabRowOverflow
+            actions={overflow}
+            context={context}
+            disabled={pending}
+            onRun={run}
+          />
+        ) : null}
+      </div>
+      {error ? <InlineError message={error} /> : null}
+    </li>
+  );
+}
+
+/**
+ * A trailing button on a list row.
+ *
+ * Deliberately smaller and quieter than a `button` node: up to three of these
+ * sit beside the row's own text, and at the weight of a real button a row would
+ * read as a toolbar with a label attached. `primary` still fills, for the one
+ * action a row is actually about.
+ *
+ * No pending text of its own — the row's runner holds the whole row while an
+ * action is in flight, so a spinner here would be a second answer to a question
+ * the row already answered.
+ */
+function VocabRowAction({
+  action,
+  context,
+  disabled,
+  onRun,
+}: {
+  action: VocabListItemAction;
+  context: VocabRenderContext;
+  disabled: boolean;
+  onRun: (action: VocabAction) => Promise<void>;
+}) {
+  const Icon = action.icon ? pluginIcon(action.icon) : null;
+  const kind = action.kind ?? "default";
+  const compact: React.CSSProperties = { height: 24, padding: "0 8px", fontSize: 11, gap: 5 };
+  const style: React.CSSProperties = kind === "primary"
+    ? primaryButton(compact)
+    : kind === "quiet"
+      ? outlineButton({
+          ...compact,
+          background: "transparent",
+          border: "1px solid transparent",
+          color: COLORS.textMuted,
+        })
+      : outlineButton(compact);
+
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => void onRun(action)}
+      data-tour={`plugin:${context.pluginId}.action-${action.action}`}
+      style={{
+        ...style,
+        flexShrink: 0,
+        opacity: disabled ? 0.55 : 1,
+        cursor: disabled ? "default" : "pointer",
+      }}
+    >
+      {Icon ? <Icon size={12} weight="regular" aria-hidden /> : null}
+      {action.label}
+    </button>
+  );
+}
+
+/**
+ * The rest of a row's actions, behind a chevron.
+ *
+ * A menu rather than more buttons: a row that showed six controls would be a
+ * form. The open menu closes on a press, on Escape and on a click anywhere
+ * else, because a menu left open over the row below it is a menu that looks
+ * like it belongs to the wrong row.
+ */
+function VocabRowOverflow({
+  actions,
+  context,
+  disabled,
+  onRun,
+}: {
+  actions: VocabListItemAction[];
+  context: VocabRenderContext;
+  disabled: boolean;
+  onRun: (action: VocabAction) => Promise<void>;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const holder = React.useRef<HTMLSpanElement | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!holder.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <span ref={holder} style={{ position: "relative", flexShrink: 0, display: "inline-flex" }}>
       <button
         type="button"
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        onClick={() => void context.dispatch(item.onPress!).catch(() => {})}
-        style={{ ...rowStyle, cursor: "pointer" }}
+        disabled={disabled}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More actions"
+        onClick={() => setOpen((value) => !value)}
+        style={{
+          ...outlineButton({ height: 24, padding: "0 5px", background: "transparent" }),
+          border: "1px solid transparent",
+          color: COLORS.textMuted,
+          opacity: disabled ? 0.55 : 1,
+          cursor: disabled ? "default" : "pointer",
+        }}
       >
-        {body}
+        <CaretDown size={12} weight="regular" aria-hidden />
       </button>
-    </li>
+      {open ? (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            top: "calc(100% + 4px)",
+            right: 0,
+            zIndex: 20,
+            display: "grid",
+            gap: 1,
+            minWidth: 160,
+            padding: 4,
+            background: COLORS.cardBgSolid,
+            border: `1px solid ${COLORS.border}`,
+            borderRadius: RADII.sm,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.28)",
+          }}
+        >
+          {actions.map((action, index) => {
+            const Icon = action.icon ? pluginIcon(action.icon) : null;
+            return (
+              <button
+                key={`${action.action}:${index}`}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  void onRun(action);
+                }}
+                data-tour={`plugin:${context.pluginId}.action-${action.action}`}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  width: "100%",
+                  padding: "5px 7px",
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  textAlign: "left",
+                  color: COLORS.textSecondary,
+                  background: "transparent",
+                  border: "none",
+                  borderRadius: RADII.sm,
+                  cursor: "pointer",
+                }}
+              >
+                {Icon ? <Icon size={12} weight="regular" aria-hidden /> : null}
+                {action.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </span>
   );
 }
 

@@ -25,16 +25,24 @@ import {
   readPluginManifest,
   readPluginReadme,
   readPluginUsage,
+  readPluginWebhookIngress,
   restartPlugin,
   setPluginEnabled,
   uninstallPlugin,
   type PluginUsageRow,
+  type PluginWebhookIngressStatus,
 } from "../../lib/pluginRuntimeBridge";
 import { pluginIdentity } from "./pluginIcons";
 import { PluginInstallDialog, type InstallDialogTarget } from "./PluginInstallDialog";
 import { PluginConfigForm } from "./PluginConfigForm";
 import { PluginThemePreview } from "./PluginThemePreview";
-import { ContributionsRail, MachineRail, UsageRail, WhereItShowsUpRail } from "./MarketplaceDetailRail";
+import {
+  ContributionsRail,
+  MachineRail,
+  UsageRail,
+  WebhooksRail,
+  WhereItShowsUpRail,
+} from "./MarketplaceDetailRail";
 import { useMarketplaceCatalogue, usePluginPresence, usePluginRepoStars } from "./useMarketplace";
 import { PluginMediaGallery } from "./PluginMediaGallery";
 import { PluginStarButton } from "./PluginStarButton";
@@ -105,6 +113,7 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
   const [localManifest, setLocalManifest] = React.useState<PluginManifest | null>(null);
   const [readme, setReadme] = React.useState<string | null>(null);
   const [usage, setUsage] = React.useState<PluginUsageRow | null>(null);
+  const [ingress, setIngress] = React.useState<PluginWebhookIngressStatus | null>(null);
 
   /* The registry hands back a fresh array on every refresh, so keying the read
      on the entry's identity would refetch the manifest on every unrelated
@@ -119,18 +128,24 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
     setLocalManifest(null);
     setReadme(null);
     setUsage(null);
+    setIngress(null);
     if (!installedKey) return;
     void (async () => {
-      const [rawManifest, readmeText, usageRows] = await Promise.all([
+      const [rawManifest, readmeText, usageRows, ingressRows] = await Promise.all([
         readPluginManifest(pluginId),
         readPluginReadme(pluginId),
         readPluginUsage(pluginId),
+        readPluginWebhookIngress(pluginId),
       ]);
       if (cancelled) return;
       const parsed = rawManifest ? parsePluginManifest(rawManifest) : null;
       setLocalManifest(parsed?.manifest ?? null);
       setReadme(readmeText);
       setUsage(usageRows.find((row) => row.pluginId === pluginId) ?? null);
+      // `undeclared` is the drain saying this plugin receives nothing, which is
+      // the same section-absent answer as a host that drains nothing at all.
+      const row = ingressRows.find((entry) => entry.pluginId === pluginId) ?? null;
+      setIngress(row && row.state !== "undeclared" ? row : null);
     })();
     return () => {
       cancelled = true;
@@ -374,6 +389,10 @@ export function MarketplaceDetailPage({ pluginId }: { pluginId: string }) {
               <PluginConfigForm pluginId={pluginId} settings={manifest.settings} />
             </RailSection>
           ) : null}
+
+          {/* Under Settings, because a channel that declares `verify` needs a
+              secret set there before its URL is worth pasting anywhere. */}
+          {ingress ? <WebhooksRail status={ingress} /> : null}
 
           {usage && pluginStoresData(manifest, usage) ? <UsageRail usage={usage} /> : null}
         </aside>

@@ -9634,7 +9634,11 @@ final class SyncService: ObservableObject {
   // desktop like the Linear pane. No Cursor credentials live on device.
 
   func fetchCursorCloudFleet() async throws -> CursorCloudFleetResult {
-    try await sendDecodableCommand(action: "ai.cursorCloudFleet", as: CursorCloudFleetResult.self)
+    try await sendDecodableCommand(
+      action: "ai.cursorCloudFleet",
+      args: CursorCloudFleetRequest.args,
+      as: CursorCloudFleetResult.self
+    )
   }
 
   func resolveCursorCloudLane(agentId: String) async throws -> CursorCloudResolvedLane {

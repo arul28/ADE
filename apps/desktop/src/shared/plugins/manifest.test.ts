@@ -6,9 +6,15 @@ import {
   isValidPluginId,
   parsePluginManifest,
   parsePluginManifestJson,
+  findPluginChatRuntime,
   pluginHasRuntimeEntry,
   pluginPanelShowsOnMobile,
 } from "./manifest";
+import {
+  assertPluginSecretName,
+  isReservedPluginSecretName,
+  PLUGIN_WEBHOOK_SECRET_NAME,
+} from "./sdk";
 
 function validManifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -83,6 +89,26 @@ describe("parsePluginManifest", () => {
     expect(escapingPanel.warnings.length).toBeGreaterThan(0);
     expect(isSafePluginRelativePath("panels/main.json")).toBe(true);
     expect(isSafePluginRelativePath("panels/../../main.json")).toBe(false);
+  });
+
+  it("reads a panel's refresh action, and keeps the panel when it is malformed", () => {
+    const declared = parsePluginManifest(validManifest({
+      panels: [{ id: "fleet", schemaFile: "panels/fleet.json", refreshAction: "refresh-fleet" }],
+    }));
+    expect(declared.manifest?.panels[0]?.refreshAction).toBe("refresh-fleet");
+
+    // A panel that cannot be refreshed by gesture is still a perfectly good
+    // panel, so a bad value costs the gesture rather than the panel.
+    for (const bad of [7, "", "not an identifier!", null]) {
+      const result = parsePluginManifest(validManifest({
+        panels: [{ id: "fleet", schemaFile: "panels/fleet.json", refreshAction: bad }],
+      }));
+      expect(result.manifest?.panels[0]?.id, `${String(bad)} dropped the panel`).toBe("fleet");
+      expect(result.manifest?.panels[0]?.refreshAction).toBeUndefined();
+    }
+
+    // Absent stays absent: the field is what turns the gesture on.
+    expect(parsePluginManifest(validManifest()).manifest?.panels[0]?.refreshAction).toBeUndefined();
   });
 
   // A badge with no label renders nothing. It used to parse clean and then
@@ -486,6 +512,116 @@ describe("surface mobile flag", () => {
   });
 });
 
+describe("parsePluginManifest webhookIngress", () => {
+  it("defaults to an empty list, so every reader can ask for .length", () => {
+    const manifest = parsePluginManifest(validManifest()).manifest!;
+    expect(manifest.webhookIngress).toEqual([]);
+  });
+
+  it("parses channels and normalizes the verify frame", () => {
+    const parsed = parsePluginManifest(validManifest({
+      webhookIngress: [
+        { id: "default", label: "Cursor Cloud" },
+        {
+          id: "billing",
+          label: "Billing",
+          description: "Stripe events.",
+          verify: { kind: "hmac-sha256", secretRef: "STRIPE_SIGNING_SECRET", header: "Stripe-Signature", prefix: "v1=" },
+        },
+      ],
+    }));
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+    expect(parsed.manifest!.webhookIngress).toEqual([
+      { id: "default", label: "Cursor Cloud" },
+      {
+        id: "billing",
+        label: "Billing",
+        description: "Stripe events.",
+        // Lowercased because the host looks the header up in a map the relay
+        // wrote with lowercase keys.
+        verify: { kind: "hmac-sha256", secretRef: "STRIPE_SIGNING_SECRET", header: "stripe-signature", prefix: "v1=" },
+      },
+    ]);
+  });
+
+  // The id is a relay path segment. A manifest the relay would 404 must be
+  // refused on the machine that wrote it, not months later on a pasted URL.
+  it("drops a channel whose id is not a relay path segment", () => {
+    const parsed = parsePluginManifest(validManifest({
+      webhookIngress: [{ id: "Billing_Events", label: "Billing" }],
+    }));
+    expect(parsed.manifest!.webhookIngress).toEqual([]);
+    expect(parsed.warnings.join(" ")).toMatch(/must be lowercase letters, digits and hyphens/);
+  });
+
+  it("drops a channel with no label", () => {
+    const parsed = parsePluginManifest(validManifest({
+      webhookIngress: [{ id: "billing" }],
+    }));
+    expect(parsed.manifest!.webhookIngress).toEqual([]);
+    expect(parsed.warnings.join(" ")).toMatch(/label is required/);
+  });
+
+  // Losing the channel is loud; keeping it unverified would be silent. A
+  // plugin that asked for a signature check must never be handed unchecked
+  // bodies because its verify block was malformed.
+  it("drops the whole channel when verify is malformed, never the check alone", () => {
+    const wrongKind = parsePluginManifest(validManifest({
+      webhookIngress: [{ id: "billing", label: "Billing", verify: { kind: "md5", secretRef: "SIGNING" } }],
+    }));
+    expect(wrongKind.manifest!.webhookIngress).toEqual([]);
+    expect(wrongKind.warnings.join(" ")).toMatch(/verify\.kind must be "hmac-sha256"/);
+
+    const badRef = parsePluginManifest(validManifest({
+      webhookIngress: [{ id: "billing", label: "Billing", verify: { kind: "hmac-sha256", secretRef: "not a name" } }],
+    }));
+    expect(badRef.manifest!.webhookIngress).toEqual([]);
+    expect(badRef.warnings.join(" ")).toMatch(/verify\.secretRef must name one of this plugin's secrets/);
+  });
+
+  // Pins the mirrored spelling in manifest.ts against sdk.ts, which cannot be
+  // imported there because sdk.ts imports manifest.ts.
+  it("refuses the reserved relay secret as a verify secretRef", () => {
+    expect(isReservedPluginSecretName(PLUGIN_WEBHOOK_SECRET_NAME)).toBe(true);
+    const parsed = parsePluginManifest(validManifest({
+      webhookIngress: [{
+        id: "billing",
+        label: "Billing",
+        verify: { kind: "hmac-sha256", secretRef: PLUGIN_WEBHOOK_SECRET_NAME },
+      }],
+    }));
+    expect(parsed.manifest!.webhookIngress).toEqual([]);
+    expect(parsed.warnings.join(" ")).toMatch(/must not be the reserved/);
+  });
+
+  // Every accepted secretRef has to be readable by the secret store that
+  // actually fetches it, so the two alphabets are pinned together.
+  it("accepts exactly the secret names the secret store accepts", () => {
+    const name = "STRIPE.signing-secret_1";
+    expect(assertPluginSecretName(name)).toBe(name);
+    const parsed = parsePluginManifest(validManifest({
+      webhookIngress: [{ id: "billing", label: "Billing", verify: { kind: "hmac-sha256", secretRef: name } }],
+    }));
+    expect(parsed.manifest!.webhookIngress[0]?.verify?.secretRef).toBe(name);
+  });
+
+  it("caps the channel count and drops a repeated id", () => {
+    const parsed = parsePluginManifest(validManifest({
+      webhookIngress: [
+        { id: "one", label: "One" },
+        { id: "two", label: "Two" },
+        { id: "three", label: "Three" },
+        { id: "four", label: "Four" },
+        { id: "five", label: "Five" },
+        { id: "one", label: "One again" },
+      ],
+    }));
+    expect(parsed.manifest!.webhookIngress.map((channel) => channel.id)).toEqual(["one", "two", "three", "four"]);
+    expect(parsed.warnings.length).toBeGreaterThan(0);
+  });
+});
+
 describe("isPluginSupportedByAdeVersion", () => {
   it("compares against the declared floor", () => {
     const manifest = parsePluginManifest(validManifest({ minAdeVersion: "1.3.0" })).manifest!;
@@ -506,5 +642,81 @@ describe("isPluginSupportedByAdeVersion", () => {
     expect(comparePluginVersions("1.10.0", "1.9.0")).toBe(1);
     expect(comparePluginVersions("1.2.0", "1.2.0")).toBe(0);
     expect(comparePluginVersions("1.2.0-beta.1", "1.2.0")).toBe(0);
+  });
+});
+
+describe("parsePluginManifest chatRuntimes", () => {
+  it("reads a declared conversation runtime with all four capability flags", () => {
+    const declared = parsePluginManifest(validManifest({
+      chatRuntimes: [{
+        id: "cloud",
+        displayName: "Cursor Cloud",
+        icon: "Cloud",
+        capabilities: { followUp: true, interrupt: true, hydrate: true, artifacts: false },
+      }],
+    }));
+    expect(declared.manifest?.chatRuntimes ?? []).toEqual([{
+      id: "cloud",
+      displayName: "Cursor Cloud",
+      icon: "Cloud",
+      capabilities: { followUp: true, interrupt: true, hydrate: true, artifacts: false },
+    }]);
+    expect(findPluginChatRuntime(declared.manifest, "cloud")?.displayName).toBe("Cursor Cloud");
+    expect(findPluginChatRuntime(declared.manifest, "nope")).toBeNull();
+    expect(findPluginChatRuntime(null, "cloud")).toBeNull();
+  });
+
+  it("declares none by default, so every reader can ask without a guard", () => {
+    expect(parsePluginManifest(validManifest()).manifest?.chatRuntimes ?? []).toEqual([]);
+  });
+
+  it("drops a runtime with a missing or partial capabilities block", () => {
+    // Both defaults are wrong: true promises what the plugin never wrote, and
+    // false silently disables what the author believed they had shipped.
+    const partial = [
+      undefined,
+      {},
+      { followUp: true, interrupt: true, hydrate: true },
+      { followUp: true, interrupt: true, hydrate: true, artifacts: "yes" },
+    ];
+    for (const capabilities of partial) {
+      const result = parsePluginManifest(validManifest({
+        chatRuntimes: [{ id: "cloud", displayName: "Cursor Cloud", ...(capabilities ? { capabilities } : {}) }],
+      }));
+      expect(result.manifest?.chatRuntimes ?? [], JSON.stringify(capabilities)).toEqual([]);
+    }
+  });
+
+  it("drops a runtime with no id or no display name", () => {
+    const caps = { followUp: true, interrupt: false, hydrate: false, artifacts: false };
+    for (const entry of [
+      { displayName: "Cursor Cloud", capabilities: caps },
+      { id: "not an identifier!", displayName: "Cursor Cloud", capabilities: caps },
+      { id: "cloud", capabilities: caps },
+      { id: "cloud", displayName: "   ", capabilities: caps },
+    ]) {
+      expect(parsePluginManifest(validManifest({ chatRuntimes: [entry] })).manifest?.chatRuntimes ?? [])
+        .toEqual([]);
+    }
+  });
+
+  it("caps a plugin at two runtimes and drops a repeated id", () => {
+    const caps = { followUp: true, interrupt: true, hydrate: true, artifacts: true };
+    const many = parsePluginManifest(validManifest({
+      chatRuntimes: [
+        { id: "a", displayName: "A", capabilities: caps },
+        { id: "b", displayName: "B", capabilities: caps },
+        { id: "c", displayName: "C", capabilities: caps },
+      ],
+    }));
+    expect(many.manifest?.chatRuntimes?.map((runtime) => runtime.id)).toEqual(["a", "b"]);
+
+    const repeated = parsePluginManifest(validManifest({
+      chatRuntimes: [
+        { id: "a", displayName: "First", capabilities: caps },
+        { id: "a", displayName: "Second", capabilities: caps },
+      ],
+    }));
+    expect(repeated.manifest?.chatRuntimes?.map((runtime) => runtime.displayName)).toEqual(["First"]);
   });
 });

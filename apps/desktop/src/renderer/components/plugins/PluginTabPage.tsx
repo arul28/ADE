@@ -51,8 +51,30 @@ export function PluginTabPage({ active = true }: { active?: boolean }) {
   );
 
   const requestedPanelId = searchParams.get("panel");
+  /**
+   * The remembered panel, kept only while this plugin still declares it.
+   *
+   * The store remembers a panel id per plugin so a rail click returns where the
+   * reader left off. Unvalidated, that memory OUTLIVED the manifest that earned
+   * it: a plugin that declares only `dashboard` was opened at the remembered
+   * `main`, `tabs.find` matched nothing, and the page hosted a panel the plugin
+   * never published — a rail tab that looks like it does nothing, with no error
+   * anywhere. The same happens on the very first click, where the default `main`
+   * is remembered from no plugin at all.
+   *
+   * A panel reached through `{navigate:{panelId}}` is not forgotten by this: the
+   * navigation writes `?panel=`, which is the address Back, reload and a
+   * deeplink all carry, and `?panel=` still wins here.
+   */
+  const rememberedPanelId = lastPanelByPlugin[pluginId] ?? null;
+  const declaresRemembered = Boolean(
+    rememberedPanelId && plugin?.tabs.some((tab) => tab.panelId === rememberedPanelId),
+  );
   const panelId = requestedPanelId
-    ?? lastPanelByPlugin[pluginId]
+    ?? (declaresRemembered ? rememberedPanelId : null)
+    // `tabs[0]` is the plugin's OWN first surface, so it is the fallback rather
+    // than `"main"`. `"main"` survives only for a plugin that declares no rail
+    // surface at all, where there is no declared id to prefer.
     ?? plugin?.tabs[0]?.panelId
     ?? "main";
 

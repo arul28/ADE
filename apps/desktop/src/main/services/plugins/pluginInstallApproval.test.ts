@@ -4,11 +4,13 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "../../../shared/plugins/clientRendering";
+import { parsePluginManifestJson, type PluginManifest } from "../../../shared/plugins/manifest";
 import {
   canonicalApprovalSource,
   isPluginInstallPreapproved,
   recordPluginInstallApproval,
   requestPluginInstallApproval,
+  requestPluginRemovalApproval,
   resetPluginInstallApprovalsForTests,
   type PluginInstallApprovalChat,
 } from "./pluginInstallApproval";
@@ -398,5 +400,328 @@ describe("plugin install approval", () => {
     expect(canonicalApprovalSource(
       resolvePluginInstallSource("https://example.invalid/x.git", { builtinPluginsRoot: null }),
     )).toBeNull();
+  });
+});
+
+/* ── Disclosure and the grant a remembered approval is keyed on ─────────── */
+
+describe("requestPluginInstallApproval — network and provider keys", () => {
+  /** Approve once and remember it, the way the RPC server does. */
+  async function approveAndRemember(
+    chat: PluginInstallApprovalChat,
+    source: string,
+  ): Promise<void> {
+    const approved = await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+    if (approved.allow && approved.pluginId && approved.canonicalSource) {
+      recordPluginInstallApproval({
+        projectId: "project-1",
+        pluginId: approved.pluginId,
+        canonicalSource: approved.canonicalSource,
+        grant: approved.grant,
+      });
+    }
+  }
+
+  it("puts the hosts and the provider key on the card before anyone agrees", async () => {
+    const source = pluginDir(tipsyManifest({
+      network: { hosts: ["api.cursor.com"] },
+      providerKeys: ["cursor"],
+    }));
+    const { chat, calls } = chatMock({});
+
+    await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    expect(calls[0]!.body).toContain("Talks to api.cursor.com");
+    expect(calls[0]!.body).toContain("Uses your Cursor API key");
+  });
+
+  it("asks again when a later save widens the declared hosts", async () => {
+    const source = pluginDir(tipsyManifest({ network: { hosts: ["api.cursor.com"] } }));
+    const { chat, calls } = chatMock({});
+
+    await approveAndRemember(chat, source);
+    // The remembered approval deliberately lets the CODE at this path change.
+    // It does not let the DECLARATION change: this is a host the person never
+    // saw on the card they answered.
+    fs.writeFileSync(
+      path.join(source, "plugin.json"),
+      JSON.stringify(tipsyManifest({ network: { hosts: ["api.cursor.com", "telemetry.test"] } })),
+      "utf8",
+    );
+    await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain("telemetry.test");
+  });
+
+  it("asks again when a later save adds a provider key", async () => {
+    const source = pluginDir(tipsyManifest());
+    const { chat, calls } = chatMock({});
+
+    await approveAndRemember(chat, source);
+    fs.writeFileSync(
+      path.join(source, "plugin.json"),
+      JSON.stringify(tipsyManifest({ providerKeys: ["cursor"] })),
+      "utf8",
+    );
+    await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    expect(calls).toHaveLength(2);
+  });
+
+  it("still skips the card when only the plugin's code changed", async () => {
+    const source = pluginDir(tipsyManifest({ network: { hosts: ["api.cursor.com"] } }));
+    const { chat, calls } = chatMock({});
+
+    await approveAndRemember(chat, source);
+    // A new version at the same path with the same declarations is the
+    // build-test-fix loop, and re-approving every save would make it unusable.
+    fs.writeFileSync(
+      path.join(source, "plugin.json"),
+      JSON.stringify(tipsyManifest({ version: "0.3.1", network: { hosts: ["api.cursor.com"] } })),
+      "utf8",
+    );
+    const second = await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    expect(second.allow && second.reason).toBe("preapproved");
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("plugin removal, disable and enable approval", () => {
+  beforeEach(() => {
+    resetPluginInstallApprovalsForTests();
+  });
+
+  afterEach(() => {
+    while (scratchDirs.length) fs.rmSync(scratchDirs.pop()!, { recursive: true, force: true });
+  });
+
+  /** The parsed manifest a host would have on disk for an installed plugin. */
+  function installedManifest(overrides: Record<string, unknown> = {}): PluginManifest {
+    const parsed = parsePluginManifestJson(JSON.stringify(tipsyManifest(overrides)));
+    if (!parsed.manifest) throw new Error(`fixture manifest did not parse: ${parsed.errors.join(", ")}`);
+    return parsed.manifest;
+  }
+
+  function removalChat(response: {
+    decision?: string;
+    answers?: Record<string, string[]>;
+    hang?: boolean;
+  }): ReturnType<typeof chatMock> {
+    return chatMock({
+      answers: { plugin_lifecycle: ["proceed"] },
+      ...response,
+    });
+  }
+
+  it("asks with the plugin's own name, version and surfaces, and proceeds on accept", async () => {
+    const { chat, calls } = removalChat({});
+
+    const result = await requestPluginRemovalApproval({
+      chat,
+      chatSessionId: "session-1",
+      kind: "uninstall",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      version: "0.3.0",
+      manifest: installedManifest({ collections: { drinks: { sync: true } } }),
+    });
+
+    expect(result.allow).toBe(true);
+    const card = calls[0]!;
+    expect(card.title).toBe("Remove Tipsy 0.3.0?");
+    expect(card.operatorOnly).toBe(true);
+    expect(card.body).toContain("Removes:");
+    expect(card.body).toContain("- Tipsy tab");
+    expect(card.body).toContain("- Its addition to Work");
+    expect(card.body).toContain("- One agent skill");
+    expect(card.body).toContain("- Terminal commands: ade ade-tipsy status");
+    // The line that decides whether this is a cheap yes.
+    expect(card.body).toContain("deleted here and on your other devices");
+    // The card IS the disclosure: without `description` the composer falls back
+    // to the question, and the reader approves a deletion having read a title.
+    expect(card.description).toBe(card.body);
+    expect(card.questions?.[0]?.options?.map((option) => option.label)).toEqual(["Remove", "Keep"]);
+  });
+
+  it("refuses with a verb-specific kind when the person declines", async () => {
+    const { chat } = removalChat({ decision: "decline", answers: { plugin_lifecycle: ["keep"] } });
+
+    const result = await requestPluginRemovalApproval({
+      chat,
+      chatSessionId: "session-1",
+      kind: "uninstall",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      version: "0.3.0",
+      manifest: installedManifest(),
+    });
+
+    expect(result.allow).toBe(false);
+    if (result.allow) throw new Error("unreachable");
+    expect(result.reason).toBe("denied");
+    expect(result.data.kind).toBe("plugin_uninstall_denied");
+    expect(result.message).toContain("Don't retry");
+  });
+
+  it("reads an accept decision that names the deny option as a refusal", async () => {
+    // Both gates have to agree, exactly as the install card requires.
+    const { chat } = removalChat({ decision: "accept", answers: { plugin_lifecycle: ["keep"] } });
+
+    const result = await requestPluginRemovalApproval({
+      chat,
+      chatSessionId: "session-1",
+      kind: "disable",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      version: null,
+      manifest: installedManifest(),
+    });
+
+    expect(result.allow).toBe(false);
+    if (result.allow) throw new Error("unreachable");
+    expect(result.data.kind).toBe("plugin_disable_denied");
+  });
+
+  it("settles the card and reports a verb-specific timeout when nobody answers", async () => {
+    const { chat, responded } = removalChat({ hang: true });
+
+    const result = await requestPluginRemovalApproval({
+      chat,
+      chatSessionId: "session-1",
+      kind: "enable",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      version: null,
+      manifest: installedManifest(),
+      timeoutMs: 5,
+    });
+
+    expect(result.allow).toBe(false);
+    if (result.allow) throw new Error("unreachable");
+    expect(result.data.kind).toBe("plugin_enable_approval_timed_out");
+    expect(responded).toEqual([{ itemId: "item-1", decision: "cancel" }]);
+  });
+
+  it("words disable and enable as switches that keep the data", async () => {
+    const manifest = installedManifest({ collections: { drinks: { sync: false } } });
+
+    const off = removalChat({});
+    await requestPluginRemovalApproval({
+      chat: off.chat,
+      chatSessionId: "session-1",
+      kind: "disable",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      version: "0.3.0",
+      manifest,
+    });
+    expect(off.calls[0]?.title).toBe("Turn off Tipsy?");
+    expect(off.calls[0]?.body).toContain("Turns off:");
+    expect(off.calls[0]?.body).toContain("Its stored data and settings stay.");
+    expect(off.calls[0]?.questions?.[0]?.options?.map((option) => option.label))
+      .toEqual(["Turn off", "Leave on"]);
+
+    const on = removalChat({});
+    await requestPluginRemovalApproval({
+      chat: on.chat,
+      chatSessionId: "session-1",
+      kind: "enable",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      version: "0.3.0",
+      manifest,
+    });
+    expect(on.calls[0]?.title).toBe("Turn on Tipsy?");
+    expect(on.calls[0]?.body).toContain("Turns on:");
+    expect(on.calls[0]?.questions?.[0]?.options?.map((option) => option.label))
+      .toEqual(["Turn on", "Leave off"]);
+  });
+
+  it("says so when it cannot read the plugin's manifest, rather than listing nothing", async () => {
+    const { chat, calls } = removalChat({});
+
+    await requestPluginRemovalApproval({
+      chat,
+      chatSessionId: "session-1",
+      kind: "uninstall",
+      pluginId: "ade-tipsy",
+      displayName: "ade-tipsy",
+      version: null,
+      manifest: null,
+    });
+
+    expect(calls[0]?.body).toContain("ADE can't read ade-tipsy's plugin.json");
+  });
+
+  it("is never pre-approved by an approved install of the same plugin", async () => {
+    // The install of this exact plugin from this exact directory is approved and
+    // remembered, so a second install would not ask. Removal still asks.
+    const source = pluginDir(tipsyManifest());
+    const installChat = chatMock({});
+    const installed = await requestPluginInstallApproval({
+      chat: installChat.chat,
+      chatSessionId: "session-1",
+      projectId: "project-1",
+      source,
+    });
+    expect(installed.allow).toBe(true);
+    if (!installed.allow) throw new Error("unreachable");
+    recordPluginInstallApproval({
+      projectId: "project-1",
+      pluginId: installed.pluginId!,
+      canonicalSource: installed.canonicalSource!,
+      grant: installed.grant,
+    });
+    expect(isPluginInstallPreapproved({
+      projectId: "project-1",
+      pluginId: "ade-tipsy",
+      canonicalSource: installed.canonicalSource!,
+      grant: installed.grant,
+    })).toBe(true);
+
+    const removal = removalChat({});
+    const result = await requestPluginRemovalApproval({
+      chat: removal.chat,
+      chatSessionId: "session-1",
+      kind: "uninstall",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      version: "0.3.0",
+      manifest: installedManifest(),
+    });
+
+    expect(result.allow).toBe(true);
+    // The whole assertion: it ASKED. A remembered install approval is not
+    // consent to delete, and there is no branch here that could make it one.
+    expect(removal.calls).toHaveLength(1);
+    expect(removal.calls[0]?.title).toBe("Remove Tipsy 0.3.0?");
+  });
+
+  it("records nothing, so a second removal of the same plugin asks again", async () => {
+    for (const _ of [0, 1]) {
+      const { chat, calls } = removalChat({});
+      await requestPluginRemovalApproval({
+        chat,
+        chatSessionId: "session-1",
+        kind: "uninstall",
+        pluginId: "ade-tipsy",
+        displayName: "Tipsy",
+        version: "0.3.0",
+        manifest: installedManifest(),
+      });
+      expect(calls).toHaveLength(1);
+    }
   });
 });

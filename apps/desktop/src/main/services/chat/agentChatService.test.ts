@@ -21,6 +21,11 @@ import {
   PLUGIN_ADE_CARDS_PER_SESSION_BURST,
   PLUGIN_BUDGET_EXCEEDED_CODE,
 } from "../../../shared/plugins/sdk";
+import {
+  findPluginChatRuntimeWriterForProjectRoot,
+  requirePluginChatWriteTarget,
+  setPluginChatRuntimeDelivery,
+} from "./pluginChatRuntime";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
@@ -44678,5 +44683,392 @@ describe("claude output style listing", () => {
 
     expect(readPersistedChatState(session.id).claudeOutputStyle ?? null).toBeNull();
     expect((await service.getSessionSummary(session.id))?.claudeOutputStyle ?? null).toBeNull();
+  });
+});
+
+describe("agentChatService plugin-owned conversations", () => {
+  const RUNTIME_REF = { pluginId: "ade-cursor-cloud", runtimeId: "cloud", externalId: "bc-42" };
+  const FULL_CAPABILITIES = { followUp: true, interrupt: true, hydrate: true, artifacts: true };
+
+  type FakePluginRuntime = {
+    turns: { sessionId: string; turnId: string; message: string; followUp: boolean }[];
+    interrupts: { sessionId: string; turnId: string | null }[];
+    presence: { sessionId: string; watching: boolean }[];
+    detach: () => void;
+  };
+
+  function installFakePluginRuntime(options: {
+    capabilities?: typeof FULL_CAPABILITIES;
+    onTurn?: (turn: { sessionId: string; turnId: string }) => void | Promise<void>;
+    turnRejects?: string;
+  } = {}): FakePluginRuntime {
+    const state: FakePluginRuntime = {
+      turns: [],
+      interrupts: [],
+      presence: [],
+      detach: () => undefined,
+    };
+    state.detach = setPluginChatRuntimeDelivery({
+      async deliverTurn(turn) {
+        if (options.turnRejects) throw new Error(options.turnRejects);
+        state.turns.push({
+          sessionId: turn.sessionId,
+          turnId: turn.turnId,
+          message: turn.message,
+          followUp: turn.followUp,
+        });
+        await options.onTurn?.({ sessionId: turn.sessionId, turnId: turn.turnId });
+      },
+      async deliverInterrupt(interrupt) {
+        state.interrupts.push({ sessionId: interrupt.sessionId, turnId: interrupt.turnId });
+      },
+      notifyPresence(presence) {
+        state.presence.push({ sessionId: presence.sessionId, watching: presence.watching });
+      },
+      describe: () => ({
+        displayName: "Cursor Cloud",
+        icon: "Cloud",
+        pluginDisplayName: "Cursor Cloud",
+        capabilities: options.capabilities ?? FULL_CAPABILITIES,
+      }),
+    });
+    return state;
+  }
+
+  // Read from the live event stream rather than the transcript file: transcript
+  // writes are queued and flushed off the turn path, and these assertions are
+  // about what the conversation emitted, not about when it hit the disk.
+  function eventsFor(
+    captured: AgentChatEventEnvelope[],
+    sessionId: string,
+  ): AgentChatEventEnvelope["event"][] {
+    return captured
+      .filter((envelope) => envelope.sessionId === sessionId)
+      .map((envelope) => envelope.event);
+  }
+
+  function createOwnedService() {
+    const captured: AgentChatEventEnvelope[] = [];
+    const made = createService({
+      onEvent: (envelope: AgentChatEventEnvelope) => captured.push(envelope),
+    });
+    return { ...made, captured };
+  }
+
+  async function bindOwnedSession(service: ReturnType<typeof createService>["service"]) {
+    const writer = findPluginChatRuntimeWriterForProjectRoot(tmpRoot);
+    expect(writer).toBeTruthy();
+    const bound = await writer!.createSession(RUNTIME_REF.pluginId, {
+      runtimeId: RUNTIME_REF.runtimeId,
+      externalId: RUNTIME_REF.externalId,
+      laneId: "lane-1",
+      title: "Cloud run",
+    });
+    const session = await service.getSessionSummary(bound.sessionId);
+    return { writer: writer!, bound, session };
+  }
+
+  it("binds a session the plugin owns, labels it, and is idempotent on the external id", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound, session } = await bindOwnedSession(service);
+      expect(bound.created).toBe(true);
+      expect(session?.provider).toBe("plugin");
+      expect(session?.runtimeRef).toEqual(RUNTIME_REF);
+      // The runtime's own name, resolved from the manifest by the host. Every
+      // client needs it and none of them can read a manifest.
+      expect(session?.runtimeLabel).toMatchObject({ displayName: "Cursor Cloud", icon: "Cloud" });
+
+      // A webhook that fires twice, or one that beats the user to opening the
+      // chat, must not mint a second conversation for the same external run.
+      const again = await findPluginChatRuntimeWriterForProjectRoot(tmpRoot)!
+        .createSession(RUNTIME_REF.pluginId, {
+          runtimeId: RUNTIME_REF.runtimeId,
+          externalId: RUNTIME_REF.externalId,
+          laneId: "lane-1",
+        });
+      expect(again.created).toBe(false);
+      expect(again.sessionId).toBe(bound.sessionId);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("runs a whole turn: user send → chat.turn → streamed reply → idle settles it", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+
+      await service.sendMessage({ sessionId: bound.sessionId, text: "Fix the flaky test." }, { awaitBackendDispatch: true });
+
+      // Dispatch reaches the plugin, and returns without waiting for the answer.
+      expect(runtime.turns).toHaveLength(1);
+      expect(runtime.turns[0]).toMatchObject({
+        sessionId: bound.sessionId,
+        message: expect.stringContaining("Fix the flaky test."),
+        followUp: false,
+      });
+      const turnId = runtime.turns[0]!.turnId;
+
+      // The reply arrives later, as the plugin reads its own conversation.
+      await writer.appendAssistant(bound.sessionId, { text: "Looking at it", turnId });
+      await writer.appendAssistant(bound.sessionId, { parts: [{ kind: "thinking", text: "hmm" }], turnId });
+      await writer.appendAssistant(bound.sessionId, { text: " — fixed.", turnId });
+
+      let events = eventsFor(captured, bound.sessionId);
+      expect(events.filter((event) => event.type === "user_message")).toHaveLength(1);
+      // Still running: no terminal status yet. Assistant text is coalesced by
+      // the shared buffer and lands when the turn closes, exactly as it does
+      // for ADE's own streaming runtimes.
+      expect(events.some((event) => event.type === "done")).toBe(false);
+
+      await writer.emitStatus(bound.sessionId, { state: "idle" });
+
+      events = eventsFor(captured, bound.sessionId);
+      expect(events.filter((event) => event.type === "text").map((event) => (event as { text: string }).text).join(""))
+        .toBe("Looking at it — fixed.");
+      expect(events.some((event) => event.type === "reasoning")).toBe(true);
+      const done = events.find((event) => event.type === "done") as { status: string; turnId: string } | undefined;
+      expect(done).toMatchObject({ status: "completed", turnId });
+      expect(events.filter((event) => event.type === "status").map((event) => (event as { turnStatus: string }).turnStatus))
+        .toEqual(["started", "completed"]);
+      const settled = await service.getSessionSummary(bound.sessionId);
+      expect(settled?.status).toBe("idle");
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("marks a second send a follow-up, and refuses one the runtime cannot take", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      await service.sendMessage({ sessionId: bound.sessionId, text: "First." }, { awaitBackendDispatch: true });
+      await writer.emitStatus(bound.sessionId, { state: "idle" });
+      await service.sendMessage({ sessionId: bound.sessionId, text: "Second." }, { awaitBackendDispatch: true });
+      expect(runtime.turns.map((turn) => turn.followUp)).toEqual([false, true]);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+
+    const noFollowUp = installFakePluginRuntime({
+      capabilities: { ...FULL_CAPABILITIES, followUp: false },
+    });
+    const second = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(second.service);
+      await second.service.sendMessage({ sessionId: bound.sessionId, text: "First." }, { awaitBackendDispatch: true });
+      await writer.emitStatus(bound.sessionId, { state: "idle" });
+      await expect(second.service.sendMessage({ sessionId: bound.sessionId, text: "Second." }, { awaitBackendDispatch: true }))
+        .rejects.toThrow(/do not take follow-up messages/i);
+    } finally {
+      noFollowUp.detach();
+      second.service.forceDisposeAll();
+    }
+  });
+
+  it("fails the turn visibly when the plugin refuses to accept it", async () => {
+    const runtime = installFakePluginRuntime({ turnRejects: "the cloud API is down" });
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound } = await bindOwnedSession(service);
+      await expect(service.sendMessage({ sessionId: bound.sessionId, text: "Go." }, { awaitBackendDispatch: true }))
+        .rejects.toThrow(/the cloud API is down/);
+
+      // A message the host quietly dropped is a chat that silently stops
+      // answering, so the failure lands in the transcript.
+      const events = eventsFor(captured, bound.sessionId);
+      expect(events.find((event) => event.type === "error")).toMatchObject({
+        message: expect.stringContaining("Cursor Cloud could not accept this message"),
+      });
+      expect(events.find((event) => event.type === "done")).toMatchObject({ status: "failed" });
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("says so plainly when the plugin that runs the conversation is gone", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound } = await bindOwnedSession(service);
+      runtime.detach();
+      await expect(service.sendMessage({ sessionId: bound.sessionId, text: "Anyone there?" }, { awaitBackendDispatch: true }))
+        .rejects.toThrow(/not available on this machine/i);
+    } finally {
+      service.forceDisposeAll();
+    }
+  });
+
+  it("sends an interrupt to the plugin and settles the turn", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound } = await bindOwnedSession(service);
+      await service.sendMessage({ sessionId: bound.sessionId, text: "Long job." }, { awaitBackendDispatch: true });
+      const turnId = runtime.turns[0]!.turnId;
+
+      await service.interrupt({ sessionId: bound.sessionId });
+
+      expect(runtime.interrupts).toEqual([{ sessionId: bound.sessionId, turnId }]);
+      const done = eventsFor(captured, bound.sessionId).find((event) => event.type === "done");
+      expect(done).toMatchObject({ status: "interrupted", turnId });
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses every write aimed at a session another plugin owns", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound } = await bindOwnedSession(service);
+      // The gate reads the plugin id off the CHILD CONNECTION, never off the
+      // request, so an impostor cannot name its way into somebody's transcript.
+      expect(() => requirePluginChatWriteTarget("ade-impostor", bound.sessionId))
+        .toThrowError(/does not own chat session/i);
+      expect(requirePluginChatWriteTarget(RUNTIME_REF.pluginId, bound.sessionId).ref)
+        .toEqual(RUNTIME_REF);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("backfills history without opening a turn, and does not double it on a re-read", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      const history = [
+        { role: "user" as const, text: "Rename the button", fingerprint: "u1" },
+        { role: "assistant" as const, text: "Renamed it." },
+      ];
+      await writer.hydrate(bound.sessionId, history);
+      await writer.hydrate(bound.sessionId, history);
+
+      const events = eventsFor(captured, bound.sessionId);
+      expect(events.filter((event) => event.type === "user_message")).toHaveLength(1);
+      // Backfill is history: a chat that lit up "running" because somebody
+      // re-read the past would be lying about the present.
+      expect(events.some((event) => event.type === "status")).toBe(false);
+      expect((await service.getSessionSummary(bound.sessionId))?.status).not.toBe("active");
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("dedupes a backfilled user turn suffix-tolerantly against what ADE already sent", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      await service.sendMessage({ sessionId: bound.sessionId, text: "Fix the flaky test." }, { awaitBackendDispatch: true });
+
+      // The plugin re-reads its own conversation and gets the same message back
+      // wearing a preamble ADE injected. An exact-match dedupe would double it.
+      await writer.appendUser(bound.sessionId, {
+        text: "<system preamble>\nFix the flaky test.",
+      });
+
+      expect(eventsFor(captured, bound.sessionId).filter((event) => event.type === "user_message"))
+        .toHaveLength(1);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("sends presence to the plugin, once, however many clients are looking", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound } = await bindOwnedSession(service);
+      service.watchCursorCloudMirror({ sessionId: bound.sessionId, watching: true });
+      service.watchCursorCloudMirror({ sessionId: bound.sessionId, watching: true });
+      service.watchCursorCloudMirror({ sessionId: bound.sessionId, watching: false });
+      expect(runtime.presence).toEqual([{ sessionId: bound.sessionId, watching: true }]);
+
+      service.watchCursorCloudMirror({ sessionId: bound.sessionId, watching: false });
+      expect(runtime.presence).toEqual([
+        { sessionId: bound.sessionId, watching: true },
+        { sessionId: bound.sessionId, watching: false },
+      ]);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses an oversized chunk and holds the per-session write budget", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      await expect(writer.appendAssistant(bound.sessionId, { text: "x".repeat(200_000) }))
+        .rejects.toThrow(/the limit is/i);
+
+      for (let index = 0; index < 900; index += 1) {
+        await writer.appendAssistant(bound.sessionId, { text: "." });
+      }
+      await expect(writer.appendAssistant(bound.sessionId, { text: "." }))
+        .rejects.toMatchObject({ code: PLUGIN_BUDGET_EXCEEDED_CODE });
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("adopts a Cursor Cloud session into a plugin runtime, once, and only with an external id", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const cursorSession = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+      // No cloud agent id yet: there is nothing for the plugin runtime to
+      // address, so the migration declines rather than binding a dead pointer.
+      expect(service.adoptSessionIntoPluginRuntime({
+        sessionId: cursorSession.id,
+        pluginId: RUNTIME_REF.pluginId,
+        runtimeId: RUNTIME_REF.runtimeId,
+      })).toBeNull();
+
+      const adopted = service.adoptSessionIntoPluginRuntime({
+        sessionId: cursorSession.id,
+        pluginId: RUNTIME_REF.pluginId,
+        runtimeId: RUNTIME_REF.runtimeId,
+        externalId: "bc-legacy",
+      });
+      expect(adopted).toEqual({ ...RUNTIME_REF, externalId: "bc-legacy" });
+      const after = await service.getSessionSummary(cursorSession.id);
+      expect(after?.provider).toBe("plugin");
+      expect(after?.runtimeRef?.externalId).toBe("bc-legacy");
+
+      // Idempotent: running it twice changes nothing.
+      expect(service.adoptSessionIntoPluginRuntime({
+        sessionId: cursorSession.id,
+        pluginId: "ade-somebody-else",
+        runtimeId: "other",
+        externalId: "bc-other",
+      })).toBeNull();
+      expect((await service.getSessionSummary(cursorSession.id))?.runtimeRef?.pluginId)
+        .toBe(RUNTIME_REF.pluginId);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
   });
 });

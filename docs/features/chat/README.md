@@ -139,8 +139,6 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/renderer/components/chat/ComposerPromptStash.tsx` | Desktop prompt-stash control mounted immediately left of the context meter. Cmd/Ctrl+S and the bookmark share one path: non-empty text is persisted before the exact saved draft is cleared, while an empty draft opens the keyboard-navigable stash menu. Restore is a take operation, but it puts text into the composer before waiting for a remote delete so edits cannot be overwritten; delete failure intentionally favors a duplicate over lost text. Attachments and context items never enter the stash. |
 | `apps/desktop/src/renderer/components/shared/ModelPicker/ReasoningEffortPicker.tsx` | Shared reasoning slider. Supports pointer drag with nearest-tick snap, keyboard arrows/Home/End, a progressive filled gradient, and a directional roll transition for the active tier label, GPT-5.6 labels (Light, Medium, High, Extra High, Max, and Ultra where supported), and an Ultra multi-agent usage note. The collapsed trigger uses full tier names on desktop, keeps abbreviations for narrow/mobile layouts, and does not add a second border around the label. Choosing or dragging to a tier leaves the popover open; outside click or Escape closes it. |
 | `apps/desktop/src/renderer/components/chat/ChatModelSelectionPendingCard.tsx` | Pending-input card used when ADE asks the user to choose a model for a new or rerouted agent. It renders the agent briefing, touched files, run-after dependencies, provider/model controls, cancel/confirm states, and leaves the model unset until the user chooses one. |
-| `apps/desktop/src/renderer/components/chat/ChatCursorCloudPanel.tsx` | Side panel for Cursor Cloud (background agents): lists existing cloud agents and runs for the lane, lets the user open an existing cloud chat in ADE, archive/unarchive/cancel, and stream run output. Backed by `ade.ai.cursorCloud.*` IPC. |
-| `apps/desktop/src/renderer/components/chat/CursorCloudInlineLaunch.tsx` | Inline composer affordance for "Send to Cursor Cloud": picks repo + branch + Cursor Cloud-eligible model, optionally targeting a detected PR, and dispatches the prompt to a fresh cloud agent. |
 | `apps/desktop/src/renderer/components/app/CursorCloudQuickViewButton.tsx`, `CursorCloudFleetModal.tsx`, `CursorCloudFleetRow.tsx` | Top-bar Cursor Cloud **fleet view** (see [Composer and chat UI › Cursor Cloud fleet view](composer-and-ui.md#cursor-cloud-fleet-view) for the surface contract). The button mounts beside `LinearQuickViewButton` only while a Cursor connection exists — read through a per-project cached `ai.getStatus` reader (120 s connected / 5 s disconnected TTLs, checked after a 4 s delay and re-queued on bridge-ready) so it never lands in the Work startup IPC window — and counts finishes from `fleetEvent` pushes into an unread badge while the modal is closed. The modal owns filters (status / lane / archived), the active/lane/unlinked grouping, lazy row expansion with usage, all row actions, and the honest relay/key-missing/empty/error states; `FleetRow` renders one row plus its overflow menu. Status derivation lives in shared `cursorCloudFleetStatus.ts` so section placement, Stop-button visibility, and filter results cannot drift between main process and renderer. Opening the modal occludes the built-in browser's `WebContentsView` so native content cannot paint over it. |
 | `apps/desktop/src/renderer/components/chat/ChatSurfaceShell.tsx` | Shell that wraps every chat surface (desktop pane, mobile lane, CTO chat) with a unified header/footer slot and `--chat-accent` CSS variable. Supports a `layoutVariant="mobile"` mode that the iOS companion mirrors. |
 | `apps/desktop/src/renderer/components/chat/chatSurfaceTheme.ts` | Chat chrome tokens. Exports `PROVIDER_CHAT_ACCENTS` (claude → amber, codex → warm white, cursor → near-black, droid/factory → burnt orange, opencode → periwinkle, pi → near-black, etc.) and `providerChatAccent(provider)`, plus `NEUTRAL_CHAT_ACCENT` and the single synchronous resolver `chatAccentForRenderedChat({ sessionProvider, lockSessionProvider, modelFamily, modelColor })` — best evidence first, caller-owned staleness, neutral gray rather than a borrowed color (see [composer-and-ui.md](composer-and-ui.md#resolving-the-accent-for-the-chat-on-screen)). The user bubble shades from `--chat-accent` itself rather than mixing toward a fixed violet, so two runtimes with different accents no longer come out the same purple; Claude and Codex are pinned to the original gradient (`ACCENTS_KEEPING_ORIGINAL_BUBBLE`) because they already read correctly, and near-black accents take a lifted gradient (`isDeepChatAccent`, luminance < 0.22) so the bubble does not disappear into the transcript background. iOS mirrors this table in `ADEDesignSystem.swift`. |
@@ -942,6 +940,52 @@ ADE/provider transport wrappers, and derives a fallback title from the first
 imported user/assistant text when the caller did not provide one. The cleanup
 grammar deliberately preserves ordinary user-authored JSX/XML and prompts that
 happen to begin with `User request:`.
+
+## Plugin-owned sessions
+
+A chat's turns do not have to belong to one of ADE's runtimes. A session that
+carries a `runtimeRef` is owned by a **plugin chat runtime**: the user's turn is
+delivered to a plugin child, and the answer streams back into the same
+transcript every other chat writes to. The full contract lives in
+[plugins › A plugin can own a conversation](../plugins/README.md#a-plugin-can-own-a-conversation);
+what the chat service does with it is here.
+
+- **One provider value.** Such a session has `provider: "plugin"` — never one
+  provider string per installed plugin. Which plugin, and which of its declared
+  runtimes, is `session.runtimeRef = {pluginId, runtimeId, externalId}`. Minting
+  a provider per plugin would put an install-time-discovered set into a union
+  that roughly twenty provider-keyed maps across four clients close over.
+- **Routing reads the ref, not the provider.** `executePreparedSendMessage` and
+  `interrupt` both test `isPluginOwnedChatSession(session)` **before** the
+  provider ladder, because the ref is what names a destination and a session
+  carrying one without the other must still reach its owner rather than fall
+  into a built-in runtime that has no thread for it. A plugin session also has
+  no `managed.runtime`, so every branch below would otherwise fall through to
+  the Claude runtime at the tail.
+- **Dispatch does not wait for the answer.** `runPluginChatTurn` returns as soon
+  as the plugin has *accepted* the message. The turn stays open and is closed
+  later by `appendAssistant({done: true})` or a terminal `emitStatus`. A cloud
+  conversation can take twenty minutes; holding the send promise open for it
+  would make the composer, the automation runner and every scheduled wake wait
+  on somebody else's server. The terminal emissions are deliberately the same
+  three `runCursorCloudTurn` makes — `status`, `done`, session idle — so an
+  owned session inherits the settled lifecycle and the attention ladder without
+  any of them learning a new provider.
+- **An unsolicited write opens a turn.** A plugin may write with nothing open: a
+  webhook fired, the run finished overnight, nobody typed. That is a real
+  conversation event, so it opens a turn rather than being dropped.
+- **`follow-up` is durable.** Whether a turn is a follow-up is read from the
+  transcript's own recent entries, not a counter, so it survives a restart.
+- **Presence rides the existing action.** `ai.watchCursorCloudMirror` now drives
+  both the Cursor mirror ladder and `chat.opened` / `chat.closed` for a
+  plugin-owned session. The name is a wire contract clients ship independently;
+  renaming it would mean a version of ADE where the phone sends presence nobody
+  receives.
+- **Migration.** `adoptSessionIntoPluginRuntime({sessionId, pluginId, runtimeId,
+  externalId?})` gives an existing session a plugin owner, defaulting
+  `externalId` to its `cursorCloudAgentId`. It refuses a session that already
+  has an owner and one with no external id, so running it twice changes nothing.
+  Nothing runs it today: the built-in Cursor Cloud path keeps working untouched.
 
 ## Session lifecycle
 

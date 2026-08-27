@@ -4,8 +4,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 
-import { WhereItShowsUpRail } from "./MarketplaceDetailRail";
+import { WebhooksRail, WhereItShowsUpRail } from "./MarketplaceDetailRail";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
+import type { PluginWebhookIngressStatus } from "../../../shared/plugins/sdk";
 
 /**
  * "Installed" and "visible on my phone" are different facts, and this section
@@ -38,6 +39,8 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     automationSteps: [],
     searchProviders: [],
     keybindings: [],
+    chatRuntimes: [],
+    webhookIngress: [],
     official: false,
     ...overrides,
   };
@@ -95,6 +98,81 @@ describe("WhereItShowsUpRail", () => {
     const { container } = render(
       <WhereItShowsUpRail manifest={manifest({ sockets: [] })} showSkillTiming />,
     );
+    expect(container.textContent).toBe("");
+  });
+});
+
+/**
+ * The webhook rail is a SETUP surface: the person reading it is about to paste
+ * a URL into a third party. The tests below hold that shape — the URL is
+ * readable and copyable, a missing signing secret is named, and the health line
+ * never invents a delivery that has not happened.
+ */
+function ingressStatus(
+  overrides: Partial<PluginWebhookIngressStatus> = {},
+): PluginWebhookIngressStatus {
+  return {
+    pluginId: "ade-tipsy",
+    state: "ready",
+    relayBaseUrl: "https://relay.example",
+    channels: [
+      {
+        channelId: "default",
+        label: "Drink events",
+        url: "https://relay.example/plugin/ade-tipsy/webhook",
+        verified: false,
+        lastReceivedAt: null,
+      },
+    ],
+    lastReceivedAt: null,
+    lastPolledAt: null,
+    lastError: null,
+    pendingDeliveries: 0,
+    abandonedDeliveries: 0,
+    ...overrides,
+  };
+}
+
+describe("WebhooksRail", () => {
+  it("shows the URL and copies it", async () => {
+    const copied: string[] = [];
+    Object.assign(navigator, {
+      clipboard: { writeText: async (text: string) => { copied.push(text); } },
+    });
+
+    render(<WebhooksRail status={ingressStatus()} />);
+    expect(screen.getByText("https://relay.example/plugin/ade-tipsy/webhook")).toBeTruthy();
+    // Nothing has arrived, and the line says what to do about it rather than
+    // reporting a failure that has not happened.
+    expect(screen.getByText(/Paste the URL above/)).toBeTruthy();
+
+    screen.getByRole("button", { name: "Copy" }).click();
+    await Promise.resolve();
+    expect(copied).toEqual(["https://relay.example/plugin/ade-tipsy/webhook"]);
+  });
+
+  it("names a signing secret the plugin still needs", () => {
+    render(<WebhooksRail status={ingressStatus({
+      channels: [{
+        channelId: "billing",
+        label: "Billing",
+        url: "https://relay.example/plugin/ade-tipsy/webhook/billing",
+        verified: true,
+        missingSecretRef: "STRIPE_SIGNING_SECRET",
+        lastReceivedAt: null,
+      }],
+    })} />);
+
+    expect(screen.getByText(/STRIPE_SIGNING_SECRET/)).toBeTruthy();
+  });
+
+  it("reports a relay failure instead of silence", () => {
+    render(<WebhooksRail status={ingressStatus({ state: "error", lastError: "relay unreachable" })} />);
+    expect(screen.getByText(/relay unreachable/)).toBeTruthy();
+  });
+
+  it("draws nothing for a plugin with no channels", () => {
+    const { container } = render(<WebhooksRail status={ingressStatus({ channels: [] })} />);
     expect(container.textContent).toBe("");
   });
 });
