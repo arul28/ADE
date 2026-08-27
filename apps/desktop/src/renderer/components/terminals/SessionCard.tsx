@@ -26,6 +26,7 @@ import type {
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
+import { chatSessionAgentIcon } from "../../../shared/types/chat";
 import {
   canonicalInputFromSummary,
   sanitizeTerminalInlineText,
@@ -753,7 +754,7 @@ export const SessionCard = React.memo(function SessionCard({
   }
   hoverRows.push({
     id: "provider",
-    icon: <ToolLogo toolType={session.toolType} size={13} className="opacity-80" />,
+    icon: <ToolLogo toolType={session.toolType} pluginIconName={chatSessionAgentIcon(session)} size={13} className="opacity-80" />,
     value: defaultSessionLabel(session.toolType),
   });
   if (lanePr) {
@@ -1033,7 +1034,12 @@ export const SessionCard = React.memo(function SessionCard({
           {titleNode}
           {compactLineageGlyph}
           {cursorCloudLink}
-          <ToolLogo toolType={session.toolType} size={14} className="shrink-0 opacity-75" />
+          <ToolLogo
+            toolType={session.toolType}
+            pluginIconName={chatSessionAgentIcon(session)}
+            size={14}
+            className="shrink-0 opacity-75"
+          />
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
           {pluginBadges}
@@ -1116,7 +1122,12 @@ export const SessionCard = React.memo(function SessionCard({
                 most rows share a provider — so it sits in the least prominent
                 slot rather than leading the card. */}
             {cursorCloudLink}
-            <ToolLogo toolType={session.toolType} size={20} className="shrink-0 opacity-75" />
+            <ToolLogo
+              toolType={session.toolType}
+              pluginIconName={chatSessionAgentIcon(session)}
+              size={20}
+              className="shrink-0 opacity-75"
+            />
           </div>
         </div>
       )}

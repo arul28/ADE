@@ -62,7 +62,7 @@ import {
   supportsActiveTurnDispatchMode,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
-import { chatSessionAgentLabel, isPluginOwnedChatSession } from "../../../shared/types/chat";
+import { chatSessionAgentIcon, chatSessionAgentLabel, isPluginOwnedChatSession } from "../../../shared/types/chat";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { formatSubagentModelChip, subagentModelAttribution } from "../../../shared/chatSubagents";
 import {
@@ -12748,7 +12748,11 @@ export function AgentChatPane({
                     setSelectedSessionId(session.sessionId);
                   }}
                 >
-                  <ToolLogo toolType={chatToolTypeForProvider(session.provider)} size={10} />
+                  <ToolLogo
+                    toolType={chatToolTypeForProvider(session.provider)}
+                    pluginIconName={chatSessionAgentIcon(session)}
+                    size={10}
+                  />
                   <span className="max-w-[120px] truncate">{title}</span>
                   {session.completion ? (
                     <span

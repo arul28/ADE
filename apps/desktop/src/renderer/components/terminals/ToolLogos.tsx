@@ -3,6 +3,7 @@ import { Claude, Codex, Cursor, OpenCode } from "@lobehub/icons";
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { DroidLogo, PiLogo } from "../shared/ProviderLogos";
+import { pluginIcon } from "../plugins/pluginIcons";
 
 type LogoProps = { size?: number; className?: string };
 
@@ -63,13 +64,34 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
 
 export function ToolLogo({
   toolType,
+  pluginIconName,
   size = 16,
   className,
 }: {
   toolType: TerminalToolType | null | undefined;
+  /**
+   * A plugin chat runtime's declared icon token, for a plugin-owned session.
+   *
+   * Wins over `toolType` when present, because there is exactly ONE tool type
+   * for every plugin — `"other"` — and it cannot say which plugin a chat
+   * belongs to. Resolved through `pluginIcon`, the same token list the socket
+   * renderers use, so an unknown token draws the same puzzle-piece default a
+   * socket would rather than some other provider's mark.
+   *
+   * Read it off a session with `chatSessionAgentIcon(session)`.
+   */
+  pluginIconName?: string | null;
   size?: number;
   className?: string;
 }) {
+  if (pluginIconName) {
+    const PluginGlyph = pluginIcon(pluginIconName);
+    return (
+      <span className={cn("shrink-0 inline-flex items-center", className)}>
+        <PluginGlyph size={size} weight="regular" />
+      </span>
+    );
+  }
   const Logo = toolType ? LOGO_MAP[toolType] : undefined;
   if (Logo) return <Logo size={size} className={className} />;
   return <ShellLogo size={size} className={className} />;
