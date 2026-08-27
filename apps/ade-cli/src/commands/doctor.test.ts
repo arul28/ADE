@@ -67,6 +67,7 @@ function healthyInput(): DoctorInput {
       path: "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade",
       version: "1.2.35",
       adeHome: "/Users/tester/.ade",
+      adeHomeReason: "default",
       hasPluginDomain: true,
       chatSessionId: null,
       sessionCliPath: null,
@@ -707,8 +708,50 @@ describe("doctor CLI row", () => {
     expect(row.status).toBe("ok");
     expect(row.detail).toContain("/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade");
     expect(row.detail).toContain("version 1.2.35");
-    expect(row.detail).toContain("ADE_HOME /Users/tester/.ade");
+    expect(row.detail).toContain("ADE_HOME /Users/tester/.ade (default, $ADE_HOME unset)");
     expect(row.detail).toContain("plugin commands: yes");
+  });
+
+  it("names the signal each machine home came from", () => {
+    expect(cliRowOf({ adeHomeReason: "env" }).detail).toContain(
+      "ADE_HOME /Users/tester/.ade (from $ADE_HOME)",
+    );
+    expect(
+      cliRowOf({
+        adeHome: "/Users/tester/.ade-alpha",
+        adeHomeReason: "channel-env",
+        adeHomeDetail: "$ADE_PACKAGE_CHANNEL=alpha",
+      }).detail,
+    ).toContain("ADE_HOME /Users/tester/.ade-alpha (from $ADE_PACKAGE_CHANNEL=alpha)");
+    expect(
+      cliRowOf({
+        path: "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade",
+        adeHome: "/Users/tester/.ade-alpha",
+        adeHomeReason: "bundle",
+        adeHomeDetail: "ADE Alpha.app",
+      }).detail,
+    ).toContain("ADE_HOME /Users/tester/.ade-alpha (derived from ADE Alpha.app)");
+  });
+
+  /**
+   * The bug this row could not see: an Alpha chat's injected `ade` lost
+   * ADE_HOME on the way to the runtime worker, so an Alpha binary read the
+   * stable machine. The bundle comparison below stayed happy — both CLIs were
+   * Alpha's — and the wrong home sailed through as "ok".
+   */
+  it("WARNS when a channel app's CLI defaulted to the stable machine home", () => {
+    const row = cliRowOf({
+      path: "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade",
+      adeHome: "/Users/tester/.ade",
+      adeHomeReason: "default",
+      chatSessionId: "bbca6866-ffc5-4d8a-9d04-8073f2e92cb6",
+      sessionCliPath: "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade",
+    });
+    expect(row.status).toBe("warn");
+    expect(row.detail).toContain("/Applications/ADE Alpha.app");
+    expect(row.detail).toContain("reading the stable machine");
+    // Actionable: the reader is told what to change, not just what is wrong.
+    expect(row.detail).toContain("set ADE_HOME");
   });
 
   it("WARNS when the running binary belongs to a different app than this chat", () => {

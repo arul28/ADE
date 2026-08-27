@@ -153,6 +153,32 @@ describe("headlessLinearServices", () => {
     expect(preview?.iconDataUrl).toBeUndefined();
   });
 
+  /**
+   * `bootstrap.ts` hands this object to the RPC server as the real chat service
+   * through an `as unknown` cast, so nothing at compile time says which verbs it
+   * is missing. It is missing the ones that raise and close an approval card,
+   * and the plugin gate calling straight through the cast threw
+   * `args.chat.requestChatInput is not a function` as a bare -32011 at a Cursor
+   * chat that was only trying to install the plugin it had just written.
+   *
+   * Pinned here so the gate's shape check stays honest work rather than
+   * defensive noise: if this surface ever grows real card verbs, that check can
+   * be revisited deliberately instead of by accident.
+   */
+  it("raises no approval cards, which is why callers must check the shape and not the truthiness", () => {
+    const services = createHeadlessLinearServices(createDeps());
+    const chat = services.agentChatService as unknown as Record<string, unknown>;
+
+    expect(chat).toBeTruthy();
+    expect(chat.requestChatInput).toBeUndefined();
+    expect(chat.respondToInput).toBeUndefined();
+    expect(chat.pendingInputRequiresOperator).toBeUndefined();
+    // The verbs it DOES carry are the reason the gap went unnoticed: a chat the
+    // agent could write to looked like a chat the host could ask in.
+    expect(typeof chat.sendMessage).toBe("function");
+    expect(typeof chat.approveToolUse).toBe("function");
+  });
+
   it("emits GitHub status changes from the headless shared credential service", async () => {
     const previousAdeHome = process.env.ADE_HOME;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-"));

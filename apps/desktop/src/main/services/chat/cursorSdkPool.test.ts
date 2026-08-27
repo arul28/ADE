@@ -249,7 +249,7 @@ describe("Cursor SDK pool paths", () => {
     expect(second.socketPath).not.toBe(first.socketPath);
   });
 
-  it("builds a worker environment with real HOME parity and no ADE brain ownership metadata", () => {
+  it("builds a worker environment with real HOME parity, the channel identity, and no ADE brain ownership metadata", () => {
     const cliRoot = makeTempDir("ade-cli-current-");
     const cliBinDir = path.join(cliRoot, "bin");
     const cliEntry = path.join(cliRoot, "cli.cjs");
@@ -293,8 +293,8 @@ describe("Cursor SDK pool paths", () => {
     expect(env.USERPROFILE).toBe("/Users/admin");
     expect(env.CURSOR_API_KEY).toBeUndefined();
     expect(env.CURSOR_AUTH_TOKEN).toBeUndefined();
-    expect(env.ADE_HOME).toBeUndefined();
-    expect(env.ADE_PACKAGE_CHANNEL).toBeUndefined();
+    expect(env.ADE_HOME).toBe("/Users/admin/.ade-beta");
+    expect(env.ADE_PACKAGE_CHANNEL).toBe("beta");
     expect(env.ADE_RUNTIME_SOCKET_PATH).toBeUndefined();
     expect(env.ADE_RPC_SOCKET_PATH).toBeUndefined();
     expect(env.ADE_DESKTOP_BRIDGE_SOCKET_PATH).toBeUndefined();
@@ -376,12 +376,49 @@ describe("Cursor SDK pool paths", () => {
     });
 
     expect(env.ADE_CLI_ENTRY_PATH).toBeUndefined();
-    expect(env.ADE_PACKAGE_CHANNEL).toBeUndefined();
-    expect(env.ADE_HOME).toBeUndefined();
+    expect(env.ADE_PACKAGE_CHANNEL).toBe("beta");
+    expect(env.ADE_HOME).toBe("/Users/admin/.ade-beta");
     expect(env.ADE_RUNTIME_SOCKET_PATH).toBeUndefined();
     expect(env.ADE_CLI_BIN_DIR).toBe(betaBinDir);
     expect(env.ADE_CLI_PATH).toBe(betaCommand);
     expect(env.PATH?.split(path.delimiter)[0]).toBe(betaBinDir);
+  });
+
+  /**
+   * A Cursor chat inside packaged ADE Alpha got an injected `ade` that sat in
+   * the Alpha bundle but resolved the STABLE `~/.ade`, because the worker env
+   * denylist stripped ADE_HOME along with the brain's socket. It could not
+   * reach the Alpha brain, fell back to a headless in-process runtime, and
+   * `ade actions run plugin.install` failed. The two are different things: the
+   * socket is the brain's, the home is WHICH APP'S STATE this agent belongs to.
+   */
+  it("keeps the channel home while still dropping the brain's socket", () => {
+    const channelRoot = makeTempDir("ade-cli-channel-");
+    const channelBinDir = path.join(channelRoot, "bin");
+    const channelCommand = path.join(channelBinDir, process.platform === "win32" ? "ade-beta.cmd" : "ade-beta");
+    fs.mkdirSync(channelBinDir, { recursive: true });
+    fs.writeFileSync(channelCommand, "");
+
+    const env = buildCursorSdkWorkerEnv({
+      baseEnv: {
+        PATH: "/usr/bin",
+        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_CLI_BIN_DIR: channelBinDir,
+        ADE_CLI_PATH: channelCommand,
+      },
+      userHomeDir: "/Users/admin",
+      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
+      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
+      workspacePath: "/repo/.ade/worktrees/lane",
+      sessionId: "session-1",
+    });
+
+    expect(env.ADE_HOME).toBe("/Users/admin/.ade-beta");
+    expect(env.ADE_PACKAGE_CHANNEL).toBe("beta");
+    expect(env.ADE_RUNTIME_SOCKET_PATH).toBeUndefined();
+    expect(env.ADE_CLI_PATH).toBe(channelCommand);
   });
 
   /**

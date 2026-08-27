@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, Package } from "@phosphor-icons/react";
+import { ArrowSquareOut, FolderOpen, Package } from "@phosphor-icons/react";
 
 import { COLORS, RADII, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
@@ -8,6 +8,7 @@ import { SettingsText } from "../settings/primitives/SettingsControls";
 // loaded into ADE's built-in browser pane would land somewhere nobody is
 // looking and the button would read as doing nothing.
 import { openExternalUrl } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { useRootAppStore } from "../../state/appStore";
 import {
   inspectPluginSource,
@@ -36,9 +37,15 @@ import {
  * and a link to the source before they agree.
  *
  * Two entry points share it. From the gallery the manifest is already in hand.
- * From "Install from URL" it is not, so the dialog reads the source first when
- * the host can (`inspectSource`) and otherwise says plainly that it will read
- * the manifest during install rather than pretending to know.
+ * From the Marketplace's own Install button it is not, so the dialog reads the
+ * source first when the host can (`inspectSource`) and otherwise says plainly
+ * that it will read the manifest during install rather than pretending to know.
+ *
+ * That second entry point takes a repository URL OR a folder on this machine —
+ * `resolvePluginInstallSource` has always tried a local directory before git,
+ * so a plugin someone just wrote installs from here. It read as URL-only
+ * because every word on the screen said URL and nothing offered a folder, which
+ * is how a user with a working plugin on disk concluded ADE could not take it.
  */
 
 export type InstallDialogTarget =
@@ -50,6 +57,24 @@ type Phase =
   | { status: "inspecting" }
   | { status: "installing" }
   | { status: "error"; message: string };
+
+/**
+ * The native folder picker, or null where there isn't one.
+ *
+ * The hosted web client answers every unimplemented preload member with a stub
+ * callable (`webclient/adapter/infra/proxy.ts`), and its own `chooseDirectory`
+ * resolves `null` unconditionally — so `typeof … === "function"` is not evidence
+ * there, and a button gated on it alone would open nothing on web. The web-client
+ * flag is the only reliable half of the test; the `typeof` guard covers a desktop
+ * preload older than the channel.
+ */
+function nativeFolderPicker():
+  | ((args: { title?: string; defaultPath?: string }) => Promise<string | null>)
+  | null {
+  if (typeof window === "undefined" || isWebClientMode()) return null;
+  const choose = window.ade?.project?.chooseDirectory;
+  return typeof choose === "function" ? choose : null;
+}
 
 export function PluginInstallDialog({
   target,
@@ -67,6 +92,8 @@ export function PluginInstallDialog({
   const [sourceInput, setSourceInput] = React.useState("");
   const [resolved, setResolved] = React.useState<MarketplaceListing | null>(null);
   const [phase, setPhase] = React.useState<Phase>({ status: "idle" });
+  const [picking, setPicking] = React.useState(false);
+  const folderPicker = React.useMemo(nativeFolderPicker, []);
 
   const open = target !== null;
   React.useEffect(() => {
@@ -77,6 +104,7 @@ export function PluginInstallDialog({
     setSourceInput("");
     setResolved(null);
     setPhase({ status: "idle" });
+    setPicking(false);
   }, [open]);
 
   const listing = target?.kind === "listing" ? target.listing : resolved;
@@ -87,16 +115,26 @@ export function PluginInstallDialog({
   // has read yet would be a guess — the note lands on the detail page once the
   // install has read it for real.
   const declaresSkill = (listing?.manifest?.skills.length ?? 0) > 0;
-  const busy = phase.status === "installing" || phase.status === "inspecting";
+  const busy = phase.status === "installing" || phase.status === "inspecting" || picking;
 
-  const inspect = async () => {
-    if (!source) return;
+  /**
+   * Read a source's manifest.
+   *
+   * Takes the source explicitly rather than closing over `sourceInput`: the
+   * folder picker sets the field and inspects in the same tick, and a read of
+   * the state variable there would inspect the source the field held BEFORE the
+   * pick — showing the previous plugin's "Adds" list under the new path.
+   */
+  const inspect = async (override?: string) => {
+    // Not `target`: that name is the dialog's own prop one scope out.
+    const readSource = override ?? source;
+    if (!readSource) return;
     setPhase({ status: "inspecting" });
     try {
-      const inspection = await inspectPluginSource(source);
+      const inspection = await inspectPluginSource(readSource);
       const parsed = inspection ? parsePluginManifest(inspection.manifest) : null;
       if (parsed?.manifest) {
-        setResolved(listingFromManifest(parsed.manifest, source));
+        setResolved(listingFromManifest(parsed.manifest, readSource));
         setPhase({ status: "idle" });
         return;
       }
@@ -110,6 +148,31 @@ export function PluginInstallDialog({
         status: "error",
         message: cause instanceof Error ? cause.message : "Could not read that source.",
       });
+    }
+  };
+
+  const chooseFolder = async () => {
+    if (!folderPicker) return;
+    setPicking(true);
+    try {
+      const picked = await folderPicker({ title: "Choose the plugin folder" });
+      // Cancelling leaves the field exactly as it was — a cancel that wiped a
+      // typed URL would be worse than doing nothing.
+      if (!picked) return;
+      setSourceInput(picked);
+      // Cleared before the read, not after: leaving the previous source's
+      // listing up would show one plugin's "Adds" under another one's path for
+      // as long as the inspection takes.
+      setResolved(null);
+      setPhase({ status: "idle" });
+      if (capabilities.inspect) await inspect(picked);
+    } catch (cause) {
+      setPhase({
+        status: "error",
+        message: cause instanceof Error ? cause.message : "Could not open the folder picker.",
+      });
+    } finally {
+      setPicking(false);
     }
   };
 
@@ -134,7 +197,7 @@ export function PluginInstallDialog({
   };
 
   const identity = listing ? pluginIdentity(listing) : null;
-  const title = listing ? `Install ${listing.displayName}` : "Install from a URL";
+  const title = listing ? `Install ${listing.displayName}` : "Install a plugin";
 
   return (
     <LaneDialogShell
@@ -147,7 +210,11 @@ export function PluginInstallDialog({
       footer={
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
           <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, minWidth: 0 }}>
-            {phase.status === "installing" ? "Installing…" : source || "Paste a repository URL"}
+            {phase.status === "installing"
+              ? "Installing…"
+              : source || (folderPicker
+                ? "Paste a repository URL, or choose a folder"
+                : "Paste a repository URL")}
           </span>
           <span style={{ display: "inline-flex", gap: 8 }}>
             <button
@@ -182,7 +249,7 @@ export function PluginInstallDialog({
               htmlFor="plugin-install-source"
               style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}
             >
-              Repository URL
+              Repository URL or folder
             </label>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <SettingsText
@@ -193,7 +260,7 @@ export function PluginInstallDialog({
                   setResolved(null);
                   if (phase.status === "error") setPhase({ status: "idle" });
                 }}
-                placeholder="https://github.com/owner/repo"
+                placeholder="https://github.com/owner/repo · or a folder"
                 mono
                 width="100%"
               />
@@ -205,6 +272,22 @@ export function PluginInstallDialog({
                   style={outlineButton({ height: 30, fontSize: 11.5 })}
                 >
                   {phase.status === "inspecting" ? "Reading…" : "Check"}
+                </button>
+              ) : null}
+              {/* The affordance the field was missing. A local folder has always
+                  installed — `resolvePluginInstallSource` tries a directory
+                  before git — but with no picker and URL-only wording, someone
+                  holding a plugin they just wrote read the Marketplace as having
+                  no way to take it. */}
+              {folderPicker ? (
+                <button
+                  type="button"
+                  onClick={() => void chooseFolder()}
+                  disabled={busy}
+                  style={{ ...outlineButton({ height: 30, fontSize: 11.5 }), flexShrink: 0 }}
+                >
+                  <FolderOpen size={12} weight="regular" aria-hidden />
+                  {picking ? "Choosing…" : "Choose folder…"}
                 </button>
               ) : null}
             </div>
@@ -306,7 +389,11 @@ export function PluginInstallDialog({
           >
             Runs with the same access as tools you install yourself.
           </span>
-          {source ? (
+          {/* Only for a source the system browser can actually open. The
+              external-URL bridge rejects every non-http(s) scheme silently, so
+              offering "View source" for a folder path — now that folders are an
+              advertised way in — would be a button that does nothing. */}
+          {/^https?:\/\//i.test(source) ? (
             <button
               type="button"
               onClick={() => openExternalUrl(source)}

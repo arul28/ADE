@@ -105,8 +105,6 @@ const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
 const CURSOR_SDK_WORKER_ENV_DENYLIST = [
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
-  "ADE_HOME",
-  "ADE_PACKAGE_CHANNEL",
   "ADE_RUNTIME_SOCKET_PATH",
   "ADE_RPC_SOCKET_PATH",
   "ADE_DESKTOP_BRIDGE_SOCKET_PATH",
@@ -440,6 +438,19 @@ export function buildCursorSdkWorkerEnv(args: {
     ADE_CURSOR_SDK_SESSION_ID: args.sessionId,
     ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
   };
+  // ADE_HOME and ADE_PACKAGE_CHANNEL are re-asserted from the base environment
+  // AFTER the sanitize, so a later denylist entry cannot silently drop them
+  // again. They are not brain ownership: stripping ADE_RUNTIME_SOCKET_PATH
+  // still stands, because the CLI derives the socket it may talk to from
+  // ADE_HOME through `resolveMachineAdeLayout` rather than inheriting the one
+  // handed to the brain. What ADE_HOME carries is WHICH APP'S STATE this agent
+  // belongs to. Dropping it pointed an Alpha agent's injected `ade` at the
+  // stable machine, where it could not reach the Alpha brain at all and fell
+  // back to a headless in-process runtime.
+  const channelHome = baseEnv.ADE_HOME?.trim();
+  if (channelHome) env.ADE_HOME = channelHome;
+  const packageChannel = baseEnv.ADE_PACKAGE_CHANNEL?.trim();
+  if (packageChannel) env.ADE_PACKAGE_CHANNEL = packageChannel;
   applyCurrentAdeCliEnv(env, baseEnv, args.logger ?? null);
   delete env.ADE_CLI_ENTRY_PATH;
   return env;

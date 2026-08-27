@@ -30,7 +30,9 @@ import {
   type StorageEnvironment,
 } from "../services/diagnostics/storageEnvironmentProbe";
 import {
+  resolveMachineAdeDirWithReason,
   resolveMachineAdeLayout,
+  type MachineAdeDirReason,
   type MachineAdeLayout,
 } from "../services/projects/machineLayout";
 import { readBrainStartupState } from "../services/runtime/brainStartupState";
@@ -104,6 +106,10 @@ export type DoctorCliInput = {
   version: string | null;
   /** The machine directory it reads — `$ADE_HOME`, or the default. */
   adeHome: string;
+  /** Which signal chose `adeHome`, from `resolveMachineAdeDirWithReason`. */
+  adeHomeReason: MachineAdeDirReason;
+  /** The signal itself, when the reason has one to name. */
+  adeHomeDetail?: string;
   /** Whether this build ships the `plugin` command and action domain. */
   hasPluginDomain: boolean;
   /** `$ADE_CHAT_SESSION_ID`: set when an ADE chat launched this process. */
@@ -676,14 +682,49 @@ function appBundleOf(binaryPath: string | null): string | null {
   return match?.[1] ?? null;
 }
 
+/** `ADE Alpha.app` / `ADE Beta.app`, the bundles that own a machine home. */
+const CHANNEL_APP_BUNDLE_PATTERN = /(?:^|[/\\])ADE (?:Alpha|Beta)\.app$/i;
+
+/** Plain words for where the machine home came from, for the CLI row. */
+function adeHomeSource(input: DoctorCliInput): string {
+  if (input.adeHomeReason === "env") return "from $ADE_HOME";
+  if (input.adeHomeReason === "channel-env") {
+    return `from ${input.adeHomeDetail ?? "$ADE_PACKAGE_CHANNEL"}`;
+  }
+  if (input.adeHomeReason === "bundle") {
+    return `derived from ${input.adeHomeDetail ?? "the app bundle"}`;
+  }
+  return "default, $ADE_HOME unset";
+}
+
 function cliRow(input: DoctorCliInput): DoctorRow {
   const label = "CLI";
   const facts = [
     input.path ?? "path unknown",
     input.version ? `version ${input.version}` : "version unknown",
-    `ADE_HOME ${input.adeHome}`,
+    `ADE_HOME ${input.adeHome} (${adeHomeSource(input)})`,
     input.hasPluginDomain ? "plugin commands: yes" : "plugin commands: no",
   ].join(" · ");
+
+  const runningBundle = appBundleOf(input.path);
+  const runningChannelBundle = runningBundle && CHANNEL_APP_BUNDLE_PATTERN.test(runningBundle)
+    ? runningBundle
+    : null;
+  if (input.adeHomeReason === "default" && runningChannelBundle) {
+    // The exact silent mismatch this row was extended for: a channel binary
+    // reading the stable machine. It happened because one runtime stripped
+    // ADE_HOME out of the agent's environment, so the CLI was in ADE Alpha.app
+    // and its brain, projects and plugins were the stable app's. Nothing else
+    // in this report says so — the bundle comparison below is happy, because
+    // both CLIs ARE the channel's.
+    return {
+      key: "cli",
+      label,
+      status: "warn",
+      detail: `${facts} · this is ${runningChannelBundle}'s CLI reading the stable machine`
+        + " — set ADE_HOME, or start the chat from that app",
+    };
+  }
 
   if (!input.chatSessionId) {
     return { key: "cli", label, status: "ok", detail: facts };
@@ -698,9 +739,8 @@ function cliRow(input: DoctorCliInput): DoctorRow {
       detail: `${facts} · in an ADE chat, which did not name its own CLI`,
     };
   }
-  const running = appBundleOf(input.path);
   const session = appBundleOf(input.sessionCliPath);
-  if (running && session && running !== session) {
+  if (runningBundle && session && runningBundle !== session) {
     return {
       key: "cli",
       label,
@@ -1202,10 +1242,13 @@ function readDoctorCliIdentity(
 ): DoctorCliInput {
   const argv = typeof process.argv[1] === "string" ? process.argv[1].trim() : "";
   const sessionCliPath = env.ADE_CLI_PATH?.trim() || null;
+  const home = resolveMachineAdeDirWithReason(env, argv || null);
   return {
     path: argv ? path.resolve(argv) : sessionCliPath,
     version: env.ADE_CLI_VERSION?.trim() || BUNDLED_DOCTOR_ADE_VERSION || null,
     adeHome: layout.adeDir,
+    adeHomeReason: home.reason,
+    ...(home.detail ? { adeHomeDetail: home.detail } : {}),
     // A constant, and a useful one: a build without the plugin domain prints no
     // such row at all, so "plugin commands: yes" beside a version is what tells
     // a reader comparing two CLIs which of them is the one with plugins.

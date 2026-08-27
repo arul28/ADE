@@ -3,7 +3,77 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { resolveMachineAdeLayout } from "./machineLayout";
+import { resolveMachineAdeDirWithReason, resolveMachineAdeLayout } from "./machineLayout";
+
+/**
+ * Where the machine home comes from when nothing set `$ADE_HOME`.
+ *
+ * A packaged channel build exports it to everything it spawns, but the Cursor
+ * SDK worker stripped it, and the Alpha `ade` it injected then read the STABLE
+ * `~/.ade`: an agent inside `ADE Alpha.app` whose CLI could not reach the Alpha
+ * brain at all. The bundle a binary runs out of is the backstop.
+ */
+describe("resolveMachineAdeDirWithReason", () => {
+  const alphaCli = "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade";
+
+  it("takes $ADE_HOME first, whatever else is set", () => {
+    const resolved = resolveMachineAdeDirWithReason(
+      { ADE_HOME: "/Volumes/work/.ade-custom", ADE_PACKAGE_CHANNEL: "alpha" },
+      alphaCli,
+      "darwin",
+    );
+
+    expect(resolved).toEqual({
+      dir: path.resolve("/Volumes/work/.ade-custom"),
+      reason: "env",
+      detail: "$ADE_HOME",
+    });
+  });
+
+  it("takes $ADE_PACKAGE_CHANNEL ahead of the bundle it is running from", () => {
+    const resolved = resolveMachineAdeDirWithReason(
+      { ADE_PACKAGE_CHANNEL: "beta" },
+      alphaCli,
+      "darwin",
+    );
+
+    expect(resolved.dir).toBe(path.join(os.homedir(), ".ade-beta"));
+    expect(resolved.reason).toBe("channel-env");
+    expect(resolved.detail).toBe("$ADE_PACKAGE_CHANNEL=beta");
+  });
+
+  it("derives the channel home from the app bundle when nothing in the env says", () => {
+    const resolved = resolveMachineAdeDirWithReason({}, alphaCli, "darwin");
+
+    expect(resolved.dir).toBe(path.join(os.homedir(), ".ade-alpha"));
+    expect(resolved.reason).toBe("bundle");
+    expect(resolved.detail).toBe("ADE Alpha.app");
+  });
+
+  it("leaves the stable ADE.app on the stable machine home", () => {
+    // `ADE.app` carries no channel word. Borrowing a channel home here would
+    // move every stable install's brain, projects and plugins.
+    const resolved = resolveMachineAdeDirWithReason(
+      {},
+      "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade",
+      "darwin",
+    );
+
+    expect(resolved).toEqual({ dir: path.join(os.homedir(), ".ade"), reason: "default" });
+  });
+
+  it("falls back to the stable home outside any app bundle", () => {
+    const resolved = resolveMachineAdeDirWithReason({}, "/usr/local/bin/ade", "darwin");
+
+    expect(resolved).toEqual({ dir: path.join(os.homedir(), ".ade"), reason: "default" });
+  });
+
+  it("does not sniff app bundles on Windows, where they are not how channels install", () => {
+    const resolved = resolveMachineAdeDirWithReason({}, alphaCli, "win32");
+
+    expect(resolved.reason).toBe("default");
+  });
+});
 
 describe("resolveMachineAdeLayout", () => {
   const arulEnv = {

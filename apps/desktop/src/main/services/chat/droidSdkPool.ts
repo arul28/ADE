@@ -69,7 +69,14 @@ function resolveWorkerPath(): string {
   return candidates[0]!;
 }
 
-function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/**
+ * Droid's worker inherits the parent environment whole, ADE_HOME included, so
+ * its injected `ade` reads the same machine the chat belongs to. Exported so
+ * the cross-runtime env-identity test can hold every pool to that same rule --
+ * Cursor once stripped ADE_HOME here and pointed an Alpha agent at the stable
+ * machine.
+ */
+export function sanitizeDroidSdkWorkerBaseEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...base };
 }
 
@@ -125,7 +132,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
   // the installed @types/node ForkOptions declaration omits that property.
   const child = fork(resolveWorkerPath(), [], {
     cwd: args.workspacePath,
-    env: sanitizeEnv(args.baseEnv ?? process.env),
+    env: sanitizeDroidSdkWorkerBaseEnv(args.baseEnv ?? process.env),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
     windowsHide: true,

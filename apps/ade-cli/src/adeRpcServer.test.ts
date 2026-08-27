@@ -631,6 +631,10 @@ function createRuntime() {
         answers: { answer: ["yes"] },
         responseText: "yes",
       })),
+      // The pair, not the half: an approval closes its own card through this
+      // one when it times out, so a fixture with only the asking half would
+      // model a runtime that does not exist.
+      respondToInput: vi.fn(async () => {}),
       sendMessage: vi.fn(async () => {}),
       steer: vi.fn(async () => ({ steerId: "steer-1", queued: false })),
       messageSession: vi.fn(async (args: unknown) => ({
@@ -6777,6 +6781,126 @@ describe("run_ade_action plugin domain", () => {
     });
 
     /**
+     * A chat session on the call is not the same as a chat to ask in.
+     *
+     * `runtime.agentChatService` is two different things wearing one type: the
+     * real service in a brain, and the read-only stub the CLI falls back to
+     * when it cannot reach one — cast through `as unknown` in `bootstrap.ts`
+     * and carrying neither `requestChatInput` nor `respondToInput`. Calling
+     * straight through that cast threw `args.chat.requestChatInput is not a
+     * function` as a bare -32011, which named a missing method instead of the
+     * fact that mattered: this CLI is not talking to the app that owns the
+     * chat. That is what a Cursor chat inside packaged ADE Alpha hit, because
+     * its injected CLI read `~/.ade` rather than `~/.ade-alpha`.
+     */
+    describe("a chat binding that cannot raise a card", () => {
+      /** The headless stub's shape: truthy, read-only, no card verbs. */
+      function withoutCardVerbs(fixture: RuntimeFixture, keep: { requestChatInput?: boolean } = {}): void {
+        const chat = fixture.runtime.agentChatService as unknown as Record<string, unknown>;
+        if (!keep.requestChatInput) delete chat.requestChatInput;
+        delete chat.respondToInput;
+      }
+
+      it("refuses install with a typed, actionable error instead of a TypeError", async () => {
+        const source = pluginSourceDir();
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        withoutCardVerbs(fixture);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        const denied = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "install",
+          args: { source },
+        });
+
+        expect(denied?.isError).toBe(true);
+        expect(denied.error).toMatchObject({
+          code: JsonRpcErrorCode.policyDenied,
+          data: { kind: "plugin_approval_unavailable", method: "plugin.install", chatSessionId: "chat-1" },
+        });
+        // The message has to be about the connection, not about a method name,
+        // and has to hand the reader the command that shows which app answered.
+        expect(String(denied.error.message)).not.toContain("is not a function");
+        expect(String(denied.error.message)).toContain("ade doctor --text");
+        expect(service.install).not.toHaveBeenCalled();
+      });
+
+      it("refuses uninstall the same way", async () => {
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        withoutCardVerbs(fixture);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        const denied = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "uninstall",
+          args: { pluginId: "hello" },
+        });
+
+        expect(denied?.isError).toBe(true);
+        expect(denied.error).toMatchObject({
+          code: JsonRpcErrorCode.policyDenied,
+          data: { kind: "plugin_approval_unavailable", method: "plugin.uninstall" },
+        });
+        expect(service.uninstall).not.toHaveBeenCalled();
+      });
+
+      /**
+       * Half a binding is not a binding: the approval answers its own card
+       * through `respondToInput` when it times out, so a runtime with only the
+       * asking half would fail after the person had already been asked.
+       */
+      it("refuses when it could ask but could not close its own card", async () => {
+        const source = pluginSourceDir();
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        const calls = withApprovalChat(fixture);
+        withoutCardVerbs(fixture, { requestChatInput: true });
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+        const denied = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "install",
+          args: { source },
+        });
+
+        expect(denied.error).toMatchObject({
+          code: JsonRpcErrorCode.policyDenied,
+          data: { kind: "plugin_approval_unavailable" },
+        });
+        expect(calls).toHaveLength(0);
+        expect(service.install).not.toHaveBeenCalled();
+      });
+
+      /**
+       * The operator's own terminal carries no chat session, connects at `cto`,
+       * and never reaches the card at all — so a runtime with no chat binding
+       * must not start refusing the path that never needed one.
+       */
+      it("leaves the operator's own terminal installing without a card", async () => {
+        const source = pluginSourceDir();
+        const { service, host } = pluginHostMock();
+        const fixture = withPluginHost(host);
+        withoutCardVerbs(fixture);
+        const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+        await initialize(handler, { callerId: "operator", role: "cto" });
+
+        const result = await callTool(handler, "run_ade_action", {
+          domain: "plugin",
+          action: "install",
+          args: { source },
+        });
+
+        expect(result?.isError).toBeUndefined();
+        expect(service.install).toHaveBeenCalledWith({ source });
+      });
+    });
+
+    /**
      * The other half of the install card, and deliberately symmetric.
      *
      * An agent that can put a plugin on the machine with the user's consent has
@@ -7001,6 +7125,37 @@ describe("run_ade_action plugin domain", () => {
         code: JsonRpcErrorCode.policyDenied,
         data: { kind: "pending_input_operator_only", itemId: "item-1", requiredRole: "cto" },
       });
+      expect(respondToInput).not.toHaveBeenCalled();
+    });
+
+    /**
+     * `?.` guarded a null service, not a missing method — and the CLI's
+     * headless fallback holds a truthy stub without this one, so the guard
+     * threw a TypeError where a policy answer belonged. A runtime that cannot
+     * say whether a request is operator-only must not be read as saying "no":
+     * this is the only door between an agent and its own approval card.
+     */
+    it("refuses rather than guesses when the runtime cannot say who a request waits on", async () => {
+      const fixture = createRuntime();
+      const respondToInput = vi.fn(async () => ({ ok: true }));
+      const chat = fixture.runtime.agentChatService as unknown as Record<string, unknown>;
+      chat.respondToInput = respondToInput;
+      delete chat.pendingInputRequiresOperator;
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, { callerId: "agent-plugin", role: "agent", chatSessionId: "chat-1" });
+
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "chat",
+        action: "respondToInput",
+        args: { sessionId: "chat-1", itemId: "item-1" },
+      });
+
+      expect(denied?.isError).toBe(true);
+      expect(denied.error).toMatchObject({
+        code: JsonRpcErrorCode.policyDenied,
+        data: { kind: "pending_input_unverifiable", itemId: "item-1" },
+      });
+      expect(String(denied.error.message)).not.toContain("is not a function");
       expect(respondToInput).not.toHaveBeenCalled();
     });
 

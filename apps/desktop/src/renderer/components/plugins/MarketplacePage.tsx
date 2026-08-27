@@ -1,7 +1,7 @@
 import React from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import * as Popover from "@radix-ui/react-popover";
-import { ArrowClockwise, DotsThree, LinkSimple, MagnifyingGlass } from "@phosphor-icons/react";
+import { ArrowClockwise, DotsThree, MagnifyingGlass, Plus } from "@phosphor-icons/react";
 
 import {
   COLORS,
@@ -186,7 +186,7 @@ function MarketplaceGallery() {
         <GalleryHeader
           search={query.search}
           onSearch={(search) => setQuery((previous) => ({ ...previous, search }))}
-          onInstallFromUrl={() => setInstallTarget({ kind: "url" })}
+          onInstallPlugin={() => setInstallTarget({ kind: "url" })}
           onRefresh={catalogue.refresh}
           refreshing={catalogue.refreshing}
           canRefresh={catalogue.capabilities.browse}
@@ -335,7 +335,7 @@ function MarketplaceGallery() {
 function GalleryHeader({
   search,
   onSearch,
-  onInstallFromUrl,
+  onInstallPlugin,
   onRefresh,
   refreshing,
   canRefresh,
@@ -343,7 +343,7 @@ function GalleryHeader({
 }: {
   search: string;
   onSearch: (value: string) => void;
-  onInstallFromUrl: () => void;
+  onInstallPlugin: () => void;
   onRefresh: () => void;
   refreshing: boolean;
   canRefresh: boolean;
@@ -385,12 +385,17 @@ function GalleryHeader({
           {canManage ? (
             <button
               type="button"
-              onClick={onInstallFromUrl}
+              onClick={onInstallPlugin}
               data-tour="plugin:marketplace.install-from-url"
               style={primaryButton({ height: 30, fontSize: 11.5 })}
             >
-              <LinkSimple size={13} weight="regular" aria-hidden />
-              Install from URL
+              {/* Not "Install from URL". The dialog behind this has always taken
+                  a folder on this machine as well — a plugin someone just wrote
+                  installs from here — and the URL-only label is why a user with
+                  one on disk read the Marketplace as having no way to take it.
+                  The `data-tour` id stays: the product tour points at it. */}
+              <Plus size={13} weight="bold" aria-hidden />
+              Install plugin
             </button>
           ) : null}
         </div>

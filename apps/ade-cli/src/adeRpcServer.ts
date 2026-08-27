@@ -65,6 +65,7 @@ import {
   recordPluginInstallApproval,
   requestPluginInstallApproval,
   requestPluginRemovalApproval,
+  type PluginInstallApprovalChat,
 } from "../../desktop/src/main/services/plugins/pluginInstallApproval";
 import {
   buildTrackedCliLaunchCommand,
@@ -1561,6 +1562,41 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * installed, and none of them is ever remembered.
  */
 const PLUGIN_REMOVAL_ACTIONS = new Set(["uninstall", "enable", "disable"]);
+
+/**
+ * The plugin lifecycle verbs a session-bound caller may ask for. Both branches
+ * below raise a card in the caller's own chat, so both need a chat binding that
+ * can actually raise one.
+ */
+function isPluginApprovalAction(domain: string, action: string): boolean {
+  if (domain !== "plugin") return false;
+  return action === "install" || PLUGIN_REMOVAL_ACTIONS.has(action);
+}
+
+/**
+ * `runtime.agentChatService` is not one type wearing one shape. A brain started
+ * with `chatRuntime: "agent"` holds the real service; the CLI's headless
+ * fallback — `cli.ts` calling `createAdeRuntime` with no `chatRuntime` after it
+ * fails to reach a brain — holds the read-only stub from
+ * `headlessLinearServices`, which `bootstrap.ts` casts to the real type through
+ * `as unknown`. That stub has no `requestChatInput` and no `respondToInput`.
+ *
+ * The cast meant the gate below called straight through it and threw
+ * `args.chat.requestChatInput is not a function` as a bare -32011 — a message
+ * about a missing method, when the actual fact was that this CLI is not talking
+ * to the app that owns the chat. So the shape is checked here, once, and the
+ * refusal names the real problem.
+ */
+function resolvePluginApprovalChat(runtime: AdeRuntime): PluginInstallApprovalChat | null {
+  const chat = runtime.agentChatService as unknown as Partial<PluginInstallApprovalChat> | null | undefined;
+  if (!chat) return null;
+  if (typeof chat.requestChatInput !== "function") return null;
+  // `requestPluginInstallApproval` answers its own card through `respondToInput`
+  // when it times out, so a binding with only half the pair would fail late,
+  // after the person had already been asked.
+  if (typeof chat.respondToInput !== "function") return null;
+  return chat as PluginInstallApprovalChat;
+}
 
 function safeObject(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
@@ -3934,10 +3970,33 @@ async function runTool(args: {
       // A caller with no chat session — an operator's own terminal — never
       // reaches any of this: it connects at `cto` and the whole branch is
       // skipped, so nothing on that path grew a card.
+      const approvalChat = isPluginApprovalAction(domain, action) && callerCtx.chatSessionId
+        ? resolvePluginApprovalChat(runtime)
+        : null;
+      if (isPluginApprovalAction(domain, action) && callerCtx.chatSessionId && !approvalChat) {
+        // The card is the only way this caller may pass, so a runtime that
+        // cannot raise one is a refusal, never a fall-through: dropping to the
+        // ordinary role denial below would tell the reader to "run it from your
+        // own terminal", which is advice about the wrong problem entirely.
+        throw new JsonRpcError(
+          JsonRpcErrorCode.policyDenied,
+          `Action '${domain}.${action}' has to ask you first, and this CLI cannot reach the chat to ask.`
+          + ` It is not connected to the ADE app that owns chat ${callerCtx.chatSessionId} —`
+          + " it answered from its own headless runtime, which has no composer to put the card in."
+          + " Run 'ade doctor --text' to see which binary, version and ADE_HOME answered,"
+          + " and whether it is the app this chat belongs to.",
+          {
+            kind: "plugin_approval_unavailable",
+            method: `${domain}.${action}`,
+            chatSessionId: callerCtx.chatSessionId,
+            requiredRole: "cto",
+          },
+        );
+      }
       if (domain === "plugin" && action === "install"
-        && callerCtx.chatSessionId && runtime.agentChatService) {
+        && callerCtx.chatSessionId && approvalChat) {
         const approval = await requestPluginInstallApproval({
-          chat: runtime.agentChatService,
+          chat: approvalChat,
           chatSessionId: callerCtx.chatSessionId,
           projectId: runtime.projectId,
           // Read straight off the call, then resolved and described by the
@@ -3965,7 +4024,7 @@ async function runTool(args: {
         }
         pluginLifecycleApproved = true;
       } else if (domain === "plugin" && PLUGIN_REMOVAL_ACTIONS.has(action)
-        && callerCtx.chatSessionId && runtime.agentChatService) {
+        && callerCtx.chatSessionId && approvalChat) {
         // Removal, disable and enable ask the same way install does — and,
         // unlike install, they are never remembered. An approved install does
         // not pre-approve taking the plugin off again: that is its own consent
@@ -3994,7 +4053,7 @@ async function runTool(args: {
         }
         const detail = isRecord(installed) ? installed : null;
         const approval = await requestPluginRemovalApproval({
-          chat: runtime.agentChatService,
+          chat: approvalChat,
           chatSessionId: callerCtx.chatSessionId,
           kind: action as "uninstall" | "enable" | "disable",
           pluginId,
@@ -4071,18 +4130,40 @@ async function runTool(args: {
     if (domain === "chat" && action === "respondToInput" && !callerIsCto) {
       const targetSessionId = asOptionalTrimmedString(rawObjectArgs.sessionId);
       const targetItemId = asOptionalTrimmedString(rawObjectArgs.itemId);
-      if (targetSessionId && targetItemId
-        && runtime.agentChatService?.pendingInputRequiresOperator(targetSessionId, targetItemId)) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.policyDenied,
-          "That request is waiting on the person at the keyboard, not on you. Leave it for them to answer.",
-          {
-            kind: "pending_input_operator_only",
-            method: `${domain}.${action}`,
-            itemId: targetItemId,
-            requiredRole: "cto",
-          },
-        );
+      // `?.` guards a null service, not a missing method. The CLI's headless
+      // fallback holds a truthy stub without this one, so calling through it
+      // threw a raw TypeError where a policy answer belonged.
+      if (targetSessionId && targetItemId) {
+        const pendingInputRequiresOperator = runtime.agentChatService?.pendingInputRequiresOperator;
+        if (typeof pendingInputRequiresOperator !== "function") {
+          // Refused, not trusted: this guard is the only door between an agent
+          // and its own approval card, so a runtime that cannot say whether a
+          // request is operator-only must not be read as saying "no".
+          throw new JsonRpcError(
+            JsonRpcErrorCode.policyDenied,
+            "This CLI cannot tell whether that request is waiting on you or on the person at the"
+            + " keyboard, because it is not connected to the ADE app that owns the chat."
+            + " Run 'ade doctor --text' to see which binary and ADE_HOME answered.",
+            {
+              kind: "pending_input_unverifiable",
+              method: `${domain}.${action}`,
+              itemId: targetItemId,
+              requiredRole: "cto",
+            },
+          );
+        }
+        if (pendingInputRequiresOperator.call(runtime.agentChatService, targetSessionId, targetItemId)) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.policyDenied,
+            "That request is waiting on the person at the keyboard, not on you. Leave it for them to answer.",
+            {
+              kind: "pending_input_operator_only",
+              method: `${domain}.${action}`,
+              itemId: targetItemId,
+              requiredRole: "cto",
+            },
+          );
+        }
       }
     }
     let scopedObjectArgs = rawObjectArgs;

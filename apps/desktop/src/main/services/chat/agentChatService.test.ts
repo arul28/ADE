@@ -743,8 +743,6 @@ vi.mock("./cursorSdkPool", () => ({
     const env = { ...baseEnv };
     delete env.CURSOR_API_KEY;
     delete env.CURSOR_AUTH_TOKEN;
-    delete env.ADE_HOME;
-    delete env.ADE_PACKAGE_CHANNEL;
     delete env.ADE_RUNTIME_SOCKET_PATH;
     delete env.ADE_RPC_SOCKET_PATH;
     delete env.ADE_DESKTOP_BRIDGE_SOCKET_PATH;
