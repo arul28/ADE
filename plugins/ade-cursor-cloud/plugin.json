@@ -1,0 +1,154 @@
+{
+  "name": "ade-cursor-cloud",
+  "version": "1.0.0",
+  "displayName": "Cursor Cloud",
+  "description": "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
+  "icon": "cloud",
+  "accent": "#A78BFA",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "network": { "hosts": ["api.cursor.com"] },
+  "providerKeys": ["cursor"],
+  "webhookIngress": [
+    {
+      "id": "cursor",
+      "label": "Cursor Cloud status events",
+      "description": "Paste this URL into Cursor's webhook settings so a finished run wakes ADE."
+    }
+  ],
+  "surfaces": [
+    {
+      "kind": "tab",
+      "id": "fleet",
+      "title": "Cursor Cloud",
+      "icon": "cloud",
+      "panelId": "fleet",
+      "order": 60,
+      "mobile": true
+    }
+  ],
+  "panels": [
+    { "id": "fleet", "schemaFile": "panels/fleet.json", "title": "Cursor Cloud", "icon": "cloud", "refreshAction": "refreshFleet" },
+    { "id": "agent", "schemaFile": "panels/agent.json", "title": "Agent", "icon": "cloud", "refreshAction": "refreshAgent" },
+    { "id": "launch", "schemaFile": "panels/launch.json", "title": "Launch in Cursor Cloud", "icon": "cloud" }
+  ],
+  "sockets": [
+    {
+      "socket": "composer-action",
+      "surface": "work",
+      "id": "send-to-cloud",
+      "label": "Launch in Cursor Cloud",
+      "icon": "cloud",
+      "actionId": "openLaunch"
+    },
+    {
+      "socket": "chat-header-action",
+      "surface": "work",
+      "id": "open-fleet",
+      "label": "Cursor Cloud fleet",
+      "icon": "cloud",
+      "actionId": "openFleet",
+      "menu": [
+        { "label": "Pull this run into the lane", "actionId": "pullIntoLaneFromChat", "icon": "git-branch" },
+        { "label": "Stop this cloud run", "actionId": "stopRunFromChat", "icon": "cloud" }
+      ]
+    },
+    {
+      "socket": "work-rail-pane",
+      "surface": "work",
+      "id": "fleet-pane",
+      "label": "Cursor Cloud",
+      "icon": "cloud",
+      "panelId": "fleet"
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "palette-fleet",
+      "label": "Cursor Cloud fleet",
+      "icon": "cloud",
+      "actionId": "openFleet"
+    }
+  ],
+  "collections": {
+    "fleet": { "sync": true },
+    "sessions": { "sync": true },
+    "deliveries": { "sync": false },
+    "laneSecrets": { "sync": false }
+  },
+  "settings": [
+    { "key": "autoOpenPr", "kind": "toggle", "label": "Open a PR when a run finishes", "default": false }
+  ],
+  "chatRuntimes": [
+    {
+      "id": "cloud-agent",
+      "displayName": "Cursor Cloud",
+      "icon": "cloud",
+      "capabilities": { "followUp": true, "interrupt": true, "hydrate": true, "artifacts": true }
+    }
+  ],
+  "automationTriggers": [
+    { "id": "cloud_finished", "label": "A Cursor Cloud agent finishes", "description": "Fires when Cursor reports a run FINISHED." },
+    { "id": "cloud_error", "label": "A Cursor Cloud agent errors", "description": "Fires when Cursor reports a run ERROR." }
+  ],
+  "automationSteps": [
+    { "id": "stop_agent", "label": "Stop a Cursor Cloud agent", "action": "stopRun" },
+    { "id": "pull_into_lane", "label": "Pull the agent's branch into its lane", "action": "pullIntoLane" }
+  ],
+  "searchProviders": [
+    { "id": "agents", "label": "Cursor Cloud", "action": "searchAgents" }
+  ],
+  "tools": [
+    {
+      "name": "list_agents",
+      "description": "List this project's Cursor Cloud agents, newest first.",
+      "action": "listAgents",
+      "input": {
+        "type": "object",
+        "properties": {
+          "includeArchived": { "type": "boolean", "description": "Include archived agents." },
+          "limit": { "type": "integer", "description": "How many agent rows to walk. Defaults to 100, at most 200." }
+        },
+        "required": []
+      }
+    },
+    {
+      "name": "launch_agent",
+      "description": "Start a Cursor Cloud agent on this lane's branch.",
+      "action": "createRun",
+      "input": {
+        "type": "object",
+        "properties": {
+          "prompt": { "type": "string", "description": "What the agent should do." },
+          "laneId": { "type": "string", "description": "The lane whose branch the agent works on." },
+          "model": { "type": "string", "description": "Cursor model id. Omit for Cursor's default." },
+          "openPr": { "type": "boolean", "description": "Open a pull request when the run finishes." }
+        },
+        "required": ["prompt"]
+      }
+    },
+    {
+      "name": "stop_agent",
+      "description": "Stop a running Cursor Cloud agent.",
+      "action": "stopRun",
+      "input": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string", "description": "The agent id." } },
+        "required": ["agentId"]
+      }
+    },
+    {
+      "name": "pull_into_lane",
+      "description": "Fetch a finished Cursor Cloud agent's branch into its lane.",
+      "action": "pullIntoLane",
+      "input": {
+        "type": "object",
+        "properties": { "agentId": { "type": "string", "description": "The agent id." } },
+        "required": ["agentId"]
+      }
+    }
+  ],
+  "cli": ["agents", "runs", "artifacts", "repos", "me"],
+  "skills": ["skills"],
+  "official": true
+}

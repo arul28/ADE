@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Cursor Cloud",
+  "fallback": {
+    "title": "Cursor Cloud",
+    "text": "Open ADE on the Mac that holds this plugin to see your cloud agents.",
+    "deeplink": "ade://plugin/ade-cursor-cloud/fleet"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading cloud agents…",
+      "description": "Reading your Cursor Cloud fleet.",
+      "icon": "cloud"
+    }
+  ]
+}

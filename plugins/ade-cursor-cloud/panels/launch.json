@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Launch in Cursor Cloud",
+  "fallback": {
+    "title": "Cursor Cloud",
+    "text": "Cursor Cloud agents launch from the Mac that holds this plugin.",
+    "deeplink": "ade://plugin/ade-cursor-cloud/launch"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Checking Cursor Cloud…",
+      "description": "Reading this lane's remote and your connected repositories.",
+      "icon": "cloud"
+    }
+  ]
+}

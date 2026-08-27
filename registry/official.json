@@ -94,6 +94,10 @@
         "1.0.0": "482c3817176d0fcd0a29cf3600838161da44ae51642ae3e6802a8ca5b57c99f9",
         "1.0.1": "8c834fe8b511e3c3111ac4969050de0a0aed0da73e5ad406064b32c62f69876b"
       }
+    },
+    "ade-cursor-cloud": {
+      "repo": "https://github.com/arul28/ade-cursor-cloud",
+      "checksums": {}
     }
   }
 }

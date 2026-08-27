@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "title": "Agent",
+  "fallback": {
+    "title": "Cursor Cloud",
+    "text": "Open the Cursor Cloud fleet to pick an agent.",
+    "deeplink": "ade://plugin/ade-cursor-cloud/agent"
+  },
+  "body": [
+    {
+      "component": "emptyState",
+      "title": "Loading this cloud agent…",
+      "description": "Reading it from Cursor.",
+      "icon": "cloud"
+    }
+  ]
+}

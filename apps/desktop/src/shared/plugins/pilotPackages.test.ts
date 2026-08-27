@@ -37,6 +37,7 @@ const PACKAGE_DIRS = [
   "ade-app-control",
   "ade-log-viewer",
   "ade-voice",
+  "ade-cursor-cloud",
   "themes/ade-theme-paper",
   "themes/ade-theme-ink",
   "themes/ade-theme-contrast",

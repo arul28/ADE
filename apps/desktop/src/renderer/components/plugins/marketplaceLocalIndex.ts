@@ -210,6 +210,91 @@ const VOICE = manifest({
 });
 
 /**
+ * Cursor Cloud, which gates nothing either — and owns a conversation.
+ *
+ * The largest thing a plugin can be. Voice above proves a `composer-action` and
+ * an SDK call are enough for a feature; this one proves the same for a whole
+ * vertical: a tab, a pane, a chat runtime, a webhook channel and a brokered
+ * provider key, none of them reserved for packages ADE publishes. If any part
+ * of it ever needs a `builtin` binding or an official-only capability, the
+ * extraction it was built to prove has regressed.
+ */
+const CURSOR_CLOUD = manifest({
+  name: "ade-cursor-cloud",
+  version: "1.0.0",
+  displayName: "Cursor Cloud",
+  description: "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
+  icon: "cloud",
+  accent: "#A78BFA",
+  entry: "index.js",
+  network: { hosts: ["api.cursor.com"] },
+  providerKeys: ["cursor"],
+  webhookIngress: [{
+    id: "cursor",
+    label: "Cursor Cloud status events",
+    description: "Paste this URL into Cursor's webhook settings so a finished run wakes ADE.",
+  }],
+  chatRuntimes: [{
+    id: "cloud-agent",
+    displayName: "Cursor Cloud",
+    icon: "cloud",
+    capabilities: { followUp: true, interrupt: true, hydrate: true, artifacts: true },
+  }],
+  surfaces: [{
+    kind: "tab",
+    id: "fleet",
+    title: "Cursor Cloud",
+    panelId: "fleet",
+    icon: "cloud",
+    order: 60,
+    mobile: true,
+  }],
+  panels: [
+    { id: "fleet", schemaFile: "panels/fleet.json", title: "Cursor Cloud", icon: "cloud", refreshAction: "refreshFleet" },
+    { id: "agent", schemaFile: "panels/agent.json", title: "Agent", icon: "cloud", refreshAction: "refreshAgent" },
+    { id: "launch", schemaFile: "panels/launch.json", title: "Launch in Cursor Cloud", icon: "cloud" },
+  ],
+  sockets: [
+    {
+      socket: "composer-action",
+      surface: "work",
+      id: "send-to-cloud",
+      label: "Launch in Cursor Cloud",
+      icon: "cloud",
+      actionId: "openLaunch",
+    },
+    {
+      socket: "chat-header-action",
+      surface: "work",
+      id: "open-fleet",
+      label: "Cursor Cloud fleet",
+      icon: "cloud",
+      actionId: "openFleet",
+      menu: [
+        { label: "Pull this run into the lane", actionId: "pullIntoLaneFromChat", icon: "git-branch" },
+        { label: "Stop this cloud run", actionId: "stopRunFromChat", icon: "cloud" },
+      ],
+    },
+    {
+      socket: "work-rail-pane",
+      surface: "work",
+      id: "fleet-pane",
+      label: "Cursor Cloud",
+      icon: "cloud",
+      panelId: "fleet",
+    },
+    {
+      socket: "command-palette-action",
+      surface: "app",
+      id: "palette-fleet",
+      label: "Cursor Cloud fleet",
+      icon: "cloud",
+      actionId: "openFleet",
+    },
+  ],
+});
+
+/**
  * The starter themes.
  *
  * Each ships both palettes, because a theme that only defines dark tokens
@@ -1038,6 +1123,44 @@ export const MARKETPLACE_LOCAL_INDEX: readonly MarketplaceListing[] = [
       "- English. The bundled model is `base.en`.",
       "- On iPhone, use the keyboard's own dictation key — iOS has it built in, so",
       "  this plugin does not ship a mobile surface.",
+    ].join("\n"),
+  }),
+
+  listing(CURSOR_CLOUD, {
+    author: "ADE",
+    readme: [
+      "## Cursor Cloud",
+      "",
+      "Launch Cursor Cloud agents from ADE, watch them from any client, and answer",
+      "them in an ordinary ADE chat.",
+      "",
+      "A cloud agent clones your lane's branch, works on it on Cursor's machines and",
+      "pushes back. This gives that a rail tab, a pane beside your chat, a button in",
+      "the composer, and — the part that matters — a real conversation: open a cloud",
+      "agent as an ADE chat and its history is backfilled, your follow-ups go to",
+      "Cursor, and its replies stream back where you already read everything else.",
+      "",
+      "### Before it works",
+      "",
+      "- **Connect a Cursor API key** in Settings → AI connections. ADE holds it and",
+      "  lends it to this plugin one call at a time; the plugin never stores a copy.",
+      "- **Connect the repository to Cursor.** Cursor clones from its own GitHub",
+      "  connection, not from your machine, so a repository it has never seen cannot",
+      "  be worked on. The launch form checks first and says which half is missing.",
+      "- **Paste the webhook URL into Cursor** for live status. `ade plugin doctor",
+      "  ade-cursor-cloud` prints it. Without it everything still works — an open",
+      "  chat polls while you are reading it — but a run that finishes while nothing",
+      "  is on screen is only noticed the next time you look.",
+      "",
+      "### Notes",
+      "",
+      "- It calls exactly one host, `api.cursor.com`, declared in its manifest and",
+      "  enforced by the plugin child's network guard.",
+      "- Polling follows your attention: a 3s → 45s ladder while a chat is on screen,",
+      "  and nothing at all when it is not.",
+      "- Uninstalling takes the tab, the pane, the composer button, the chat runtime,",
+      "  the automation triggers and the CLI words with it. Chats already bound to a",
+      "  cloud agent keep their transcripts.",
     ].join("\n"),
   }),
   listing(PAPER, {
