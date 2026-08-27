@@ -349,7 +349,7 @@ its own timer inside the child; the host only says when it matters.
 | `emitStatus(sessionId, status)` | `running` \| `idle` \| `failed` \| `finished`. This is what settles the session. |
 | `setArtifacts(sessionId, artifacts)` | Lane-relative files, drawn as a proof-artifact card. |
 | `attachBranch(sessionId, {branch, remote?})` | Fetch the branch into the lane so the ordinary branch and PR affordances light up. |
-| `hydrate(sessionId, transcript)` | Backfill history, oldest first, ≤ 500 entries per call. |
+| `hydrate(sessionId, transcript, options?)` | Backfill history, oldest first. See **Paging a backfill** below. |
 
 `emitStatus` is not decoration. A plugin that never reports leaves a chat
 spinning forever; `idle` and `finished` settle it, and settling is what feeds
@@ -368,9 +368,47 @@ identically for "no such session", "unowned session", "somebody else's session"
 and "no project open", because a caller that could tell them apart could
 enumerate the machine's conversations and their owners by probing.
 
+**Paging a backfill.** `hydrate` takes at most `PLUGIN_CHAT_HYDRATE_MAX_ENTRIES`
+(500) per call, and a real cloud conversation can be longer. A plugin sends pages
+oldest first — the first with no options, every later one with `{append: true}` —
+and each page appends after the last. The host does not re-sort: only the plugin
+knows the true order of a conversation it read from somebody else's API.
+
+Each call answers `{accepted, skipped, sweepTotal}`. `accepted === 0 &&
+skipped > 0` is the normal result of a re-read after a reconnect and is the
+signal to stop paging. `append` is what carries `sweepTotal` forward, which is
+what makes `PLUGIN_CHAT_HYDRATE_SWEEP_MAX_ENTRIES` (10,000) a real ceiling
+rather than one a plugin escapes by calling again; a call without it starts a
+fresh sweep. The sweep ledger is in memory only — a process that restarted
+mid-sweep has a plugin that restarted with it and will begin again at its first
+page.
+
 **Budgets.** 128 KiB per write (frame size, not a cap on how much a plugin may
 ultimately say — stream it), 900 writes per session per minute, 64 parts per
-chunk, 50 artifacts per call.
+chunk, 50 artifacts per call, 500 hydrate entries per call and 10,000 per sweep.
+Every one is charged AFTER the call's arguments validate, so a refused malformed
+write costs an error rather than one of the writes the plugin is allowed.
+
+**The `ade:` action namespace is reserved.** `chat.turn` and `chat.interrupt`
+reach the child as `invoke` frames named `ade:chat.turn` / `ade:chat.interrupt`,
+so the action NAME is the only thing separating the host's delivery from a
+plugin's own handlers. Two doors enforce the reservation
+(`PLUGIN_RESERVED_ACTION_PREFIX` in `sdk.ts`):
+
+- The **manifest parser** drops any action id, socket `actionId`, CLI word or
+  tool name that claims the prefix, with a warning. `manifest.ts` cannot import
+  `sdk.ts` (real runtime cycle) so it mirrors the constant, and `manifest.test.ts`
+  pins the two together.
+- The **host's invoke door** (`domainService.invoke`) refuses a reserved action
+  from every caller. This is the one that matters: a published vocabulary node's
+  `action` string is runtime data no manifest parser ever sees, so without it a
+  node, a schedule or a remote command could hand a child a forged `chat.turn`
+  naming any session it chose. The host's own delivery does not pass through
+  this door — it calls `supervisor.invoke` directly — so closing it costs
+  nothing.
+
+The whole prefix is reserved rather than the two names in use today, so a later
+reserved verb cannot be squatted before it ships.
 
 **Limits today.** A plugin-owned chat can be handed *off* — the transcript
 replays into an ADE runtime like any other source — but nothing can be handed

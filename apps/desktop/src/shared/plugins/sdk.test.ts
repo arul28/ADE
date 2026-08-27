@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PLUGIN_CHAT_DELIVERY_ACTION_PREFIX,
+  PLUGIN_RESERVED_ACTION_PREFIX,
+  isReservedPluginActionName,
+  pluginChatDeliveryAction,
+  readPluginChatDeliveryAction,
+  reservedPluginActionMessage,
   hasPluginActionComposerRequest,
   hasPluginActionDialogRequest,
   hasPluginActionOpenUrlRequest,
@@ -259,5 +265,47 @@ describe("a deeplink on a plugin notification", () => {
   it("drops a link long enough to blow the push payload", () => {
     const long = `ade://plugin/acme/fleet?ctx=${"x".repeat(PLUGIN_NOTIFICATION_DEEPLINK_MAX_CHARS)}`;
     expect(readPluginNotificationDeeplink(long, "acme")).toBeNull();
+  });
+});
+
+describe("reserved chat-delivery action names", () => {
+  it("round-trips the two reliable chat events", () => {
+    expect(pluginChatDeliveryAction("chat.turn")).toBe("ade:chat.turn");
+    expect(pluginChatDeliveryAction("chat.interrupt")).toBe("ade:chat.interrupt");
+    expect(readPluginChatDeliveryAction("ade:chat.turn")).toBe("chat.turn");
+    expect(readPluginChatDeliveryAction("ade:chat.interrupt")).toBe("chat.interrupt");
+  });
+
+  it("reads a plugin's own action as not-a-delivery", () => {
+    // The child consults this BEFORE its handler map, so anything that is not
+    // one of the two reserved names must fall through to the plugin.
+    expect(readPluginChatDeliveryAction("openIssue")).toBeNull();
+    expect(readPluginChatDeliveryAction("ade-cursor-cloud")).toBeNull();
+    // Inside the reserved namespace but not a delivery: the host's invoke door
+    // refuses this name outright, so it can never reach a child at all.
+    expect(readPluginChatDeliveryAction("ade:chat.opened")).toBeNull();
+    expect(readPluginChatDeliveryAction("ade:")).toBeNull();
+  });
+
+  it("reserves the whole prefix, not just the two names in use", () => {
+    // A later reserved verb must not be squattable before it ships.
+    expect(PLUGIN_RESERVED_ACTION_PREFIX).toBe(PLUGIN_CHAT_DELIVERY_ACTION_PREFIX);
+    expect(isReservedPluginActionName("ade:chat.opened")).toBe(true);
+    expect(isReservedPluginActionName("ade:something-not-invented-yet")).toBe(true);
+    expect(isReservedPluginActionName("ADE:CHAT.TURN")).toBe(true);
+    expect(isReservedPluginActionName(" ade:chat.turn ")).toBe(true);
+  });
+
+  it("does not reserve a name that merely starts with the letters", () => {
+    for (const name of ["ade", "adept", "ade-cursor-cloud", "adeChat", "openIssue"]) {
+      expect(isReservedPluginActionName(name), name).toBe(false);
+    }
+    expect(isReservedPluginActionName(null)).toBe(false);
+    expect(isReservedPluginActionName(42)).toBe(false);
+  });
+
+  it("names the prefix in its refusal, so an author can see the rule", () => {
+    expect(reservedPluginActionMessage("ade:chat.turn")).toContain("ade:");
+    expect(reservedPluginActionMessage("ade:chat.turn")).toContain("reserved");
   });
 });

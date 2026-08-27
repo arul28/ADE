@@ -671,9 +671,13 @@ describe("createPluginSdkServer chat", () => {
     const calls: { verb: string; args: unknown[] }[] = [];
     const record = (verb: string) => async (...args: unknown[]) => {
       calls.push({ verb, args });
-      return verb === "createSession"
-        ? { sessionId: "session-1", runtimeId: "cloud", externalId: "bc-1", created: true }
-        : undefined;
+      if (verb === "createSession") {
+        return { sessionId: "session-1", runtimeId: "cloud", externalId: "bc-1", created: true };
+      }
+      // `hydrate` answers with what the page did, so a plugin can stop paging
+      // once ADE says it already had that far back.
+      if (verb === "hydrate") return { accepted: 1, skipped: 0, sweepTotal: 1 };
+      return undefined;
     };
     const { handle } = createServer({
       manifest: CHAT_MANIFEST,
@@ -748,5 +752,88 @@ describe("createPluginSdkServer chat", () => {
     expect(await codeOf(() => handle("chat.appendAssistant", { chunk: { text: "hi" } })))
       .toBe("invalid_args");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("createPluginSdkServer chat.hydrate paging", () => {
+  const CHAT_MANIFEST: PluginManifest = {
+    ...MANIFEST,
+    chatRuntimes: [{
+      id: "cloud",
+      displayName: "Cursor Cloud",
+      capabilities: { followUp: true, interrupt: true, hydrate: true, artifacts: true },
+    }],
+  };
+
+  function hydrateServer() {
+    const calls: { transcriptLength: number; options: unknown }[] = [];
+    const { handle } = createServer({
+      manifest: CHAT_MANIFEST,
+      chat: {
+        createSession: async () => ({ sessionId: "s", runtimeId: "cloud", externalId: "e", created: true }),
+        appendAssistant: async () => undefined,
+        appendUser: async () => undefined,
+        emitStatus: async () => undefined,
+        setArtifacts: async () => undefined,
+        attachBranch: async () => undefined,
+        hydrate: async (
+          _pluginId: string,
+          _sessionId: string,
+          transcript: unknown[],
+          options: unknown,
+        ) => {
+          calls.push({ transcriptLength: transcript.length, options });
+          return { accepted: transcript.length, skipped: 0, sweepTotal: transcript.length };
+        },
+      },
+    } as never);
+    return { handle, calls };
+  }
+
+  it("passes the continuation flag through and hands back the page result", async () => {
+    const { handle, calls } = hydrateServer();
+    const result = await handle("chat.hydrate", {
+      sessionId: "session-1",
+      transcript: [{ role: "user", text: "One" }],
+      options: { append: true },
+    });
+    expect(result).toEqual({ accepted: 1, skipped: 0, sweepTotal: 1 });
+    expect(calls[0]?.options).toEqual({ append: true });
+  });
+
+  it("reads a first page as a fresh sweep", async () => {
+    const { handle, calls } = hydrateServer();
+    await handle("chat.hydrate", {
+      sessionId: "session-1",
+      transcript: [{ role: "user", text: "One" }],
+    });
+    // Absent options stay absent rather than becoming `{append: false}`, so the
+    // writer sees the same thing an older plugin sends.
+    expect(calls[0]?.options).toBeUndefined();
+  });
+
+  it("reads a malformed options bag tolerantly", async () => {
+    const { handle, calls } = hydrateServer();
+    // Getting `append` wrong costs a plugin nothing — the fingerprint dedupe
+    // still stops a page landing twice — so this normalizes rather than throws.
+    for (const options of [{ append: "yes" }, { append: 1 }, {}]) {
+      await handle("chat.hydrate", {
+        sessionId: "session-1",
+        transcript: [{ role: "user", text: "One" }],
+        options,
+      });
+    }
+    expect(calls.map((call) => call.options)).toEqual([
+      { append: false },
+      { append: false },
+      { append: false },
+    ]);
+  });
+
+  it("still refuses a page past the per-call cap", async () => {
+    const { handle } = hydrateServer();
+    const transcript = Array.from({ length: 501 }, () => ({ role: "user", text: "x" }));
+    expect(await codeOf(() => handle("chat.hydrate", { sessionId: "session-1", transcript })))
+      .toBe("plugin_budget_exceeded");
   });
 });

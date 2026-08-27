@@ -650,12 +650,40 @@ Four things to get right:
   but `createSession` is refused otherwise. There is no way to name your way
   into somebody else's transcript, so do not try to handle that error.
 
-`appendUser` backfills a turn ADE did not originate and `hydrate` backfills a
-whole history (≤ 500 entries, oldest first); both dedupe on `fingerprint`
-suffix-tolerantly, so re-reading a conversation after a reconnect adds only what
-is new. `setArtifacts` draws lane-relative files as a proof card, and
-`attachBranch` fetches a branch into the lane so the ordinary branch and PR
-affordances light up.
+`appendUser` backfills a single turn ADE did not originate. `setArtifacts` draws
+lane-relative files as a proof card, and `attachBranch` fetches a branch into the
+lane so the ordinary branch and PR affordances light up.
+
+**Backfilling a long history: page it.** `hydrate` takes at most **500 entries
+per call**, and a real cloud conversation can be longer. Send pages oldest
+first — the first with no options, every later one with `{append: true}` — and
+each page appends after the last. ADE does not re-sort: only you know the true
+order of a conversation you read from somebody else's API.
+
+```js
+let first = true;
+for (const page of pagesOldestFirst) {          // 500 entries or fewer each
+  const { accepted, skipped } = await ade.chat.hydrate(sessionId, page, { append: !first });
+  first = false;
+  if (!accepted) break;                          // ADE already had this far back
+}
+```
+
+The result is worth reading. `accepted === 0 && skipped > 0` means ADE already
+holds that page — the normal answer on a re-read after a reconnect — so stop
+paging rather than walking the whole history again. Entries dedupe on
+`fingerprint` suffix-tolerantly, so a page that lands twice costs nothing.
+
+One whole sweep is capped at **10,000 entries** across all its pages. `append`
+is what carries the running total forward; a call without it starts a fresh
+sweep. A backfill that reaches the ceiling is a loop, not a history, and gets a
+`plugin_budget_exceeded` refusal that says so.
+
+**Never name an action `ade:anything`.** The whole `ade:` prefix belongs to ADE:
+the host delivers `chat.turn` and `chat.interrupt` over the same channel your
+own actions use, and the name is what tells them apart. A handler, socket
+`actionId`, CLI word or tool that claims the prefix is dropped from your
+manifest with a warning, and `ade.actions.invoke` refuses it outright.
 
 ### Engine registrations
 

@@ -30,6 +30,7 @@ import {
   type AdePluginSdk,
   type PluginAnyEventPayload,
   type PluginAudioClip,
+  type PluginChatHydrateResult,
   type PluginChatSessionRef,
   type PluginChildFrame,
   type PluginCollectionRow,
@@ -297,9 +298,15 @@ export function runPluginChild(): void {
       attachBranch: async (sessionId, input) => {
         await callHost("chat.attachBranch", { sessionId, input });
       },
-      hydrate: async (sessionId, transcript) => {
-        await callHost("chat.hydrate", { sessionId, transcript });
-      },
+      // Returns the host's page result so a plugin can stop paging once ADE
+      // says it already had that far back. See `PluginChatHydrateResult`.
+      hydrate: async (sessionId, transcript, options) => (
+        await callHost("chat.hydrate", {
+          sessionId,
+          transcript,
+          ...(options ? { options } : {}),
+        }) as PluginChatHydrateResult
+      ),
     },
     clipboard: {
       read: async () => (await callHost("clipboard.read", {})) as string,

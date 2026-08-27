@@ -691,9 +691,31 @@ export function isAllowedPluginThemeToken(key: string): boolean {
 
 const PLUGIN_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/**
+ * Mirrors `PLUGIN_RESERVED_ACTION_PREFIX` in `sdk.ts`, which cannot be imported
+ * here — `sdk.ts` imports THIS module, and the cycle would be real at runtime.
+ * `manifest.test.ts` pins the two together, so a change there fails a test here
+ * rather than letting this parser accept a name the host's invoke door refuses.
+ *
+ * The whole `ade:` namespace belongs to ADE: the host's chat delivery rides the
+ * same `invoke` frame a plugin's own actions do, and the action name is the
+ * only thing that tells them apart.
+ */
+const RESERVED_ACTION_PREFIX = "ade:";
+
+function isReservedPluginActionName(value: string): boolean {
+  return value.trim().toLowerCase().startsWith(RESERVED_ACTION_PREFIX);
+}
+
 function parseIdentifier(value: unknown): string | null {
   const text = trimmedString(value);
   if (!text || text.length > 64) return null;
+  // The `ade:` namespace belongs to the host — see
+  // `PLUGIN_RESERVED_ACTION_PREFIX`. Checked here as well as at the invoke
+  // door, and NOT left to the pattern below: `:` is outside the identifier
+  // charset today, but a reservation that survives only by accident is a
+  // reservation that reopens the first time somebody widens the charset.
+  if (isReservedPluginActionName(text)) return null;
   return PLUGIN_IDENTIFIER_PATTERN.test(text) ? text : null;
 }
 
@@ -1396,6 +1418,9 @@ const PLUGIN_TOOL_NAME_MAX = 32;
 function parseToolName(value: unknown): string | null {
   const text = trimmedString(value);
   if (!text || text.length > PLUGIN_TOOL_NAME_MAX) return null;
+  // A tool name defaults to its action name, so the reservation applies here
+  // for the same reason it applies to an identifier.
+  if (isReservedPluginActionName(text)) return null;
   return PLUGIN_TOOL_NAME_PATTERN.test(text) ? text : null;
 }
 
@@ -1710,7 +1735,14 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const settings = parseSettings(raw.settings, ctx);
   const collections = parseCollections(raw.collections, ctx);
   const theme = parseTheme(raw.theme, ctx);
-  const cli = parseStringList(raw.cli, "cli", ctx, (value) => /^[a-z][a-z0-9-]{0,31}$/.test(value));
+  const cli = parseStringList(
+    raw.cli,
+    "cli",
+    ctx,
+    // A CLI word becomes an action the host invokes, so it obeys the same
+    // reservation as every other action name.
+    (value) => !isReservedPluginActionName(value) && /^[a-z][a-z0-9-]{0,31}$/.test(value),
+  );
   const skills = parseStringList(raw.skills, "skills", ctx, isSafePluginRelativePath);
   const tools = parseTools(raw.tools, ctx);
   const automationTriggers = parseAutomationTriggers(raw.automationTriggers, ctx);

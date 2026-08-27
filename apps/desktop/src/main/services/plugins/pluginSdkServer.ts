@@ -50,6 +50,8 @@ import {
   type PluginChatArtifact,
   type PluginChatAssistantChunk,
   type PluginChatPart,
+  type PluginChatHydrateOptions,
+  type PluginChatHydrateResult,
   type PluginChatSessionCreateInput,
   type PluginChatSessionRef,
   type PluginChatStatus,
@@ -440,7 +442,12 @@ export function createPluginSdkServer(deps: {
       sessionId: string,
       input: { branch: string; remote?: string },
     ) => Promise<void>;
-    hydrate: (pluginId: string, sessionId: string, transcript: PluginChatTranscriptEntry[]) => Promise<void>;
+    hydrate: (
+      pluginId: string,
+      sessionId: string,
+      transcript: PluginChatTranscriptEntry[],
+      options?: PluginChatHydrateOptions,
+    ) => Promise<PluginChatHydrateResult>;
   };
   /** Electron-only verbs, served over the daemon→desktop bridge. */
   desktopHost?: {
@@ -1083,9 +1090,15 @@ export function createPluginSdkServer(deps: {
           // bounded backfill already capped above, and charging it per turn
           // would let a legitimate reconnect exhaust the streaming budget the
           // conversation needs immediately afterwards.
+          // `append` marks a continuation of one paged sweep. Read tolerantly:
+          // getting it wrong costs a plugin nothing, because the fingerprint
+          // dedupe still stops a page landing twice — it only decides which
+          // running total the sweep ceiling is measured against.
+          const options: PluginChatHydrateOptions | undefined = isRecord(params.options)
+            ? { append: params.options.append === true }
+            : undefined;
           chargeChatWrite(sessionId);
-          await chat.hydrate(pluginId, sessionId, transcript);
-          return null;
+          return await chat.hydrate(pluginId, sessionId, transcript, options);
         }
 
         case "clipboard.read": {

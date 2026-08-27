@@ -42,6 +42,8 @@ import {
   type PluginChatArtifact,
   type PluginChatAssistantChunk,
   type PluginChatAttachment,
+  type PluginChatHydrateOptions,
+  type PluginChatHydrateResult,
   type PluginChatSessionCreateInput,
   type PluginChatSessionRef,
   type PluginChatStatus,
@@ -189,7 +191,11 @@ export type PluginChatRuntimeWriter = {
   emitStatus(sessionId: string, status: PluginChatStatus): Promise<void>;
   setArtifacts(sessionId: string, artifacts: PluginChatArtifact[]): Promise<void>;
   attachBranch(sessionId: string, input: { branch: string; remote?: string }): Promise<void>;
-  hydrate(sessionId: string, transcript: PluginChatTranscriptEntry[]): Promise<void>;
+  hydrate(
+    sessionId: string,
+    transcript: PluginChatTranscriptEntry[],
+    options?: PluginChatHydrateOptions,
+  ): Promise<PluginChatHydrateResult>;
 };
 
 const writers = new Set<PluginChatRuntimeWriter>();

@@ -804,8 +804,57 @@ export const PLUGIN_CHAT_TEXT_MAX_BYTES = 128 * 1024;
 export const PLUGIN_CHAT_WRITES_PER_SESSION_BURST = 900;
 export const PLUGIN_CHAT_WRITE_BURST_WINDOW_MS = 60_000;
 
-/** Most transcript entries one `chat.hydrate` call may backfill. */
+/** Most transcript entries one `chat.hydrate` CALL may backfill. Page past it. */
 export const PLUGIN_CHAT_HYDRATE_MAX_ENTRIES = 500;
+
+/**
+ * Most entries one backfill SWEEP may write, across all of its pages.
+ *
+ * The per-call cap bounds a frame; this bounds the whole operation, because
+ * paging without a total is just an unbounded write with extra steps. Ten
+ * thousand turns is far past any real conversation — a plugin that reaches it
+ * is looping, not backfilling, and gets a refusal that says so instead of
+ * quietly filling the user's disk.
+ */
+export const PLUGIN_CHAT_HYDRATE_SWEEP_MAX_ENTRIES = 10_000;
+
+/**
+ * How one `hydrate` call relates to the ones around it.
+ *
+ * A Cursor Cloud conversation can run past the per-call cap, so backfill is
+ * paged. Pages are ordered OLDEST FIRST and each one appends after the last —
+ * the host does not re-sort, because only the plugin knows the true order of a
+ * conversation it read from somebody else's API.
+ */
+export type PluginChatHydrateOptions = {
+  /**
+   * True for every page after the first of one sweep.
+   *
+   * The first page (absent or `false`) starts a sweep and resets its running
+   * total. A continuation carries it forward, which is what makes
+   * {@link PLUGIN_CHAT_HYDRATE_SWEEP_MAX_ENTRIES} a real ceiling rather than
+   * one a plugin escapes by calling again. Getting it wrong is not dangerous:
+   * the fingerprint dedupe still stops a page landing twice.
+   */
+  append?: boolean;
+};
+
+/**
+ * What a `hydrate` page actually did.
+ *
+ * Returned rather than assumed, because "nothing landed" is the normal answer
+ * on a re-read after a reconnect and a plugin needs to tell that from a page it
+ * got wrong. Read `accepted === 0 && skipped > 0` as "ADE already had this" and
+ * stop paging.
+ */
+export type PluginChatHydrateResult = {
+  /** Entries written to the transcript. */
+  accepted: number;
+  /** Entries the host already had, matched by fingerprint or by text. */
+  skipped: number;
+  /** Entries this sweep has written so far, across every page. */
+  sweepTotal: number;
+};
 
 /** Most parts one `appendAssistant` chunk may carry. */
 export const PLUGIN_CHAT_PARTS_MAX = 64;
@@ -1217,9 +1266,29 @@ export type AdePluginSdk = {
      *
      * Oldest first. Deduped against what the transcript already holds by
      * `fingerprint`, so calling this again after a reconnect adds only what is
-     * new. Capped at {@link PLUGIN_CHAT_HYDRATE_MAX_ENTRIES} per call — page it.
+     * new.
+     *
+     * **Capped at {@link PLUGIN_CHAT_HYDRATE_MAX_ENTRIES} per call — page it.**
+     * Send the oldest page first with no options, then each later page with
+     * `{append: true}`:
+     *
+     * ```js
+     * let first = true;
+     * for (const page of pagesOldestFirst) {
+     *   const { accepted } = await ade.chat.hydrate(sessionId, page, { append: !first });
+     *   first = false;
+     *   if (!accepted) break; // ADE already had this far back
+     * }
+     * ```
+     *
+     * A whole sweep is bounded by
+     * {@link PLUGIN_CHAT_HYDRATE_SWEEP_MAX_ENTRIES}.
      */
-    hydrate(sessionId: string, transcript: PluginChatTranscriptEntry[]): Promise<void>;
+    hydrate(
+      sessionId: string,
+      transcript: PluginChatTranscriptEntry[],
+      options?: PluginChatHydrateOptions,
+    ): Promise<PluginChatHydrateResult>;
   };
 
   clipboard: {

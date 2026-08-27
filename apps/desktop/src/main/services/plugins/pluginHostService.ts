@@ -1073,9 +1073,9 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
           await writer.attachBranch(sessionId, input);
         },
-        hydrate: async (chatPluginId, sessionId, transcript) => {
+        hydrate: async (chatPluginId, sessionId, transcript, options) => {
           const { writer } = requirePluginChatWriteTarget(chatPluginId, sessionId);
-          await writer.hydrate(sessionId, transcript);
+          return await writer.hydrate(sessionId, transcript, options);
         },
       },
       // Read through `machine` at call time, not captured: a supervisor

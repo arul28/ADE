@@ -417,6 +417,7 @@ import {
 import {
   PLUGIN_BUDGET_EXCEEDED_CODE,
   PLUGIN_CHAT_HYDRATE_MAX_ENTRIES,
+  PLUGIN_CHAT_HYDRATE_SWEEP_MAX_ENTRIES,
   PLUGIN_CHAT_PARTS_MAX,
   PLUGIN_CHAT_TEXT_MAX_BYTES,
   PLUGIN_CHAT_ARTIFACTS_MAX,
@@ -38688,6 +38689,16 @@ export function createAgentChatService(args: {
   const pluginChatFingerprints = new Map<string, Set<string>>();
   const PLUGIN_CHAT_FINGERPRINT_CACHE_MAX = 512;
 
+  /**
+   * Entries each session's current backfill sweep has written, across pages.
+   *
+   * In memory only: a sweep is one plugin's paging loop, and a process that
+   * restarted mid-sweep has a plugin that restarted with it and will start
+   * again from its first page. Persisting this would only let a stale total
+   * refuse a fresh backfill.
+   */
+  const pluginChatHydrateSweeps = new Map<string, number>();
+
   const pluginChatWriteRefused = (sessionId: string): PluginSdkError => new PluginSdkError(
     "not_permitted",
     `This plugin does not own chat session "${sessionId}".`,
@@ -39375,16 +39386,32 @@ export function createAgentChatService(args: {
       });
       persistChatState(managed);
     },
-    async hydrate(sessionId, transcript) {
+    async hydrate(sessionId, transcript, options) {
       const managed = requirePluginManagedSession(sessionId);
-      if (!Array.isArray(transcript) || !transcript.length) return;
+      const append = options?.append === true;
+      // A first page starts a sweep; a continuation carries its running total
+      // forward. Without that, the per-call cap is the only bound and a plugin
+      // could page forever — which is an unbounded write with extra steps.
+      const sweepBefore = append ? pluginChatHydrateSweeps.get(sessionId) ?? 0 : 0;
+      if (!Array.isArray(transcript) || !transcript.length) {
+        pluginChatHydrateSweeps.set(sessionId, sweepBefore);
+        return { accepted: 0, skipped: 0, sweepTotal: sweepBefore };
+      }
       if (transcript.length > PLUGIN_CHAT_HYDRATE_MAX_ENTRIES) {
         throw new PluginSdkError(
           "invalid_args",
-          `A hydrate call may carry at most ${PLUGIN_CHAT_HYDRATE_MAX_ENTRIES} entries. Page it.`,
+          `A hydrate call may carry at most ${PLUGIN_CHAT_HYDRATE_MAX_ENTRIES} entries. Page it with { append: true }.`,
+        );
+      }
+      if (sweepBefore + transcript.length > PLUGIN_CHAT_HYDRATE_SWEEP_MAX_ENTRIES) {
+        throw new PluginSdkError(
+          PLUGIN_BUDGET_EXCEEDED_CODE,
+          `This backfill has reached ${PLUGIN_CHAT_HYDRATE_SWEEP_MAX_ENTRIES} entries. A conversation that long is a loop, not a history.`,
         );
       }
       chargePluginChatWrite(sessionId);
+      let accepted = 0;
+      let skipped = 0;
       // Backfill never opens a turn and never settles the session: it is
       // history, and a chat that lit up "running" because somebody re-read the
       // past would be lying about the present.
@@ -39398,7 +39425,10 @@ export function createAgentChatService(args: {
         if (entry.role === "user") {
           const text = parts.filter((part) => part.kind === "text").map((part) => part.text).join("");
           if (!text.trim().length) continue;
-          if (pluginChatUserAlreadyPresent(managed, text, entry.fingerprint)) continue;
+          if (pluginChatUserAlreadyPresent(managed, text, entry.fingerprint)) {
+            skipped += 1;
+            continue;
+          }
           rememberPluginChatFingerprint(sessionId, entry.fingerprint?.trim() || text.trim());
           emitChatEvent(managed, {
             type: "user_message",
@@ -39408,6 +39438,7 @@ export function createAgentChatService(args: {
             processed: true,
             runtime: "cloud",
           });
+          accepted += 1;
           continue;
         }
         const historyTurnId = `plugin-history-${randomUUID()}`;
@@ -39416,8 +39447,12 @@ export function createAgentChatService(args: {
           { turnId: historyTurnId, ref: managed.session.runtimeRef!, streamedText: "", closed: true },
           parts,
         );
+        accepted += 1;
       }
       persistChatState(managed);
+      const sweepTotal = sweepBefore + accepted;
+      pluginChatHydrateSweeps.set(sessionId, sweepTotal);
+      return { accepted, skipped, sweepTotal };
     },
   };
 
@@ -46566,6 +46601,7 @@ export function createAgentChatService(args: {
     pluginOwnedTurns.clear();
     pluginChatWriteBudget.clear();
     pluginChatFingerprints.clear();
+    pluginChatHydrateSweeps.clear();
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
@@ -46598,6 +46634,7 @@ export function createAgentChatService(args: {
     pluginOwnedTurns.clear();
     pluginChatWriteBudget.clear();
     pluginChatFingerprints.clear();
+    pluginChatHydrateSweeps.clear();
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();

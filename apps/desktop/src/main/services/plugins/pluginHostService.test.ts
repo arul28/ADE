@@ -1636,3 +1636,49 @@ describe("plugin.list / plugin.get carry a webview surface's entryHtml", () => {
     ]);
   });
 });
+
+describe("the ade: action namespace belongs to the host", () => {
+  // The host's chat delivery rides the same `invoke` frame a plugin's own
+  // actions do, and the action NAME is all that tells them apart on the child.
+  // So no caller through this door may spell one — otherwise a published
+  // vocabulary node's `action` string, a schedule, or a remote command could
+  // hand a child a forged `chat.turn` naming any session it chose.
+  it("refuses a reserved action from every caller that reaches invoke", async () => {
+    const { plugins } = await hostWithFixture();
+
+    for (const action of ["ade:chat.turn", "ade:chat.interrupt", "ade:anything"]) {
+      await expect(
+        plugins.invoke({ pluginId: "hello-plugin", action }),
+        `${action} must be refused`,
+      ).rejects.toMatchObject({ code: "not_permitted" });
+    }
+  });
+
+  it("refuses it case-insensitively and with surrounding space", async () => {
+    const { plugins } = await hostWithFixture();
+    // `isReservedPluginActionName` trims and lowercases, so neither dressing
+    // gets a forged delivery past the door.
+    for (const action of ["ADE:chat.turn", "  ade:chat.turn", "Ade:Chat.Turn"]) {
+      await expect(
+        plugins.invoke({ pluginId: "hello-plugin", action }),
+        `${action} must be refused`,
+      ).rejects.toMatchObject({ code: "not_permitted" });
+    }
+  });
+
+  it("refuses before it resolves the plugin, so it is not an existence oracle", async () => {
+    const { plugins } = await hostWithFixture();
+    // Same refusal for a plugin that is not installed at all: the reserved
+    // name is rejected on its own terms, not after a lookup that would leak
+    // which plugins exist.
+    await expect(plugins.invoke({ pluginId: "no-such-plugin", action: "ade:chat.turn" }))
+      .rejects.toMatchObject({ code: "not_permitted" });
+  });
+
+  it("leaves an ordinary action untouched", async () => {
+    // The reservation must cost a well-behaved plugin nothing.
+    const { plugins } = await hostWithFixture();
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" }))
+      .resolves.toBeNull();
+  });
+});

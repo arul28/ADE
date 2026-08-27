@@ -11,6 +11,8 @@ import {
   pluginPanelShowsOnMobile,
 } from "./manifest";
 import {
+  isReservedPluginActionName,
+  PLUGIN_RESERVED_ACTION_PREFIX,
   assertPluginSecretName,
   isReservedPluginSecretName,
   PLUGIN_WEBHOOK_SECRET_NAME,
@@ -718,5 +720,75 @@ describe("parsePluginManifest chatRuntimes", () => {
       ],
     }));
     expect(repeated.manifest?.chatRuntimes?.map((runtime) => runtime.displayName)).toEqual(["First"]);
+  });
+});
+
+describe("parsePluginManifest reserves the ade: namespace", () => {
+  // The host's chat delivery rides the same `invoke` frame a plugin's own
+  // actions do, and the action NAME is the only thing that tells them apart on
+  // the child. So a plugin that could declare `ade:chat.turn` would sit exactly
+  // where the host routes its deliveries.
+  it("stays in step with the prefix sdk.ts enforces at the invoke door", () => {
+    // manifest.ts cannot import sdk.ts (real runtime cycle), so it mirrors the
+    // prefix. This pins the copy to the original.
+    expect(PLUGIN_RESERVED_ACTION_PREFIX).toBe("ade:");
+    expect(isReservedPluginActionName("ade:chat.turn")).toBe(true);
+    expect(isReservedPluginActionName("ade:anything-at-all")).toBe(true);
+    // The whole prefix is reserved, not just the two names in use today, so a
+    // later reserved verb cannot be squatted before it ships.
+    expect(isReservedPluginActionName("ADE:chat.turn")).toBe(true);
+    expect(isReservedPluginActionName("  ade:chat.turn  ")).toBe(true);
+    expect(isReservedPluginActionName("adept")).toBe(false);
+    expect(isReservedPluginActionName("ade-cursor-cloud")).toBe(false);
+    expect(isReservedPluginActionName("refresh-fleet")).toBe(false);
+  });
+
+  it("drops a socket whose actionId claims the reserved prefix", () => {
+    const result = parsePluginManifest(validManifest({
+      sockets: [{ socket: "row-badge", surface: "lanes", id: "drift", label: "Drift", actionId: "ade:chat.turn" }],
+    }));
+    expect(result.manifest?.sockets).toEqual([]);
+    // Dropped with a warning, not a hard error: one bad declaration costs that
+    // declaration, exactly as every other malformed entry does.
+    expect(result.warnings.some((warning) => warning.includes("actionId"))).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it("drops a tool named for the reserved prefix, and one whose action claims it", () => {
+    const tool = {
+      description: "Does a thing.",
+      input: { type: "object", properties: {} },
+    };
+    expect(parsePluginManifest(validManifest({
+      tools: [{ ...tool, name: "ade:chat.turn" }],
+    })).manifest?.tools).toEqual([]);
+    expect(parsePluginManifest(validManifest({
+      tools: [{ ...tool, name: "fetch-runs", action: "ade:chat.interrupt" }],
+    })).manifest?.tools).toEqual([]);
+  });
+
+  it("drops a cli word claiming the reserved prefix", () => {
+    // A CLI word becomes an action the host invokes.
+    const result = parsePluginManifest(validManifest({ cli: ["ade:chat.turn", "fleet"] }));
+    expect(result.manifest?.cli).toEqual(["fleet"]);
+  });
+
+  it("drops an automation step and a search provider claiming it", () => {
+    expect(parsePluginManifest(validManifest({
+      automationSteps: [{ id: "ade:chat.turn", label: "Steal", action: "ade:chat.turn" }],
+    })).manifest?.automationSteps).toEqual([]);
+    expect(parsePluginManifest(validManifest({
+      searchProviders: [{ id: "runs", label: "Runs", action: "ade:chat.turn" }],
+    })).manifest?.searchProviders).toEqual([]);
+  });
+
+  it("leaves an ordinary action untouched", () => {
+    // The reservation must cost a well-behaved plugin nothing.
+    const result = parsePluginManifest(validManifest({
+      sockets: [{ socket: "row-badge", surface: "lanes", id: "drift", label: "Drift", actionId: "refresh-fleet" }],
+      cli: ["fleet"],
+    }));
+    expect(result.manifest?.sockets[0]?.actionId).toBe("refresh-fleet");
+    expect(result.manifest?.cli).toEqual(["fleet"]);
   });
 });

@@ -45118,6 +45118,88 @@ describe("agentChatService plugin-owned conversations", () => {
     }
   });
 
+  it("pages a backfill: each page appends, and the result says what landed", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service, captured } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+
+      // A Cursor Cloud conversation can run past the per-call cap, so pages
+      // arrive oldest first: the first with no options, the rest continuing it.
+      const first = await writer.hydrate(bound.sessionId, [
+        { role: "user", text: "One", fingerprint: "u1" },
+        { role: "assistant", text: "First reply" },
+      ]);
+      expect(first).toEqual({ accepted: 2, skipped: 0, sweepTotal: 2 });
+
+      const second = await writer.hydrate(bound.sessionId, [
+        { role: "user", text: "Two", fingerprint: "u2" },
+        { role: "assistant", text: "Second reply" },
+      ], { append: true });
+      // The sweep total carries forward; that is what makes the sweep ceiling
+      // a real bound rather than one a plugin escapes by calling again.
+      expect(second).toEqual({ accepted: 2, skipped: 0, sweepTotal: 4 });
+
+      const events = eventsFor(captured, bound.sessionId);
+      expect(events.filter((event) => event.type === "user_message")
+        .map((event) => (event as { text: string }).text)).toEqual(["One", "Two"]);
+      // Backfill still never opens a turn, however many pages it took.
+      expect(events.some((event) => event.type === "status")).toBe(false);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("reports a re-read page as skipped, so a plugin knows to stop paging", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      const page = [{ role: "user" as const, text: "One", fingerprint: "u1" }];
+      await writer.hydrate(bound.sessionId, page);
+
+      // "Nothing landed" is the normal answer on a re-read after a reconnect,
+      // and a plugin has to tell it from a page it got wrong.
+      const again = await writer.hydrate(bound.sessionId, page, { append: true });
+      expect(again.accepted).toBe(0);
+      expect(again.skipped).toBe(1);
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
+  it("refuses a page past the per-call cap and a sweep past its ceiling", async () => {
+    const runtime = installFakePluginRuntime();
+    const { service } = createOwnedService();
+    try {
+      const { bound, writer } = await bindOwnedSession(service);
+      const page = (count: number, seed: number) => Array.from({ length: count }, (_, index) => ({
+        role: "assistant" as const,
+        text: `entry ${seed + index}`,
+      }));
+
+      await expect(writer.hydrate(bound.sessionId, page(501, 0)))
+        .rejects.toThrow(/at most 500 entries. Page it/i);
+
+      // Paging is bounded as a whole: 20 full pages reach the sweep ceiling,
+      // and the 21st is refused rather than quietly filling the user's disk.
+      for (let index = 0; index < 20; index += 1) {
+        await writer.hydrate(bound.sessionId, page(500, index * 500), { append: index > 0 });
+      }
+      await expect(writer.hydrate(bound.sessionId, page(1, 99_000), { append: true }))
+        .rejects.toMatchObject({ code: PLUGIN_BUDGET_EXCEEDED_CODE });
+
+      // A fresh sweep (no `append`) starts the total over.
+      await expect(writer.hydrate(bound.sessionId, page(1, 99_001)))
+        .resolves.toMatchObject({ sweepTotal: 1 });
+    } finally {
+      runtime.detach();
+      service.forceDisposeAll();
+    }
+  });
+
   it("dedupes a backfilled user turn suffix-tolerantly against what ADE already sent", async () => {
     const runtime = installFakePluginRuntime();
     const { service, captured } = createOwnedService();
