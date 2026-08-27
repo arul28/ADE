@@ -1,0 +1,43 @@
+{
+  "name": "hn",
+  "version": "1.0.0",
+  "displayName": "Hacker News",
+  "description": "Read Hacker News from the chat header. Read status syncs to your other devices.",
+  "icon": "trend",
+  "accent": "#E65C00",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "network": { "hosts": ["hacker-news.firebaseio.com"] },
+  "panels": [
+    {
+      "id": "stories",
+      "schemaFile": "panels/stories.json",
+      "title": "Hacker News",
+      "icon": "trend",
+      "refreshAction": "refreshStories"
+    }
+  ],
+  "sockets": [
+    {
+      "socket": "chat-header-action",
+      "surface": "work",
+      "id": "hn",
+      "label": "HN",
+      "icon": "trend",
+      "actionId": "openStories",
+      "color": "#E65C00",
+      "menu": [
+        { "label": "Top", "actionId": "openTop", "icon": "trend" },
+        { "label": "New", "actionId": "openNew", "icon": "clock" },
+        { "label": "Ask", "actionId": "openAsk", "icon": "chat" }
+      ]
+    }
+  ],
+  "collections": {
+    "stories": { "sync": false },
+    "read": { "sync": true },
+    "prefs": { "sync": false }
+  },
+  "cli": ["stories"],
+  "official": false
+}
