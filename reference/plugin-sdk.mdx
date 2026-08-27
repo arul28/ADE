@@ -73,7 +73,7 @@ Parsing is strict on keys it knows and tolerant of keys it doesn't: an unknown f
 |---|---|
 | `name` | The plugin id. Lowercase kebab-case, starts with a letter, 64 characters or fewer. It is a directory name, a secret namespace, a sync key, and a CLI word |
 | `version` | `major.minor.patch`, optional prerelease or build tail |
-| `displayName`, `description`, `icon`, `accent` | Presentation. `accent` is a 3- or 6-digit hex color |
+| `displayName`, `description`, `icon`, `accent` | Presentation. `icon` is a token from the shared list — see [Icon tokens](#icon-tokens). `accent` is a 3- or 6-digit hex color |
 | `minAdeVersion` | Version floor. An unknown host version never locks a user out of their own plugins |
 | `vocabVersion` | Panel schema version. Positive integer, defaults to `1` |
 | `entry` | Relative path to your entry module. **Omit it** for UI-only plugins such as themes — they run no code |
@@ -88,6 +88,18 @@ Parsing is strict on keys it knows and tolerant of keys it doesn't: an unknown f
 | `official` | **Ignored for trust.** Official status comes from the registry's curated file, never from a manifest |
 
 Every path in a manifest must be relative, inside the plugin directory, and free of `..`.
+
+### Icon tokens
+
+Every `icon` field — on the manifest, a surface, a panel, a socket, a chat runtime, a vocabulary node — takes a token from one closed list. Each client resolves the same token to its own artwork: desktop and the web client to a Phosphor glyph, iOS to an SF Symbol. A name outside the list draws the puzzle piece on every client, so an icon that renders anywhere renders everywhere and an unrecognised one is unrecognised identically. Naming a raw SF Symbol or a Phosphor component name is not a shortcut; it is an unknown token.
+
+Five of the tokens are **brand tokens**, for a plugin whose whole subject is one vendor's product:
+
+`brand:claude` `brand:codex` `brand:cursor` `brand:github` `brand:openai`
+
+These draw the vendor's real mark — the same one ADE already draws for that provider in the chat header and the model picker — rather than a generic glyph. The set is small and closed on purpose: a vendor joins it only when every client already ships artwork for it. `brand:` is not a namespace you can extend; anything else after it is an unknown token and draws the puzzle piece.
+
+The live list is `PLUGIN_ICON_NAMES` in `apps/desktop/src/renderer/components/plugins/pluginIcons.tsx`, with `PLUGIN_BRAND_ICON_NAMES` beside it for the brand half.
 
 <Warning>
 `detail-section` and `file-viewer` sockets require a `panelId`. `toolbar-action` and `row-menu-item` require an `actionId`. `file-viewer` requires at least one `".ext"` extension. A socket that fails these is dropped rather than rendered empty.

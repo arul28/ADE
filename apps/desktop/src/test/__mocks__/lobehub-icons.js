@@ -30,6 +30,7 @@ export const Claude = brand("Claude");
 export const Codex = brand("Codex");
 export const Cursor = brand("Cursor");
 export const Gemini = brand("Gemini");
+export const Github = brand("GitHub");
 export const Google = brand("Google");
 export const Grok = brand("Grok");
 export const Groq = brand("Groq");

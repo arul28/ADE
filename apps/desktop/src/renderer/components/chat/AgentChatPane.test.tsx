@@ -133,6 +133,7 @@ vi.mock("@lobehub/icons", () => {
     Codex: brand(),
     Cursor: brand(),
     Gemini: brand(),
+    Github: brand(),
     GithubCopilot: brand(),
     Google: brand(),
     Grok: brand(),

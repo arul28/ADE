@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { commandPlacement, parseCommand, paletteCommands } from "../commands";
+import {
+  builtinCommandAvailable,
+  commandPlacement,
+  parseCommand,
+  paletteCommands,
+  slashCommandUnavailableSurface,
+} from "../commands";
 import { buildLinearToolRequest, parseLinearArgs } from "../linearCommands";
 
 describe("commands", () => {
@@ -750,5 +756,52 @@ describe("linear command routing", () => {
       if (result.kind !== "usage") continue;
       expect(result.title).toBe("Linear");
     }
+  });
+});
+
+/**
+ * The terminal's half of the built-in-surface gate.
+ *
+ * `ade-cursor-cloud` replaces ADE's compiled fleet surface everywhere, and the
+ * TUI is one of the four clients that has to agree. A `/cloud` still listed
+ * after the plugin owns that surface would send someone to a pane the product
+ * no longer has, and one hidden on a machine WITHOUT the plugin would delete a
+ * shipped command — so both directions are pinned.
+ */
+describe("built-in commands over a plugin-owned surface", () => {
+  const CURSOR_CLOUD_INSTALLED = [{ pluginId: "ade-cursor-cloud", enabled: true }];
+
+  function names(installedPlugins?: { pluginId: string; enabled: boolean }[]): string[] {
+    return paletteCommands("", [], installedPlugins ? { installedPlugins } : {})
+      .map((command) => command.name);
+  }
+
+  it("lists /cloud on a machine that does not have the plugin", () => {
+    expect(names()).toContain("/cloud");
+    expect(names([])).toContain("/cloud");
+    expect(names([{ pluginId: "ade-linear", enabled: true }])).toContain("/cloud");
+  });
+
+  it("keeps /cloud listed while the plugin is installed but switched off", () => {
+    expect(names([{ pluginId: "ade-cursor-cloud", enabled: false }])).toContain("/cloud");
+  });
+
+  it("drops /cloud from the palette once the plugin owns the surface", () => {
+    expect(names(CURSOR_CLOUD_INSTALLED)).not.toContain("/cloud");
+    // Only that one. A gate that took the whole Nav category would be worse than
+    // no gate at all.
+    expect(names(CURSOR_CLOUD_INSTALLED)).toContain("/activity");
+    expect(names(CURSOR_CLOUD_INSTALLED)).toContain("/machines");
+  });
+
+  it("still refuses a typed /cloud, because a hidden row is not access control", () => {
+    expect(slashCommandUnavailableSurface("/cloud", CURSOR_CLOUD_INSTALLED)).toBe("cursor-cloud");
+    expect(slashCommandUnavailableSurface("/cloud", [])).toBeNull();
+    expect(slashCommandUnavailableSurface("/activity", CURSOR_CLOUD_INSTALLED)).toBeNull();
+    expect(slashCommandUnavailableSurface("/not-a-command", CURSOR_CLOUD_INSTALLED)).toBeNull();
+  });
+
+  it("leaves a command that names no built-in surface alone", () => {
+    expect(builtinCommandAvailable({}, CURSOR_CLOUD_INSTALLED)).toBe(true);
   });
 });

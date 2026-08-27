@@ -11,6 +11,7 @@ import {
   type BuiltinGateInput,
 } from "./builtinTabs";
 import { PLUGIN_BUILTIN_SURFACE_IDS } from "../../../shared/plugins/manifest";
+import { builtinSurfacePresence } from "../../../shared/plugins/builtinSurfaces";
 
 /**
  * The rules for a compiled surface a plugin owns.
@@ -88,21 +89,35 @@ describe("every registered surface", () => {
       .toEqual([...PLUGIN_BUILTIN_SURFACE_IDS].sort());
   });
 
-  it.each(BUILTIN_TAB_GATES)("$builtinId is hidden by default and shown by its own owner", (gate) => {
+  /**
+   * Both polarities, swept in one place.
+   *
+   * `shown` is what the surface's OWN owner does to it, and the two directions
+   * are opposites: an `enables` owner reveals the compiled page, a `supersedes`
+   * owner takes it away. Everything else about the sweep is the same, including
+   * the rule that one plugin moves exactly one surface.
+   */
+  it.each(BUILTIN_TAB_GATES)("$builtinId moves only with its own owner", (gate) => {
+    const supersedes = builtinSurfacePresence(gate.builtinId) === "supersedes";
     const owner = plugin({
       pluginId: gate.ownerPluginId,
       displayName: gate.title,
-      tabs: [{ id: gate.builtinId, title: gate.title, panelId: "main", builtin: gate.builtinId }],
+      tabs: supersedes
+        ? [{ id: gate.builtinId, title: gate.title, panelId: "main" }]
+        : [{ id: gate.builtinId, title: gate.title, panelId: "main", builtin: gate.builtinId }],
     });
 
-    expect(isBuiltinSurfaceVisible(gate.builtinId, input())).toBe(false);
-    expect(isBuiltinSurfaceVisible(gate.builtinId, input({ plugins: [owner] }))).toBe(true);
-    expect(isBuiltinSurfaceVisible(gate.builtinId, input({ plugins: [{ ...owner, enabled: false }] }))).toBe(false);
+    expect(isBuiltinSurfaceVisible(gate.builtinId, input())).toBe(supersedes);
+    expect(isBuiltinSurfaceVisible(gate.builtinId, input({ plugins: [owner] }))).toBe(!supersedes);
+    expect(isBuiltinSurfaceVisible(gate.builtinId, input({ plugins: [{ ...owner, enabled: false }] })))
+      .toBe(supersedes);
 
     // One plugin opens one surface. Installing Review must not reveal Graph.
     for (const other of BUILTIN_TAB_GATES) {
       if (other.builtinId === gate.builtinId) continue;
-      expect(isBuiltinSurfaceVisible(other.builtinId, input({ plugins: [owner] })), other.builtinId).toBe(false);
+      const othersDefault = builtinSurfacePresence(other.builtinId) === "supersedes";
+      expect(isBuiltinSurfaceVisible(other.builtinId, input({ plugins: [owner] })), other.builtinId)
+        .toBe(othersDefault);
     }
   });
 });
@@ -156,5 +171,72 @@ describe("gate ownership", () => {
 
   it("does not route to a surface whose owner is installed but disabled", () => {
     expect(builtinRouteForPluginRoute("ade-graph", [plugin({ enabled: false })])).toBeNull();
+  });
+});
+
+/**
+ * The superseded surface, whose unknowns fall the other way.
+ *
+ * Everything above pins "hidden until three positive facts". Cursor Cloud is
+ * the mirror: ADE has shipped the compiled fleet surface all along, so the same
+ * three unknowns must leave it ALONE. A regression that collapses the two
+ * polarities back together shows up here as a machine that loses its Cursor
+ * Cloud button for one frame on every launch, or keeps it forever after the
+ * plugin arrives — one of those two, depending which way the collapse went.
+ */
+describe("a superseded builtin surface", () => {
+  function cursorCloudPlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
+    return plugin({
+      pluginId: "ade-cursor-cloud",
+      displayName: "Cursor Cloud",
+      icon: "brand:cursor",
+      accent: "#A78BFA",
+      // No `builtin`: the plugin draws its own fleet tab. That is exactly the
+      // shape the legacy-host fallback in `claimedBuiltinGate` used to trust.
+      tabs: [{ id: "fleet", title: "Cursor Cloud", panelId: "fleet" }],
+      ...overrides,
+    });
+  }
+
+  it("is visible on a machine that does not have the plugin", () => {
+    expect(isBuiltinSurfaceVisible("cursor-cloud", input({ plugins: [] }))).toBe(true);
+  });
+
+  it("is visible while the registry is still loading, unlike an enabling surface", () => {
+    const loading = input({ pluginsLoaded: false, plugins: [cursorCloudPlugin()] });
+    expect(isBuiltinSurfaceVisible("cursor-cloud", loading)).toBe(true);
+    expect(isBuiltinSurfaceVisible("graph", input({ pluginsLoaded: false, plugins: [plugin()] }))).toBe(false);
+  });
+
+  it("is visible on a host with no plugin support at all", () => {
+    expect(isBuiltinSurfaceVisible("cursor-cloud", input({ pluginSupport: false }))).toBe(true);
+  });
+
+  it("is visible when the plugin is installed but switched off", () => {
+    expect(isBuiltinSurfaceVisible("cursor-cloud", input({ plugins: [cursorCloudPlugin({ enabled: false })] })))
+      .toBe(true);
+  });
+
+  it("is hidden exactly once the plugin is installed and enabled", () => {
+    expect(isBuiltinSurfaceVisible("cursor-cloud", input({ plugins: [cursorCloudPlugin()] }))).toBe(false);
+  });
+
+  it("keeps the plugin's own rail item, because ADE draws nothing in its place", () => {
+    // The bug this pins: `builtinGateForPlugin` finds the registered owner, and
+    // the legacy-host fallback then treats a plugin with no `builtin` tab as
+    // claiming the surface. For a superseding plugin that would suppress its own
+    // tab and leave the rail with neither entry.
+    const installed = cursorCloudPlugin();
+    expect(claimedBuiltinGate(installed)).toBeNull();
+    expect(pluginOwnsBuiltinTab(installed)).toBe(false);
+    expect(builtinRouteForPluginRoute("ade-cursor-cloud", [installed])).toBeNull();
+  });
+
+  it("leaves every other surface on the original polarity", () => {
+    const withCursorCloud = input({ plugins: [cursorCloudPlugin()] });
+    for (const builtinId of PLUGIN_BUILTIN_SURFACE_IDS) {
+      if (builtinId === "cursor-cloud") continue;
+      expect(isBuiltinSurfaceVisible(builtinId, withCursorCloud), builtinId).toBe(false);
+    }
   });
 });

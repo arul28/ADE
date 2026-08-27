@@ -173,9 +173,39 @@ struct ContentView: View {
       } message: { refusal in
         Text("\(refusal.pluginLabel) isn't on your computer, so this link has nothing to open.")
       }
-      .sheet(isPresented: $syncService.cursorCloudPanePresented) {
+      // The built-in Cursor Cloud pane, and the third place the same question is
+      // asked. The toolbar button hides itself and so does the button's own
+      // body, but a hidden button is not access control: `cursorCloudPanePresented`
+      // is a plain published flag on `SyncService` that anything in the app can
+      // set, so the host of the sheet refuses too.
+      //
+      // The binding is written as a filter rather than a plain `isPresented`
+      // for the case where the answer arrives WHILE the sheet is up — the phone
+      // attaches to a machine that has `ade-cursor-cloud`, or the user installs
+      // it from Marketplace mid-session. Reading false then flips the binding,
+      // which dismisses the superseded pane instead of leaving a screen up that
+      // the plugin has taken over. Setting it back to false always clears the
+      // flag, so the "closed" path is unaffected.
+      .sheet(isPresented: Binding(
+        get: { syncService.cursorCloudPanePresented && pluginGate.drawsBuiltin(.cursorCloud) },
+        set: { syncService.cursorCloudPanePresented = $0 }
+      )) {
         CursorCloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
+          .environmentObject(pluginGate)
+      }
+      // Clearing the flag is separate from filtering it because the filter alone
+      // only suppresses the sheet, it does not forget that something asked for
+      // it. Leaving `cursorCloudPanePresented` true under a superseding plugin
+      // would arm the pane to spring open later, the moment the plugin was
+      // disabled or the phone attached to a machine without it — a sheet
+      // appearing out of nowhere long after the tap that requested it. The write
+      // is here rather than in the binding's getter because a getter runs during
+      // the view update, where mutating published state is not allowed.
+      .onChange(of: pluginGate.drawsBuiltin(.cursorCloud)) { _, drawsBuiltin in
+        if !drawsBuiltin {
+          syncService.cursorCloudPanePresented = false
+        }
       }
       // Presented rather than bound to the request itself: the card's stage
       // changes under a stable id as the wake runs, and `sheet(item:)` would

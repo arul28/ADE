@@ -31,6 +31,8 @@ import {
   builtinSurfaceInstalled,
   builtinSurfaceOwnerForActionDomain,
   gatedBuiltinActionDomains,
+  gatedBuiltinActionNames,
+  hiddenBuiltinActionNames,
   type BuiltinSurfaceOwner,
 } from "../../../shared/plugins/builtinSurfaces";
 import { isRecord } from "../../../shared/plugins/parse";
@@ -68,6 +70,30 @@ export function resolveDisabledActionDomains(
     if (!builtinSurfaceInstalled(owner.builtinId, records)) disabled.add(domain);
   }
   return disabled;
+}
+
+/** Every `"<domain>.<action>"` any surface gates, whether or not it is drawn. */
+export function allGatedActionNames(): ReadonlySet<string> {
+  return new Set(gatedBuiltinActionNames());
+}
+
+/**
+ * The `"<domain>.<action>"` names to leave out of an action catalog right now.
+ *
+ * The name-level twin of {@link resolveDisabledActionDomains}, for a surface
+ * whose verbs share a domain ADE keeps — today only Cursor Cloud, whose verbs
+ * live in `ai`. It is a WITHHOLDING, not a refusal: the verbs still dispatch, so
+ * a chat already bound to a cloud agent keeps working while the built-in UI is
+ * hidden. What stops is ADE listing a surface's verbs to an agent when the user
+ * cannot see that surface.
+ *
+ * Reads the registry through the same lenient path the domain gate uses, so an
+ * unparseable `state.json` withholds rather than advertises.
+ */
+export function resolveHiddenActionNames(
+  pluginsRoot: string = resolvePluginsRoot(),
+): ReadonlySet<string> {
+  return hiddenBuiltinActionNames([...readPluginInstallRecords(pluginsRoot).values()]);
 }
 
 /** How a plugin id becomes a name a user recognizes. Injectable for tests. */

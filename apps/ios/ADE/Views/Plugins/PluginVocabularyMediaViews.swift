@@ -147,9 +147,8 @@ struct PluginVocabButtonView: View {
       HStack(spacing: 6) {
         if isBusy {
           ProgressView().controlSize(.mini)
-        } else if let icon = PluginSymbol.symbol(button.icon) {
-          Image(systemName: icon)
-            .font(.system(size: 11, weight: .semibold))
+        } else if PluginSymbol.drawsIcon(button.icon) {
+          PluginSymbol.glyph(button.icon, fallback: "puzzlepiece.extension", pointSize: 11)
         }
         Text(button.label)
           .font(.caption.weight(.semibold))
@@ -188,6 +187,11 @@ struct PluginVocabEmptyStateView: View {
   @ObservedObject var store: PluginPaneStore
 
   var body: some View {
+    // Symbol tokens only: `ADEEmptyStateView` takes a symbol NAME and draws it
+    // as the large centred mark of a whole empty page. A `brand:` token falls
+    // through to the puzzle piece here rather than putting a vendor's logo at
+    // hero size on a page that is about the panel being empty, not about whose
+    // plugin it is.
     ADEEmptyStateView(
       symbol: PluginSymbol.resolve(emptyState.icon, fallback: "puzzlepiece.extension"),
       title: emptyState.title,
@@ -277,6 +281,30 @@ struct PluginInlineEmptyText: View {
 ///
 /// The pairs are chosen for what a glyph MEANS rather than what it is called:
 /// Phosphor's `Robot` and SF's `cpu` share no word and the same idea.
+///
+/// ## The second kind: brand tokens
+///
+/// Phosphor and SF Symbols are both *idea* catalogues, and a plugin that carries
+/// a real brand has no idea to point at. `ade-cursor-cloud` is Cursor, and asking
+/// it to pick between `cloud` and `robot` produced a pane, a menu row and a chat
+/// header that all drew a generic cloud beside the word "Cursor" — the plugin
+/// looked unfinished in exactly the places its identity mattered most.
+///
+/// So the namespace has a second, smaller, equally CLOSED half: `brand:<vendor>`
+/// tokens that resolve to the provider-logo assets this app already ships for
+/// its own runtimes. Closed for the same reason the first half is — a token that
+/// draws on one client and puzzles on the other is one manifest with two
+/// pictures — and small because a token only earns a place when BOTH clients
+/// already carry that vendor's mark. `brand:linear` is deliberately absent: no
+/// asset exists on either side, and inventing one here would break parity in the
+/// direction that is hardest to notice.
+///
+/// A brand token is an IMAGE, not a symbol name, which is why ``symbol(_:)``
+/// keeps returning nil for one and callers reach for ``image(_:fallback:)`` or
+/// ``glyph(_:fallback:pointSize:weight:)`` instead. An unknown `brand:*` string
+/// degrades to the very same puzzle piece an unknown ordinary token does — the
+/// prefix buys no leniency, because a raw asset name passed through would be the
+/// removed `UIImage(systemName:)` passthrough all over again.
 enum PluginSymbol {
   /// Manifest icon token → SF Symbol. Mirrors desktop's `PLUGIN_ICONS`.
   ///
@@ -364,11 +392,49 @@ enum PluginSymbol {
     "wrench": "wrench.adjustable",
   ]
 
-  /// Tokens this build maps, for the parity test that walks every one of them.
-  static var tokenNames: [String] { tokens.keys.sorted() }
+  /// Manifest brand token → asset catalogue name. Mirrors desktop's brand half
+  /// of `PLUGIN_ICONS`.
+  ///
+  /// Every entry here is a mark the app ALREADY ships for its own runtimes and
+  /// providers (see `providerAssetName(_:)`), so adding one costs nothing at
+  /// build time and, more importantly, cannot introduce a vendor whose logo the
+  /// desktop cannot draw. A vendor with an asset on only one client does not
+  /// belong in this map at all — that is the single rule the list is closed to
+  /// enforce.
+  ///
+  /// Same additive/removal rule as the symbol map above: adding a token is safe,
+  /// removing one silently changes the appearance of a plugin already shipped
+  /// with it.
+  private static let brandTokens: [String: String] = [
+    "brand:claude": "ProviderClaude",
+    "brand:codex": "ProviderCodex",
+    "brand:cursor": "ProviderCursor",
+    "brand:github": "ProviderGitHub",
+    "brand:openai": "ProviderOpenAI",
+  ]
+
+  /// Every token this build maps, of either kind, for the parity test that
+  /// walks the shared list. The two kinds are also exposed separately below,
+  /// because "does this resolve to a real SF Symbol" is a question only the
+  /// symbol half can be asked — a brand token resolves to an asset and would
+  /// fail that check while being perfectly correct.
+  static var tokenNames: [String] { (Array(tokens.keys) + Array(brandTokens.keys)).sorted() }
+
+  /// The symbol half only: tokens that must name a glyph in this OS catalogue.
+  static var symbolTokenNames: [String] { tokens.keys.sorted() }
+
+  /// The brand half only: tokens that must name an image in this bundle.
+  static var brandTokenNames: [String] { brandTokens.keys.sorted() }
 
   static func exists(_ name: String) -> Bool {
     UIImage(systemName: name) != nil
+  }
+
+  /// Whether this bundle actually carries the named asset. The brand half's
+  /// equivalent of ``exists(_:)``: a map entry naming an imageset that was never
+  /// added draws an empty box beside a label, which reads as the plugin's fault.
+  static func assetExists(_ name: String) -> Bool {
+    UIImage(named: name) != nil
   }
 
   /// The SF Symbol a manifest icon draws as, or nil when nothing honest draws.
@@ -388,13 +454,87 @@ enum PluginSymbol {
   /// authoritative, an icon that renders anywhere renders everywhere, and an
   /// unrecognised string puzzles identically on both.
   static func symbol(_ name: String?) -> String? {
-    guard let raw = name?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
-      return nil
-    }
-    return tokens[raw.lowercased()]
+    guard let raw = normalized(name) else { return nil }
+    return tokens[raw]
   }
 
   static func resolve(_ name: String?, fallback: String) -> String {
     symbol(name) ?? fallback
+  }
+
+  /// The asset a `brand:` token draws as, or nil for everything else.
+  ///
+  /// Nil for an unknown `brand:*` string as much as for an ordinary token —
+  /// there is no "strip the prefix and try the asset catalogue" branch, on
+  /// purpose. Such a branch would let a manifest name any imageset this app
+  /// happens to bundle, which renders here and puzzles on desktop: the exact
+  /// asymmetry the removed `UIImage(systemName:)` passthrough created and the
+  /// reason ``symbol(_:)`` refuses raw SF Symbol names.
+  static func brandAsset(_ name: String?) -> String? {
+    guard let raw = normalized(name) else { return nil }
+    return brandTokens[raw]
+  }
+
+  /// Whether this build draws anything at all for a token, of either kind. For
+  /// the call sites that render nothing rather than a puzzle piece when a row
+  /// names no usable icon — a menu row without an image is ordinary on iOS,
+  /// where a stamped-on generic mark is not.
+  static func drawsIcon(_ name: String?) -> Bool {
+    symbol(name) != nil || brandAsset(name) != nil
+  }
+
+  /// The icon for a `Label`'s image slot: the vendor's mark for a brand token,
+  /// the mapped SF Symbol for an ordinary one, and `fallback` for anything the
+  /// list does not know.
+  ///
+  /// `Label(_:systemImage:)` cannot express the first case at all — it takes a
+  /// symbol NAME — which is why the plugin call sites use the two-closure
+  /// `Label { Text(…) } icon: { … }` form instead. The brand image is left at
+  /// its intrinsic size (the provider assets are 24pt vectors) and marked
+  /// `.original` so the vendor's own colours survive: a system menu tints a
+  /// template image to the row's foreground colour, which would flatten the
+  /// Claude and Codex marks to a monochrome smear.
+  static func image(_ name: String?, fallback: String) -> Image {
+    if let asset = brandAsset(name) {
+      return Image(asset).renderingMode(.original)
+    }
+    return Image(systemName: resolve(name, fallback: fallback))
+  }
+
+  /// The same icon for a standalone slot that has already chosen a point size —
+  /// a toolbar glyph, the mark inside an action pill.
+  ///
+  /// A symbol takes the size through `.font`, the way the call sites always
+  /// did. An asset cannot: `Image(asset)` is a fixed 24pt vector and `.font`
+  /// does nothing to it, so an 11pt pill would be built around a 24pt logo.
+  /// Making it resizable and framing it to the same point size is what keeps a
+  /// brand token from resizing the control it sits in.
+  @ViewBuilder
+  static func glyph(
+    _ name: String?,
+    fallback: String,
+    pointSize: CGFloat,
+    weight: Font.Weight = .semibold
+  ) -> some View {
+    if let asset = brandAsset(name) {
+      Image(asset)
+        .renderingMode(.original)
+        .resizable()
+        .scaledToFit()
+        .frame(width: pointSize, height: pointSize)
+    } else {
+      Image(systemName: resolve(name, fallback: fallback))
+        .font(.system(size: pointSize, weight: weight))
+    }
+  }
+
+  /// Trimmed and lowercased, or nil when the author wrote nothing. Case and
+  /// stray whitespace are the author's, not a different icon — shared by both
+  /// lookups so the two halves cannot disagree about what "the same token" is.
+  private static func normalized(_ name: String?) -> String? {
+    guard let raw = name?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+      return nil
+    }
+    return raw.lowercased()
   }
 }

@@ -690,6 +690,13 @@ struct WorkRootScreen: View {
             // Cursor Cloud fleet button, immediately left of the Linear one;
             // gated on an active project plus the host advertising the fleet
             // commands; the pane resolves connection state itself.
+            //
+            // It is also gated on the attached machine NOT having
+            // `ade-cursor-cloud`, which ships its own pane through the
+            // puzzle-piece slot above — the built-in and the plugin must never
+            // both be in this top bar. The check lives in the button's own body
+            // (see `PluginPresenceGate.drawsBuiltin`) exactly as Linear's does,
+            // so a new call site cannot forget it.
             CursorCloudPaneToolbarButton()
           }
         }

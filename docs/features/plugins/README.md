@@ -837,6 +837,49 @@ without the plugin never loads them. The capability underneath is not fenced
 off — `xcrun simctl`, the Linear API and AppleScript are still there; what the
 plugin carries is ADE's premium layer over them.
 
+### Two polarities: enabling and superseding
+
+Every owner row carries a `presence`, from `PLUGIN_BUILTIN_SURFACE_PRESENCE` in
+`shared/plugins/manifest.ts`, and it decides which way the plugin's install
+moves the compiled surface.
+
+| surface | owner | presence |
+|---|---|---|
+| `graph` | `ade-graph` | `enables` |
+| `review` | `ade-review` | `enables` |
+| `history` | `ade-history` | `enables` |
+| `linear` | `ade-linear` | `enables` |
+| `ios` | `ade-ios-sim` | `enables` |
+| `app-control` | `ade-app-control` | `enables` |
+| `cursor-cloud` | `ade-cursor-cloud` | `supersedes` |
+
+`enables` is the original relationship: the plugin is the only reason the
+surface exists, so ADE draws it only while the owner is installed and enabled,
+and every unknown — an unresolved registry, a host with no plugin support —
+hides it. There is no state in which a surface appears because ADE was unsure.
+
+`supersedes` is the mirror, and Cursor Cloud is the first of it. ADE shipped a
+compiled fleet surface long before the plugin existed, and `ade-cursor-cloud`
+**replaces** it: its own header button, composer socket, panels and chat runtime
+stand where the built-in ones did. So ADE draws the compiled surface only while
+the owner is ABSENT, and every unknown draws it — a machine without the plugin
+must behave exactly as it did before the plugin existed, and hiding on an
+unresolved registry would blink a shipped feature off on every launch. Only a
+positive "the owner is here" takes it away, which is the same instant the
+plugin's own entry point appears, so the user never sees both at once.
+
+The polarity also decides what a manifest may say. A `supersedes` surface is
+never named by `surfaces[].builtin`: that field means "ADE draws its compiled
+page in my place", and honouring it would suppress the plugin's OWN rail item in
+favour of the page it exists to replace. The parser refuses the combination.
+
+What is gated for Cursor Cloud: the top-bar quick-view button and its fleet
+modal (`CursorCloudQuickViewButton`, which carries the gate itself so neither of
+`TopBar`'s two call sites can forget it), the composer's "Cursor Cloud" machine
+row plus the cloud mode, Advanced menu and secrets picker that descend from it
+(`cursorCloudAvailable` in `AgentChatPane`), the phone's Work top-bar button and
+`CursorCloudPaneSheet`, and the TUI's `/cloud`.
+
 ### Agent tooling
 
 A plugin's ADE action domains leave with it. `BUILTIN_SURFACE_OWNERS` in
@@ -847,6 +890,18 @@ owns `app_control` — and `resolveDisabledActionDomains()` turns that plus the
 install registry into the set to refuse. Graph, Review and History list nothing:
 they are views over state other domains already own, so there is nothing of
 theirs to refuse.
+
+Cursor Cloud gets a second mechanism, because its verbs have no domain of their
+own: all twenty live in `ai`, next to `getStatus`, every API-key verb and the
+Cursor CLI login, so refusing that domain would take the model picker with it.
+The owner row carries an `actionNames` list of `"ai.<verb>"` strings instead, and
+`resolveHiddenActionNames()` withholds them from the three places ADE lists
+actions to an agent — the automations action picker, `list_ade_actions`, and the
+automation ADE-action registry. It is a withholding, not a refusal: the verbs
+still dispatch, so a chat already bound to a cloud agent keeps working. What
+stops is ADE advertising a surface the user can no longer see. The `cursorAuth*`
+verbs are deliberately not on the list — that is the Cursor API-key connection,
+which the Cursor chat provider and CLI still need.
 
 ### Recording audio: `ade.audio.captureClip`
 

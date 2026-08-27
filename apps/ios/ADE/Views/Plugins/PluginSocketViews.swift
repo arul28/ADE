@@ -152,6 +152,13 @@ struct PluginRowBadgeCluster: View {
 
   @ViewBuilder
   private func badgeView(_ badge: PluginRowBadgePayload) -> some View {
+    // Symbol tokens only, and deliberately so. `ADEGlassChip` draws its glyph
+    // at 8pt through `Image(systemName:)`, and a `brand:` token resolves to a
+    // 24pt vector asset that has no honest reading at that size — a vendor's
+    // mark inside a status pill is a smudge, not a logo. A brand token here
+    // therefore lands on the same branch an unrecognised token does and the
+    // chip degrades to its text-only form, which is exactly what this call site
+    // has always done when it cannot draw an icon.
     if let icon = PluginSymbol.symbol(badge.icon) {
       ADEGlassChip(icon: icon, text: badge.text, tint: badge.tone.color)
     } else {
@@ -194,8 +201,16 @@ struct PluginRowMenuItems: View {
           Button(role: Self.role(for: item)) {
             onInvoke(contribution)
           } label: {
-            if let icon = PluginSymbol.symbol(item.icon) {
-              Label(item.label, systemImage: icon)
+            // Either kind of token draws here: an ordinary one as its SF
+            // Symbol, a `brand:` one as the vendor's bundled mark. A row that
+            // names nothing usable stays plain text, which is what a system
+            // menu row without an image is supposed to look like.
+            if PluginSymbol.drawsIcon(item.icon) {
+              Label {
+                Text(item.label)
+              } icon: {
+                PluginSymbol.image(item.icon, fallback: "puzzlepiece.extension")
+              }
             } else {
               Text(item.label)
             }
@@ -357,7 +372,11 @@ extension View {
 @ViewBuilder
 private func pluginMenuEntryLabel(_ entry: PluginActionMenuEntry) -> some View {
   if let icon = entry.icon {
-    Label(entry.label, systemImage: PluginSymbol.resolve(icon, fallback: "puzzlepiece.extension"))
+    Label {
+      Text(entry.label)
+    } icon: {
+      PluginSymbol.image(icon, fallback: "puzzlepiece.extension")
+    }
   } else {
     Text(entry.label)
   }
@@ -436,7 +455,11 @@ struct PluginToolbarActions: View {
                 Button {
                   invoke(contribution, actionId: action.actionId)
                 } label: {
-                  Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+                  Label {
+                    Text(action.label)
+                  } icon: {
+                    PluginSymbol.image(action.icon, fallback: "puzzlepiece.extension")
+                  }
                 }
                 .disabled(action.disabled || !syncService.canInvokePluginActions)
                 ForEach(action.menu) { entry in
@@ -469,9 +492,12 @@ struct PluginToolbarActions: View {
     "\(label), \(syncService.pluginPresenceCatalog().label(for: contribution.pluginId))"
   }
 
+  /// The plugin's declared tint still applies to a symbol token and is inert on
+  /// a `brand:` one, which is the intent: a vendor's mark is not the plugin's to
+  /// recolour, and the fixed 38x34 slot means the sized glyph cannot push the
+  /// top bar around whichever kind of token an author picked.
   private func toolbarGlyph(_ action: PluginActionButtonPayload) -> some View {
-    Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
-      .font(.system(size: 15, weight: .semibold))
+    PluginSymbol.glyph(action.icon, fallback: "puzzlepiece.extension", pointSize: 15)
       .foregroundStyle(pluginActionTint(action))
       .frame(width: 38, height: 34)
       .contentShape(Rectangle())
@@ -899,8 +925,7 @@ struct PluginComposerActions: View {
           if busy {
             ProgressView().controlSize(.mini)
           } else {
-            Image(systemName: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
-              .font(.system(size: 11, weight: .semibold))
+            PluginSymbol.glyph(action.icon, fallback: "puzzlepiece.extension", pointSize: 11)
           }
           Text(action.label)
             .font(.caption.weight(.semibold))
@@ -970,7 +995,11 @@ struct PluginComposerActions: View {
       Button {
         invoke(contribution, actionId: action.actionId)
       } label: {
-        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+        Label {
+          Text(action.label)
+        } icon: {
+          PluginSymbol.image(action.icon, fallback: "puzzlepiece.extension")
+        }
       }
       .disabled(isDisabled(contribution, disabled: action.disabled))
     } else {
@@ -978,7 +1007,11 @@ struct PluginComposerActions: View {
         Button {
           invoke(contribution, actionId: action.actionId)
         } label: {
-          Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+          Label {
+            Text(action.label)
+          } icon: {
+            PluginSymbol.image(action.icon, fallback: "puzzlepiece.extension")
+          }
         }
         .disabled(isDisabled(contribution, disabled: action.disabled))
         ForEach(action.menu) { entry in
@@ -990,7 +1023,11 @@ struct PluginComposerActions: View {
           .disabled(isDisabled(contribution, disabled: false))
         }
       } label: {
-        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+        Label {
+          Text(action.label)
+        } icon: {
+          PluginSymbol.image(action.icon, fallback: "puzzlepiece.extension")
+        }
       }
     }
   }
@@ -1071,7 +1108,11 @@ struct PluginChatHeaderMenuItems: View {
       Button {
         onInvoke(contribution, action.actionId)
       } label: {
-        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+        Label {
+          Text(action.label)
+        } icon: {
+          PluginSymbol.image(action.icon, fallback: "puzzlepiece.extension")
+        }
       }
       .disabled(action.disabled || !isEnabled)
     } else {
@@ -1082,7 +1123,11 @@ struct PluginChatHeaderMenuItems: View {
         Button {
           onInvoke(contribution, action.actionId)
         } label: {
-          Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+          Label {
+            Text(action.label)
+          } icon: {
+            PluginSymbol.image(action.icon, fallback: "puzzlepiece.extension")
+          }
         }
         .disabled(action.disabled || !isEnabled)
         ForEach(action.menu) { entry in
@@ -1094,7 +1139,11 @@ struct PluginChatHeaderMenuItems: View {
           .disabled(!isEnabled)
         }
       } label: {
-        Label(action.label, systemImage: PluginSymbol.resolve(action.icon, fallback: "puzzlepiece.extension"))
+        Label {
+          Text(action.label)
+        } icon: {
+          PluginSymbol.image(action.icon, fallback: "puzzlepiece.extension")
+        }
       }
     }
   }

@@ -458,6 +458,33 @@ describe("webview surfaces", () => {
     expect(result.warnings.join(" ")).toMatch(/cannot be combined with a "webview" surface/);
   });
 
+  /**
+   * A superseding plugin brings its own panels; `builtin` means the opposite.
+   *
+   * Honouring the field for such a surface would make `pluginOwnsBuiltinTab`
+   * true, which suppresses the plugin's OWN rail item in favour of a compiled
+   * page the plugin exists to replace — a rail with neither entry on it.
+   */
+  it("refuses a surface that names a superseded built-in", () => {
+    const result = parsePluginManifest(validManifest({
+      official: true,
+      surfaces: [{ kind: "tab", id: "fleet", title: "Cursor Cloud", panelId: "fleet", builtin: "cursor-cloud" }],
+    }));
+    expect(result.errors).toEqual([]);
+    expect(result.manifest!.surfaces[0]).not.toHaveProperty("builtin");
+    expect(result.warnings.join(" ")).toMatch(/superseded surface/);
+  });
+
+  it("accepts a brand icon token on a surface and on the manifest itself", () => {
+    const result = parsePluginManifest(validManifest({
+      icon: "brand:cursor",
+      surfaces: [{ kind: "tab", id: "fleet", title: "Cursor Cloud", panelId: "fleet", icon: "brand:cursor" }],
+    }));
+    expect(result.errors).toEqual([]);
+    expect(result.manifest!.icon).toBe("brand:cursor");
+    expect(result.manifest!.surfaces[0]?.icon).toBe("brand:cursor");
+  });
+
   it("resolves a webview surface to desktop-only while keeping its panel on the phone", () => {
     const result = parsePluginManifest(webviewSurface({ mobile: true }));
     expect(result.manifest!.surfaces[0]?.mobile).toBe(false);

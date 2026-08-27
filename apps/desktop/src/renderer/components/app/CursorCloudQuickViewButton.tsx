@@ -10,6 +10,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { CursorCloudFleetModal } from "./CursorCloudFleetModal";
+import { useBuiltinSurfaceVisible } from "../plugins/useBuiltinTabs";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 4_000;
 const VISIBILITY_CONNECTED_CACHE_TTL_MS = 120_000;
@@ -69,6 +70,16 @@ function readCursorVisibilityCached(
 }
 
 export function CursorCloudQuickViewButton() {
+  /**
+   * The `ade-cursor-cloud` plugin replaces this button, its modal and the whole
+   * compiled fleet surface. The gate lives HERE rather than at the two places
+   * TopBar renders this component, so a third call site cannot forget it — and
+   * so the user is never offered ADE's fleet button and the plugin's own header
+   * button at the same time. With the plugin absent the predicate answers true
+   * for every state, including a registry that has not resolved, so nothing
+   * about this button changes on a machine that does not have it.
+   */
+  const cursorCloudSurfaceVisible = useBuiltinSurfaceVisible("cursor-cloud");
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const activeProjectRoot =
@@ -157,7 +168,7 @@ export function CursorCloudQuickViewButton() {
     };
   }, [occludesNativeBrowser]);
 
-  if (!visible) return null;
+  if (!visible || !cursorCloudSurfaceVisible) return null;
 
   return (
     <>

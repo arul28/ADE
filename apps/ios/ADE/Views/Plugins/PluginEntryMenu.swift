@@ -115,7 +115,15 @@ struct PluginEntryMenuButton: View {
           Button {
             open(entry)
           } label: {
-            Label(entry.label, systemImage: PluginSymbol.resolve(entry.icon, fallback: "puzzlepiece.extension"))
+            // Two-closure `Label` rather than `systemImage:`, because a plugin
+            // that carries a real brand names a `brand:` token and that resolves
+            // to a bundled logo, not to a symbol name. Ordinary tokens still end
+            // up as `Image(systemName:)` — see `PluginSymbol.image(_:fallback:)`.
+            Label {
+              Text(entry.label)
+            } icon: {
+              PluginSymbol.image(entry.icon, fallback: "puzzlepiece.extension")
+            }
           }
         }
       } label: {
@@ -129,9 +137,13 @@ struct PluginEntryMenuButton: View {
     }
   }
 
+  /// The single-plugin form of the slot: the plugin's own mark, not a puzzle
+  /// piece, because with one plugin installed the button IS that plugin.
+  ///
+  /// `foregroundStyle` still applies to a symbol token and is inert on a brand
+  /// asset, which is the intent — a vendor's logo is not the app's to tint.
   private func label(for entry: PluginEntry) -> some View {
-    Image(systemName: PluginSymbol.resolve(entry.icon, fallback: "puzzlepiece.extension"))
-      .font(.system(size: 15, weight: .semibold))
+    PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 15)
       .foregroundStyle(ADEColor.textSecondary)
       .frame(width: 38, height: 34)
       .contentShape(Rectangle())

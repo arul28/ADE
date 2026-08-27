@@ -122,6 +122,7 @@ import { readPluginRegistryFile } from "../../desktop/src/main/services/plugins/
 import {
   allGatedActionDomains,
   buildGatedDomainDenial,
+  resolveHiddenActionNames,
   gatedDomainUnavailableReason,
   pluginStepUnavailableReason,
 } from "../../desktop/src/main/services/plugins/gatedActionDomains";
@@ -2865,8 +2866,13 @@ export async function createAdeRuntime(args: {
         return Object.keys(ADE_ACTION_ALLOWLIST);
       },
       listActions(domain: string): string[] {
+        // Read fresh rather than memoized: an automation editor is a cold path,
+        // and a plugin installed since the daemon started must not keep offering
+        // the built-in verbs it replaced.
+        const hidden = resolveHiddenActionNames();
         return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-          .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
+          .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action))
+          .filter((action) => !hidden.has(`${domain}.${action}`));
       },
       unavailableReason(domain: string): string | null {
         return gatedDomainUnavailableReason(domain);

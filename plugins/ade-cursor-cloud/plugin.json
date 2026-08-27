@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "displayName": "Cursor Cloud",
   "description": "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
-  "icon": "cloud",
+  "icon": "brand:cursor",
   "accent": "#A78BFA",
   "vocabVersion": 1,
   "entry": "index.js",
@@ -21,7 +21,7 @@
       "kind": "tab",
       "id": "fleet",
       "title": "Cursor Cloud",
-      "icon": "cloud",
+      "icon": "brand:cursor",
       "panelId": "fleet",
       "order": 60,
       "mobile": true
@@ -83,7 +83,7 @@
     {
       "id": "cloud-agent",
       "displayName": "Cursor Cloud",
-      "icon": "cloud",
+      "icon": "brand:cursor",
       "capabilities": { "followUp": true, "interrupt": true, "hydrate": true, "artifacts": true }
     }
   ],

@@ -1,3 +1,4 @@
+import React from "react";
 import {
   BeerStein,
   Bell,
@@ -64,6 +65,7 @@ import {
   Wrench,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
+import { Claude, Codex, Cursor, Github, OpenAI } from "@lobehub/icons";
 
 /**
  * Manifest icon names → glyphs.
@@ -153,6 +155,108 @@ const PLUGIN_ICONS: Record<string, PhosphorIcon> = {
   wrench: Wrench,
 };
 
+/* ── Brand tokens ─────────────────────────────────────────────── */
+
+/**
+ * A small, CLOSED set of vendor marks a manifest may name.
+ *
+ * The glyph list above is deliberately generic, and that is right for almost
+ * every plugin: a colour theme drawn as a palette reads correctly on any client.
+ * It is wrong for a plugin whose whole subject is one company's product. The
+ * Cursor Cloud plugin declared `cloud`, the only honest token available to it,
+ * and the Marketplace drew a weather glyph next to the word "Cursor". A reader
+ * who already knows the mark learns nothing from a generic stand-in.
+ *
+ * Three rules keep this from becoming a second, unbounded icon namespace:
+ *
+ * 1. **The set is closed and small.** Only vendors ADE already ships artwork for
+ *    on EVERY client are in it. A token that resolves here and puzzles on the
+ *    phone is the exact cross-client break the token list exists to prevent, and
+ *    this repo has paid for that once already with `beer`.
+ * 2. **No new artwork.** Each entry points at a logo the product already draws
+ *    somewhere else, so a brand token can never be the reason a mark is
+ *    out of date.
+ * 3. **Unknown degrades identically.** `brand:whatever` is not a family of
+ *    tokens with a special fallback; it is an unknown token, and it draws the
+ *    same puzzle piece any other unknown token draws.
+ *
+ * `linear` is the notable absence: `@lobehub/icons` publishes no Linear mark and
+ * the iOS asset catalogue has none, so there is nothing to point at on two of
+ * the four clients. ADE's own Linear tile artwork lives in
+ * {@link OFFICIAL_PLUGIN_LOGOS} below, which is a full-bleed square for the
+ * gallery rather than a mono glyph for a rail.
+ */
+type BrandMark = React.ComponentType<{ size?: number | string; className?: string; style?: React.CSSProperties }>;
+
+/**
+ * Wrap a vendor mark so it renders anywhere a Phosphor glyph does.
+ *
+ * Every caller of {@link pluginIcon} renders the result as a component with
+ * Phosphor's props — `size`, `weight`, `color`, `aria-hidden`. A LobeHub mark
+ * takes `size` and would forward `weight` straight onto its `<svg>`, where React
+ * warns about an unknown attribute. The wrapper takes the props apart: `size`
+ * reaches the mark, `color` becomes the surrounding `color` so a tinted context
+ * still tints anything the mark draws in `currentColor`, and `weight` is dropped
+ * because a logo has no stroke weight to vary.
+ *
+ * The BARE mark is used, never the boxed `.Avatar`: these draw inline beside
+ * text at 11-16px, where a filled brand tile reads as a badge stuck onto the row
+ * rather than as that row's icon.
+ */
+function brandGlyph(Mark: BrandMark, label: string): PhosphorIcon {
+  function BrandGlyph({
+    size = 16,
+    color,
+    className,
+    style,
+    ...rest
+  }: {
+    size?: number | string;
+    color?: string;
+    className?: string;
+    style?: React.CSSProperties;
+    weight?: unknown;
+    [key: string]: unknown;
+  }) {
+    const { weight: _weight, ...passthrough } = rest;
+    const pixels = typeof size === "number" ? size : Number.parseFloat(String(size)) || 16;
+    return (
+      <span
+        {...(passthrough as Record<string, unknown>)}
+        className={className}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          lineHeight: 0,
+          ...(color ? { color } : {}),
+          ...style,
+        }}
+      >
+        <Mark size={pixels} />
+      </span>
+    );
+  }
+  BrandGlyph.displayName = `BrandGlyph(${label})`;
+  return BrandGlyph as unknown as PhosphorIcon;
+}
+
+const PLUGIN_BRAND_ICONS: Record<string, PhosphorIcon> = {
+  "brand:claude": brandGlyph(Claude, "Claude"),
+  "brand:codex": brandGlyph(Codex, "Codex"),
+  "brand:cursor": brandGlyph(Cursor, "Cursor"),
+  "brand:github": brandGlyph(Github, "GitHub"),
+  "brand:openai": brandGlyph(OpenAI, "OpenAI"),
+};
+
+/** Brand token names, for docs, the authoring skill and the parity tests. */
+export const PLUGIN_BRAND_ICON_NAMES: readonly string[] = Object.keys(PLUGIN_BRAND_ICONS).sort();
+
+/** Whether a token names a vendor mark rather than a generic glyph. */
+export function isPluginBrandIconName(name: string | null | undefined): boolean {
+  return Object.hasOwn(PLUGIN_BRAND_ICONS, (name ?? "").trim().toLowerCase());
+}
+
 /** The glyph for a plugin that named no icon, or named one this build lacks. */
 export const DEFAULT_PLUGIN_ICON: PhosphorIcon = PuzzlePiece;
 
@@ -160,7 +264,10 @@ export const DEFAULT_PLUGIN_ICON: PhosphorIcon = PuzzlePiece;
 export const MARKETPLACE_ICON: PhosphorIcon = Storefront;
 
 /** Icon names a manifest may use, for docs and the authoring skill. */
-export const PLUGIN_ICON_NAMES: readonly string[] = Object.keys(PLUGIN_ICONS).sort();
+export const PLUGIN_ICON_NAMES: readonly string[] = [
+  ...Object.keys(PLUGIN_ICONS),
+  ...Object.keys(PLUGIN_BRAND_ICONS),
+].sort();
 
 /**
  * Resolve a manifest icon name. Never returns null — unknown names degrade.
@@ -173,6 +280,7 @@ export const PLUGIN_ICON_NAMES: readonly string[] = Object.keys(PLUGIN_ICONS).so
  */
 export function pluginIcon(name: string | null | undefined): PhosphorIcon {
   const key = (name ?? "").trim().toLowerCase();
+  if (Object.hasOwn(PLUGIN_BRAND_ICONS, key)) return PLUGIN_BRAND_ICONS[key]!;
   return Object.hasOwn(PLUGIN_ICONS, key) ? PLUGIN_ICONS[key]! : DEFAULT_PLUGIN_ICON;
 }
 
@@ -358,7 +466,8 @@ export function pluginIdentity(input: {
 }): PluginIdentity {
   const hash = hashPluginId(input.pluginId);
   const named = (input.icon ?? "").trim().toLowerCase();
-  const hasNamedIcon = named.length > 0 && Object.hasOwn(PLUGIN_ICONS, named);
+  const hasNamedIcon = named.length > 0
+    && (Object.hasOwn(PLUGIN_ICONS, named) || Object.hasOwn(PLUGIN_BRAND_ICONS, named));
   const glyph = hasNamedIcon
     ? named
     : PLUGIN_IDENTITY_GLYPHS[hash % PLUGIN_IDENTITY_GLYPHS.length]!;

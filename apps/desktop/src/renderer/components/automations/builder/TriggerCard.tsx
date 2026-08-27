@@ -22,6 +22,7 @@ import {
   type TriggerSource,
 } from "../triggerCatalog";
 import { usePluginAutomationTriggers, type PluginAutomationOption } from "../../plugins/usePluginRegistry";
+import { useBuiltinSurfaceVisible } from "../../plugins/useBuiltinTabs";
 import { GitHubTriggerFilters } from "../GitHubTriggerFilters";
 import { LinearTriggerFilters } from "../LinearTriggerFilters";
 import { ScheduleEditor } from "./ScheduleEditor";
@@ -282,11 +283,27 @@ export function TriggerCard({
   onIngressChanged?: () => void;
 }) {
   const source = sourceForTriggerType(trigger.type);
+  const cursorCloudSurfaceVisible = useBuiltinSurfaceVisible("cursor-cloud");
   const def = sourceDef(source);
   const events = def.events;
   const deliveryKey = triggerDeliveryKeyForType(trigger.type);
   const delivery = deliveryKey ? ingressStatus?.delivery?.[deliveryKey] : null;
 
+  /**
+   * The sources this machine may start a NEW automation from.
+   *
+   * Cursor Cloud's two triggers are ADE's own, and `ade-cursor-cloud` publishes
+   * its own pair. Offering both would put two "A Cursor Cloud agent finishes"
+   * rows in front of the user, wired to different halves of the same feature.
+   * The source that is already SELECTED always stays offered, so opening a
+   * saved cursor automation after installing the plugin shows the automation
+   * that exists rather than silently re-pointing its trigger at GitHub.
+   */
+  const offeredTriggerSources = TRIGGER_SOURCES.filter(
+    (candidate) => candidate.value === source
+      || candidate.value !== "cursor"
+      || cursorCloudSurfaceVisible,
+  );
   const setSource = (nextSource: TriggerSource) => onChange(defaultTriggerForSource(nextSource));
   const setEvent = (type: string) => onChange({ ...defaultTriggerForSource(source), type: type as AutomationTrigger["type"] });
   const patch = (p: Partial<AutomationTrigger>) => onChange({ ...trigger, ...p });
@@ -295,7 +312,7 @@ export function TriggerCard({
     <div className="space-y-3">
       {/* Source picker */}
       <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
-        {TRIGGER_SOURCES.map((s) => {
+        {offeredTriggerSources.map((s) => {
           const Icon = s.icon;
           const active = s.value === source;
           const iconWeight = s.value === "github" || active ? "fill" : "regular";

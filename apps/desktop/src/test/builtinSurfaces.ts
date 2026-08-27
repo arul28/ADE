@@ -8,16 +8,27 @@
  * so — which is the point of making this explicit instead of seeding plugins
  * globally in `setup.ts`: a suite that forgets to ask still sees the shipped
  * default, so a gate that stops working shows up as a failing test.
+ *
+ * Cursor Cloud runs the other way: `ade-cursor-cloud` REPLACES ADE's compiled
+ * fleet surface, so seeding it here is how a suite describes the machine where
+ * the built-in is GONE, and a suite that says nothing gets the built-in — which
+ * is what a machine without the plugin has always had.
  */
 
 import { BUILTIN_TAB_GATES } from "../renderer/components/plugins/builtinTabs";
 import { rootAppStoreApi } from "../renderer/state/appStore";
+import { builtinSurfacePresence } from "../shared/plugins/builtinSurfaces";
 import type { PluginBuiltinSurfaceId } from "../shared/plugins/manifest";
 import type { PluginClientInstalled } from "../shared/plugins/sdk";
 
 function installedPluginFor(builtinId: PluginBuiltinSurfaceId): PluginClientInstalled {
   const gate = BUILTIN_TAB_GATES.find((candidate) => candidate.builtinId === builtinId);
   if (!gate) throw new Error(`No owner registered for builtin surface ${builtinId}`);
+  // A plugin that SUPERSEDES a surface never declares `builtin` — the manifest
+  // parser refuses the combination, because that field means "ADE draws its
+  // compiled page in my place" and such a plugin draws its own. Seeding one with
+  // the field would describe a machine that cannot exist.
+  const supersedes = builtinSurfacePresence(gate.builtinId) === "supersedes";
   return {
     pluginId: gate.ownerPluginId,
     displayName: gate.title,
@@ -30,7 +41,7 @@ function installedPluginFor(builtinId: PluginBuiltinSurfaceId): PluginClientInst
       id: gate.builtinId,
       title: gate.title,
       panelId: `${gate.builtinId}-panel`,
-      builtin: gate.builtinId,
+      ...(supersedes ? {} : { builtin: gate.builtinId }),
     }],
     theme: null,
   };

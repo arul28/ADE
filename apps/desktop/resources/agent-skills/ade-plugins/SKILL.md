@@ -134,11 +134,17 @@ Rule of thumb for anything not in the table: **if it is rows of things with butt
 Say which clients will draw the thing, in the same message as the placement. Two facts do most of the damage when they are left out:
 
 - **A kind absent on a client is absent, not degraded.** `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab` and `dialog-section` do not draw on iOS at all. The TUI draws exactly three kinds: `row-badge`, `row-menu-item` and `toolbar-action`. Composer actions draw on desktop, web and iOS — iOS's compact layout draws them labeled — and the TUI draws none. Never read this list from memory: `PLUGIN_SOCKET_CLIENT_SUPPORT` is one boolean per client per kind and it moves as parity lands, so read it at the moment you write the claim.
-- **`icon` is a token, and the token list is the whole namespace.** Both clients resolve it against the same 64 tokens — desktop to a Phosphor glyph, iOS to an SF Symbol — and anything not on the list draws the puzzle piece on **both**. So an icon that renders anywhere renders everywhere, and an unrecognised string is unrecognised identically. There is no per-client escape hatch: naming a raw SF Symbol does not work on the phone, and never portably did. The tokens:
+- **`icon` is a token, and the token list is the whole namespace.** Both clients resolve it against the same 69 tokens — desktop to a Phosphor glyph or a vendor mark, iOS to an SF Symbol or a bundled logo asset — and anything not on the list draws the puzzle piece on **both**. So an icon that renders anywhere renders everywhere, and an unrecognised string is unrecognised identically. There is no per-client escape hatch: naming a raw SF Symbol does not work on the phone, and never portably did. The generic tokens:
 
   `beer` `bell` `bookmark` `brain` `bug` `calendar` `chart` `chart-bar` `chat` `clock` `clock-counter-clockwise` `cloud` `code` `compass` `cube` `currency` `database` `desktop` `device-mobile` `envelope` `eye` `file` `flag` `folder` `gear` `git-branch` `git-commit` `git-pull-request` `globe` `graph` `heart` `image` `kanban` `key` `lightning` `link` `list` `list-checks` `lock` `magic` `microphone` `music` `note` `package` `palette` `play` `plug` `puzzle` `robot` `rocket` `rows` `shield` `sparkle` `star` `storefront` `table` `tag` `terminal` `timer` `toolbox` `trend` `users` `video` `wrench`
 
-  Read the live list from `PLUGIN_ICON_NAMES` in `apps/desktop/src/renderer/components/plugins/pluginIcons.tsx` — it is exported for this skill. **Name a token and the picture cannot differ between clients**; name anything else and you get the puzzle piece, which is what a plugin looks like when it looks unfinished.
+  And five **brand tokens**, for a plugin whose whole subject is one vendor's product:
+
+  `brand:claude` `brand:codex` `brand:cursor` `brand:github` `brand:openai`
+
+  A brand token draws that vendor's real mark — the same one ADE already draws for the provider elsewhere — instead of a generic glyph. The set is closed and small on purpose: a vendor is only in it when every client already ships artwork for it, so there is no `brand:linear`, and there will be no new one without a logo on desktop AND iOS. `brand:anything-else` is not a special case; it is an unknown token and draws the puzzle piece like any other.
+
+  Read the live list from `PLUGIN_ICON_NAMES` in `apps/desktop/src/renderer/components/plugins/pluginIcons.tsx` — it is exported for this skill, and `PLUGIN_BRAND_ICON_NAMES` next to it is the brand half on its own. **Name a token and the picture cannot differ between clients**; name anything else and you get the puzzle piece, which is what a plugin looks like when it looks unfinished.
 
 ## Phase 2 — Build, install, verify
 

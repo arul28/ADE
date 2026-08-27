@@ -192,6 +192,13 @@ private struct PluginVocabBadgeView: View {
   let badge: PluginVocabBadge
 
   var body: some View {
+    // Symbol tokens only, and deliberately so. `ADEGlassChip` draws its glyph
+    // at 8pt through `Image(systemName:)`, and a `brand:` token resolves to a
+    // 24pt vector asset that has no honest reading at that size — a vendor's
+    // mark inside a status pill is a smudge, not a logo. A brand token here
+    // therefore lands on the same branch an unrecognised token does and the
+    // chip degrades to its text-only form, which is exactly what this call site
+    // has always done when it cannot draw an icon.
     if let icon = PluginSymbol.symbol(badge.icon) {
       ADEGlassChip(icon: icon, text: badge.text, tint: badge.tone.color)
     } else {
@@ -354,9 +361,12 @@ private struct PluginVocabListRow: View {
 
   private var content: some View {
     HStack(spacing: 10) {
-      if let icon = PluginSymbol.symbol(item.icon) {
-        Image(systemName: icon)
-          .font(.system(size: 13, weight: .semibold))
+      if PluginSymbol.drawsIcon(item.icon) {
+        // The tone colour reaches a symbol token and passes over a `brand:` one:
+        // a vendor's mark carries its own colours and tinting it to the row's
+        // tone would flatten it. The fixed 18pt column keeps the two kinds in
+        // the same place either way.
+        PluginSymbol.glyph(item.icon, fallback: "puzzlepiece.extension", pointSize: 13)
           .foregroundStyle(item.tone.color)
           .frame(width: 18)
       }
@@ -426,9 +436,8 @@ private struct PluginVocabRowActionButton: View {
       HStack(spacing: 5) {
         if isBusy {
           ProgressView().controlSize(.mini)
-        } else if let icon = PluginSymbol.symbol(entry.icon) {
-          Image(systemName: icon)
-            .font(.system(size: 10, weight: .semibold))
+        } else if PluginSymbol.drawsIcon(entry.icon) {
+          PluginSymbol.glyph(entry.icon, fallback: "puzzlepiece.extension", pointSize: 10)
         }
         Text(entry.label)
           .font(.caption2.weight(.semibold))
@@ -477,8 +486,12 @@ private struct PluginVocabRowOverflowMenu: View {
           ADEHaptics.light()
           store.perform(entry.action)
         } label: {
-          if let icon = PluginSymbol.symbol(entry.icon) {
-            Label(entry.label, systemImage: icon)
+          if PluginSymbol.drawsIcon(entry.icon) {
+            Label {
+              Text(entry.label)
+            } icon: {
+              PluginSymbol.image(entry.icon, fallback: "puzzlepiece.extension")
+            }
           } else {
             Text(entry.label)
           }

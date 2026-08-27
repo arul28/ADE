@@ -4,10 +4,13 @@ import SwiftUI
 ///
 /// A surface listed here is a screen this app already ships — the Linear pane is
 /// hand-written SwiftUI, not a plugin panel — but the plugin decides whether it
-/// exists at all. Uninstalling the plugin takes every entry point for that
-/// screen out of the product: button, sheet, deep link, copy-a-link row. A
-/// hidden button is not access control, so each entry point checks rather than
-/// trusting the one before it.
+/// exists at all. Which way that decision runs is the surface's
+/// ``PluginBuiltinSurface/presence``: an `.enables` surface exists only while its
+/// plugin does, a `.supersedes` surface exists only while its plugin does NOT,
+/// because the plugin ships a replacement and the user must never be offered
+/// both. Either way the answer reaches every entry point for that screen —
+/// button, sheet, deep link, copy-a-link row. A hidden button is not access
+/// control, so each entry point checks rather than trusting the one before it.
 ///
 /// The list mirrors `PLUGIN_BUILTIN_SURFACE_IDS` in
 /// `apps/desktop/src/shared/plugins/manifest.ts`, which is the source of truth
@@ -16,9 +19,10 @@ import SwiftUI
 /// id here that no manifest declares gates nothing, and a manifest surface
 /// missing here would ship un-gated on the phone.
 ///
-/// Only `linear` has a screen on iOS today. The rest are listed because the list
-/// is closed and shared, not because this app draws them — the phone has no
-/// Graph, Review, History, iOS-Simulator or App-Control screen to hide.
+/// Only `linear` and `cursor-cloud` have a screen on iOS today. The rest are
+/// listed because the list is closed and shared, not because this app draws
+/// them — the phone has no Graph, Review, History, iOS-Simulator or App-Control
+/// screen to hide.
 enum PluginBuiltinSurface: String, CaseIterable {
   case graph
   case review
@@ -26,6 +30,7 @@ enum PluginBuiltinSurface: String, CaseIterable {
   case linear
   case iosSimulator = "ios"
   case appControl = "app-control"
+  case cursorCloud = "cursor-cloud"
 
   /// The plugin that must be installed and enabled for this surface to exist.
   /// Matches the `name` field of each manifest under `plugins/`, which is the
@@ -38,8 +43,51 @@ enum PluginBuiltinSurface: String, CaseIterable {
     case .linear: return "ade-linear"
     case .iosSimulator: return "ade-ios-sim"
     case .appControl: return "ade-app-control"
+    case .cursorCloud: return "ade-cursor-cloud"
     }
   }
+
+  /// Which way round the owner plugin and the compiled screen relate.
+  ///
+  /// Mirrors `PLUGIN_BUILTIN_SURFACE_PRESENCE` in
+  /// `apps/desktop/src/shared/plugins/manifest.ts`, and it exists because the
+  /// two relationships are opposites and a single boolean cannot carry both.
+  ///
+  /// See ``PluginSurfacePresence`` for what each polarity means at render time.
+  /// The reason a surface picks one rather than the other is a product fact
+  /// about who draws the screen: `ade-linear` is the *only* reason a Linear pane
+  /// exists at all, while `ade-cursor-cloud` REPLACES a fleet pane this app has
+  /// shipped compiled since before the plugin existed. Uninstalling the former
+  /// removes a feature; uninstalling the latter must hand the feature back.
+  var presence: PluginSurfacePresence {
+    switch self {
+    case .graph, .review, .history, .linear, .iosSimulator, .appControl:
+      return .enables
+    case .cursorCloud:
+      return .supersedes
+    }
+  }
+}
+
+/// The two directions a plugin can relate to a compiled surface.
+///
+/// The distinction is entirely about which way the *unknowns* fall, and the
+/// unknowns are the common case: a cold launch before the first
+/// `plugins.presenceList` reply, a host too old to answer it, a dropped socket,
+/// the instant after attaching to a different machine.
+enum PluginSurfacePresence: Equatable {
+  /// The plugin is the only reason the screen exists. Visible ONLY on a
+  /// positive answer — every unknown hides, because an entry point that opens a
+  /// screen the attached machine cannot serve reads as a broken app.
+  case enables
+
+  /// The plugin REPLACES a screen this app already ships. Visible UNLESS a
+  /// positive answer says the owner is installed and enabled — every unknown
+  /// shows, because the built-in is what the product has always done and a
+  /// machine without the plugin (or a phone that has not heard back yet) must
+  /// behave exactly as it did before the plugin existed. Hiding on an unknown
+  /// would delete a shipped feature every time the socket blinked.
+  case supersedes
 }
 
 /// What the gate needs from the sync layer, and nothing more. Narrow on purpose
@@ -60,11 +108,16 @@ protocol PluginPresenceGateSyncing: AnyObject {
 /// Answers one question: is plugin `<id>` installed and enabled on the machine
 /// this phone is attached to, right now.
 ///
-/// **Hidden is the default and every unknown collapses into it.** Before the
-/// first reply, after a failed reply, on a host too old to know the action, and
-/// the moment the phone attaches to a different machine — all hidden. The
+/// **Not-installed is the default and every unknown collapses into it.** Before
+/// the first reply, after a failed reply, on a host too old to know the action,
+/// and the moment the phone attaches to a different machine — all "no". The
 /// alternative is an entry point that opens a screen the machine cannot serve,
 /// which reads as a broken app rather than as an uninstalled plugin.
+///
+/// That default is about the PLUGIN, not about pixels, and the two are only the
+/// same thing for a surface the plugin `.enables`. A surface the plugin
+/// `.supersedes` reads the identical default and draws the opposite way — see
+/// ``drawsBuiltin(_:)``, which is what every gated entry point should call.
 ///
 /// Availability comes from the ATTACHED MACHINE, never from the synced
 /// `plugin_presence` mirror: that table carries rows for every machine on the
@@ -109,6 +162,47 @@ final class PluginPresenceGate: ObservableObject {
 
   func owns(_ surface: PluginBuiltinSurface) -> Bool {
     isInstalled(surface.ownerPluginId)
+  }
+
+  /// The render-time answer to "is ADE's OWN compiled version of this surface
+  /// still part of the product on this phone".
+  ///
+  /// This is the question every built-in entry point actually has, and it is not
+  /// the same question ``owns(_:)`` answers. `owns` says whether the plugin is
+  /// there; whether that makes the compiled screen appear or disappear depends
+  /// on ``PluginBuiltinSurface/presence``:
+  ///
+  /// - `.enables` — the plugin is the whole reason the screen exists, so the
+  ///   built-in draws only when the plugin is positively known to be installed
+  ///   and enabled. Identical to `owns(_:)`, which is why Linear's callers are
+  ///   unchanged and can keep calling `owns` directly.
+  /// - `.supersedes` — the plugin replaces a screen this app already ships, so
+  ///   the built-in draws unless we positively know the plugin is there. Every
+  ///   unknown — no answer yet, a host too old to be asked, a failed call, the
+  ///   gap right after attaching to another machine — leaves the built-in up,
+  ///   because that is exactly how the app behaved before the plugin existed and
+  ///   a machine without the plugin must not lose the feature to a slow socket.
+  ///
+  /// The two are never on screen at once. The plugin's own entry point is drawn
+  /// from ``PluginEntryListModel``, which lists nothing until `refresh()` has
+  /// filled `installedPlugins` from a real reply — the same list this reads. So
+  /// the instant the plugin appears in the entry menu is the instant this starts
+  /// returning false for the surface it supersedes, and before that reply the
+  /// plugin entry is absent while the built-in is present.
+  ///
+  /// There is deliberately no `await` twin for `.supersedes`. The one-shot form
+  /// exists for decisions with no second chance — a deep link is consumed once —
+  /// and iOS has no Cursor Cloud deep link. A view that renders before the answer
+  /// lands simply re-renders when it does, because `installedPlugins` is
+  /// `@Published`. Add the awaited twin alongside the first such entry point,
+  /// not before it.
+  func drawsBuiltin(_ surface: PluginBuiltinSurface) -> Bool {
+    switch surface.presence {
+    case .enables:
+      return owns(surface)
+    case .supersedes:
+      return !owns(surface)
+    }
   }
 
   /// The one-shot answer, for decisions with no second chance: a deep link is

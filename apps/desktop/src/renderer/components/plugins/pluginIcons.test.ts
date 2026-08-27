@@ -1,11 +1,16 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Claude, Codex, Cursor, Github, OpenAI } from "@lobehub/icons";
 import { describe, expect, it } from "vitest";
 
 import { MARKETPLACE_LOCAL_INDEX } from "./marketplaceLocalIndex";
 import {
   DEFAULT_PLUGIN_ICON,
+  PLUGIN_BRAND_ICON_NAMES,
   PLUGIN_ICON_NAMES,
   PLUGIN_IDENTITY_COLORS,
   PLUGIN_IDENTITY_GLYPHS,
+  isPluginBrandIconName,
   officialPluginLogo,
   pluginIcon,
   pluginIdentity,
@@ -213,5 +218,79 @@ describe("the official set's identities", () => {
     // Themes share the palette glyph on purpose, so the pair is what has to be
     // distinct — a reader tells them apart by colour.
     expect(new Set(looks).size).toBe(officials.length);
+  });
+});
+
+/**
+ * The brand tokens, and the one thing that makes them worth having: they draw
+ * the SAME mark the rest of the product draws.
+ *
+ * A token that resolved to a hand-copied SVG would be a second source of truth
+ * for a logo, and the two would drift the first time a vendor refreshed theirs.
+ * These assertions compare the rendered output against the vendor component
+ * `ToolLogos`/`ProviderLogos` already use, so a brand token can only ever be
+ * that component.
+ */
+describe("brand icon tokens", () => {
+  const MARKS = {
+    "brand:claude": Claude,
+    "brand:codex": Codex,
+    "brand:cursor": Cursor,
+    "brand:github": Github,
+    "brand:openai": OpenAI,
+  } as const;
+
+  it("ships exactly the closed set, and publishes it for authors", () => {
+    expect([...PLUGIN_BRAND_ICON_NAMES]).toEqual([
+      "brand:claude",
+      "brand:codex",
+      "brand:cursor",
+      "brand:github",
+      "brand:openai",
+    ]);
+    for (const name of PLUGIN_BRAND_ICON_NAMES) {
+      expect(PLUGIN_ICON_NAMES, `${name} is not offered to authors`).toContain(name);
+      expect(isPluginBrandIconName(name)).toBe(true);
+    }
+  });
+
+  it("draws the same mark the rest of the product draws", () => {
+    for (const [token, Mark] of Object.entries(MARKS)) {
+      const Token = pluginIcon(token);
+      expect(renderToStaticMarkup(createElement(Token, { size: 18 })), token)
+        .toContain(renderToStaticMarkup(createElement(Mark, { size: 18 })));
+    }
+  });
+
+  it("takes Phosphor's props without leaking weight onto the svg", () => {
+    // Every caller renders the result as `<Icon size weight color />`. `weight`
+    // has no meaning for a logo and React warns if it reaches an element, so the
+    // wrapper must swallow it rather than spread it.
+    const markup = renderToStaticMarkup(
+      createElement(pluginIcon("brand:cursor"), { size: 11, weight: "regular", color: "#fff" }),
+    );
+    expect(markup).not.toContain("weight");
+    expect(markup).toContain("#fff");
+  });
+
+  it("degrades an unknown brand token exactly like any other unknown token", () => {
+    for (const name of ["brand:linear", "brand:", "brand:nope", "brand", "cursor"]) {
+      expect(pluginIcon(name), `${name} resolved to something`).toBe(DEFAULT_PLUGIN_ICON);
+      expect(isPluginBrandIconName(name)).toBe(false);
+    }
+  });
+
+  it("lets a manifest name one as its published identity", () => {
+    const identity = pluginIdentity({ pluginId: "ade-cursor-cloud", icon: "brand:cursor" });
+    expect(identity.Icon).toBe(pluginIcon("brand:cursor"));
+    // Not the derived glyph: a named token that resolves must win, which is the
+    // whole reason `pluginIdentity` has to know about this map too.
+    expect(identity.Icon).not.toBe(pluginIdentity({ pluginId: "ade-cursor-cloud" }).Icon);
+  });
+
+  it("gives the Cursor Cloud plugin the Cursor mark in the bundled catalogue", () => {
+    const listing = MARKETPLACE_LOCAL_INDEX.find((entry) => entry.pluginId === "ade-cursor-cloud");
+    expect(listing?.icon).toBe("brand:cursor");
+    expect(pluginIdentity(listing!).Icon).toBe(pluginIcon("brand:cursor"));
   });
 });

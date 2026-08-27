@@ -174,7 +174,7 @@ import {
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
 import { deriveChatInfoSnapshot, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
-import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
+import { BUILTIN_COMMANDS, paletteCommands, parseCommand, slashCommandUnavailableSurface } from "./commands";
 import {
   resolveSessionTarget,
   resolveSnoozeChoice,
@@ -3724,6 +3724,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => mergePluginKeybindings(pluginKeybindingRoster, keybindings),
     [keybindings, pluginKeybindingRoster],
   );
+
+  /**
+   * The plugin roster as the shared built-in-surface gate wants it.
+   *
+   * The same rows the keybinding matrix reads, narrowed to the two fields the
+   * gate needs. An empty roster — before the first poll, on a host with no
+   * plugin support, after a failed read — is the "cannot know" case, and the
+   * gate resolves it per surface: a superseded surface such as Cursor Cloud
+   * stays available, so the terminal is unchanged on a machine that has no
+   * plugins at all.
+   */
+  const pluginInstallRecords = useMemo(
+    () => pluginKeybindingRoster.map((plugin) => ({
+      pluginId: plugin.pluginId,
+      enabled: plugin.enabled,
+    })),
+    [pluginKeybindingRoster],
+  );
   const pluginKeybindingRowsRef = useRef<ClaudeKeybinding[]>([]);
   pluginKeybindingRowsRef.current = mergedKeybindings.pluginBindings;
   const loggedKeybindingRefusalsRef = useRef<Set<string>>(new Set());
@@ -5479,7 +5497,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const slashComposerTrigger = activeComposerTrigger?.type === "slash" ? activeComposerTrigger : null;
   const slashRows = useMemo(() => (
     slashComposerTrigger
-      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, { provider: activeCommandProvider })
+      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, { provider: activeCommandProvider, installedPlugins: pluginInstallRecords })
       : []
   ), [activeCommandProvider, slashComposerTrigger, slashCommands]);
   // Mid-sentence slash triggers complete into the draft on Enter instead of
@@ -5488,7 +5506,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     && !composerTriggerSpansWholeDraft(prompt, slashComposerTrigger);
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
     if (!commandPaletteOpen) return [];
-    const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider }).map((command) => ({
+    const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider, installedPlugins: pluginInstallRecords }).map((command) => ({
       key: `command:${command.name}`,
       kind: "command" as const,
       label: command.argumentHint ? `${command.name} ${command.argumentHint}` : command.name,
@@ -11449,6 +11467,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (name === "/cloud") {
+      // A hidden palette row is not access control: `/cloud` can still be typed
+      // in full, restored from history, or arrive from a keybinding. The gate is
+      // checked here as well, and it names the plugin so the refusal reads as a
+      // move rather than a breakage.
+      if (slashCommandUnavailableSurface(name, pluginInstallRecords)) {
+        setRightPane({
+          kind: "details",
+          title: "Cloud agents",
+          body: "The Cursor Cloud plugin owns this surface on this machine. Open it from the plugin instead.",
+        });
+        setRightOpen(true);
+        return;
+      }
       setRightPane({
         kind: "list",
         title: "Cloud agents",
@@ -18729,6 +18760,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               provider={activeCommandProvider}
               width={paletteOverlayWidth}
               maxRows={slashPaletteHeightBudget}
+              installedPlugins={pluginInstallRecords}
             />
           </Box>
         ) : null}

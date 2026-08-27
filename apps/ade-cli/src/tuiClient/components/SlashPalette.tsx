@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import type { AgentChatProvider, AgentChatSlashCommand } from "../../../../desktop/src/shared/types/chat";
 import { paletteCommands, type CommandPlacement } from "../commands";
+import type { BuiltinSurfaceInstallRecord } from "../../../../desktop/src/shared/plugins/builtinSurfaces";
 import { theme } from "../theme";
 
 const PLACEMENT_GLYPHS: Record<CommandPlacement, string> = {
@@ -132,6 +133,7 @@ export function SlashPalette({
   provider,
   width,
   maxRows,
+  installedPlugins,
 }: {
   query: string;
   userCommands: AgentChatSlashCommand[];
@@ -139,8 +141,14 @@ export function SlashPalette({
   provider?: AgentChatProvider | null;
   width?: number;
   maxRows?: number;
+  /**
+   * The plugin roster, so a command over a surface a plugin now owns leaves the
+   * palette. Omitted means "not known", which keeps every superseded command
+   * listed — see `builtinCommandAvailable`.
+   */
+  installedPlugins?: readonly BuiltinSurfaceInstallRecord[];
 }) {
-  const rows = paletteCommands(query, userCommands, { provider });
+  const rows = paletteCommands(query, userCommands, { provider, ...(installedPlugins ? { installedPlugins } : {}) });
   if (!query.startsWith("/")) return null;
   const paletteWidth = clampPaletteWidth(width);
   const visibleRows = slashPaletteVisibleRows(maxRows);

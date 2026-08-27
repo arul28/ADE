@@ -139,6 +139,7 @@ export const PLUGIN_BUILTIN_SURFACE_IDS = [
   "linear",
   "ios",
   "app-control",
+  "cursor-cloud",
 ] as const;
 
 export type PluginBuiltinSurfaceId = (typeof PLUGIN_BUILTIN_SURFACE_IDS)[number];
@@ -146,6 +147,45 @@ export type PluginBuiltinSurfaceId = (typeof PLUGIN_BUILTIN_SURFACE_IDS)[number]
 export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltinSurfaceId {
   return PLUGIN_BUILTIN_SURFACE_IDS.some((id) => id === value);
 }
+
+/**
+ * Which way round the owner plugin and the compiled surface relate.
+ *
+ * Two opposite relationships share this one table, and a single boolean cannot
+ * carry both:
+ *
+ * - `"enables"` — the plugin is the only reason the surface exists. ADE draws
+ *   the compiled page only while the owner is installed and enabled. Every
+ *   unknown hides it, so there is no state in which a surface appears because
+ *   ADE was unsure. This is what Graph, Review, History, Linear, the iOS
+ *   Simulator pane and Electron Control have always done.
+ * - `"supersedes"` — the plugin REPLACES a surface ADE already ships compiled.
+ *   ADE draws the compiled page only while the owner is ABSENT. Every unknown
+ *   SHOWS it, because the built-in is what the product has always done and a
+ *   machine without the plugin must behave exactly as it did before the plugin
+ *   existed. Hiding on an unknown would delete a shipped feature every time the
+ *   registry had not resolved yet.
+ *
+ * The polarity also decides what the manifest may say. A `"supersedes"` surface
+ * is never named by a `surfaces[].builtin` field: that field means "ADE draws
+ * this compiled page in my place", and a plugin that supersedes a surface draws
+ * its own panels instead. See {@link parseSurfaces}, which refuses the
+ * combination rather than producing a rail item that navigates nowhere.
+ *
+ * Keyed by the closed id list above, so adding a gateable surface without
+ * deciding this question does not compile.
+ */
+export const PLUGIN_BUILTIN_SURFACE_PRESENCE: Readonly<
+  Record<PluginBuiltinSurfaceId, "enables" | "supersedes">
+> = {
+  graph: "enables",
+  review: "enables",
+  history: "enables",
+  linear: "enables",
+  ios: "enables",
+  "app-control": "enables",
+  "cursor-cloud": "supersedes",
+};
 
 /**
  * Which gated built-ins the phone has a page for.
@@ -159,6 +199,13 @@ export function isPluginBuiltinSurfaceId(value: unknown): value is PluginBuiltin
  *
  * Keyed by the closed id list above, so adding a gateable surface without
  * deciding this question does not compile.
+ *
+ * `cursor-cloud` records `true` because the phone really does ship a Cursor
+ * Cloud screen, which is the question this table asks. Nothing reads that entry
+ * today: the ceiling only ever applies to a surface a manifest named with
+ * `builtin`, and a `"supersedes"` surface may not be named that way at all — see
+ * {@link PLUGIN_BUILTIN_SURFACE_PRESENCE}. The honest answer is still the one to
+ * record, so a later change that does consult it does not read a lie.
  */
 export const PLUGIN_BUILTIN_SURFACE_MOBILE: Readonly<Record<PluginBuiltinSurfaceId, boolean>> = {
   graph: false,
@@ -167,6 +214,7 @@ export const PLUGIN_BUILTIN_SURFACE_MOBILE: Readonly<Record<PluginBuiltinSurface
   linear: true,
   ios: false,
   "app-control": false,
+  "cursor-cloud": true,
 };
 
 const SURFACE_KINDS: readonly PluginSurfaceKind[] = ["tab", "pane", "webview"];
@@ -848,6 +896,15 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
         // A gate draws nothing; a webview draws everything. Honouring both would
         // ask the client which of the two pages it is looking at.
         ctx.warnings.push(`${label}.builtin cannot be combined with a "webview" surface — ignored`);
+      } else if (PLUGIN_BUILTIN_SURFACE_PRESENCE[requested] === "supersedes") {
+        // `builtin` means "ADE draws its compiled page in my place". A plugin
+        // that SUPERSEDES a surface is doing the opposite — it brings its own
+        // panels and the compiled page steps aside — so honouring the field
+        // here would suppress the plugin's own rail item (see
+        // `pluginOwnsBuiltinTab`) and leave the product with neither page.
+        ctx.warnings.push(
+          `${label}.builtin "${requested}" is a superseded surface — the plugin draws its own panels, so the field is ignored`,
+        );
       } else {
         builtin = requested;
       }

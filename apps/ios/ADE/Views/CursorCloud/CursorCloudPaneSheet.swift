@@ -33,11 +33,25 @@ struct CursorCloudPaneSheet: View {
 /// that do not advertise them (the pane resolves connection state itself — a
 /// missing key renders an honest connect prompt — but no advertisement means
 /// every command would fail).
+///
+/// It also hides once the attached machine has `ade-cursor-cloud` installed and
+/// enabled: that plugin ships its own Cursor Cloud pane, reached through the
+/// puzzle-piece entry menu, and two Cursor Cloud entry points side by side in a
+/// 38pt toolbar slot is the confusion this gate exists to prevent. The check is
+/// repeated here rather than left to the caller because a hidden button is not
+/// access control — the same rule the comments in `PluginPresenceGate.swift`
+/// state, and the reason the sheet in `ContentView` checks a third time.
+///
+/// Note the polarity: this is `drawsBuiltin`, not `owns`. Every unknown — no
+/// answer yet, an old host, a dropped socket — leaves the built-in button up,
+/// so a machine without the plugin behaves exactly as it always has.
 struct CursorCloudPaneToolbarButton: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var pluginGate: PluginPresenceGate
 
   var body: some View {
     if syncService.activeProjectId != nil,
+       pluginGate.drawsBuiltin(.cursorCloud),
        syncService.supportsRemoteAction("ai.cursorCloudFleet") {
       Button {
         ADEHaptics.light()

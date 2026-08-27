@@ -224,7 +224,7 @@ const CURSOR_CLOUD = manifest({
   version: "1.0.0",
   displayName: "Cursor Cloud",
   description: "Launch, watch and adopt Cursor Cloud agents from ADE. Needs a Cursor API key.",
-  icon: "cloud",
+  icon: "brand:cursor",
   accent: "#A78BFA",
   entry: "index.js",
   network: { hosts: ["api.cursor.com"] },
@@ -237,7 +237,7 @@ const CURSOR_CLOUD = manifest({
   chatRuntimes: [{
     id: "cloud-agent",
     displayName: "Cursor Cloud",
-    icon: "cloud",
+    icon: "brand:cursor",
     capabilities: { followUp: true, interrupt: true, hydrate: true, artifacts: true },
   }],
   surfaces: [{
@@ -245,7 +245,7 @@ const CURSOR_CLOUD = manifest({
     id: "fleet",
     title: "Cursor Cloud",
     panelId: "fleet",
-    icon: "cloud",
+    icon: "brand:cursor",
     order: 60,
     mobile: true,
   }],

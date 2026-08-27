@@ -5613,7 +5613,19 @@ export function AgentChatPane({
   }, [draftCursorModelSelectionError, effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
   const cursorCloudApiAvailable = providerConnections?.cursor?.runtimeAvailable === true
     || aiStatus?.availableProviders?.cursor === true;
+  /**
+   * ADE's own launch-to-cloud path, and the single choke point for it in this
+   * pane: the machine-picker's "Cursor Cloud" row, cloud mode, the Advanced menu
+   * and the secrets picker all descend from this one flag.
+   *
+   * The `ade-cursor-cloud` plugin replaces every one of them with its own
+   * composer socket, so the compiled path steps aside while that plugin is
+   * installed and enabled. The predicate answers true for every unknown, so a
+   * machine without the plugin is unchanged.
+   */
+  const cursorCloudSurfaceVisible = useBuiltinSurfaceVisible("cursor-cloud");
   const cursorCloudAvailable = Boolean(laneId)
+    && cursorCloudSurfaceVisible
     && cursorCloudApiAvailable
     && (selectedSession?.provider === "cursor" || (typeof modelId === "string" && modelId.startsWith("cursor/")));
   // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a

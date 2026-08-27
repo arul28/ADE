@@ -1898,6 +1898,23 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     "timer", "toolbox", "trend", "users", "video", "wrench",
   ]
 
+  /// The BRAND half of the same shared list, held separately because it is a
+  /// different kind of token: these resolve to a bundled vendor logo, not to a
+  /// glyph, so every assertion about "this names a real SF Symbol" is false of
+  /// them while they are perfectly correct.
+  ///
+  /// Kept just as literal as the list above, and for the same reason. A brand
+  /// token only belongs on the list when BOTH clients already ship that vendor's
+  /// mark; `brand:linear` is the one that does not, on either side, and adding it
+  /// here would be the "one manifest, two pictures" bug in its quietest form.
+  private static let desktopBrandTokens = [
+    "brand:claude",
+    "brand:codex",
+    "brand:cursor",
+    "brand:github",
+    "brand:openai",
+  ]
+
   func testEveryDesktopIconTokenDrawsSomethingOnThePhone() {
     for token in Self.desktopIconTokens {
       XCTAssertNotNil(
@@ -1916,7 +1933,7 @@ final class PluginVocabularyDecodingTests: XCTestCase {
   /// map, so the identical token drew a mug on iOS and a puzzle piece on the
   /// desktop beside it.
   func testThePhoneDrawsNoTokenDesktopHasNeverHeardOf() {
-    let desktop = Set(Self.desktopIconTokens)
+    let desktop = Set(Self.desktopIconTokens).union(Self.desktopBrandTokens)
     for token in PluginSymbol.tokenNames {
       XCTAssertTrue(
         desktop.contains(token),
@@ -1924,8 +1941,23 @@ final class PluginVocabularyDecodingTests: XCTestCase {
       )
     }
     // Same count both ways, so neither list can drift by an entry the loops
-    // above happen not to reach.
-    XCTAssertEqual(PluginSymbol.tokenNames.count, Self.desktopIconTokens.count)
+    // above happen not to reach. `tokenNames` spans both kinds, so the desktop
+    // side is counted the same way.
+    XCTAssertEqual(
+      PluginSymbol.tokenNames.count,
+      Self.desktopIconTokens.count + Self.desktopBrandTokens.count
+    )
+  }
+
+  /// The brand half of the parity walk, in the desktop → phone direction.
+  func testEveryDesktopBrandTokenDrawsSomethingOnThePhone() {
+    for token in Self.desktopBrandTokens {
+      XCTAssertNotNil(
+        PluginSymbol.brandAsset(token),
+        "`\(token)` is offered to manifest authors on desktop but falls back to the puzzle piece here."
+      )
+    }
+    XCTAssertEqual(PluginSymbol.brandTokenNames, Self.desktopBrandTokens.sorted())
   }
 
   /// Every symbol the map names has to exist in THIS build's SF Symbols
@@ -1933,7 +1965,14 @@ final class PluginVocabularyDecodingTests: XCTestCase {
   /// runtime and draws an empty box beside a label, which looks like the
   /// plugin's fault.
   func testEveryMappedSymbolResolvesOnThisOS() {
-    for token in PluginSymbol.tokenNames {
+    // Walked over the SYMBOL half only. Not a weakening: a brand token has no SF
+    // Symbol by construction, so asking `exists` about it would assert something
+    // false about a correct entry. The brand half gets the equivalent check
+    // against the asset catalogue in the test below, and
+    // `testThePhoneDrawsNoTokenDesktopHasNeverHeardOf` proves the two halves
+    // together account for every token this build maps — so no token can slip
+    // between them unchecked.
+    for token in PluginSymbol.symbolTokenNames {
       let symbol = PluginSymbol.symbol(token)
       XCTAssertNotNil(symbol, "`\(token)` maps to nothing.")
       if let symbol {
@@ -1943,6 +1982,88 @@ final class PluginVocabularyDecodingTests: XCTestCase {
         )
       }
     }
+    XCTAssertEqual(
+      Set(PluginSymbol.symbolTokenNames).union(PluginSymbol.brandTokenNames),
+      Set(PluginSymbol.tokenNames),
+      "Every token must be covered by exactly one of the two kind-specific walks."
+    )
+  }
+
+  /// The brand half's equivalent, and the failure it catches is the same one:
+  /// a map entry naming an imageset nobody added draws an empty box beside a
+  /// label, which reads as the plugin's fault rather than the app's.
+  func testEveryBrandTokenNamesAnAssetThisBundleShips() {
+    for token in PluginSymbol.brandTokenNames {
+      let asset = PluginSymbol.brandAsset(token)
+      XCTAssertNotNil(asset, "`\(token)` maps to nothing.")
+      if let asset {
+        XCTAssertTrue(
+          PluginSymbol.assetExists(asset),
+          "`\(token)` maps to `\(asset)`, which is not in this bundle's asset catalogue."
+        )
+      }
+    }
+  }
+
+  /// The five brand tokens and the mark each one draws, pinned by name.
+  ///
+  /// Pinned rather than merely counted because the mapping is the whole product
+  /// claim: `brand:cursor` on `ade-cursor-cloud` is what puts the real Cursor
+  /// mark in the entry menu, the pane header and the chat header instead of the
+  /// generic cloud the token list could otherwise offer.
+  func testBrandTokensResolveToTheProviderMarksTheAppAlreadyShips() {
+    XCTAssertEqual(PluginSymbol.brandAsset("brand:cursor"), "ProviderCursor")
+    XCTAssertEqual(PluginSymbol.brandAsset("brand:claude"), "ProviderClaude")
+    XCTAssertEqual(PluginSymbol.brandAsset("brand:codex"), "ProviderCodex")
+    XCTAssertEqual(PluginSymbol.brandAsset("brand:openai"), "ProviderOpenAI")
+    XCTAssertEqual(PluginSymbol.brandAsset("brand:github"), "ProviderGitHub")
+
+    // Case and stray whitespace are the author's, not a different icon — the
+    // same normalisation the symbol half applies.
+    XCTAssertEqual(PluginSymbol.brandAsset("  Brand:Cursor "), "ProviderCursor")
+
+    // A brand token is an image, so the symbol lookup must keep saying no: a
+    // caller that reaches for `systemImage:` gets the honest puzzle piece rather
+    // than an asset name handed to `UIImage(systemName:)`, which draws nothing.
+    XCTAssertNil(PluginSymbol.symbol("brand:cursor"))
+    XCTAssertEqual(
+      PluginSymbol.resolve("brand:cursor", fallback: "puzzlepiece.extension"),
+      "puzzlepiece.extension"
+    )
+    XCTAssertTrue(PluginSymbol.drawsIcon("brand:cursor"))
+  }
+
+  /// An unknown brand token is exactly as unknown as any other unknown token.
+  ///
+  /// The `brand:` prefix buys no leniency and there is no "strip the prefix and
+  /// try the asset catalogue" branch. Such a branch would let a manifest name
+  /// any imageset this app happens to bundle — rendering here, puzzling on
+  /// desktop — which is precisely the asymmetry the removed
+  /// `UIImage(systemName:)` passthrough created.
+  func testAnUnknownBrandTokenDegradesToThePuzzlePieceLikeAnyOther() {
+    XCTAssertNil(PluginSymbol.brandAsset("brand:nope"))
+    XCTAssertNil(PluginSymbol.symbol("brand:nope"))
+    XCTAssertFalse(PluginSymbol.drawsIcon("brand:nope"))
+    XCTAssertEqual(
+      PluginSymbol.resolve("brand:nope", fallback: "puzzlepiece.extension"),
+      "puzzlepiece.extension"
+    )
+
+    // Neither side of the list has a Linear mark, so the token an author would
+    // most plausibly guess must stay unknown until both do.
+    XCTAssertNil(PluginSymbol.brandAsset("brand:linear"))
+    XCTAssertFalse(PluginSymbol.drawsIcon("brand:linear"))
+
+    // A raw asset name is not an icon, prefixed or not — the asset-catalogue
+    // twin of `testARawSystemSymbolNameIsNotAnIcon`.
+    XCTAssertNil(PluginSymbol.brandAsset("ProviderCursor"))
+    XCTAssertNil(PluginSymbol.brandAsset("brand:ProviderDroid"))
+    XCTAssertFalse(PluginSymbol.drawsIcon("ProviderCursor"))
+
+    // And the bare vendor name without the namespace stays an ordinary unknown
+    // token, so `brand:` remains the only way to ask for a logo.
+    XCTAssertNil(PluginSymbol.symbol("cursor"))
+    XCTAssertNil(PluginSymbol.brandAsset("cursor"))
   }
 
   /// The bug the retrospective named, pinned so it cannot come back.

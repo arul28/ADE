@@ -120,6 +120,7 @@ describe("manifest builtin surfaces", () => {
       "linear",
       "ios",
       "app-control",
+      "cursor-cloud",
     ]);
   });
 });

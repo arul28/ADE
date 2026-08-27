@@ -4,6 +4,11 @@ import {
   type AgentChatProvider,
   type AgentChatSlashCommand,
 } from "../../../desktop/src/shared/types/chat";
+import {
+  builtinSurfaceDrawn,
+  type BuiltinSurfaceInstallRecord,
+} from "../../../desktop/src/shared/plugins/builtinSurfaces";
+import type { PluginBuiltinSurfaceId } from "../../../desktop/src/shared/plugins/manifest";
 
 /**
  * Providers whose backend accepts this atomic active-turn dispatch mode, read
@@ -53,6 +58,18 @@ export type BuiltinCommand = {
   argumentHint?: string;
   providers?: AgentChatProvider[];
   category?: CommandCategory;
+  /**
+   * A compiled surface an official plugin owns, from the shared table every
+   * client gates against.
+   *
+   * The command leaves the palette and refuses to run whenever that surface is
+   * not part of the product on this machine. It is the terminal's half of the
+   * rule the desktop rail and the phone's toolbar already follow: a plugin is a
+   * whole vertical, so its UI, its verbs and its commands arrive and leave
+   * together, and a `/cloud` that still answers after the plugin replaced it
+   * would just move the confusion into the terminal.
+   */
+  builtin?: PluginBuiltinSurfaceId;
 };
 
 export const BUILTIN_COMMANDS: BuiltinCommand[] = [
@@ -121,7 +138,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/activity", description: "Show account-wide Activity across machines", placement: "right", category: "Nav" },
   { name: "/project", description: "Switch project on this machine", placement: "right", argumentHint: "[name|path]", category: "Nav" },
   { name: "/machines", description: "Hop to another paired ADE machine", placement: "right", argumentHint: "[name]", category: "Nav" },
-  { name: "/cloud", description: "List Cursor Cloud agents for this project", placement: "right", category: "Nav" },
+  { name: "/cloud", description: "List Cursor Cloud agents for this project", placement: "right", category: "Nav", builtin: "cursor-cloud" },
   { name: "/context", description: "Show chat context usage", placement: "right", category: "Nav" },
   { name: "/agents", description: "List Claude agents from user and project config", placement: "right", providers: ["claude"], category: "Nav" },
   { name: "/info", description: "Open active chat info, plan, goal, and agents", placement: "right", category: "Nav" },
@@ -311,14 +328,47 @@ export type PaletteCommand = {
   placement?: CommandPlacement;
 };
 
+/**
+ * Whether a built-in command whose surface a plugin owns may run right now.
+ *
+ * `installedPlugins` is what the drawer's plugin poll already holds. Omitting it
+ * means "this caller cannot know", and the two polarities resolve that unknown
+ * in opposite directions on purpose: a command over a surface the plugin
+ * SUPERSEDES stays available, because the terminal without the plugin must
+ * behave exactly as it did before the plugin existed, while a command over a
+ * surface the plugin ENABLES stays hidden, because there is nothing to open.
+ * `builtinSurfaceDrawn` over an empty roster gives both of those.
+ */
+export function builtinCommandAvailable(
+  command: Pick<BuiltinCommand, "builtin">,
+  installedPlugins: readonly BuiltinSurfaceInstallRecord[] = [],
+): boolean {
+  return !command.builtin || builtinSurfaceDrawn(command.builtin, installedPlugins);
+}
+
+/** The same question for a typed command name, for the dispatch side. */
+export function slashCommandUnavailableSurface(
+  name: string,
+  installedPlugins: readonly BuiltinSurfaceInstallRecord[] = [],
+): PluginBuiltinSurfaceId | null {
+  const key = slashCommandKey(name);
+  const command = BUILTIN_COMMANDS.find((entry) => slashCommandKey(entry.name) === key);
+  if (!command?.builtin) return null;
+  return builtinCommandAvailable(command, installedPlugins) ? null : command.builtin;
+}
+
 export function paletteCommands(
   query: string,
   userCommands: AgentChatSlashCommand[] = [],
-  options: { provider?: AgentChatProvider | null } = {},
+  options: {
+    provider?: AgentChatProvider | null;
+    installedPlugins?: readonly BuiltinSurfaceInstallRecord[];
+  } = {},
 ): PaletteCommand[] {
   const normalizedQuery = query.trim().toLowerCase();
   const queryToken = normalizedQuery.replace(/^\//, "");
   const builtins = BUILTIN_COMMANDS
+    .filter((command) => builtinCommandAvailable(command, options.installedPlugins ?? []))
     .filter((command) => !command.providers?.length || (options.provider ? command.providers.includes(options.provider) : true))
     .map((command) => ({
       name: command.name,

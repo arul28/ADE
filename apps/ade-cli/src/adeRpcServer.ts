@@ -58,6 +58,7 @@ import { readInstalledBuiltinSurfaces } from "../../desktop/src/main/services/pl
 import {
   buildGatedDomainDenial,
   resolveDisabledActionDomains,
+  resolveHiddenActionNames,
 } from "../../desktop/src/main/services/plugins/gatedActionDomains";
 import { subscribeToPluginChanges } from "../../desktop/src/main/services/plugins/pluginEvents";
 import {
@@ -1404,6 +1405,21 @@ function disabledAdeActionDomainSet(): ReadonlySet<string> {
 
 function refreshDisabledAdeActionDomains(): void {
   disabledAdeActionDomains = null;
+  hiddenAdeActionNames = null;
+}
+
+/**
+ * The same memo for the name-level catalog filter.
+ *
+ * Separate from the domain set because the two answer different questions — a
+ * domain is refused at dispatch, a name is only withheld from the catalog — but
+ * invalidated together, since both are read out of the same `state.json`.
+ */
+let hiddenAdeActionNames: ReadonlySet<string> | null = null;
+
+function hiddenAdeActionNameSet(): ReadonlySet<string> {
+  hiddenAdeActionNames ??= resolveHiddenActionNames();
+  return hiddenAdeActionNames;
 }
 
 subscribeToPluginChanges((event) => {
@@ -3835,12 +3851,18 @@ async function runTool(args: {
       ? (Object.keys(services) as AdeActionDomain[])
       : [domain as AdeActionDomain];
     const exposedDomains = domains.filter((entry) => !disabledAdeActionDomainSet().has(entry));
+    // Names withheld one at a time, for a surface whose verbs live in a domain
+    // ADE keeps. Cursor Cloud is the only one today: `ai` still carries the
+    // model picker and every API-key verb, so the domain cannot leave, but the
+    // fleet verbs must stop being advertised once the plugin owns that surface.
+    const hiddenActionNames = hiddenAdeActionNameSet();
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
     const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
       return listAllowedAdeActionNames(entry, service)
+        .filter((action) => !hiddenActionNames.has(`${entry}.${action}`))
         // An approval-gated action stays listed for a lesser caller: the whole
         // point is that they may ask, and an agent cannot ask for a verb it was
         // never told exists.

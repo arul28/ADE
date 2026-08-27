@@ -44,6 +44,7 @@ import {
   builtinSurfaceOwner,
   builtinSurfaceOwnerForPlugin,
   builtinSurfaceOwnerForRoute,
+  builtinSurfacePresence,
   type BuiltinSurfaceOwner,
 } from "../../../shared/plugins/builtinSurfaces";
 import type { InstalledPlugin } from "../../lib/pluginRuntimeBridge";
@@ -68,6 +69,12 @@ export function builtinGateForSurface(builtinId: PluginBuiltinSurfaceId): Builti
 export function claimedBuiltinGate(plugin: InstalledPlugin): BuiltinTabGate | null {
   const gate = builtinGateForPlugin(plugin.pluginId);
   if (!gate) return null;
+  // A plugin that SUPERSEDES a surface claims nothing to draw. It brings its own
+  // tab, and the rail must show that tab rather than suppress it in favour of a
+  // compiled page this plugin exists to replace — which is what the legacy-host
+  // fallback below would otherwise do, since such a plugin never declares
+  // `builtin` on any of its surfaces.
+  if (builtinSurfacePresence(gate.builtinId) === "supersedes") return null;
   const claims = plugin.tabs.some((tab) => tab.builtin === gate.builtinId);
   // A host that predates the `builtin` field reports the surface without it.
   // The registered owner is trusted in that case: the alternative is a duplicate
@@ -98,7 +105,18 @@ export function isBuiltinSurfaceVisible(
   builtinId: PluginBuiltinSurfaceId,
   input: BuiltinGateInput,
 ): boolean {
-  if (!input.pluginSupport || !input.pluginsLoaded) return false;
+  const resolved = input.pluginSupport && input.pluginsLoaded;
+  if (builtinSurfacePresence(builtinId) === "supersedes") {
+    // The mirror image, and the unknowns fall the other way on purpose. A
+    // superseded surface is one ADE has always shipped, so an unresolved
+    // registry, a host with no plugin support and an uninstalled owner all mean
+    // "draw it" — the product without the plugin must be exactly the product it
+    // was before the plugin existed. Only a positive "the owner is here" takes
+    // it away, which is also the moment the plugin's own entry point appears, so
+    // the two are never on screen together.
+    return !(resolved && builtinSurfaceInstalled(builtinId, input.plugins));
+  }
+  if (!resolved) return false;
   return builtinSurfaceInstalled(builtinId, input.plugins);
 }
 

@@ -824,7 +824,7 @@ import type { CursorCloudIngressService } from "../automations/cursorCloudIngres
 import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
-import { resolveDisabledActionDomains } from "../plugins/gatedActionDomains";
+import { resolveDisabledActionDomains, resolveHiddenActionNames } from "../plugins/gatedActionDomains";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ADE_WELCOME_VIDEO_ID, ADE_WELCOME_VIDEO_VERSION } from "../../../shared/welcomeVideo";
 
@@ -6204,12 +6204,17 @@ export function registerIpc({
     const services = getAdeActionDomainServices(ctx as unknown as AdeRuntime);
     const entries: AdeActionRegistryEntry[] = [];
     // A domain whose plugin is not installed is not in this ADE, so it is not
-    // in the picker either — the same rule the rail follows for the pane.
+    // in the picker either — the same rule the rail follows for the pane. The
+    // name-level set is the same rule for a surface whose verbs share a domain
+    // ADE keeps: the built-in Cursor Cloud verbs leave the picker the moment the
+    // plugin that replaces them arrives.
     const disabledDomains = resolveDisabledActionDomains();
+    const hiddenActionNames = resolveHiddenActionNames();
     for (const domain of Object.keys(ADE_ACTION_ALLOWLIST) as Array<keyof typeof ADE_ACTION_ALLOWLIST>) {
       const service = services[domain];
       if (!service || disabledDomains.has(domain)) continue;
-      const actionNames = listAllowedAdeActionNames(domain, service as Record<string, unknown>);
+      const actionNames = listAllowedAdeActionNames(domain, service as Record<string, unknown>)
+        .filter((name) => !hiddenActionNames.has(`${domain}.${name}`));
       if (actionNames.length === 0) continue;
       entries.push({
         domain,
