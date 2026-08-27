@@ -396,7 +396,7 @@ Three shapes that fit the platform well:
 
 **Churning synced values spends the user's relay allowance.** Per-machine daily relay ceilings exist and a machine past one loses relay transport until midnight UTC — numbers and the rule in *Budgets*. Direct and LAN sync are never counted. Read it as etiquette rather than a limit you will hit: publish when something changed, not on a loop.
 
-**The vocabulary is thirteen components with hard ceilings** — 200 nodes, depth 8, 64 KiB per schema, plus the per-component caps in *Vocabulary limits*. No expressions, conditionals, formatting strings or callbacks. A component this build has never heard of renders a marker naming it, and a panel over any ceiling renders its required `fallback` instead — which is why `fallback` is mandatory rather than nice to have. What draws where differs per surface: *Per-surface support* is the authority, and worth reading before you design a panel around a `chart`.
+**The vocabulary is fourteen components with hard ceilings** — 200 nodes, depth 8, 64 KiB per schema, plus the per-component caps in *Vocabulary limits*. No expressions, conditionals, formatting strings or callbacks. A component this build has never heard of renders a marker naming it, and a panel over any ceiling renders its required `fallback` instead — which is why `fallback` is mandatory rather than nice to have. What draws where differs per surface: *Per-surface support* is the authority, and worth reading before you design a panel around a `chart`.
 
 **A `webview` page is desktop-only and sandboxed.** Its own origin, `script-src 'self'`, no Node, no `require`, no raw IPC, and no `window.ade` — the `window.adePlugin` bridge is the entire capability, and even `collections.put` through it is refused on the desktop app (write through `invoke` instead). iOS, the web client and the TUI render the surface's `panelId` panel in its place. **There is no custom native UI on iOS or the TUI at all**; declarative panels are the only cross-device UI that exists.
 
@@ -474,6 +474,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
   "theme": { "tokens": { "dark": { "--color-accent": "#7C6FF0" }, "light": {} } },
   "network": { "hosts": ["api.cursor.com"] },
   "providerKeys": ["cursor"],
+  "projectSecrets": ["STRIPE_API_KEY"],
   "webhookIngress": [{ "id": "default", "label": "Build events" }],
   "official": false
 }
@@ -503,6 +504,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `theme` | no | Token sets — see *Themes* |
 | `network` | no | `{"hosts": ["api.cursor.com"]}`. Hosts your plugin's process may contact. Max **8**, lowercase, no scheme, no port, no IP. One leading `*.` wildcard is allowed and matches any subdomain depth. **Omit it and your plugin reaches nothing** — see *Outbound network* |
 | `providerKeys` | no | `["cursor"]`. Providers whose ADE-stored API key you read through `ade.secrets.getProviderKey`. Max **4**, from the api-key store's own ids — see *Provider keys* |
+| `projectSecrets` | no | `["STRIPE_API_KEY"]`. Names of **this project's** ADE secrets you read through `ade.actions.invoke("project_secret", "get", { name })`. Max **6**. **Omit it and you read none** — see *Project secrets* |
 | `webhookIngress[]` | no | `{id, label, description?, verify?}`. Webhook channels ADE receives for you at its relay. Max **4**; `id` is a URL path segment, so `^[a-z][a-z0-9-]{0,31}$` — see *Webhooks* |
 | `official` | no | **Not a trust claim.** The Official badge and the checksum rule come from the registry's curated file, never from the manifest. Locally the field does exactly one thing: a surface may carry `builtin` only on a manifest that sets it — see *What you can build* |
 
@@ -552,6 +554,26 @@ if (!key) return { text: "Add a Cursor API key in Settings to use this." };
 - The install card says "Uses your Cursor API key". Adding a provider in a later version asks the person again.
 
 This is the user's credential, given to ADE and lent to you. Hold it for the call that needs it. Do not copy it into `ade.secrets`, a collection, a panel schema or a log — the user rotates it in Settings, and a second copy is a copy that goes stale and a credential in a place they cannot see.
+
+### Project secrets
+
+The project's own secrets — the ones the user imported from a `.env` and manages in ADE — are read **by name, and only a name you declared**:
+
+```json
+"projectSecrets": ["STRIPE_API_KEY"]
+```
+
+```js
+const secret = await ade.actions.invoke("project_secret", "get", { name: "STRIPE_API_KEY" });
+```
+
+- **Undeclared is `not_permitted`**, and the refusal names the secret and the `projectSecrets` field to add it to. Declaring nothing means you read nothing; that is the default and it is the right one for almost every plugin.
+- **`get` is the only verb you get.** `list`, `set`, `delete`, `previewEnvImport` and `importEnv` are refused to every plugin, declared or not. `list` is refused because it reads back the names of the secrets you did *not* declare; the writers are refused because the project's `.env` is the user's, not yours.
+- **Your own secrets go in `ade.secrets`**, which is a per-plugin encrypted namespace nothing else can read. Use it for the tokens your plugin obtains itself.
+- The install card says "Reads this project's secrets (.env): STRIPE_API_KEY". Adding a name in a later version asks the person again.
+- `ade plugin doctor <id>` prints a **Project secrets** rung with the declared names. It never says whether a secret is set — that is the project's business, not the report's.
+
+Prefer a plugin `setting` of kind `secret` when the value is yours to collect. Reach for `projectSecrets` only when the value is genuinely the project's and the user already keeps it in ADE.
 
 ### Webhooks
 
@@ -769,10 +791,11 @@ A panel is a JSON document. `v` is the vocabulary version, `fallback` is **requi
 | `divider` | `label` |
 | `keyValue` | **`rows[]` or `bind`**, `emptyText`. Row: **`key`**, `value`, `tone` |
 | `emptyState` | **`title`**, `description`, `icon`, `action` `{label, onPress}` |
+| `segmented` | **`stateKey`**, **`options[]`** (2–8) of `{value, label?, badge?}`, `label`, `default`, `style` (`segmented`\|`toggle`), `onChange`. The one control that holds state — see *A filter with no round trip* |
 
 Tones are `neutral`, `accent`, `success`, `warning`. **There is no red.** Any red-ish value you write (`danger`, `error`, `fail`) folds to `warning` — the house rule cannot be bypassed by a payload.
 
-`bind` reads your own `plugin_collections` rows: `{collection, keyPrefix?, limit?, allowActions?}`. The rows must **already be in render shape** for the component that binds them — a `list` binding reads `{title, subtitle?, …}` values, a `table` binding reads column-keyed records. The renderer does no reshaping.
+`bind` reads your own `plugin_collections` rows: `{collection, keyPrefix?, limit?, allowActions?, where?}`. The rows must **already be in render shape** for the component that binds them — a `list` binding reads `{title, subtitle?, …}` values, a `table` binding reads column-keyed records. The renderer does no reshaping.
 
 `onPress` is `{action, args?, confirm?}`. `args` is flat scalars only (nested objects are dropped — that is where "data, never code" would start to leak). `confirm` makes the client ask before dispatching, on **every** client — a list row asks exactly as a button does.
 
@@ -801,6 +824,68 @@ Per-client: desktop, the web client and iOS draw all of it, with `overflow` behi
 
 A row naming anything outside that list still renders; it is simply not pressable. Max **16** ids, deduplicated. An empty `allowActions` means the same as none.
 
+### A filter with no round trip
+
+A fleet list needs a status filter. Built out of what the vocabulary had, that was a `form`, a submit button, a `panels.update()` from your plugin and a refetch — three taps and a round trip for every change, and the selection did not survive the re-render unless you baked it back into `field.value`.
+
+One control and one clause replace all of it. A **`segmented`** node owns a named piece of client state, and a binding's **`where`** keeps the rows that match it. Changing the control re-renders from rows already in memory: no IPC, no fetch, no call into your plugin.
+
+```json
+{
+  "component": "stack", "direction": "horizontal", "gap": "md", "wrap": true,
+  "children": [
+    { "component": "segmented", "stateKey": "statusFilter", "label": "Status", "default": "",
+      "options": [
+        { "value": "", "label": "All", "badge": 12 },
+        { "value": "active", "label": "Active", "badge": 4 },
+        { "value": "failed", "label": "Failed", "badge": 1 }
+      ] }
+  ]
+}
+```
+
+```json
+{ "component": "list",
+  "bind": {
+    "collection": "fleet",
+    "allowActions": ["open-agent"],
+    "where": [{ "field": "statusGroup", "equals": { "$state": "statusFilter" } }]
+  },
+  "emptyText": "No agents match this filter." }
+```
+
+Write `statusGroup` onto every row when you publish it. **The client only compares strings** — it never computes one, which is what keeps this inside "data, never code".
+
+**An empty `value` means unset, and that is how you write "All".** A comparison whose state key is unset — or names a key no control declares — is *inactive*, not false: it drops out of its `and`/`or`, a `not` of it is inactive too, and a `where` with nothing active keeps every row. That one rule is why the option list needs no second concept for "turn this filter off".
+
+**The grammar.** Clauses are ANDed at the top level. A comparison is `{field, equals|notEquals|in|notIn}` where the operand is a literal, a list of literals, or `{"$state": "key"}` — exactly one operator per clause. Compose with `{"and":[…]}`, `{"or":[…]}` and `{"not":{…}}`. `field` is a top-level field of the row: no paths, no field-to-field comparison, no expressions, no regular expressions.
+
+```json
+{ "or": [
+  { "field": "statusGroup", "in": ["failed"] },
+  { "and": [
+    { "field": "statusGroup", "equals": "active" },
+    { "field": "archived", "notEquals": "true" } ] } ] }
+```
+
+A field compares as its JSON words: `archived: false` matches `"false"`, not `"No"`. An object or an array compares as empty, so it matches nothing.
+
+**A broken filter shows too much, never too little.** A clause the parser cannot read disappears with a warning and the binding keeps the rest; a `where` where nothing survived is an unfiltered binding. You can see that a filter did nothing — you cannot see rows a filter silently removed.
+
+**`limit` caps what a node draws, not what it fetches.** Filtering happens before the cap, and the host drops the fetch limit for a filtered collection. A fleet of 300 fetched at `limit: 100` and then filtered would report "4 failed" when there are eleven.
+
+**Read the selection back with `$state`.** The second reserved collection after `$context`, and the only way a schema can name the reader's choice — rule 3 has no interpolation. A row's key is the control's `label` and its value is the *selected option's label*, so a `keyValue` bound to it says "Status: Active" rather than "Status: active".
+
+```json
+{ "component": "keyValue", "bind": { "collection": "$state" } }
+```
+
+**Your plugin is told, when it needs to be.** Every action invoked from the panel carries the current selections under `state` beside `context`, so a "Refresh" can fetch the filtered set instead of everything. Declare `onChange` on the control to be told on the change itself — it fires *after* the local write and never instead of it, so the filter works whether or not your handler answers. Answer an action with `{resetState: true}` (or `{resetState: ["statusFilter"]}`) to put the reader back on the defaults — worth doing after you archive everything the current filter was showing, since an empty list is a puzzle and "All" is an answer.
+
+**Lifecycle.** State is per-panel, per-viewer and session-only. It never reaches sqlite and never syncs. It survives a re-publish of the same controls — your panel refreshing its rows every few seconds must not reset the filter — and reconciles when the controls themselves change: a key the new schema drops goes away, and a value the control no longer offers falls back to that control's default.
+
+**Ceilings.** 4 state keys per panel, 2–8 options per control, 4 top-level `where` clauses, depth 3, 24 clauses in total, 20 literals per list. A `style: "toggle"` with anything other than two options draws as a segmented control, because drawing three options as a switch would hide one.
+
 ### A panel that fetches
 
 A panel bound to your own `plugin_collections` is already live: you write rows, the host publishes a change, and every client refetches. A panel whose rows come from somewhere else — an API you poll — has no such signal, and a reader looking at stale rows has no way to ask for new ones.
@@ -822,6 +907,7 @@ The action runs first, then the client refetches, so the gesture means "go and g
 | Component | Desktop / web | iOS | `ade code` TUI |
 |---|---|---|---|
 | `stack`, `text`, `badge`, `button`, `list`, `table`, `keyValue`, `divider`, `emptyState` | full | full | full |
+| `segmented` | full | full | full (numbered options; ←→ cycles) |
 | `form` | full | full | full (via the composer prompt line) |
 | `video`, `image` | full | full | named placeholder; `Ctrl+Y` copies a link to the panel |
 | `chart` | full | named marker | named placeholder |
@@ -837,7 +923,7 @@ Two consequences worth designing around: **put a `deeplink` in every `fallback`*
 
 ### Vocabulary limits
 
-`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxBindingAllowActions` 16.
+`maxNodes` 200 · `maxDepth` 8 · `maxSchemaBytes` 65,536 · `maxSelectOptions` 40 · `maxTableRows` 100 · `maxTableColumns` 8 · `maxListItems` 100 · `maxKeyValueRows` 60 · `maxChartSeries` 3 · `maxChartPoints` 200 · `maxFormFields` 24 · `maxTextChars` 4,000 · `maxLabelChars` 200 · `maxValueChars` 1,000 · `maxBindingAllowActions` 16 · `maxStateKeys` 4 · `maxStateOptions` 8 · `maxWhereClauses` 4 · `maxWhereDepth` 3 · `maxWhereNodes` 24 · `maxWhereValues` 20.
 
 These are part of the contract, not a client's private defence — a schema over any of them is invalid everywhere, identically.
 
@@ -887,7 +973,7 @@ A `webview` surface renders the plugin's **own HTML page** instead of a panel sc
 
 ### When to choose it — and when not to
 
-The vocabulary's ceiling is the thirteen components above, arranged in stacks. Rows, tables, key/value pairs, forms, a line or bar chart, an image, a video. No expressions, no conditionals, no custom layout, no pointer events of your own, no canvas, no drag.
+The vocabulary's ceiling is the fourteen components above, arranged in stacks. Rows, tables, key/value pairs, forms, a line or bar chart, an image, a video. No expressions, no conditionals, no custom layout, no pointer events of your own, no canvas, no drag.
 
 Choose a webview when what you need to draw is genuinely past that line — a graph someone pans, a diagram editor, a timeline with blocks people drag. Do not choose it to skip learning the vocabulary: everything you build in a page is invisible on three of ADE's four clients, and you will have written the panel anyway.
 
@@ -1311,7 +1397,7 @@ exports.actions = {
 
 | Call | Contract |
 |---|---|
-| `ade.actions.invoke(domain, action, args?)` | Invoke an ADE action at **agent** role. CTO-only actions are refused; project-scoped domains need `projectId` in `args` |
+| `ade.actions.invoke(domain, action, args?)` | Invoke an ADE action at **agent** role. CTO-only actions are refused; project-scoped domains need `projectId` in `args`; `project_secret` needs a manifest declaration — see *Project secrets* |
 | `ade.collections.get(collection, key)` | Read one value |
 | `ade.collections.put(collection, key, value, options?)` | Write one value. Budget-checked inside the writer transaction. `{ifFull: "evictOldest"}` drops the oldest entries in that same collection to make room instead of refusing — see *Never stall* |
 | `ade.collections.delete(collection, key)` | Delete one value |
@@ -1333,6 +1419,8 @@ exports.actions = {
 The last four need a host that can perform them. `notifications`, `clipboard` and `dialogs` are the desktop's — a plugin running against a headless daemon gets `notification_unavailable` or `desktop_unavailable`, which are refusals worth retrying later rather than reasons to give up. Check the code, don't check the platform.
 
 **Two things you may no longer borrow through `ade.actions.invoke`, because these verbs replace them:** `session.requestSessionAttention` (its push arrived unlabelled and unlimited, and it lied about a chat session waiting on the user) and `chat.createScheduledWork` (its cron carried no owner, so nothing listed it as yours and uninstalling you left it firing forever). Both are refused for plugins and name their replacement in the refusal.
+
+**And one thing you may only borrow by name:** the `project_secret` domain. `get` needs the name in your manifest's `projectSecrets`; every other verb in the domain is refused outright — see *Project secrets*.
 
 `PLUGIN_SDK_VERSION` is **0** and the handshake is additive: methods get added, never removed or re-shaped. Anything that would break a shipped plugin gets a new method name.
 

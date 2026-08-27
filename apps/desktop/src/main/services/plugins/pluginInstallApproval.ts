@@ -85,26 +85,28 @@ function pairKey(pluginId: string, canonicalSource: string, grant: string): stri
  *
  * The remembered pair deliberately lets the CODE at an approved path change
  * freely — the user approved a directory their own agent is editing, and
- * re-approving every save would be theatre. Two declarations are different:
- * the hosts the plugin's process may contact, and the ADE-stored API keys it
- * reads. Both are things the person agreed to by name, and both can widen in a
- * later save without the source string moving an inch.
+ * re-approving every save would be theatre. Three declarations are different:
+ * the hosts the plugin's process may contact, the ADE-stored API keys it
+ * reads, and the project secrets it opens. All three are things the person
+ * agreed to by name, and all three can widen in a later save without the source
+ * string moving an inch.
  *
- * So they are part of the key. A manifest that adds a host or a provider key
- * does not match the remembered approval, and the card comes back. A manifest
- * that NARROWS also asks again, which is one extra prompt rather than a rule
- * with an exception in it.
+ * So they are part of the key. A manifest that adds a host, a provider key or a
+ * project secret does not match the remembered approval, and the card comes
+ * back. A manifest that NARROWS also asks again, which is one extra prompt
+ * rather than a rule with an exception in it.
  */
 export function pluginApprovalGrant(manifest: PluginManifest | null): string {
   if (!manifest) return "";
   const hosts = [...(manifest.network?.hosts ?? [])].sort().join(",");
   const providers = [...(manifest.providerKeys ?? [])].sort().join(",");
-  // The overwhelming majority of manifests declare neither, and those get the
-  // empty string — the same value a caller that omits the argument passes. So
-  // the field is genuinely additive: a recorder that never heard of it keeps
-  // matching for every plugin that has nothing extra to disclose.
-  if (!hosts && !providers) return "";
-  return `${hosts}|${providers}`;
+  const projectSecrets = [...(manifest.projectSecrets ?? [])].sort().join(",");
+  // The overwhelming majority of manifests declare none of the three, and those
+  // get the empty string — the same value a caller that omits the argument
+  // passes. So the field is genuinely additive: a recorder that never heard of
+  // it keeps matching for every plugin that has nothing extra to disclose.
+  if (!hosts && !providers && !projectSecrets) return "";
+  return `${hosts}|${providers}|${projectSecrets}`;
 }
 
 /**

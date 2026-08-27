@@ -31,7 +31,8 @@ Node built-ins:
 | File | Responsibility |
 |---|---|
 | `apps/desktop/src/shared/plugins/manifest.ts` | `plugin.json` contract, strict-on-known/tolerant-of-unknown parser, id and relative-path validation, `minAdeVersion` gate, the `tab`/`pane`/`webview` surface kinds and the `entryHtml` rule |
-| `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, the reserved `$context` binding (`VOCAB_CONTEXT_COLLECTION`, `vocabContextRows`) |
+| `apps/desktop/src/shared/plugins/vocabulary.ts` | Panel schema v1: component union, `VOCAB_LIMITS`, degradation ladder, `parsePluginPanel`, the reserved bindings (`vocabReservedRows` over `$context` and `$state`), `collectVocabStateDeclarations` |
+| `apps/desktop/src/shared/plugins/vocabularyState.ts` | Client-evaluated panel state: the `segmented` control's declarations, the `where` grammar and its three-valued evaluator, the `$state` binding (`VOCAB_STATE_COLLECTION`), the signature/normalize/reset lifecycle, `readPluginActionResetState` |
 | `apps/desktop/src/shared/plugins/webviewBridge.ts` | The `window.adePlugin` contract: bridge version, the `ade-plugin://` origin and per-plugin partition, `PLUGIN_WEBVIEW_CSP`, the closed method list |
 | `apps/desktop/src/shared/plugins/sockets.ts` | Socket kinds, surface ids, entity kinds, per-kind payload validation, deterministic placement ordering, row-badge overflow split |
 | `apps/desktop/src/shared/plugins/context.ts` | Read-only surface contexts (`pr`, `lane`, `session`, `file`, `surface`) and their contribution keys |
@@ -94,7 +95,7 @@ iOS and TUI:
 
 | File | Responsibility |
 |---|---|
-| `apps/ios/ADE/Models/PluginVocabularyParsing.swift`, `PluginRecords.swift` | Swift transcription of the panel and socket contracts |
+| `apps/ios/ADE/Models/PluginVocabularyParsing.swift`, `PluginVocabularyState.swift`, `PluginRecords.swift` | Swift transcription of the panel, panel-state and socket contracts |
 | `apps/ios/ADE/Views/Plugins/PluginPaneStore.swift` | `PluginRenderSupport.renderableComponents` — the iOS renderable set |
 | `apps/ios/ADE/Views/Plugins/PluginVocabularyView.swift`, `PluginVocabFormView.swift`, `PluginVocabularyMediaViews.swift`, `PluginSocketViews.swift`, `PluginPaneSheet.swift`, `PluginEntryMenu.swift` | Native rendering and entry points |
 | `apps/ade-cli/src/tuiClient/pluginPane.ts` | Panel schema → rows, Ink-free |
@@ -233,9 +234,41 @@ user pastes the same key twice and rotating one silently breaks the other.
   schema or the sync layer, and never logged. `plugin.get` carries **presence
   only**, as `providerKeys: [{ provider, present }]`, which is what the doctor's
   **Provider keys** rung reads.
-- The remembered install approval is keyed on the declared hosts and provider
-  keys as well as the source, so a later save that widens either raises the card
-  again instead of riding an approval given for something narrower.
+- The remembered install approval is keyed on the declared hosts, provider keys
+  and project secrets as well as the source, so a later save that widens any of
+  the three raises the card again instead of riding an approval given for
+  something narrower.
+
+### Project secrets are declared by name, and read one at a time
+
+The project's own secrets — what the user imported from a `.env` — are the most
+sensitive read on the machine, and they were reachable by any installed plugin
+through `ade.actions.invoke("project_secret", "get")` with nothing on the
+install card saying so. They now follow the same declare → disclose → enforce
+path as the two above.
+
+- A manifest declares `projectSecrets: ["STRIPE_API_KEY"]`, max 6, validated
+  against `PROJECT_SECRET_NAME_PATTERN` — the secret store's own name rule, so a
+  manifest cannot declare a name the store could never hold.
+- Names rather than a boolean, because the action is already called by name and
+  because "reads your STRIPE_API_KEY" is a disclosure a person can act on.
+- The install card says "Reads this project's secrets (.env): STRIPE_API_KEY",
+  last of the three capability lines. The same sentence reaches the Marketplace
+  detail modal and the in-chat approval card, all three through
+  `describeManifestAdds`.
+- **`get` is the only verb a plugin may reach**, and only for a declared name.
+  `list`, `set`, `delete`, `previewEnvImport` and `importEnv` are refused to
+  every plugin declared or not — `list` included, because it reads back the
+  names of the secrets the plugin did **not** declare. `exportEnv` was already
+  CTO-only. A plugin keeps its own secrets in `ade.secrets.*`.
+- The gate is `pluginProjectSecretRefusal` in `bootstrap.ts`, applied in the
+  plugin binding's `invokeAdeAction` — the door every plugin-originated action
+  invoke passes through. The declared list arrives on `caller`, resolved by the
+  host from the parsed manifest and never from the call's arguments. Callers
+  that are not a plugin child — the user's own agent, the CLI, the desktop
+  renderer — are untouched.
+- `ade plugin doctor` grows a **Project secrets** rung: which names, or that the
+  plugin reads none. Declaration only; it never reports whether a secret is set.
 
 ### Webhooks arrive through the relay, and only to a plugin that asked
 
@@ -532,6 +565,93 @@ desktop and web that is structural: `useVocabActionRunner` in
 `vocabularyComponents.tsx` is the only path from a control to `dispatch`, so a
 list row cannot skip the prompt a button asks. iOS holds the same shape in
 `PluginPaneStore.perform`.
+
+### Client-evaluated panel state
+
+One control and one clause let a panel filter its own rows without asking the
+plugin anything. A **`segmented`** node owns a named piece of client state — a
+closed option list, a default, and a `stateKey` other nodes name — and a
+binding's **`where`** keeps the rows whose fields match it, read either against a
+literal or against the current value of that key. Changing the control
+re-renders from rows already in memory: no IPC, no fetch, no round trip.
+
+It exists because the alternative was a `form`, a submit button, a
+`panels.update()` from the plugin child and a refetch — three taps and a round
+trip per filter change, with the selection surviving the re-render only if the
+plugin baked it back into `field.value`. A fleet list is unusable that way.
+
+Rule 3 ("data, never code") is intact. A predicate is a fixed grammar of four
+comparisons (`equals`, `notEquals`, `in`, `notIn`) over three composers (`and`,
+`or`, `not`), with no functions, no regular expressions, no arithmetic, no
+field-to-field comparison and no reach beyond the row it was handed and the state
+the panel declared. The plugin still computes on its own machine — it
+materializes `statusGroup`, `laneId` and `archived` onto each row — and the
+client still only compares strings.
+
+**Three-valued evaluation is the load-bearing rule.** A comparison whose state
+key is unset — the "All" option, written as an option with an empty `value` — or
+whose key no control declares, is *inactive* rather than false. An inactive
+clause is removed from its enclosing `and`/`or`, a `not` of one is itself
+inactive, and a `where` with nothing active keeps every row. That is what lets a
+closed option list express "turn this filter off" without a second primitive, and
+it is why a typo'd state key shows everything instead of hiding everything.
+Rejection is node-local for the same reason: a clause the parser cannot read
+disappears with a warning and the binding keeps the rest, because a reader can
+see that a filter did nothing but cannot see rows a broken filter removed.
+
+**Filter before cap, everywhere.** `boundRowValues` filters and then applies the
+binding's `limit`, and `distinctBindings` drops the *fetch* limit for a
+collection any node filters. A binding's `limit` caps what a node draws; a fleet
+of 300 fetched at `limit: 100` and then filtered would report "4 failed" when
+there are eleven. iOS applies the same order in `PluginPaneStore.entries`, which
+also strips `limit` from the fetch when the binding carries a `where`.
+
+**`$state` is the second reserved collection**, beside `$context` and for the
+same reason: the leading `$` is illegal in a real collection name, so nothing can
+shadow it. Binding to it yields one row per declared key, whose value is the
+*selected option's label* rather than its raw value — "Showing: Active", not
+"Showing: FINISHED_WITH_ERROR". It is the only way a schema with no interpolation
+in it can name the reader's own choice. `vocabReservedRows` resolves both
+reserved collections in one place so a client cannot support one and quietly not
+support the other; `$state` is filled at render rather than at fetch, because
+tying it to a read would put the round trip back into the gesture.
+
+**The lifecycle is per-panel, per-viewer and session-only.** It never reaches
+sqlite and never syncs. `vocabStateSignature` is the identity of the CONTROLS,
+not of the data: a plugin refreshing its rows republishes the whole panel every
+few seconds, and a filter that reset on each of those would be unusable, so an
+unchanged signature carries the selection through. When the controls do change,
+`vocabNormalizePanelState` does the fine reconciliation — a key the new schema
+does not declare is dropped, a value the control no longer offers falls back to
+that control's default. Both halves are needed: the signature catches a control
+that vanished, the normalize catches a value inside one that did not. Moving to
+another panel clears the state outright.
+
+**The plugin is told, when it needs to be.** Every action invoked from a panel
+carries the selections under `state` beside `context` (`vocabStatePayload`), so a
+declared `refreshAction` can fetch the filtered set rather than everything and a
+plugin paging an API can page what the reader is looking at. A control may also
+declare `onChange`, dispatched *after* the local write and never instead of it —
+the filter works whether or not the handler answers. An action may answer with
+`{resetState: true}` or `{resetState: ["statusFilter"]}`
+(`readPluginActionResetState`) to put the reader back on the defaults, which is
+what a plugin that just archived everything the current filter was showing should
+do.
+
+Four clients, one evaluator where possible. Desktop, the web client and the TUI
+all call `filterVocabRows` / `boundRowValues` from `shared/plugins`, so a filter
+cannot keep a row on one surface and drop it on another; the TUI draws the
+options as numbered pills with ←→ to cycle, and holds the state in the pane
+input beside its form values. iOS mirrors the module in
+`apps/ios/ADE/Models/PluginVocabularyState.swift` against the same cases, with
+`PluginVocabPanelStateTests` pinning the equality, membership, state-driven,
+inactive, composed and depth-refusal readings the TypeScript tests pin.
+
+Ceilings, in `VOCAB_STATE_LIMITS` and spread into `VOCAB_LIMITS`: 4 state keys
+per panel, 2–8 options per control, 4 top-level `where` clauses, depth 3, 24
+clauses in total, 20 literals per list. They are small on purpose — a predicate
+language with a generous budget is a query language, and a query language is what
+rule 3 exists to keep out of a panel schema.
 
 ### Context and navigation
 

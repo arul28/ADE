@@ -107,7 +107,8 @@ export type PluginDoctorLayerKey =
   | "synced"
   | "skills"
   | "network"
-  | "providerKeys";
+  | "providerKeys"
+  | "projectSecrets";
 
 /**
  * `ok` / `no` / `na` print as ✓ / ✗ / –. `unknown` prints as – too, and says in
@@ -796,6 +797,34 @@ function providerKeysLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
 }
 
 /**
+ * Which of THIS PROJECT's secrets the plugin may read.
+ *
+ * Declaration only, and deliberately so: whether the named secret exists is the
+ * project's business and printing "STRIPE_API_KEY is set" would put the shape
+ * of the user's `.env` in a report people paste into issues. What the rung
+ * answers is the question the platform's own gate answers — "may it, and which
+ * ones" — so a plugin failing with `not_permitted` has a line to look at.
+ */
+function projectSecretsLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
+  const label = "Project secrets";
+  const declared = snapshot.manifest?.projectSecrets ?? [];
+  if (declared.length === 0) {
+    return {
+      key: "projectSecrets",
+      label,
+      state: "na",
+      detail: "this plugin reads none of this project's secrets",
+    };
+  }
+  return {
+    key: "projectSecrets",
+    label,
+    state: "ok",
+    detail: `may read ${declared.join(", ")} — and no other project secret`,
+  };
+}
+
+/**
  * The ladder, in the order a plugin actually climbs it.
  *
  * Pure, and takes a snapshot rather than a transport, so every branch here is
@@ -827,11 +856,13 @@ export function buildPluginDoctorReport(
       panelsLayer(snapshot),
       syncedLayer(snapshot),
       skillsLayer(snapshot),
-      // Last, because they are the two rungs about what the plugin reaches
-      // OUTSIDE ADE. A reader scanning for the first ✗ has passed everything
-      // internal by the time they get here.
+      // Last, because these are the rungs about what the plugin reaches beyond
+      // its own box — the internet, the user's API keys, the project's secrets.
+      // A reader scanning for the first ✗ has passed everything cheaper by the
+      // time they get here.
       networkLayer(snapshot),
       providerKeysLayer(snapshot),
+      projectSecretsLayer(snapshot),
     ],
     clients,
     // Sockets first, because that sentence is the one the module derives from

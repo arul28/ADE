@@ -144,6 +144,7 @@ function toSyncRecord(
         // record spells it one way and every reader has one thing to check.
         ...(manifest.network ? { network: { hosts: [...manifest.network.hosts] } } : {}),
         ...(manifest.providerKeys?.length ? { providerKeys: [...manifest.providerKeys] } : {}),
+        ...(manifest.projectSecrets?.length ? { projectSecrets: [...manifest.projectSecrets] } : {}),
       }
       : {}),
     // NOT guarded by `manifest` — the toggles live in the install registry, not

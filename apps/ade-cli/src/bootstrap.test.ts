@@ -10,6 +10,7 @@ import {
   emitRuntimePrCardsForChanges,
   inferAgentSkillsRootForCliEntry,
   pluginActionRefusalMessage,
+  pluginProjectSecretRefusal,
   withoutPluginAuthoredProvenance,
   withPluginCallerProvenance,
 } from "./bootstrap";
@@ -815,5 +816,67 @@ describe("plugin action bridge refusals", () => {
         "startIngress",
       ].sort(),
     );
+  });
+});
+
+/**
+ * The project's own secrets — the most sensitive read a plugin can attempt, and
+ * the one gated on the MANIFEST rather than on the verb.
+ *
+ * The declared list reaches this function from the manifest the host parsed at
+ * install, so these cases are the whole policy: one readable verb, declared
+ * names only, and every other verb in the domain refused outright.
+ */
+describe("pluginProjectSecretRefusal", () => {
+  it("lets a plugin read a secret it declared", () => {
+    expect(pluginProjectSecretRefusal("get", { name: "STRIPE_API_KEY" }, ["STRIPE_API_KEY"]))
+      .toBeNull();
+  });
+
+  it("refuses an undeclared name and names the manifest field to add it to", () => {
+    const refusal = pluginProjectSecretRefusal("get", { name: "OPENAI_API_KEY" }, ["STRIPE_API_KEY"]);
+    expect(refusal).toMatch(/OPENAI_API_KEY/);
+    expect(refusal).toMatch(/projectSecrets/);
+  });
+
+  it("refuses every name for a plugin that declared none, which is most of them", () => {
+    expect(pluginProjectSecretRefusal("get", { name: "STRIPE_API_KEY" }, [])).toMatch(/projectSecrets/);
+    expect(pluginProjectSecretRefusal("get", { name: "STRIPE_API_KEY" }, undefined))
+      .toMatch(/projectSecrets/);
+  });
+
+  it("refuses the writers, the importers and the lister, declared or not", () => {
+    for (const action of ["list", "set", "delete", "previewEnvImport", "importEnv", "exportEnv"]) {
+      expect(pluginProjectSecretRefusal(action, {}, ["STRIPE_API_KEY"]), action)
+        .toMatch(/not available to plugins/);
+    }
+  });
+
+  /**
+   * Drift guard: a new verb in the domain must be classified deliberately. Only
+   * `get` may ever answer null, and only for a declared name.
+   */
+  it("covers every verb the action allowlist exposes on the domain", () => {
+    const domainVerbs = [...(ADE_ACTION_ALLOWLIST.project_secret ?? [])];
+    expect(domainVerbs.sort()).toEqual(
+      ["delete", "exportEnv", "get", "importEnv", "list", "previewEnvImport", "set"],
+    );
+    for (const action of domainVerbs) {
+      const refusal = pluginProjectSecretRefusal(action, { name: "STRIPE_API_KEY" }, ["STRIPE_API_KEY"]);
+      if (action === "get") expect(refusal).toBeNull();
+      else expect(refusal, action).not.toBeNull();
+    }
+  });
+
+  /**
+   * The gate is the PLUGIN bridge, not the action layer. A user's own agent,
+   * the CLI and the desktop renderer keep reaching `project_secret.get` — this
+   * change must not have quietly taken the feature away from them.
+   */
+  it("leaves non-plugin callers alone: the action stays reachable at agent role", () => {
+    expect(isAutomationAllowedAdeAction("project_secret", "get")).toBe(true);
+    expect(isAutomationAllowedAdeAction("project_secret", "list")).toBe(true);
+    // Still the one verb in the domain the action layer itself reserves.
+    expect(isAutomationAllowedAdeAction("project_secret", "exportEnv")).toBe(false);
   });
 });

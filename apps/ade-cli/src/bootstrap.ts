@@ -664,6 +664,60 @@ export function pluginActionRefusalMessage(
   return null;
 }
 
+/* ── Project secrets ────────────────────────────────────────────────────── */
+
+/**
+ * The one verb in the `project_secret` domain a plugin may reach.
+ *
+ * Everything else in the domain is refused outright, declared or not:
+ *
+ * - `set`, `delete`, `importEnv` WRITE the user's own `.env`-backed store. A
+ *   plugin has `ade.secrets.*` for the things it owns; rewriting the project's
+ *   secrets is not a thing it owns.
+ * - `previewEnvImport` is the first half of the import path and reports which
+ *   names it would REPLACE, so it reads the existing name list out.
+ * - `list` reads every secret name in the project. A plugin that declared one
+ *   name already knows it; listing would only tell it the names of the ones it
+ *   did not declare, which is the leak this whole gate exists to close.
+ * - `exportEnv` writes the whole store to a file in Downloads, and is already
+ *   CTO-only — it never reaches this bridge. Named here anyway so the set is
+ *   the domain, not the domain minus whatever another table happens to cover.
+ */
+const PLUGIN_PROJECT_SECRET_READ_ACTION = "get";
+
+/**
+ * Whether a plugin's `project_secret` call is allowed, and why not when it is
+ * not.
+ *
+ * Declared names come from the manifest the host parsed at install — the same
+ * list the install card printed and the person agreed to — never from the call.
+ * An undeclared name is refused BY NAME and names the manifest field, because
+ * the plugin author reading their own error log is the person who has to fix it.
+ *
+ * Exported for the test that pins every verb in the domain.
+ */
+export function pluginProjectSecretRefusal(
+  action: string,
+  args: Record<string, unknown>,
+  declared: readonly string[] | undefined,
+): string | null {
+  if (action !== PLUGIN_PROJECT_SECRET_READ_ACTION) {
+    return `Action 'project_secret.${action}' is not available to plugins.`
+      + ' A plugin reads a project secret it declared with ade.actions.invoke("project_secret", "get", { name }),'
+      + " and keeps its own secrets in ade.secrets.*.";
+  }
+  const names = declared ?? [];
+  const requested = typeof args.name === "string" ? args.name : "";
+  if (!requested) {
+    return "Reading a project secret needs a \"name\".";
+  }
+  if (!names.includes(requested)) {
+    return `Project secret '${requested}' is not declared in this plugin's manifest.`
+      + ' Add it to "projectSecrets" and install the plugin again.';
+  }
+  return null;
+}
+
 function trustedAgentSkillsRootForCliEntry(
   cliEntry: string | null,
   resourcesPath: string | null,
@@ -2729,6 +2783,21 @@ export async function createAdeRuntime(args: {
           const staticRefusal = pluginActionRefusalMessage(actionDomain, action);
           if (staticRefusal) {
             throw new PluginSdkError("not_permitted", staticRefusal);
+          }
+          // The project's own secrets are the one read gated on the MANIFEST
+          // rather than on the verb, so it cannot live in the static table
+          // above. The declared list arrives on `caller`, resolved by the host
+          // from the manifest it parsed at install — the same list the install
+          // card printed — so a plugin cannot widen it by argument.
+          //
+          // Deliberately here and not in the SDK server: this is the door every
+          // plugin-originated action invoke passes through, and a check at the
+          // server would be one route rather than the boundary.
+          if (actionDomain === "project_secret") {
+            const secretRefusal = pluginProjectSecretRefusal(action, args, caller.projectSecrets);
+            if (secretRefusal) {
+              throw new PluginSdkError("not_permitted", secretRefusal);
+            }
           }
           // A plugin asking for another plugin's domain gets the same refusal a
           // user's agent gets. Named, so a plugin author reading its own error log

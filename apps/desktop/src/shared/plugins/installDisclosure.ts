@@ -98,10 +98,11 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
     lines.push(synced > 0 ? "Stores data, and syncs it to your other devices" : "Stores data on this machine");
   }
   if (manifest.entry) lines.push("Runs code on this machine");
-  // The two capability lines go last, together, because they are the two things
-  // on this card that leave the machine: where the plugin's code talks to, and
-  // whose credential it reads. A reader who stops early has still seen the
-  // sockets; a reader who stops before these has seen everything cheaper.
+  // The three capability lines go last, together, because they are the ones
+  // about credentials and reach: where the plugin's code talks to, whose API
+  // key it reads, and which of this project's own secrets it opens. A reader
+  // who stops early has still seen the sockets; a reader who stops before these
+  // has seen everything cheaper.
   const hosts = manifest.network?.hosts ?? [];
   if (hosts.length > 0) lines.push(`Talks to ${joinSurfaceNames(hosts)}`);
   const providers = manifest.providerKeys ?? [];
@@ -110,6 +111,15 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
     lines.push(providers.length === 1
       ? `Uses your ${named} API key`
       : `Uses your ${named} API keys`);
+  }
+  // Last of the three, because it is the most sensitive read on the card and
+  // the one a person is most likely to want to stop on. Named rather than
+  // counted — "reads two of this project's secrets" tells the reader nothing
+  // they can decide with, and the manifest declares the names precisely so this
+  // line can print them.
+  const projectSecrets = manifest.projectSecrets ?? [];
+  if (projectSecrets.length > 0) {
+    lines.push(`Reads this project's secrets (.env): ${joinSurfaceNames(projectSecrets)}`);
   }
   return lines;
 }

@@ -477,6 +477,37 @@ describe("requestPluginInstallApproval — network and provider keys", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("puts the declared project secrets on the card before anyone agrees", async () => {
+    const source = pluginDir(tipsyManifest({ projectSecrets: ["STRIPE_API_KEY"] }));
+    const { chat, calls } = chatMock({});
+
+    await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    expect(calls[0]!.body).toContain("Reads this project's secrets (.env): STRIPE_API_KEY");
+  });
+
+  it("asks again when a later save adds a project secret", async () => {
+    const source = pluginDir(tipsyManifest({ projectSecrets: ["STRIPE_API_KEY"] }));
+    const { chat, calls } = chatMock({});
+
+    await approveAndRemember(chat, source);
+    // The reader agreed to one secret by name. A second one is a widening of
+    // the most sensitive read on the card, so the card comes back and prints it.
+    fs.writeFileSync(
+      path.join(source, "plugin.json"),
+      JSON.stringify(tipsyManifest({ projectSecrets: ["STRIPE_API_KEY", "OPENAI_API_KEY"] })),
+      "utf8",
+    );
+    await requestPluginInstallApproval({
+      chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toContain("OPENAI_API_KEY");
+  });
+
   it("still skips the card when only the plugin's code changed", async () => {
     const source = pluginDir(tipsyManifest({ network: { hosts: ["api.cursor.com"] } }));
     const { chat, calls } = chatMock({});

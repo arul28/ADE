@@ -257,6 +257,15 @@ export type SyncPluginInstallRecord = {
    * a thing that crosses this wire, or any other.
    */
   providerKeys?: string[];
+  /**
+   * Names of the PROJECT's own secrets the plugin reads.
+   *
+   * Same contract and same reason as `network`: a peer with no manifest on disk
+   * would otherwise draw a Marketplace page that lists everything except the
+   * most sensitive read the plugin declared. Names only — a secret VALUE is not
+   * a thing that crosses this wire, or any other.
+   */
+  projectSecrets?: string[];
 };
 
 export type SyncPluginInstallService = {

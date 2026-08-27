@@ -3,6 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import {
+  PROJECT_SECRET_NAME_PATTERN,
+} from "../../../shared/types/projectSecrets";
 import type {
   ProjectSecretDeleteArgs,
   ProjectSecretEnvFile,
@@ -39,7 +42,9 @@ const STORE_FILE = "project-secrets.v1.enc";
 const KEY_FILE = ".project-secrets-key";
 const INDEX_KEY = "__ade_project_secrets_index_v1";
 const VALUE_PREFIX = "secret:";
-const NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
+// One spelling, shared with the plugin manifest parser: see
+// `PROJECT_SECRET_NAME_PATTERN`.
+const NAME_PATTERN = PROJECT_SECRET_NAME_PATTERN;
 
 function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";

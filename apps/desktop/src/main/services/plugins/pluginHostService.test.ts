@@ -29,7 +29,11 @@ import {
   emitPluginRuntimeHook,
   resetPluginRuntimeHookListenersForTests,
 } from "./pluginRuntimeHooks";
-import { disposeSharedPluginHostService, getSharedPluginHostService } from "./pluginHostService";
+import {
+  disposeSharedPluginHostService,
+  getSharedPluginHostService,
+  type PluginProjectBinding,
+} from "./pluginHostService";
 
 /**
  * `plugin.setConfig` — the settings writer.
@@ -137,6 +141,16 @@ function copyFixture(): string {
   return dir;
 }
 
+/** The fixture with `projectSecrets` declared, for the action-bridge tests. */
+function fixtureWithProjectSecrets(names: string[]): string {
+  const dir = copyFixture();
+  const manifestPath = path.join(dir, "plugin.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+  manifest.projectSecrets = names;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return dir;
+}
+
 function fixtureWithSockets(sockets: unknown[]): string {
   const dir = copyFixture();
   const manifestPath = path.join(dir, "plugin.json");
@@ -161,7 +175,13 @@ function recordingLogger() {
 }
 
 async function hostWithFixture(
-  options: { source?: string; attachProject?: boolean; logger?: Logger } = {},
+  options: {
+    source?: string;
+    attachProject?: boolean;
+    logger?: Logger;
+    /** Overrides the binding's action bridge, for the tests that read `caller`. */
+    invokeAdeAction?: PluginProjectBinding["invokeAdeAction"];
+  } = {},
 ) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-host-"));
   scratchDirs.push(dir);
@@ -181,7 +201,12 @@ async function hostWithFixture(
     scratchDirs.push(projectRoot);
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), silentLogger());
     openDatabases.push(db);
-    host.attachProject({ projectId: "project-1", projectRoot, db, invokeAdeAction: async () => null });
+    host.attachProject({
+      projectId: "project-1",
+      projectRoot,
+      db,
+      invokeAdeAction: options.invokeAdeAction ?? (async () => null),
+    });
     store = createPluginDataStore({ db });
     projectDb = db;
     attachedRoot = projectRoot;
@@ -1638,6 +1663,11 @@ describe("plugin.list / plugin.get carry a webview surface's entryHtml", () => {
 });
 
 describe("the ade: action namespace belongs to the host", () => {
+  // Every other block in this file disposes the shared host between tests, and
+  // this one must too: a leaked host is handed to the NEXT block's
+  // `getSharedPluginHostService`, which then records no supervisors of its own.
+  afterEach(closeScratch);
+
   // The host's chat delivery rides the same `invoke` frame a plugin's own
   // actions do, and the action NAME is all that tells them apart on the child.
   // So no caller through this door may spell one — otherwise a published
@@ -1680,5 +1710,50 @@ describe("the ade: action namespace belongs to the host", () => {
     const { plugins } = await hostWithFixture();
     await expect(plugins.invoke({ pluginId: "hello-plugin", action: "openIssue" }))
       .resolves.toBeNull();
+  });
+});
+
+/**
+ * What the host tells the action bridge about the plugin that is calling.
+ *
+ * The bridge refuses `project_secret.get` for an undeclared name, and it can
+ * only do that if the DECLARED list reaches it — resolved here from the
+ * manifest the host parsed, never from the plugin's own arguments. These tests
+ * pin this half; `bootstrap.test.ts` pins the refusal the other half applies.
+ */
+describe("the plugin action bridge caller", () => {
+  afterEach(closeScratch);
+
+  type Caller = Parameters<PluginProjectBinding["invokeAdeAction"]>[3];
+
+  async function callerFor(source?: string): Promise<Caller> {
+    const seen: Caller[] = [];
+    const { supervisors } = await hostWithFixture({
+      ...(source ? { source } : {}),
+      invokeAdeAction: async (_domain, _action, _args, caller) => {
+        seen.push(caller);
+        return null;
+      },
+    });
+    const child = supervisors.latest("hello-plugin")!;
+    await child.sdk("actions.invoke", {
+      domain: "project_secret",
+      action: "get",
+      args: { name: "STRIPE_API_KEY" },
+    });
+    return seen[0]!;
+  }
+
+  it("carries the declared project secrets, so the bridge can check the name", async () => {
+    const caller = await callerFor(fixtureWithProjectSecrets(["STRIPE_API_KEY"]));
+    expect(caller.pluginId).toBe("hello-plugin");
+    expect(caller.projectSecrets).toEqual(["STRIPE_API_KEY"]);
+  });
+
+  it("carries an empty list for the manifests that declare none, which is most", async () => {
+    // Empty rather than absent: the bridge refuses on an empty list, and a
+    // host that simply left the field off would look the same to a reader but
+    // read as "this host does not know about the field".
+    expect((await callerFor()).projectSecrets).toEqual([]);
   });
 });

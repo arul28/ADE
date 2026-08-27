@@ -157,9 +157,23 @@ export type PluginProjectBinding = {
      * Which plugin is calling, as the HOST knows it — resolved from the
      * supervisor that owns the child socket, never from the call's arguments.
      * The bridge uses it for anything that must be attributed rather than
-     * merely permitted (`chat.emitAdeCard` stamps it onto the card).
+     * merely permitted (`chat.emitAdeCard` stamps it onto the card), and for
+     * the one thing that must be PERMITTED against the manifest rather than
+     * against the verb alone (`projectSecrets`).
      */
-    caller: { pluginId: string; displayName?: string | null },
+    caller: {
+      pluginId: string;
+      displayName?: string | null;
+      /**
+       * `manifest.projectSecrets` — the project secret names this plugin
+       * declared and the user approved at install.
+       *
+       * Read from the manifest the host parsed, never from the call. Absent
+       * reads as "declared none", so a caller that has not been taught about
+       * this field is refused rather than trusted.
+       */
+      projectSecrets?: readonly string[];
+    },
   ) => Promise<unknown>;
   /**
    * Per-plugin wire accounting for this project's sync host. Optional: a scope
@@ -978,6 +992,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         requireProject(pluginId).binding.invokeAdeAction(domain, action, actionArgs, {
           pluginId,
           displayName: manifest.displayName ?? null,
+          projectSecrets: manifest.projectSecrets ?? [],
         }),
       readConfig: () => configFor(pluginId, manifest),
       readProviderKey,

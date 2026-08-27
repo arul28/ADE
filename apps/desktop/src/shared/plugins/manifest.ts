@@ -44,6 +44,7 @@ import {
 import { isValidPluginKeybinding } from "./keybindings";
 import { isValidPluginNetworkHost, PLUGIN_NETWORK_HOSTS_MAX } from "./network";
 import { isRecord, oneOf, trimmed as trimmedString } from "./parse";
+import { isValidProjectSecretName } from "../types/projectSecrets";
 
 /**
  * Plugin ids are lowercase-kebab and short: they become a directory name, a
@@ -651,6 +652,24 @@ export type PluginManifest = {
    * else the package adds, and brokered one call at a time by the host.
    */
   providerKeys?: PluginProviderKeyId[];
+  /**
+   * Names of THIS PROJECT's ADE secrets (the ones the user imported from a
+   * `.env`) that this plugin asks to read.
+   *
+   * Optional, and its absence is the SECURE reading, exactly as `network` is:
+   * a manifest that says nothing about project secrets reads none of them, and
+   * `project_secret.get` refuses the call by name.
+   *
+   * Names rather than a boolean because the action is called by name
+   * (`project_secret.get { name }`), so the tighter shape is the one the call
+   * already has — and because "reads your STRIPE_API_KEY" is a disclosure a
+   * person can act on where "reads your project's secrets" is not.
+   *
+   * Read verb only. Writing, deleting, importing, exporting and LISTING the
+   * project's secrets are refused to every plugin, declared or not: a plugin
+   * has its own secret store (`ade.secrets.*`) for the things it owns.
+   */
+  projectSecrets?: string[];
   theme?: PluginManifestTheme;
   official: boolean;
 };
@@ -1277,6 +1296,31 @@ function parseNetwork(raw: unknown, ctx: ParseContext): PluginManifestNetwork | 
   return limited.length > 0 ? { hosts: limited } : null;
 }
 
+/**
+ * The most project secrets one plugin may ask to read.
+ *
+ * The same reasoning as `PLUGIN_PROVIDER_KEYS_PER_PLUGIN`, one notch higher: a
+ * plugin naming two or three keys is describing an integration, and one naming
+ * a dozen is asking for the project's whole `.env` a name at a time. The
+ * install card has to stay a list a person finishes reading.
+ */
+const PLUGIN_PROJECT_SECRETS_PER_PLUGIN = 6;
+
+/**
+ * `projectSecrets: ["STRIPE_API_KEY"]`, checked against the secret store's own
+ * name rule so a manifest cannot declare a name the store could never hold.
+ */
+function parseProjectSecrets(raw: unknown, ctx: ParseContext): string[] {
+  const names = parseStringList(raw, "projectSecrets", ctx, isValidProjectSecretName);
+  return limitDeclarations(
+    names,
+    "projectSecrets",
+    PLUGIN_PROJECT_SECRETS_PER_PLUGIN,
+    (name) => name,
+    ctx,
+  );
+}
+
 /** `providerKeys: ["cursor"]`, checked against the store's own provider ids. */
 function parseProviderKeys(raw: unknown, ctx: ParseContext): PluginProviderKeyId[] {
   const providers = parseStringList(raw, "providerKeys", ctx, isPluginProviderKeyId);
@@ -1753,6 +1797,7 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
   const webhookIngress = parseWebhookIngress(raw.webhookIngress, ctx);
   const network = parseNetwork(raw.network, ctx);
   const providerKeys = parseProviderKeys(raw.providerKeys, ctx);
+  const projectSecrets = parseProjectSecrets(raw.projectSecrets, ctx);
 
   // Identity must be VALID here, not merely present: `manifest.name` is joined
   // into a filesystem path and a secret namespace, so a caller that ignores
@@ -1791,6 +1836,7 @@ export function parsePluginManifest(raw: unknown): PluginManifestParseResult {
       webhookIngress,
       ...(network ? { network } : {}),
       ...(providerKeys.length > 0 ? { providerKeys } : {}),
+      ...(projectSecrets.length > 0 ? { projectSecrets } : {}),
       ...(theme ? { theme } : {}),
       official,
     },

@@ -63,3 +63,19 @@ export type ProjectSecretsExportResult = {
   filePath: string;
   secretCount: number;
 };
+
+/**
+ * What an ADE project secret may be called.
+ *
+ * Lives here rather than beside the store because two very different modules
+ * need the same answer: `projectSecretService` normalizes every name it writes,
+ * and the plugin manifest parser validates the names a plugin DECLARES it will
+ * read. A plugin that declared a name the store could never hold would pass
+ * parsing and then be refused at every call, which reads as a broken host
+ * rather than as a typo in the manifest.
+ */
+export const PROJECT_SECRET_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
+
+export function isValidProjectSecretName(value: unknown): value is string {
+  return typeof value === "string" && PROJECT_SECRET_NAME_PATTERN.test(value);
+}

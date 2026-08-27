@@ -592,6 +592,28 @@ describe("buildPluginDoctorReport provider-keys rung", () => {
 });
 
 /**
+ * Declaration only, and readable with ADE closed. Whether the named secret is
+ * actually set is the project's business, and a doctor report gets pasted into
+ * issues — so the rung answers "may it, and which ones", never "and here is
+ * what your .env holds".
+ */
+describe("buildPluginDoctorReport project-secrets rung", () => {
+  it("stays out of the way for a plugin that reads none of them", () => {
+    const found = layer(healthy(), "projectSecrets");
+    expect(found.state).toBe("na");
+    expect(found.detail).toContain("none of this project's secrets");
+  });
+
+  it("names the declared secrets, and says they are the only ones", () => {
+    const snapshot = healthy({ manifest: manifest({ projectSecrets: ["STRIPE_API_KEY"] }) });
+    const found = layer(snapshot, "projectSecrets");
+    expect(found.state).toBe("ok");
+    expect(found.detail).toContain("STRIPE_API_KEY");
+    expect(found.detail).toContain("no other project secret");
+  });
+});
+
+/**
  * "I pasted the URL into Stripe and nothing happens" has four causes that look
  * identical from outside. Each case below is one of them, and the assertion is
  * that the rung names THAT one rather than a generic failure.
