@@ -57,6 +57,7 @@ enum PluginRenderSupport {
     "divider",
     "keyValue",
     "emptyState",
+    "segmented",
   ]
 
   static func isRenderable(_ node: PluginVocabNode) -> Bool {
@@ -93,6 +94,19 @@ final class PluginPaneStore: ObservableObject {
   @Published var actionMessage: PluginActionMessage?
   /// An action waiting on the confirmation sentence its schema declared.
   @Published var pendingConfirmation: PluginPendingConfirmation?
+
+  /// The value of every state key the panel's `segmented` controls declared.
+  ///
+  /// Per-panel, per-viewer, and gone when the pane closes. It is what a
+  /// binding's `where` reads and what rides on an action invoke under `state`;
+  /// it never reaches sqlite and never syncs. Published so a control redraws
+  /// itself the moment it is tapped.
+  @Published private(set) var panelState: PluginVocabPanelState = [:]
+
+  /// The controls the current schema declares, in reading order.
+  private(set) var stateDeclarations: [PluginVocabStateDeclaration] = []
+  /// Identity of those controls — see ``PluginVocabState/signature(_:)``.
+  private var stateSignature = ""
 
   /// What this pane was opened with. Read by a node bound to `$context` and
   /// attached to every action dispatched from here, so a button knows what the
@@ -175,6 +189,7 @@ final class PluginPaneStore: ObservableObject {
   func selectPanel(_ panelId: String) {
     guard panelId != selectedPanelId else { return }
     selectedPanelId = panelId
+    clearPanelState()
     presentation = resolvePresentation()
   }
 
@@ -188,6 +203,7 @@ final class PluginPaneStore: ObservableObject {
   func navigate(to navigation: PluginInvokeNavigation) {
     context = navigation.context ?? [:]
     selectedPanelId = navigation.panelId
+    clearPanelState()
     presentation = resolvePresentation()
   }
 
@@ -201,6 +217,7 @@ final class PluginPaneStore: ObservableObject {
     }
     switch PluginPanelParser.parse(record.schemaJSON) {
     case let .ok(schema, _):
+      adoptStateControls(from: schema.body)
       return .panel(resolveBindings(in: schema))
     case let .failed(failure, fallback):
       if case .versionUnsupported = failure {
@@ -208,6 +225,70 @@ final class PluginPaneStore: ObservableObject {
       }
       return .damaged(fallback)
     }
+  }
+
+  // MARK: - Panel state
+
+  /// Reconcile the reader's selections against the controls now on screen.
+  ///
+  /// Both halves matter, and they catch different things. The SIGNATURE catches
+  /// a control that vanished or changed its options: a plugin refreshing its
+  /// fleet rows republishes the whole panel every few seconds, and a filter that
+  /// reset on each of those would be unusable, so an unchanged signature keeps
+  /// the selections untouched. ``PluginVocabState/normalize(_:declarations:)``
+  /// catches a value inside a control that did not vanish — an option the new
+  /// schema no longer offers cannot stay selected.
+  private func adoptStateControls(from body: [PluginVocabNode]) {
+    let declarations = PluginVocabState.declarations(in: body)
+    let signature = PluginVocabState.signature(declarations)
+    stateDeclarations = declarations
+    guard signature != stateSignature else { return }
+    panelState = stateSignature.isEmpty
+      ? PluginVocabState.initialState(declarations)
+      : PluginVocabState.normalize(panelState, declarations: declarations)
+    stateSignature = signature
+  }
+
+  /// Forget the reader's selections because they are leaving this panel.
+  ///
+  /// A different panel is a different set of controls. Cleared outright rather
+  /// than left to the signature check, so arriving at a panel that happens to
+  /// declare the same controls reads as a fresh open rather than as a
+  /// continuation of one the reader has moved on from.
+  private func clearPanelState() {
+    panelState = [:]
+    stateDeclarations = []
+    stateSignature = ""
+  }
+
+  /// Choose one option of a `segmented` control.
+  ///
+  /// The write is local and immediate — that is the whole point of the control —
+  /// and re-resolving the presentation re-filters every bound node from rows the
+  /// mirror already holds. `onChange` is dispatched afterwards, never instead:
+  /// a plugin that wants to know which filter the reader picked gets told, and a
+  /// plugin that does not declare it still gets a working filter.
+  func select(_ option: PluginVocabStateOption, in segmented: PluginVocabSegmented) {
+    // The store's declaration wins where there is one; a control past the
+    // `maxStateKeys` ceiling declares nothing and falls back to its own node, so
+    // it still works as a control even though no `where` can read it.
+    let declaration = stateDeclarations.first { $0.stateKey == segmented.stateKey } ?? segmented.declaration
+    let next = PluginVocabState.apply(panelState, declaration: declaration, value: option.value)
+    if next != panelState {
+      panelState = next
+      presentation = resolvePresentation()
+    }
+    // Dispatched even when the value did not change, because tapping the option
+    // already selected is a legitimate "do that again" — the same reading a
+    // refresh button gets.
+    if let onChange = segmented.onChange {
+      perform(onChange, extraArgs: [segmented.stateKey: option.value])
+    }
+  }
+
+  /// The option a control is currently showing as chosen.
+  func selectedValue(in segmented: PluginVocabSegmented) -> String {
+    panelState[segmented.stateKey] ?? segmented.initial
   }
 
   // MARK: - Binding resolution
@@ -266,14 +347,58 @@ final class PluginPaneStore: ObservableObject {
   }
 
   private func entries(for binding: PluginVocabBinding, limit: Int) -> [PluginCollectionEntry] {
-    // `$context` is resolved here rather than at the database, which has no such
-    // collection and would answer a guaranteed miss. Resolving it beside the
-    // real bindings is also what keeps what a panel READS the same value its
-    // actions CARRY.
+    let filtered = binding.whereClauses != nil
+    // A `where` is evaluated on the CLIENT, so the fetch must not carry the
+    // binding's own `limit`. That limit caps what the node DISPLAYS: applying it
+    // first would filter a truncated window, and a fleet of 300 fetched at 100
+    // would report "4 failed" when there are eleven. Same rule as
+    // `distinctBindings` on desktop, which drops the limit for a filtered fetch.
+    var fetch = binding
+    if filtered { fetch.limit = nil }
+    let rows = reservedEntries(for: binding, limit: filtered ? limit : min(limit, binding.limit ?? limit))
+      ?? sync.pluginCollectionEntries(binding: fetch, pluginId: pluginId, limit: limit)
+    guard filtered else { return rows }
+    let kept = PluginVocabState.filter(binding.whereClauses, rows, state: panelState) { $0.value }
+    // Filter first, cap second — the order every client shares.
+    guard let cap = binding.limit, kept.count > cap else { return kept }
+    return Array(kept.prefix(cap))
+  }
+
+  /// Rows for a binding ADE answers itself, or `nil` when the plugin owns it.
+  ///
+  /// Two reserved collections and neither exists in the database, so a pane that
+  /// forgot one would send the plugin's store a guaranteed miss and draw an
+  /// empty node with no error. Resolving both in one place is also what keeps
+  /// what a panel READS the same value its actions CARRY.
+  private func reservedEntries(for binding: PluginVocabBinding, limit: Int) -> [PluginCollectionEntry]? {
     if binding.collection == PluginVocabulary.contextCollection {
-      return contextEntries(limit: min(limit, binding.limit ?? limit))
+      return contextEntries(limit: limit)
     }
-    return sync.pluginCollectionEntries(binding: binding, pluginId: pluginId, limit: limit)
+    if binding.collection == PluginVocabulary.stateCollection {
+      return stateEntries(limit: limit)
+    }
+    return nil
+  }
+
+  /// The panel's own selections as bindable rows.
+  ///
+  /// Built at draw time from the live state, never fetched: this is the one
+  /// collection whose content changes without any data changing, and tying it to
+  /// a read would put a round trip back into the gesture the whole feature
+  /// exists to make free. A `keyValue` bound to `$state` renders "Status:
+  /// Active" and updates on the same tap that re-filters the list beside it.
+  private func stateEntries(limit: Int) -> [PluginCollectionEntry] {
+    PluginVocabState.rows(stateDeclarations, state: panelState).prefix(limit).compactMap { row in
+      guard let data = try? adeJSONData(withJSONObject: ["key": row.key, "value": row.value]),
+            let valueJSON = String(data: data, encoding: .utf8) else { return nil }
+      return PluginCollectionEntry(
+        pluginId: pluginId,
+        collection: PluginVocabulary.stateCollection,
+        key: row.key,
+        valueJSON: valueJSON,
+        updatedAt: ""
+      )
+    }
   }
 
   /// The context as bindable rows, one per top-level key.
@@ -368,6 +493,13 @@ final class PluginPaneStore: ObservableObject {
         // cannot name an argument that would quietly replace it.
         payload["context"] = PluginPanelContext.payload(context)
       }
+      if let state = PluginVocabState.payload(panelState) {
+        // The reader's filter selections, beside `context` and for the same
+        // reason: a "Refresh" that did not know them would refetch a whole fleet
+        // for a reader looking at four rows of it, and a plugin paging an API
+        // could not page the filtered set at all.
+        payload["state"] = state
+      }
       let result = try await sync.invokePluginAction(
         pluginId: pluginId,
         actionId: action.action,
@@ -383,6 +515,12 @@ final class PluginPaneStore: ObservableObject {
       // nothing else can reach here.
       if let url = result.openURL {
         openExternalURL(url)
+      }
+      // Before the navigation as well: a reset belongs to the panel the action
+      // ran on, and a navigation replaces that panel's controls anyway.
+      if let reset = result.resetState {
+        panelState = PluginVocabState.reset(panelState, declarations: stateDeclarations, reset: reset)
+        presentation = resolvePresentation()
       }
       if let navigation = result.navigate {
         navigate(to: navigation)

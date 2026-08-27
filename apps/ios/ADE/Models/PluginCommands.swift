@@ -147,9 +147,16 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// was sent. Mirrors `readPluginActionOpenUrl` in
   /// `apps/desktop/src/shared/plugins/sdk.ts`.
   var openURL: URL?
+  /// Which `segmented` controls the action asked to put back on their defaults.
+  ///
+  /// The explicit reset in the panel-state lifecycle. A plugin that just
+  /// archived everything the "Active" filter was showing can put the reader back
+  /// on "All" rather than leaving them staring at an empty list they have to
+  /// debug. Mirrors `readPluginActionResetState` in `vocabularyState.ts`.
+  var resetState: PluginInvokeStateReset?
 
   private enum CodingKeys: String, CodingKey {
-    case ok, message, error, result, navigate, composer, openUrl
+    case ok, message, error, result, navigate, composer, openUrl, resetState
   }
 
   init(
@@ -157,13 +164,15 @@ struct PluginInvokeResult: Decodable, Equatable {
     message: String? = nil,
     navigate: PluginInvokeNavigation? = nil,
     composer: PluginInvokeComposerEdit? = nil,
-    openURL: URL? = nil
+    openURL: URL? = nil,
+    resetState: PluginInvokeStateReset? = nil
   ) {
     self.ok = ok
     self.message = message
     self.navigate = navigate
     self.composer = composer
     self.openURL = openURL
+    self.resetState = resetState
   }
 
   /// Mirrors `PLUGIN_OPEN_URL_MAX_CHARS`.
@@ -224,7 +233,38 @@ struct PluginInvokeResult: Decodable, Equatable {
       } else if let bare = (try? handlerResult.decodeIfPresent(String.self, forKey: .openUrl)) ?? nil {
         openURL = Self.parseOpenURL(bare)
       }
+      // `true` for every control, or a list of the keys to reset. Anything else
+      // is read as "the action said nothing about state", which is what almost
+      // every action means.
+      if let everything = (try? handlerResult.decodeIfPresent(Bool.self, forKey: .resetState)) ?? nil {
+        resetState = everything ? .all : nil
+      } else if let keys = (try? handlerResult.decodeIfPresent([String].self, forKey: .resetState)) ?? nil {
+        resetState = PluginInvokeStateReset(keys: keys)
+      }
     }
+  }
+}
+
+/// The `{resetState}` verb: every declared control, or the named ones.
+///
+/// A closed pair rather than an optional array, so a caller cannot confuse "all
+/// of them" with "none of them" — the two answers a bare `[String]?` would have
+/// had to carry between them.
+enum PluginInvokeStateReset: Equatable {
+  case all
+  case keys([String])
+
+  /// Named keys, cleaned and capped the way every other list in the vocabulary
+  /// is. `nil` when nothing usable survived, because a reset of no keys is not a
+  /// reset the plugin can have meant.
+  init?(keys raw: [String]) {
+    var cleaned: [String] = []
+    for entry in raw.prefix(PluginVocabLimits.maxStateKeys) {
+      guard let key = PluginPanelParser.parseStateKey(entry), !cleaned.contains(key) else { continue }
+      cleaned.append(key)
+    }
+    guard !cleaned.isEmpty else { return nil }
+    self = .keys(cleaned)
   }
 }
 

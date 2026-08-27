@@ -133,6 +133,7 @@ enum PluginPanelParser {
       return .divider(label: cleanString(object["label"], max: PluginVocabLimits.maxLabelChars))
     case "keyValue": return parseKeyValue(object, path: path, context: &context)
     case "emptyState": return parseEmptyState(object, path: path, context: &context)
+    case "segmented": return parseSegmented(object, path: path, context: &context)
     default:
       // The forward-compat path, and a warning rather than an error: a name
       // added to the vocabulary after this build shipped lands here.
@@ -194,7 +195,8 @@ enum PluginPanelParser {
       collection: collection,
       keyPrefix: cleanString(object["keyPrefix"], max: PluginVocabLimits.maxIdChars),
       limit: (limit ?? 0) > 0 ? limit : nil,
-      allowActions: parseAllowActions(object["allowActions"])
+      allowActions: parseAllowActions(object["allowActions"]),
+      whereClauses: parseWhere(object["where"], path: "\(path).where", context: &context)
     )
   }
 

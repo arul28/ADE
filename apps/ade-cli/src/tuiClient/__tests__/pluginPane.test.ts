@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   bindingKey,
@@ -9,6 +9,11 @@ import {
   pluginFieldUsesComposer,
   pluginFormValueKey,
   pluginInteractiveKey,
+  pluginPaneBindingRows,
+  pluginPaneStateChange,
+  pluginPaneStateCycle,
+  pluginPaneStatePayload,
+  pluginPaneStateReset,
   pluginPaneWindow,
   pluginTableWidths,
   type PluginPaneCollectionMap,
@@ -17,6 +22,7 @@ import {
   type PluginPanelFetch,
 } from "../pluginPane";
 import { defaultPluginPanelId, resolvePluginByName } from "../adeApi";
+import { PLUGIN_FIXTURES } from "../../../../desktop/src/renderer/components/plugins/pluginFixtures";
 import type { PluginSummary } from "../../../../desktop/src/shared/plugins/sdk";
 import type { VocabField } from "../../../../desktop/src/shared/plugins/vocabulary";
 
@@ -38,7 +44,13 @@ function panel(body: unknown[], extra: Record<string, unknown> = {}): PluginPane
 
 function build(
   fetch: PluginPanelFetch,
-  options: { collections?: PluginPaneCollectionMap; values?: Record<string, string>; editing?: number | null } = {},
+  options: {
+    collections?: PluginPaneCollectionMap;
+    values?: Record<string, string>;
+    editing?: number | null;
+    state?: Record<string, string>;
+    stateSignature?: string;
+  } = {},
 ): PluginPaneModel {
   const input: PluginPaneInput = {
     pluginId: "graph",
@@ -48,6 +60,8 @@ function build(
     collections: options.collections ?? new Map(),
     values: options.values ?? {},
     editing: options.editing ?? null,
+    ...(options.state !== undefined ? { state: options.state } : {}),
+    ...(options.stateSignature !== undefined ? { stateSignature: options.stateSignature } : {}),
     width: 40,
   };
   return buildPluginPaneModel(input);
@@ -429,6 +443,330 @@ describe("plugin pane forms", () => {
     expect(pluginFieldRawValue(field, "body[0]", {})).toBe("from-schema");
     expect(pluginFieldRawValue(field, "body[0]", { [pluginFormValueKey("body[0]", "name")]: "typed" }))
       .toBe("typed");
+  });
+});
+
+/* ── Client-evaluated panel state ─────────────────────────────────────────── */
+
+const FLEET_ROWS = [
+  { key: "1", value: { title: "bc-1f4a", statusGroup: "active", archivedGroup: "live" } },
+  { key: "2", value: { title: "bc-90de", statusGroup: "active", archivedGroup: "live" } },
+  { key: "3", value: { title: "bc-77b2", statusGroup: "failed", archivedGroup: "live" } },
+  { key: "4", value: { title: "bc-3ac1", statusGroup: "finished", archivedGroup: "live" } },
+  { key: "5", value: { title: "bc-0092", statusGroup: "finished", archivedGroup: "archived" } },
+];
+
+function fleet(): PluginPaneCollectionMap {
+  return new Map([[bindingKey({ collection: "agents" }), FLEET_ROWS]]);
+}
+
+const STATUS_CONTROL = {
+  component: "segmented",
+  stateKey: "statusFilter",
+  label: "Status",
+  default: "",
+  options: [
+    { value: "", label: "All", badge: "5" },
+    { value: "active", label: "Active", badge: "2" },
+    { value: "failed", label: "Failed", badge: "1" },
+  ],
+};
+
+/** A list of the fleet filtered by whatever `statusFilter` currently holds. */
+function statusFilteredList(extra: Record<string, unknown> = {}) {
+  return {
+    component: "list",
+    bind: {
+      collection: "agents",
+      where: [{ field: "statusGroup", equals: { $state: "statusFilter" } }],
+      ...extra,
+    },
+    emptyText: "No agents match this filter.",
+  };
+}
+
+function listTitles(model: PluginPaneModel): string[] {
+  return model.rows.flatMap((row) => (row.kind === "listItem" ? [row.title] : []));
+}
+
+describe("plugin pane panel state", () => {
+  it("draws a segmented control as one row of options, with the default in force", () => {
+    const model = build(panel([STATUS_CONTROL]));
+
+    expect(model.rows.map((row) => row.kind)).toEqual(["segmented"]);
+    const row = model.rows[0];
+    expect(row?.kind === "segmented" && row.label).toBe("Status");
+    expect(row?.kind === "segmented" && row.options.map((option) => option.label)).toEqual([
+      "All",
+      "Active",
+      "Failed",
+    ]);
+    // The default is the one in force, and every option is reachable in one
+    // keystroke rather than by cycling to it.
+    expect(row?.kind === "segmented" && row.options.map((option) => option.selected)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+    expect(model.interactives).toEqual([
+      { kind: "state", stateKey: "statusFilter", label: "All", value: "" },
+      { kind: "state", stateKey: "statusFilter", label: "Active", value: "active" },
+      { kind: "state", stateKey: "statusFilter", label: "Failed", value: "failed" },
+    ]);
+    expect(model.state).toEqual({ statusFilter: "" });
+  });
+
+  it("keeps every row while the filter is unset, and filters once it is not", () => {
+    const body = [STATUS_CONTROL, statusFilteredList()];
+
+    // "All" is the empty value, so the clause is INACTIVE rather than false: an
+    // unset filter shows everything instead of hiding everything.
+    const unset = build(panel(body), { collections: fleet() });
+    expect(listTitles(unset)).toEqual(["bc-1f4a", "bc-90de", "bc-77b2", "bc-3ac1", "bc-0092"]);
+
+    const active = build(panel(body), {
+      collections: fleet(),
+      state: { statusFilter: "active" },
+      stateSignature: unset.stateSignature,
+    });
+    expect(listTitles(active)).toEqual(["bc-1f4a", "bc-90de"]);
+  });
+
+  it("treats a state key no control declares as inactive, not as false", () => {
+    const model = build(panel([
+      {
+        component: "list",
+        bind: {
+          collection: "agents",
+          where: [{ field: "statusGroup", equals: { $state: "nobodyDeclaredThis" } }],
+        },
+      },
+    ]), { collections: fleet() });
+
+    expect(listTitles(model)).toHaveLength(5);
+  });
+
+  it("filters on literals and on composed clauses", () => {
+    const model = build(panel([
+      {
+        component: "list",
+        bind: {
+          collection: "agents",
+          where: [
+            {
+              or: [
+                { field: "statusGroup", in: ["failed"] },
+                {
+                  and: [
+                    { field: "statusGroup", equals: "finished" },
+                    { field: "archivedGroup", notEquals: "archived" },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]), { collections: fleet() });
+
+    expect(listTitles(model)).toEqual(["bc-77b2", "bc-3ac1"]);
+  });
+
+  it("drops a clause nested past the depth limit rather than the rows it guarded", () => {
+    const model = build(panel([
+      {
+        component: "list",
+        bind: {
+          collection: "agents",
+          where: [
+            { and: [{ or: [{ not: { field: "statusGroup", equals: "active" } }] }] },
+          ],
+        },
+      },
+    ]), { collections: fleet() });
+
+    // A `where` that cannot be read filters nothing: a broken filter that shows
+    // too much is visible, one that silently hides rows is not.
+    expect(listTitles(model)).toHaveLength(5);
+    expect(model.warnings.join(" ")).toContain("nest at most");
+  });
+
+  it("filters before it caps, so a limited list is not a filtered window", () => {
+    const model = build(panel([STATUS_CONTROL, statusFilteredList({ limit: 2 })]), {
+      collections: fleet(),
+      state: { statusFilter: "finished" },
+      stateSignature: build(panel([STATUS_CONTROL])).stateSignature,
+    });
+
+    // The two finished agents sit fourth and fifth. Capping first would have
+    // filtered the first two rows and found nothing.
+    expect(listTitles(model)).toEqual(["bc-3ac1", "bc-0092"]);
+  });
+
+  it("reads the panel's own state back through the `$state` collection", () => {
+    const model = build(panel([
+      STATUS_CONTROL,
+      { component: "keyValue", bind: { collection: "$state" } },
+    ]), { state: { statusFilter: "active" }, stateSignature: build(panel([STATUS_CONTROL])).stateSignature });
+
+    const row = model.rows.find((entry) => entry.kind === "keyValue");
+    // The OPTION'S LABEL, not the raw value: a reader wants "Status: Active".
+    expect(row?.kind === "keyValue" && [row.label, row.value]).toEqual(["Status", "Active"]);
+  });
+
+  it("answers a `$state` binding at render rather than at the fetch", async () => {
+    const fetchRows = vi.fn(async () => [{ key: "k", value: "v" }]);
+    const rows = await pluginPaneBindingRows({ collection: "$state" }, null, fetchRows);
+    expect(rows).toEqual([]);
+    expect(fetchRows).not.toHaveBeenCalled();
+  });
+
+  it("carries a selection across a republish of the same controls", () => {
+    const first = build(panel([STATUS_CONTROL, statusFilteredList()]), { collections: fleet() });
+    const chosen = pluginPaneStateChange(first, "statusFilter", "failed");
+
+    const republished = build(panel([STATUS_CONTROL, statusFilteredList()]), {
+      collections: fleet(),
+      state: chosen,
+      stateSignature: first.stateSignature,
+    });
+
+    expect(republished.state).toEqual({ statusFilter: "failed" });
+    expect(listTitles(republished)).toEqual(["bc-77b2"]);
+  });
+
+  it("reconciles a selection the republished controls no longer offer", () => {
+    const first = build(panel([STATUS_CONTROL]));
+    const chosen = pluginPaneStateChange(first, "statusFilter", "failed");
+
+    const narrowed = build(panel([
+      {
+        ...STATUS_CONTROL,
+        options: [
+          { value: "", label: "All" },
+          { value: "active", label: "Active" },
+        ],
+      },
+    ]), { state: chosen, stateSignature: first.stateSignature });
+
+    expect(narrowed.stateSignature).not.toBe(first.stateSignature);
+    expect(narrowed.state).toEqual({ statusFilter: "" });
+  });
+
+  it("refuses a value the control never offered, and cycles through the ones it did", () => {
+    const model = build(panel([STATUS_CONTROL]));
+
+    expect(pluginPaneStateChange(model, "statusFilter", "invented")).toEqual(model.state);
+    expect(pluginPaneStateChange(model, "noSuchKey", "active")).toEqual(model.state);
+    expect(pluginPaneStateCycle(model, "statusFilter", 1)).toEqual({ statusFilter: "active" });
+    // Wrapping: one step back from the first option is the last one.
+    expect(pluginPaneStateCycle(model, "statusFilter", -1)).toEqual({ statusFilter: "failed" });
+  });
+
+  it("reports the reader's selections as an action's `state` payload", () => {
+    const model = build(panel([STATUS_CONTROL]));
+    expect(pluginPaneStatePayload(model.state)).toEqual({ statusFilter: "" });
+    expect(pluginPaneStatePayload(pluginPaneStateChange(model, "statusFilter", "active")))
+      .toEqual({ statusFilter: "active" });
+    // A panel with no controls sends nothing rather than an empty object.
+    expect(pluginPaneStatePayload(build(panel([{ component: "text", text: "hi" }])).state)).toBeNull();
+  });
+
+  it("puts the reader back on a filter an action reset", () => {
+    const first = build(panel([STATUS_CONTROL]));
+    const model = build(panel([STATUS_CONTROL]), {
+      state: pluginPaneStateChange(first, "statusFilter", "active"),
+      stateSignature: first.stateSignature,
+    });
+
+    expect(pluginPaneStateReset(model, { resetState: true })).toEqual({ statusFilter: "" });
+    expect(pluginPaneStateReset(model, { resetState: ["statusFilter"] })).toEqual({ statusFilter: "" });
+    expect(pluginPaneStateReset(model, { resetState: ["someoneElse"] })).toEqual({ statusFilter: "active" });
+    // An action that said nothing about state leaves it alone.
+    expect(pluginPaneStateReset(model, { ok: true })).toBeNull();
+  });
+
+  it("dispatches an `onChange` beside the local write, never instead of it", () => {
+    const model = build(panel([{ ...STATUS_CONTROL, onChange: { action: "filterChanged" } }]));
+    expect(model.interactives[1]).toEqual({
+      kind: "state",
+      stateKey: "statusFilter",
+      label: "Active",
+      value: "active",
+      onChange: { action: "filterChanged" },
+    });
+  });
+
+  it("draws the app's own filtered-rows fixture, filtered the same way", () => {
+    const fixture = PLUGIN_FIXTURES.find((entry) => entry.id === "filtered-rows");
+    if (!fixture) throw new Error("the filtered-rows fixture is what pins client parity");
+    // The rows the fixture ships, keyed exactly as the pane keys a real fetch.
+    const collections: PluginPaneCollectionMap = new Map(
+      (fixture.rows ?? []).map((group) => [
+        bindingKey({
+          collection: group.collection,
+          ...(group.keyPrefix !== undefined ? { keyPrefix: group.keyPrefix } : {}),
+        }),
+        group.items.map((value, index) => ({ key: String(index), value })),
+      ]),
+    );
+    const record: PluginPanelFetch = {
+      state: "ok",
+      record: {
+        pluginId: "graph",
+        panelId: "main",
+        title: "Filtered rows",
+        schema: fixture.schema,
+        vocabVersion: 1,
+        updatedAt: null,
+      },
+    };
+
+    const opened = build(record, { collections });
+    expect(opened.warnings).toEqual([]);
+    expect(opened.rows.some((row) => row.kind === "segmented")).toBe(true);
+    // Two controls, and the fixture's second one defaults to hiding archived
+    // rows — so the first list opens on the four live agents.
+    expect(opened.declarations.map((entry) => entry.stateKey)).toEqual(["statusFilter", "archived"]);
+    expect(listTitles(opened).slice(0, 4)).toEqual(["bc-1f4a", "bc-90de", "bc-77b2", "bc-3ac1"]);
+
+    const failed = build(record, {
+      collections,
+      state: { ...opened.state, statusFilter: "failed" },
+      stateSignature: opened.stateSignature,
+    });
+    expect(listTitles(failed).slice(0, 1)).toEqual(["bc-77b2"]);
+  });
+
+  it("keeps the control the reader is standing on inside the window", () => {
+    const body: unknown[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      body.push({ component: "text", text: `line ${index}` });
+    }
+    body.push(STATUS_CONTROL);
+    const model = build(panel(body));
+
+    // The control's options are the last interactives, and the pane has no
+    // scrollbar: moving the selection is what scrolls.
+    const window = pluginPaneWindow(model, model.interactives.length - 1, 6);
+    expect(window.rows.some((row) => row.kind === "segmented")).toBe(true);
+  });
+
+  it("identifies a state option by what it sets, not by its label", () => {
+    const model = build(panel([STATUS_CONTROL]));
+    const renamed = build(panel([{
+      ...STATUS_CONTROL,
+      options: [
+        { value: "", label: "All" },
+        { value: "active", label: "Running" },
+        { value: "failed", label: "Failed" },
+      ],
+    }]));
+
+    const key = (source: PluginPaneModel, index: number) =>
+      pluginInteractiveKey(source, source.interactives[index]!);
+    expect(key(renamed, 1)).toBe(key(model, 1));
+    expect(key(model, 2)).not.toBe(key(model, 1));
   });
 });
 

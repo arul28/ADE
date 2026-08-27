@@ -61,12 +61,17 @@ import {
   VOCAB_VERSION,
   bindingKey,
   parseVocabNode,
+  vocabSegmentedDeclaration,
+  vocabStateDeclarations,
   vocabString,
   type VocabBinding,
   type VocabError,
   type VocabNode,
   type VocabParseState,
+  type VocabPanelState,
+  type VocabStateDeclaration,
 } from "./vocabularyNodes";
+import { VOCAB_STATE_COLLECTION, vocabStateRows } from "./vocabularyState";
 import { isRecord } from "./parse";
 
 export * from "./vocabularyNodes";
@@ -144,6 +149,61 @@ export function vocabContextRows(
 ): { key: string; value: unknown }[] {
   if (!context) return [];
   return Object.entries(context).map(([key, value]) => ({ key, value }));
+}
+
+/**
+ * Rows for a binding ADE answers itself, or `null` when the plugin owns it.
+ *
+ * There are two reserved collections and neither exists in the database, so a
+ * host that forgot one would send the plugin's store a guaranteed miss and
+ * render an empty node with no error. One resolver means a client cannot
+ * support `$context` and quietly not support `$state`, which is exactly the
+ * drift the four release trains make expensive to discover.
+ */
+export function vocabReservedRows(
+  binding: Pick<VocabBinding, "collection">,
+  source: {
+    context?: Record<string, unknown> | null;
+    declarations?: readonly VocabStateDeclaration[];
+    state?: VocabPanelState;
+  },
+): { key: string; value: unknown }[] | null {
+  if (binding.collection === VOCAB_CONTEXT_COLLECTION) {
+    return vocabContextRows(source.context);
+  }
+  if (binding.collection === VOCAB_STATE_COLLECTION) {
+    return vocabStateRows(source.declarations ?? [], source.state ?? {});
+  }
+  return null;
+}
+
+/* ── Panel state ────────────────────────────────────────────────────────── */
+
+/**
+ * Every state key a parsed panel declares, in reading order.
+ *
+ * A host calls this once per parse and keeps the result beside the panel: it is
+ * what builds the initial state, what validates a change, what fills the
+ * `$state` binding, and what decides whether a re-published schema may keep the
+ * reader's selection. Walking the tree in each of those places instead would be
+ * four chances to disagree about which control owns a key.
+ *
+ * See `vocabularyState.ts` for the lifecycle: per-panel, per-viewer, session
+ * only, surviving a re-publish of the same controls and resetting when they
+ * change or when an action returns `{resetState}`.
+ */
+export function collectVocabStateDeclarations(
+  nodes: readonly VocabNode[],
+): VocabStateDeclaration[] {
+  const found: VocabStateDeclaration[] = [];
+  const walk = (list: readonly VocabNode[]) => {
+    for (const node of list) {
+      if (node.component === "stack") walk(node.children);
+      else if (node.component === "segmented") found.push(vocabSegmentedDeclaration(node));
+    }
+  };
+  walk(nodes);
+  return vocabStateDeclarations(found);
 }
 
 /* ── Parsing ────────────────────────────────────────────────────────────── */
@@ -337,17 +397,34 @@ export function collectVocabBindings(nodes: readonly VocabNode[]): VocabBinding[
  * caps. Last-wins looked equivalent and is not: the node asking for 100 rows
  * gets 10 whenever a node asking for 10 happens to be declared after it, and
  * the panel renders a truncated list with no sign anything is missing.
+ *
+ * A `where` on ANY node reading a key drops the fetch's `limit` for all of them.
+ * A binding's `limit` caps what it DISPLAYS, and the host applies it before the
+ * client filters: a fleet of 300 agents fetched at `limit: 100` would filter 100
+ * rows and report "4 failed" when there are eleven. Dropping the cap hands the
+ * host's own default instead, and every node still applies its own `limit` to
+ * what it draws — see {@link boundRowValues}, which filters before it caps.
+ *
+ * The `where` itself is NOT part of {@link bindingKey}, because filtering is a
+ * client-side reading of rows the host does not interpret. Two nodes filtering
+ * one collection differently still share one fetch, which is the point.
  */
 export function distinctBindings(schema: unknown): VocabBinding[] {
   const parsed = parsePluginPanel(schema);
   if (!parsed.ok) return [];
   const seen = new Map<string, VocabBinding>();
+  const filtered = new Set<string>();
   for (const binding of collectVocabBindings(parsed.panel.body)) {
     const key = bindingKey(binding);
+    if (binding.where && binding.where.length > 0) filtered.add(key);
     const existing = seen.get(key);
     if (!existing || (binding.limit ?? Infinity) > (existing.limit ?? Infinity)) {
       seen.set(key, binding);
     }
   }
-  return [...seen.values()];
+  return [...seen.entries()].map(([key, binding]) => {
+    if (!filtered.has(key) || binding.limit === undefined) return binding;
+    const { limit: _limit, ...rest } = binding;
+    return rest;
+  });
 }

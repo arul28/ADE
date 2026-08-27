@@ -1,0 +1,676 @@
+/**
+ * Client-evaluated panel state: the `segmented` control's state keys, and the
+ * `where` predicate a binding filters its rows with.
+ *
+ * ## Why this exists
+ *
+ * A panel that wanted a status filter could only express it as a `form` plus a
+ * submit button plus a `panels.update()` from the plugin child plus a refetch.
+ * That is three taps and a full round trip for every filter change, and the
+ * selected value did not survive the re-render unless the plugin baked it back
+ * into `field.value`. A fleet list is unusable that way.
+ *
+ * So the vocabulary gains one primitive and one clause:
+ *
+ * - a **`segmented` node** owns a named piece of CLIENT state — a closed option
+ *   list, a default, and nothing else;
+ * - a **`where` clause on a binding** keeps the rows whose fields match, read
+ *   either against a literal or against the current value of a state key.
+ *
+ * ## Rule 3 is intact
+ *
+ * "Data, never code" (`vocabulary.ts`) forbids expressions, formatting strings,
+ * conditionals and host callbacks. A predicate here is none of those. It is a
+ * fixed grammar of four comparisons over three composers, with no functions, no
+ * regular expressions, no arithmetic, no field-to-field comparison and no way to
+ * reach anything but the row it was handed and the state the panel declared.
+ * Every value it can read, the plugin wrote itself. The plugin still computes on
+ * its own machine — it materializes `status`, `laneId` and `archived` onto each
+ * row — and the client still only compares strings.
+ *
+ * ## Where the module sits
+ *
+ * `vocabulary.ts → vocabularyNodes.ts → vocabularyState.ts`. This file imports
+ * nothing but `parse.ts`, so `vocabularyNodes.ts` can use its parsers inside
+ * `parseBinding` and the `segmented` node parser without a cycle. Desktop, the
+ * web client and the TUI all evaluate through {@link filterVocabRows} — one
+ * implementation, so a filter cannot keep a row on one surface and drop it on
+ * another. iOS mirrors it in `PluginVocabularyState.swift` against the same
+ * cases.
+ *
+ * ## Three-valued evaluation
+ *
+ * A comparison whose state key is unset — the "All" option, or a key no
+ * `segmented` declared — is **inactive**, not false. An inactive clause is
+ * removed from its enclosing `and`/`or`; a `not` of one is itself inactive; a
+ * `where` with nothing active keeps every row. That single rule is what lets a
+ * segmented control express "All" as an option with an empty `value` instead of
+ * needing a second primitive for "turn this filter off".
+ */
+
+import { finite, isRecord, oneOf, trimmed } from "./parse";
+
+/* ── Limits ─────────────────────────────────────────────────────────────── */
+
+/**
+ * The ceilings that belong to panel state. Spread into `VOCAB_LIMITS` by
+ * `vocabularyNodes.ts` so a schema author reads one table, and declared here so
+ * this module owes that one nothing.
+ *
+ * The numbers are small on purpose. A predicate language with a generous budget
+ * is a query language, and a query language is the thing rule 3 exists to keep
+ * out of a panel schema.
+ */
+export const VOCAB_STATE_LIMITS = {
+  /** Distinct `segmented` state keys in one panel. */
+  maxStateKeys: 4,
+  /** Options on one `segmented` control. */
+  maxStateOptions: 8,
+  /** Top-level clauses on one binding's `where`. They are ANDed. */
+  maxWhereClauses: 4,
+  /** Nesting depth of `and`/`or`/`not`. A top-level clause is depth 1. */
+  maxWhereDepth: 3,
+  /** Total clauses in one binding's `where`, counted through the whole tree. */
+  maxWhereNodes: 24,
+  /** Literal values in one `in` / `notIn` list. */
+  maxWhereValues: 20,
+  /** A state key, an option value, or a predicate field name. */
+  maxStateIdChars: 120,
+} as const;
+
+/* ── Panel state ────────────────────────────────────────────────────────── */
+
+/**
+ * The live value of every state key a panel declared: one string each.
+ *
+ * Per-panel, per-viewer, session-scoped. It never reaches sqlite, never syncs,
+ * and never leaves the client unless the panel declared `onChange` or the plugin
+ * asked for it — see {@link vocabStatePayload}.
+ */
+export type VocabPanelState = Readonly<Record<string, string>>;
+
+export const EMPTY_VOCAB_PANEL_STATE: VocabPanelState = Object.freeze({});
+
+/**
+ * One option of a `segmented` control.
+ *
+ * An **empty `value` means unset**, which is how a panel writes "All". Every
+ * clause reading that key goes inactive and keeps every row, so the option list
+ * stays a plain list of strings and the filter needs no second concept.
+ */
+export type VocabStateOption = {
+  value: string;
+  label: string;
+  /** A small count or chip beside the label, e.g. `12`. Text only. */
+  badge?: string;
+};
+
+/**
+ * What a `segmented` node contributes to the panel's state, lifted out of the
+ * node tree so a host can build the initial state without walking it twice.
+ */
+export type VocabStateDeclaration = {
+  stateKey: string;
+  label?: string;
+  options: VocabStateOption[];
+  /** The option selected when the panel first renders. Always a declared value. */
+  initial: string;
+};
+
+/* ── Predicates ─────────────────────────────────────────────────────────── */
+
+/**
+ * A parsed `where` clause.
+ *
+ * `equals` folds into `in` with a single value and `notEquals` into `notIn`,
+ * because they evaluate identically and one code path cannot drift from itself.
+ * A comparison reads EITHER `values` (a literal list) or `stateKey` (the current
+ * value of a declared state key), never both.
+ */
+export type VocabPredicate =
+  | {
+      kind: "compare";
+      op: "in" | "notIn";
+      /** Top-level field of the bound row. No paths, no nesting. */
+      field: string;
+      values?: string[];
+      stateKey?: string;
+    }
+  | { kind: "and"; clauses: VocabPredicate[] }
+  | { kind: "or"; clauses: VocabPredicate[] }
+  | { kind: "not"; clause: VocabPredicate };
+
+/**
+ * A row field as the text a predicate compares against.
+ *
+ * Deliberately NOT {@link vocabCellText}, which is a DISPLAY coercion: it turns
+ * `true` into `"Yes"`, which is the right cell and the wrong operand. A plugin
+ * writing `archived: false` and filtering on `"false"` must match, so booleans
+ * render as their JSON words here. An object or an array has no text form a
+ * plugin could have meant, so it compares as empty and matches only an operand
+ * that is itself empty — which is inactive, so in practice it never matches.
+ */
+export function vocabPredicateFieldText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return "";
+}
+
+/** A literal operand as text. Same coercion, applied at parse instead of at read. */
+function literalText(value: unknown): string | null {
+  if (typeof value === "string") {
+    const text = trimmed(value);
+    return text === null ? null : text.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return vocabPredicateFieldText(value);
+  }
+  return null;
+}
+
+/** `{"$state":"statusFilter"}` — the one object form an operand may take. */
+function stateRef(raw: unknown): string | null {
+  if (!isRecord(raw)) return null;
+  const key = trimmed(raw.$state);
+  if (key === null) return null;
+  return key.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+}
+
+type WhereParseBudget = { nodes: number; warn: (message: string) => void };
+
+const COMPARISON_KEYS = ["equals", "notEquals", "in", "notIn"] as const;
+type ComparisonKey = (typeof COMPARISON_KEYS)[number];
+
+/**
+ * One clause, or `null` when it is unusable.
+ *
+ * Every rejection is node-local: the clause disappears with a warning and the
+ * binding keeps the clauses that parsed. A binding whose whole `where` is
+ * unusable filters nothing, which shows every row — the safe direction, because
+ * a reader can see that a filter did nothing but cannot see rows a broken filter
+ * silently removed.
+ */
+function parseClause(raw: unknown, depth: number, budget: WhereParseBudget): VocabPredicate | null {
+  if (!isRecord(raw)) {
+    budget.warn("A `where` clause must be an object.");
+    return null;
+  }
+  if (depth > VOCAB_STATE_LIMITS.maxWhereDepth) {
+    budget.warn(`A \`where\` clause may nest at most ${VOCAB_STATE_LIMITS.maxWhereDepth} levels.`);
+    return null;
+  }
+  budget.nodes += 1;
+  if (budget.nodes > VOCAB_STATE_LIMITS.maxWhereNodes) {
+    budget.warn(`A \`where\` may contain at most ${VOCAB_STATE_LIMITS.maxWhereNodes} clauses.`);
+    return null;
+  }
+
+  if (raw.not !== undefined) {
+    const clause = parseClause(raw.not, depth + 1, budget);
+    return clause === null ? null : { kind: "not", clause };
+  }
+
+  for (const composer of ["and", "or"] as const) {
+    if (raw[composer] === undefined) continue;
+    if (!Array.isArray(raw[composer])) {
+      budget.warn(`\`${composer}\` must be an array of clauses.`);
+      return null;
+    }
+    const clauses: VocabPredicate[] = [];
+    for (const entry of raw[composer] as unknown[]) {
+      const clause = parseClause(entry, depth + 1, budget);
+      if (clause !== null) clauses.push(clause);
+    }
+    if (clauses.length === 0) return null;
+    return { kind: composer, clauses };
+  }
+
+  const field = trimmed(raw.field);
+  if (field === null) {
+    budget.warn("A `where` comparison needs a `field`.");
+    return null;
+  }
+  const present = COMPARISON_KEYS.filter((key) => raw[key] !== undefined);
+  if (present.length !== 1) {
+    // Two operators on one clause is not a clause the author meant either way,
+    // and picking one for them would filter rows nobody asked to hide.
+    budget.warn(
+      present.length === 0
+        ? "A `where` comparison needs one of `equals`, `notEquals`, `in` or `notIn`."
+        : "A `where` comparison may declare only one operator.",
+    );
+    return null;
+  }
+  const key = present[0] as ComparisonKey;
+  const op: "in" | "notIn" = key === "equals" || key === "in" ? "in" : "notIn";
+  const operand = raw[key];
+
+  const fromState = stateRef(operand);
+  if (fromState !== null) {
+    return {
+      kind: "compare",
+      op,
+      field: field.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars),
+      stateKey: fromState,
+    };
+  }
+
+  // A scalar under `in`, or an array under `equals`, is read as the list it
+  // obviously means rather than dropped: `op` has already folded the two
+  // operators into one operation, so there is nothing left for the shape of the
+  // operand to disambiguate.
+  const rawValues = Array.isArray(operand) ? operand : [operand];
+  const values: string[] = [];
+  for (const entry of rawValues.slice(0, VOCAB_STATE_LIMITS.maxWhereValues)) {
+    const text = literalText(entry);
+    if (text !== null && !values.includes(text)) values.push(text);
+  }
+  if (values.length === 0) {
+    budget.warn(`\`${key}\` needs at least one literal value or a \`{"$state": …}\` reference.`);
+    return null;
+  }
+  return { kind: "compare", op, field: field.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars), values };
+}
+
+/**
+ * A binding's `where`: an array of clauses, ANDed.
+ *
+ * `undefined` — not `[]` — when nothing usable was declared, so a binding that
+ * declared no filter and a binding whose filter was all garbage are the same
+ * thing to every caller: an unfiltered binding.
+ */
+export function parseVocabWhere(
+  raw: unknown,
+  onWarning?: (message: string) => void,
+): VocabPredicate[] | undefined {
+  if (raw === undefined) return undefined;
+  const warn = onWarning ?? (() => {});
+  const entries = Array.isArray(raw) ? raw : [raw];
+  const budget: WhereParseBudget = { nodes: 0, warn };
+  const clauses: VocabPredicate[] = [];
+  for (const entry of entries.slice(0, VOCAB_STATE_LIMITS.maxWhereClauses)) {
+    const clause = parseClause(entry, 1, budget);
+    if (clause !== null) clauses.push(clause);
+  }
+  return clauses.length > 0 ? clauses : undefined;
+}
+
+/** The state keys a `where` reads, so a host can warn about one nothing declares. */
+export function vocabWhereStateKeys(where: readonly VocabPredicate[] | undefined): string[] {
+  const found = new Set<string>();
+  const walk = (clause: VocabPredicate) => {
+    switch (clause.kind) {
+      case "compare":
+        if (clause.stateKey !== undefined) found.add(clause.stateKey);
+        return;
+      case "not":
+        walk(clause.clause);
+        return;
+      default:
+        for (const child of clause.clauses) walk(child);
+    }
+  };
+  for (const clause of where ?? []) walk(clause);
+  return [...found];
+}
+
+/* ── Evaluation ─────────────────────────────────────────────────────────── */
+
+/**
+ * One clause against one row. `null` is INACTIVE — see the module comment.
+ *
+ * Total by construction: there is no input that throws and no input that loops.
+ * A clause reads exactly two things, the row field it names and the state key it
+ * names, and both are already strings by the time they get here.
+ */
+function evaluateClause(
+  clause: VocabPredicate,
+  row: Record<string, unknown>,
+  state: VocabPanelState,
+): boolean | null {
+  switch (clause.kind) {
+    case "compare": {
+      let values = clause.values;
+      if (clause.stateKey !== undefined) {
+        const selected = state[clause.stateKey];
+        // Unset, or a key no `segmented` declared. Inactive rather than false:
+        // an "All" option and a typo both mean "this filter is not filtering",
+        // and hiding every row would be the worst reading of either.
+        if (selected === undefined || selected === "") return null;
+        values = [selected];
+      }
+      if (!values || values.length === 0) return null;
+      return values.includes(vocabPredicateFieldText(row[clause.field])) === (clause.op === "in");
+    }
+    case "and": {
+      let result: boolean | null = null;
+      for (const child of clause.clauses) {
+        const value = evaluateClause(child, row, state);
+        if (value === null) continue;
+        if (!value) return false;
+        result = true;
+      }
+      return result;
+    }
+    case "or": {
+      let result: boolean | null = null;
+      for (const child of clause.clauses) {
+        const value = evaluateClause(child, row, state);
+        if (value === null) continue;
+        if (value) return true;
+        result = false;
+      }
+      return result;
+    }
+    case "not": {
+      const value = evaluateClause(clause.clause, row, state);
+      return value === null ? null : !value;
+    }
+  }
+}
+
+/**
+ * Does this row survive the binding's `where`?
+ *
+ * A row that is not an object cannot answer a field comparison, so an ACTIVE
+ * predicate drops it. With no active clause every row is kept, including that
+ * one — which is exactly what an unfiltered binding has always done.
+ */
+export function evaluateVocabWhere(
+  where: readonly VocabPredicate[] | undefined,
+  row: unknown,
+  state: VocabPanelState,
+): boolean {
+  if (!where || where.length === 0) return true;
+  const record = isRecord(row) ? row : {};
+  for (const clause of where) {
+    const value = evaluateClause(clause, record, state);
+    // Inactive clauses are not votes. Only a clause that actually compared
+    // something can drop a row.
+    if (value === null) continue;
+    if (!value || !isRecord(row)) return false;
+  }
+  return true;
+}
+
+/** Keep the rows a binding's `where` admits, in order. */
+export function filterVocabRows(
+  where: readonly VocabPredicate[] | undefined,
+  values: readonly unknown[],
+  state: VocabPanelState,
+): unknown[] {
+  if (!where || where.length === 0) return [...values];
+  return values.filter((value) => evaluateVocabWhere(where, value, state));
+}
+
+/* ── Declarations and lifecycle ─────────────────────────────────────────── */
+
+/**
+ * A `segmented` node's option list.
+ *
+ * Duplicate values collapse — two options that set the same state are one
+ * option with two labels, and the second would be unreachable. An option with
+ * no `label` falls back to its own value, because a control whose choices have
+ * no words is not a control; an option whose value is empty ("All") keeps its
+ * label, which is the whole point of it.
+ */
+export function parseVocabStateOptions(raw: unknown): VocabStateOption[] {
+  if (!Array.isArray(raw)) return [];
+  const options: VocabStateOption[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw.slice(0, VOCAB_STATE_LIMITS.maxStateOptions)) {
+    if (!isRecord(entry)) continue;
+    if (typeof entry.value !== "string") continue;
+    const value = entry.value.trim().slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+    if (seen.has(value)) continue;
+    const label = trimmed(entry.label)?.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars)
+      ?? (value === "" ? null : value);
+    if (label === null) continue;
+    seen.add(value);
+    const badge = vocabStateBadgeText(entry.badge);
+    options.push({ value, label, ...(badge !== undefined ? { badge } : {}) });
+  }
+  return options;
+}
+
+/** A state key. Same shape as a collection name, minus the `$` ADE reserves. */
+export function parseVocabStateKey(raw: unknown): string | undefined {
+  const key = trimmed(raw);
+  if (key === null || key.startsWith("$")) return undefined;
+  return key.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+}
+
+/** How a segmented control is drawn. `toggle` needs exactly two options. */
+export type VocabSegmentedStyle = "segmented" | "toggle";
+
+export function parseVocabSegmentedStyle(
+  raw: unknown,
+  optionCount: number,
+): VocabSegmentedStyle | undefined {
+  const style = oneOf(typeof raw === "string" ? raw.trim() : raw, ["segmented", "toggle"] as const);
+  if (style === null) return undefined;
+  // A "toggle" with three options is a segmented control the author mislabelled.
+  // Drawing it as a switch would hide an option, so the declaration loses.
+  return style === "toggle" && optionCount !== 2 ? "segmented" : style;
+}
+
+/**
+ * The initial value for one control: its `default` when that names a real
+ * option, else the first option's value.
+ *
+ * Never `undefined`, so no client has to invent "nothing selected" — a closed
+ * option list always has something selected, even when that something is the
+ * empty "All".
+ */
+export function vocabStateInitial(options: readonly VocabStateOption[], raw: unknown): string {
+  const declared = typeof raw === "string" ? raw.trim() : null;
+  if (declared !== null && options.some((option) => option.value === declared)) return declared;
+  return options[0]?.value ?? "";
+}
+
+/**
+ * Every state key a panel declares, first declaration wins.
+ *
+ * First rather than last because the first one is the control the reader sees
+ * highest on the page, and its default is the one they will assume is in force.
+ * Over {@link VOCAB_STATE_LIMITS.maxStateKeys} the extras are dropped: their
+ * controls still render and still set state, they simply share nothing with a
+ * `where`, which is the honest failure for a panel that declared too many.
+ */
+export function vocabStateDeclarations(
+  found: readonly VocabStateDeclaration[],
+): VocabStateDeclaration[] {
+  const byKey = new Map<string, VocabStateDeclaration>();
+  for (const declaration of found) {
+    if (byKey.has(declaration.stateKey)) continue;
+    byKey.set(declaration.stateKey, declaration);
+    if (byKey.size >= VOCAB_STATE_LIMITS.maxStateKeys) break;
+  }
+  return [...byKey.values()];
+}
+
+/** The state a freshly opened panel starts in. */
+export function vocabInitialPanelState(
+  declarations: readonly VocabStateDeclaration[],
+): VocabPanelState {
+  const state: Record<string, string> = {};
+  for (const declaration of declarations) state[declaration.stateKey] = declaration.initial;
+  return state;
+}
+
+/**
+ * Identity of a panel's CONTROLS, not of its data.
+ *
+ * State is session-scoped and must survive a re-publish: a plugin that refreshes
+ * its fleet rows republishes the whole panel every few seconds, and resetting
+ * the filter on each one would make the control unusable. It must NOT survive a
+ * change to the controls themselves, because an option that no longer exists
+ * cannot stay selected. The signature is exactly the controls — keys, option
+ * values, and their order — so a schema whose rows changed keeps the selection
+ * and a schema whose filter changed starts over.
+ */
+export function vocabStateSignature(declarations: readonly VocabStateDeclaration[]): string {
+  return JSON.stringify(
+    declarations.map((declaration) => [
+      declaration.stateKey,
+      declaration.initial,
+      declaration.options.map((option) => option.value),
+    ]),
+  );
+}
+
+/**
+ * Carry a reader's selections onto a newly parsed panel.
+ *
+ * Keys the new schema does not declare are dropped, and a value that is no
+ * longer an option falls back to that control's initial. Callers that also
+ * compare {@link vocabStateSignature} get the coarse reset; this is the fine one,
+ * and both are needed — the signature catches a control that vanished, this
+ * catches a value inside one that did not.
+ */
+export function vocabNormalizePanelState(
+  state: VocabPanelState | undefined,
+  declarations: readonly VocabStateDeclaration[],
+): VocabPanelState {
+  const next: Record<string, string> = {};
+  for (const declaration of declarations) {
+    const current = state?.[declaration.stateKey];
+    next[declaration.stateKey] = declaration.options.some((option) => option.value === current)
+      ? (current as string)
+      : declaration.initial;
+  }
+  return next;
+}
+
+/** Set one key, refusing a value the control never offered. */
+export function vocabApplyStateChange(
+  state: VocabPanelState,
+  declaration: VocabStateDeclaration,
+  value: string,
+): VocabPanelState {
+  if (!declaration.options.some((option) => option.value === value)) return state;
+  if (state[declaration.stateKey] === value) return state;
+  return { ...state, [declaration.stateKey]: value };
+}
+
+/**
+ * The next option, wrapping. What ←/→ does in the TUI and what a tap on a
+ * two-option toggle does everywhere.
+ */
+export function vocabCycleStateValue(
+  declaration: VocabStateDeclaration,
+  current: string,
+  delta: number,
+): string {
+  const options = declaration.options;
+  if (options.length === 0) return current;
+  const index = options.findIndex((option) => option.value === current);
+  const next = (((index < 0 ? 0 : index) + delta) % options.length + options.length) % options.length;
+  return options[next]?.value ?? current;
+}
+
+/* ── `$state` as a binding ──────────────────────────────────────────────── */
+
+/**
+ * The reserved collection name a panel binds to READ its own state.
+ *
+ * Rule 3 forbids interpolation, so a panel had no way to say "Showing: Active"
+ * beside a filtered list — the words are in the option list and nothing could
+ * reach them. `$state` reads like any other collection, so a `keyValue` bound to
+ * it renders the current selection with the components that already exist. The
+ * leading `$` is illegal in a real collection name (`PLUGIN_COLLECTION_NAME_PATTERN`),
+ * so nothing can shadow it, exactly as with `$context`.
+ */
+export const VOCAB_STATE_COLLECTION = "$state";
+
+/**
+ * The state as bindable rows: one per declared key, in declaration order.
+ *
+ * The row's `key` is the control's label and its `value` is the SELECTED
+ * OPTION'S label, not the raw value — a reader wants "Showing: Active", and
+ * "Showing: FINISHED_WITH_ERROR" is the machine's half of the same fact.
+ */
+export function vocabStateRows(
+  declarations: readonly VocabStateDeclaration[],
+  state: VocabPanelState,
+): { key: string; value: string }[] {
+  return declarations.map((declaration) => {
+    const current = state[declaration.stateKey] ?? declaration.initial;
+    const option = declaration.options.find((entry) => entry.value === current);
+    return {
+      key: declaration.label ?? declaration.stateKey,
+      value: option?.label ?? current,
+    };
+  });
+}
+
+/* ── Reporting state to the plugin ──────────────────────────────────────── */
+
+/**
+ * What rides on an action invoke under `state`, or `null` when the panel has
+ * none.
+ *
+ * Reported so a "Refresh" button can respect the filter the reader is looking
+ * at: without it the plugin refetches the whole fleet and the client re-filters,
+ * which is correct but wasteful, and a plugin paginating an API cannot page the
+ * filtered set at all. It travels as an ordinary flat-scalar object beside
+ * `context`, so it adds no capability — the plugin already receives every
+ * argument the panel declared.
+ */
+export function vocabStatePayload(state: VocabPanelState | undefined): Record<string, string> | null {
+  if (!state) return null;
+  const entries = Object.entries(state).filter(([, value]) => typeof value === "string");
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
+/**
+ * `{resetState}` on an action result: `true` for every key, or a list of keys.
+ *
+ * The explicit reset in the lifecycle. A plugin that just archived everything
+ * the "Active" filter was showing can put the reader back on "All" rather than
+ * leaving them staring at an empty list they have to debug. Lives here rather
+ * than in `sdk.ts` because it is a statement about panel state, and the panel
+ * state contract is this module's.
+ */
+export function readPluginActionResetState(result: unknown): "all" | string[] | null {
+  if (!isRecord(result)) return null;
+  const raw = result.resetState;
+  if (raw === true) return "all";
+  if (!Array.isArray(raw)) return null;
+  const keys: string[] = [];
+  for (const entry of raw.slice(0, VOCAB_STATE_LIMITS.maxStateKeys)) {
+    const key = parseVocabStateKey(entry);
+    if (key !== undefined && !keys.includes(key)) keys.push(key);
+  }
+  return keys.length > 0 ? keys : null;
+}
+
+/** Apply a `{resetState}` to the current state. Unknown keys are ignored. */
+export function vocabResetPanelState(
+  state: VocabPanelState,
+  declarations: readonly VocabStateDeclaration[],
+  reset: "all" | readonly string[],
+): VocabPanelState {
+  if (reset === "all") return vocabInitialPanelState(declarations);
+  const next: Record<string, string> = { ...state };
+  for (const key of reset) {
+    const declaration = declarations.find((entry) => entry.stateKey === key);
+    if (declaration) next[key] = declaration.initial;
+  }
+  return next;
+}
+
+/**
+ * An option's badge as text.
+ *
+ * A badge is almost always a COUNT, and a plugin that writes `badge: 12` means
+ * `"12"`. Reading only strings there would silently drop the one thing the field
+ * exists for, which is why it does not go through the plain string reader.
+ */
+export function vocabStateBadgeText(raw: unknown): string | undefined {
+  const text = trimmed(raw);
+  if (text !== null) return text.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+  const value = finite(raw);
+  return value === null ? undefined : String(value);
+}

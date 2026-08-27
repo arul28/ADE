@@ -153,6 +153,16 @@ struct PluginVocabBinding: Equatable {
   /// else carries no action, and a binding with no allowlist yields no action
   /// at all. Mirrors `VocabBinding.allowActions` in `vocabularyNodes.ts`.
   var allowActions: [String]?
+  /// Keep only the rows this predicate admits, evaluated ON THE CLIENT against
+  /// the panel's own `segmented` state.
+  ///
+  /// This is what makes a filter cost zero round trips: the plugin materializes
+  /// every row once with `status`, `laneId` and `archived` already computed on
+  /// its machine, and changing the control re-runs nothing but a string compare.
+  /// Absent means unfiltered, and so does a `where` whose every clause was
+  /// unusable: a filter that fails shows too much, never too little. Mirrors
+  /// `VocabBinding.where`, spelled out here because `where` is a Swift keyword.
+  var whereClauses: [PluginVocabPredicate]?
 }
 
 // MARK: - Nodes
@@ -354,6 +364,7 @@ indirect enum PluginVocabNode: Equatable {
   case divider(label: String?)
   case keyValue(PluginVocabKeyValue)
   case emptyState(PluginVocabEmptyState)
+  case segmented(PluginVocabSegmented)
   case unknown(name: String)
   case invalid(name: String, reason: String)
 
@@ -374,6 +385,7 @@ indirect enum PluginVocabNode: Equatable {
     case .divider: return "divider"
     case .keyValue: return "keyValue"
     case .emptyState: return "emptyState"
+    case .segmented: return "segmented"
     case let .unknown(name): return name
     case let .invalid(name, _): return name
     }

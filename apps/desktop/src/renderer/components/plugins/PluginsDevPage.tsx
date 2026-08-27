@@ -4,8 +4,17 @@ import { COLORS, RADII, SANS_FONT, outlineButton } from "../lanes/laneDesignToke
 import { useAppStore } from "../../state/appStore";
 import { PluginPanelView } from "./VocabularyRenderer";
 import type { VocabRenderContext } from "./vocabularyComponents";
-import { PLUGIN_FIXTURES } from "./pluginFixtures";
-import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
+import { PLUGIN_FIXTURES, pluginFixtureRows, type PluginFixture } from "./pluginFixtures";
+import {
+  VOCAB_STATE_COLLECTION,
+  bindingKey,
+  collectVocabStateDeclarations,
+  parsePluginPanel,
+  vocabApplyStateChange,
+  vocabInitialPanelState,
+  vocabStateRows,
+  type VocabPanelState,
+} from "../../../shared/plugins/vocabulary";
 
 /**
  * `/plugins-dev` — the vocabulary renderer's acceptance surface.
@@ -36,16 +45,6 @@ export function PluginsDevPage() {
     // here rather than only in production.
     if (action.action === "destructive") throw new Error("The plugin refused that action.");
   }, []);
-
-  const context = React.useMemo<VocabRenderContext>(
-    () => ({
-      pluginId: "dev-fixtures",
-      rowsByBinding: new Map<string, PluginCollectionRow[]>(),
-      dispatch,
-      active: true,
-    }),
-    [dispatch],
-  );
 
   return (
     <div style={{ height: "100%", minHeight: 0, overflow: "auto" }}>
@@ -110,13 +109,73 @@ export function PluginsDevPage() {
                 minWidth: 0,
               }}
             >
-              <PluginPanelView schema={fixture.schema} context={context} />
+              <FixturePanel fixture={fixture} dispatch={dispatch} />
             </div>
           </section>
         ))}
       </div>
     </div>
   );
+}
+
+/**
+ * One fixture, with its own panel state.
+ *
+ * State is per-panel by contract, so the dev page holds it per fixture rather
+ * than sharing one map across the page — two fixtures both declaring
+ * `statusFilter` must not move together, and a page-level store is exactly the
+ * bug a real host would then be free to ship.
+ */
+function FixturePanel({
+  fixture,
+  dispatch,
+}: {
+  fixture: PluginFixture;
+  dispatch: VocabRenderContext["dispatch"];
+}) {
+  const declarations = React.useMemo(() => {
+    const parsed = parsePluginPanel(fixture.schema);
+    return parsed.ok ? collectVocabStateDeclarations(parsed.panel.body) : [];
+  }, [fixture.schema]);
+  const [panelState, setPanelState] = React.useState<VocabPanelState>(
+    () => vocabInitialPanelState(declarations),
+  );
+
+  const setStateValue = React.useCallback((stateKey: string, value: string) => {
+    const declaration = declarations.find((entry) => entry.stateKey === stateKey);
+    if (!declaration) return;
+    setPanelState((previous) => vocabApplyStateChange(previous, declaration, value));
+  }, [declarations]);
+
+  const rowsByBinding = React.useMemo(() => {
+    const rows = pluginFixtureRows(fixture);
+    if (declarations.length > 0) {
+      rows.set(
+        bindingKey({ collection: VOCAB_STATE_COLLECTION }),
+        vocabStateRows(declarations, panelState).map((row) => ({
+          collection: VOCAB_STATE_COLLECTION,
+          key: row.key,
+          value: row,
+          updatedAt: "",
+        })),
+      );
+    }
+    return rows;
+  }, [declarations, fixture, panelState]);
+
+  const context = React.useMemo<VocabRenderContext>(
+    () => ({
+      pluginId: "dev-fixtures",
+      rowsByBinding,
+      dispatch,
+      active: true,
+      state: panelState,
+      setStateValue,
+    }),
+    [dispatch, panelState, rowsByBinding, setStateValue],
+  );
+
+  return <PluginPanelView schema={fixture.schema} context={context} />;
 }
 
 export default PluginsDevPage;

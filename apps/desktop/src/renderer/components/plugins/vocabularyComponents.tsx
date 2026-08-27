@@ -16,6 +16,7 @@ import type { VocabRenderContext } from "./vocabularyPrimitives";
 import type {
   VocabAction,
   VocabBadgeNode,
+  VocabBinding,
   VocabButtonNode,
   VocabDividerNode,
   VocabEmptyStateNode,
@@ -26,6 +27,7 @@ import type {
   VocabListItem,
   VocabListItemAction,
   VocabListNode,
+  VocabSegmentedNode,
   VocabTableNode,
   VocabTextNode,
   VocabUnknownNode,
@@ -221,14 +223,122 @@ export function VocabButton({
   );
 }
 
+/* ── Segmented ──────────────────────────────────────────────────────────── */
+
+/**
+ * The one control in the vocabulary that changes what a panel shows without
+ * asking the plugin anything.
+ *
+ * A press writes one string into panel state and returns; every bound node whose
+ * binding names that key re-filters from rows already in memory. That is the
+ * whole mechanism, and it is why this is a node rather than a `form` field: a
+ * field's value only means something when a submit button sends it somewhere.
+ *
+ * `onChange` is optional and fires AFTER the state is set, never instead of it.
+ * A plugin that wants to know which filter the reader picked gets told; a plugin
+ * that does not declare it still gets a working filter, and neither case waits
+ * on a round trip before redrawing.
+ *
+ * Radio semantics, not tabs: the options change what a list contains rather than
+ * which panel is showing, so screen readers should announce it as a choice.
+ */
+export function VocabSegmented({
+  node,
+  context,
+}: {
+  node: VocabSegmentedNode;
+  context: VocabRenderContext;
+}) {
+  const current = context.state[node.stateKey] ?? node.default ?? node.options[0]?.value ?? "";
+  const select = (value: string) => {
+    if (value !== current) context.setStateValue(node.stateKey, value);
+    // Dispatched even when the value did not change, because pressing the option
+    // already selected is a legitimate "do that again" — the same reading a
+    // refresh button gets.
+    if (node.onChange) {
+      void context.dispatch(node.onChange, { [node.stateKey]: value }).catch(() => {
+        // A control whose only job is to filter must not strand itself on a
+        // plugin's failure. The state is already set and the rows already
+        // re-filtered; the banner under the panel carries the plugin's word.
+      });
+    }
+  };
+
+  return (
+    <div
+      role="radiogroup"
+      {...(node.label ? { "aria-label": node.label } : {})}
+      style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}
+    >
+      {node.label ? (
+        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+          {node.label}
+        </span>
+      ) : null}
+      <div
+        style={{
+          display: "inline-flex",
+          padding: 2,
+          gap: 2,
+          background: COLORS.recessedBg,
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: RADII.md,
+          minWidth: 0,
+        }}
+      >
+        {node.options.map((option) => {
+          const selected = option.value === current;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              onClick={() => select(option.value)}
+              data-tour={`plugin:${context.pluginId}.state-${node.stateKey}`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "3px 9px",
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                fontWeight: selected ? 600 : 400,
+                color: selected ? COLORS.textPrimary : COLORS.textMuted,
+                background: selected ? COLORS.cardBgSolid : "transparent",
+                border: "1px solid transparent",
+                borderRadius: RADII.sm,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {option.label}
+              {option.badge ? (
+                <span style={{ color: COLORS.textDim, fontVariantNumeric: "tabular-nums" }}>
+                  {option.badge}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ── Bound data helpers ─────────────────────────────────────────────────── */
 
-function boundRows(
-  node: { bind?: { collection: string; keyPrefix?: string; limit?: number } },
-  context: VocabRenderContext,
-): unknown[] | null {
+/**
+ * The rows a bound node draws: the fetched values, filtered by the binding's
+ * `where` against the panel's current state, then capped.
+ *
+ * Both steps live in `boundRowValues`, in `shared/plugins`, so the terminal and
+ * the phone cannot end up with a different set of rows from the same schema and
+ * the same data.
+ */
+function boundRows(node: { bind?: VocabBinding }, context: VocabRenderContext): unknown[] | null {
   if (!node.bind) return null;
-  return boundRowValues(node.bind, context.rowsByBinding.get(bindingKey(node.bind)));
+  return boundRowValues(node.bind, context.rowsByBinding.get(bindingKey(node.bind)), context.state);
 }
 
 /* ── List ───────────────────────────────────────────────────────────────── */

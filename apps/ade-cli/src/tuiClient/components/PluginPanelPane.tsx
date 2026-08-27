@@ -206,6 +206,34 @@ function PluginRow({
         </Text>
       );
     }
+    case "segmented": {
+      // Two signals, deliberately separate: the CURSOR is where the arrow keys
+      // are (violet, like every other selected row in this client), and the DOT
+      // is which option is in force. A reader moving through the options must
+      // still be able to see the one that is filtering the list.
+      return (
+        <Text wrap="truncate-end">
+          {lead}
+          {row.label ? <Text color={theme.color.t4} dimColor>{`${row.label}  `}</Text> : null}
+          {row.options.map((option, index) => {
+            const cursor = option.selection === selectionIndex;
+            const text = `${option.selected ? "● " : ""}${option.label}${option.badge ? ` ${option.badge}` : ""}`;
+            return (
+              <Text key={`${option.label}:${index}`}>
+                {index > 0 ? <Text>{" "}</Text> : null}
+                <Text
+                  color={cursor ? theme.color.violet : option.selected ? theme.color.t1 : theme.color.t4}
+                  bold={cursor || option.selected}
+                  dimColor={!cursor && !option.selected}
+                >
+                  {`[ ${text} ]`}
+                </Text>
+              </Text>
+            );
+          })}
+        </Text>
+      );
+    }
     case "submit": {
       return (
         <Box marginTop={1}>
@@ -260,6 +288,7 @@ export function PluginPanelPane({
   const inner = Math.max(8, width - 4);
   const window = pluginPaneWindow(model, selectedIndex, PLUGIN_PANE_ROW_CAPACITY);
   const hasFields = model.interactives.some((entry) => entry.kind === "field");
+  const hasControls = model.interactives.some((entry) => entry.kind === "state");
 
   return (
     <Box flexDirection="column">
@@ -308,6 +337,7 @@ export function PluginPanelPane({
         {model.interactives.length > 0 ? (
           <Text color={theme.color.t4} dimColor>
             {hasFields ? "↑↓ move · enter edits or runs" : "↑↓ move · enter runs"}
+            {hasControls || hasFields ? " · ←→ change" : ""}
           </Text>
         ) : null}
         <Text color={theme.color.t4} dimColor>

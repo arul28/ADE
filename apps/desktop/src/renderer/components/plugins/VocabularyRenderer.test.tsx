@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 import { PluginPanelView, VocabularyBoundary } from "./VocabularyRenderer";
 import type { VocabRenderContext } from "./vocabularyComponents";
-import { PLUGIN_FIXTURES } from "./pluginFixtures";
+import { PLUGIN_FIXTURES, pluginFixtureRows } from "./pluginFixtures";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
 import { bindingKey } from "../../../shared/plugins/vocabulary";
 
@@ -23,6 +23,8 @@ function makeContext(overrides: Partial<VocabRenderContext> = {}): VocabRenderCo
     rowsByBinding: new Map<string, PluginCollectionRow[]>(),
     dispatch: vi.fn(async () => {}),
     active: true,
+    state: {},
+    setStateValue: vi.fn(),
     ...overrides,
   };
 }
@@ -36,7 +38,10 @@ describe("PluginPanelView", () => {
   it("renders every fixture without throwing and never leaves the panel empty", () => {
     for (const fixture of PLUGIN_FIXTURES) {
       const { container, unmount } = render(
-        <PluginPanelView schema={fixture.schema} context={makeContext()} />,
+        <PluginPanelView
+          schema={fixture.schema}
+          context={makeContext({ rowsByBinding: pluginFixtureRows(fixture) })}
+        />,
       );
       expect(container.textContent?.trim(), `fixture ${fixture.id} rendered blank`).toBeTruthy();
       unmount();

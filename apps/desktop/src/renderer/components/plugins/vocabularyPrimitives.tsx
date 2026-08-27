@@ -2,7 +2,11 @@ import { CheckCircle, WarningCircle } from "@phosphor-icons/react";
 
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
-import type { VocabAction, VocabTone } from "../../../shared/plugins/vocabulary";
+import type {
+  VocabAction,
+  VocabPanelState,
+  VocabTone,
+} from "../../../shared/plugins/vocabulary";
 
 /**
  * What every vocabulary leaf renderer shares: the render context it is handed,
@@ -23,6 +27,19 @@ export type VocabRenderContext = {
   /** Rows already fetched for every binding in the panel, keyed by `bindingKey`. */
   rowsByBinding: ReadonlyMap<string, PluginCollectionRow[]>;
   dispatch: VocabDispatch;
+  /**
+   * The current value of every state key the panel's `segmented` controls
+   * declared. Read by a binding's `where` at render, which is what makes a
+   * filter change cost no IPC and no fetch.
+   */
+  state: VocabPanelState;
+  /**
+   * Change one state key. The host validates the value against the control's
+   * declared options, so a caller cannot set a value the reader was never
+   * offered — which is also why this takes a key and a value rather than a whole
+   * state object.
+   */
+  setStateValue: (stateKey: string, value: string) => void;
   /**
    * False while the hosting surface is mounted but not visible. Media does not
    * load and animation does not run when false — the hidden-but-mounted perf law.

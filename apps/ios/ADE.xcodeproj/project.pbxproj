@@ -27,6 +27,7 @@
 		PH000000000000000000000B /* PluginVocabularyDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */; };
 		PH000000000000000000000C /* PluginContributionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000C /* PluginContributionTests.swift */; };
 		PH000000000000000000000D /* PluginVocabularyNodeParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */; };
+		PH0000000000000000000E01 /* PluginVocabularyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000E01 /* PluginVocabularyState.swift */; };
 		PH000000000000000000000E /* PluginVocabularyMediaViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000E /* PluginVocabularyMediaViews.swift */; };
 		PH000000000000000000000F /* PluginPresenceGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG000000000000000000000F /* PluginPresenceGate.swift */; };
 		PH0000000000000000000010 /* PluginPresenceGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = PG0000000000000000000010 /* PluginPresenceGateTests.swift */; };
@@ -370,6 +371,7 @@
 		PG000000000000000000000B /* PluginVocabularyDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyDecodingTests.swift; path = ADETests/PluginVocabularyDecodingTests.swift; sourceTree = "<group>"; };
 		PG000000000000000000000C /* PluginContributionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginContributionTests.swift; path = ADETests/PluginContributionTests.swift; sourceTree = "<group>"; };
 		PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyNodeParsing.swift; path = ADE/Models/PluginVocabularyNodeParsing.swift; sourceTree = "<group>"; };
+		PG0000000000000000000E01 /* PluginVocabularyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyState.swift; path = ADE/Models/PluginVocabularyState.swift; sourceTree = "<group>"; };
 		PG000000000000000000000E /* PluginVocabularyMediaViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginVocabularyMediaViews.swift; path = ADE/Views/Plugins/PluginVocabularyMediaViews.swift; sourceTree = "<group>"; };
 		PG000000000000000000000F /* PluginPresenceGate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPresenceGate.swift; path = ADE/Views/Plugins/PluginPresenceGate.swift; sourceTree = "<group>"; };
 		PG0000000000000000000010 /* PluginPresenceGateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PluginPresenceGateTests.swift; path = ADETests/PluginPresenceGateTests.swift; sourceTree = "<group>"; };
@@ -1189,6 +1191,7 @@
 				PG0000000000000000000003 /* PluginRecords.swift */,
 				PG0000000000000000000004 /* PluginCommands.swift */,
 				PG000000000000000000000D /* PluginVocabularyNodeParsing.swift */,
+				PG0000000000000000000E01 /* PluginVocabularyState.swift */,
 				483C5F1818BAE74B19B84617 /* RemoteModels.swift */,
 				D2000000000000000000004F /* RemoteRosterModels.swift */,
 			);
@@ -1517,6 +1520,7 @@
 				E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */,
 				E20000000000000000000098 /* LinearPaneSheet.swift in Sources */,
 				PH000000000000000000000D /* PluginVocabularyNodeParsing.swift in Sources */,
+				PH0000000000000000000E01 /* PluginVocabularyState.swift in Sources */,
 				PH000000000000000000000E /* PluginVocabularyMediaViews.swift in Sources */,
 				PH0000000000000000000001 /* PluginVocabulary.swift in Sources */,
 				PH0000000000000000000002 /* PluginVocabularyParsing.swift in Sources */,

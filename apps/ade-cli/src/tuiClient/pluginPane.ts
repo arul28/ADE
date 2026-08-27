@@ -23,14 +23,25 @@
 import {
   VOCAB_CONTEXT_COLLECTION,
   VOCAB_LIMITS,
+  VOCAB_STATE_COLLECTION,
   bindingKey,
   boundRowValues,
   coerceBoundKeyValueRow,
   coerceBoundListItem,
   coerceBoundTableRow,
+  collectVocabStateDeclarations,
   distinctBindings,
   parsePluginPanel,
+  readPluginActionResetState,
+  vocabApplyStateChange,
   vocabContextRows,
+  vocabCycleStateValue,
+  vocabInitialPanelState,
+  vocabNormalizePanelState,
+  vocabResetPanelState,
+  vocabStatePayload,
+  vocabStateRows,
+  vocabStateSignature,
   type VocabAction,
   type VocabBinding,
   type VocabFallback,
@@ -40,6 +51,8 @@ import {
   type VocabListItem,
   type VocabListItemAction,
   type VocabNode,
+  type VocabPanelState,
+  type VocabStateDeclaration,
   type VocabTableColumn,
   type VocabTone,
 } from "../../../desktop/src/shared/plugins/vocabulary";
@@ -84,6 +97,13 @@ export function pluginPaneBindingRows(
 ): Promise<PluginPaneCollectionRow[]> {
   if (binding.collection === VOCAB_CONTEXT_COLLECTION) {
     return Promise.resolve(vocabContextRows(context));
+  }
+  // `$state` is the other reserved collection, and it is filled at RENDER rather
+  // than here: its rows are the reader's own `segmented` selections, and tying
+  // them to a fetch would put a round trip back into the one gesture this
+  // feature exists to make free.
+  if (binding.collection === VOCAB_STATE_COLLECTION) {
+    return Promise.resolve([]);
   }
   return fetchRows();
 }
@@ -169,6 +189,27 @@ export type PluginPaneRow =
       editing: boolean;
     }
   | { kind: "submit"; key: string; indent: number; label: string; selection: number }
+  | {
+      /**
+       * A `segmented` control: its options as numbered pills, one of them
+       * chosen. Drawn like a `buttons` row rather than like a `field` because
+       * every option is reachable in one keystroke, which is what a filter with
+       * three states wants in a terminal — a `field` would make the reader cycle
+       * through the ones they did not want.
+       */
+      kind: "segmented";
+      key: string;
+      indent: number;
+      label: string | null;
+      options: {
+        label: string;
+        /** A small count beside the label, e.g. `12`. Text only. */
+        badge: string | null;
+        /** True for the option currently in force. */
+        selected: boolean;
+        selection: number;
+      }[];
+    }
   /** Dim explanatory line: an `emptyText`, a help string, a truncation notice. */
   | { kind: "note"; key: string; indent: number; text: string }
   /** A component this surface does not draw. Names it and says where it lives. */
@@ -179,7 +220,19 @@ export type PluginPaneRow =
 export type PluginPaneInteractive =
   | { kind: "action"; label: string; action: VocabAction }
   | { kind: "field"; formKey: string; field: VocabField }
-  | { kind: "submit"; formKey: string; label: string; action: VocabAction; fields: VocabField[] };
+  | { kind: "submit"; formKey: string; label: string; action: VocabAction; fields: VocabField[] }
+  /**
+   * One option of a `segmented` control. Selecting it writes one string into
+   * panel state and redraws from rows already in memory; `onChange` is dispatched
+   * afterwards only when the schema declared it, and never instead of the write.
+   */
+  | {
+      kind: "state";
+      stateKey: string;
+      label: string;
+      value: string;
+      onChange?: VocabAction;
+    };
 
 /**
  * What an interactive *is*, independent of where it currently sits.
@@ -209,6 +262,12 @@ export function pluginInteractiveKey(
   if (interactive.kind === "field") {
     return JSON.stringify([...owner, "field", interactive.formKey, interactive.field.id]);
   }
+  // A state option is identified by what it SETS, never by its label: a plugin
+  // that renames "Active" to "Running" between two polls has not turned it into
+  // a different option, and an armed confirm must survive that.
+  if (interactive.kind === "state") {
+    return JSON.stringify([...owner, "state", interactive.stateKey, interactive.value]);
+  }
   const { action, args } = interactive.action;
   const argIdentity = Object.keys(args ?? {})
     .sort()
@@ -225,6 +284,28 @@ export type PluginPaneModel = {
   title: string;
   rows: PluginPaneRow[];
   interactives: PluginPaneInteractive[];
+  /**
+   * The `segmented` controls this schema declares, in reading order.
+   *
+   * Collected once here and kept beside the rows, because everything that
+   * touches panel state needs them: the initial values, validating a change,
+   * filling a `$state` binding, and deciding whether a re-published schema may
+   * keep the reader's selection.
+   */
+  declarations: VocabStateDeclaration[];
+  /**
+   * The value of every declared state key right now, already reconciled against
+   * the controls above. What a binding's `where` reads and what rides on an
+   * action invoke under `state`.
+   */
+  state: VocabPanelState;
+  /**
+   * Identity of the CONTROLS, not of the data — see `vocabStateSignature`. A
+   * caller carries a selection across a refresh by handing this back with it;
+   * a schema whose controls changed gets a new one and the selection is
+   * reconciled instead of trusted.
+   */
+  stateSignature: string;
   /** Non-fatal parse warnings, shown as one summary line. */
   warnings: string[];
   fallback: VocabFallback | null;
@@ -255,12 +336,18 @@ export function pluginFormValueKey(formKey: string, fieldId: string): string {
  * the vocabulary module, so a numeric cell reads the same here as it does in the
  * app instead of each surface inventing its own answer.
  */
-function boundValues(
-  bind: VocabBinding | undefined,
-  collections: PluginPaneCollectionMap,
-): unknown[] | null {
+function boundValues(bind: VocabBinding | undefined, ctx: WalkContext): unknown[] | null {
   if (!bind) return null;
-  return boundRowValues(bind, collections.get(bindingKey(bind)));
+  // `$state` has no rows in any store: it IS the panel's live selections, so it
+  // is built here, at draw time, from the same declarations the controls render
+  // from. Everything after this point treats it as an ordinary collection.
+  const reserved = bind.collection === VOCAB_STATE_COLLECTION
+    ? vocabStateRows(ctx.declarations, ctx.state).map((row) => ({ value: row }))
+    : null;
+  // The filter and the cap both live in `boundRowValues`, in `shared/plugins`,
+  // so the terminal cannot keep a row the app drops from the same schema and the
+  // same data.
+  return boundRowValues(bind, reserved ?? ctx.collections.get(bindingKey(bind)), ctx.state);
 }
 
 /* ── Field display ──────────────────────────────────────────────────────── */
@@ -364,6 +451,9 @@ type WalkContext = {
   rows: PluginPaneRow[];
   interactives: PluginPaneInteractive[];
   collections: PluginPaneCollectionMap;
+  /** The `segmented` controls the panel declared, and their live values. */
+  declarations: VocabStateDeclaration[];
+  state: VocabPanelState;
   values: Record<string, string>;
   /** Interactive index currently taking typed input, so its row reads as live. */
   editing: number | null;
@@ -449,7 +539,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       return;
     }
     case "list": {
-      const bound = boundValues(node.bind, ctx.collections);
+      const bound = boundValues(node.bind, ctx);
       const items = bound
         ? bound
             .map((row) => coerceBoundListItem(row, node.bind?.allowActions))
@@ -492,7 +582,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       return;
     }
     case "table": {
-      const bound = boundValues(node.bind, ctx.collections);
+      const bound = boundValues(node.bind, ctx);
       const source = bound ?? node.rows ?? [];
       const cells = source
         .map((row) => coerceBoundTableRow(row, node.columns))
@@ -519,7 +609,7 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
       return;
     }
     case "keyValue": {
-      const bound = boundValues(node.bind, ctx.collections);
+      const bound = boundValues(node.bind, ctx);
       const rows = bound
         ? bound.map(coerceBoundKeyValueRow).filter((row): row is VocabKeyValueRow => row !== null)
         : (node.rows ?? []);
@@ -566,6 +656,32 @@ function walkNode(node: VocabNode, key: string, indent: number, ctx: WalkContext
         fields: node.fields,
       });
       push(ctx, { kind: "submit", key: `${key}.submit`, indent, label: node.submit.label, selection: submit });
+      return;
+    }
+    case "segmented": {
+      // The declaration wins over the node when the panel declared more state
+      // keys than the vocabulary allows: past the ceiling a control still draws
+      // and still sets its own key, it simply shares nothing with a `where`.
+      const declaration = ctx.declarations.find((entry) => entry.stateKey === node.stateKey);
+      const options = declaration?.options ?? node.options;
+      const current = ctx.state[node.stateKey]
+        ?? declaration?.initial
+        ?? node.default
+        ?? options[0]?.value
+        ?? "";
+      const drawn = options.map((option) => ({
+        label: option.label,
+        badge: option.badge ?? null,
+        selected: option.value === current,
+        selection: addInteractive(ctx, {
+          kind: "state",
+          stateKey: node.stateKey,
+          label: option.label,
+          value: option.value,
+          ...(node.onChange ? { onChange: node.onChange } : {}),
+        }),
+      }));
+      push(ctx, { kind: "segmented", key, indent, label: node.label ?? null, options: drawn });
       return;
     }
     case "emptyState": {
@@ -685,6 +801,20 @@ export type PluginPaneInput = {
    */
   context?: Record<string, unknown> | null;
   values: Record<string, string>;
+  /**
+   * The reader's `segmented` selections carried across a rebuild, and the
+   * signature of the controls they were made against.
+   *
+   * `undefined` is a freshly opened panel and starts every control on its
+   * declared default. With a value, the model reconciles: the same signature
+   * keeps the selections as they are, and a changed one runs them through
+   * `vocabNormalizePanelState`, which drops a key the new schema does not
+   * declare and resets a value the control no longer offers. Both halves are
+   * needed — the signature catches a control that vanished, the normalize
+   * catches a value inside one that did not.
+   */
+  state?: VocabPanelState;
+  stateSignature?: string;
   /** Interactive index that currently owns the composer, if any. */
   editing?: number | null;
   /** Pane content width in columns. */
@@ -706,6 +836,12 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     panelId: input.panelId,
     interactives: [] as PluginPaneInteractive[],
     warnings: [] as string[],
+    // No parsed body means no controls to declare, so a fallback card has no
+    // state — and `vocabStateSignature([])` is what a later parse of a panel
+    // with no controls produces too, so the two cannot disagree.
+    declarations: [] as VocabStateDeclaration[],
+    state: {} as VocabPanelState,
+    stateSignature: vocabStateSignature([]),
     // No row means no schema to read a declaration off, so `r` stays the plain
     // refetch it has always been.
     refreshAction: null as string | null,
@@ -753,10 +889,20 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     };
   }
 
+  const declarations = collectVocabStateDeclarations(parsed.panel.body);
+  const stateSignature = vocabStateSignature(declarations);
+  const state = input.state === undefined
+    ? vocabInitialPanelState(declarations)
+    : input.stateSignature === stateSignature
+      ? input.state
+      : vocabNormalizePanelState(input.state, declarations);
+
   const ctx: WalkContext = {
     rows: [],
     interactives: [],
     collections: input.collections,
+    declarations,
+    state,
     values: input.values,
     editing: input.editing ?? null,
     inner,
@@ -773,6 +919,9 @@ export function buildPluginPaneModel(input: PluginPaneInput): PluginPaneModel {
     title: parsed.panel.title ?? record.title ?? input.displayName,
     rows: ctx.rows,
     interactives: ctx.interactives,
+    declarations,
+    state,
+    stateSignature,
     warnings: parsed.warnings.map((warning) => warning.message),
     fallback: parsed.panel.fallback,
     status: "ok",
@@ -791,6 +940,63 @@ function fallbackNote(
       ? `${pluginId} has not published a "${panelId}" panel yet.`
       : fetch.message;
   return { kind: "note", key: "fetch", indent: 0, text };
+}
+
+/* ── Panel state ────────────────────────────────────────────────────────── */
+
+/**
+ * Select one option of a `segmented` control.
+ *
+ * Validated against the control's own declared options, so nothing can put the
+ * panel into a state the reader was never offered — and a key past the
+ * `maxStateKeys` ceiling, which declares nothing, changes nothing.
+ */
+export function pluginPaneStateChange(
+  model: PluginPaneModel,
+  stateKey: string,
+  value: string,
+): VocabPanelState {
+  const declaration = model.declarations.find((entry) => entry.stateKey === stateKey);
+  if (!declaration) return model.state;
+  return vocabApplyStateChange(model.state, declaration, value);
+}
+
+/** The next option, wrapping. What ←/→ does on a selected control. */
+export function pluginPaneStateCycle(
+  model: PluginPaneModel,
+  stateKey: string,
+  delta: number,
+): VocabPanelState {
+  const declaration = model.declarations.find((entry) => entry.stateKey === stateKey);
+  if (!declaration) return model.state;
+  const current = model.state[stateKey] ?? declaration.initial;
+  return vocabApplyStateChange(model.state, declaration, vocabCycleStateValue(declaration, current, delta));
+}
+
+/**
+ * The `{resetState}` an action asked for, applied — or `null` when it asked for
+ * nothing.
+ *
+ * A plugin that just archived everything the "Active" filter was showing can put
+ * the reader back on a filter that still has rows, rather than leaving them on an
+ * empty list they have to debug.
+ */
+export function pluginPaneStateReset(model: PluginPaneModel, result: unknown): VocabPanelState | null {
+  const reset = readPluginActionResetState(result);
+  if (!reset) return null;
+  return vocabResetPanelState(model.state, model.declarations, reset);
+}
+
+/**
+ * What rides on an action invoke under `state`, or `null` when the panel has
+ * none.
+ *
+ * So a "Refresh" button can respect the filter the reader is looking at: without
+ * it the plugin refetches everything and the client re-filters, and a plugin
+ * paging an API cannot page the filtered set at all.
+ */
+export function pluginPaneStatePayload(state: VocabPanelState | undefined): Record<string, string> | null {
+  return vocabStatePayload(state);
 }
 
 /* ── Windowing ──────────────────────────────────────────────────────────── */
@@ -819,12 +1025,20 @@ export function pluginPaneWindow(
   const anchor = model.rows.findIndex(
     (row) => "selection" in row && row.selection === selectionIndex,
   );
-  const buttonAnchor = anchor >= 0
+  // A row whose selection lives in a nested list — a button strip or a
+  // `segmented` control — is found by asking the row, not by reading a
+  // `selection` field it does not have. Missing one here scrolls the control the
+  // reader is standing on off the top of the pane.
+  const nestedAnchor = anchor >= 0
     ? anchor
-    : model.rows.findIndex(
-        (row) => row.kind === "buttons" && row.buttons.some((button) => button.selection === selectionIndex),
-      );
-  const focus = buttonAnchor >= 0 ? buttonAnchor : 0;
+    : model.rows.findIndex((row) => (
+      row.kind === "buttons"
+        ? row.buttons.some((button) => button.selection === selectionIndex)
+        : row.kind === "segmented"
+          ? row.options.some((option) => option.selection === selectionIndex)
+          : false
+    ));
+  const focus = nestedAnchor >= 0 ? nestedAnchor : 0;
   // Keep a row of context above the selection so the user can see what they are
   // moving through, not just where they landed.
   const start = Math.max(0, Math.min(focus - 1, model.rows.length - limit));

@@ -1,4 +1,8 @@
-import { VOCAB_VERSION } from "../../../shared/plugins/vocabulary";
+import { VOCAB_VERSION, bindingKey } from "../../../shared/plugins/vocabulary";
+import type { PluginCollectionRow } from "../../lib/pluginRuntimeBridge";
+
+/** The row shape a fixture answers a binding with. */
+export type PluginFixtureRow = PluginCollectionRow;
 
 /**
  * Fixture panels for `/plugins-dev`.
@@ -18,6 +22,16 @@ export type PluginFixture = {
   note: string;
   /** Raw, exactly as a plugin would store it in `plugin_panels.schema_json`. */
   schema: unknown;
+  /**
+   * Rows to answer this fixture's bindings with, exactly as `plugin_collections`
+   * would hold them.
+   *
+   * A fixture that binds nothing omits this and reads as it always did — every
+   * bound node showing its `emptyText`, which is itself one of the things these
+   * fixtures are for. A fixture exercising a `where` clause needs real rows,
+   * because a filter over an empty list proves nothing.
+   */
+  rows?: { collection: string; keyPrefix?: string; items: unknown[] }[];
 };
 
 const fallback = {
@@ -140,6 +154,131 @@ export const PLUGIN_FIXTURES: PluginFixture[] = [
         },
       ],
     },
+  },
+  {
+    id: "filtered-rows",
+    label: "Filtered rows — client state",
+    note: "The fleet filter. Every press re-renders from rows already in memory: no IPC, no fetch, no round trip to the plugin.",
+    schema: {
+      v: VOCAB_VERSION,
+      title: "Filtered rows",
+      fallback,
+      body: [
+        {
+          component: "stack",
+          direction: "horizontal",
+          gap: "md",
+          wrap: true,
+          children: [
+            {
+              component: "segmented",
+              stateKey: "statusFilter",
+              label: "Status",
+              default: "",
+              options: [
+                { value: "", label: "All", badge: "5" },
+                { value: "active", label: "Active", badge: "2" },
+                { value: "finished", label: "Finished", badge: "2" },
+                { value: "failed", label: "Failed", badge: "1" },
+              ],
+            },
+            {
+              component: "segmented",
+              stateKey: "archived",
+              label: "Archived",
+              style: "toggle",
+              default: "live",
+              options: [
+                { value: "live", label: "Hidden" },
+                { value: "", label: "Shown" },
+              ],
+            },
+          ],
+        },
+        // Reads the panel's own state back out. The one way a schema can name
+        // the reader's selection without interpolating anything.
+        { component: "keyValue", bind: { collection: "$state" } },
+        {
+          component: "list",
+          bind: {
+            collection: "agents",
+            allowActions: ["open-agent", "stop-agent"],
+            where: [
+              { field: "statusGroup", equals: { $state: "statusFilter" } },
+              { field: "archivedGroup", equals: { $state: "archived" } },
+            ],
+          },
+          emptyText: "No agents match this filter.",
+        },
+        { component: "divider", label: "Composed predicate" },
+        {
+          component: "list",
+          bind: {
+            collection: "agents",
+            where: [
+              {
+                or: [
+                  { field: "statusGroup", in: ["failed"] },
+                  {
+                    and: [
+                      { field: "statusGroup", equals: "active" },
+                      { field: "archivedGroup", notEquals: "archived" },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          emptyText: "Nothing failed and nothing running.",
+        },
+      ],
+    },
+    rows: [
+      {
+        collection: "agents",
+        items: [
+          {
+            title: "bc-1f4a",
+            subtitle: "Fix the login redirect",
+            mono: "origin/fix-login-redirect",
+            badge: { text: "Running", tone: "accent" },
+            statusGroup: "active",
+            archivedGroup: "live",
+            onPress: { action: "open-agent", args: { id: "bc-1f4a" } },
+          },
+          {
+            title: "bc-90de",
+            subtitle: "Add the plugin refresh contract",
+            mono: "origin/plugin-refresh",
+            badge: { text: "Creating", tone: "accent" },
+            statusGroup: "active",
+            archivedGroup: "live",
+          },
+          {
+            title: "bc-77b2",
+            subtitle: "Could not resolve the repository",
+            badge: { text: "Error", tone: "warning" },
+            tone: "warning",
+            statusGroup: "failed",
+            archivedGroup: "live",
+          },
+          {
+            title: "bc-3ac1",
+            subtitle: "Ship the marketplace rail",
+            badge: { text: "Finished", tone: "success" },
+            statusGroup: "finished",
+            archivedGroup: "live",
+          },
+          {
+            title: "bc-0092",
+            subtitle: "An old run nobody needs",
+            badge: { text: "Finished", tone: "success" },
+            statusGroup: "finished",
+            archivedGroup: "archived",
+          },
+        ],
+      },
+    ],
   },
   {
     id: "table",
@@ -364,3 +503,30 @@ export const PLUGIN_FIXTURES: PluginFixture[] = [
     },
   },
 ];
+
+/**
+ * A fixture's rows as the map a render context takes.
+ *
+ * Keyed by {@link bindingKey}, the same function the real host keys its fetches
+ * with, so a fixture that renders here proves the lookup a live panel does — not
+ * a lookup the fixture page invented.
+ */
+export function pluginFixtureRows(fixture: PluginFixture): Map<string, PluginFixtureRow[]> {
+  const map = new Map<string, PluginFixtureRow[]>();
+  for (const group of fixture.rows ?? []) {
+    const key = bindingKey({
+      collection: group.collection,
+      ...(group.keyPrefix !== undefined ? { keyPrefix: group.keyPrefix } : {}),
+    });
+    map.set(
+      key,
+      group.items.map((value, index) => ({
+        collection: group.collection,
+        key: `${group.keyPrefix ?? ""}${index}`,
+        value,
+        updatedAt: "",
+      })),
+    );
+  }
+  return map;
+}

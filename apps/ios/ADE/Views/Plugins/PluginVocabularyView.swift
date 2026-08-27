@@ -53,6 +53,8 @@ struct PluginVocabularyNodeView: View {
       PluginVocabKeyValueView(keyValue: keyValue)
     case let .emptyState(emptyState):
       PluginVocabEmptyStateView(emptyState: emptyState, store: store)
+    case let .segmented(segmented):
+      PluginVocabSegmentedView(segmented: segmented, store: store)
     default:
       // Unreachable: `isRenderable` gated every case above. Kept so a component
       // added to the renderable set without a branch here shows a marker rather
@@ -221,6 +223,73 @@ private struct PluginVocabKeyValueView: View {
         }
       }
     }
+  }
+}
+
+/// The one control in the vocabulary that changes what a panel shows without
+/// asking the plugin anything.
+///
+/// A tap writes one string into panel state and returns; every bound node whose
+/// binding names that key re-filters from rows the mirror already holds. That is
+/// the whole mechanism, and it is why this is a node rather than a `form` field:
+/// a field's value only means something when a submit button sends it somewhere.
+///
+/// Drawn as capsules rather than as a `Picker(.segmented)`: an option carries a
+/// badge (`Active 12`), the list can hold up to eight, and a phone-width
+/// segmented picker would squeeze all of that into unreadable slivers. The
+/// capsules scroll horizontally instead, which is what the row actions beside
+/// them already do.
+private struct PluginVocabSegmentedView: View {
+  let segmented: PluginVocabSegmented
+  @ObservedObject var store: PluginPaneStore
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      if let label = segmented.label {
+        Text(label)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          ForEach(segmented.options) { option in
+            optionButton(option)
+          }
+        }
+        .padding(.vertical, 1)
+      }
+      // Radio semantics, not tabs: the options change what a list CONTAINS
+      // rather than which panel is showing.
+      .accessibilityElement(children: .contain)
+      .accessibilityLabel(segmented.label ?? "Filter")
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func optionButton(_ option: PluginVocabStateOption) -> some View {
+    let selected = option.value == store.selectedValue(in: segmented)
+    return Button {
+      ADEHaptics.light()
+      store.select(option, in: segmented)
+    } label: {
+      HStack(spacing: 5) {
+        Text(option.label)
+          .font(.caption2.weight(selected ? .semibold : .medium))
+        if let badge = option.badge {
+          Text(badge)
+            .font(.caption2.weight(.regular))
+            .foregroundStyle(selected ? ADEColor.textSecondary : ADEColor.textMuted)
+            .monospacedDigit()
+        }
+      }
+      .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background(selected ? store.accent.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.5), in: Capsule())
+      .overlay(Capsule().stroke(ADEColor.border.opacity(selected ? 0 : 0.18), lineWidth: 0.5))
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+    .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
   }
 }
 

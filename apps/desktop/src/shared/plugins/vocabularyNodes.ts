@@ -19,6 +19,29 @@
  */
 
 import { bounded, finite, isRecord, oneOf, trimmed } from "./parse";
+import {
+  VOCAB_STATE_LIMITS,
+  evaluateVocabWhere,
+  parseVocabSegmentedStyle,
+  parseVocabStateKey,
+  parseVocabStateOptions,
+  parseVocabWhere,
+  vocabStateInitial,
+  type VocabPanelState,
+  type VocabPredicate,
+  type VocabSegmentedStyle,
+  type VocabStateDeclaration,
+  type VocabStateOption,
+} from "./vocabularyState";
+
+/**
+ * The client-state half of the contract — the `where` grammar, its evaluator and
+ * the `segmented` control's option rules — re-exported so every client keeps
+ * importing the vocabulary from one place. The dependency runs one way,
+ * `vocabularyNodes.ts → vocabularyState.ts`, so that module imports nothing from
+ * here.
+ */
+export * from "./vocabularyState";
 
 /** Bumped only for a change old clients cannot safely interpret. */
 export const VOCAB_VERSION = 1;
@@ -29,6 +52,12 @@ export const VOCAB_VERSION = 1;
  * see the `plugin_panels` budget in `dbMaintenanceApi.ts`.
  */
 export const VOCAB_LIMITS = {
+  /**
+   * The panel-state ceilings — state keys, segmented options, and the `where`
+   * predicate's depth, size and value list. Declared in `vocabularyState.ts`,
+   * spread in here so a schema author reads one table rather than two.
+   */
+  ...VOCAB_STATE_LIMITS,
   /** Total nodes in a panel, counted through the whole tree. */
   maxNodes: 200,
   /** Nesting depth. Root `body` entries are depth 1. */
@@ -100,6 +129,7 @@ export type VocabComponentName =
   | "divider"
   | "keyValue"
   | "emptyState"
+  | "segmented"
   | (string & {});
 
 /**
@@ -163,6 +193,20 @@ export type VocabBinding = {
    * Absent means the old behaviour — a bound row carries no action.
    */
   allowActions?: string[];
+  /**
+   * Keep only the rows this predicate admits, evaluated ON THE CLIENT against
+   * the panel's own `segmented` state.
+   *
+   * This is what makes a filter cost zero round trips: the plugin materializes
+   * every row once with `status`, `laneId` and `archived` already computed on
+   * its machine, and changing the control re-runs nothing but a string compare.
+   * The grammar is fixed and data-only — see `vocabularyState.ts` for what it
+   * can and cannot express, and why that is still rule 3.
+   *
+   * Absent means unfiltered, and so does a `where` whose every clause was
+   * unusable: a filter that fails shows too much, never too little.
+   */
+  where?: VocabPredicate[];
 };
 
 /**
@@ -368,6 +412,53 @@ export type VocabKeyValueNode = {
   emptyText?: string;
 };
 
+/**
+ * A closed set of options with one selected, owning a named piece of CLIENT
+ * state.
+ *
+ * The only node in the vocabulary that holds state, and deliberately the
+ * smallest thing that could: an option list, a default, and a key other nodes
+ * name. It dispatches nothing by itself — a change re-renders the panel from
+ * data already on the client, which is the entire point. `onChange` exists for
+ * the plugin that also wants to know, and is not needed for the filter to work.
+ *
+ * A `toggle` is this node with two options rather than a second component,
+ * because a switch and a two-option segmented control are the same choice drawn
+ * differently, and two components would be two parsers, two limits and two
+ * chances for a client to disagree.
+ */
+export type VocabSegmentedNode = {
+  component: "segmented";
+  /** Panel-local state key. Same shape as a collection name; no leading `$`. */
+  stateKey: string;
+  /** Shown beside the control, and used as the `$state` row's key. */
+  label?: string;
+  options: VocabStateOption[];
+  /** Selected on first render. Falls back to the first option. */
+  default?: string;
+  style?: VocabSegmentedStyle;
+  /** Also dispatch this action on change, for a plugin that wants to know. */
+  onChange?: VocabAction;
+};
+
+/**
+ * A parsed `segmented` node as the state key it declares.
+ *
+ * The node is what renders and the declaration is what a host holds, and they
+ * are deliberately different shapes: a host needs the key, the options and the
+ * initial value with nothing optional left to resolve, so that
+ * {@link vocabInitialPanelState} and {@link vocabStateSignature} never have to
+ * repeat the `default` fallback and never disagree about it.
+ */
+export function vocabSegmentedDeclaration(node: VocabSegmentedNode): VocabStateDeclaration {
+  return {
+    stateKey: node.stateKey,
+    options: node.options,
+    initial: vocabStateInitial(node.options, node.default),
+    ...(node.label !== undefined ? { label: node.label } : {}),
+  };
+}
+
 export type VocabEmptyStateNode = {
   component: "emptyState";
   title: string;
@@ -411,6 +502,7 @@ export type VocabNode =
   | VocabDividerNode
   | VocabKeyValueNode
   | VocabEmptyStateNode
+  | VocabSegmentedNode
   | VocabUnknownNode
   | VocabInvalidNode;
 
@@ -493,18 +585,29 @@ export function bindingKey(binding: { collection: string; keyPrefix?: string }):
 }
 
 /**
- * The rows a binding actually yields, capped by its own `limit`.
+ * The rows a binding actually yields: filtered by its `where`, then capped by
+ * its own `limit`.
  *
  * `null` — not `[]` — when the fetch has not landed, so a component can tell
  * "nothing yet" from "nothing there" and show its `emptyText` only for the
  * second.
+ *
+ * Filter BEFORE the cap, always. Capping first would filter a truncated window,
+ * so a list showing 20 of 100 rows would find three matches in the first twenty
+ * and report three — a wrong answer that looks like a right one. Every client
+ * calls this one function, so the order cannot differ between them.
  */
 export function boundRowValues(
   binding: VocabBinding | undefined,
   rows: readonly { value: unknown }[] | undefined,
+  state?: VocabPanelState,
 ): unknown[] | null {
   if (!binding || !rows) return null;
-  const values = rows.map((row) => row.value);
+  let values = rows.map((row) => row.value);
+  if (binding.where && binding.where.length > 0) {
+    const current = state ?? {};
+    values = values.filter((value) => evaluateVocabWhere(binding.where, value, current));
+  }
   const limit = binding.limit;
   return typeof limit === "number" && limit > 0 ? values.slice(0, limit) : values;
 }
@@ -1070,6 +1173,29 @@ export const NODE_PARSERS: Record<string, VocabNodeParser> = {
     };
   },
 
+  segmented: (raw, ctx) => {
+    const stateKey = parseVocabStateKey(raw.stateKey);
+    if (stateKey === undefined) {
+      return ctx.invalid("`stateKey` is required and may not start with `$`");
+    }
+    const options = parseVocabStateOptions(raw.options);
+    // One option is not a choice, and a control the reader cannot change is a
+    // filter permanently stuck wherever the author left it. Two is the floor.
+    if (options.length < 2) return ctx.invalid("`options` needs at least two distinct values");
+    const label = vocabString(raw.label, VOCAB_LIMITS.maxLabelChars);
+    const style = parseVocabSegmentedStyle(raw.style, options.length);
+    const onChange = parseAction(raw.onChange);
+    return {
+      component: "segmented",
+      stateKey,
+      options,
+      default: vocabStateInitial(options, raw.default),
+      ...(label !== undefined ? { label } : {}),
+      ...(style !== undefined ? { style } : {}),
+      ...(onChange !== null ? { onChange } : {}),
+    };
+  },
+
   emptyState: (raw, ctx) => {
     const title = vocabString(raw.title, VOCAB_LIMITS.maxLabelChars);
     if (title === undefined) return ctx.invalid("`title` is required");
@@ -1127,11 +1253,15 @@ function parseBinding(raw: unknown, path: string, state: VocabParseState): Vocab
   const keyPrefix = vocabString(raw.keyPrefix, VOCAB_LIMITS.maxIdChars);
   const limit = finiteNumber(raw.limit);
   const allowActions = parseAllowActions(raw.allowActions);
+  const where = parseVocabWhere(raw.where, (message) => {
+    state.warnings.push({ code: "invalid_binding", path: `${path}.where`, message });
+  });
   return {
     collection,
     ...(keyPrefix !== undefined ? { keyPrefix } : {}),
     ...(limit !== undefined && limit > 0 ? { limit: Math.floor(limit) } : {}),
     ...(allowActions !== undefined ? { allowActions } : {}),
+    ...(where !== undefined ? { where } : {}),
   };
 }
 

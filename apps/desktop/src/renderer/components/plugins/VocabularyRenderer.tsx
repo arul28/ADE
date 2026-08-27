@@ -14,6 +14,7 @@ import {
   VocabInvalid,
   VocabKeyValue,
   VocabList,
+  VocabSegmented,
   VocabTable,
   VocabText,
   VocabUnknown,
@@ -107,6 +108,8 @@ function VocabNodeView({
       return <VocabKeyValue node={node} context={context} />;
     case "emptyState":
       return <VocabEmptyState node={node} context={context} />;
+    case "segmented":
+      return <VocabSegmented node={node} context={context} />;
     case "__unknown":
       return <VocabUnknown node={node} />;
     case "__invalid":

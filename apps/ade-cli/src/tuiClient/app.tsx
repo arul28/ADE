@@ -457,6 +457,10 @@ import {
   pluginFormValueKey,
   pluginInteractiveKey,
   pluginPaneBindingRows,
+  pluginPaneStateChange,
+  pluginPaneStateCycle,
+  pluginPaneStatePayload,
+  pluginPaneStateReset,
   PLUGIN_PANE_TOO_NARROW,
   type PluginPaneCollectionMap,
   type PluginPaneInput,
@@ -10433,12 +10437,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const pluginPaneContent = useCallback((
     state: PluginPaneInput,
     extra: { error?: string | null } = {},
-  ): Extract<RightPaneContent, { kind: "plugin-panel" }> => ({
-    kind: "plugin-panel",
-    state,
-    model: buildPluginPaneModel(state),
-    ...extra,
-  }), []);
+  ): Extract<RightPaneContent, { kind: "plugin-panel" }> => {
+    const model = buildPluginPaneModel(state);
+    return {
+      kind: "plugin-panel",
+      // The model reconciles the reader's `segmented` selections against the
+      // controls the schema actually declares, so the inputs take its answer
+      // back: one place decides what the panel state is, and the next rebuild
+      // starts from that rather than from a value the schema has since dropped.
+      state: { ...state, state: model.state, stateSignature: model.stateSignature },
+      model,
+      ...extra,
+    };
+  }, []);
 
   /**
    * Change the open panel's inputs and redraw. Model and inputs are rebuilt
@@ -10504,6 +10515,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         collections,
         context,
         values: samePanel ? current.state.values : {},
+        // A filter the reader set survives the 10s poll: the plugin republishes
+        // the whole panel whenever its rows change, and a selection that reset
+        // every ten seconds would be unusable. A different panel starts fresh.
+        ...(samePanel && current.state.state !== undefined ? { state: current.state.state } : {}),
+        ...(samePanel && current.state.stateSignature !== undefined
+          ? { stateSignature: current.state.stateSignature }
+          : {}),
         editing: samePanel ? current.state.editing ?? null : null,
         width: prospectiveRightPaneWidth,
       });
@@ -10547,8 +10565,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const conn = connectionRef.current;
     if (declared && conn) {
       try {
+        const statePayload = pluginPaneStatePayload(current.model.state);
         const result = await invokePluginAction(conn, current.state.pluginId, declared, {
           ...(current.state.context ? { context: current.state.context } : {}),
+          // The filter the reader is looking at, so a declared refresh can fetch
+          // the filtered set rather than everything and let the client throw
+          // most of it away.
+          ...(statePayload ? { state: statePayload } : {}),
         });
         applyPluginOpenUrl(result, current.state.displayName);
       } catch (error) {
@@ -10837,12 +10860,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
+    // A `segmented` option. The write is local and immediate — that is the whole
+    // point of the control — so it happens before anything can fail, and a panel
+    // with no `onChange` never touches the socket at all.
+    if (interactive.kind === "state") {
+      const values = pluginPaneStateChange(current.model, interactive.stateKey, interactive.value);
+      updatePluginPaneState((state) => ({ ...state, state: values }));
+      if (!interactive.onChange) return;
+    }
+
     if (!conn) {
       addNotice("ADE runtime is still connecting.", "error");
       return;
     }
 
-    const action = interactive.action;
+    const action = interactive.kind === "state" ? interactive.onChange : interactive.action;
+    if (!action) return;
     const armKey = pluginInteractiveKey(current.model, interactive);
     if (action.confirm && pluginConfirmArmedRef.current !== armKey) {
       pluginConfirmArmedRef.current = armKey;
@@ -10852,6 +10885,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     pluginConfirmArmedRef.current = null;
 
     const args: Record<string, unknown> = { ...(action.args ?? {}) };
+    // An `onChange` is told which option was picked, named by the control's own
+    // state key — the plugin reads back exactly the key it wrote in the schema.
+    if (interactive.kind === "state") args[interactive.stateKey] = interactive.value;
     // The panel's own context rides along as `context`, the same field a socket's
     // surface context uses, so a button pressed on a context-carrying panel
     // reaches the plugin knowing what it was looking at.
@@ -10867,11 +10903,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     }
 
+    // The reader's filter selections, last so a schema cannot name an argument
+    // that would quietly replace them. A "Refresh" that did not know them would
+    // refetch a whole fleet for a reader looking at four rows of it.
+    const statePayload = pluginPaneStatePayload(
+      interactive.kind === "state"
+        ? pluginPaneStateChange(current.model, interactive.stateKey, interactive.value)
+        : current.model.state,
+    );
+    if (statePayload) args.state = statePayload;
+
     updatePluginPaneState((state) => ({ ...state, editing: null }));
     try {
       const result = await invokePluginAction(conn, current.state.pluginId, action.action, args);
       addNotice(`${interactive.label} ran.`, "success");
       applyPluginOpenUrl(result, interactive.label);
+      // A plugin may put the reader back on a filter that still has rows: after
+      // archiving everything "Active" was showing, an empty list is a puzzle and
+      // "All" is an answer. Queued before the refetch below, so the reload reads
+      // the reset selections rather than the ones they replaced.
+      const reset = pluginPaneStateReset(current.model, result);
+      if (reset) updatePluginPaneState((state) => ({ ...state, state: reset }));
       // An action may ask to be followed to another panel of its own plugin.
       // Reload rather than refresh: the destination is a different panel, and
       // it arrives with the context the action handed us.
@@ -17050,6 +17102,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         if (key.leftArrow || key.rightArrow) {
           const selected = interactives[rightSelectionIndex];
+          // A `segmented` control cycles under ←/→ as well as answering a direct
+          // press on one of its options, which is how a `select` field already
+          // behaves — one gesture for "the next one", one for "that one".
+          if (selected?.kind === "state") {
+            const values = pluginPaneStateCycle(rightPane.model, selected.stateKey, key.leftArrow ? -1 : 1);
+            updatePluginPaneState((state) => ({ ...state, state: values }));
+            return;
+          }
           if (selected?.kind === "field" && !pluginFieldUsesComposer(selected.field.kind)) {
             const raw = pluginFieldRawValue(selected.field, selected.formKey, rightPane.state.values);
             const next = cyclePluginFieldValue(selected.field, raw, key.leftArrow ? -1 : 1);

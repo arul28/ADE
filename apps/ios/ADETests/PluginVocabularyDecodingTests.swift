@@ -2012,6 +2012,432 @@ final class PluginVocabularyDecodingTests: XCTestCase {
 /// what a panel schema means, but what a plugin's ANSWER means and what a
 /// panel row says the pane may do. Both are places where a client silently
 /// dropping something the other three honour is the whole failure mode.
+/// Client-evaluated panel state: the `segmented` control and the `where` clause.
+///
+/// The cases mirror the ones the shared TypeScript module is held to
+/// (`apps/desktop/src/shared/plugins/vocabularyState.ts`), because the whole
+/// point of the contract is that one schema and one set of rows produce the same
+/// visible list on the phone, the desktop, the web client and the terminal. A
+/// divergence here is a filter that keeps a row on one surface and drops it on
+/// another, which is worse than no filter at all.
+final class PluginVocabPanelStateTests: XCTestCase {
+  private func parse(_ json: String) -> PluginPanelParseResult {
+    PluginPanelParser.parse(json)
+  }
+
+  private func panel(_ result: PluginPanelParseResult) throws -> PluginPanelSchema {
+    guard case let .ok(schema, _) = result else {
+      throw XCTSkip("Expected a parsed panel, got \(result)")
+    }
+    return schema
+  }
+
+  /// A `where`, parsed the way `parseBinding` parses one, plus its warnings.
+  private func predicates(_ json: String) -> ([PluginVocabPredicate]?, [PluginVocabWarning]) {
+    let raw = try? JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed])
+    var context = PluginPanelParser.ParseContext()
+    let parsed = PluginPanelParser.parseWhere(raw, path: "body[0].bind.where", context: &context)
+    return (parsed, context.warnings)
+  }
+
+  private let fleet: [[String: Any]] = [
+    ["title": "bc-1f4a", "statusGroup": "active", "archivedGroup": "live"],
+    ["title": "bc-90de", "statusGroup": "active", "archivedGroup": "live"],
+    ["title": "bc-77b2", "statusGroup": "failed", "archivedGroup": "live"],
+    ["title": "bc-3ac1", "statusGroup": "finished", "archivedGroup": "live"],
+    ["title": "bc-0092", "statusGroup": "finished", "archivedGroup": "archived"],
+  ]
+
+  private func kept(_ json: String, state: PluginVocabPanelState = [:]) -> [String] {
+    let (parsed, _) = predicates(json)
+    return PluginVocabState.filter(parsed, fleet, state: state) { $0 }
+      .compactMap { $0["title"] as? String }
+  }
+
+  // MARK: - The control
+
+  func testASegmentedNodeParsesItsOptionsDefaultAndStateKey() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "Fleet", "text": "Open ADE to see the fleet." },
+      "body": [
+        {
+          "component": "segmented",
+          "stateKey": "statusFilter",
+          "label": "Status",
+          "default": "active",
+          "options": [
+            { "value": "", "label": "All", "badge": 5 },
+            { "value": "active", "label": "Active" },
+            { "value": "active", "label": "A duplicate nobody can reach" },
+            { "value": "failed" }
+          ]
+        }
+      ]
+    }
+    """#))
+
+    guard case let .segmented(control) = schema.body[0] else { return XCTFail("expected a segmented node") }
+    XCTAssertEqual(control.stateKey, "statusFilter")
+    XCTAssertEqual(control.label, "Status")
+    XCTAssertEqual(control.initial, "active")
+    // A duplicate value collapses, and an option with no label falls back to its
+    // own value. A numeric badge reads as its digits rather than dropping.
+    XCTAssertEqual(control.options.map(\.value), ["", "active", "failed"])
+    XCTAssertEqual(control.options.map(\.label), ["All", "Active", "failed"])
+    XCTAssertEqual(control.options.first?.badge, "5")
+    XCTAssertTrue(PluginRenderSupport.isRenderable(schema.body[0]))
+  }
+
+  func testAControlWithNothingToChooseIsInvalidRatherThanStuck() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "F", "text": "f" },
+      "body": [
+        { "component": "segmented", "stateKey": "only", "options": [{ "value": "a", "label": "A" }] },
+        { "component": "segmented", "stateKey": "$context", "options": [
+          { "value": "a", "label": "A" }, { "value": "b", "label": "B" }
+        ] },
+        { "component": "text", "text": "still here" }
+      ]
+    }
+    """#))
+
+    // One option is not a choice, and `$` is ADE's. Both are node-local
+    // failures: the panel keeps everything else.
+    XCTAssertEqual(schema.body[0].componentName, "segmented")
+    if case .invalid = schema.body[0] {} else { XCTFail("one option must not parse") }
+    if case .invalid = schema.body[1] {} else { XCTFail("a `$` state key must not parse") }
+    XCTAssertEqual(schema.body[2], .text(PluginVocabText(text: "still here")))
+  }
+
+  func testAToggleWithMoreThanTwoOptionsFallsBackToSegmented() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "F", "text": "f" },
+      "body": [
+        { "component": "segmented", "stateKey": "k", "style": "toggle", "options": [
+          { "value": "a", "label": "A" }, { "value": "b", "label": "B" }, { "value": "c", "label": "C" }
+        ] },
+        { "component": "segmented", "stateKey": "j", "style": "toggle", "options": [
+          { "value": "a", "label": "A" }, { "value": "b", "label": "B" }
+        ] }
+      ]
+    }
+    """#))
+
+    // Drawing three options as a switch would hide one, so the declaration loses.
+    guard case let .segmented(three) = schema.body[0], case let .segmented(two) = schema.body[1] else {
+      return XCTFail("expected two segmented nodes")
+    }
+    XCTAssertEqual(three.style, .segmented)
+    XCTAssertEqual(two.style, .toggle)
+  }
+
+  // MARK: - The predicate
+
+  func testEqualityFoldsIntoMembershipAndAStateReferenceIsItsOwnOperand() {
+    let (parsed, warnings) = predicates(#"""
+    [
+      { "field": "statusGroup", "equals": "active" },
+      { "field": "statusGroup", "notEquals": ["failed", "failed"] },
+      { "field": "statusGroup", "equals": { "$state": "statusFilter" } }
+    ]
+    """#)
+
+    XCTAssertEqual(warnings, [])
+    XCTAssertEqual(parsed?.count, 3)
+    XCTAssertEqual(parsed?[0], .compare(op: .membership, field: "statusGroup", values: ["active"], stateKey: nil))
+    // `notEquals` folds the same way, and a repeated literal is one literal.
+    XCTAssertEqual(parsed?[1], .compare(op: .exclusion, field: "statusGroup", values: ["failed"], stateKey: nil))
+    XCTAssertEqual(parsed?[2], .compare(op: .membership, field: "statusGroup", values: nil, stateKey: "statusFilter"))
+  }
+
+  func testAClauseWithNoOperatorOrTwoOfThemIsDroppedWithAWarning() {
+    let (none, noneWarnings) = predicates(#"[{ "field": "statusGroup" }]"#)
+    XCTAssertNil(none)
+    XCTAssertEqual(noneWarnings.map(\.code), [.invalidBinding])
+
+    let (both, bothWarnings) = predicates(#"[{ "field": "statusGroup", "equals": "a", "in": ["b"] }]"#)
+    XCTAssertNil(both)
+    XCTAssertEqual(bothWarnings.map(\.code), [.invalidBinding])
+
+    // A `where` that parsed to nothing is an UNFILTERED binding, not an empty
+    // one: a filter that fails shows too much, never too little.
+    XCTAssertEqual(kept(#"[{ "field": "statusGroup" }]"#).count, 5)
+  }
+
+  func testALiteralFilterKeepsTheRowsItNames() {
+    XCTAssertEqual(kept(#"[{ "field": "statusGroup", "in": ["failed", "finished"] }]"#),
+                   ["bc-77b2", "bc-3ac1", "bc-0092"])
+    XCTAssertEqual(kept(#"[{ "field": "archivedGroup", "notIn": ["archived"] }]"#),
+                   ["bc-1f4a", "bc-90de", "bc-77b2", "bc-3ac1"])
+    // Two top-level clauses are ANDed.
+    XCTAssertEqual(kept(#"""
+    [
+      { "field": "statusGroup", "equals": "finished" },
+      { "field": "archivedGroup", "equals": "live" }
+    ]
+    """#), ["bc-3ac1"])
+  }
+
+  func testAStateDrivenFilterFollowsTheReadersSelection() {
+    let clause = #"[{ "field": "statusGroup", "equals": { "$state": "statusFilter" } }]"#
+    XCTAssertEqual(kept(clause, state: ["statusFilter": "active"]), ["bc-1f4a", "bc-90de"])
+    XCTAssertEqual(kept(clause, state: ["statusFilter": "failed"]), ["bc-77b2"])
+  }
+
+  func testAnUnsetOrUndeclaredStateKeyIsInactiveRatherThanFalse() {
+    let clause = #"[{ "field": "statusGroup", "equals": { "$state": "statusFilter" } }]"#
+    // "All" is the empty value. Inactive, so every row survives — this is what
+    // lets one option list express "turn this filter off".
+    XCTAssertEqual(kept(clause, state: ["statusFilter": ""]).count, 5)
+    // A key no control declared reads the same way: a typo must not hide the
+    // whole list.
+    XCTAssertEqual(kept(clause, state: [:]).count, 5)
+    // And an inactive clause is not a vote inside a composer either.
+    XCTAssertEqual(kept(#"""
+    [
+      {
+        "and": [
+          { "field": "statusGroup", "equals": { "$state": "statusFilter" } },
+          { "field": "archivedGroup", "equals": "archived" }
+        ]
+      }
+    ]
+    """#, state: [:]), ["bc-0092"])
+  }
+
+  func testComposedClausesEvaluateAsTheyRead() {
+    XCTAssertEqual(kept(#"""
+    [
+      {
+        "or": [
+          { "field": "statusGroup", "in": ["failed"] },
+          {
+            "and": [
+              { "field": "statusGroup", "equals": "finished" },
+              { "field": "archivedGroup", "notEquals": "archived" }
+            ]
+          }
+        ]
+      }
+    ]
+    """#), ["bc-77b2", "bc-3ac1"])
+
+    XCTAssertEqual(kept(#"[{ "not": { "field": "statusGroup", "equals": "active" } }]"#),
+                   ["bc-77b2", "bc-3ac1", "bc-0092"])
+    // A `not` of an inactive clause is itself inactive, not `true` — negating
+    // "this filter is off" must not start filtering.
+    XCTAssertEqual(kept(#"[{ "not": { "field": "statusGroup", "equals": { "$state": "unset" } } }]"#).count, 5)
+  }
+
+  func testAClauseNestedPastTheDepthLimitIsRefused() {
+    let (parsed, warnings) = predicates(#"""
+    [{ "and": [{ "or": [{ "not": { "field": "statusGroup", "equals": "active" } }] }] }]
+    """#)
+
+    XCTAssertNil(parsed, "A clause at depth four must not parse.")
+    XCTAssertTrue(warnings.contains { $0.message.contains("nest at most") })
+    // Depth three is the ceiling and still parses.
+    let (deep, deepWarnings) = predicates(#"""
+    [{ "and": [{ "not": { "field": "statusGroup", "equals": "active" } }] }]
+    """#)
+    XCTAssertNotNil(deep)
+    XCTAssertEqual(deepWarnings, [])
+  }
+
+  func testATypedFieldComparesAsItsJSONWordsAndAnObjectMatchesNothing() {
+    let rows: [[String: Any]] = [
+      ["id": "a", "archived": false, "count": 3],
+      ["id": "b", "archived": true, "count": 4],
+      ["id": "c", "nested": ["deep": 1]],
+    ]
+    func keep(_ json: String) -> [String] {
+      let raw = try? JSONSerialization.jsonObject(with: Data(json.utf8), options: [.fragmentsAllowed])
+      var context = PluginPanelParser.ParseContext()
+      let parsed = PluginPanelParser.parseWhere(raw, path: "p", context: &context)
+      return PluginVocabState.filter(parsed, rows, state: [:]) { $0 }.compactMap { $0["id"] as? String }
+    }
+
+    // A plugin writing `archived: false` and filtering on `"false"` must match:
+    // this is the predicate coercion, not the display one that says "No".
+    XCTAssertEqual(keep(#"[{ "field": "archived", "equals": false }]"#), ["a"])
+    XCTAssertEqual(keep(#"[{ "field": "archived", "equals": "true" }]"#), ["b"])
+    XCTAssertEqual(keep(#"[{ "field": "count", "equals": 3 }]"#), ["a"])
+    // An object has no text form a plugin could have meant.
+    XCTAssertEqual(keep(#"[{ "field": "nested", "equals": "deep" }]"#), [])
+  }
+
+  // MARK: - Lifecycle
+
+  private func controls(_ body: String) throws -> [PluginVocabStateDeclaration] {
+    let schema = try panel(parse(#"{ "v": 1, "fallback": { "title": "F", "text": "f" }, "body": \#(body) }"#))
+    return PluginVocabState.declarations(in: schema.body)
+  }
+
+  func testDeclarationsAreCollectedThroughStacksFirstOneWinningAndCapped() throws {
+    let found = try controls(#"""
+    [
+      { "component": "stack", "children": [
+        { "component": "segmented", "stateKey": "a", "options": [
+          { "value": "", "label": "All" }, { "value": "x", "label": "X" }] }
+      ] },
+      { "component": "segmented", "stateKey": "a", "default": "y", "options": [
+        { "value": "", "label": "All" }, { "value": "y", "label": "Y" }] },
+      { "component": "segmented", "stateKey": "b", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "c", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "d", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "e", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] }
+    ]
+    """#)
+
+    // First declaration wins — it is the control highest on the page, and its
+    // default is the one a reader assumes is in force. Four is the ceiling.
+    XCTAssertEqual(found.map(\.stateKey), ["a", "b", "c", "d"])
+    XCTAssertEqual(found.first?.options.map(\.value), ["", "x"])
+    XCTAssertEqual(PluginVocabState.initialState(found), ["a": "", "b": "", "c": "", "d": ""])
+  }
+
+  func testTheSignatureFollowsTheControlsAndNotTheData() throws {
+    let one = try controls(#"""
+    [{ "component": "segmented", "stateKey": "a", "options": [
+      { "value": "", "label": "All", "badge": 4 }, { "value": "x", "label": "X" }] }]
+    """#)
+    // Same keys, same option values, different badges and labels: the panel
+    // republished its counts, and the reader's selection must survive that.
+    let counted = try controls(#"""
+    [{ "component": "segmented", "stateKey": "a", "options": [
+      { "value": "", "label": "Everything", "badge": 9 }, { "value": "x", "label": "X" }] }]
+    """#)
+    let narrowed = try controls(#"""
+    [{ "component": "segmented", "stateKey": "a", "options": [
+      { "value": "", "label": "All" }] }]
+    """#)
+
+    XCTAssertEqual(PluginVocabState.signature(one), PluginVocabState.signature(counted))
+    XCTAssertNotEqual(PluginVocabState.signature(one), PluginVocabState.signature(narrowed))
+  }
+
+  func testNormalizingDropsUnknownKeysAndValuesTheControlNoLongerOffers() throws {
+    let found = try controls(#"""
+    [{ "component": "segmented", "stateKey": "a", "options": [
+      { "value": "", "label": "All" }, { "value": "x", "label": "X" }] }]
+    """#)
+
+    XCTAssertEqual(PluginVocabState.normalize(["a": "x", "gone": "y"], declarations: found), ["a": "x"])
+    XCTAssertEqual(PluginVocabState.normalize(["a": "vanished"], declarations: found), ["a": ""])
+  }
+
+  func testApplyingAChangeRefusesAValueTheReaderWasNeverOffered() throws {
+    let found = try controls(#"""
+    [{ "component": "segmented", "stateKey": "a", "options": [
+      { "value": "", "label": "All" }, { "value": "x", "label": "X" }] }]
+    """#)
+    guard let declaration = found.first else { return XCTFail("expected one control") }
+
+    XCTAssertEqual(PluginVocabState.apply(["a": ""], declaration: declaration, value: "x"), ["a": "x"])
+    XCTAssertEqual(PluginVocabState.apply(["a": ""], declaration: declaration, value: "invented"), ["a": ""])
+  }
+
+  func testTheStateReadsBackAsRowsCarryingTheChosenOptionsLabel() throws {
+    let found = try controls(#"""
+    [{ "component": "segmented", "stateKey": "a", "label": "Status", "options": [
+      { "value": "", "label": "All" }, { "value": "x", "label": "Running" }] }]
+    """#)
+
+    // The option's LABEL, not the raw value: a reader wants "Status: Running",
+    // and "Status: x" is the machine's half of the same fact.
+    XCTAssertEqual(PluginVocabState.rows(found, state: ["a": "x"]).map(\.value), ["Running"])
+    XCTAssertEqual(PluginVocabState.rows(found, state: ["a": "x"]).map(\.key), ["Status"])
+    XCTAssertEqual(PluginVocabState.rows(found, state: [:]).map(\.value), ["All"])
+  }
+
+  func testAnActionCanPutTheReaderBackOnADefaultFilter() throws {
+    let found = try controls(#"""
+    [
+      { "component": "segmented", "stateKey": "a", "options": [
+        { "value": "", "label": "All" }, { "value": "x", "label": "X" }] },
+      { "component": "segmented", "stateKey": "b", "options": [
+        { "value": "", "label": "All" }, { "value": "y", "label": "Y" }] }
+    ]
+    """#)
+    let chosen: PluginVocabPanelState = ["a": "x", "b": "y"]
+
+    XCTAssertEqual(PluginVocabState.reset(chosen, declarations: found, reset: .all), ["a": "", "b": ""])
+    XCTAssertEqual(
+      PluginVocabState.reset(chosen, declarations: found, reset: PluginInvokeStateReset(keys: ["a"])!),
+      ["a": "", "b": "y"]
+    )
+    // A key nothing declares changes nothing.
+    XCTAssertEqual(
+      PluginVocabState.reset(chosen, declarations: found, reset: PluginInvokeStateReset(keys: ["zzz"])!),
+      chosen
+    )
+    XCTAssertNil(PluginInvokeStateReset(keys: []))
+  }
+
+  func testResetStateIsReadOffTheHandlerResultInBothShapes() throws {
+    func result(_ json: String) throws -> PluginInvokeResult {
+      try JSONDecoder().decode(PluginInvokeResult.self, from: Data(json.utf8))
+    }
+
+    XCTAssertEqual(try result(#"{ "ok": true, "result": { "resetState": true } }"#).resetState, .all)
+    XCTAssertEqual(
+      try result(#"{ "ok": true, "result": { "resetState": ["a", "a", "b"] } }"#).resetState,
+      .keys(["a", "b"])
+    )
+    // `false`, an empty list, and nothing at all all mean "the action said
+    // nothing about state".
+    XCTAssertNil(try result(#"{ "ok": true, "result": { "resetState": false } }"#).resetState)
+    XCTAssertNil(try result(#"{ "ok": true, "result": { "resetState": [] } }"#).resetState)
+    XCTAssertNil(try result(#"{ "ok": true, "result": { "message": "done" } }"#).resetState)
+  }
+
+  func testThePayloadIsOmittedForAPanelWithNoControls() {
+    XCTAssertNil(PluginVocabState.payload([:]))
+    XCTAssertEqual(PluginVocabState.payload(["a": "x"]), ["a": "x"])
+  }
+
+  func testABindingCarriesItsWhereAndAFilterCapsAfterItFilters() throws {
+    let schema = try panel(parse(#"""
+    {
+      "v": 1,
+      "fallback": { "title": "F", "text": "f" },
+      "body": [
+        {
+          "component": "list",
+          "bind": {
+            "collection": "agents",
+            "limit": 2,
+            "where": [{ "field": "statusGroup", "equals": { "$state": "statusFilter" } }]
+          }
+        }
+      ]
+    }
+    """#))
+
+    guard case let .list(list) = schema.body[0], let binding = list.bind else {
+      return XCTFail("expected a bound list")
+    }
+    XCTAssertEqual(binding.whereClauses?.count, 1)
+    XCTAssertEqual(binding.limit, 2)
+    // The two finished agents sit fourth and fifth: capping before filtering
+    // would have searched the first two rows and found nothing.
+    let matching = PluginVocabState.filter(
+      binding.whereClauses, fleet, state: ["statusFilter": "finished"]
+    ) { $0 }
+    XCTAssertEqual(matching.prefix(2).compactMap { $0["title"] as? String }, ["bc-3ac1", "bc-0092"])
+  }
+}
+
 final class PluginActionResponseTests: XCTestCase {
   private func result(_ json: String) throws -> PluginInvokeResult {
     let data = Data(json.utf8)

@@ -17,10 +17,23 @@ import {
 import type { PluginSurfaceContext } from "../../../shared/plugins/context";
 import {
   VOCAB_CONTEXT_COLLECTION,
+  VOCAB_STATE_COLLECTION,
   bindingKey,
+  collectVocabStateDeclarations,
   distinctBindings,
+  parsePluginPanel,
+  readPluginActionResetState,
+  vocabApplyStateChange,
   vocabContextRows,
+  vocabInitialPanelState,
+  vocabNormalizePanelState,
+  vocabResetPanelState,
+  vocabStatePayload,
+  vocabStateRows,
+  vocabStateSignature,
   type VocabAction,
+  type VocabPanelState,
+  type VocabStateDeclaration,
 } from "../../../shared/plugins/vocabulary";
 import {
   readPluginActionMessage,
@@ -70,6 +83,23 @@ const INITIAL_STATE: PanelState = {
 /** How long an action's outcome banner stays up before it dismisses itself. */
 const PLUGIN_ACTION_BANNER_MS = 6_000;
 
+/**
+ * The reader's `segmented` selections, plus the identity of the controls they
+ * belong to.
+ *
+ * The signature is what makes the lifecycle correct in the one case that
+ * matters: a plugin refreshing its rows republishes the whole panel, often every
+ * few seconds, and a filter that reset on each of those would be unusable. Same
+ * controls means the same signature, so the selection rides through; a schema
+ * that changed its controls gets a new signature and starts over, because an
+ * option that no longer exists cannot stay selected.
+ */
+type PanelStateHolder = { signature: string; values: VocabPanelState };
+
+const EMPTY_STATE_HOLDER: PanelStateHolder = { signature: "", values: {} };
+
+const NO_DECLARATIONS: readonly VocabStateDeclaration[] = [];
+
 export function PluginPanelHost({
   pluginId,
   panelId,
@@ -114,6 +144,7 @@ export function PluginPanelHost({
   // it: a row that navigates away still owes the reader its sentence.
   const [actionMessage, setActionMessage] = React.useState<PluginActionMessage | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [panelState, setPanelState] = React.useState<PanelStateHolder>(EMPTY_STATE_HOLDER);
   const activeRef = React.useRef(active);
   activeRef.current = active;
   const contextRef = React.useRef(renderContext ?? null);
@@ -122,7 +153,59 @@ export function PluginPanelHost({
   React.useEffect(() => {
     setState(INITIAL_STATE);
     setActionMessage(null);
+    // A different panel is a different set of controls. Cleared rather than
+    // left to the signature check, so navigating away and back reads as a fresh
+    // open rather than as the same panel it happened to match.
+    setPanelState(EMPTY_STATE_HOLDER);
   }, [pluginId, panelId]);
+
+  /**
+   * The `segmented` controls this schema declares.
+   *
+   * Parsed off the stored schema rather than threaded down from the renderer:
+   * the host needs them before anything renders — to build the initial state, to
+   * validate a change, and to fill a `$state` binding — and a callback out of the
+   * render tree would make the first paint depend on a second one.
+   */
+  const declarations = React.useMemo(() => {
+    const schema = state.record?.schema;
+    if (schema === undefined) return NO_DECLARATIONS;
+    const parsed = parsePluginPanel(schema);
+    return parsed.ok ? collectVocabStateDeclarations(parsed.panel.body) : NO_DECLARATIONS;
+  }, [state.record?.schema]);
+
+  // Reconcile the held selections against the controls that are actually on
+  // screen now. Both halves matter: the signature catches a control that
+  // vanished, `vocabNormalizePanelState` catches a value inside one that did not.
+  React.useEffect(() => {
+    const signature = vocabStateSignature(declarations);
+    setPanelState((previous) => {
+      if (previous.signature === signature) return previous;
+      return {
+        signature,
+        values: previous.signature === ""
+          ? vocabInitialPanelState(declarations)
+          : vocabNormalizePanelState(previous.values, declarations),
+      };
+    });
+  }, [declarations]);
+
+  // Read by `dispatch`, which must stay referentially stable: rebuilding it on
+  // every filter change would rebuild the render context and re-render the whole
+  // panel for a value the dispatcher only reads at press time.
+  const panelStateRef = React.useRef(panelState);
+  panelStateRef.current = panelState;
+  const declarationsRef = React.useRef(declarations);
+  declarationsRef.current = declarations;
+
+  const setStateValue = React.useCallback((stateKey: string, value: string) => {
+    const declaration = declarations.find((entry) => entry.stateKey === stateKey);
+    if (!declaration) return;
+    setPanelState((previous) => {
+      const values = vocabApplyStateChange(previous.values, declaration, value);
+      return values === previous.values ? previous : { ...previous, values };
+    });
+  }, [declarations]);
 
   // Auto-dismiss. An outcome is worth reading once; left up it becomes part of
   // the panel and starts describing a press nobody remembers making. The next
@@ -170,6 +253,12 @@ export function PluginPanelHost({
               // components that already exist.
               if (binding.collection === VOCAB_CONTEXT_COLLECTION) {
                 return [bindingKey(binding), vocabContextRows(contextRef.current)] as const;
+              }
+              // `$state` is filled at RENDER, not here. Resolving it with the
+              // fetch would tie the reader's own selection to a refetch, which
+              // is the round trip this whole feature exists to remove.
+              if (binding.collection === VOCAB_STATE_COLLECTION) {
+                return [bindingKey(binding), [] as PluginCollectionRow[]] as const;
               }
               const fetched = await readPluginCollection(pluginId, panelId, binding.collection, {
                 ...(binding.keyPrefix !== undefined ? { keyPrefix: binding.keyPrefix } : {}),
@@ -220,11 +309,28 @@ export function PluginPanelHost({
       // Cleared before the call, not after it: the outcome on screen must
       // belong to the press the reader is waiting on, never to the one before.
       setActionMessage(null);
+      // The reader's filter selections ride along under `state`, beside
+      // `context`. A "Refresh" that did not know them would refetch the whole
+      // fleet for a reader looking at four rows of it, and a plugin paging an
+      // API could not page the filtered set at all. Last, so a schema cannot
+      // name an argument that would quietly replace it.
+      const statePayload = vocabStatePayload(panelStateRef.current.values);
       const result = await invokePluginAction(pluginId, action.action, {
         ...action.args,
         ...extraArgs,
         ...(context ? { context } : {}),
+        ...(statePayload ? { state: statePayload } : {}),
       });
+      // A plugin may put the reader back on a filter that still has rows — after
+      // archiving everything "Active" was showing, an empty list is a puzzle and
+      // "All" is an answer.
+      const reset = readPluginActionResetState(result);
+      if (reset) {
+        setPanelState((previous) => ({
+          ...previous,
+          values: vocabResetPanelState(previous.values, declarationsRef.current, reset),
+        }));
+      }
       // What the action said about how it went. iOS and the TUI have shown this
       // since the verb existed; desktop and the web discarded it, so one line of
       // plugin copy reached two clients out of four.
@@ -253,9 +359,44 @@ export function PluginPanelHost({
     [onNavigate, pluginId, renderContext, surfaceContext],
   );
 
+  /**
+   * The fetched rows, with every `$state` binding filled from the live
+   * selections.
+   *
+   * Overlaid here rather than fetched, because this is the one collection whose
+   * content changes without any data changing. A `keyValue` bound to `$state`
+   * renders "Status: Active" and updates on the same press that re-filters the
+   * list beside it.
+   */
+  const rowsByBinding = React.useMemo(() => {
+    if (declarations.length === 0) return state.rows;
+    // `bindingKey` joins the collection and the key prefix with a NUL, so this
+    // matches every `$state` binding whatever prefix it declared — a prefix
+    // means nothing for a collection ADE synthesizes.
+    const statePrefix = bindingKey({ collection: VOCAB_STATE_COLLECTION });
+    const stateBindings = [...state.rows.keys()].filter((key) => key.startsWith(statePrefix));
+    if (stateBindings.length === 0) return state.rows;
+    const merged = new Map(state.rows);
+    const rows = vocabStateRows(declarations, panelState.values).map((row) => ({
+      collection: VOCAB_STATE_COLLECTION,
+      key: row.key,
+      value: row,
+      updatedAt: "",
+    }));
+    for (const key of stateBindings) merged.set(key, rows);
+    return merged;
+  }, [declarations, panelState.values, state.rows]);
+
   const context = React.useMemo(
-    () => ({ pluginId, rowsByBinding: state.rows, dispatch, active }),
-    [active, dispatch, pluginId, state.rows],
+    () => ({
+      pluginId,
+      rowsByBinding,
+      dispatch,
+      active,
+      state: panelState.values,
+      setStateValue,
+    }),
+    [active, dispatch, panelState.values, pluginId, rowsByBinding, setStateValue],
   );
 
   // Declared on the manifest and stamped onto the stored schema by the writer,
