@@ -12,6 +12,7 @@ import type {
   LaneMountPointConfig,
   LaneCopyPathConfig,
   LaneDockerConfig,
+  LaneSetupScriptConfig,
   LaneOverlayOverrides,
   LaneSummary
 } from "../../../shared/types";
@@ -22,7 +23,15 @@ import {
   secureCopyPathIntoRoot,
   secureWriteFileWithinRoot,
 } from "../shared/utils";
-import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import {
+  isWindowsPowerShellScript,
+  quoteWindowsCmdArg,
+  resolveCliSpawnInvocation,
+  resolveWindowsCmdLineInvocation,
+  terminateProcessTree,
+  type SpawnInvocation,
+} from "../shared/processExecution";
+import { resolveSetupScriptConfig } from "./laneTemplateService";
 
 /** Resolve a relative path against `root` and throw if it escapes.  Logs a warning on escape. */
 function resolveCheckedPath(
@@ -121,7 +130,8 @@ function cloneEnvInitConfig(config: LaneEnvInitConfig): LaneEnvInitConfig {
     ...(docker ? { docker } : {}),
     ...(config.dependencies ? { dependencies: [...config.dependencies] } : {}),
     ...(config.mountPoints ? { mountPoints: [...config.mountPoints] } : {}),
-    ...(config.copyPaths ? { copyPaths: [...config.copyPaths] } : {})
+    ...(config.copyPaths ? { copyPaths: [...config.copyPaths] } : {}),
+    ...(config.setupScript ? { setupScript: { ...config.setupScript } } : {})
   };
 }
 
@@ -138,7 +148,11 @@ function mergeLaneEnvInitConfig(
     ...(docker ? { docker } : {}),
     dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
     mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
-    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])]
+    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
+    // A lane runs one setup script; the more specific config (overlay/template) wins.
+    ...(next.setupScript ?? current.setupScript
+      ? { setupScript: { ...(next.setupScript ?? current.setupScript) } }
+      : {})
   };
 }
 
@@ -152,6 +166,50 @@ function sanitizeLaneToken(value: string): string {
 
 function buildDockerProjectName(laneId: string, projectPrefix = "ade"): string {
   return `${projectPrefix}-${sanitizeLaneToken(laneId)}`;
+}
+
+/** Quote a single path so a POSIX shell sees it as one literal argument. */
+function quotePosixShellArg(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Setup scripts are user-authored shell lines, not argv — they legitimately use
+ * pipes, `&&`, and variable expansion — so they run through the platform shell
+ * rather than a bare spawn. Windows goes through the canonical
+ * `resolveWindowsCmdLineInvocation` helper (ComSpec + `/d /s /c` +
+ * `windowsVerbatimArguments`) so `%VAR%` expands the way the template UI
+ * promises.
+ */
+function resolveShellInvocation(
+  commandLine: string,
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): SpawnInvocation {
+  if (platform === "win32") return resolveWindowsCmdLineInvocation(commandLine, env);
+  return { command: "/bin/sh", args: ["-c", commandLine], windowsVerbatimArguments: false };
+}
+
+/** Build the shell line that invokes a resolved setup script file. */
+function buildScriptInvocationLine(
+  scriptPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  if (platform !== "win32") return quotePosixShellArg(scriptPath);
+  // `.ps1` cannot be launched by cmd.exe; PowerShell has to interpret it.
+  if (isWindowsPowerShellScript(scriptPath, platform)) {
+    return [
+      "powershell.exe",
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      quoteWindowsCmdArg(scriptPath),
+    ].join(" ");
+  }
+  return quoteWindowsCmdArg(scriptPath);
 }
 
 export function createLaneEnvironmentService({
@@ -221,21 +279,16 @@ export function createLaneEnvironmentService({
     }
   }
 
-  function execCommand(
-    command: string[],
+  function runSpawn(
+    invocation: SpawnInvocation,
     cwd: string,
-    timeoutMs = 120_000
+    env: NodeJS.ProcessEnv,
+    timeoutMs: number
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     return new Promise((resolve) => {
-      const [cmd, ...args] = command;
-      if (!cmd) {
-        resolve({ exitCode: 1, stdout: "", stderr: "Missing command" });
-        return;
-      }
-      const invocation = resolveCliSpawnInvocation(cmd, args, process.env);
       const child = spawn(invocation.command, invocation.args, {
         cwd,
-        env: process.env,
+        env,
         stdio: ["ignore", "pipe", "pipe"],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
         windowsHide: true,
@@ -267,6 +320,27 @@ export function createLaneEnvironmentService({
         resolve({ exitCode: code ?? 1, stdout, stderr });
       });
     });
+  }
+
+  function execCommand(
+    command: string[],
+    cwd: string,
+    timeoutMs = 120_000
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const [cmd, ...args] = command;
+    if (!cmd) {
+      return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Missing command" });
+    }
+    return runSpawn(resolveCliSpawnInvocation(cmd, args, process.env), cwd, process.env, timeoutMs);
+  }
+
+  function execShellCommand(
+    commandLine: string,
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+    timeoutMs: number
+  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    return runSpawn(resolveShellInvocation(commandLine, env), cwd, env, timeoutMs);
   }
 
   async function copyEnvFiles(
@@ -424,6 +498,64 @@ export function createLaneEnvironmentService({
     }
   }
 
+  /** Timeout per setup command / script, matching the Docker step's budget. */
+  const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
+
+  /**
+   * Run the template's setup script as the final init step: each configured
+   * command in order, then the script file if one is configured. Fail-fast like
+   * every other step — the first non-zero exit returns an error excerpt.
+   */
+  async function runSetupScript(
+    worktreePath: string,
+    setupScript: LaneSetupScriptConfig,
+    laneVars: Record<string, string>,
+    laneId: string
+  ): Promise<string | null> {
+    const resolved = resolveSetupScriptConfig(setupScript);
+    if (!resolved) return null;
+
+    const env: NodeJS.ProcessEnv = { ...process.env, ...laneVars };
+    if (resolved.injectPrimaryPath) {
+      // The primary lane's root is the project checkout ADE manages lanes from.
+      env.PRIMARY_WORKTREE_PATH = projectRoot;
+    }
+
+    const lines = [...resolved.commands];
+
+    if (resolved.scriptPath) {
+      const scriptPath = resolveCheckedPath(
+        projectRoot,
+        resolved.scriptPath,
+        logger,
+        "lane_env_init.setup_script_path_escape",
+        { scriptPath: resolved.scriptPath, projectRoot },
+        { allowMissing: true },
+      );
+      if (!fs.existsSync(scriptPath)) {
+        logger.warn("lane_env_init.setup_script_missing", { laneId, scriptPath: resolved.scriptPath });
+        return `Setup script not found: ${resolved.scriptPath}`;
+      }
+      lines.push(buildScriptInvocationLine(scriptPath));
+    }
+
+    for (const line of lines) {
+      const result = await execShellCommand(line, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
+      if (result.exitCode !== 0) {
+        const detail = (result.stderr.trim() || result.stdout.trim()).slice(0, 500);
+        logger.warn("lane_env_init.setup_script_failed", {
+          laneId,
+          command: line,
+          exitCode: result.exitCode,
+          stderr: detail,
+        });
+        return `${line}: ${detail || `exited with code ${result.exitCode}`}`;
+      }
+      logger.debug("lane_env_init.setup_script_command_ok", { laneId, command: line });
+    }
+    return null;
+  }
+
   function buildLaneVars(lane: LaneSummary, overrides: LaneOverlayOverrides): Record<string, string> {
     const slug = lane.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "lane";
     const portStart = overrides.portRange?.start ?? 3000;
@@ -451,7 +583,8 @@ export function createLaneEnvironmentService({
       ...(config.docker ? { docker: config.docker } : {}),
       ...(config.dependencies?.length ? { dependencies: config.dependencies } : {}),
       ...(config.mountPoints?.length ? { mountPoints: config.mountPoints } : {}),
-      ...(config.copyPaths?.length ? { copyPaths: config.copyPaths } : {})
+      ...(config.copyPaths?.length ? { copyPaths: config.copyPaths } : {}),
+      ...(resolveSetupScriptConfig(config.setupScript) ? { setupScript: config.setupScript } : {})
     };
 
     return Object.keys(normalized).length > 0 ? normalized : undefined;
@@ -482,6 +615,13 @@ export function createLaneEnvironmentService({
       }
       if (config.copyPaths && config.copyPaths.length > 0) {
         steps.push(makeStep("copy-paths", `Copy ${config.copyPaths.length} path(s)`));
+      }
+      // Resolved up front so an unconfigured (or platform-empty) setup script
+      // never shows up as an empty step.
+      const resolvedSetupScript = resolveSetupScriptConfig(config.setupScript);
+      if (resolvedSetupScript) {
+        const commandCount = resolvedSetupScript.commands.length + (resolvedSetupScript.scriptPath ? 1 : 0);
+        steps.push(makeStep("setup-script", `Run setup script (${commandCount} command(s))`));
       }
 
       if (steps.length === 0) {
@@ -553,6 +693,15 @@ export function createLaneEnvironmentService({
           setupCopyPaths(lane.worktreePath, paths);
           return null;
         });
+        if (!ok) return progress;
+      }
+
+      // Step 6: Setup script (user-authored shell commands, last so it can rely
+      // on env files, services, dependencies, mounts, and copies being in place)
+      if (resolvedSetupScript && config.setupScript) {
+        const setupScript = config.setupScript;
+        const ok = await runStep(progress, lane.id, "setup-script", () =>
+          runSetupScript(lane.worktreePath, setupScript, laneVars, lane.id));
         if (!ok) return progress;
       }
 

@@ -4,6 +4,7 @@ import {
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
   restoreRecreatedLaneRuntime,
+  teardownArchivedLaneEnvironment,
 } from "./laneRuntimeLifecycle";
 
 const lane = {
@@ -76,6 +77,45 @@ describe("lane runtime lifecycle", () => {
       { envFiles: [] },
       { portRange: { start: 4100, end: 4199 } },
     );
+  });
+
+  it("tears down the lane docker environment when a lane is archived", async () => {
+    const cleanupLaneEnvironment = vi.fn(async () => {});
+    await teardownArchivedLaneEnvironment({
+      laneService: laneService(),
+      projectConfigService: {
+        getEffective: () => ({
+          laneEnvInit: { docker: { composePath: "docker-compose.yml" } },
+          laneOverlayPolicies: [],
+        }),
+      },
+      laneEnvironmentService: {
+        resolveEnvInitConfig: (config) => config,
+        initLaneEnvironment: vi.fn(async () => {}),
+        cleanupLaneEnvironment,
+      },
+    }, lane.id);
+
+    expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, {
+      docker: { composePath: "docker-compose.yml" },
+    });
+  });
+
+  it("skips archive teardown when the lane has no docker services", async () => {
+    const cleanupLaneEnvironment = vi.fn(async () => {});
+    await teardownArchivedLaneEnvironment({
+      laneService: laneService(),
+      projectConfigService: {
+        getEffective: () => ({ laneEnvInit: { envFiles: [] }, laneOverlayPolicies: [] }),
+      },
+      laneEnvironmentService: {
+        resolveEnvInitConfig: (config) => config,
+        initLaneEnvironment: vi.fn(async () => {}),
+        cleanupLaneEnvironment,
+      },
+    }, lane.id);
+
+    expect(cleanupLaneEnvironment).not.toHaveBeenCalled();
   });
 
   it("removes the proxy route and releases an active lease", () => {

@@ -323,6 +323,27 @@ describe("laneTemplateService", () => {
       expect(result.dependencies).toEqual([{ command: ["npm", "install"] }]);
       expect(result.docker).toBeUndefined();
       expect(result.mountPoints).toBeUndefined();
+      expect(result.setupScript).toBeUndefined();
+    });
+
+    it("carries the setup script into env init so it actually runs", () => {
+      const snapshot = makeSnapshot();
+      const service = createLaneTemplateService({
+        projectConfigService: makeProjectConfigService(snapshot),
+        logger,
+      });
+
+      const template = makeTemplate({
+        id: "tpl-setup",
+        name: "With setup script",
+        setupScript: { commands: ["npm run bootstrap"], injectPrimaryPath: true },
+      });
+
+      const result = service.resolveTemplateAsEnvInit(template);
+      expect(result.setupScript).toEqual({
+        commands: ["npm run bootstrap"],
+        injectPrimaryPath: true,
+      });
     });
 
     it("with all fields populated", () => {

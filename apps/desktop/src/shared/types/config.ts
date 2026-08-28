@@ -56,7 +56,7 @@ export type LaneOverlayOverrides = {
 
 // --- Lane Environment Init types (Phase 5 W1) ---
 
-export type LaneEnvInitStepKind = "env-files" | "docker" | "dependencies" | "mount-points" | "copy-paths";
+export type LaneEnvInitStepKind = "env-files" | "docker" | "dependencies" | "mount-points" | "copy-paths" | "setup-script";
 
 export type LaneEnvInitStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
@@ -131,6 +131,12 @@ export type LaneEnvInitConfig = {
   mountPoints?: LaneMountPointConfig[];
   /** Files and directories to copy from project root into the worktree */
   copyPaths?: LaneCopyPathConfig[];
+  /**
+   * Shell commands / script to run after every other init step completes.
+   * Carried here (not only on the template) so every path that runs env init —
+   * lane create, applyTemplate, initEnv, unarchive-with-recreate — executes it.
+   */
+  setupScript?: LaneSetupScriptConfig;
 };
 
 export type LaneOverlayPolicy = {

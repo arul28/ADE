@@ -1193,6 +1193,15 @@ export function createLaneService({
   // lane service. Best-effort: failures are swallowed, never blocking creation.
   let onWorktreeLaneCreated: ((lane: LaneSummary) => void | Promise<void>) | null = null;
 
+  // Late-bound hook that tears down a lane's environment (Docker Compose stack)
+  // when the lane is archived. Set via `setOnLaneArchivedEnvTeardown` because
+  // `laneEnvironmentService` is constructed after the lane service. Lives here
+  // rather than at each caller because archive is reached from the IPC handler,
+  // the action-domain registry, the sync command service, the PR service, and
+  // storage auto-archive — one list, not six. Best-effort: a failed `compose
+  // down` warns and never fails the archive.
+  let onLaneArchivedEnvTeardown: ((laneId: string) => Promise<void>) | null = null;
+
   const resolveSessionTitle = (sessionId: string): string | null => {
     const id = sessionId.trim();
     if (!id) return null;
@@ -6645,7 +6654,9 @@ export function createLaneService({
         if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
           throw new Error("ADE will not reclaim generated data through a symbolic link.");
         }
-        await laneServiceApi.archive({ laneId: args.laneId });
+        // `teardownEnv` below already runs the environment cleanup for this
+        // path; skip the archive hook so `compose down` does not run twice.
+        await laneServiceApi.archive({ laneId: args.laneId }, { skipEnvTeardown: true });
         runtimeOpts?.onArchived?.();
         db.run(
           `insert into local_lane_storage_state(
@@ -6806,7 +6817,10 @@ export function createLaneService({
      * Async for that reason, and the same teardown steps `delete` and
      * `archiveAndReclaim` already run — one list, not three.
      */
-    async archive({ laneId }: { laneId: string }): Promise<void> {
+    async archive(
+      { laneId }: { laneId: string },
+      internalOpts?: { skipEnvTeardown?: boolean },
+    ): Promise<void> {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       if (row.lane_type === "primary") {
@@ -6829,6 +6843,20 @@ export function createLaneService({
       // Before the status write, so a teardown failure leaves the lane visible
       // and still owned rather than hidden with live processes behind it.
       await stopLaneRuntimeWork(laneId);
+
+      // Docker services the lane's env init started come down with it, keeping
+      // archive symmetric with the `compose up` that unarchive-with-recreate
+      // re-runs. Best-effort: archive still succeeds if teardown fails.
+      if (internalOpts?.skipEnvTeardown !== true && onLaneArchivedEnvTeardown) {
+        try {
+          await onLaneArchivedEnvTeardown(laneId);
+        } catch (error) {
+          logger.warn("lane.archive.env_teardown_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
 
       const now = new Date().toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
@@ -7498,6 +7526,14 @@ export function createLaneService({
      */
     setOnWorktreeLaneCreated(hook: ((lane: LaneSummary) => void | Promise<void>) | null): void {
       onWorktreeLaneCreated = hook ?? null;
+    },
+
+    /**
+     * Late-bind the environment teardown run when a lane is archived (Docker
+     * Compose `down`). Wired by the host once `laneEnvironmentService` exists.
+     */
+    setOnLaneArchivedEnvTeardown(hook: ((laneId: string) => Promise<void>) | null): void {
+      onLaneArchivedEnvTeardown = hook ?? null;
     },
 
 

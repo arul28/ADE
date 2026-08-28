@@ -239,6 +239,183 @@ describe("laneEnvironmentService", () => {
     });
   });
 
+  // The setup step runs real shell lines; the POSIX shell is the contract under
+  // test here, and Windows quoting is covered by the invocation helpers.
+  describe.skipIf(process.platform === "win32")("setup script", () => {
+    it("runs configured commands in the worktree with lane env vars", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-setup", name: "feature-auth", worktreePath });
+      const config: LaneEnvInitConfig = {
+        setupScript: {
+          commands: [
+            'printf "%s\\n" "$PORT|$LANE_NAME|$PRIMARY_WORKTREE_PATH|$PWD" > setup-out.txt',
+            "printf 'second\\n' >> setup-out.txt",
+          ],
+          injectPrimaryPath: true,
+        },
+      };
+
+      const service = createService();
+      const result = await service.initLaneEnvironment(lane, config, {
+        portRange: { start: 3400, end: 3499 },
+      });
+
+      expect(result.overallStatus).toBe("completed");
+      expect(result.steps.map((step) => step.kind)).toEqual(["setup-script"]);
+      const lines = fs.readFileSync(path.join(worktreePath, "setup-out.txt"), "utf-8").trim().split("\n");
+      expect(lines[1]).toBe("second");
+      const [port, laneName, primaryPath, cwd] = lines[0]!.split("|");
+      expect(port).toBe("3400");
+      expect(laneName).toBe("feature-auth");
+      expect(fs.realpathSync(primaryPath!)).toBe(fs.realpathSync(projectRoot));
+      expect(fs.realpathSync(cwd!)).toBe(fs.realpathSync(worktreePath));
+    });
+
+    it("omits PRIMARY_WORKTREE_PATH unless the template opts in", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-noinject");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-setup-noinject", name: "no-inject", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        { setupScript: { commands: ['printf "[%s]" "$PRIMARY_WORKTREE_PATH" > primary.txt'] } },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("completed");
+      expect(fs.readFileSync(path.join(worktreePath, "primary.txt"), "utf-8")).toBe("[]");
+    });
+
+    it("adds no step when no setup script is configured for this platform", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-none");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, ".env.template"), "PORT={{PORT}}");
+
+      const lane = makeLane({ id: "lane-setup-none", name: "none", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        {
+          envFiles: [{ source: ".env.template", dest: ".env" }],
+          setupScript: { commands: [], windowsCommands: ["echo windows-only"] },
+        },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("completed");
+      expect(result.steps.map((step) => step.kind)).toEqual(["env-files"]);
+    });
+
+    it("fails the run when a setup command exits non-zero and skips later commands", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-fail");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-setup-fail", name: "fail", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        {
+          setupScript: {
+            commands: ["echo boom 1>&2; exit 3", "touch never-ran.txt"],
+          },
+        },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("failed");
+      const step = result.steps.find((entry) => entry.kind === "setup-script");
+      expect(step?.status).toBe("failed");
+      expect(step?.error).toContain("boom");
+      expect(fs.existsSync(path.join(worktreePath, "never-ran.txt"))).toBe(false);
+    });
+
+    it("runs a configured script file after the commands", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-script");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      const scriptDir = path.join(projectRoot, "scripts");
+      fs.mkdirSync(scriptDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(scriptDir, "setup.sh"),
+        "#!/bin/sh\nprintf 'script:%s\\n' \"$LANE_SLUG\" >> order.txt\n",
+        { mode: 0o755 },
+      );
+
+      const lane = makeLane({ id: "lane-setup-script", name: "Script Lane", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        {
+          setupScript: {
+            commands: ["printf 'command\\n' > order.txt"],
+            scriptPath: "scripts/setup.sh",
+          },
+        },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("completed");
+      expect(fs.readFileSync(path.join(worktreePath, "order.txt"), "utf-8")).toBe(
+        "command\nscript:script-lane\n",
+      );
+    });
+
+    it("fails when the configured script file does not exist", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-missing");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-setup-missing", name: "missing", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        { setupScript: { scriptPath: "scripts/does-not-exist.sh" } },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("failed");
+      const step = result.steps.find((entry) => entry.kind === "setup-script");
+      expect(step?.error).toContain("scripts/does-not-exist.sh");
+    });
+
+    it("fails when the configured script path escapes the project root", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-escape");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-setup-escape", name: "escape", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        { setupScript: { scriptPath: "../outside-setup.sh" } },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("failed");
+    });
+
+    it("runs the setup script after every other init step", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-order");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, ".env.order"), "PORT={{PORT}}");
+
+      const lane = makeLane({ id: "lane-setup-order", name: "order", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        {
+          envFiles: [{ source: ".env.order", dest: ".env" }],
+          setupScript: { commands: ["cp .env .env.copied"] },
+        },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("completed");
+      expect(result.steps.map((step) => step.kind)).toEqual(["env-files", "setup-script"]);
+      expect(fs.readFileSync(path.join(worktreePath, ".env.copied"), "utf-8")).toContain("PORT=3000");
+    });
+  });
+
   describe("resolveEnvInitConfig", () => {
     it("returns undefined when both inputs are undefined", () => {
       const service = createService();

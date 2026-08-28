@@ -30,6 +30,10 @@ type LaneRuntimeLifecycleDependencies = {
       config: LaneEnvInitConfig,
       overrides: LaneOverlayOverrides,
     ) => Promise<unknown>;
+    cleanupLaneEnvironment?: (
+      lane: LaneSummary,
+      config: LaneEnvInitConfig | undefined,
+    ) => Promise<void>;
   } | null;
   portAllocationService?: {
     getLease: (laneId: string) => PortLease | null;
@@ -92,6 +96,35 @@ export function releaseLaneRuntimeResources(
     throw releaseError;
   }
   if (routeFailed) throw routeError;
+}
+
+/**
+ * Tear down the environment a lane's init started (Docker Compose stack) when
+ * the lane is archived. Called from `laneService.archive` through the late-bound
+ * hook, so every archive path — IPC, action domain, sync command, PR service
+ * auto-archive, storage auto-archive — gets the same teardown that
+ * archive-and-reclaim and delete already ran.
+ *
+ * Resolved while the lane is still active: the caller runs this before the
+ * archived status write.
+ */
+export async function teardownArchivedLaneEnvironment(
+  dependencies: Pick<
+    LaneRuntimeLifecycleDependencies,
+    "laneService" | "projectConfigService" | "laneEnvironmentService"
+  >,
+  laneId: string,
+): Promise<void> {
+  const environmentService = dependencies.laneEnvironmentService;
+  const projectConfigService = dependencies.projectConfigService;
+  if (!environmentService?.cleanupLaneEnvironment || !projectConfigService) return;
+
+  const lane = await resolveActiveLane(dependencies, laneId);
+  const config = projectConfigService.getEffective();
+  const overrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
+  const envInitConfig = environmentService.resolveEnvInitConfig(config.laneEnvInit, overrides);
+  if (!envInitConfig?.docker) return;
+  await environmentService.cleanupLaneEnvironment(lane, envInitConfig);
 }
 
 export async function restoreRecreatedLaneRuntime(

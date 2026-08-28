@@ -40,6 +40,8 @@ import type {
   LaneOverlayOverrides,
   LaneOverlayPolicy,
   LaneMountPointConfig,
+  LaneCopyPathConfig,
+  LaneSetupScriptConfig,
   LaneCleanupConfig,
   LaneTemplate,
   LaneType,
@@ -1052,6 +1054,42 @@ function coerceLaneMountPoint(value: unknown): LaneMountPointConfig | null {
   return { source, dest };
 }
 
+function coerceLaneCopyPath(value: unknown): LaneCopyPathConfig | null {
+  if (!isRecord(value)) return null;
+  const source = asString(value.source)?.trim() ?? "";
+  if (!source) return null;
+  const dest = asString(value.dest)?.trim();
+  return { source, ...(dest ? { dest } : {}) };
+}
+
+/**
+ * Setup scripts round-trip through config, so every field the template editor
+ * writes has to survive parsing — dropping one here is why a configured setup
+ * script used to silently never run.
+ */
+function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const readCommands = (candidate: unknown): string[] | undefined => {
+    if (!Array.isArray(candidate)) return undefined;
+    const commands = candidate
+      .map((entry) => asString(entry)?.trim() ?? "")
+      .filter((entry) => entry.length > 0);
+    return commands.length ? commands : undefined;
+  };
+  const readPath = (candidate: unknown): string | undefined => asString(candidate)?.trim() || undefined;
+
+  const out: LaneSetupScriptConfig = {
+    ...(readCommands(value.commands) ? { commands: readCommands(value.commands) } : {}),
+    ...(readCommands(value.unixCommands) ? { unixCommands: readCommands(value.unixCommands) } : {}),
+    ...(readCommands(value.windowsCommands) ? { windowsCommands: readCommands(value.windowsCommands) } : {}),
+    ...(readPath(value.scriptPath) ? { scriptPath: readPath(value.scriptPath) } : {}),
+    ...(readPath(value.unixScriptPath) ? { unixScriptPath: readPath(value.unixScriptPath) } : {}),
+    ...(readPath(value.windowsScriptPath) ? { windowsScriptPath: readPath(value.windowsScriptPath) } : {}),
+    ...(asBool(value.injectPrimaryPath) === true ? { injectPrimaryPath: true } : {}),
+  };
+  return Object.keys(out).length ? out : undefined;
+}
+
 function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -1208,6 +1246,10 @@ function coerceLaneTemplate(value: unknown): ConfigLaneTemplate | null {
     mountPoints: Array.isArray(value.mountPoints)
       ? value.mountPoints.map(coerceLaneMountPoint).filter((x): x is LaneMountPointConfig => x != null)
       : undefined,
+    copyPaths: Array.isArray(value.copyPaths)
+      ? value.copyPaths.map(coerceLaneCopyPath).filter((x): x is LaneCopyPathConfig => x != null)
+      : undefined,
+    setupScript: coerceLaneSetupScript(value.setupScript),
     portRange: isRecord(value.portRange) && typeof value.portRange.start === "number" && typeof value.portRange.end === "number"
       ? { start: value.portRange.start, end: value.portRange.end }
       : undefined,
@@ -2495,6 +2537,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(t.docker ? { docker: t.docker } : {}),
             ...(t.dependencies?.length ? { dependencies: t.dependencies } : {}),
             ...(t.mountPoints?.length ? { mountPoints: t.mountPoints } : {}),
+            ...(t.copyPaths?.length ? { copyPaths: t.copyPaths } : {}),
+            ...(t.setupScript ? { setupScript: t.setupScript } : {}),
             ...(t.portRange ? { portRange: { ...t.portRange } } : {}),
             ...(t.envVars && Object.keys(t.envVars).length ? { envVars: t.envVars } : {})
           }))

@@ -1448,7 +1448,9 @@ function mergeLaneEnvInitConfig(
           ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
           ...(mergeLaneDockerConfig(undefined, next.docker) ? { docker: mergeLaneDockerConfig(undefined, next.docker) } : {}),
           ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
-          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {})
+          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {}),
+          ...(next.copyPaths ? { copyPaths: [...next.copyPaths] } : {}),
+          ...(next.setupScript ? { setupScript: { ...next.setupScript } } : {})
         }
       : undefined;
   }
@@ -1457,14 +1459,21 @@ function mergeLaneEnvInitConfig(
       ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
       ...(mergeLaneDockerConfig(undefined, current.docker) ? { docker: mergeLaneDockerConfig(undefined, current.docker) } : {}),
       ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
-      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {})
+      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {}),
+      ...(current.copyPaths ? { copyPaths: [...current.copyPaths] } : {}),
+      ...(current.setupScript ? { setupScript: { ...current.setupScript } } : {})
     };
   }
   return {
     envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
     ...(mergeLaneDockerConfig(current.docker, next.docker) ? { docker: mergeLaneDockerConfig(current.docker, next.docker) } : {}),
     dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
-    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])]
+    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
+    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
+    // A lane runs one setup script; the more specific config (template) wins.
+    ...(next.setupScript ?? current.setupScript
+      ? { setupScript: { ...(next.setupScript ?? current.setupScript) } }
+      : {})
   };
 }
 
@@ -6589,6 +6598,8 @@ export function registerIpc({
       .list({ includeArchived: true, includeStatus: false })
       .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
       .catch(() => null);
+    // Docker teardown runs inside `laneService.archive` via the late-bound
+    // env-teardown hook, so every archive path gets it, not just this one.
     await ctx.laneService.archive(arg);
     try {
       releaseLaneRuntimeResources(ctx, arg.laneId);

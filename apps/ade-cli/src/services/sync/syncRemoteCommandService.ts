@@ -3515,6 +3515,7 @@ function mergeLaneEnvInitConfig(
           ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
           ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {}),
           ...(next.copyPaths ? { copyPaths: [...next.copyPaths] } : {}),
+          ...(next.setupScript ? { setupScript: { ...next.setupScript } } : {}),
         }
       : undefined;
   }
@@ -3525,6 +3526,7 @@ function mergeLaneEnvInitConfig(
       ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
       ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {}),
       ...(current.copyPaths ? { copyPaths: [...current.copyPaths] } : {}),
+      ...(current.setupScript ? { setupScript: { ...current.setupScript } } : {}),
     };
   }
   return {
@@ -3533,6 +3535,10 @@ function mergeLaneEnvInitConfig(
     dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
     mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
     copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
+    // A lane runs one setup script; the more specific config (template) wins.
+    ...(next.setupScript ?? current.setupScript
+      ? { setupScript: { ...(next.setupScript ?? current.setupScript) } }
+      : {}),
   };
 }
 
@@ -4039,6 +4045,8 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     return { ok: true };
   });
   register("lanes.archive", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // Docker teardown runs inside `laneService.archive` via the late-bound
+    // env-teardown hook, so every archive path gets it, not just this one.
     await args.laneService.archive(parseArchiveLaneArgs(payload, "lanes.archive"));
     return { ok: true };
   });

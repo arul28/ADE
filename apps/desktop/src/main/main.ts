@@ -102,7 +102,10 @@ import { createLaneTemplateService } from "./services/lanes/laneTemplateService"
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
-import { releaseLaneRuntimeResources } from "./services/lanes/laneRuntimeLifecycle";
+import {
+  releaseLaneRuntimeResources,
+  teardownArchivedLaneEnvironment,
+} from "./services/lanes/laneRuntimeLifecycle";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
 import {
@@ -3211,6 +3214,16 @@ app.whenReady().then(async () => {
       projectConfigService,
       logger,
     });
+
+    // Archiving a lane brings down the Docker services its env init started —
+    // the same teardown delete and archive-and-reclaim run. Late-bound because
+    // the lane service is constructed before the project config service.
+    laneService.setOnLaneArchivedEnvTeardown((laneId) =>
+      teardownArchivedLaneEnvironment(
+        { laneService, projectConfigService, laneEnvironmentService },
+        laneId,
+      ),
+    );
 
     const portAllocationService = createPortAllocationService({
       logger,

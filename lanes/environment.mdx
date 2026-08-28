@@ -34,7 +34,7 @@ When you create a lane, ADE leases it a port range and can route a `<slug>.local
 The **Run** tab's lane runtime bar shows the live state at a glance: a health dot, the responding port, proxy and preview status, and the OAuth callback URL for the selected lane.
 
 <Tip>
-Stop a lane's dev server when you're done with it, or delete the lane — both return its leased ports to the pool. If a lane ever flaps unhealthy on a slow cold start, the health bar settles once the server finishes binding.
+Stop a lane's dev server when you're done with it, or delete the lane — both return its leased ports to the pool. Archiving a lane also brings down the Docker Compose services its env init started; restoring the lane starts them again when ADE has to recreate the worktree, and **Init env** restarts them otherwise. If a lane ever flaps unhealthy on a slow cold start, the health bar settles once the server finishes binding.
 </Tip>
 
 ## Per-lane environment init
@@ -52,11 +52,14 @@ For lanes that need more than a running server, ADE can run an **env-init** sequ
     | **Dependencies** | Run an install command from an allowlist (`npm`, `yarn`, `pnpm`, `pip`, `bundle`, `cargo`, `go`, `bun`, and a few more). Anything outside the list is rejected. |
     | **Mount points** | Configure runtime mount points for agent profiles and context. |
     | **Copy paths** | Copy non-template files from the project root into the worktree. |
+    | **Setup script** | Run the template's setup commands (and script file) last, in the lane's worktree. Only appears when a setup script is configured for your platform. |
 
-    Each step reports `pending → running → done` (or `failed`) with a duration, so you can watch the lane bootstrap.
+    Each step reports `pending → running → done` (or `failed`) with a duration, so you can watch the lane bootstrap. A step that fails stops the run — later steps do not run.
   </Accordion>
   <Accordion title="Reusable templates" icon="copy">
     Rather than configure env init lane by lane, package it once as a **template** — a complete init recipe plus an optional setup script. Manage templates in **Settings → Lane Templates**, set a default, and new lanes pick it up. The setup script can carry platform-specific variants (Unix vs. Windows commands) and expose the primary worktree's path to its commands.
+
+    The setup script runs last, after every other init step, as shell commands in the lane's worktree — so pipes, `&&`, and variables work. Your commands see the lane's runtime variables (`PORT`, `PORT_RANGE_START`, `PORT_RANGE_END`, `HOSTNAME`, `PROXY_HOSTNAME`, `LANE_NAME`, `LANE_SLUG`, `LANE_BRANCH`, `LANE_WORKTREE`), plus `$PRIMARY_WORKTREE_PATH` when **Expose primary lane path** is on. Commands run in order and stop at the first one that fails; a script file that is configured but missing counts as a failure.
   </Accordion>
   <Accordion title="Where to find these settings" icon="sliders">
     - **Settings → Proxy & Preview** — start/stop the proxy and configure OAuth redirect.

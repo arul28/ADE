@@ -147,12 +147,17 @@ type LaneEnvInitConfig = {
   dependencies?: LaneDependencyInstallConfig[];
   mountPoints?: LaneMountPointConfig[];
   copyPaths?: LaneCopyPathConfig[];
+  setupScript?: LaneSetupScriptConfig;
 };
 ```
 
 Runs when a lane is created. Copies templated env files, starts
 docker-compose services, runs install commands, mounts agent profile
-paths, and copies project-level files into the worktree.
+paths, copies project-level files into the worktree, and finally runs
+the setup script when one is configured. `setupScript` is carried here
+from the lane template — see
+[`lanes/runtime.md`](../lanes/runtime.md#setup-script-execution) for
+shell semantics, available environment variables, and failure behavior.
 
 ## Lane templates
 
@@ -172,7 +177,9 @@ type LaneTemplate = {
 };
 ```
 
-Templates provide a reusable init recipe. `defaultLaneTemplate` (a
+Templates provide a reusable init recipe. `copyPaths` and `setupScript`
+round-trip through `local.yaml` / `ade.yaml` and are applied with the
+rest of the recipe. `defaultLaneTemplate` (a
 template id) is applied to new lanes. `NO_DEFAULT_LANE_TEMPLATE = "__ade_none__"`
 is a sentinel for explicitly overriding an inherited shared default
 back to "none" in `local.yaml`.

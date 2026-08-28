@@ -69,6 +69,10 @@ steps in order:
    profiles/context. Source and destination validated.
 5. **`copy-paths`** — same validation as env files; used for copying
    non-template files from the project root into the worktree.
+6. **`setup-script`** — run the template's setup script, last, so it can
+   rely on every step above having finished. Only added to the run when
+   a setup script is actually configured for the current platform;
+   otherwise there is no step and nothing runs.
 
 Each step is reported through `LaneEnvInitProgress` IPC events with
 status (`pending | running | done | failed`) and a duration.
@@ -88,14 +92,83 @@ Config types live in `src/shared/types/config.ts`:
   platform-specific variants (`commands` / `unixCommands` /
   `windowsCommands`, similar for `scriptPath`). Supports
   `injectPrimaryPath` to expose `$PRIMARY_WORKTREE_PATH` to shell
-  commands.
+  commands. Carried on `LaneEnvInitConfig` as `setupScript`, which is
+  how it reaches the executor.
+
+### Setup script execution
+
+`laneTemplateService.resolveTemplateAsEnvInit()` copies the template's
+`setupScript` onto the resulting `LaneEnvInitConfig`, so the script runs
+on **every** path that runs env init with a template: lane create,
+`lanes.applyTemplate`, `lanes.initEnv`, and unarchive that recreates the
+worktree. When both a project-level and a template/overlay setup script
+exist, the more specific one wins — a lane runs one setup script.
+
+- **Platform selection.** `resolveSetupScriptConfig` picks
+  `windowsCommands` / `windowsScriptPath` on Windows and
+  `unixCommands` / `unixScriptPath` elsewhere, each falling back to the
+  generic `commands` / `scriptPath`. If nothing resolves for the current
+  platform, the step is not created at all.
+- **Shell semantics.** Setup lines are user-authored shell, not argv:
+  they run through `/bin/sh -c` on macOS/Linux and through
+  `cmd.exe /d /s /c` (via `resolveWindowsCmdLineInvocation`) on Windows,
+  so pipes, `&&`, and variable expansion work — `$VAR` on POSIX,
+  `%VAR%` on Windows. A `.ps1` script path is invoked through
+  PowerShell (`-NoLogo -NoProfile -NonInteractive -ExecutionPolicy
+  Bypass -File`) because cmd.exe cannot run one.
+- **Order.** Configured commands run first, in order, then the script
+  file if one is set. `scriptPath` is resolved against the project root
+  with the same symlink-aware traversal check as env files.
+- **Working directory.** The lane's worktree root.
+- **Environment.** The ADE process environment plus the lane runtime
+  vars: `LANE_ID`, `LANE_NAME`, `LANE_SLUG`, `LANE_BRANCH`,
+  `LANE_WORKTREE`, `PORT`, `PORT_RANGE_START`, `PORT_RANGE_END`,
+  `HOSTNAME`, `PROXY_HOSTNAME`, and any overlay `env` entries. With
+  `injectPrimaryPath` enabled, `PRIMARY_WORKTREE_PATH` is also set to
+  the primary lane's root (the project checkout).
+- **Failure.** Fail-fast, like every other step: the first non-zero exit
+  fails the `setup-script` step with the failing command and a stderr
+  excerpt, marks the whole init failed, and skips the remaining
+  commands. A configured `scriptPath` that does not exist is a failure,
+  not a silent skip. Each command has a 300 s timeout.
+
+### Teardown on archive, delete, and reclaim
+
+`laneEnvironmentService.cleanupLaneEnvironment(lane, config)` runs
+`docker compose -f <composePath> -p <projectName> down --remove-orphans`
+for the lane's compose project. It runs on all four lifecycle paths:
+
+| Path | How teardown is reached |
+|------|-------------------------|
+| Delete | `teardownEnv` passed by the caller into `laneService.delete` |
+| Archive & reclaim | `teardownEnv` passed into `laneService.archiveAndReclaim` |
+| Plain archive | The late-bound `setOnLaneArchivedEnvTeardown` hook, run inside `laneService.archive` |
+| Unarchive | Re-init runs `docker compose up` again when the worktree had to be recreated |
+
+Plain archive used to skip teardown, so an archived lane's containers
+kept running and holding ports with nothing in the UI pointing at them.
+The hook lives in `laneService.archive` rather than at each caller
+because archive is reached from the IPC handler, the action-domain
+registry, the sync command service, the PR service (post-merge lane
+cleanup), and storage auto-archive — one list, not six. It is wired by
+the host (`main.ts`, `bootstrap.ts`) once `laneEnvironmentService`
+exists, resolved through
+`laneRuntimeLifecycle.teardownArchivedLaneEnvironment`.
+
+Teardown on archive is best-effort: a failing `compose down` is logged
+(`lane.archive.env_teardown_failed`) and the archive still succeeds.
+Restoring an archived lane re-runs env init — and therefore
+`docker compose up` — only when the worktree had to be recreated; after
+a plain unarchive, run **Init env** (`lanes.initEnv`) to bring the
+services back.
 
 ## Lane templates (W2)
 
 Templates package a complete `LaneEnvInitConfig` + overlay overrides
 + setup script. `laneTemplateService.resolveSetupScript(template)`
 returns the platform-appropriate command/script path at runtime or
-`null` if no script is configured.
+`null` if no script is configured; the same resolution is what
+`laneEnvironmentService` executes for the `setup-script` step.
 
 The `NO_DEFAULT_LANE_TEMPLATE` sentinel distinguishes "no default
 set" from "default explicitly cleared" so the Settings UI can surface
