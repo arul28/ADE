@@ -293,13 +293,19 @@ that could not work without it.
   enclosing `AgentChatPane` reports `isTileActive: true` (for packed
   grid tiles) or any equivalent active state — typing in the grid
   immediately targets the focused tile's composer.
-- **Attachments** via drag-drop, paste, and an inline picker. Pasted and
-  dropped image files show a pending thumbnail while ADE writes the
-  temp attachment. Electron clipboard images use
+- **Attachments** via drag-drop in the composer or anywhere in the selected
+  chat surface, paste, and an inline picker. Pasted and dropped image files
+  show a pending thumbnail while ADE writes the temp attachment. Electron
+  clipboard images use
   `ade.app.saveClipboardImageAttachment` when available so the main
   process can save the PNG and return a small preview without sending
   the full base64 payload through the renderer; the legacy
   `ade.agentChat.saveTempAttachment` path remains as the fallback.
+  On macOS, `.heic` and `.heif` file drops are converted to JPEG through
+  the main-process image bridge before the temp attachment is saved, so
+  the preview and provider payload use the converted bytes. Windows and
+  Linux do not bundle a HEIF codec; those drops stay out of the attachment
+  list and show a clear instruction to convert the photo to JPEG first.
   Temp images keep the 10 MB cap and provider-specific MIME validation.
 - **Issue context.** The composer attach menu (~180px, opaque, Linear and GitHub rows, no subtitle) opens `LinearIssueSelectModal` or `GitHubIssueSelectModal`. GitHub is offered only when `detectRepo()` returns this project's repository; personal chats hide GitHub and still allow Linear. Each attachment is a `linear_issue` or `github_issue` context item built by `makeLinearIssueContextAttachment` / `makeGitHubIssueContextAttachment` from `chatContextAttachments.ts`. Sending the turn persists the issue on the chat session (`attachLinearIssueToSession` / `attachGitHubIssueToSession`); mixed Linear + GitHub attachments are allowed. GitHub PRs are not attachable. Clicking a chip reopens the same pane in details mode (Open + Remove). On send, the composer chip moves onto that user message. TUI `/issue attach ADE-123|owner/repo#42|#42` (slash-only on Windows) attaches without a picker. iOS **Attach issue** in the chat overflow menu reuses the Linear pane in attach mode when `lane.attachLinearIssueToSession` is advertised. PR bodies get Linear `Refs ADE-123` (`closeOnMerge: false`) and GitHub `Closes owner/repo#42` (`closeOnMerge: true`) — see [features/linear-integration/README.md](../linear-integration/README.md).
 - **Typed triggers anywhere.** `detectComposerTrigger(text, cursorPos)`
@@ -823,7 +829,10 @@ allowing a cross-provider fork.
 
 ### Attachment handling
 
-- Pasted and dropped images are written to a temp location. File-backed
+- Pasted and dropped images are written to a temp location. The selected
+  chat surface (header, transcript, and composer) accepts the same file and
+  image-URL drops as the composer and routes them through one attachment
+  pipeline, while composer-owned drops are handled only once. File-backed
   renderer payloads use `ade.agentChat.saveTempAttachment`; native
   clipboard images prefer `ade.app.saveClipboardImageAttachment`, which
   reads the Electron clipboard, writes the PNG beside other chat
@@ -843,8 +852,10 @@ allowing a cross-provider fork.
 - `inferAttachmentType` and `mergeAttachments` in `shared/types/chat.ts`
   dedupe attachments by path (last-write wins).
 - MIME-type validation happens per provider. Claude enforces
-  `image/jpeg | image/png | image/gif | image/webp`; Codex uses local
-  path references; OpenCode uses runtime content blocks.
+  `image/jpeg | image/png | image/gif | image/webp`; macOS HEIC/HEIF
+  uploads are normalized to JPEG before that boundary, while Windows/Linux
+  report the missing codec instead of relabeling HEIC bytes. Codex uses
+  local path references; OpenCode uses runtime content blocks.
 - Parallel launches reuse this same attachment path after the renderer
   validates the 12-file cap. Every child session receives identical
   attachment refs; provider-specific handling still happens inside

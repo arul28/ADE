@@ -5,6 +5,7 @@ import { projectBindingKey } from "../shared/projectIdentity";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
+import type { ConvertImageToJpegResult } from "../shared/types/chat";
 import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
@@ -3899,6 +3900,12 @@ const adeBridge = {
       filename: string;
       mimeType: string;
     } | null> => ipcRenderer.invoke(IPC.appReadClipboardImage),
+    convertImageToJpeg: async (args: {
+      data: string;
+      filename: string;
+      mimeType?: string | null;
+    }): Promise<ConvertImageToJpegResult> =>
+      ipcRenderer.invoke(IPC.appConvertImageToJpeg, args),
     saveClipboardImageAttachment: async (): Promise<{
       path: string;
       mimeType: string;

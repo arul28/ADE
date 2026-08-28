@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AgentChatFileRef } from "../../../shared/types/chat";
+import {
+  getImageAttachmentMediaType,
+  type AgentChatFileRef,
+} from "../../../shared/types/chat";
 import {
   readAgentAccessibleFileBytes,
   readFileWithinRootSecure,
@@ -20,37 +23,30 @@ export const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
   "image/webp",
 ]);
 
-/** Extension-to-MIME lookup used by inferAttachmentMediaType. */
+/** Non-image extension-to-MIME lookup used by inferAttachmentMediaType. */
 const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
   ".c": "text/x-c",
   ".cc": "text/x-c++src",
   ".cpp": "text/x-c++src",
   ".css": "text/css",
   ".csv": "text/csv",
-  ".gif": "image/gif",
   ".go": "text/x-go",
   ".html": "text/html",
-  ".ico": "image/x-icon",
-  ".jpeg": "image/jpeg",
-  ".jpg": "image/jpeg",
   ".js": "text/javascript",
   ".json": "application/json",
   ".jsx": "text/jsx",
   ".md": "text/markdown",
   ".mjs": "text/javascript",
   ".pdf": "application/pdf",
-  ".png": "image/png",
   ".py": "text/x-python",
   ".rb": "text/x-ruby",
   ".rs": "text/x-rustsrc",
   ".sh": "text/x-shellscript",
   ".sql": "application/sql",
-  ".svg": "image/svg+xml",
   ".toml": "application/toml",
   ".ts": "text/typescript",
   ".tsx": "text/tsx",
   ".txt": "text/plain",
-  ".webp": "image/webp",
   ".xml": "application/xml",
   ".yaml": "application/yaml",
   ".yml": "application/yaml",
@@ -59,7 +55,8 @@ const ATTACHMENT_MEDIA_TYPES: Record<string, string> = {
 /** Infer the MIME type of an attachment from its file extension. */
 export function inferAttachmentMediaType(attachment: AgentChatFileRef): string {
   const ext = path.extname(attachment.path).toLowerCase();
-  return ATTACHMENT_MEDIA_TYPES[ext]
+  return getImageAttachmentMediaType(attachment.path)
+    ?? ATTACHMENT_MEDIA_TYPES[ext]
     ?? (attachment.type === "image" ? "image/png" : "application/octet-stream");
 }
 

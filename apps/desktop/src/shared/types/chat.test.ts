@@ -4,6 +4,7 @@ import {
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
   inferAttachmentType,
+  isHeicAttachment,
   mergeAttachments,
   providerSupportsCrossMachineHandoffFork,
   providerSupportsHandoffFork,
@@ -74,6 +75,7 @@ describe("inferAttachmentType", () => {
     expect(inferAttachmentType("file.bin", "image/jpeg")).toBe("image");
     expect(inferAttachmentType("file.bin", "image/webp")).toBe("image");
     expect(inferAttachmentType("file.bin", "image/svg+xml")).toBe("image");
+    expect(inferAttachmentType("file.bin", "IMAGE/HEIC")).toBe("image");
   });
 
   it("returns 'image' for image file extensions when no mimeType is provided", () => {
@@ -88,6 +90,8 @@ describe("inferAttachmentType", () => {
     expect(inferAttachmentType("photo.ico")).toBe("image");
     expect(inferAttachmentType("photo.tiff")).toBe("image");
     expect(inferAttachmentType("photo.tif")).toBe("image");
+    expect(inferAttachmentType("photo.heic")).toBe("image");
+    expect(inferAttachmentType("photo.HEIF")).toBe("image");
   });
 
   it("returns 'file' for non-image extensions and no image mimeType", () => {
@@ -114,6 +118,15 @@ describe("inferAttachmentType", () => {
     expect(inferAttachmentType("file.ts", null)).toBe("file");
     expect(inferAttachmentType("photo.jpg", null)).toBe("image");
     expect(inferAttachmentType("file.ts", undefined)).toBe("file");
+  });
+
+  it("recognizes HEIC/HEIF by either MIME type or extension", () => {
+    expect(isHeicAttachment("photo.heic")).toBe(true);
+    expect(isHeicAttachment("photo.HEIF")).toBe(true);
+    expect(isHeicAttachment("photo.bin", "image/heic")).toBe(true);
+    expect(isHeicAttachment("photo.bin", "image/heic; codecs=hevc")).toBe(true);
+    expect(isHeicAttachment("photo.bin", "image/heif-sequence")).toBe(true);
+    expect(isHeicAttachment("photo.jpg", "image/jpeg")).toBe(false);
   });
 });
 

@@ -66,6 +66,9 @@ import {
   activeTurnDispatchModes,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
+  type HeicConversionErrorCode,
+  isImageAttachmentPath,
+  isHeicAttachment,
   type ActiveTurnSendMode,
 } from "../../../shared/types/chat";
 import { cn } from "../ui/cn";
@@ -127,6 +130,8 @@ import {
 } from "./ComposerPromptStash";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
+import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
+import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
@@ -136,7 +141,28 @@ const BASE64_ENCODE_CHUNK_SIZE = 0x8000;
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
-const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
+export const HEIC_CONVERSION_UNAVAILABLE_MESSAGE =
+  "HEIC photos can't be converted on this computer. Convert the photo to JPEG before attaching it.";
+export const HEIC_CONVERSION_FAILED_MESSAGE =
+  "This HEIC photo couldn't be converted to JPEG. It may be corrupt or unsupported.";
+const HEIC_CONVERSION_MESSAGES: Record<HeicConversionErrorCode, string> = {
+  unavailable: HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
+  failed: HEIC_CONVERSION_FAILED_MESSAGE,
+};
+
+class AttachmentConversionError extends Error {
+  constructor(readonly code: HeicConversionErrorCode) {
+    super(code);
+    this.name = "AttachmentConversionError";
+  }
+}
+
+function attachmentErrorMessage(error: unknown, filename: string): string {
+  if (error instanceof AttachmentConversionError) {
+    return HEIC_CONVERSION_MESSAGES[error.code];
+  }
+  return `Unable to attach "${filename || "file"}".`;
+}
 
 // Every rich-composer chip carries `data-composer-chip`. Chips are
 // contentEditable="false", so the browser skips them when painting the native
@@ -299,7 +325,7 @@ function normalizeImageAttachmentUrl(value: string | null | undefined): string |
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    if (!IMAGE_URL_EXTENSION_RE.test(parsed.pathname)) return null;
+    if (!isImageAttachmentPath(parsed.pathname)) return null;
     return parsed.toString();
   } catch {
     return null;
@@ -1609,6 +1635,7 @@ export function AgentChatComposer({
   onInterrupt,
   onApproval,
   onAddAttachment,
+  onRegisterDropTarget,
   onRemoveAttachment,
   onAddContextAttachment,
   onRemoveContextAttachment,
@@ -1780,6 +1807,8 @@ export function AgentChatComposer({
     answers?: Record<string, string | string[]>,
   ) => void;
   onAddAttachment: (attachment: AgentChatFileRef) => void;
+  /** Register this composer's attachment pipeline with its larger chat shell. */
+  onRegisterDropTarget?: (target: AgentChatAttachmentDropTarget | null) => void;
   onRemoveAttachment: (path: string) => void;
   onAddContextAttachment?: (attachment: AgentChatContextAttachment) => void;
   onRemoveContextAttachment?: (key: string) => void;
@@ -2055,6 +2084,7 @@ export function AgentChatComposer({
   const lastSerializedDraftRef = useRef<string>("");
   const lastPlainSelectionRef = useRef<number | null>(null);
   const fileAddInProgressRef = useRef(false);
+  const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
@@ -2569,6 +2599,10 @@ export function AgentChatComposer({
       setAttachError(attachmentPersistenceUnavailableReason);
       return;
     }
+    if (!canAttach) {
+      setAttachError(attachBlockedReason ?? "Attachments are unavailable right now.");
+      return;
+    }
     if (!files?.length) return;
     if (parallelChatMode && attachmentSlotsUsed >= PARALLEL_CHAT_MAX_ATTACHMENTS) return;
     if (fileAddInProgressRef.current) return;
@@ -2582,8 +2616,9 @@ export function AgentChatComposer({
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
           break;
         }
-        const attachmentName = file.name || "clipboard.png";
-        const isImageAttachment = inferAttachmentType(attachmentName, file.type) === "image";
+        const sourceAttachmentName = file.name || "clipboard.png";
+        const isHeicUpload = isHeicAttachment(sourceAttachmentName, file.type);
+        const isImageAttachment = inferAttachmentType(sourceAttachmentName, file.type) === "image";
 
         if (file.size > MAX_TEMP_ATTACHMENT_BYTES) {
           setAttachError(
@@ -2593,44 +2628,72 @@ export function AgentChatComposer({
         }
 
         const pendingImage = isImageAttachment
-          ? addPendingImageAttachment(attachmentName, createObjectPreviewUrl(file))
+          ? addPendingImageAttachment(sourceAttachmentName, isHeicUpload ? null : createObjectPreviewUrl(file))
           : null;
         const attachmentOwnerBinding = composerMachineBinding;
         try {
           const buf = await file.arrayBuffer();
-          const base64 = arrayBufferToBase64(buf);
+          let attachmentName = sourceAttachmentName;
+          let attachmentData = arrayBufferToBase64(buf);
+          let attachmentMimeType: string | null = file.type || null;
+          let convertedPreviewDataUrl: string | null = null;
+          if (isHeicUpload) {
+            const convertImageToJpeg = window.ade?.app?.convertImageToJpeg;
+            if (typeof convertImageToJpeg !== "function") {
+              throw new AttachmentConversionError("unavailable");
+            }
+            const converted = await convertImageToJpeg({
+              data: attachmentData,
+              filename: sourceAttachmentName,
+              mimeType: file.type || null,
+            });
+            if (converted.ok !== true) {
+              throw new AttachmentConversionError(
+                converted.errorCode === "unavailable" ? "unavailable" : "failed",
+              );
+            }
+            attachmentName = converted.filename;
+            attachmentData = converted.data;
+            attachmentMimeType = converted.mimeType;
+            convertedPreviewDataUrl = `data:${converted.mimeType};base64,${converted.data}`;
+          }
           const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
-            data: base64,
+            data: attachmentData,
             filename: attachmentName,
           }, attachmentOwnerBinding);
           if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
             if (pendingImage) dropPendingImageAttachment(pendingImage.id);
-            setAttachError(`"${attachmentName}" was not attached because the selected machine changed. Attach it again.`);
+            setAttachError(`"${sourceAttachmentName}" was not attached because the selected machine changed. Attach it again.`);
             continue;
           }
           if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
             cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
             continue;
           }
-          const attachmentType = inferAttachmentType(tempPath, file.type);
+          const attachmentType = inferAttachmentType(tempPath, attachmentMimeType);
           const pendingPreviewUrl = pendingImage?.previewUrl ?? null;
-          if (attachmentType === "image" && pendingPreviewUrl) {
-            rememberPreviewUrl(tempPath, pendingPreviewUrl);
+          if (attachmentType === "image") {
+            if (convertedPreviewDataUrl) {
+              rememberPreviewUrl(tempPath, convertedPreviewDataUrl);
+            } else if (pendingPreviewUrl) {
+              rememberPreviewUrl(tempPath, pendingPreviewUrl);
+            }
           }
           onAddAttachment({ path: tempPath, type: attachmentType });
           if (pendingImage) {
             dropPendingImageAttachment(pendingImage.id);
           }
           addedInBatch += 1;
-        } catch {
+        } catch (error) {
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
-          setAttachError(`Unable to attach "${file.name || "clipboard"}".`);
+          setAttachError(attachmentErrorMessage(error, sourceAttachmentName));
         }
       }
     } finally {
       fileAddInProgressRef.current = false;
     }
   };
+  addFileAttachmentsRef.current = addFileAttachments;
 
   const addNativeClipboardImageAttachment = async () => {
     if (attachmentPersistenceUnavailableReason) {
@@ -2698,6 +2761,32 @@ export function AgentChatComposer({
     }
     return attached;
   }, [addImageUrlAttachment]);
+
+  const canAttachRef = useRef(canAttach);
+  canAttachRef.current = canAttach;
+  const addImageUrlFromTransferRef = useRef(addImageUrlFromTransfer);
+  addImageUrlFromTransferRef.current = addImageUrlFromTransfer;
+  const attachmentDropTarget = useMemo<AgentChatAttachmentDropTarget>(() => ({
+    canHandle: (dataTransfer) => canAttachRef.current
+      && (
+        dataTransfer.files.length > 0
+        || dataTransfer.types.includes("Files")
+        || dataTransfer.types.includes("text/uri-list")
+    ),
+    handle: (dataTransfer) => {
+      if (!canAttachRef.current) return;
+      if (dataTransfer.files.length > 0) {
+        void addFileAttachmentsRef.current(dataTransfer.files);
+        return;
+      }
+      addImageUrlFromTransferRef.current(dataTransfer);
+    },
+  }), []);
+
+  useEffect(() => {
+    onRegisterDropTarget?.(attachmentDropTarget);
+    return () => onRegisterDropTarget?.(null);
+  }, [attachmentDropTarget, onRegisterDropTarget]);
 
   const captureRichSelection = useCallback(() => {
     const editor = richEditorRef.current;
@@ -4492,18 +4581,22 @@ export function AgentChatComposer({
   };
 
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    event.stopPropagation();
     const hasImageUrl = event.dataTransfer.types.includes("text/uri-list");
-    if (!canAttach || (!event.dataTransfer.files.length && !hasImageUrl)) return;
+    const hasFiles = event.dataTransfer.files.length > 0 || event.dataTransfer.types.includes("Files");
+    if (!canAttach || (!hasFiles && !hasImageUrl)) return;
     event.preventDefault();
     setDragActive(true);
   };
 
   const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    event.stopPropagation();
     if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
     setDragActive(false);
   };
 
   const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.stopPropagation();
     setDragActive(false);
     const hasFiles = event.dataTransfer.files.length > 0;
     const hasUriList = event.dataTransfer.types.includes("text/uri-list");
@@ -5997,17 +6090,8 @@ export function AgentChatComposer({
         onDrop={handleDrop}
       >
         {dragActive ? (
-          <div className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,rgba(5,5,8,0.58))] backdrop-blur-sm">
-            <div className="rounded-[var(--chat-radius-card)] border border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)] bg-card/92 px-5 py-4 text-center shadow-[var(--chat-composer-shadow)]">
-              <div className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.18em] text-[var(--chat-accent)]">
-                Drop files to attach
-              </div>
-              <div className="mt-1 text-[length:calc(var(--chat-font-size)*12/14)] text-fg/74">
-                {parallelChatMode
-                  ? `Up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files, sent to every parallel lane.`
-                  : "Images and files will be added to this turn."}
-              </div>
-            </div>
+          <div className="pointer-events-none absolute inset-0 z-[1]">
+            <ChatAttachmentDropOverlay variant="composer" parallelChatMode={parallelChatMode} />
           </div>
         ) : null}
 
@@ -6249,4 +6333,3 @@ export function AgentChatComposer({
     </>
   );
 }
-

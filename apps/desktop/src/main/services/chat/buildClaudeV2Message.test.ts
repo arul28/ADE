@@ -195,6 +195,20 @@ describe("buildClaudeV2Message", () => {
     });
   });
 
+  it("does not relabel legacy HEIC attachments as PNG", () => {
+    const heicPath = writeFakeImage("legacy-photo.heic");
+    const result = buildClaudeV2Message("Review this photo", [{ path: heicPath, type: "image" }]);
+
+    const msg = result as SDKUserMessagePartial;
+    expect(msg.type).toBe("user");
+    expect(msg.message.content).toHaveLength(2);
+    expect(msg.message.content[1]).toEqual({
+      type: "text",
+      text: `\n[Image attached (image/heic): ${heicPath}]`,
+    });
+    expect((msg.message.content[1] as { text: string }).text).not.toContain("image/png");
+  });
+
   // ─────────────────────────────────────────────────────────────────────────
   // 6. Mixed image and non-image attachments
   // ─────────────────────────────────────────────────────────────────────────
@@ -248,6 +262,8 @@ describe("inferAttachmentMediaType", () => {
     expect(inferAttachmentMediaType({ path: "photo.png", type: "image" })).toBe("image/png");
     expect(inferAttachmentMediaType({ path: "photo.gif", type: "image" })).toBe("image/gif");
     expect(inferAttachmentMediaType({ path: "photo.webp", type: "image" })).toBe("image/webp");
+    expect(inferAttachmentMediaType({ path: "photo.heic", type: "image" })).toBe("image/heic");
+    expect(inferAttachmentMediaType({ path: "photo.heif", type: "image" })).toBe("image/heif");
   });
 
   it("returns correct MIME type for known non-image extensions", () => {
@@ -256,8 +272,9 @@ describe("inferAttachmentMediaType", () => {
     expect(inferAttachmentMediaType({ path: "main.ts", type: "file" })).toBe("text/typescript");
   });
 
-  it("defaults to image/png for unknown extensions on image attachments", () => {
-    expect(inferAttachmentMediaType({ path: "photo.bmp", type: "image" })).toBe("image/png");
+  it("uses the shared image MIME table for otherwise unsupported image extensions", () => {
+    expect(inferAttachmentMediaType({ path: "photo.bmp", type: "image" })).toBe("image/bmp");
+    expect(inferAttachmentMediaType({ path: "photo.tiff", type: "image" })).toBe("image/tiff");
   });
 
   it("defaults to application/octet-stream for unknown extensions on file attachments", () => {
@@ -278,5 +295,7 @@ describe("ANTHROPIC_IMAGE_MEDIA_TYPES", () => {
     expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/svg+xml")).toBe(false);
     expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/bmp")).toBe(false);
     expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/tiff")).toBe(false);
+    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/heic")).toBe(false);
+    expect(ANTHROPIC_IMAGE_MEDIA_TYPES.has("image/heif")).toBe(false);
   });
 });

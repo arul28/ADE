@@ -29191,6 +29191,63 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("interaction mode", () => {
+    /**
+     * Drive a Codex session to the state this group keeps asserting on: a plan
+     * approval card raised by a turn that has since completed, so `activeTurnId`
+     * is already null while the card is still waiting on the user.
+     */
+    const stageCompletedCodexPlanApproval = async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-approval",
+            type: "plan",
+            text: "<proposed_plan>Inspect the lifecycle and patch it.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      });
+      // The postcondition every caller relies on: the turn is over and the card
+      // is still waiting on the user.
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+      return { service, session, events, approvalEvent };
+    };
+
     it("defaults interaction mode to null or undefined", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -29381,6 +29438,40 @@ describe("createAgentChatService", () => {
     });
 
     it("dismisses a completed Codex plan approval without staging a revision turn", async () => {
+      const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+      const turnStartsBeforeDismiss = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+      await service.dismissPendingInputForSettlement({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
+        .toHaveLength(turnStartsBeforeDismiss);
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
+        awaitingInput: true,
+      });
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: approvalEvent.event.itemId,
+          resolution: "cancelled",
+        }),
+      }));
+      // Settlement interrupts first and then settles as a net, and both paths
+      // resolve Codex cards. One receipt per card, not one per path.
+      expect(events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(1);
+    });
+
+    it("does not start an implementation turn from a plan response staged before settlement", async () => {
+      // Answering a plan approval mid-turn stages the follow-up until the turn
+      // idles. Settlement has to take those staged responses before it stops
+      // the turn: a `turn/completed` landing during the interrupt would
+      // otherwise drain one and start a fresh turn on the settled session.
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -29404,9 +29495,9 @@ describe("createAgentChatService", () => {
         params: {
           turnId: "turn-1",
           item: {
-            id: "codex-plan-dismiss-1",
+            id: "codex-plan-staged-1",
             type: "plan",
-            text: "<proposed_plan>Inspect the lifecycle and patch it.</proposed_plan>",
+            text: "<proposed_plan>Stage this response while the turn runs.</proposed_plan>",
           },
         },
       });
@@ -29418,27 +29509,36 @@ describe("createAgentChatService", () => {
           event.event.type === "approval_request"
           && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
       );
+
+      // The turn is still active, so this response is staged rather than sent.
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+      const turnStartsBeforeSettle = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+
+      // Hold the interrupt open so the app-server's `turn/completed` lands
+      // while the settle is mid-flight — the exact window the staged response
+      // used to survive into.
+      mockState.delayedCodexMethods.add("turn/interrupt");
+      const settling = service.dismissPendingInputForSettlement({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
         method: "turn/completed",
         params: { turn: { id: "turn-1", status: "completed" } },
       });
-      await vi.waitFor(async () => {
-        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
-      });
-      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
-
-      const turnStartsBeforeDismiss = mockState.codexRequestPayloads
-        .filter((payload) => payload.method === "turn/start").length;
-      await service.dismissPendingInputForSettlement({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      mockState.flushCodexResponses();
+      await settling;
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
-        .toHaveLength(turnStartsBeforeDismiss);
-      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
-      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
-        awaitingInput: true,
-      });
+        .toHaveLength(turnStartsBeforeSettle);
+      // The staged response is not silently dropped either: it gets the same
+      // cancel receipt as the card it came from.
       expect(events).toContainEqual(expect.objectContaining({
         sessionId: session.id,
         event: expect.objectContaining({
@@ -29447,6 +29547,185 @@ describe("createAgentChatService", () => {
           resolution: "cancelled",
         }),
       }));
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+    });
+
+    it("stops a Codex chat whose only pending card is a plan approval from the completed turn", async () => {
+      // A Codex plan approval is raised after `turn/completed` has already
+      // nulled `activeTurnId`, so Stop takes the no-active-turn path. That path
+      // used to return without settling anything, leaving the card rendered and
+      // every later send refused by the pending-input guard.
+      const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: approvalEvent.event.itemId,
+          resolution: "cancelled",
+        }),
+      }));
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      // The send gate reads the same state: the next message must reach Codex
+      // rather than bounce off a card for a turn that already ended.
+      const turnStartsBeforeSend = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Different approach, please.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length)
+          .toBeGreaterThan(turnStartsBeforeSend);
+      });
+    });
+
+    it("leaves a Codex plan approval alone when settle teardown stops the session", async () => {
+      // `stop_only` stops the work without discarding what the user still owns.
+      // A card nobody has answered is the user's to answer, so an automatic
+      // settle teardown must not cancel it out from under them.
+      const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
+
+      await service.interrupt({ sessionId: session.id, mode: "stop_only" });
+
+      expect(events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(0);
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+    });
+
+    it("writes one receipt when stopping a plan approval whose response is already staged", async () => {
+      // Answering a plan approval mid-turn stages the follow-up but leaves the
+      // approval entry in place, so the item sits in both stores at once. Stop
+      // does not run settlement's de-duplication, so the helper has to be the
+      // thing that keeps it to one durable receipt.
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-staged-receipt-1",
+            type: "plan",
+            text: "<proposed_plan>Answer this while the turn still runs.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+
+      // Still mid-turn, so the response is staged rather than dispatched.
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(1);
+    });
+
+    it("declines an outstanding Codex command approval on stop and resolves it exactly once", async () => {
+      // `edit` has to stay `edit`: a session that lands in `plan` refuses
+      // provider-native approvals outright and never raises the card.
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "edit") {
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "edit",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run the migration.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "codex-exec-approval-req-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          turnId: "turn-1",
+          itemId: "codex-exec-approval-1",
+          command: "/bin/zsh -lc 'npm run migrate'",
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request" && event.event.itemId === "codex-exec-approval-1",
+      );
+
+      await service.interrupt({ sessionId: session.id });
+
+      // The app-server holds the request open until ADE answers it, so a stop
+      // that only drops the local entry strands it.
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads).toContainEqual(expect.objectContaining({
+          id: "codex-exec-approval-req-1",
+          result: expect.objectContaining({ decision: "decline" }),
+        }));
+      });
+
+      const resolutionsFor = (): AgentChatEventEnvelope[] => events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId);
+      expect(resolutionsFor()).toHaveLength(1);
+
+      // The app-server's own abort lands after the local settle. It must not
+      // resolve the same card a second time.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: { turnId: "turn-1" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((envelope) =>
+          envelope.event.type === "done" && envelope.event.status === "interrupted")).toBe(true);
+      });
+      expect(resolutionsFor()).toHaveLength(1);
     });
 
     it("emits a terminal event when a streamed native Codex plan item completes", async () => {

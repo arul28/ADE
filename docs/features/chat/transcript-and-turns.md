@@ -757,6 +757,18 @@ the queued steers the runtime actually cancelled, emits `queue_recovery`, and
 accepts one `restoreCancelledQueue` call for eight seconds; expiry and restore
 are persisted as terminal recovery events so replay cannot resurrect Undo.
 
+A Codex turn ends through several paths — Stop, the local interrupt finish, the
+app-server's `turn/aborted`, runtime teardown, `thread/deleted`, an app-server
+crash — and every one of them runs `settleCodexPendingInputs` so the turn cannot
+leave a plan, exec, or permission card behind. That matters more for Codex than
+for the other providers because a Codex plan approval is raised *after* the turn
+completes, when `activeTurnId` is already null: Stop's "nothing to interrupt"
+arms are the common case for the one card that blocks every later send. The
+helper empties the approvals map as it settles, so the app-server's own
+`turn/aborted` arriving after a local interrupt is a no-op rather than a second
+receipt. Settle teardown's `stop_only` interrupt is the deliberate exception and
+leaves the cards for the user.
+
 Codex adapters deduplicate repeated lifecycle notifications before
 converting them to envelope events. Terminal app-server failures use a
 bounded semantic key (turn id + message + detail + error identity) shared by
@@ -783,6 +795,15 @@ regain duplicate visible failures after restart.
   rely on it for non-lane surfaces.
 - **Claude parent terminal events are an ordered pair.** Restart and idle-Stop
   repair must leave the parent `status` + `done` pair after any orphan cleanup.
+- **A terminal turn does not clear a Codex card; a receipt does.** A Codex plan
+  approval is raised after `turn/completed`, so the renderer intentionally keeps
+  plan-approval and question inputs across a `done: completed`. The only thing
+  that retires such a card is an explicit `pending_input_resolved` — which is
+  why every Codex turn-ending path has to emit one. On runtime death the receipt
+  is deliberately *withheld* for a plan approval
+  (`preserveRecoverablePlanApprovals`) so `respondToInput` can rebuild the card
+  from the transcript; withholding it for anything else strands the composer.
+  See [README › Fragile and tricky wiring](README.md#fragile-and-tricky-wiring).
 - **Claude idle turns close on an SDK event, never on a timer.** An idle turn is
   opened by background/subagent output that has no result envelope of its own,
   so its only authoritative end is the `system` / `session_state_changed`

@@ -36,6 +36,7 @@ export const IPC = {
   appReadClipboardText: "ade.app.readClipboardText",
   appHasClipboardImage: "ade.app.hasClipboardImage",
   appReadClipboardImage: "ade.app.readClipboardImage",
+  appConvertImageToJpeg: "ade.app.convertImageToJpeg",
   appSaveClipboardImageAttachment: "ade.app.saveClipboardImageAttachment",
   appGetImageDataUrl: "ade.app.getImageDataUrl",
   appWriteClipboardImage: "ade.app.writeClipboardImage",
