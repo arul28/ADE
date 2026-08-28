@@ -155,6 +155,11 @@ brain **must** advertise them — but they must stay out of the required set,
 because a shipped mobile build that predates the feature would otherwise be
 flipped into `limited` mode against a newer host it works with perfectly well.
 
+`chat.regenerateSessionMetadata` is optional for the same compatibility reason:
+older phones never call it. A newer controller may feature-detect it from the
+advertised action list before offering a metadata refresh; omitting it must not
+break the connection or put the host in `limited` mode.
+
 ## Registry
 
 Commands are registered by calling `register(action, policy, handler,
@@ -331,7 +336,7 @@ strategy.
   `restoreCancelledQueue`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `recoverTurn`, legacy `recoverCodexTurn`, `resolveUnprocessedMessage`
-- `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
+- `restart`, `updateSession`, `regenerateSessionMetadata`, `archive`, `unarchive`, `delete`, `models`,
   `modelCatalog`
 
 `chat.recoverTurn` is the provider-neutral stall-recovery action. It takes
@@ -349,6 +354,17 @@ viewer-allowed and non-queueable. The runtime persists a terminal
 client retries and runtime restarts. `run_next` is accepted only while the
 session is idle and commits only after the replacement turn is dispatched;
 `dismiss` never sends a turn.
+
+`chat.regenerateSessionMetadata` takes
+`{ sessionId, fields?: ("title" | "laneName" | "statusLine")[] }`. Omitting
+`fields` selects all three; duplicate allowed fields are de-duplicated, and a
+provided array with no valid field is rejected. It is viewer-allowed and
+non-queueable, so a reconnect cannot replay an old generation request. The
+runtime makes one structured session-intelligence request that returns all
+three strings, then applies only the selected fields. It returns `applied`,
+`skipped`, and `modelId`; per-field snapshots protect edits made while the
+request runs. Explicit generation may replace a manual title, while imported
+provider titles are replaceable metadata. The primary lane name is skipped.
 
 `chat.resolveSmartLinkPreview` is a viewer-allowed, non-mutating enrichment
 read. Its `{ url }` payload returns the shared deterministic provider/kind/label
@@ -591,7 +607,10 @@ Each action has a dedicated parse function (e.g. `parseCreateLaneArgs`,
 Helpers (`asTrimmedString`, `asStringArray`, `requireString`, etc.) live
 at the top of the file. A non-conforming args object causes the parser
 to throw an explicit error like `"lanes.create requires name."`; that
-error reaches the controller as `command_result.error.message`.
+error reaches the controller as `command_result.error.message`. The metadata
+parser additionally requires `fields` to be an array when present, normalizes
+and de-duplicates the three allowed field names, and rejects an array with no
+valid field.
 
 Cross-machine handoff has dedicated parsers for all five actions. The service
 then performs the deeper version, bounds, secret-redaction, Git identity, and
@@ -692,6 +711,11 @@ A handful have more logic:
 - **`chat.create`** — resolves a missing `model` to the first
   available provider model via `agentChatService.getAvailableModels`
   before forwarding.
+- **`chat.regenerateSessionMetadata`** — requires the runtime's
+  `agentChatService`, makes the single structured request for the selected
+  visible chat title, lane name, and/or status line, and returns per-field
+  `applied`/`skipped` results. The action is deliberately non-queueable; the
+  service's snapshot checks preserve edits that race the generation.
 - **`chat.recoverCodexTurn`** — validates one of `wait`, `steer`,
   `interrupt_retry_same_thread`, or `restart_resume_thread` and forwards to
   the chat service. It is viewer-allowed but deliberately non-queueable: the

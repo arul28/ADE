@@ -120,9 +120,10 @@ and other terminal rows do not acquire lineage from resume metadata.
 
 - `SessionService` never fires `changed` on create/end — those are
   handled by `ptyService` broadcasting PTY events.
-- The `manuallyNamed` flag suppresses auto-title regeneration. Any
-  rename from the renderer sets it to `true`; AI auto-title code
-  refuses to overwrite when it is set.
+- The `manuallyNamed` flag suppresses the quiet automatic title path. Any
+  rename from the renderer sets it to `true`; explicit **Name & status**
+  generation is a separate user command that may intentionally replace a
+  manual title, while per-field guards preserve edits made during the request.
 - Continuation metadata is stored as a JSON blob. `normalizeResumeMetadata`
   accepts both the current `{ provider, targetKind, targetId, launch }`
   shape (plus optional `orchestrationParentSessionId` / `spawnKind`) and legacy

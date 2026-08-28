@@ -2192,6 +2192,35 @@ describe("createSyncRemoteCommandService", () => {
     }));
   });
 
+  it("routes chat.regenerateSessionMetadata and validates its field selection", async () => {
+    const regenerateSessionMetadata = vi.fn().mockResolvedValue({
+      sessionId: "session-1",
+      applied: ["title", "statusLine"],
+      skipped: [],
+      modelId: "openai/gpt-5.5",
+    });
+    const { service } = createService({ agentChatService: { regenerateSessionMetadata } });
+
+    expect(service.getDescriptor("chat.regenerateSessionMetadata")).toEqual({
+      action: "chat.regenerateSessionMetadata",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    await expect(service.execute(makePayload("chat.regenerateSessionMetadata", {
+      sessionId: " session-1 ",
+      fields: ["title", "statusLine", "title"],
+    }))).resolves.toEqual(expect.objectContaining({ sessionId: "session-1" }));
+    expect(regenerateSessionMetadata).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      fields: ["title", "statusLine"],
+    });
+
+    await expect(service.execute(makePayload("chat.regenerateSessionMetadata", {
+      sessionId: "session-1",
+      fields: ["not-a-field"],
+    }))).rejects.toThrow("fields must include title, laneName, or statusLine");
+  });
+
   it("routes every cross-machine chat handoff phase through the remote command bridge", async () => {
     const capsule = {
       version: 1 as const,

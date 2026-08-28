@@ -470,6 +470,8 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatKillDroidWorkerArgs,
+  AgentChatRegenerateSessionMetadataArgs,
+  AgentChatRegenerateSessionMetadataResult,
   AgentChatUpdateSessionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -6874,6 +6876,21 @@ const adeBridge = {
       );
       agentChatSummaryCache.clear();
       return session;
+    },
+    regenerateSessionMetadata: async (
+      args: AgentChatRegenerateSessionMetadataArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatRegenerateSessionMetadataResult> => {
+      agentChatSummaryCache.clear();
+      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRegenerateSessionMetadataResult>(
+        pin,
+        "chat",
+        "regenerateSessionMetadata",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatRegenerateSessionMetadata, args),
+      );
+      agentChatSummaryCache.clear();
+      return result;
     },
     createScheduledWork: async (
       args: AgentChatCreateScheduledWorkArgs,

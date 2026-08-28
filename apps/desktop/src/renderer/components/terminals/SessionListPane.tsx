@@ -972,9 +972,10 @@ export const SessionListPane = React.memo(function SessionListPane({
      * Set only for a singleton lane's card. That row has no lane divider above
      * it, so its session menu is the only surface left that can reach lane
      * management — the menu appends a lane section when this is present.
-     */
+    */
     laneActions?: SessionContextMenuLaneActions | null,
     openIn?: SessionContextMenuOpenIn | null,
+    laneType?: LaneSummary["laneType"] | null,
   ) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
@@ -1949,6 +1950,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             openIn && (!options?.laneActions || Boolean(foreignRow))
               ? openIn
               : null,
+            sessionLane?.laneType,
           );
         }}
         compact={options?.compact}

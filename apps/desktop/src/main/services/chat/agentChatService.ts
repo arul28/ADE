@@ -370,6 +370,9 @@ import type {
   PendingInputKind,
   PendingInputRequest,
   PendingInputSource,
+  AgentChatRegenerateSessionMetadataArgs,
+  AgentChatRegenerateSessionMetadataResult,
+  AgentChatSessionMetadataField,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   TerminalSessionStatus,
@@ -395,6 +398,7 @@ import {
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
+  normalizeAgentChatSessionMetadataFields,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
@@ -428,6 +432,7 @@ import type {
 } from "../../../shared/types/chatMentions";
 import type { RuntimeProcessSummary } from "../../../shared/types/sessions";
 import { formatWorkingDuration } from "../../../shared/sessionStatusPresentation";
+import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
 import {
   createChatRuntimeBudget,
   type ChatRuntimeBudget,
@@ -661,7 +666,9 @@ import {
   LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
   LEGACY_LANE_NAME_SYSTEM_PROMPT,
   MAX_NAMING_WORDS,
+  buildSessionMetadataPrompt,
   runNamingAcrossProviders,
+  runSessionMetadataGeneration,
 } from "./sessionNaming";
 import {
   mapCursorSdkMessageToChatEvents,
@@ -3105,6 +3112,10 @@ type ManagedChatSession = {
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
+  /** Monotonic guard for explicit metadata requests and later user edits. */
+  sessionMetadataGenerationVersion: number;
+  /** Revision of any persisted title write, including same-text user edits. */
+  sessionMetadataTitleRevision: number;
   runtimeTitleAdopted: boolean;
   manuallyNamed: boolean;
   summaryInFlight: boolean;
@@ -7852,6 +7863,11 @@ export function createAgentChatService(args: {
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
+  /** Content-free hook fired after an explicit session-metadata generation request. */
+  onSessionMetadataRegenerated?: (event: {
+    sessionId: string;
+    outcome: "completed" | "partial" | "failed";
+  }) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -7908,6 +7924,7 @@ export function createAgentChatService(args: {
     onEvent,
     onTurnSettled,
     onChatMentionsExpanded,
+    onSessionMetadataRegenerated,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -11731,6 +11748,53 @@ export function createAgentChatService(args: {
     return sanitizeAutoTitle(sessionService.get(managed.session.id)?.title ?? "");
   };
 
+  const persistSessionTitleMetadata = (
+    managed: ManagedChatSession,
+    rawTitle: string,
+    manuallyNamed: boolean,
+  ): string | null => {
+    const title = rawTitle.trim();
+    if (!title) return null;
+
+    sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed });
+    managed.sessionMetadataTitleRevision += 1;
+    managed.manuallyNamed = manuallyNamed;
+    if (manuallyNamed) {
+      managed.runtimeTitleAdopted = false;
+    }
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      title,
+      manuallyNamed,
+    });
+
+    return title;
+  };
+
+  const syncCodexSessionTitle = (managed: ManagedChatSession, title: string): void => {
+    // Sync ADE-generated titles to Codex so the app-server and ADE agree.
+    if (managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
+      managed.runtime.request("thread/name/set", {
+        threadId: managed.session.threadId,
+        name: title,
+      }).catch(() => { /* thread/name/set not supported — ignore */ });
+    }
+  };
+
+  const syncClaudeSessionTitle = async (managed: ManagedChatSession, title: string): Promise<void> => {
+    const runtime = managed.runtime;
+    if (managed.session.provider !== "claude" || runtime?.kind !== "claude" || !runtime.sdkSessionId) return;
+    const sdkSessionId = runtime.sdkSessionId;
+    await renameClaudeSession(sdkSessionId, title, { dir: managed.laneWorktreePath }).catch((error) => {
+      logger.warn("agent_chat.claude_rename_session_failed", {
+        sessionId: managed.session.id,
+        sdkSessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    mirrorClaudeSessionPointer(managed, sdkSessionId, { title });
+  };
+
   const setManagedSessionTitle = (
     managed: ManagedChatSession,
     rawTitle: string,
@@ -11738,27 +11802,33 @@ export function createAgentChatService(args: {
   ): string | null => {
     const title = sanitizeAutoTitle(rawTitle);
     if (!title) return null;
-
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     if (currentTitle?.trim() === title) return title;
-
-    sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
-    managed.manuallyNamed = false;
-    emitTransientChatEnvelope(managed.session.id, {
-      type: "session_meta_updated",
-      title,
-      manuallyNamed: false,
-    });
-
-    // Sync ADE-generated titles to Codex so the app-server and ADE agree.
-    if (options.syncToRuntime !== false && managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
-      managed.runtime.request("thread/name/set", {
-        threadId: managed.session.threadId,
-        name: title,
-      }).catch(() => { /* thread/name/set not supported — ignore */ });
+    const appliedTitle = persistSessionTitleMetadata(managed, title, false);
+    if (appliedTitle && options.syncToRuntime !== false) {
+      syncCodexSessionTitle(managed, appliedTitle);
     }
+    return appliedTitle;
+  };
 
-    return title;
+  /**
+   * Apply a title selected by the user, even when it came from the generator.
+   * It intentionally records `manuallyNamed: true`: a context-menu choice is
+   * user-owned metadata, so the quiet automatic title job must not replace it
+   * on the next turn. A later explicit generation request still wins because
+   * it advances the generation version and calls this helper again.
+   */
+  const setUserChosenGeneratedSessionTitle = async (
+    managed: ManagedChatSession,
+    rawTitle: string,
+  ): Promise<string | null> => {
+    const title = sanitizeAutoTitle(rawTitle, 72);
+    if (!title) return null;
+    const appliedTitle = persistSessionTitleMetadata(managed, title, true);
+    if (!appliedTitle) return null;
+    syncCodexSessionTitle(managed, appliedTitle);
+    await syncClaudeSessionTitle(managed, appliedTitle);
+    return appliedTitle;
   };
 
   const adoptRuntimeSessionTitle = (
@@ -11774,18 +11844,11 @@ export function createAgentChatService(args: {
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     const titleChanged = currentTitle?.trim() !== title;
     if (titleChanged) {
-      sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
+      persistSessionTitleMetadata(managed, title, false);
     }
     managed.manuallyNamed = false;
     managed.runtimeTitleAdopted = true;
     managed.autoTitleStage = "initial";
-    if (titleChanged) {
-      emitTransientChatEnvelope(managed.session.id, {
-        type: "session_meta_updated",
-        title,
-        manuallyNamed: false,
-      });
-    }
     logger.info("agent_chat.runtime_title_adopted", {
       sessionId: managed.session.id,
       provider: managed.session.provider,
@@ -11958,6 +12021,212 @@ export function createAgentChatService(args: {
       });
     } finally {
       managed.autoTitleInFlight = false;
+    }
+  };
+
+  const regenerateSessionMetadata = async (
+    args: AgentChatRegenerateSessionMetadataArgs,
+  ): Promise<AgentChatRegenerateSessionMetadataResult> => {
+    const sessionId = args.sessionId.trim();
+    const managed = ensureManagedSession(sessionId);
+    const fields = normalizeAgentChatSessionMetadataFields(args.fields);
+    if (!fields.length) {
+      throw new Error("Choose at least one piece of session metadata to generate.");
+    }
+
+    // This version belongs to the explicit request, not to manual title edits.
+    // A later generation therefore cancels this whole result, while a manual
+    // title edit is handled per-field by comparing the title snapshot and
+    // revision below.
+    const generationVersion = ++managed.sessionMetadataGenerationVersion;
+    const initialRow = sessionService.get(sessionId);
+    if (!initialRow) throw new Error(`Chat session '${sessionId}' was not found.`);
+    const initialLane = await laneService.getSummary(managed.session.laneId, { includeStatus: false }).catch(() => null);
+    const snapshot = {
+      title: initialRow.title,
+      titleRevision: managed.sessionMetadataTitleRevision,
+      laneName: initialLane?.name ?? initialRow.laneName,
+      statusLine: initialRow.statusNote ?? null,
+    };
+    const applied: AgentChatSessionMetadataField[] = [];
+    const skipped: AgentChatSessionMetadataField[] = [];
+    let selectedModelId: string | null = null;
+    let attemptCount = 0;
+
+    const notifyOutcome = (outcome: "completed" | "partial" | "failed"): void => {
+      try {
+        onSessionMetadataRegenerated?.({ sessionId, outcome });
+      } catch (error) {
+        logger.warn("agent_chat.session_metadata_callback_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    try {
+      const auth = await detectAuth();
+      const availableModels = await getAvailableRegistryModels(auth);
+      const config = resolveChatConfig();
+      const candidateModelIds = buildNamingModelCandidates({
+        availableModels,
+        preferred: [
+          config.titleModelId,
+          managed.session.modelId,
+          managed.session.model,
+          DEFAULT_AUTO_TITLE_MODEL_ID,
+          availableModels[0]?.id,
+        ],
+      });
+      if (!candidateModelIds.length) {
+        throw new Error("No AI model is available to generate session metadata.");
+      }
+
+      const recentConversation = buildRecentConversationContext(managed, 8).trim();
+      let latestOutputPreview: string | null = null;
+      const storedOutputPreview = initialRow.lastOutputPreview?.trim();
+      if (storedOutputPreview) {
+        latestOutputPreview = storedOutputPreview.slice(0, 1_000);
+      } else {
+        const managedOutputPreview = managed.preview?.trim();
+        if (managedOutputPreview) {
+          latestOutputPreview = managedOutputPreview.slice(0, 1_000);
+        }
+      }
+      const prompt = buildSessionMetadataPrompt({
+        provider: managed.session.provider,
+        chatModel: managed.session.modelId ?? managed.session.model,
+        currentLaneName: snapshot.laneName,
+        currentChatTitle: snapshot.title,
+        currentStatusLine: snapshot.statusLine,
+        goal: managed.session.goal?.trim().slice(0, 2_000) ?? null,
+        summary: initialRow.summary?.trim().slice(0, 2_000) ?? null,
+        latestOutputPreview,
+        originalRequest: managed.autoTitleSeed?.trim().slice(0, 2_000) ?? null,
+        recentConversation: recentConversation.slice(-8_000),
+      });
+
+      const generated = await runSessionMetadataGeneration({
+        candidateModelIds,
+        cwd: managed.laneWorktreePath,
+        prompt,
+        runPrompt: ({ cwd, modelId, prompt: metadataPrompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
+          cwd,
+          modelId,
+          prompt: metadataPrompt,
+          systemPrompt,
+          jsonSchema,
+          taskType: "session_title",
+        }),
+        normalizeTitle: normalizeSuggestedLaneTitle,
+        normalizeStatusLine: normalizeSessionStatusNote,
+        shouldStop: () => managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion,
+        onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount: currentAttempt, error }) => {
+          logger.warn("agent_chat.session_metadata_generation_failed", {
+            sessionId,
+            modelId: descriptor.id,
+            provider,
+            providerLevelFailure,
+            attemptCount: currentAttempt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      });
+      selectedModelId = generated.selectedModelId;
+      attemptCount = generated.attemptCount;
+      if (!generated.result) {
+        throw new Error("The AI returned no usable session metadata.");
+      }
+
+      // A newer explicit request cancels every field from this response. Manual
+      // edits do not change the request version, so untouched fields can still
+      // land while the edited title is protected by its value and revision
+      // comparison.
+      if (managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion) {
+        skipped.push(...fields);
+        notifyOutcome("partial");
+        return { sessionId, applied, skipped, modelId: selectedModelId };
+      }
+
+      const metadata = generated.result;
+      if (fields.includes("title")) {
+        const current = sessionService.get(sessionId);
+        if (
+          current?.title === snapshot.title
+          && managed.sessionMetadataTitleRevision === snapshot.titleRevision
+        ) {
+          const title = await setUserChosenGeneratedSessionTitle(managed, metadata.chatTitle);
+          if (title) applied.push("title");
+          else skipped.push("title");
+        } else {
+          skipped.push("title");
+        }
+      }
+
+      if (managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion) {
+        for (const field of fields) {
+          if (!applied.includes(field) && !skipped.includes(field)) skipped.push(field);
+        }
+        persistChatState(managed);
+        notifyOutcome("partial");
+        return { sessionId, applied, skipped, modelId: selectedModelId };
+      }
+
+      if (fields.includes("statusLine")) {
+        const current = sessionService.get(sessionId);
+        if (current?.statusNote === snapshot.statusLine) {
+          if (sessionService.setStatusNote(sessionId, metadata.statusLine)) applied.push("statusLine");
+          else skipped.push("statusLine");
+        } else {
+          skipped.push("statusLine");
+        }
+      }
+
+      if (fields.includes("laneName")) {
+        const currentLane = await laneService.getSummary(managed.session.laneId, { includeStatus: false }).catch(() => null);
+        if (managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion) {
+          for (const field of fields) {
+            if (!applied.includes(field) && !skipped.includes(field)) skipped.push(field);
+          }
+          persistChatState(managed);
+          notifyOutcome("partial");
+          return { sessionId, applied, skipped, modelId: selectedModelId };
+        }
+        if (currentLane && currentLane.name === snapshot.laneName) {
+          try {
+            laneService.rename({ laneId: managed.session.laneId, name: metadata.laneName });
+            applied.push("laneName");
+          } catch (error) {
+            skipped.push("laneName");
+            logger.warn("agent_chat.session_metadata_lane_rename_failed", {
+              sessionId,
+              laneId: managed.session.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        } else {
+          skipped.push("laneName");
+        }
+      }
+
+      persistChatState(managed);
+      logger.info("agent_chat.session_metadata_regenerated", {
+        sessionId,
+        appliedFields: applied.length,
+        requestedFields: fields.length,
+        attemptCount,
+      });
+      notifyOutcome(applied.length === fields.length ? "completed" : "partial");
+      return { sessionId, applied, skipped, modelId: selectedModelId };
+    } catch (error) {
+      notifyOutcome("failed");
+      logger.warn("agent_chat.session_metadata_generation_failed", {
+        sessionId,
+        modelId: selectedModelId,
+        attemptCount,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
   };
 
@@ -18210,6 +18479,8 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
+      sessionMetadataGenerationVersion: 0,
+      sessionMetadataTitleRevision: 0,
       runtimeTitleAdopted: persisted?.runtimeTitleAdopted === true,
       manuallyNamed: persisted?.manuallyNamed === true || row.manuallyNamed === true,
       summaryInFlight: false,
@@ -31550,6 +31821,8 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      sessionMetadataGenerationVersion: 0,
+      sessionMetadataTitleRevision: 0,
       runtimeTitleAdopted: false,
       manuallyNamed: false,
       summaryInFlight: false,
@@ -32470,6 +32743,8 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      sessionMetadataGenerationVersion: 0,
+      sessionMetadataTitleRevision: 0,
       runtimeTitleAdopted: false,
       manuallyNamed: normalizedTitle.length > 0,
       summaryInFlight: false,
@@ -46059,34 +46334,11 @@ export function createAgentChatService(args: {
       const normalizedTitle = String(title ?? "").trim();
       const hasExplicitTitle = normalizedTitle.length > 0;
       const effectiveTitle = hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider);
-      sessionService.updateMeta({
-        sessionId,
-        manuallyNamed: manuallyNamed ?? false,
-        title: effectiveTitle,
-      });
-      if (manuallyNamed !== undefined) {
-        managed.manuallyNamed = manuallyNamed && hasExplicitTitle;
-      } else if (hasExplicitTitle) {
-        managed.manuallyNamed = true;
-      } else {
-        managed.manuallyNamed = false;
-      }
-      managed.runtimeTitleAdopted = false;
-      emitTransientChatEnvelope(sessionId, {
-        type: "session_meta_updated",
-        title: effectiveTitle,
-        manuallyNamed: managed.manuallyNamed,
-      });
-      if (managed.session.provider === "claude" && managed.runtime?.kind === "claude" && managed.runtime.sdkSessionId && hasExplicitTitle) {
-        await renameClaudeSession(managed.runtime.sdkSessionId, normalizedTitle, { dir: managed.laneWorktreePath }).catch((error) => {
-          logger.warn("agent_chat.claude_rename_session_failed", {
-            sessionId: managed.session.id,
-            sdkSessionId: managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-        mirrorClaudeSessionPointer(managed, managed.runtime.sdkSessionId, { title: normalizedTitle });
-      }
+      const userNamed = manuallyNamed !== undefined ? manuallyNamed && hasExplicitTitle : hasExplicitTitle;
+      // Preserve updateSession's existing provider-sync behavior; explicit
+      // generated titles opt into the shared provider-sync path separately.
+      persistSessionTitleMetadata(managed, effectiveTitle, userNamed);
+      if (hasExplicitTitle) await syncClaudeSessionTitle(managed, normalizedTitle);
     }
     if (tag !== undefined) {
       const normalizedTag = typeof tag === "string" ? tag.trim() : null;
@@ -48805,6 +49057,7 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession,
+    regenerateSessionMetadata,
     setSpawnKind,
     dismissSubagentTakeoverPrompt,
     reconcileThreadPointerFromRedundantSources,

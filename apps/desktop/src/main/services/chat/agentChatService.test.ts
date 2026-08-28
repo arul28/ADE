@@ -1290,6 +1290,12 @@ function createMockLaneService() {
     }),
     list: vi.fn(async () => lanes),
     getSummary: vi.fn(async (laneId: string) => lanes.find((lane) => lane.id === laneId) ?? null),
+    rename: vi.fn(({ laneId, name }: { laneId: string; name: string }) => {
+      const lane = lanes.find((entry) => entry.id === laneId);
+      if (!lane) throw new Error(`Lane not found: ${laneId}`);
+      if (lane.laneType === "primary") throw new Error("Primary lane cannot be renamed");
+      lane.name = name;
+    }),
     importBranch: vi.fn(async ({ branchRef, name, description }: { branchRef: string; name?: string; description?: string }) => {
       const lane = {
         id: `lane-${lanes.length + 1}`,
@@ -1364,6 +1370,7 @@ function createMockSessionService() {
         lastOutputPreview: null,
         summary: null,
         goal: args.goal ?? null,
+        statusNote: null,
         manuallyNamed: false,
         headShaStart: null,
         headShaEnd: null,
@@ -1425,6 +1432,11 @@ function createMockSessionService() {
         if (args.toolType !== undefined) row.toolType = args.toolType;
         if (args.resumeCommand !== undefined) row.resumeCommand = args.resumeCommand;
       }
+    }),
+    setStatusNote: vi.fn((sessionId: string, note: string | null) => {
+      const row = sessions.get(sessionId);
+      if (row) row.statusNote = note;
+      return Boolean(row);
     }),
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
@@ -15863,6 +15875,144 @@ describe("createAgentChatService", () => {
       expect(title).not.toBe("Claude Chat");
       expect(title.split(/\s+/).filter(Boolean).length).toBeGreaterThanOrEqual(2);
       expect(title.toLowerCase()).toContain("lane");
+    });
+  });
+
+  describe("regenerateSessionMetadata", () => {
+    const generatedMetadata = {
+      chatTitle: "Refresh Session Metadata",
+      laneName: "Metadata Refresh",
+      statusLine: "Regenerating visible session details",
+    };
+
+    it("lets an explicit request replace a manual title and updates all three fields", async () => {
+      installAutoTitleAuth();
+      const { service, sessionService, laneService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      await service.updateSession({
+        sessionId: session.id,
+        title: "The user's chosen title",
+        manuallyNamed: true,
+      });
+      aiIntegrationService.summarizeTerminal.mockResolvedValue({
+        text: JSON.stringify(generatedMetadata),
+        structuredOutput: generatedMetadata,
+      } as never);
+
+      const result = await service.regenerateSessionMetadata({ sessionId: session.id });
+
+      expect(result.applied).toEqual(["title", "statusLine", "laneName"]);
+      expect(result.skipped).toEqual([]);
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+      expect(sessionService.updateMeta).toHaveBeenLastCalledWith({
+        sessionId: session.id,
+        title: generatedMetadata.chatTitle,
+        manuallyNamed: true,
+      });
+      expect(sessionService.setStatusNote).toHaveBeenCalledWith(session.id, generatedMetadata.statusLine);
+      expect(laneService.rename).toHaveBeenCalledWith({
+        laneId: "lane-2",
+        name: generatedMetadata.laneName,
+      });
+      expect(sessionService.get(session.id)).toMatchObject({
+        title: generatedMetadata.chatTitle,
+        manuallyNamed: true,
+        statusNote: generatedMetadata.statusLine,
+      });
+    });
+
+    it("keeps a same-text manual rename made while generation is in flight", async () => {
+      installAutoTitleAuth();
+      const { service, sessionService, laneService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const existingTitle = sessionService.get(session.id)?.title;
+      expect(existingTitle).toBeTruthy();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      aiIntegrationService.summarizeTerminal.mockImplementation(async () => {
+        await gate;
+        return {
+          text: JSON.stringify(generatedMetadata),
+          structuredOutput: generatedMetadata,
+        } as never;
+      });
+
+      const regeneration = service.regenerateSessionMetadata({ sessionId: session.id });
+      await vi.waitFor(() => expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1));
+      await service.updateSession({
+        sessionId: session.id,
+        title: existingTitle!,
+        manuallyNamed: true,
+      });
+      release();
+
+      const result = await regeneration;
+
+      expect(result.applied).toEqual(["statusLine", "laneName"]);
+      expect(result.skipped).toEqual(["title"]);
+      expect(sessionService.get(session.id)).toMatchObject({
+        title: existingTitle,
+        manuallyNamed: true,
+        statusNote: generatedMetadata.statusLine,
+      });
+      expect(sessionService.updateMeta).not.toHaveBeenCalledWith(expect.objectContaining({
+        title: generatedMetadata.chatTitle,
+      }));
+      expect(laneService.rename).toHaveBeenCalledWith({ laneId: "lane-2", name: generatedMetadata.laneName });
+    });
+
+    it("does not let a newer request apply a stale lane name", async () => {
+      installAutoTitleAuth();
+      const { service, laneService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const staleMetadata = { ...generatedMetadata, laneName: "Stale Lane Name" };
+      const freshMetadata = { ...generatedMetadata, laneName: "Fresh Lane Name" };
+      let aiCall = 0;
+      let releaseFirstModel!: () => void;
+      const firstModelGate = new Promise<void>((resolve) => { releaseFirstModel = resolve; });
+      let releaseStaleLaneLookup!: () => void;
+      const staleLaneLookup = new Promise<void>((resolve) => { releaseStaleLaneLookup = resolve; });
+      let summaryCall = 0;
+      const originalGetSummary = laneService.getSummary;
+      laneService.getSummary = vi.fn(async (laneId: string) => {
+        summaryCall += 1;
+        if (summaryCall === 2) await staleLaneLookup;
+        return await originalGetSummary(laneId);
+      });
+      aiIntegrationService.summarizeTerminal.mockImplementation(async () => {
+        aiCall += 1;
+        if (aiCall === 1) await firstModelGate;
+        const metadata = aiCall === 1 ? staleMetadata : freshMetadata;
+        return { text: JSON.stringify(metadata), structuredOutput: metadata } as never;
+      });
+
+      const staleRequest = service.regenerateSessionMetadata({ sessionId: session.id, fields: ["laneName"] });
+      await vi.waitFor(() => expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1));
+      releaseFirstModel();
+      await vi.waitFor(() => expect(summaryCall).toBe(2));
+
+      const freshRequest = service.regenerateSessionMetadata({ sessionId: session.id, fields: ["laneName"] });
+      await expect(freshRequest).resolves.toMatchObject({ applied: ["laneName"], skipped: [] });
+      releaseStaleLaneLookup();
+
+      await expect(staleRequest).resolves.toMatchObject({ applied: [], skipped: ["laneName"] });
+      expect(laneService.rename).toHaveBeenCalledTimes(1);
+      expect(laneService.rename).toHaveBeenCalledWith({ laneId: "lane-2", name: freshMetadata.laneName });
     });
   });
 

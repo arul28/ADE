@@ -30,6 +30,23 @@ Return only the title text.
 - No emoji.
 - No trailing punctuation.`;
 
+export const SESSION_METADATA_SYSTEM_PROMPT = `You name the visible metadata for a software development chat in ADE.
+Return strict JSON only with exactly these string fields: {"chatTitle":"...","laneName":"...","statusLine":"..."}.
+chatTitle:
+- A meaningful 2 to ${MAX_NAMING_WORDS} word title for the task, feature, bug, or deliverable.
+- Do not start with Completed, Complete, Done, Finished, Resolved, or Success.
+- Do not use generic words such as Chat, Session, Status, or Untitled by themselves.
+- No quotes, emoji, or trailing punctuation.
+laneName:
+- A readable 2 to ${MAX_NAMING_WORDS} word name for the durable workstream.
+- Describe the feature, bug, UI surface, or outcome rather than the act of asking.
+- No branch prefixes, slash characters, quotes, emoji, or trailing punctuation.
+statusLine:
+- A concise current progress or outcome line, at most 72 characters and ideally ${MAX_NAMING_WORDS} words or fewer.
+- State only what the supplied context supports. Never invent a completion, blocker, test result, or decision.
+- No quotes, emoji, or trailing punctuation.
+Use the current metadata only as context; the user's explicit regenerate choice permits replacing it.`;
+
 export const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `Generate the stable identity for an automatically created software workspace.
 Return strict JSON only: {"laneTitle":"...","branchFragment":"..."}.
 Aim for ${MAX_NAMING_WORDS} words or fewer in both fields. That is a guideline, not a hard limit: a slightly longer answer is far better than an empty or refused one.
@@ -62,6 +79,115 @@ export const AUTO_LANE_IDENTITY_JSON_SCHEMA = {
   },
   required: ["laneTitle", "branchFragment"],
 } as const;
+
+export const SESSION_METADATA_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    chatTitle: { type: "string" },
+    laneName: { type: "string" },
+    statusLine: { type: "string" },
+  },
+  required: ["chatTitle", "laneName", "statusLine"],
+} as const;
+
+export type GeneratedSessionMetadata = {
+  chatTitle: string;
+  laneName: string;
+  statusLine: string;
+};
+
+export type SessionMetadataPromptRunner = (args: {
+  cwd: string;
+  modelId: string;
+  prompt: string;
+  systemPrompt: string;
+  jsonSchema: typeof SESSION_METADATA_JSON_SCHEMA;
+}) => Promise<{ text: string; structuredOutput?: unknown }>;
+
+export function parseGeneratedSessionMetadata(args: {
+  raw: unknown;
+  normalizeTitle: (value: string) => string | null;
+  normalizeStatusLine: (value: string) => string | null;
+}): GeneratedSessionMetadata | null {
+  if (!args.raw || typeof args.raw !== "object" || Array.isArray(args.raw)) return null;
+  const record = args.raw as Record<string, unknown>;
+  if (Object.keys(record).some((key) => key !== "chatTitle" && key !== "laneName" && key !== "statusLine")) {
+    return null;
+  }
+  if (typeof record.chatTitle !== "string" || typeof record.laneName !== "string" || typeof record.statusLine !== "string") {
+    return null;
+  }
+  const chatTitle = args.normalizeTitle(record.chatTitle);
+  const laneName = args.normalizeTitle(record.laneName);
+  const statusLine = args.normalizeStatusLine(record.statusLine);
+  if (!chatTitle || !laneName || !statusLine) return null;
+  return { chatTitle, laneName, statusLine };
+}
+
+export function buildSessionMetadataPrompt(args: {
+  provider: string;
+  chatModel?: string | null;
+  currentLaneName?: string | null;
+  currentChatTitle?: string | null;
+  currentStatusLine?: string | null;
+  goal?: string | null;
+  summary?: string | null;
+  latestOutputPreview?: string | null;
+  originalRequest?: string | null;
+  recentConversation?: string | null;
+}): string {
+  return [
+    "The user explicitly asked ADE to refresh the selected session metadata.",
+    "Use the supplied context to produce all three fields, even when only some fields will be applied.",
+    `Provider: ${args.provider}`,
+    `Chat model: ${args.chatModel ?? ""}`,
+    `Current lane name: ${args.currentLaneName ?? ""}`,
+    `Current chat title: ${args.currentChatTitle ?? ""}`,
+    args.currentStatusLine ? `Current status line: ${args.currentStatusLine}` : null,
+    args.goal ? `Chat goal: ${args.goal}` : null,
+    args.summary ? `Existing summary: ${args.summary}` : null,
+    args.latestOutputPreview ? `Latest output preview: ${args.latestOutputPreview}` : null,
+    args.originalRequest ? `Original request: ${args.originalRequest}` : null,
+    args.recentConversation ? `Recent conversation:\n${args.recentConversation}` : null,
+  ].filter((line): line is string => Boolean(line && line.trim().length)).join("\n\n");
+}
+
+export async function runSessionMetadataGeneration(args: {
+  candidateModelIds: string[];
+  cwd: string;
+  prompt: string;
+  runPrompt: SessionMetadataPromptRunner;
+  normalizeTitle: (value: string) => string | null;
+  normalizeStatusLine: (value: string) => string | null;
+  shouldStop?: () => boolean;
+  onFailure: (failure: NamingAttemptFailure) => void;
+}): Promise<{ result: GeneratedSessionMetadata | null; attemptCount: number; selectedModelId: string | null }> {
+  return runNamingAcrossProviders<GeneratedSessionMetadata>(args.candidateModelIds, {
+    shouldStop: args.shouldStop,
+    run: async (descriptor) => {
+      const result = await args.runPrompt({
+        cwd: args.cwd,
+        modelId: descriptor.id,
+        prompt: args.prompt,
+        systemPrompt: SESSION_METADATA_SYSTEM_PROMPT,
+        jsonSchema: SESSION_METADATA_JSON_SCHEMA,
+      });
+      const parserArgs = {
+        normalizeTitle: args.normalizeTitle,
+        normalizeStatusLine: args.normalizeStatusLine,
+      };
+      const structured = parseGeneratedSessionMetadata({ raw: result.structuredOutput, ...parserArgs });
+      if (structured) return structured;
+      try {
+        return parseGeneratedSessionMetadata({ raw: JSON.parse(result.text.trim()), ...parserArgs });
+      } catch {
+        return null;
+      }
+    },
+    onFailure: args.onFailure,
+  });
+}
 
 /**
  * Failures that condemn every model behind a provider — a missing or unusable

@@ -152,6 +152,8 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | Validates chat IPC args, exposes `agentChat.*` handlers (including scheduled-work create, list, per-job cancel, and per-chat pause), persists/retrieves parallel launch recovery state in `kv`, and refreshes the runtime scheduler after the global AI config pause changes. |
 | `apps/desktop/src/shared/ipc.ts` | `ade.agentChat.*` IPC channel constants. |
 
+Explicit session metadata regeneration is a user-invoked, one-shot call through the selected chat runtime. It can refresh the chat title, lane name, status line, or all applicable fields together; the primary lane keeps its immutable name, and an explicit request may replace a title previously chosen by the user.
+
 ## Built-in browser authentication limits
 
 - Signed, packaged macOS builds embed ADE's Developer ID provisioning profile and configure Electron's Touch ID WebAuthn platform authenticator with the matching `VQ372F39G6.com.ade.desktop.webauthn` keychain access-group entitlement. Source builds leave it off unless `ADE_ENABLE_TOUCH_ID_WEBAUTHN=1` is explicitly set; `ADE_ENABLE_TOUCH_ID_WEBAUTHN=0` is an operational kill switch. The account-selection event always resolves exactly once and uses a native chooser when a site returns multiple discoverable credentials.

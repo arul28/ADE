@@ -449,6 +449,8 @@ import type {
   PromptStashEntry,
   AgentChatSession,
   AgentChatSessionSummary,
+  AgentChatRegenerateSessionMetadataArgs,
+  AgentChatRegenerateSessionMetadataResult,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatKillDroidWorkerArgs,
@@ -8050,6 +8052,14 @@ export function registerIpc({
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.updateSession(arg);
   });
+
+  ipcMain.handle(
+    IPC.agentChatRegenerateSessionMetadata,
+    async (_event, arg: AgentChatRegenerateSessionMetadataArgs): Promise<AgentChatRegenerateSessionMetadataResult> => {
+      const ctx = ensureAgentChatContext();
+      return await ctx.agentChatService.regenerateSessionMetadata(arg);
+    },
+  );
 
   ipcMain.handle(
     IPC.agentChatRecoverContinuity,

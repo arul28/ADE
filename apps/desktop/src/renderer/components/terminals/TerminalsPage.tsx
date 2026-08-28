@@ -16,6 +16,7 @@ import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover"
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type {
   AgentChatSession,
+  LaneSummary,
   OpenProjectBinding,
   PtyResumeSessionResult,
   TerminalResumeLaunchConfig,
@@ -164,6 +165,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
+  const [regeneratingMetadataSessionIds, setRegeneratingMetadataSessionIds] = useState<Set<string>>(new Set());
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
@@ -403,6 +405,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // to right-click; the session menu then also carries the lane section.
       laneActions?: SessionContextMenuLaneActions | null,
       openIn?: SessionContextMenuOpenIn | null,
+      laneType?: LaneSummary["laneType"] | null,
     ) => {
       setContextMenu({
         session,
@@ -412,6 +415,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(machineName ? { machineName } : {}),
         ...(laneActions ? { laneActions } : {}),
         ...(openIn ? { openIn } : {}),
+        ...(laneType ? { laneType } : {}),
       });
     },
     [],
@@ -1671,6 +1675,40 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               window.setTimeout(() => setSessionActionError(null), 6000);
             });
         }}
+        onRegenerateMetadata={(session, fields, runtimePin) => {
+          if (regeneratingMetadataSessionIds.has(session.id)) return;
+          setSessionActionError(null);
+          setRegeneratingMetadataSessionIds((current) => new Set(current).add(session.id));
+          const regenerate = runtimePin
+            ? window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields }, runtimePin)
+            : window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields });
+          void regenerate
+            .then((result) => {
+              invalidateSessionListCache();
+              work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+                console.error("[TerminalsPage] refresh after metadata generation failed", {
+                  sessionId: session.id,
+                  refreshErr,
+                });
+              });
+              if (result.applied.length === 0) {
+                setSessionActionError("Metadata was not changed because the session or lane changed while it was generating.");
+                window.setTimeout(() => setSessionActionError(null), 6000);
+              }
+            })
+            .catch((err: unknown) => {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error("[TerminalsPage] regenerate session metadata failed", { sessionId: session.id, err });
+              setSessionActionError(`Generate metadata failed: ${message}`);
+              window.setTimeout(() => setSessionActionError(null), 6000);
+            })
+            .finally(() => setRegeneratingMetadataSessionIds((current) => {
+              const next = new Set(current);
+              next.delete(session.id);
+              return next;
+            }));
+        }}
+        regeneratingMetadataSessionIds={regeneratingMetadataSessionIds}
       />
 
       <SessionInfoPopover
