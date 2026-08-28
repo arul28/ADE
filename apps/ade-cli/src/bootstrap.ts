@@ -59,7 +59,10 @@ import { createLaneEnvironmentService } from "../../desktop/src/main/services/la
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
-import { releaseLaneRuntimeResources } from "../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import {
+  releaseLaneRuntimeResources,
+  teardownArchivedLaneEnvironment,
+} from "../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
@@ -980,12 +983,25 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       logger,
       broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
+      // Setup scripts run unrestricted shell and can come from repo-committed
+      // shared config, so the executor gets the same trust gate test suites use.
+      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,
       logger,
     });
+
+    // Archiving a lane brings down the Docker services its env init started —
+    // the same teardown delete and archive-and-reclaim run. Late-bound because
+    // the lane service is constructed before the project config service.
+    laneService.setOnLaneArchivedEnvTeardown((laneId) =>
+      teardownArchivedLaneEnvironment(
+        { laneService, projectConfigService, laneEnvironmentService, logger },
+        laneId,
+      ),
+    );
 
     const portAllocationService = createPortAllocationService({
       logger,

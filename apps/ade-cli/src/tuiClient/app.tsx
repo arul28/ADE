@@ -6731,6 +6731,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         const failedStep = progress.steps.find((step) => step.status === "failed");
+        // An init the host cancelled because the lane is being archived or
+        // deleted also ends `failed`, but with every remaining step `skipped`
+        // and no failed step at all. `skipped` carries a reason, not a fault —
+        // reporting the user's own teardown as a red failure (with "press r to
+        // retry" for a lane that is going away) is wrong. Desktop and iOS make
+        // the same distinction by muting a skipped step's message.
+        const cancelledStep = failedStep
+          ? undefined
+          : progress.steps.find((step) => step.status === "skipped" && (step.error?.trim().length ?? 0) > 0);
+        if (cancelledStep) {
+          const reason = cancelledStep.error?.trim() || "Setup was cancelled";
+          const cancelled: LaneSetupStatus = {
+            status: "cancelled",
+            label: "lane setup cancelled",
+            detail: reason,
+            templateId: appliedTemplateId,
+            retryable: false,
+          };
+          setLaneSetupStatusByLaneId((prev) => ({ ...prev, [lane.id]: cancelled }));
+          setRightPane((prev) => prev.kind === "lane-details" && prev.lane.id === lane.id
+            ? { ...prev, setup: cancelled }
+            : prev);
+          addNotice(`Lane setup for ${lane.name} stopped: ${reason}`, "info");
+          return;
+        }
         const detail = failedStep?.error?.trim()
           || (failedStep ? `${failedStep.label} failed` : "Environment setup failed");
         const failed: LaneSetupStatus = {

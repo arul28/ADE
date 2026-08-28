@@ -75,7 +75,7 @@ private struct LaneEnvInitStepRow: View {
         if let error = step.error, !error.isEmpty {
           Text(error)
             .font(.caption)
-            .foregroundStyle(ADEColor.danger)
+            .foregroundStyle(step.status == "skipped" ? ADEColor.textMuted : ADEColor.danger)
             .lineLimit(3)
         }
       }

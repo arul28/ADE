@@ -357,7 +357,12 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/primitives/` — the
   control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
   `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,
-  `useSavedFlash`). There is **no Save button anywhere in settings**:
+  `SettingsDisclosure`, `useSavedFlash`). `SettingsDisclosure` is a
+  native `<details>` in a recessed card for rarely-needed fields —
+  native markup keeps keyboard and find-in-page behaviour — and its
+  `defaultOpen` is uncontrolled on purpose, so a caller passes `true`
+  when the block already holds a value and an existing config never
+  hides itself. There is **no Save button anywhere in settings**:
   every control persists on change and reports via `SavedFlash`.
   `ScopeChip` (Team / This Mac / This app) is shown only where the
   backing store would surprise — clicking it names the file and who it
@@ -755,7 +760,18 @@ Renderer — settings:
   only the selected secrets.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
-  lifecycle policies.
+  lifecycle policies. The template editor is written for someone who has
+  never read the config schema: fields are named for what they do
+  ("Files to copy into new lanes", "Env files to fill in", "Install
+  command", "Setup script", "Use for new lanes") rather than for the
+  YAML keys behind them, each with a one-line hint. Docker services,
+  `.ade`-folder mounts, and extra variables sit behind an **Advanced**
+  `SettingsDisclosure`, and per-platform setup commands behind a
+  "Different commands on Windows" one; both open by default when the
+  template already has a value there. There is no port-range control —
+  lane creation leases a port range and the lease always outranks a
+  template's `portRange`, so the field could only mislead. An existing
+  `portRange` in YAML is preserved across edits rather than dropped.
 - `apps/desktop/src/renderer/components/settings/StorageSection.tsx` plus
   `settings/storage/StorageCleanupDialog.tsx`, `StorageDiagnostics.tsx`,
   `StorageMaintenanceJournal.tsx`, `storageView.ts`, and `storageUiConstants.ts`

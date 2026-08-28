@@ -547,7 +547,13 @@ function LaneDetailsPane({
         <>
           <LaneSectionHead title="SETUP" width={contentWidth} />
           <Text color={setupColor} wrap="truncate-end">
-            {setup.status === "running" ? "●" : setup.status === "failed" ? "×" : "✓"} {endTruncate(setup.label, contentWidth - 2)}
+            {setup.status === "running"
+              ? "●"
+              : setup.status === "failed"
+                ? "×"
+                // A cancelled init did not succeed either — a check mark would
+                // claim the environment is ready when it is half-built.
+                : setup.status === "cancelled" ? "—" : "✓"} {endTruncate(setup.label, contentWidth - 2)}
           </Text>
           {setup.detail ? (
             <Text color={setup.status === "failed" ? theme.color.error : theme.color.t4} dimColor={setup.status !== "failed"} wrap="truncate-end">

@@ -85,16 +85,13 @@ import type {
   FileChangeEvent,
   FilesWatchArgs,
   LaneBranchDriftResolution,
-  LaneEnvInitConfig,
   LaneEnvInitProgress,
   LaneListSnapshot,
-  LaneOverlayOverrides,
   LanePreviewInfo,
   ListSessionsArgs,
   ListLanesArgs,
   SessionSettleOverride,
   SessionWakeReason,
-  PortLease,
   PrAgentPermissionMode,
   PrAiResolutionContext,
   PrAiResolutionEventPayload,
@@ -115,12 +112,17 @@ import type {
   LinearConnectionStatus,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
-import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 import {
+  buildLaneEnvTeardown,
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
-  restoreRecreatedLaneRuntime,
+  restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
+import {
+  mergeLaneEnvInitConfig,
+  mergeLaneOverrides,
+} from "../lanes/laneEnvInitMerge";
+import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { runGit } from "../git/git";
@@ -2311,78 +2313,6 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   };
 }
 
-function mergeLaneDockerConfig(
-  current: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
-  next: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
-) {
-  if (!current && !next) return undefined;
-  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
-  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
-  return {
-    ...current,
-    ...next,
-    ...(next.services != null
-      ? { services: [...next.services] }
-      : current.services != null
-        ? { services: [...current.services] }
-        : {}),
-  };
-}
-
-function mergeLaneEnvInitConfig(
-  current: LaneEnvInitConfig | undefined,
-  next: LaneEnvInitConfig | undefined,
-): LaneEnvInitConfig | undefined {
-  if (!current && !next) return undefined;
-  if (!current) {
-    return next
-      ? {
-          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
-          ...(mergeLaneDockerConfig(undefined, next.docker) ? { docker: mergeLaneDockerConfig(undefined, next.docker) } : {}),
-          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
-          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {}),
-          ...(next.copyPaths ? { copyPaths: [...next.copyPaths] } : {}),
-        }
-      : undefined;
-  }
-  if (!next) {
-    return {
-      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
-      ...(mergeLaneDockerConfig(undefined, current.docker) ? { docker: mergeLaneDockerConfig(undefined, current.docker) } : {}),
-      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
-      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {}),
-      ...(current.copyPaths ? { copyPaths: [...current.copyPaths] } : {}),
-    };
-  }
-  return {
-    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    ...(mergeLaneDockerConfig(current.docker, next.docker) ? { docker: mergeLaneDockerConfig(current.docker, next.docker) } : {}),
-    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
-    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
-    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
-  };
-}
-
-function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
-  return {
-    ...base,
-    ...next,
-    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
-    ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
-    ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {}),
-  };
-}
-
-function applyLeaseToOverrides(overrides: LaneOverlayOverrides, lease: PortLease | null): LaneOverlayOverrides {
-  if (!lease || lease.status !== "active" || overrides.portRange) {
-    return { ...overrides };
-  }
-  return {
-    ...overrides,
-    portRange: { start: lease.rangeStart, end: lease.rangeEnd },
-  };
-}
-
 function requireService<T>(service: T | null | undefined, message: string): T {
   if (!service) throw new Error(message);
   return service;
@@ -2400,19 +2330,22 @@ async function resolveActiveLaneIds(runtime: AdeRuntime): Promise<string[]> {
   return lanes.map((lane) => lane.id);
 }
 
-async function resolveLaneOverlayContext(runtime: AdeRuntime, laneId: string) {
-  const lane = await resolveLane(runtime, laneId);
-  const config = runtime.projectConfigService.getEffective();
-  const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
-  const lease = runtime.portAllocationService?.getLease(lane.id) ?? null;
-  const overrides = applyLeaseToOverrides(overlayOverrides, lease);
-  const envInitConfig = runtime.laneEnvironmentService?.resolveEnvInitConfig(config.laneEnvInit, overrides);
-  return {
-    lane,
-    overrides,
-    envInitConfig,
-    lease,
-  };
+/**
+ * Thin AdeRuntime adapter over the shared resolver in `lanes/laneOverlayContext`.
+ * `includeArchived` matches `resolveLane` above: the action domain resolves
+ * lanes that may already be archived.
+ */
+async function resolveLaneOverlayContextForRuntime(runtime: AdeRuntime, laneId: string) {
+  return await resolveLaneOverlayContext(
+    {
+      laneService: runtime.laneService,
+      projectConfigService: runtime.projectConfigService,
+      portAllocationService: runtime.portAllocationService,
+      laneEnvironmentService: runtime.laneEnvironmentService,
+    },
+    laneId,
+    { includeArchived: true },
+  );
 }
 
 async function ensureLanePreviewInfo(runtime: AdeRuntime, laneId: string): Promise<LanePreviewInfo | null> {
@@ -2544,6 +2477,8 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     archive: async (args?: { laneId?: string }): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const lane = await findLaneForArchive(laneId);
+      // Docker teardown runs inside `laneService.archive` via the late-bound
+      // env-teardown hook, so every archive path gets it, not just this one.
       await runtime.laneService.archive({ laneId });
       try {
         releaseLaneRuntimeResources(runtime, laneId);
@@ -2553,21 +2488,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     delete: async (args?: DeleteLaneArgs): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const laneEnvironmentService = runtime.laneEnvironmentService;
-      const envContext = laneEnvironmentService
-        ? await resolveLaneOverlayContext(runtime, laneId).catch((error: unknown) => {
-            runtime.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
-              laneId,
-              error: getErrorMessage(error),
-            });
-            return null;
-          })
-        : null;
-      const teardownEnv = laneEnvironmentService && envContext?.envInitConfig
-        ? async () => {
-            await laneEnvironmentService.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
-          }
-        : undefined;
+      const teardownEnv = await buildLaneEnvTeardown(runtime, laneId, { includeArchived: true });
       await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
       releaseLaneRuntimeResources(runtime, laneId);
     },
@@ -2577,15 +2498,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         throw new Error('archiveAndReclaim requires confirmation: "RECLAIM".');
       }
       const lane = await findLaneForArchive(laneId);
-      const laneEnvironmentService = runtime.laneEnvironmentService;
-      const envContext = laneEnvironmentService
-        ? await resolveLaneOverlayContext(runtime, laneId).catch(() => null)
-        : null;
-      const teardownEnv = laneEnvironmentService && envContext?.envInitConfig
-        ? async () => {
-            await laneEnvironmentService.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
-          }
-        : undefined;
+      const teardownEnv = await buildLaneEnvTeardown(runtime, laneId, { includeArchived: true });
       const result = await runtime.laneService.archiveAndReclaim(
         {
           laneId,
@@ -2608,9 +2521,16 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     unarchive: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const result = await runtime.laneService.unarchive({ laneId });
-      if (!result.worktreeRecreated) return result;
       try {
-        await restoreRecreatedLaneRuntime(runtime, laneId);
+        await restoreUnarchivedLaneRuntime(runtime, laneId, {
+          worktreeRecreated: result.worktreeRecreated === true,
+          onDockerError: (error) => {
+            runtime.logger.warn("lane_env_setup.post_unarchive_docker_failed", {
+              laneId,
+              error: getErrorMessage(error),
+            });
+          },
+        });
         return result;
       } catch (error) {
         return { ...result, setupWarning: getErrorMessage(error) };
@@ -2634,7 +2554,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     initEnv: async (args?: { laneId?: string }): Promise<LaneEnvInitProgress> => {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const context = await resolveLaneOverlayContext(runtime, laneId);
+      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
       if (!context.envInitConfig) {
         const now = new Date().toISOString();
         return { laneId, steps: [], startedAt: now, completedAt: now, overallStatus: "completed" };
@@ -2644,7 +2564,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     getEnvStatus: (args?: { laneId?: string }) =>
       runtime.laneEnvironmentService?.getProgress(requireNonEmptyString(args?.laneId, "laneId")) ?? null,
     getOverlay: async (args?: { laneId?: string }) => {
-      const context = await resolveLaneOverlayContext(runtime, requireNonEmptyString(args?.laneId, "laneId"));
+      const context = await resolveLaneOverlayContextForRuntime(runtime, requireNonEmptyString(args?.laneId, "laneId"));
       return context.overrides;
     },
     listTemplates: () => runtime.laneTemplateService?.listTemplates() ?? [],
@@ -2659,7 +2579,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const templateId = requireNonEmptyString(args?.templateId, "templateId");
-      const context = await resolveLaneOverlayContext(runtime, laneId);
+      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
       const template = laneTemplateService.getTemplate(templateId);
       if (!template) throw new Error(`Template not found: ${templateId}`);
       const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);

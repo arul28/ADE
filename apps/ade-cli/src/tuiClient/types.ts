@@ -436,7 +436,13 @@ export type RightPaneContent =
     };
 
 export type LaneSetupStatus = {
-  status: "running" | "failed" | "completed";
+  /**
+   * `cancelled` is not a failure: the host aborts a lane's env init when the
+   * lane is being archived or deleted, marking the remaining steps `skipped`
+   * with a reason. It is rendered muted and is never retryable — the lane it
+   * belongs to is going away.
+   */
+  status: "running" | "failed" | "completed" | "cancelled";
   label: string;
   detail?: string;
   templateId?: string | null;

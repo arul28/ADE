@@ -1029,6 +1029,36 @@ describe("RightPane lane-details", () => {
     expect(frame).toContain("press r to retry");
   });
 
+  it("renders a cancelled lane setup as a neutral stop, not a failure", () => {
+    // The host aborts env init when the lane is being archived or deleted; the
+    // run comes back `failed` with only `skipped` steps. That is the user's own
+    // teardown, so the TUI must not show a check mark (environment ready), an
+    // "×" failure, or a retry hint for a lane that is going away.
+    const result = render(
+      <RightPane
+        content={{
+          kind: "lane-details",
+          ...baseLaneDetails,
+          setup: {
+            status: "cancelled",
+            label: "lane setup cancelled",
+            detail: "Cancelled: lane is being torn down",
+            retryable: false,
+          },
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SETUP");
+    expect(frame).toContain("— lane setup cancelled");
+    expect(frame).toContain("Cancelled: lane is being torn down");
+    expect(frame).not.toContain("press r to retry");
+    expect(frame).not.toContain("✓ lane setup cancelled");
+  });
+
   it("shows action shortcuts only for the selected row", () => {
     const result = render(
       <RightPane

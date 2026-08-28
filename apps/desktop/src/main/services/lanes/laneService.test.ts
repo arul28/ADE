@@ -4600,6 +4600,45 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     ).toBe("archived");
   });
 
+  it("tears the lane environment down after the runtime work is stopped, before the status write", async () => {
+    // ORDER, not just presence. `compose down` racing PTYs and agents still
+    // bound to the stack is how services came back half-dead; and running it
+    // after the status write would hide a lane whose containers are still up.
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    service.setOnLaneArchivedEnvTeardown(async () => {
+      fake.calls.push("env_teardown");
+      expect(
+        db.get<{ status: string }>("select status from lanes where id = ?", ["lane-child"])?.status,
+      ).not.toBe("archived");
+    });
+
+    await service.archive({ laneId: "lane-child" });
+
+    expect(fake.calls.indexOf("env_teardown")).toBeGreaterThan(fake.calls.indexOf("stop_ptys"));
+    expect(fake.calls.indexOf("env_teardown")).toBeGreaterThan(fake.calls.indexOf("stop_chats"));
+    expect(fake.calls.indexOf("env_teardown")).toBeGreaterThan(fake.calls.indexOf("stop_watchers"));
+    expect(
+      db.get<{ status: string }>("select status from lanes where id = ?", ["lane-child"])?.status,
+    ).toBe("archived");
+  });
+
+  it("still archives when the environment teardown fails", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { db, service } = await setupWithLane({ teardown: fake, events });
+    service.setOnLaneArchivedEnvTeardown(async () => {
+      throw new Error("compose down exploded");
+    });
+
+    await service.archive({ laneId: "lane-child" });
+
+    expect(
+      db.get<{ status: string }>("select status from lanes where id = ?", ["lane-child"])?.status,
+    ).toBe("archived");
+  });
+
   it("still archives when one teardown step throws, after attempting it", async () => {
     // Each step is best-effort on purpose — a lane must not become
     // un-archivable because one watcher refuses to stop. What must hold is
