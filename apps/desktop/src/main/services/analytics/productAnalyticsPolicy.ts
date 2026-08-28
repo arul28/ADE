@@ -130,6 +130,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "brain_repair",
   "machine_reconnect",
   "mention_expanded",
+  "metadata_regenerated",
   "transaction_failed",
   "scope_selected",
   // Settle teardown: work a settle could not confirm it stopped, and a peer

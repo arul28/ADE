@@ -75,7 +75,11 @@ import {
   getSharedProductAnalyticsService,
 } from "./services/analytics/productAnalyticsService";
 import { detectInstallSource } from "./services/analytics/installSource";
-import { captureAgentTurnSettledAnalytics, captureChatMentionsExpandedAnalytics } from "./services/analytics/agentTurnProductAnalytics";
+import {
+  captureAgentTurnSettledAnalytics,
+  captureChatMentionsExpandedAnalytics,
+  captureSessionMetadataRegeneratedAnalytics,
+} from "./services/analytics/agentTurnProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -102,7 +106,10 @@ import { createLaneTemplateService } from "./services/lanes/laneTemplateService"
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
-import { releaseLaneRuntimeResources } from "./services/lanes/laneRuntimeLifecycle";
+import {
+  releaseLaneRuntimeResources,
+  teardownArchivedLaneEnvironment,
+} from "./services/lanes/laneRuntimeLifecycle";
 import { createOAuthRedirectService } from "./services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "./services/lanes/runtimeDiagnosticsService";
 import {
@@ -3393,14 +3400,6 @@ app.whenReady().then(async () => {
     });
     laneWorktreeLockService.sweepExpired();
 
-    const laneEnvironmentService = createLaneEnvironmentService({
-      projectRoot,
-      adeDir: adePaths.adeDir,
-      logger,
-      broadcastEvent: (ev) =>
-        emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
-    });
-
     // Late-bound: the chat service that owns the work does not exist yet at
     // this point, and the settle path must not depend on construction order.
     const settleTeardownRef: {
@@ -3467,10 +3466,31 @@ app.whenReady().then(async () => {
     });
     const projectSecretService = createProjectSecretService(projectRoot);
 
+    const laneEnvironmentService = createLaneEnvironmentService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
+      logger,
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
+      // Setup scripts run unrestricted shell and can come from repo-committed
+      // shared config, so the executor gets the same trust gate test suites use.
+      projectConfigService,
+    });
+
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,
       logger,
     });
+
+    // Archiving a lane brings down the Docker services its env init started —
+    // the same teardown delete and archive-and-reclaim run. Late-bound because
+    // the lane service is constructed before the project config service.
+    laneService.setOnLaneArchivedEnvTeardown((laneId) =>
+      teardownArchivedLaneEnvironment(
+        { laneService, projectConfigService, laneEnvironmentService, logger },
+        laneId,
+      ),
+    );
 
     const portAllocationService = createPortAllocationService({
       logger,
@@ -4117,6 +4137,11 @@ app.whenReady().then(async () => {
         analytics: productAnalyticsService,
         projectId,
         sessionId: event.sessionId,
+      }),
+      onSessionMetadataRegenerated: (event) => captureSessionMetadataRegeneratedAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
       }),
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {

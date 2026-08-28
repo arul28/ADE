@@ -3,6 +3,25 @@ import type { ProductAnalyticsService } from "./productAnalyticsService";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
+export function captureSessionMetadataRegeneratedAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: { sessionId: string; outcome: "completed" | "partial" | "failed" };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    sessionId: args.event.sessionId,
+    properties: {
+      feature: "chat",
+      action: "metadata_regenerated",
+      outcome: args.event.outcome,
+      source: "runtime",
+    },
+  });
+}
+
 /**
  * One coarse adoption fact when a send's composer @-mentions were expanded
  * into pointer blocks. Identity only — no mention targets, titles, previews,

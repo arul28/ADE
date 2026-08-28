@@ -2014,6 +2014,7 @@ export type SyncRemoteCommandAction =
   | "chat.respondToInput"
   | "chat.restart"
   | "chat.updateSession"
+  | "chat.regenerateSessionMetadata"
   | "chat.setSpawnKind"
   | "chat.dismissSubagentTakeoverPrompt"
   | "chat.getCodexGoal"

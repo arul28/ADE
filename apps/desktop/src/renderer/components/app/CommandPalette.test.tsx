@@ -48,6 +48,7 @@ function seedStore(overrides: Record<string, unknown> = {}) {
     },
     lanes: [],
     selectedLaneId: null,
+    projectBinding: null,
     selectLane: vi.fn(),
     switchProjectToPath: vi.fn(async () => {}),
     // Reset explicitly: `setState` merges, so a thread test's sessions would
@@ -734,6 +735,255 @@ describe("CommandPalette", () => {
       expect(screen.queryByText("Alpha")).toBeNull();
     });
 
+    it("matches title words in any order", async () => {
+      seedThreads([
+        makeSession({ id: "session-auth-migration", title: "auth migration" }),
+        makeSession({ id: "session-migration-only", title: "migration cleanup" }),
+      ]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads…"),
+        { target: { value: "migration auth" } },
+      );
+
+      await waitFor(() => {
+        expect(document.querySelector('[data-thread-id="session-auth-migration"]')).toBeTruthy();
+      });
+      expect(document.querySelector('[data-thread-id="session-migration-only"]')).toBeNull();
+      expect(screen.getByText("Match: title")).toBeTruthy();
+    });
+
+    it("promotes a transcript hit into the matching Work row", async () => {
+      const query = vi.fn(async () => ({
+        results: [{
+          kind: "chat" as const,
+          id: "chat:session-1:event-1",
+          title: "Keep this chat",
+          snippet: "The rename request is in the transcript.",
+          matchRanges: [{ start: 4, end: 10 }],
+          laneId: "lane-1",
+          laneName: "redesign",
+          sessionId: "session-1",
+          deepLink: "ade://work/session/session-1?event=1",
+          updatedAt: new Date().toISOString(),
+        }],
+        totalByKind: { chat: 1 },
+        nextCursor: null,
+      }));
+      globalThis.window.ade.search = { query } as any;
+      seedThreads([makeSession({ title: "Keep this chat" })]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads…"),
+        { target: { value: "rename" } },
+      );
+
+      expect(await screen.findByText("Keep this chat")).toBeTruthy();
+      expect(document.querySelector('[data-thread-id="session-1"]')?.textContent).toContain("rename request");
+      expect(screen.getByText("Match: chat content")).toBeTruthy();
+      expect(query).toHaveBeenCalledWith({ query: "rename", limit: 60 });
+    });
+
+    it("queries each lane when a Work lane facet has multiple values", async () => {
+      const query = vi.fn(async () => ({
+        results: [],
+        totalByKind: {},
+        nextCursor: null,
+      }));
+      globalThis.window.ade.search = { query } as any;
+      seedThreads(
+        [makeSession({ title: "auth migration" })],
+        {
+          lanes: [
+            makeLane({ name: "auth" }),
+            makeLane({ id: "lane-2", name: "payments" }),
+          ],
+        },
+      );
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads…"),
+        { target: { value: "lane:auth lane:payments auth" } },
+      );
+
+      await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+      expect(query).toHaveBeenNthCalledWith(1, {
+        query: "auth lane:auth",
+        limit: 60,
+      });
+      expect(query).toHaveBeenNthCalledWith(2, {
+        query: "auth lane:payments",
+        limit: 60,
+      });
+    });
+
+    it("does not let a transcript hit bypass a Work facet", async () => {
+      const query = vi.fn(async () => ({
+        results: [{
+          kind: "chat" as const,
+          id: "chat:session-claude:event-1",
+          title: "Claude chat",
+          snippet: "The rename request is in the transcript.",
+          matchRanges: [{ start: 4, end: 10 }],
+          laneId: "lane-1",
+          laneName: "redesign",
+          // Missing ownership metadata must not bypass the local provider facet.
+          sessionId: null,
+          deepLink: "ade://work/session/session-claude?event=1",
+          updatedAt: new Date().toISOString(),
+        }],
+        totalByKind: { chat: 1 },
+        nextCursor: null,
+      }));
+      globalThis.window.ade.search = { query } as any;
+      seedThreads([
+        makeSession({ id: "session-codex", title: "Codex chat", toolType: "codex-chat" }),
+        makeSession({ id: "session-claude", title: "Claude chat", toolType: "claude-chat" }),
+      ]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads…"),
+        { target: { value: "provider:codex rename" } },
+      );
+
+      await waitFor(() => expect(query).toHaveBeenCalled());
+      expect(document.querySelector('[data-thread-id="session-claude"]')).toBeNull();
+      expect(screen.queryByText("Claude chat")).toBeNull();
+      expect(screen.queryByText("The rename request is in the transcript.")).toBeNull();
+    });
+
+    it("filters Work results with provider aliases and exposes the chip", async () => {
+      seedThreads([
+        makeSession({ id: "session-codex", title: "auth migration", toolType: "codex-chat" }),
+        makeSession({ id: "session-claude", title: "auth migration", toolType: "claude-chat" }),
+      ]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads…"),
+        { target: { value: "provider:codex auth" } },
+      );
+
+      expect(await screen.findByTestId("thread-status-session-codex")).toBeTruthy();
+      expect(screen.queryByTestId("thread-status-session-claude")).toBeNull();
+      expect(screen.getByRole("button", { name: /Remove provider filter codex/i })).toBeTruthy();
+    });
+
+    it("shows lifecycle actions on the highlighted Work result and targets that session", async () => {
+      const settle = vi.fn(async () => {});
+      globalThis.window.ade.sessions = { settle } as any;
+      const onOpenChange = vi.fn();
+      seedThreads([makeSession({
+        id: "session-to-settle",
+        title: "Settle this chat",
+        status: "completed",
+        runtimeState: "exited",
+        exitCode: 0,
+        endedAt: new Date().toISOString(),
+      })]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={onOpenChange} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(await screen.findByRole("button", { name: "Settle session" }));
+
+      await waitFor(() => {
+        expect(settle).toHaveBeenCalledWith("session-to-settle", undefined);
+        expect(onOpenChange).toHaveBeenCalledWith(false);
+      });
+    });
+
+    it("persists a new-chat draft before navigating when Work is not mounted", async () => {
+      const onOpenChange = vi.fn();
+      seedThreads([makeSession({ title: "Start a follow-up chat" })]);
+
+      render(
+        <MemoryRouter initialEntries={["/lanes"]}>
+          <LocationProbe />
+          <CommandPalette open onOpenChange={onOpenChange} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "New chat in redesign" }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("location").textContent).toBe("/work");
+        expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]).toMatchObject({
+          draftKind: "chat",
+          draftLaneId: "lane-1",
+          draftMachineId: null,
+          activeItemId: null,
+          selectedItemId: null,
+        });
+        expect(onOpenChange).toHaveBeenCalledWith(false);
+      });
+    });
+
+    it("does not leave a draft when switching to a new-chat target fails", async () => {
+      const switchRemoteProject = vi.fn(async () => {
+        throw new Error("remote target unavailable");
+      });
+      const onOpenChange = vi.fn();
+      seedStore({
+        switchRemoteProject,
+        sessionsCacheByProject: { [PROJECT_ROOT]: [] },
+        workViewByProject: {},
+        crossMachineLanesByMachineId: {
+          "target-studio": makeForeignMachine(),
+        },
+      });
+
+      render(
+        <MemoryRouter initialEntries={["/lanes"]}>
+          <LocationProbe />
+          <CommandPalette open onOpenChange={onOpenChange} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "New chat in release" }),
+      );
+
+      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalled());
+      expect(useAppStore.getState().workViewByProject[REMOTE_BINDING.key]).toBeUndefined();
+      expect(screen.getByTestId("location").textContent).toBe("/lanes");
+      expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    });
+
     it("renders the status indicator from the shared tone classes", async () => {
       seedThreads([makeSession()]);
 
@@ -1147,6 +1397,51 @@ describe("CommandPalette", () => {
         });
         expect(row.dataset.dimmed).toBe("true");
         expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
+      });
+
+      it("keeps the active remote binding on row actions", async () => {
+        const boundKey = "remote:target-studio:project-a";
+        const settle = vi.fn(async () => {});
+        globalThis.window.ade.sessions = { settle } as any;
+        seedStore({
+          projectBinding: {
+            ...REMOTE_BINDING,
+            key: boundKey,
+            projectId: "project-a",
+            rootPath: PROJECT_ROOT,
+          },
+          lanes: [makeLane()],
+          sessionsCacheByProject: {
+            [boundKey]: [makeSession({
+              id: "remote-session-to-settle",
+              title: "Remote completed chat",
+              status: "completed",
+              runtimeState: "exited",
+              endedAt: new Date().toISOString(),
+            })],
+          },
+          workViewByProject: { [boundKey]: { activeItemId: null } },
+        });
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        fireEvent.click(await screen.findByRole("button", { name: "Settle session" }));
+
+        await waitFor(() => {
+          expect(settle).toHaveBeenCalledWith(
+            "remote-session-to-settle",
+            undefined,
+            expect.objectContaining({
+              kind: "remote",
+              targetId: "target-studio",
+              projectId: "project-a",
+            }),
+          );
+        });
       });
     });
   });

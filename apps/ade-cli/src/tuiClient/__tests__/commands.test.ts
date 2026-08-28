@@ -44,6 +44,16 @@ describe("commands", () => {
     expect(paletteCommands("/attention")).toEqual([]);
   });
 
+  it("matches all palette words in any order", () => {
+    expect(paletteCommands("chat new")).toContainEqual(expect.objectContaining({
+      name: "/new chat",
+      description: "Create a new chat in the current lane",
+    }));
+    expect(paletteCommands("new chat")).toContainEqual(expect.objectContaining({
+      name: "/new chat",
+    }));
+  });
+
   it("parses multi-word ADE commands before generic slash commands", () => {
     const parsed = parseCommand("/linear pull ADE-123");
     expect(parsed?.name).toBe("/linear pull");

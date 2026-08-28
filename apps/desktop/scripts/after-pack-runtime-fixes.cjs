@@ -53,6 +53,12 @@ function darwinCrsqliteTargetsForContext(context) {
   return [isArm64 ? "darwin-arm64" : "darwin-x64"];
 }
 
+function linuxCrsqliteTargetForContext(context) {
+  const appOutDir = String(context?.appOutDir || "");
+  const isArm64 = /arm64/.test(appOutDir) || context?.arch === 3;
+  return isArm64 ? "linux-arm64" : "linux-x64";
+}
+
 function darwinPackageArchForContext(context) {
   const appOutDir = String(context?.appOutDir || "");
   const appOutDirName = path.basename(appOutDir);
@@ -258,6 +264,8 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPa
       path.join("node_modules", "@anthropic-ai", "claude-agent-sdk", "vendor", "tree-sitter-bash", "x64-win32"),
       path.join("node_modules", "node-pty", "prebuilds", "win32-arm64"),
       path.join("node_modules", "node-pty", "prebuilds", "win32-x64"),
+      path.join("vendor", "crsqlite", "linux-arm64"),
+      path.join("vendor", "crsqlite", "linux-x64"),
       path.join("vendor", "crsqlite", "win32-x64"),
     ],
     win32: [
@@ -277,6 +285,13 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPa
       path.join("node_modules", "node-pty", "prebuilds", "darwin-x64"),
       path.join("vendor", "crsqlite", "darwin-arm64"),
       path.join("vendor", "crsqlite", "darwin-x64"),
+      path.join("vendor", "crsqlite", "linux-arm64"),
+      path.join("vendor", "crsqlite", "linux-x64"),
+    ],
+    linux: [
+      path.join("vendor", "crsqlite", "darwin-arm64"),
+      path.join("vendor", "crsqlite", "darwin-x64"),
+      path.join("vendor", "crsqlite", "win32-x64"),
     ],
   };
   const candidates = [
@@ -471,6 +486,9 @@ module.exports = async function afterPack(context) {
     }
   } else if (platform === "win32") {
     requiredScripts.push(path.join(runtimeRoot, "vendor", "crsqlite", "win32-x64", "crsqlite.dll"));
+  } else if (platform === "linux") {
+    const linuxTarget = linuxCrsqliteTargetForContext(context);
+    requiredScripts.push(path.join(runtimeRoot, "vendor", "crsqlite", linuxTarget, "crsqlite.so"));
   }
 
   for (const scriptPath of requiredScripts) {

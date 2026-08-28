@@ -2246,6 +2246,35 @@ describe("createSyncRemoteCommandService", () => {
     }));
   });
 
+  it("routes chat.regenerateSessionMetadata and validates its field selection", async () => {
+    const regenerateSessionMetadata = vi.fn().mockResolvedValue({
+      sessionId: "session-1",
+      applied: ["title", "statusLine"],
+      skipped: [],
+      modelId: "openai/gpt-5.5",
+    });
+    const { service } = createService({ agentChatService: { regenerateSessionMetadata } });
+
+    expect(service.getDescriptor("chat.regenerateSessionMetadata")).toEqual({
+      action: "chat.regenerateSessionMetadata",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    await expect(service.execute(makePayload("chat.regenerateSessionMetadata", {
+      sessionId: " session-1 ",
+      fields: ["title", "statusLine", "title"],
+    }))).resolves.toEqual(expect.objectContaining({ sessionId: "session-1" }));
+    expect(regenerateSessionMetadata).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      fields: ["title", "statusLine"],
+    });
+
+    await expect(service.execute(makePayload("chat.regenerateSessionMetadata", {
+      sessionId: "session-1",
+      fields: ["not-a-field"],
+    }))).rejects.toThrow("fields must include title, laneName, or statusLine");
+  });
+
   it("routes every cross-machine chat handoff phase through the remote command bridge", async () => {
     const capsule = {
       version: 1 as const,
@@ -3138,8 +3167,15 @@ describe("lanes.unarchive", () => {
       rangeEnd: 4199,
       status: "active",
     };
-    const getLease = vi.fn().mockReturnValue(null);
-    const acquire = vi.fn().mockReturnValue(lease);
+    // Allocator fake that behaves like the real one: nothing held until
+    // `acquire`, the acquired lease afterwards — the overlay context reads the
+    // lease back off the allocator rather than being handed one.
+    let held: typeof lease | null = null;
+    const getLease = vi.fn(() => held);
+    const acquire = vi.fn(() => {
+      held = lease;
+      return lease;
+    });
     const getEffective = vi.fn().mockReturnValue({
       laneEnvInit: null,
       laneOverlayPolicies: [],

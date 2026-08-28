@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.67] - 2026-08-28
+
+### Compact from the meter
+
+- An idle measured context dial is a compact control on Claude, Codex, and Pi: click sends `/compact` without replacing the unsent draft. Cursor, Droid, and OpenCode stay read-only (#1169).
+- iOS has the same action in the usage popover. Compact never steers an active turn. ADE still auto-compacts Claude at 97% at a turn boundary; 80% is a hint (#1169).
+
+### Name and status
+
+- Refresh the chat title, lane name, and/or status line from the session context menu. One model call returns all three; only the selected fields apply, and in-flight edits win (#1172).
+- A menu-driven title counts as manually named so quiet auto-title does not overwrite it. Primary lanes skip lane-name generation (#1172).
+
+### Chat attachments
+
+- HEIC and HEIF photos convert to JPEG on macOS before they hit the transcript or a provider. Windows and Linux refuse conversion instead of attaching mislabeled bytes (#1170).
+- Drop files onto the whole chat surface — header, transcript, and composer — not only the composer (#1170).
+
+### Lanes
+
+- Lane templates can run setup scripts when a lane is created, and tear Docker down when you archive the lane (#1173).
+- Settings for templates is simpler. A cancelled setup is treated as incomplete so the next open re-runs it (#1173).
+
+### Codex approvals
+
+- Stop, abort, teardown, and thread delete settle Codex approval cards, including a plan card that appeared after the turn already finished. Stop-only still leaves the card for you to answer (#1171).
+
+### Linux brains
+
+- Linux `install.sh` runtimes vendor cr-sqlite for x64 and arm64, so a signed-in Linux brain hosts CRR like macOS and Windows (#1168).
+
+### Work search
+
+- The command palette searches Work in any word order, with typed filters, ranked content hits, and lifecycle actions on sessions.
+
+## [1.2.66] - 2026-08-27
+
+### Pull requests
+
+- React to a PR description, an issue comment, or an inline review comment from ADE, with optimistic rollback when GitHub rejects the reaction (#1166).
+- Edit your own PR comments. The control appears only when a write-capable GitHub identity is available, and the backend checks PR membership and author ownership before saving (#1166).
+- `ade prs comment-edit <pr> --comment <id> --body "..."` edits the same comment the UI edits, with an optional `--source issue|review` (#1166).
+
+### Open in editor
+
+- Lane and Work session context menus offer a detected **Open in** submenu listing installed editors (#1166).
+- SSH-backed remote lanes open through allowlisted `vscode://vscode-remote/ssh-remote+...` and `zed://ssh/...` URLs. Paired transports and bindings without a hostname stay excluded, as do projectless chats (#1166).
+- A single-session lane no longer shows a duplicate Open in submenu at the session root (#1166).
+
+### Agent delegation
+
+- Runtime system prompts steer agents to provider-native same-thread subagents for short delegation, and reserve ADE child chats for durable, scheduled, cross-provider, separate-permission, or separate-lifecycle work (#1165).
+- Claude subagent rows keep their agent type and model when lifecycle frames arrive before the tool input that named them, and historical child transcripts carry the model too (#1165).
+- Drilling into a native subagent transcript keeps parent and child scroll memory separate, and a pinned child view follows the tail on entry (#1165).
+
+### Work
+
+- Two worktree lanes on the same feature branch sit adjacent in a dashed cluster in the by-lane list. Primaries and `main`/`master` stay unclustered (#1167).
+- A quiet lane stays in the inbox while its same-branch sibling is live; a fully quiet pair shelves together (#1167).
+
+### Help and tooltips
+
+- Removed the glossary page, glossary popovers, help chips, "Did you know?" hints, and their IPC and state plumbing. The Help menu keeps Docs, welcome replay, and tooltips (#1164).
+- SmartTooltip covers more of the shell, PR, files, and account actions, and shows keyboard shortcuts where they exist (#1164).
+- Tooltips support left and right placement and clamp to the viewport instead of overflowing (#1164).
+
 ## [1.2.65] - 2026-08-26
 
 ### Chats and turns
@@ -1741,7 +1806,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.65...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.67...HEAD
+[1.2.67]: https://github.com/arul28/ADE/compare/v1.2.66...v1.2.67
+[1.2.66]: https://github.com/arul28/ADE/compare/v1.2.65...v1.2.66
 [1.2.65]: https://github.com/arul28/ADE/compare/v1.2.64...v1.2.65
 [1.2.64]: https://github.com/arul28/ADE/compare/v1.2.63...v1.2.64
 [1.2.63]: https://github.com/arul28/ADE/compare/v1.2.62...v1.2.63

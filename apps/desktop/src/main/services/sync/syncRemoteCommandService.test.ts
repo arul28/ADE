@@ -800,7 +800,12 @@ describe("createSyncRemoteCommandService", () => {
         laneType: "feature",
         worktreePath: "/repo/.ade/worktrees/lane-1",
       };
-      const envInitConfig = { dependencies: ["npm install"] };
+      // `buildLaneEnvTeardown` builds a closure whenever the lane resolves an
+      // env-init config at all; this one has a compose stack to bring down.
+      const envInitConfig = {
+        dependencies: ["npm install"],
+        docker: { composePath: "docker-compose.yml" },
+      };
       const cleanupLaneEnvironment = vi.fn(async () => undefined);
       const release = vi.fn();
       laneService.list.mockResolvedValue([lane]);

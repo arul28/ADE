@@ -340,12 +340,13 @@ enum WorkComposerSlashCatalog {
     case "claude":
       return [
         ("/clear", "Drop prior context and start fresh."),
-        ("/compact", "Summarize the transcript so far."),
+        ("/compact", "Summarize the visible conversation to free tokens."),
         ("/plan", "Ask the assistant to draft a plan."),
         ("/review", "Review the current diff."),
       ]
     case "codex":
       return [
+        ("/compact", "Summarize the visible conversation to free tokens."),
         ("/explain", "Explain a file or change."),
         ("/refactor", "Propose a refactor."),
         ("/tests", "Write or run tests."),
@@ -359,7 +360,7 @@ enum WorkComposerSlashCatalog {
       ]
     case "pi":
       return [
-        ("/compact", "Compact the native Pi session context."),
+        ("/compact", "Summarize the visible conversation to free tokens."),
         ("/explain", "Explain a file or change."),
         ("/review", "Review the current diff."),
       ]

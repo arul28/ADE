@@ -9,7 +9,10 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { AgentChatComposer } from "./AgentChatComposer";
+import {
+  AgentChatComposer,
+  HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
+} from "./AgentChatComposer";
 import { useAppStore } from "../../state/appStore";
 import {
   resetBuiltinSurfacePlugins,
@@ -3269,6 +3272,119 @@ describe("AgentChatComposer", () => {
     expect(props.onAddAttachment).not.toHaveBeenCalled();
   });
 
+  it("accepts a file dragover before the browser exposes its file list", () => {
+    renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const dataTransfer = {
+      files: [],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      configurable: true,
+      value: dataTransfer,
+    });
+
+    fireEvent(screen.getByPlaceholderText("Type to vibecode..."), dragOverEvent);
+
+    expect(dragOverEvent.defaultPrevented).toBe(true);
+    expect(screen.getByText("Drop files to attach")).toBeTruthy();
+  });
+
+  it.each(["heic", "HEIF"])("accepts a .%s image URL drop", (extension) => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const imageUrl = `https://example.com/photos/IMG_0001.${extension}`;
+    const dataTransfer = {
+      files: [],
+      types: ["text/uri-list"],
+      getData: vi.fn((type: string) => (type === "text/uri-list" ? imageUrl : "")),
+    };
+    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), { dataTransfer });
+
+    expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: imageUrl,
+      type: "image-url",
+      url: imageUrl,
+    });
+    expect(props.onAddAttachment).toHaveBeenCalledTimes(1);
+    expect(dataTransfer.getData).toHaveBeenCalledWith("text/uri-list");
+  });
+
+  it("converts HEIC uploads to JPEG before saving the attachment", async () => {
+    const convertImageToJpeg = vi.fn().mockResolvedValue({
+      ok: true,
+      data: "/9j/converted",
+      filename: "IMG_0001.jpg",
+      mimeType: "image/jpeg",
+    });
+    const saveTempAttachment = vi.fn().mockResolvedValue({
+      path: "/tmp/ade-IMG_0001.jpg",
+    });
+    (window as any).ade = {
+      app: { convertImageToJpeg },
+      agentChat: { saveTempAttachment },
+    };
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const file = new File([new Uint8Array([1, 2, 3])], "IMG_0001.HEIC", { type: "" });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+    const dataTransfer = {
+      files: [file],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+
+    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), { dataTransfer });
+
+    await waitFor(() => expect(convertImageToJpeg).toHaveBeenCalledWith({
+      data: "AQID",
+      filename: "IMG_0001.HEIC",
+      mimeType: null,
+    }));
+    await waitFor(() => expect(saveTempAttachment).toHaveBeenCalledWith({
+      data: "/9j/converted",
+      filename: "IMG_0001.jpg",
+    }, null));
+    expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: "/tmp/ade-IMG_0001.jpg",
+      type: "image",
+    });
+  });
+
+  it("explains the Windows-style no-codec fallback instead of attaching HEIC bytes as an image", async () => {
+    const convertImageToJpeg = vi.fn().mockResolvedValue({ ok: false, errorCode: "unavailable" });
+    const saveTempAttachment = vi.fn();
+    (window as any).ade = {
+      app: { convertImageToJpeg },
+      agentChat: { saveTempAttachment },
+    };
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const file = new File([new Uint8Array([1, 2, 3])], "IMG_0002.heic", { type: "image/heic" });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+    const dataTransfer = {
+      files: [file],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+
+    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), { dataTransfer });
+
+    expect(await screen.findByText(HEIC_CONVERSION_UNAVAILABLE_MESSAGE)).toBeTruthy();
+    expect(saveTempAttachment).not.toHaveBeenCalled();
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+  });
+
   it("does not attach URLs whose image extension appears only in query text", () => {
     const props = renderComposer({
       turnActive: false,
@@ -3703,6 +3819,102 @@ describe("AgentChatComposer", () => {
       // either duplicate the shelf's picker or assert a default about to change.
       const { container } = renderComposer({ sessionId: null });
       expect(chip(container)).toBeNull();
+    });
+  });
+
+  describe("compact context dial", () => {
+    const usageViewModel = {
+      provider: "codex",
+      state: "measured" as const,
+      contextWindow: 200_000,
+      usedTokens: 160_000,
+      inputTokens: 160_000,
+      outputTokens: 500,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+      totalTokens: null,
+      ratio: 0.8,
+      windowSource: "runtime" as const,
+    };
+
+    it("sends compact from the meter without submitting the unsent draft", () => {
+      const onCompactContext = vi.fn();
+      const view = renderComposer({
+        turnActive: false,
+        sessionProvider: "codex",
+        usageViewModel,
+        onCompactContext,
+        draft: "keep this draft",
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Context usage: 80% full. Compact context" }));
+      expect(onCompactContext).toHaveBeenCalledTimes(1);
+      expect(view.onSubmit).not.toHaveBeenCalled();
+      expect(view.onDraftChange).not.toHaveBeenCalled();
+    });
+
+    it("disables compact while the turn is active", () => {
+      const onCompactContext = vi.fn();
+      renderComposer({
+        turnActive: true,
+        sessionProvider: "claude",
+        usageViewModel,
+        onCompactContext,
+      });
+
+      const button = screen.getByRole("button", {
+        name: "Context usage: 80% full. Wait for this turn to finish before compacting.",
+      });
+      expect(button).toHaveProperty("disabled", true);
+      fireEvent.click(button);
+      expect(onCompactContext).not.toHaveBeenCalled();
+    });
+
+    it("keeps the meter read-only for providers without /compact", () => {
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "cursor",
+        usageViewModel: { ...usageViewModel, provider: "cursor" },
+        onCompactContext: vi.fn(),
+      });
+
+      expect(screen.queryByRole("button", { name: /Compact context/i })).toBeNull();
+      expect(screen.getByLabelText("Context usage: 80% full")).toBeTruthy();
+    });
+
+    it("follows the live session provider, not the model picker", () => {
+      const onCompactContext = vi.fn();
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "claude",
+        compactSessionProvider: "cursor",
+        usageViewModel,
+        onCompactContext,
+      });
+      expect(screen.queryByRole("button", { name: /Compact context/i })).toBeNull();
+
+      cleanup();
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "cursor",
+        compactSessionProvider: "claude",
+        usageViewModel,
+        onCompactContext,
+      });
+      expect(screen.getByRole("button", { name: "Context usage: 80% full. Compact context" })).toBeTruthy();
+    });
+
+    it("hides compact while the composer is locked on a subagent view", () => {
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "codex",
+        usageViewModel,
+        onCompactContext: vi.fn(),
+        inputLockMessage: "Viewing Explore",
+      });
+      expect(screen.queryByRole("button", { name: /Compact context/i })).toBeNull();
+      expect(screen.getByLabelText("Context usage: 80% full")).toBeTruthy();
     });
   });
 });

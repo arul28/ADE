@@ -11,6 +11,7 @@ import type {
   AgentChatModelCatalog,
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatReloadClaudePluginsResult,
+  AgentChatRegenerateSessionMetadataResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
   AgentChatSession,
@@ -369,6 +370,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     updateSession: async (args, pin) => {
       guardPin("updateSession", pin);
       return await callRequiredMutation<AgentChatSession>("chat.updateSession", args);
+    },
+    regenerateSessionMetadata: async (args, pin) => {
+      guardPin("regenerateSessionMetadata", pin);
+      return await callRequiredMutation<AgentChatRegenerateSessionMetadataResult>(
+        "chat.regenerateSessionMetadata",
+        args,
+      );
     },
     createScheduledWork: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("createScheduledWork", pin);

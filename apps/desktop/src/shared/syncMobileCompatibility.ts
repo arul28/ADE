@@ -31,6 +31,9 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // omits the actions.
   "chat.setSpawnKind",
   "chat.dismissSubagentTakeoverPrompt",
+  // Metadata regeneration is an explicit chat affordance. Optional so older
+  // phones can keep their connection and simply omit the newer action.
+  "chat.regenerateSessionMetadata",
   // GitHub Stacked PRs are in public preview. Mobile clients can expose these
   // actions as they adopt stack management without limiting older builds.
   "prs.listGithubStacks",

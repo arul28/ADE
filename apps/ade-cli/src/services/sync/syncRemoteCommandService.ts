@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { isAgentChatTurnRecoveryAction } from "../../../../desktop/src/shared/types/chat";
+import {
+  isAgentChatTurnRecoveryAction,
+  normalizeAgentChatSessionMetadataFields,
+} from "../../../../desktop/src/shared/types/chat";
 import { runWithAbortSignal } from "./abortSignal";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import {
@@ -81,6 +84,7 @@ import type {
   AgentChatRecoverTurnArgs,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatUpdateSessionArgs,
+  AgentChatRegenerateSessionMetadataArgs,
   AgentChatSetSpawnKindArgs,
   AgentChatDismissSubagentTakeoverPromptArgs,
   AddGitHubPrStackPullRequestsArgs,
@@ -147,7 +151,6 @@ import type {
   LaneEnvInitProgress,
   LaneDetailPayload,
   LaneListSnapshot,
-  LaneOverlayOverrides,
   LaneStateSnapshotSummary,
   ListLanesArgs,
   ListIntegrationWorkflowsArgs,
@@ -284,7 +287,6 @@ import {
   type createLinearOAuthService,
 } from "../../../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
-import { matchLaneOverlayPolicies } from "../../../../desktop/src/main/services/config/laneOverlayMatcher";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES, type createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
@@ -295,7 +297,17 @@ import type { createGithubService } from "../../../../desktop/src/main/services/
 import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
-import { restoreRecreatedLaneRuntime } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import {
+  buildLaneEnvTeardown,
+  restoreUnarchivedLaneRuntime,
+} from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import {
+  mergeLaneEnvInitConfig,
+  mergeLaneOverrides,
+} from "../../../../desktop/src/main/services/lanes/laneEnvInitMerge";
+import {
+  resolveLaneOverlayContext,
+} from "../../../../desktop/src/main/services/lanes/laneOverlayContext";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
@@ -2754,6 +2766,21 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   return parsed;
 }
 
+function parseAgentChatRegenerateSessionMetadataArgs(
+  value: Record<string, unknown>,
+): AgentChatRegenerateSessionMetadataArgs {
+  const sessionId = requireString(value.sessionId, "chat.regenerateSessionMetadata requires sessionId.");
+  if (value.fields === undefined) return { sessionId };
+  if (!Array.isArray(value.fields)) {
+    throw new Error("chat.regenerateSessionMetadata fields must be an array.");
+  }
+  const fields = normalizeAgentChatSessionMetadataFields(value.fields);
+  if (!fields.length) {
+    throw new Error("chat.regenerateSessionMetadata fields must include title, laneName, or statusLine.");
+  }
+  return { sessionId, fields };
+}
+
 function parseAgentChatSetSpawnKindArgs(value: Record<string, unknown>): AgentChatSetSpawnKindArgs {
   const spawnKind = requireString(value.spawnKind, "chat.setSpawnKind requires spawnKind.");
   if (spawnKind !== "subagent" && spawnKind !== "peer") {
@@ -3580,81 +3607,6 @@ function parseRecheckIntegrationStepArgs(value: Record<string, unknown>): Rechec
   };
 }
 
-function mergeLaneDockerConfig(
-  current: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
-  next: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
-) {
-  if (!current && !next) return undefined;
-  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
-  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
-  return {
-    ...current,
-    ...next,
-    ...(next.services != null
-      ? { services: [...next.services] }
-      : current.services != null
-        ? { services: [...current.services] }
-        : {}),
-  };
-}
-
-function mergeLaneEnvInitConfig(
-  current: LaneEnvInitConfig | undefined,
-  next: LaneEnvInitConfig | undefined,
-): LaneEnvInitConfig | undefined {
-  if (!current && !next) return undefined;
-  if (!current) {
-    return next
-      ? {
-          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
-          ...(mergeLaneDockerConfig(undefined, next.docker) ? { docker: mergeLaneDockerConfig(undefined, next.docker) } : {}),
-          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
-          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {}),
-          ...(next.copyPaths ? { copyPaths: [...next.copyPaths] } : {}),
-        }
-      : undefined;
-  }
-  if (!next) {
-    return {
-      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
-      ...(mergeLaneDockerConfig(undefined, current.docker) ? { docker: mergeLaneDockerConfig(undefined, current.docker) } : {}),
-      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
-      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {}),
-      ...(current.copyPaths ? { copyPaths: [...current.copyPaths] } : {}),
-    };
-  }
-  return {
-    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    ...(mergeLaneDockerConfig(current.docker, next.docker) ? { docker: mergeLaneDockerConfig(current.docker, next.docker) } : {}),
-    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
-    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
-    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
-  };
-}
-
-function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
-  return {
-    ...base,
-    ...next,
-    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
-    ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
-    ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {}),
-  };
-}
-
-function applyLeaseToOverrides(
-  overrides: LaneOverlayOverrides,
-  lease: { status: string; rangeStart: number; rangeEnd: number } | null,
-): LaneOverlayOverrides {
-  if (!lease || lease.status !== "active" || overrides.portRange) {
-    return { ...overrides };
-  }
-  return {
-    ...overrides,
-    portRange: { start: lease.rangeStart, end: lease.rangeEnd },
-  };
-}
-
 /**
  * Strict resolver for identity-pinned sessions (CTO + worker agents). Never
  * slips a foreign lane through via a `lanes[0]` fallback — if no primary lane
@@ -3678,30 +3630,27 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
   return null;
 }
 
-async function resolveLaneOverlayContext(
+/**
+ * Thin sync-host adapter over the shared resolver in the desktop
+ * `lanes/laneOverlayContext` module, so the mobile command path and the desktop
+ * hosts resolve a lane's env-init config identically.
+ */
+async function resolveLaneOverlayContextForSyncHost(
   args: SyncRemoteCommandServiceArgs,
   laneId: string,
   options: { includeArchived?: boolean } = {},
 ) {
   const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-  const lanes = await args.laneService.list({
-    includeStatus: false,
-    ...(options.includeArchived === true ? { includeArchived: true } : {}),
-  });
-  const lane = lanes.find((entry) => entry.id === laneId);
-  if (!lane) throw new Error(`Lane not found: ${laneId}`);
-
-  const config = projectConfigService.getEffective();
-  const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
-  const lease = args.portAllocationService?.getLease(lane.id) ?? null;
-  const overrides = applyLeaseToOverrides(overlayOverrides, lease);
-  const envInitConfig = args.laneEnvironmentService?.resolveEnvInitConfig(config.laneEnvInit, overrides);
-
-  return {
-    lane,
-    overrides,
-    envInitConfig,
-  };
+  return await resolveLaneOverlayContext(
+    {
+      laneService: args.laneService,
+      projectConfigService,
+      portAllocationService: args.portAllocationService,
+      laneEnvironmentService: args.laneEnvironmentService,
+    },
+    laneId,
+    options,
+  );
 }
 
 async function deleteLaneWithRuntimeCleanup(
@@ -3709,20 +3658,17 @@ async function deleteLaneWithRuntimeCleanup(
   payload: Record<string, unknown>,
 ): Promise<{ ok: true }> {
   const deleteArgs = parseDeleteLaneArgs(payload);
-  const envContext = args.laneEnvironmentService
-    ? await resolveLaneOverlayContext(args, deleteArgs.laneId, { includeArchived: true }).catch((error: unknown) => {
-        args.logger.warn("sync_remote.lane_env_cleanup.pre_delete_context_failed", {
-          laneId: deleteArgs.laneId,
-          err: String(error),
-        });
-        return null;
-      })
-    : null;
-  const teardownEnv = args.laneEnvironmentService && envContext?.envInitConfig
-    ? async () => {
-        await args.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
-      }
-    : undefined;
+  const teardownEnv = await buildLaneEnvTeardown(
+    {
+      laneService: args.laneService,
+      projectConfigService: args.projectConfigService,
+      portAllocationService: args.portAllocationService,
+      laneEnvironmentService: args.laneEnvironmentService,
+      logger: args.logger,
+    },
+    deleteArgs.laneId,
+    { includeArchived: true },
+  );
 
   await args.laneService.delete(deleteArgs, { teardownEnv });
   args.portAllocationService?.release(deleteArgs.laneId);
@@ -3735,11 +3681,16 @@ async function unarchiveLaneWithRuntimeSetup(
 ): Promise<{ ok: true }> {
   const archiveArgs = parseArchiveLaneArgs(payload, "lanes.unarchive");
   const result = await args.laneService.unarchive(archiveArgs);
-  if (!result.worktreeRecreated) {
-    return { ok: true };
-  }
   try {
-    await restoreRecreatedLaneRuntime(args, archiveArgs.laneId);
+    await restoreUnarchivedLaneRuntime(args, archiveArgs.laneId, {
+      worktreeRecreated: result.worktreeRecreated === true,
+      onDockerError: (error) => {
+        args.logger.warn("sync_remote.lane_env_setup.post_unarchive_docker_failed", {
+          laneId: archiveArgs.laneId,
+          err: String(error),
+        });
+      },
+    });
   } catch (error) {
     // Keep the established mobile command response stable. The worktree was
     // restored successfully; environment setup can be retried separately.
@@ -4144,6 +4095,8 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     return { ok: true };
   });
   register("lanes.archive", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // Docker teardown runs inside `laneService.archive` via the late-bound
+    // env-teardown hook, so every archive path gets it, not just this one.
     await args.laneService.archive(parseArchiveLaneArgs(payload, "lanes.archive"));
     return { ok: true };
   });
@@ -4240,7 +4193,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.initEnv", { viewerAllowed: true, queueable: true }, async (payload) => {
     const laneEnvironmentService = requireService(args.laneEnvironmentService, "Lane environment service not available.");
     const laneId = requireString(payload.laneId, "lanes.initEnv requires laneId.");
-    const context = await resolveLaneOverlayContext(args, laneId);
+    const context = await resolveLaneOverlayContextForSyncHost(args, laneId);
     if (!context.envInitConfig) {
       const now = new Date().toISOString();
       return {
@@ -4260,7 +4213,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
       laneId: requireString(payload.laneId, "lanes.applyTemplate requires laneId."),
       templateId: requireString(payload.templateId, "lanes.applyTemplate requires templateId."),
     } satisfies ApplyLaneTemplateArgs;
-    const context = await resolveLaneOverlayContext(args, parsed.laneId);
+    const context = await resolveLaneOverlayContextForSyncHost(args, parsed.laneId);
     const template = laneTemplateService.getTemplate(parsed.templateId);
     if (!template) throw new Error(`Template not found: ${parsed.templateId}`);
     const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);
@@ -4886,6 +4839,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("chat.updateSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
+  register("chat.regenerateSessionMetadata", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").regenerateSessionMetadata(
+      parseAgentChatRegenerateSessionMetadataArgs(payload),
+    ));
   register("chat.setSpawnKind", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").setSpawnKind(parseAgentChatSetSpawnKindArgs(payload)));
   register("chat.dismissSubagentTakeoverPrompt", { viewerAllowed: true, queueable: true }, async (payload) =>

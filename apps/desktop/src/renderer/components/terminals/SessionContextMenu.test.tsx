@@ -92,19 +92,31 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
 
 function renderMenu(
   session: TerminalSessionSummary,
-  onSetChatTag = vi.fn(),
-  onSettle = vi.fn(),
-  binding?: OpenProjectBinding | null,
-  laneActions?: SessionContextMenuLaneActions | null,
+  {
+    onSetChatTag = vi.fn(),
+    onSettle = vi.fn(),
+    binding,
+    laneActions,
+    onRegenerateMetadata,
+    laneType,
+  }: {
+    onSetChatTag?: ReturnType<typeof vi.fn>;
+    onSettle?: ReturnType<typeof vi.fn>;
+    binding?: OpenProjectBinding | null;
+    laneActions?: SessionContextMenuLaneActions | null;
+    onRegenerateMetadata?: ReturnType<typeof vi.fn>;
+    laneType?: LaneSummary["laneType"] | null;
+  } = {},
 ) {
   const onClose = vi.fn();
   const onCopySessionId = vi.fn();
   const onCopySessionDeepLink = vi.fn();
   const onGoToLane = vi.fn();
+  const onRename = vi.fn();
   render(
     <MemoryRouter>
       <SessionContextMenu
-        menu={{ session, binding, laneActions, x: 20, y: 20 }}
+        menu={{ session, binding, laneActions, laneType, x: 20, y: 20 }}
         onClose={onClose}
         onStopRuntime={vi.fn()}
         onStopAndDelete={vi.fn()}
@@ -114,13 +126,23 @@ function renderMenu(
         onGoToLane={onGoToLane}
         onCopySessionId={onCopySessionId}
         onCopySessionDeepLink={onCopySessionDeepLink}
-        onRename={vi.fn()}
+        onRename={onRename}
+        onRegenerateMetadata={onRegenerateMetadata}
         onSetChatTag={onSetChatTag}
         onSettle={onSettle}
       />
     </MemoryRouter>,
   );
-  return { onClose, onSetChatTag, onSettle, onCopySessionId, onCopySessionDeepLink, onGoToLane };
+  return {
+    onClose,
+    onSetChatTag,
+    onSettle,
+    onCopySessionId,
+    onCopySessionDeepLink,
+    onGoToLane,
+    onRename,
+    onRegenerateMetadata,
+  };
 }
 
 /** Opens a submenu the way a pointer user would: hover, then wait out the intent delay. */
@@ -180,7 +202,7 @@ describe("SessionContextMenu lane section", () => {
   afterEach(() => { vi.useRealTimers(); });
 
   it("expands the real lane menu items in a submenu rather than a second menu", () => {
-    renderMenu(makeSession(), vi.fn(), vi.fn(), null, laneActions);
+    renderMenu(makeSession(), { laneActions });
 
     const entry = screen.getByTestId("session-menu-lane-actions");
     // Names the lane, so a menu opened from a card still says which lane it acts on.
@@ -200,7 +222,7 @@ describe("SessionContextMenu lane section", () => {
   });
 
   it("keeps the deep lane copy links reachable through a nested submenu", () => {
-    renderMenu(makeSession(), vi.fn(), vi.fn(), null, laneActions);
+    renderMenu(makeSession(), { laneActions });
 
     openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
     openSubmenuByHover(screen.getByRole("menuitem", { name: "Copy" }));
@@ -217,10 +239,7 @@ describe("SessionContextMenu lane section", () => {
     const open = vi.fn();
     const { onClose } = renderMenu(
       makeSession(),
-      vi.fn(),
-      vi.fn(),
-      null,
-      { laneId: "lane-solo", laneName: "Solo lane", open },
+      { laneActions: { laneId: "lane-solo", laneName: "Solo lane", open } },
     );
 
     openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
@@ -353,6 +372,73 @@ describe("SessionContextMenu grouped actions", () => {
     expect(onGoToLane).toHaveBeenCalledWith(session, null);
   });
 
+  it("groups manual rename and the three AI metadata choices together", () => {
+    const session = makeSession();
+    const onRegenerateMetadata = vi.fn();
+    const { onClose } = renderMenu(session, { onRegenerateMetadata });
+
+    openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
+
+    expect(screen.getByRole("button", { name: "Rename…" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate chat title" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate lane name" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate status line" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate all three" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate all three" }));
+
+    expect(onRegenerateMetadata).toHaveBeenCalledWith(
+      session,
+      ["title", "laneName", "statusLine"],
+      null,
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps manual rename in the Name & status submenu", () => {
+    const session = makeSession();
+    const onRegenerateMetadata = vi.fn();
+    const { onClose, onRename } = renderMenu(session, { onRegenerateMetadata });
+
+    openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
+    fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
+
+    const input = screen.getByRole("textbox", { name: "Rename session" });
+    expect(screen.queryByRole("button", { name: "Generate all three" })).toBeNull();
+    fireEvent.change(input, { target: { value: "A clearer title" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(onRename).toHaveBeenCalledWith(session, "A clearer title", null);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains why lane-name generation is disabled for the primary lane", () => {
+    const onRegenerateMetadata = vi.fn();
+    renderMenu(makeSession(), { onRegenerateMetadata, laneType: "primary" });
+
+    openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
+    const laneNameButton = screen.getByRole("button", { name: "Generate lane name" });
+
+    expect((laneNameButton as HTMLButtonElement).disabled).toBe(true);
+    expect(laneNameButton.getAttribute("title")).toBe("The primary lane keeps its name");
+    expect(onRegenerateMetadata).not.toHaveBeenCalled();
+  });
+
+  it("omits the immutable primary lane name from combined generation", () => {
+    const session = makeSession();
+    const onRegenerateMetadata = vi.fn();
+    const { onClose } = renderMenu(session, { onRegenerateMetadata, laneType: "primary" });
+
+    openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
+    expect(screen.getByRole("button", { name: "Generate title & status" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Generate all three" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate title & status" }));
+
+    expect(onRegenerateMetadata).toHaveBeenCalledWith(session, ["title", "statusLine"], null);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("re-resolves the snooze presets every time the submenu opens", () => {
     // 09:00 offers "This evening"; 21:00 must not, because it would silently
     // mean tomorrow. The presets are a snapshot of the clock at open time, so
@@ -410,7 +496,7 @@ describe("SessionContextMenu settle safety", () => {
       hostname: "studio.local",
     };
     const onSettle = vi.fn();
-    renderMenu(session, vi.fn(), onSettle, binding);
+    renderMenu(session, { onSettle, binding });
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
 
@@ -435,7 +521,7 @@ describe("SessionContextMenu settle safety", () => {
       runtimeState: "waiting-input",
       pendingInputItemId: null,
       attentionRequestedAt: null,
-    }), vi.fn(), onSettle);
+    }), { onSettle });
 
     expect(screen.queryByRole("button", { name: "Resolve input to settle" })).toBeNull();
     expect(onSettle).not.toHaveBeenCalled();

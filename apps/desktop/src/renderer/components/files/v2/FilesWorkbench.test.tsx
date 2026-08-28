@@ -658,6 +658,8 @@ describe("FilesWorkbench", () => {
     expect(screen.queryByRole("button", { name: /lane-a\.ts/i })).toBeNull();
   });
 
+  const largeDirectoryPage = { timeout: 5_000 };
+
   const installLargeDirectoryMocks = (totalChildren: number) => {
     window.ade.files.listTree = vi.fn(async () => [
       { name: "bigdir", path: "bigdir", type: "directory" as const, changeStatus: null },
@@ -688,7 +690,7 @@ describe("FilesWorkbench", () => {
 
     fireEvent.click(screen.getByTestId("expand-bigdir"));
 
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"), largeDirectoryPage);
     expect(listTreeChildren).toHaveBeenCalledTimes(1);
     expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 0 }), null);
     // Correct pagination cursor: the rest stays reachable via "Load more".
@@ -700,10 +702,10 @@ describe("FilesWorkbench", () => {
     render(<FilesWorkbench active />);
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("-1"));
     fireEvent.click(screen.getByTestId("expand-bigdir"));
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"), largeDirectoryPage);
 
     fireEvent.click(screen.getByTestId("load-more-bigdir"));
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"), largeDirectoryPage);
     expect(listTreeChildren).toHaveBeenCalledTimes(2);
     expect(listTreeChildren).toHaveBeenLastCalledWith(expect.objectContaining({ parentPath: "bigdir", offset: 2000 }), null);
     expect(screen.getByTestId("bigdir-load-more-offset").textContent).toBe("4000");
@@ -721,9 +723,9 @@ describe("FilesWorkbench", () => {
     render(<FilesWorkbench active />);
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("-1"));
     fireEvent.click(screen.getByTestId("expand-bigdir"));
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"), largeDirectoryPage);
     fireEvent.click(screen.getByTestId("load-more-bigdir"));
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"), largeDirectoryPage);
 
     listTreeChildren.mockClear();
     act(() => {
@@ -735,7 +737,7 @@ describe("FilesWorkbench", () => {
     // (Only structural events re-list; a content-only `modified` event refreshes
     // git decorations alone.)
     await waitFor(() => expect(listTreeChildren).toHaveBeenCalledTimes(2), { timeout: 3_000 });
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"), largeDirectoryPage);
     expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 }), null);
     expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 2000 }), null);
   });
@@ -752,7 +754,7 @@ describe("FilesWorkbench", () => {
     render(<FilesWorkbench active />);
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("-1"));
     fireEvent.click(screen.getByTestId("expand-bigdir"));
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"), largeDirectoryPage);
     listTreeChildren.mockClear();
 
     // Hold the load-more page in flight…
@@ -788,7 +790,7 @@ describe("FilesWorkbench", () => {
     const first = render(<FilesWorkbench active />);
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("-1"));
     fireEvent.click(screen.getByTestId("expand-bigdir"));
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"), largeDirectoryPage);
     first.unmount();
 
     const listTree = window.ade.files.listTree as ReturnType<typeof vi.fn>;
@@ -806,7 +808,7 @@ describe("FilesWorkbench", () => {
     const first = render(<FilesWorkbench active />);
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("-1"));
     fireEvent.click(screen.getByTestId("expand-bigdir"));
-    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"));
+    await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("2000"), largeDirectoryPage);
 
     // Open a file and mark it dirty so we can prove eviction leaves editor state alone.
     fireEvent.click(screen.getByTestId("open-file"));

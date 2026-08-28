@@ -1283,6 +1283,8 @@ struct WorkTurnEndMarkerView: View {
   var onOpenActivity: (() -> Void)? = nil
   var usageViewModel: WorkContextUsageViewModel? = nil
   var modelLabel: String? = nil
+  var compact: WorkContextCompactControl = .hidden
+  var onCompact: (() -> Void)? = nil
 
   @State private var contextUsagePresented = false
 
@@ -1353,7 +1355,12 @@ struct WorkTurnEndMarkerView: View {
         ) {
           WorkContextUsagePopover(
             usage: usageViewModel,
-            modelLabel: modelLabel ?? marker.modelLabel
+            modelLabel: modelLabel ?? marker.modelLabel,
+            compact: compact,
+            onCompact: {
+              contextUsagePresented = false
+              onCompact?()
+            }
           )
           .presentationCompactAdaptation(.popover)
           .presentationBackground(ADEColor.surfaceBackground)

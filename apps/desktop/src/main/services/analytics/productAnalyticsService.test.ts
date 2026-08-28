@@ -11,7 +11,10 @@ import {
   parseProductAnalyticsCapture,
   type ProductAnalyticsCapture,
 } from "../../../shared/types/productAnalytics";
-import { captureAgentTurnSettledAnalytics } from "./agentTurnProductAnalytics";
+import {
+  captureAgentTurnSettledAnalytics,
+  captureSessionMetadataRegeneratedAnalytics,
+} from "./agentTurnProductAnalytics";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
 import {
   captureDailyUsageAnalytics,
@@ -315,6 +318,45 @@ describe("productAnalyticsService", () => {
       minimumIntervalMs: 60 * 60_000,
     })).toEqual({ accepted: false, reason: "duplicate" });
     fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("records metadata regeneration as a coarse chat fact", () => {
+    const captures: ProductAnalyticsCapture[] = [];
+    const analytics = settledAnalytics(captures);
+
+    captureSessionMetadataRegeneratedAnalytics({
+      analytics,
+      projectId: "project-1",
+      event: { sessionId: "session-1", outcome: "completed" },
+    });
+
+    expect(captures).toEqual([{
+      event: "ade_feature_used",
+      surface: "api",
+      projectId: "project-1",
+      sessionId: "session-1",
+      properties: {
+        feature: "chat",
+        action: "metadata_regenerated",
+        outcome: "completed",
+        source: "runtime",
+      },
+    }]);
+
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "chat",
+      action: "metadata_regenerated",
+      outcome: "partial",
+      source: "runtime",
+      generated_title: "Refresh the user's chat",
+      lane_name: "A private lane",
+      status_line: "Contains user text",
+    })).toEqual({
+      feature: "chat",
+      action: "metadata_regenerated",
+      outcome: "partial",
+      source: "runtime",
+    });
   });
 
   it("accepts one usage scope fact per scope per day and strips everything but the scope", () => {

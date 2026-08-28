@@ -4,6 +4,7 @@
  */
 export { ScopeChip } from "./ScopeChip";
 export { SettingsCard, SettingsGroup, SavedFlash, useSavedFlash } from "./SettingsCard";
+export { SettingsDisclosure } from "./SettingsDisclosure";
 export {
   SettingsToggle,
   SettingsSegmented,

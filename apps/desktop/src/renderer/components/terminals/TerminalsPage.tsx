@@ -16,6 +16,7 @@ import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover"
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type {
   AgentChatSession,
+  LaneSummary,
   OpenProjectBinding,
   PtyResumeSessionResult,
   TerminalResumeLaunchConfig,
@@ -56,7 +57,7 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
-import { clearSessionWokeMarker } from "./sessionLifecycleActions";
+import { clearSessionWokeMarker, renameSession } from "./sessionLifecycleActions";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
@@ -79,6 +80,13 @@ const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
 const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
 const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
+
+type SessionMutationOptions<T> = {
+  actionName: string;
+  errorLabel: string;
+  refreshLabel: string;
+  onSuccess?: (result: T) => void;
+};
 
 function clampWorkSidebarWidthPct(widthPct: number): number {
   return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
@@ -146,6 +154,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const refreshWork = work.refresh;
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const selectLaneInStore = useAppStore((s) => s.selectLane);
@@ -164,6 +173,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
+  const [regeneratingMetadataSessionIds, setRegeneratingMetadataSessionIds] = useState<Set<string>>(new Set());
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
@@ -174,8 +184,28 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
 
   const refreshWorkSessionsAfterLaneDelete = useCallback(
-    () => work.refresh({ showLoading: false, force: true }),
-    [work.refresh],
+    () => refreshWork({ showLoading: false, force: true }),
+    [refreshWork],
+  );
+  const runSessionMutation = useCallback(
+    <T,>(sessionId: string, promise: Promise<T>, options: SessionMutationOptions<T>): void => {
+      setSessionActionError(null);
+      void promise
+        .then((result) => {
+          invalidateSessionListCache();
+          refreshWork({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+            console.error(`[TerminalsPage] refresh after ${options.refreshLabel} failed`, { sessionId, refreshErr });
+          });
+          options.onSuccess?.(result);
+        })
+        .catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[TerminalsPage] ${options.actionName} failed`, { sessionId, err });
+          setSessionActionError(`${options.errorLabel} failed: ${message}`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        });
+    },
+    [refreshWork],
   );
   useWorkLaneDeleteProgress({
     active,
@@ -403,6 +433,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // to right-click; the session menu then also carries the lane section.
       laneActions?: SessionContextMenuLaneActions | null,
       openIn?: SessionContextMenuOpenIn | null,
+      laneType?: LaneSummary["laneType"] | null,
     ) => {
       setContextMenu({
         session,
@@ -412,6 +443,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         ...(machineName ? { machineName } : {}),
         ...(laneActions ? { laneActions } : {}),
         ...(openIn ? { openIn } : {}),
+        ...(laneType ? { laneType } : {}),
       });
     },
     [],
@@ -1621,60 +1653,45 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         gridSessionIds={gridSessionIds}
         onRemoveFromGrid={(session) => handleRemoveSessionFromGrid(session.id)}
         onSetChatTag={(session, tag, runtimePin) => {
-          setSessionActionError(null);
           const update = runtimePin
             ? window.ade.agentChat.updateSession({ sessionId: session.id, tag }, runtimePin)
             : window.ade.agentChat.updateSession({ sessionId: session.id, tag });
-          update
-            .then(() => {
-              invalidateSessionListCache();
-              work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
-                console.error("[TerminalsPage] refresh after tag failed", { sessionId: session.id, refreshErr });
-              });
-            })
-            .catch((err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
-              console.error("[TerminalsPage] set session tag failed", { sessionId: session.id, err });
-              setSessionActionError(`Set tag failed: ${message}`);
-              window.setTimeout(() => setSessionActionError(null), 6000);
-            });
+          runSessionMutation(session.id, update, {
+            actionName: "set session tag",
+            errorLabel: "Set tag",
+            refreshLabel: "tag",
+          });
         }}
         onRename={(session, newTitle, runtimePin) => {
-          setSessionActionError(null);
-          let renamePromise: Promise<unknown>;
-          if (isChatToolType(session.toolType)) {
-            renamePromise = runtimePin
-              ? window.ade.agentChat.updateSession(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-                runtimePin,
-              )
-              : window.ade.agentChat.updateSession(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-              );
-          } else {
-            renamePromise = runtimePin
-              ? window.ade.sessions.updateMeta(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-                runtimePin,
-              )
-              : window.ade.sessions.updateMeta(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-              );
-          }
-          renamePromise
-            .then(() => {
-              invalidateSessionListCache();
-              work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
-                console.error("[TerminalsPage] refresh after rename failed", { sessionId: session.id, refreshErr });
-              });
-            })
-            .catch((err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
-              console.error("[TerminalsPage] rename session failed", { sessionId: session.id, err });
-              setSessionActionError(`Rename failed: ${message}`);
-              window.setTimeout(() => setSessionActionError(null), 6000);
-            });
+          runSessionMutation(session.id, renameSession(session, newTitle, runtimePin), {
+            actionName: "rename session",
+            errorLabel: "Rename",
+            refreshLabel: "rename",
+          });
         }}
+        onRegenerateMetadata={(session, fields, runtimePin) => {
+          if (regeneratingMetadataSessionIds.has(session.id)) return;
+          setRegeneratingMetadataSessionIds((current) => new Set(current).add(session.id));
+          const regenerate = runtimePin
+            ? window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields }, runtimePin)
+            : window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields });
+          runSessionMutation(session.id, regenerate.finally(() => setRegeneratingMetadataSessionIds((current) => {
+            const next = new Set(current);
+            next.delete(session.id);
+            return next;
+          })), {
+            actionName: "regenerate session metadata",
+            errorLabel: "Generate metadata",
+            refreshLabel: "metadata generation",
+            onSuccess: (result) => {
+              if (result.applied.length === 0) {
+                setSessionActionError("Metadata was not changed because the session or lane changed while it was generating.");
+                window.setTimeout(() => setSessionActionError(null), 6000);
+              }
+            },
+          });
+        }}
+        regeneratingMetadataSessionIds={regeneratingMetadataSessionIds}
       />
 
       <SessionInfoPopover

@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode, Ref } from "react";
+import type { CSSProperties, DragEventHandler, ReactNode, Ref } from "react";
 import type { ChatChromeTint, ChatShellGeometry } from "../../state/appStore";
 import type { ChatSurfaceMode } from "../../../shared/types";
 import { cn } from "../ui/cn";
@@ -29,6 +29,12 @@ export function ChatSurfaceShell({
   autoHeight = false,
   paneReserveLeft = "0px",
   paneReserveRight = "0px",
+  dropOverlay,
+  onDragOverCapture,
+  onDropCapture,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: {
   mode: ChatSurfaceMode;
   accentColor?: string | null;
@@ -47,6 +53,13 @@ export function ChatSurfaceShell({
   /** Horizontal space the chat reserves for open floating side panes (CSS length). */
   paneReserveLeft?: string;
   paneReserveRight?: string;
+  /** Optional whole-surface drag/drop hooks for hosts such as Work Chat. */
+  dropOverlay?: ReactNode;
+  onDragOverCapture?: DragEventHandler<HTMLElement>;
+  onDropCapture?: DragEventHandler<HTMLElement>;
+  onDragOver?: DragEventHandler<HTMLElement>;
+  onDragLeave?: DragEventHandler<HTMLElement>;
+  onDrop?: DragEventHandler<HTMLElement>;
 }) {
   const scale = Number.isFinite(contentScale) && contentScale > 0 ? contentScale : 1;
   const scaled = Math.abs(scale - 1) > 0.001;
@@ -113,6 +126,11 @@ export function ChatSurfaceShell({
           ["--chat-pane-reserve-left" as string]: paneReserveLeft,
           ["--chat-pane-reserve-right" as string]: paneReserveRight,
         } as CSSProperties}
+        onDragOverCapture={onDragOverCapture}
+        onDropCapture={onDropCapture}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
       >
         {scaled ? (
           <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>
@@ -121,6 +139,11 @@ export function ChatSurfaceShell({
         ) : (
           inner
         )}
+        {dropOverlay ? (
+          <div className="pointer-events-none absolute inset-0 z-50">
+            {dropOverlay}
+          </div>
+        ) : null}
       </section>
     </ChatChromeTintContext.Provider>
   );

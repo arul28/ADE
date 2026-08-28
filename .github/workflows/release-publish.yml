@@ -169,6 +169,9 @@ jobs:
               echo "::error::ADE native dependency archive for $target is missing node_modules."
               exit 1
             }
+            node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs \
+              --archive "release-assets/runtime/ade-$target.native.tar.gz" \
+              --target "$target"
           done
 
       - name: Validate gated Windows publish asset manifest
@@ -225,6 +228,9 @@ jobs:
             exit 1
           fi
           (cd release-assets/runtime && sha256sum -c "$windows_sums")
+          node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs \
+            --archive release-assets/runtime/ade-win32-x64.native.tar.gz \
+            --target win32-x64
 
       - name: Create or update draft GitHub release
         env:

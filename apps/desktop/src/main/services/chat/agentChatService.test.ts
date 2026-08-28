@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import zlib, { gzipSync } from "node:zlib";
-import { getSessionInfo, getSessionMessages, getSubagentMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, getSessionMessages, getSubagentMessages, query, renameSession, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import {
@@ -1304,6 +1304,12 @@ function createMockLaneService() {
     }),
     list: vi.fn(async () => lanes),
     getSummary: vi.fn(async (laneId: string) => lanes.find((lane) => lane.id === laneId) ?? null),
+    rename: vi.fn(({ laneId, name }: { laneId: string; name: string }) => {
+      const lane = lanes.find((entry) => entry.id === laneId);
+      if (!lane) throw new Error(`Lane not found: ${laneId}`);
+      if (lane.laneType === "primary") throw new Error("Primary lane cannot be renamed");
+      lane.name = name;
+    }),
     importBranch: vi.fn(async ({ branchRef, name, description }: { branchRef: string; name?: string; description?: string }) => {
       const lane = {
         id: `lane-${lanes.length + 1}`,
@@ -1378,6 +1384,7 @@ function createMockSessionService() {
         lastOutputPreview: null,
         summary: null,
         goal: args.goal ?? null,
+        statusNote: null,
         manuallyNamed: false,
         headShaStart: null,
         headShaEnd: null,
@@ -1439,6 +1446,11 @@ function createMockSessionService() {
         if (args.toolType !== undefined) row.toolType = args.toolType;
         if (args.resumeCommand !== undefined) row.resumeCommand = args.resumeCommand;
       }
+    }),
+    setStatusNote: vi.fn((sessionId: string, note: string | null) => {
+      const row = sessions.get(sessionId);
+      if (row) row.statusNote = note;
+      return Boolean(row);
     }),
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
@@ -2194,6 +2206,12 @@ afterEach(() => {
   mockState.droidPromptError = null;
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // `vi.restoreAllMocks()` does not reset factory-created `vi.fn` mocks.
+  // Reinstall the default so mode-specific approval tests cannot leak it.
+  vi.mocked(mapPermissionToCodex).mockImplementation(() => ({
+    approvalPolicy: "on-request",
+    sandbox: "read-only",
+  } as const));
   if (ORIGINAL_CURSOR_API_KEY === undefined) {
     delete process.env.CURSOR_API_KEY;
   } else {
@@ -2529,6 +2547,21 @@ describe("createAgentChatService", () => {
       expect(events.some((entry) => entry.event.type === "system_notice"
         && typeof entry.event.detail === "object"
         && (entry.event.detail as { kind?: string }).kind === "disk_pressure")).toBe(true);
+      service.forceDisposeAll();
+    });
+
+    it("does not steer /compact on an active Codex chat", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      void service.runSessionTurn({ sessionId: session.id, text: "Kick off a long turn." }).catch(() => undefined);
+      await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true));
+      mockState.codexRequestPayloads = [];
+
+      await expect(service.sendMessage(
+        { sessionId: session.id, text: "/compact" },
+        { routeActiveToSteer: true },
+      )).rejects.toThrow(/already active/i);
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/steer" || p.method === "thread/compact/start")).toBe(false);
       service.forceDisposeAll();
     });
 
@@ -15521,6 +15554,34 @@ describe("createAgentChatService", () => {
       expect(sessionService.get(session.id)?.manuallyNamed).toBe(false);
     });
 
+    it("allows a later runtime title after an explicit non-manual title write", async () => {
+      mockState.codexResponseOverrides.set("thread/start", () => ({
+        thread: { id: "thread-runtime-title-reset", name: "Initial Runtime Title" },
+      }));
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Use the initial runtime title." });
+      await waitForSessionTitle(sessionService, session.id, "Initial Runtime Title");
+
+      await service.updateSession({
+        sessionId: session.id,
+        title: "ADE Reset",
+        manuallyNamed: false,
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/name/updated",
+        params: { threadId: "thread-runtime-title-reset", name: "Runtime Title After Reset" },
+      });
+
+      await waitForSessionTitle(sessionService, session.id, "Runtime Title After Reset");
+    });
+
     it("adopts Codex thread/name/updated notifications without overwriting manual names", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -15601,6 +15662,59 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("updateSession", () => {
+    it("does not let a stale Claude title sync overwrite a newer rename", async () => {
+      const { service, sessionService, session } = await createClaudeStreamFixture({
+        sdkSessionId: "sdk-session-title-race",
+        messages: [
+          {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Ready" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          },
+          {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-session-title-race",
+          },
+        ],
+      });
+
+      let releaseGenerated!: () => void;
+      const generatedGate = new Promise<void>((resolve) => { releaseGenerated = resolve; });
+      let markGeneratedStarted!: () => void;
+      const generatedStarted = new Promise<void>((resolve) => { markGeneratedStarted = resolve; });
+      const renameTitles: string[] = [];
+      vi.mocked(renameSession)
+        .mockImplementationOnce(async (_sessionId, title) => {
+          renameTitles.push(title);
+          markGeneratedStarted();
+          await generatedGate;
+        })
+        .mockImplementationOnce(async (_sessionId, title) => {
+          renameTitles.push(title);
+        });
+
+      const generated = service.updateSession({
+        sessionId: session.id,
+        title: "Generated Title",
+        manuallyNamed: true,
+      });
+      await generatedStarted;
+
+      const manual = service.updateSession({
+        sessionId: session.id,
+        title: "User Title",
+        manuallyNamed: true,
+      });
+      await vi.waitFor(() => expect(sessionService.get(session.id)?.title).toBe("User Title"));
+
+      releaseGenerated();
+      await Promise.all([generated, manual]);
+
+      expect(renameTitles).toEqual(["Generated Title", "User Title"]);
+      expect(sessionService.getClaudeSessionPointerByChatSessionId(session.id)?.title).toBe("User Title");
+    });
+
     it("broadcasts a session_meta_updated event with mode fields on a mode change", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -15985,6 +16099,170 @@ describe("createAgentChatService", () => {
       expect(title).not.toBe("Claude Chat");
       expect(title.split(/\s+/).filter(Boolean).length).toBeGreaterThanOrEqual(2);
       expect(title.toLowerCase()).toContain("lane");
+    });
+  });
+
+  describe("regenerateSessionMetadata", () => {
+    const generatedMetadata = {
+      chatTitle: "Refresh Session Metadata",
+      laneName: "Metadata Refresh",
+      statusLine: "Regenerating visible session details",
+    };
+
+    it("lets an explicit request replace a manual title and updates all three fields", async () => {
+      installAutoTitleAuth();
+      const { service, sessionService, laneService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      await service.updateSession({
+        sessionId: session.id,
+        title: "The user's chosen title",
+        manuallyNamed: true,
+      });
+      aiIntegrationService.summarizeTerminal.mockResolvedValue({
+        text: JSON.stringify(generatedMetadata),
+        structuredOutput: generatedMetadata,
+      } as never);
+
+      const result = await service.regenerateSessionMetadata({ sessionId: session.id });
+
+      expect(result.applied).toEqual(["title", "statusLine", "laneName"]);
+      expect(result.skipped).toEqual([]);
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+      expect(sessionService.updateMeta).toHaveBeenLastCalledWith({
+        sessionId: session.id,
+        title: generatedMetadata.chatTitle,
+        manuallyNamed: true,
+      });
+      expect(sessionService.setStatusNote).toHaveBeenCalledWith(session.id, generatedMetadata.statusLine);
+      expect(laneService.rename).toHaveBeenCalledWith({
+        laneId: "lane-2",
+        name: generatedMetadata.laneName,
+      });
+      expect(sessionService.get(session.id)).toMatchObject({
+        title: generatedMetadata.chatTitle,
+        manuallyNamed: true,
+        statusNote: generatedMetadata.statusLine,
+      });
+    });
+
+    it("applies a usable title when the model leaves the status line empty", async () => {
+      installAutoTitleAuth();
+      const { service, sessionService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const sparseMetadata = { ...generatedMetadata, statusLine: "" };
+      aiIntegrationService.summarizeTerminal.mockResolvedValue({
+        text: JSON.stringify(sparseMetadata),
+        structuredOutput: sparseMetadata,
+      } as never);
+
+      const result = await service.regenerateSessionMetadata({
+        sessionId: session.id,
+        fields: ["title", "statusLine"],
+      });
+
+      expect(result.applied).toEqual(["title"]);
+      expect(result.skipped).toEqual(["statusLine"]);
+      expect(sessionService.get(session.id)?.title).toBe(generatedMetadata.chatTitle);
+      expect(sessionService.setStatusNote).not.toHaveBeenCalled();
+    });
+
+    it("keeps a same-text manual rename made while generation is in flight", async () => {
+      installAutoTitleAuth();
+      const { service, sessionService, laneService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const existingTitle = sessionService.get(session.id)?.title;
+      expect(existingTitle).toBeTruthy();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      aiIntegrationService.summarizeTerminal.mockImplementation(async () => {
+        await gate;
+        return {
+          text: JSON.stringify(generatedMetadata),
+          structuredOutput: generatedMetadata,
+        } as never;
+      });
+
+      const regeneration = service.regenerateSessionMetadata({ sessionId: session.id });
+      await vi.waitFor(() => expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1));
+      await service.updateSession({
+        sessionId: session.id,
+        title: existingTitle!,
+        manuallyNamed: true,
+      });
+      release();
+
+      const result = await regeneration;
+
+      expect(result.applied).toEqual(["statusLine", "laneName"]);
+      expect(result.skipped).toEqual(["title"]);
+      expect(sessionService.get(session.id)).toMatchObject({
+        title: existingTitle,
+        manuallyNamed: true,
+        statusNote: generatedMetadata.statusLine,
+      });
+      expect(sessionService.updateMeta).not.toHaveBeenCalledWith(expect.objectContaining({
+        title: generatedMetadata.chatTitle,
+      }));
+      expect(laneService.rename).toHaveBeenCalledWith({ laneId: "lane-2", name: generatedMetadata.laneName });
+    });
+
+    it("does not let a newer request apply a stale lane name", async () => {
+      installAutoTitleAuth();
+      const { service, laneService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const staleMetadata = { ...generatedMetadata, laneName: "Stale Lane Name" };
+      const freshMetadata = { ...generatedMetadata, laneName: "Fresh Lane Name" };
+      let aiCall = 0;
+      let releaseFirstModel!: () => void;
+      const firstModelGate = new Promise<void>((resolve) => { releaseFirstModel = resolve; });
+      let releaseStaleLaneLookup!: () => void;
+      const staleLaneLookup = new Promise<void>((resolve) => { releaseStaleLaneLookup = resolve; });
+      let summaryCall = 0;
+      const originalGetSummary = laneService.getSummary;
+      laneService.getSummary = vi.fn(async (laneId: string) => {
+        summaryCall += 1;
+        if (summaryCall === 2) await staleLaneLookup;
+        return await originalGetSummary(laneId);
+      });
+      aiIntegrationService.summarizeTerminal.mockImplementation(async () => {
+        aiCall += 1;
+        if (aiCall === 1) await firstModelGate;
+        const metadata = aiCall === 1 ? staleMetadata : freshMetadata;
+        return { text: JSON.stringify(metadata), structuredOutput: metadata } as never;
+      });
+
+      const staleRequest = service.regenerateSessionMetadata({ sessionId: session.id, fields: ["laneName"] });
+      await vi.waitFor(() => expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1));
+      releaseFirstModel();
+      await vi.waitFor(() => expect(summaryCall).toBe(2));
+
+      const freshRequest = service.regenerateSessionMetadata({ sessionId: session.id, fields: ["laneName"] });
+      await expect(freshRequest).resolves.toMatchObject({ applied: ["laneName"], skipped: [] });
+      releaseStaleLaneLookup();
+
+      await expect(staleRequest).resolves.toMatchObject({ applied: [], skipped: ["laneName"] });
+      expect(laneService.rename).toHaveBeenCalledTimes(1);
+      expect(laneService.rename).toHaveBeenCalledWith({ laneId: "lane-2", name: freshMetadata.laneName });
     });
   });
 
@@ -29551,6 +29829,63 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("interaction mode", () => {
+    /**
+     * Drive a Codex session to the state this group keeps asserting on: a plan
+     * approval card raised by a turn that has since completed, so `activeTurnId`
+     * is already null while the card is still waiting on the user.
+     */
+    const stageCompletedCodexPlanApproval = async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-approval",
+            type: "plan",
+            text: "<proposed_plan>Inspect the lifecycle and patch it.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      });
+      // The postcondition every caller relies on: the turn is over and the card
+      // is still waiting on the user.
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+      return { service, session, events, approvalEvent };
+    };
+
     it("defaults interaction mode to null or undefined", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -29741,6 +30076,40 @@ describe("createAgentChatService", () => {
     });
 
     it("dismisses a completed Codex plan approval without staging a revision turn", async () => {
+      const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+      const turnStartsBeforeDismiss = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+      await service.dismissPendingInputForSettlement({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
+        .toHaveLength(turnStartsBeforeDismiss);
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
+        awaitingInput: true,
+      });
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: approvalEvent.event.itemId,
+          resolution: "cancelled",
+        }),
+      }));
+      // Settlement interrupts first and then settles as a net, and both paths
+      // resolve Codex cards. One receipt per card, not one per path.
+      expect(events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(1);
+    });
+
+    it("does not start an implementation turn from a plan response staged before settlement", async () => {
+      // Answering a plan approval mid-turn stages the follow-up until the turn
+      // idles. Settlement has to take those staged responses before it stops
+      // the turn: a `turn/completed` landing during the interrupt would
+      // otherwise drain one and start a fresh turn on the settled session.
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -29764,9 +30133,9 @@ describe("createAgentChatService", () => {
         params: {
           turnId: "turn-1",
           item: {
-            id: "codex-plan-dismiss-1",
+            id: "codex-plan-staged-1",
             type: "plan",
-            text: "<proposed_plan>Inspect the lifecycle and patch it.</proposed_plan>",
+            text: "<proposed_plan>Stage this response while the turn runs.</proposed_plan>",
           },
         },
       });
@@ -29778,27 +30147,36 @@ describe("createAgentChatService", () => {
           event.event.type === "approval_request"
           && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
       );
+
+      // The turn is still active, so this response is staged rather than sent.
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+      const turnStartsBeforeSettle = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+
+      // Hold the interrupt open so the app-server's `turn/completed` lands
+      // while the settle is mid-flight — the exact window the staged response
+      // used to survive into.
+      mockState.delayedCodexMethods.add("turn/interrupt");
+      const settling = service.dismissPendingInputForSettlement({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
         method: "turn/completed",
         params: { turn: { id: "turn-1", status: "completed" } },
       });
-      await vi.waitFor(async () => {
-        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
-      });
-      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
-
-      const turnStartsBeforeDismiss = mockState.codexRequestPayloads
-        .filter((payload) => payload.method === "turn/start").length;
-      await service.dismissPendingInputForSettlement({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      mockState.flushCodexResponses();
+      await settling;
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
-        .toHaveLength(turnStartsBeforeDismiss);
-      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
-      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
-        awaitingInput: true,
-      });
+        .toHaveLength(turnStartsBeforeSettle);
+      // The staged response is not silently dropped either: it gets the same
+      // cancel receipt as the card it came from.
       expect(events).toContainEqual(expect.objectContaining({
         sessionId: session.id,
         event: expect.objectContaining({
@@ -29807,6 +30185,185 @@ describe("createAgentChatService", () => {
           resolution: "cancelled",
         }),
       }));
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+    });
+
+    it("stops a Codex chat whose only pending card is a plan approval from the completed turn", async () => {
+      // A Codex plan approval is raised after `turn/completed` has already
+      // nulled `activeTurnId`, so Stop takes the no-active-turn path. That path
+      // used to return without settling anything, leaving the card rendered and
+      // every later send refused by the pending-input guard.
+      const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: approvalEvent.event.itemId,
+          resolution: "cancelled",
+        }),
+      }));
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      // The send gate reads the same state: the next message must reach Codex
+      // rather than bounce off a card for a turn that already ended.
+      const turnStartsBeforeSend = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Different approach, please.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length)
+          .toBeGreaterThan(turnStartsBeforeSend);
+      });
+    });
+
+    it("leaves a Codex plan approval alone when settle teardown stops the session", async () => {
+      // `stop_only` stops the work without discarding what the user still owns.
+      // A card nobody has answered is the user's to answer, so an automatic
+      // settle teardown must not cancel it out from under them.
+      const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
+
+      await service.interrupt({ sessionId: session.id, mode: "stop_only" });
+
+      expect(events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(0);
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+    });
+
+    it("writes one receipt when stopping a plan approval whose response is already staged", async () => {
+      // Answering a plan approval mid-turn stages the follow-up but leaves the
+      // approval entry in place, so the item sits in both stores at once. Stop
+      // does not run settlement's de-duplication, so the helper has to be the
+      // thing that keeps it to one durable receipt.
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-staged-receipt-1",
+            type: "plan",
+            text: "<proposed_plan>Answer this while the turn still runs.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+
+      // Still mid-turn, so the response is staged rather than dispatched.
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(1);
+    });
+
+    it("declines an outstanding Codex command approval on stop and resolves it exactly once", async () => {
+      // `edit` has to stay `edit`: a session that lands in `plan` refuses
+      // provider-native approvals outright and never raises the card.
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "edit") {
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "edit",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run the migration.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "codex-exec-approval-req-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          turnId: "turn-1",
+          itemId: "codex-exec-approval-1",
+          command: "/bin/zsh -lc 'npm run migrate'",
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request" && event.event.itemId === "codex-exec-approval-1",
+      );
+
+      await service.interrupt({ sessionId: session.id });
+
+      // The app-server holds the request open until ADE answers it, so a stop
+      // that only drops the local entry strands it.
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads).toContainEqual(expect.objectContaining({
+          id: "codex-exec-approval-req-1",
+          result: expect.objectContaining({ decision: "decline" }),
+        }));
+      });
+
+      const resolutionsFor = (): AgentChatEventEnvelope[] => events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId);
+      expect(resolutionsFor()).toHaveLength(1);
+
+      // The app-server's own abort lands after the local settle. It must not
+      // resolve the same card a second time.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: { turnId: "turn-1" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((envelope) =>
+          envelope.event.type === "done" && envelope.event.status === "interrupted")).toBe(true);
+      });
+      expect(resolutionsFor()).toHaveLength(1);
     });
 
     it("emits a terminal event when a streamed native Codex plan item completes", async () => {
@@ -37251,6 +37808,68 @@ describe("createAgentChatService", () => {
         && event.event.deliveryState !== "queued"
         && (event.event.displayText === "Follow up soon" || event.event.text === "Follow up soon")
       )).toBe(true);
+    });
+
+    it("does not steer /compact during an active Claude turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-compact-no-steer", slash_commands: [] };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        await activeTurnGate;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-compact-no-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the foreground work",
+        timeoutMs: 15_000,
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "/compact keep the tests",
+      }, { routeActiveToSteer: true })).rejects.toThrow(/already active/i);
+      expect(events.some((event) =>
+        event.event.type === "user_message" && String(event.event.text).includes("/compact")
+      )).toBe(false);
+      expect(send.mock.calls.map((call) => String(call[0])).some((prompt) => /\/compact/i.test(prompt))).toBe(false);
+
+      finishActiveTurn();
+      await activeTurn;
     });
 
     it("ignores empty active-turn sends but queues attachment-only steers", async () => {

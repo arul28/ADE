@@ -17160,6 +17160,78 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(laterTurn?.ratio ?? 0, 0.3, accuracy: 0.0001)
   }
 
+  func testWorkComposerSlashCatalogIncludesCompactForManualProviders() {
+    XCTAssertTrue(WorkComposerSlashCatalog.commands(provider: "claude").contains(where: { $0.command == "/compact" }))
+    XCTAssertTrue(WorkComposerSlashCatalog.commands(provider: "codex").contains(where: { $0.command == "/compact" }))
+    XCTAssertTrue(WorkComposerSlashCatalog.commands(provider: "pi").contains(where: { $0.command == "/compact" }))
+    XCTAssertFalse(WorkComposerSlashCatalog.commands(provider: "cursor").contains(where: { $0.command == "/compact" }))
+    XCTAssertFalse(WorkComposerSlashCatalog.commands(provider: "opencode").contains(where: { $0.command == "/compact" }))
+    XCTAssertFalse(WorkComposerSlashCatalog.commands(provider: "droid").contains(where: { $0.command == "/compact" }))
+  }
+
+  func testWorkProviderSupportsManualCompact() {
+    XCTAssertTrue(workProviderSupportsManualCompact("claude"))
+    XCTAssertTrue(workProviderSupportsManualCompact("Codex"))
+    XCTAssertTrue(workProviderSupportsManualCompact("pi"))
+    XCTAssertFalse(workProviderSupportsManualCompact("cursor"))
+    XCTAssertFalse(workProviderSupportsManualCompact("opencode"))
+    XCTAssertFalse(workProviderSupportsManualCompact("droid"))
+  }
+
+  func testWorkResolveContextCompactControlIsIdleOnly() {
+    XCTAssertEqual(
+      workResolveContextCompactControl(
+        provider: "codex",
+        usageState: .measured,
+        canSend: true,
+        pendingInput: false,
+        turnBusy: false
+      ),
+      .ready
+    )
+    XCTAssertEqual(
+      workResolveContextCompactControl(
+        provider: "codex",
+        usageState: .measured,
+        canSend: true,
+        pendingInput: false,
+        turnBusy: true
+      ),
+      .disabled(reason: "Wait for this turn to finish before compacting.")
+    )
+    XCTAssertEqual(
+      workResolveContextCompactControl(
+        provider: "cursor",
+        usageState: .measured,
+        canSend: true,
+        pendingInput: false,
+        turnBusy: false
+      ),
+      .hidden
+    )
+    XCTAssertEqual(
+      workResolveContextCompactControl(
+        provider: "claude",
+        usageState: .compacting,
+        canSend: true,
+        pendingInput: false,
+        turnBusy: false
+      ),
+      .hidden
+    )
+  }
+
+  func testWorkChatBlocksManualCompactSendInsteadOfSteering() {
+    XCTAssertTrue(workChatIsManualCompactCommand(" /compact "))
+    XCTAssertTrue(workChatIsManualCompactCommand("/Compact"))
+    XCTAssertTrue(workChatIsManualCompactCommand("/compact keep the tests"))
+    XCTAssertFalse(workChatIsManualCompactCommand("/compaction"))
+    XCTAssertTrue(workChatBlocksManualCompactSend(text: "/compact", shouldSteer: true, turnHintActive: false))
+    XCTAssertTrue(workChatBlocksManualCompactSend(text: "/Compact keep going", shouldSteer: false, turnHintActive: true))
+    XCTAssertFalse(workChatBlocksManualCompactSend(text: "/compact", shouldSteer: false, turnHintActive: false))
+    XCTAssertFalse(workChatBlocksManualCompactSend(text: "please compact", shouldSteer: true, turnHintActive: true))
+  }
+
   func testWorkChatStatusNormalizationPrefersAwaitingInputAndIdle() {
     let waitingSummary = makeAgentChatSessionSummary(status: "active", awaitingInput: true)
     XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: waitingSummary), "awaiting-input")

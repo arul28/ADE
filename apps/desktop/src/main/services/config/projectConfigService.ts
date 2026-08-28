@@ -40,6 +40,8 @@ import type {
   LaneOverlayOverrides,
   LaneOverlayPolicy,
   LaneMountPointConfig,
+  LaneCopyPathConfig,
+  LaneSetupScriptConfig,
   LaneCleanupConfig,
   LaneTemplate,
   LaneType,
@@ -63,8 +65,10 @@ import {
   DEFAULT_LANE_BANNER_BUDGET,
   DEFAULT_REBASE_SUGGESTIONS,
   DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+  laneSetupScriptHasWork,
   type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
+import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
@@ -1076,6 +1080,54 @@ function coerceLaneMountPoint(value: unknown): LaneMountPointConfig | null {
   return { source, dest };
 }
 
+function coerceLaneCopyPath(value: unknown): LaneCopyPathConfig | null {
+  if (!isRecord(value)) return null;
+  const source = asString(value.source)?.trim() ?? "";
+  if (!source) return null;
+  const dest = asString(value.dest)?.trim();
+  return { source, ...(dest ? { dest } : {}) };
+}
+
+/**
+ * Setup scripts round-trip through config, so every field the template editor
+ * writes has to survive parsing — dropping one here is why a configured setup
+ * script used to silently never run.
+ */
+function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const readCommands = (candidate: unknown): string[] | undefined => {
+    if (!Array.isArray(candidate)) return undefined;
+    const commands = candidate
+      .map((entry) => asString(entry)?.trim() ?? "")
+      .filter((entry) => entry.length > 0);
+    return commands.length ? commands : undefined;
+  };
+  const readPath = (candidate: unknown): string | undefined => asString(candidate)?.trim() || undefined;
+
+  const commands = readCommands(value.commands);
+  const unixCommands = readCommands(value.unixCommands);
+  const windowsCommands = readCommands(value.windowsCommands);
+  const scriptPath = readPath(value.scriptPath);
+  const unixScriptPath = readPath(value.unixScriptPath);
+  const windowsScriptPath = readPath(value.windowsScriptPath);
+
+  const parsed: LaneSetupScriptConfig = {
+    ...(commands ? { commands } : {}),
+    ...(unixCommands ? { unixCommands } : {}),
+    ...(windowsCommands ? { windowsCommands } : {}),
+    ...(scriptPath ? { scriptPath } : {}),
+    ...(unixScriptPath ? { unixScriptPath } : {}),
+    ...(windowsScriptPath ? { windowsScriptPath } : {}),
+    ...(asBool(value.injectPrimaryPath) === true ? { injectPrimaryPath: true } : {}),
+  };
+
+  // `injectPrimaryPath` on its own configures nothing to run, so a config with
+  // only that key is not a setup script — returning one would emit an empty
+  // init step that always "succeeds". Shared with the resolver and the template
+  // editor so all three agree on what counts as a script.
+  return laneSetupScriptHasWork(parsed) ? parsed : undefined;
+}
+
 function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined {
   if (!isRecord(value)) return undefined;
 
@@ -1091,8 +1143,22 @@ function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined 
   const mountPoints = Array.isArray(value.mountPoints)
     ? value.mountPoints.map(coerceLaneMountPoint).filter((entry): entry is LaneMountPointConfig => entry != null)
     : undefined;
+  // `copyPaths` and `setupScript` are documented on `laneEnvInit` and on lane
+  // overlay overrides, not just on templates. Dropping them here is why a
+  // YAML-authored setup script silently never ran.
+  const copyPaths = Array.isArray(value.copyPaths)
+    ? value.copyPaths.map(coerceLaneCopyPath).filter((entry): entry is LaneCopyPathConfig => entry != null)
+    : undefined;
+  const setupScript = coerceLaneSetupScript(value.setupScript);
 
-  if (!envFiles?.length && !docker && !dependencies?.length && !mountPoints?.length) {
+  if (
+    !envFiles?.length
+    && !docker
+    && !dependencies?.length
+    && !mountPoints?.length
+    && !copyPaths?.length
+    && !setupScript
+  ) {
     return undefined;
   }
 
@@ -1100,7 +1166,9 @@ function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined 
     ...(envFiles?.length ? { envFiles } : {}),
     ...(docker ? { docker } : {}),
     ...(dependencies?.length ? { dependencies } : {}),
-    ...(mountPoints?.length ? { mountPoints } : {})
+    ...(mountPoints?.length ? { mountPoints } : {}),
+    ...(copyPaths?.length ? { copyPaths } : {}),
+    ...(setupScript ? { setupScript } : {})
   };
 }
 
@@ -1109,61 +1177,29 @@ function normalizeLaneEnvInitConfig(value: LaneEnvInitConfig): LaneEnvInitConfig
     ...(value.envFiles && value.envFiles.length > 0 ? { envFiles: value.envFiles } : {}),
     ...(value.docker ? { docker: value.docker } : {}),
     ...(value.dependencies && value.dependencies.length > 0 ? { dependencies: value.dependencies } : {}),
-    ...(value.mountPoints && value.mountPoints.length > 0 ? { mountPoints: value.mountPoints } : {})
+    ...(value.mountPoints && value.mountPoints.length > 0 ? { mountPoints: value.mountPoints } : {}),
+    ...(value.copyPaths && value.copyPaths.length > 0 ? { copyPaths: value.copyPaths } : {}),
+    ...(value.setupScript ? { setupScript: value.setupScript } : {})
   };
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
-function mergeLaneDockerConfig(
-  base: LaneDockerConfig | undefined,
-  over: LaneDockerConfig | undefined
-): LaneDockerConfig | undefined {
-  if (!base && !over) return undefined;
-  if (!base) return over ? { ...over, ...(over.services ? { services: [...over.services] } : {}) } : undefined;
-  if (!over) return { ...base, ...(base.services ? { services: [...base.services] } : {}) };
-
-  return {
-    ...base,
-    ...over,
-    ...(over.services != null
-      ? { services: [...over.services] }
-      : base.services != null
-        ? { services: [...base.services] }
-        : {})
-  };
-}
-
+/**
+ * Config-scope merge for `laneEnvInit`: the shared/local (or policy base/over)
+ * merge through the one kernel every host uses, then normalized so an all-empty
+ * result reads as "unconfigured" rather than a shell of empty arrays.
+ *
+ * The merge itself is deliberately NOT reimplemented here. A fifth hand-written
+ * copy is how `copyPaths` and `setupScript` came to reach some merges and not
+ * others.
+ */
 function mergeLaneEnvInit(
   base: LaneEnvInitConfig | undefined,
   over: LaneEnvInitConfig | undefined
 ): LaneEnvInitConfig | undefined {
-  if (!base && !over) return undefined;
-  if (!base) {
-    return over
-      ? normalizeLaneEnvInitConfig({
-          ...(over.envFiles ? { envFiles: [...over.envFiles] } : {}),
-          ...(mergeLaneDockerConfig(undefined, over.docker) ? { docker: mergeLaneDockerConfig(undefined, over.docker) } : {}),
-          ...(over.dependencies ? { dependencies: [...over.dependencies] } : {}),
-          ...(over.mountPoints ? { mountPoints: [...over.mountPoints] } : {})
-        })
-      : undefined;
-  }
-  if (!over) {
-    return normalizeLaneEnvInitConfig({
-      ...(base.envFiles ? { envFiles: [...base.envFiles] } : {}),
-      ...(mergeLaneDockerConfig(undefined, base.docker) ? { docker: mergeLaneDockerConfig(undefined, base.docker) } : {}),
-      ...(base.dependencies ? { dependencies: [...base.dependencies] } : {}),
-      ...(base.mountPoints ? { mountPoints: [...base.mountPoints] } : {})
-    });
-  }
-
-  return normalizeLaneEnvInitConfig({
-    envFiles: [...(base.envFiles ?? []), ...(over.envFiles ?? [])],
-    ...(mergeLaneDockerConfig(base.docker, over.docker) ? { docker: mergeLaneDockerConfig(base.docker, over.docker) } : {}),
-    dependencies: [...(base.dependencies ?? []), ...(over.dependencies ?? [])],
-    mountPoints: [...(base.mountPoints ?? []), ...(over.mountPoints ?? [])]
-  });
+  const merged = mergeLaneEnvInitConfig(base, over);
+  return merged ? normalizeLaneEnvInitConfig(merged) : undefined;
 }
 
 function coerceLaneOverlayPolicy(value: unknown): ConfigLaneOverlayPolicy | null {
@@ -1232,6 +1268,10 @@ function coerceLaneTemplate(value: unknown): ConfigLaneTemplate | null {
     mountPoints: Array.isArray(value.mountPoints)
       ? value.mountPoints.map(coerceLaneMountPoint).filter((x): x is LaneMountPointConfig => x != null)
       : undefined,
+    copyPaths: Array.isArray(value.copyPaths)
+      ? value.copyPaths.map(coerceLaneCopyPath).filter((x): x is LaneCopyPathConfig => x != null)
+      : undefined,
+    setupScript: coerceLaneSetupScript(value.setupScript),
     portRange: isRecord(value.portRange) && typeof value.portRange.start === "number" && typeof value.portRange.end === "number"
       ? { start: value.portRange.start, end: value.portRange.end }
       : undefined,
@@ -2523,6 +2563,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(t.docker ? { docker: t.docker } : {}),
             ...(t.dependencies?.length ? { dependencies: t.dependencies } : {}),
             ...(t.mountPoints?.length ? { mountPoints: t.mountPoints } : {}),
+            ...(t.copyPaths?.length ? { copyPaths: t.copyPaths } : {}),
+            ...(t.setupScript ? { setupScript: t.setupScript } : {}),
             ...(t.portRange ? { portRange: { ...t.portRange } } : {}),
             ...(t.envVars && Object.keys(t.envVars).length ? { envVars: t.envVars } : {})
           }))
@@ -3162,6 +3204,33 @@ export function createProjectConfigService({
     const localYaml = toCanonicalYaml(local);
     const shouldWriteShared = fs.existsSync(sharedPath) || hasSharedConfigContent(shared);
 
+    // Did this save actually EDIT the shared scope, or is it carrying the
+    // loaded shared snapshot back through untouched?
+    //
+    // Most callers are local-scope writers — `laneTemplateService.saveTemplate`,
+    // `deleteTemplate`, `setDefaultTemplateId`, `setPrTranscriptGists` — and
+    // they all round-trip `snapshot.shared` because `save` takes both scopes.
+    // Trusting on every save therefore let editing one lane template silently
+    // approve an unreviewed, repo-committed `.ade/ade.yaml`, which is exactly
+    // the attacker-supplied file the setup-script trust gate exists to stop.
+    // Compared canonically (parse then re-serialize both sides) so a
+    // formatting-only rewrite of an untrusted file is not mistaken for an edit.
+    const sharedOnDisk = readConfigFile(sharedPath);
+    const sharedOnDiskYaml = toCanonicalYaml(
+      normalizeConfigFilePaths(coerceConfigFile(sharedOnDisk.config), projectRoot),
+    );
+    const sharedScopeEdited = sharedYaml !== sharedOnDiskYaml;
+
+    // Trust is a hash of the RAW bytes, but every save rewrites `.ade/ade.yaml`
+    // as canonical YAML — so a local-only save of an already-trusted but
+    // hand-formatted shared file changes the bytes and would silently revoke
+    // trust, popping the "trust this project" gate with no user action. Carry
+    // trust across the reserialization when the pre-write bytes were the ones
+    // the user already approved. That does not reopen the laundering hole the
+    // `sharedScopeEdited` gate closed: re-affirming content that was already
+    // approved (and, canonically, is unchanged) approves nothing new.
+    const sharedWasTrusted = getTrustedSharedHash() === hashContent(sharedOnDisk.raw);
+
     if (shouldWriteShared) {
       ensureSharedAdeProjectScaffold(projectRoot, { logger });
     } else {
@@ -3174,7 +3243,10 @@ export function createProjectConfigService({
     writeFileAtomicSync(localPath, localYaml);
 
     const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
-    if (shouldWriteShared) {
+    // Trust follows the new bytes when the save either edited the shared scope
+    // (the user reviewed what they just wrote) or merely reserialized bytes that
+    // were already trusted. An untrusted round-trip stays untrusted.
+    if (shouldWriteShared && (sharedScopeEdited || sharedWasTrusted)) {
       setTrustedSharedHash(sharedHash);
     }
 
@@ -3182,6 +3254,8 @@ export function createProjectConfigService({
       sharedPath,
       localPath,
       sharedHash,
+      sharedScopeEdited,
+      sharedWasTrusted,
     });
 
     const snapshot = readSnapshotFromDisk();

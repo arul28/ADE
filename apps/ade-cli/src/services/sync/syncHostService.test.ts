@@ -5966,6 +5966,7 @@ describe("CTO-gated Linear sync commands", () => {
         "session.clearWokeMarker",
         "chat.setSpawnKind",
         "chat.dismissSubagentTakeoverPrompt",
+        "chat.regenerateSessionMetadata",
         "prs.listGithubStacks",
         "prs.syncGithubStacks",
         "prs.createGithubStack",

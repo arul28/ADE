@@ -2606,7 +2606,12 @@ sends:
 - Environment-init progress (`LaneEnvInitProgress`) returned by
   `lanes.initEnv`, `lanes.templates.apply`, and `lanes.getEnvStatus`;
   `LaneCreateSheet` switches from the form to a progress panel when a
-  template-backed create starts runtime-side setup.
+  template-backed create starts runtime-side setup. A step's message is
+  rendered in danger red only when the step actually `failed`; a
+  `skipped` step carries a reason rather than a fault (an archive or
+  delete cancelling an in-flight init marks the remaining steps that
+  way), so `LaneEnvInitProgressView` shows it muted — matching the
+  desktop panel.
 - `LaneSummary.devicesOpen` lists the devices currently on a lane,
   decorated by the runtime from `lanes.presence.announce` events.
 

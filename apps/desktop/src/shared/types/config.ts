@@ -56,7 +56,7 @@ export type LaneOverlayOverrides = {
 
 // --- Lane Environment Init types (Phase 5 W1) ---
 
-export type LaneEnvInitStepKind = "env-files" | "docker" | "dependencies" | "mount-points" | "copy-paths";
+export type LaneEnvInitStepKind = "env-files" | "docker" | "dependencies" | "mount-points" | "copy-paths" | "setup-script";
 
 export type LaneEnvInitStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
 
@@ -131,6 +131,12 @@ export type LaneEnvInitConfig = {
   mountPoints?: LaneMountPointConfig[];
   /** Files and directories to copy from project root into the worktree */
   copyPaths?: LaneCopyPathConfig[];
+  /**
+   * Shell commands / script to run after every other init step completes.
+   * Carried here (not only on the template) so every path that runs env init —
+   * lane create, applyTemplate, initEnv, unarchive-with-recreate — executes it.
+   */
+  setupScript?: LaneSetupScriptConfig;
 };
 
 export type LaneOverlayPolicy = {
@@ -171,6 +177,37 @@ export type LaneSetupScriptConfig = {
    */
   injectPrimaryPath?: boolean;
 };
+
+/**
+ * Does this setup script actually run anything?
+ *
+ * True when at least one command or script path is configured for some
+ * platform. `injectPrimaryPath` on its own configures nothing to run, so a
+ * config carrying only that key is NOT a setup script — persisting one emits an
+ * init step that always "succeeds" without doing anything, and showing one
+ * tells the user a script will run when none will.
+ *
+ * Platform-agnostic and trim-aware, and deliberately shared: the config
+ * coercer, the platform resolver and the template editor must agree, or the UI
+ * shows a script the executor skips (or the reverse).
+ */
+export function laneSetupScriptHasWork(
+  script: LaneSetupScriptConfig | undefined | null,
+): script is LaneSetupScriptConfig {
+  if (!script) return false;
+  const hasCommand = (list: string[] | undefined): boolean =>
+    Array.isArray(list) && list.some((entry) => typeof entry === "string" && entry.trim().length > 0);
+  const hasPath = (value: string | undefined): boolean =>
+    typeof value === "string" && value.trim().length > 0;
+  return (
+    hasCommand(script.commands)
+    || hasCommand(script.unixCommands)
+    || hasCommand(script.windowsCommands)
+    || hasPath(script.scriptPath)
+    || hasPath(script.unixScriptPath)
+    || hasPath(script.windowsScriptPath)
+  );
+}
 
 // --- Lane Cleanup / Lifecycle types ---
 

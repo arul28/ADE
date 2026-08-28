@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createLaneTemplateService } from "./laneTemplateService";
+import { resolveSetupScriptConfig, unsupportedWindowsScriptPathError } from "./setupScriptConfig";
 import type {
   LaneTemplate,
   EffectiveProjectConfig,
@@ -323,6 +324,27 @@ describe("laneTemplateService", () => {
       expect(result.dependencies).toEqual([{ command: ["npm", "install"] }]);
       expect(result.docker).toBeUndefined();
       expect(result.mountPoints).toBeUndefined();
+      expect(result.setupScript).toBeUndefined();
+    });
+
+    it("carries the setup script into env init so it actually runs", () => {
+      const snapshot = makeSnapshot();
+      const service = createLaneTemplateService({
+        projectConfigService: makeProjectConfigService(snapshot),
+        logger,
+      });
+
+      const template = makeTemplate({
+        id: "tpl-setup",
+        name: "With setup script",
+        setupScript: { commands: ["npm run bootstrap"], injectPrimaryPath: true },
+      });
+
+      const result = service.resolveTemplateAsEnvInit(template);
+      expect(result.setupScript).toEqual({
+        commands: ["npm run bootstrap"],
+        injectPrimaryPath: true,
+      });
     });
 
     it("with all fields populated", () => {
@@ -443,40 +465,24 @@ describe("laneTemplateService", () => {
   // 4. Setup script resolution tests
   // ---------------------------------------------------------------
 
-  describe("resolveSetupScript", () => {
-    function makeService() {
-      const snapshot = makeSnapshot();
-      const configService = makeProjectConfigService(snapshot);
-      return createLaneTemplateService({
-        projectConfigService: configService,
-        logger,
-      });
-    }
-
+  describe("resolveSetupScriptConfig", () => {
     it("returns null when template has no setupScript", () => {
-      const service = makeService();
       const template = makeTemplate({ id: "tpl-no-script", name: "No Script" });
 
-      const result = service.resolveSetupScript(template);
-
-      expect(result).toBeNull();
+      expect(resolveSetupScriptConfig(template.setupScript, "darwin")).toBeNull();
     });
 
     it("returns null when setupScript has empty commands and no scriptPath", () => {
-      const service = makeService();
       const template = makeTemplate({
         id: "tpl-empty-script",
         name: "Empty Script",
         setupScript: { commands: [] },
       });
 
-      const result = service.resolveSetupScript(template);
-
-      expect(result).toBeNull();
+      expect(resolveSetupScriptConfig(template.setupScript, "darwin")).toBeNull();
     });
 
     it("uses unixCommands on non-Windows", () => {
-      const service = makeService();
       const template = makeTemplate({
         id: "tpl-unix",
         name: "Unix Commands",
@@ -487,14 +493,13 @@ describe("laneTemplateService", () => {
         },
       });
 
-      const result = service.resolveSetupScript(template);
+      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
 
       expect(result).not.toBeNull();
       expect(result!.commands).toEqual(["bash setup.sh"]);
     });
 
     it("falls back to generic commands when no unixCommands provided", () => {
-      const service = makeService();
       const template = makeTemplate({
         id: "tpl-generic",
         name: "Generic Commands",
@@ -503,15 +508,13 @@ describe("laneTemplateService", () => {
         },
       });
 
-      const result = service.resolveSetupScript(template);
+      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
 
       expect(result).not.toBeNull();
       expect(result!.commands).toEqual(["npm run setup"]);
     });
 
     it("uses unixScriptPath on non-Windows, falls back to generic scriptPath", () => {
-      const service = makeService();
-
       const templateWithUnix = makeTemplate({
         id: "tpl-unix-path",
         name: "Unix Script Path",
@@ -522,7 +525,7 @@ describe("laneTemplateService", () => {
         },
       });
 
-      const resultWithUnix = service.resolveSetupScript(templateWithUnix);
+      const resultWithUnix = resolveSetupScriptConfig(templateWithUnix.setupScript, "darwin");
       expect(resultWithUnix).not.toBeNull();
       expect(resultWithUnix!.scriptPath).toBe("scripts/unix-setup.sh");
 
@@ -534,13 +537,12 @@ describe("laneTemplateService", () => {
         },
       });
 
-      const resultFallback = service.resolveSetupScript(templateFallback);
+      const resultFallback = resolveSetupScriptConfig(templateFallback.setupScript, "darwin");
       expect(resultFallback).not.toBeNull();
       expect(resultFallback!.scriptPath).toBe("setup.sh");
     });
 
     it("defaults injectPrimaryPath to false when not set", () => {
-      const service = makeService();
       const template = makeTemplate({
         id: "tpl-no-inject",
         name: "No Inject",
@@ -549,14 +551,13 @@ describe("laneTemplateService", () => {
         },
       });
 
-      const result = service.resolveSetupScript(template);
+      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
 
       expect(result).not.toBeNull();
       expect(result!.injectPrimaryPath).toBe(false);
     });
 
     it("returns injectPrimaryPath true when explicitly set", () => {
-      const service = makeService();
       const template = makeTemplate({
         id: "tpl-inject",
         name: "With Inject",
@@ -566,14 +567,13 @@ describe("laneTemplateService", () => {
         },
       });
 
-      const result = service.resolveSetupScript(template);
+      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
 
       expect(result).not.toBeNull();
       expect(result!.injectPrimaryPath).toBe(true);
     });
 
     it("returns commands and scriptPath together", () => {
-      const service = makeService();
       const template = makeTemplate({
         id: "tpl-both",
         name: "Both",
@@ -584,7 +584,7 @@ describe("laneTemplateService", () => {
         },
       });
 
-      const result = service.resolveSetupScript(template);
+      const result = resolveSetupScriptConfig(template.setupScript, "darwin");
 
       expect(result).not.toBeNull();
       expect(result!.commands).toEqual(["npm install", "npm run build"]);
@@ -593,32 +593,51 @@ describe("laneTemplateService", () => {
     });
 
     it("uses windowsCommands and windowsScriptPath on win32", () => {
-      const originalPlatform = process.platform;
-      Object.defineProperty(process, "platform", { value: "win32", writable: true });
+      const template = makeTemplate({
+        id: "tpl-win",
+        name: "Windows",
+        setupScript: {
+          commands: ["generic-cmd"],
+          unixCommands: ["bash setup.sh"],
+          windowsCommands: ["powershell setup.ps1"],
+          scriptPath: "setup.sh",
+          unixScriptPath: "scripts/unix-setup.sh",
+          windowsScriptPath: "scripts/win-setup.ps1",
+        },
+      });
 
-      try {
-        const service = makeService();
-        const template = makeTemplate({
-          id: "tpl-win",
-          name: "Windows",
-          setupScript: {
-            commands: ["generic-cmd"],
-            unixCommands: ["bash setup.sh"],
-            windowsCommands: ["powershell setup.ps1"],
-            scriptPath: "setup.sh",
-            unixScriptPath: "scripts/unix-setup.sh",
-            windowsScriptPath: "scripts/win-setup.ps1",
-          },
-        });
+      const result = resolveSetupScriptConfig(template.setupScript, "win32");
 
-        const result = service.resolveSetupScript(template);
+      expect(result).not.toBeNull();
+      expect(result!.commands).toEqual(["powershell setup.ps1"]);
+      expect(result!.scriptPath).toBe("scripts/win-setup.ps1");
+    });
+  });
 
-        expect(result).not.toBeNull();
-        expect(result!.commands).toEqual(["powershell setup.ps1"]);
-        expect(result!.scriptPath).toBe("scripts/win-setup.ps1");
-      } finally {
-        Object.defineProperty(process, "platform", { value: originalPlatform, writable: true });
+  describe("unsupportedWindowsScriptPathError", () => {
+    it("names the fix when Windows falls back to a script it cannot execute", () => {
+      // A template with only a generic `scriptPath: scripts/setup.sh` resolves
+      // to that .sh on win32. Spawning it there dies with a raw ENOEXEC that
+      // reads as an ADE bug, so the step has to say what to configure instead.
+      const message = unsupportedWindowsScriptPathError("scripts/setup.sh", "win32");
+
+      expect(message).toContain("scripts/setup.sh");
+      expect(message).toContain("windowsScriptPath");
+    });
+
+    it("rejects an extension-less script on Windows", () => {
+      expect(unsupportedWindowsScriptPathError("scripts/setup", "win32")).toContain("windowsScriptPath");
+    });
+
+    it("allows the extensions Windows can actually launch", () => {
+      for (const script of ["scripts\\setup.ps1", "setup.CMD", "setup.bat", "C:\\tools\\setup.exe"]) {
+        expect(unsupportedWindowsScriptPathError(script, "win32")).toBeNull();
       }
+    });
+
+    it("never blocks a POSIX script, where the shebang decides", () => {
+      expect(unsupportedWindowsScriptPathError("scripts/setup.sh", "darwin")).toBeNull();
+      expect(unsupportedWindowsScriptPathError("scripts/setup", "linux")).toBeNull();
     });
   });
 });

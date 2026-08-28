@@ -176,6 +176,10 @@ import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "
 import { deriveChatInfoSnapshot, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand, slashCommandUnavailableSurface } from "./commands";
 import {
+  parseWorkSearchQuery,
+  scoreWorkSearchTerms,
+} from "../../../desktop/src/shared/workSearch";
+import {
   resolveSessionTarget,
   resolveSnoozeChoice,
   resolveSnoozeChoices,
@@ -1022,19 +1026,8 @@ export function firstUrlInText(value: string): { url: string; index: number; wid
 }
 
 function paletteMatchScore(item: CommandPaletteItem, query: string): number | null {
-  const trimmed = query.trim().toLowerCase();
-  if (!trimmed) return 0;
-  const haystack = `${item.label} ${item.detail}`.toLowerCase();
-  if (haystack.includes(trimmed)) return haystack.indexOf(trimmed);
-  let cursor = 0;
-  let score = 0;
-  for (const char of trimmed) {
-    const found = haystack.indexOf(char, cursor);
-    if (found < 0) return null;
-    score += found - cursor;
-    cursor = found + 1;
-  }
-  return score + haystack.length;
+  const terms = parseWorkSearchQuery(query).terms;
+  return scoreWorkSearchTerms(terms, [item.label, item.detail]);
 }
 
 // Collapse a multi-line search snippet into a single trimmed detail line and cap
@@ -6906,6 +6899,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         const failedStep = progress.steps.find((step) => step.status === "failed");
+        // An init the host cancelled because the lane is being archived or
+        // deleted also ends `failed`, but with every remaining step `skipped`
+        // and no failed step at all. `skipped` carries a reason, not a fault —
+        // reporting the user's own teardown as a red failure (with "press r to
+        // retry" for a lane that is going away) is wrong. Desktop and iOS make
+        // the same distinction by muting a skipped step's message.
+        const cancelledStep = failedStep
+          ? undefined
+          : progress.steps.find((step) => step.status === "skipped" && (step.error?.trim().length ?? 0) > 0);
+        if (cancelledStep) {
+          const reason = cancelledStep.error?.trim() || "Setup was cancelled";
+          const cancelled: LaneSetupStatus = {
+            status: "cancelled",
+            label: "lane setup cancelled",
+            detail: reason,
+            templateId: appliedTemplateId,
+            retryable: false,
+          };
+          setLaneSetupStatusByLaneId((prev) => ({ ...prev, [lane.id]: cancelled }));
+          setRightPane((prev) => prev.kind === "lane-details" && prev.lane.id === lane.id
+            ? { ...prev, setup: cancelled }
+            : prev);
+          addNotice(`Lane setup for ${lane.name} stopped: ${reason}`, "info");
+          return;
+        }
         const detail = failedStep?.error?.trim()
           || (failedStep ? `${failedStep.label} failed` : "Environment setup failed");
         const failed: LaneSetupStatus = {

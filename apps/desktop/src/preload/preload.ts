@@ -5,6 +5,7 @@ import { projectBindingKey } from "../shared/projectIdentity";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
+import type { ConvertImageToJpegResult } from "../shared/types/chat";
 import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
@@ -474,6 +475,8 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatKillDroidWorkerArgs,
+  AgentChatRegenerateSessionMetadataArgs,
+  AgentChatRegenerateSessionMetadataResult,
   AgentChatUpdateSessionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -1432,6 +1435,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "dispatchSteer",
   "cancelDispatchedSteer",
   "createSession",
+  "regenerateSessionMetadata",
   "archiveSession",
   "unarchiveSession",
   "deleteSession",
@@ -3931,6 +3935,12 @@ const adeBridge = {
       filename: string;
       mimeType: string;
     } | null> => ipcRenderer.invoke(IPC.appReadClipboardImage),
+    convertImageToJpeg: async (args: {
+      data: string;
+      filename: string;
+      mimeType?: string | null;
+    }): Promise<ConvertImageToJpegResult> =>
+      ipcRenderer.invoke(IPC.appConvertImageToJpeg, args),
     saveClipboardImageAttachment: async (): Promise<{
       path: string;
       mimeType: string;
@@ -6895,6 +6905,25 @@ const adeBridge = {
       );
       agentChatSummaryCache.clear();
       return session;
+    },
+    regenerateSessionMetadata: async (
+      args: AgentChatRegenerateSessionMetadataArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatRegenerateSessionMetadataResult> => {
+      return clearAround(
+        () => {
+          clearGitReadCaches();
+          agentChatSummaryCache.clear();
+        },
+        () =>
+          callPinnedOrBoundRuntimeActionOr<AgentChatRegenerateSessionMetadataResult>(
+            pin,
+            "chat",
+            "regenerateSessionMetadata",
+            { args },
+            () => ipcRenderer.invoke(IPC.agentChatRegenerateSessionMetadata, args),
+          ),
+      );
     },
     createScheduledWork: async (
       args: AgentChatCreateScheduledWorkArgs,

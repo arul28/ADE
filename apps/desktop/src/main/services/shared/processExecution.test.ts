@@ -19,8 +19,10 @@ import {
   resolveCliSpawnInvocation,
   resolveWindowsCmdLineInvocation,
   resolveWindowsCmdInvocation,
+  resolveWindowsPowerShellInvocation,
   shouldUseWindowsCmdWrapper,
   terminateProcessTree,
+  windowsPowerShellCommand,
   windowsTaskkillCommand,
 } from "./processExecution";
 
@@ -53,6 +55,37 @@ describe("processExecution", () => {
     expect(preferNativeExecutablePath(candidates, "darwin")).toBe("/opt/homebrew/bin/claude");
     expect(preferNativeExecutablePath(candidates, "linux")).toBe("/opt/homebrew/bin/claude");
     expect(preferNativeExecutablePath([], "linux")).toBeNull();
+  });
+
+  it("runs a Windows .ps1 through an absolute System32 PowerShell, not a PATH lookup", () => {
+    // Injected platform, so this assertion runs on macOS/Linux CI too. A lane
+    // worktree is a repo ADE did not write: a `powershell.exe` dropped at its
+    // root wins a PATH-relative spawn, which is what the absolute path stops.
+    const invocation = resolveCliSpawnInvocation(
+      "C:\\repo\\.ade\\worktrees\\lane\\setup.ps1",
+      ["--flag"],
+      {},
+      "win32",
+    );
+
+    expect(invocation.command).toBe(windowsPowerShellCommand("win32"));
+    expect(invocation.command).not.toBe("powershell.exe");
+    expect(path.win32.isAbsolute(invocation.command)).toBe(true);
+    expect(invocation.command.toLowerCase()).toContain("system32");
+    expect(invocation.args).toEqual([
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "C:\\repo\\.ade\\worktrees\\lane\\setup.ps1",
+      "--flag",
+    ]);
+    expect(invocation.windowsVerbatimArguments).toBe(false);
+
+    // Off Windows the plain name keeps cross-platform renders deterministic.
+    expect(resolveWindowsPowerShellInvocation("setup.ps1", [], "darwin").command).toBe("powershell.exe");
   });
 
   it("quotes cmd arguments consistently", () => {

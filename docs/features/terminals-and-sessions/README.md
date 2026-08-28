@@ -659,6 +659,9 @@ Renderer surfaces:
   surface is covered by a non-interactive deletion overlay until that refresh
   succeeds; failed refreshes retry twice with bounded backoff before clearing
   the overlay and surfacing a sticky error toast.
+- `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` also owns
+  the per-session metadata-generation busy set, routes selected fields through
+  the owning runtime pin, and refreshes the cache/list after completion.
 - `apps/desktop/src/renderer/components/terminals/importSessions/` —
   desktop two-stage import browser/details flow and bridge contract. It lists
   external sessions by provider/search, counts meaningful user prompts, shows
@@ -1384,14 +1387,16 @@ Renderer surfaces:
   and `SessionInfoPopover.tsx` — grouped right-click actions and explicit info
   overlay. The context menu sections identity, Lifecycle, Go to, Copy, optional
   **Open in**, optional singleton-lane actions, and fenced destructive rows;
-  Copy, Snooze, Lane, and Open in are pointer/keyboard submenus. `openIn` is an
-  `OpenInTarget` from `resolveOpenInTarget`. Local singleton rows omit
-  session-root Open in because **Lane ▸** already renders it from
-  `buildLaneMenuGroups`; headerless foreign SSH rows keep session-root Open in
-  because the Lane submenu cannot resolve a remote editor from the local store.
-  Ended chat sessions get Delete chat wired to
-  `ade.agentChat.delete`. Fixed-position menus measure and clamp to the renderer
-  viewport.
+  chat rows also expose a `Name & status` submenu for inline Rename and the
+  three metadata-generation choices, while Copy, Snooze, Lane, and Open in
+  remain pointer/keyboard submenus. `openIn` is an `OpenInTarget` from
+  `resolveOpenInTarget`. Local singleton rows omit session-root Open in because
+  **Lane ▸** already renders it from `buildLaneMenuGroups`; headerless foreign
+  SSH rows keep session-root Open in because the Lane submenu cannot resolve a
+  remote editor from the local store. The lane-name choice is disabled for the
+  primary lane. Ended chat sessions get Delete chat wired to
+  `ade.agentChat.delete`. Fixed-position menus measure and clamp to the
+  renderer viewport.
 - `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx`,
   `apps/desktop/src/renderer/components/lanes/LanePrHoverCard.tsx`,
   `apps/desktop/src/renderer/lib/lanePrBadge.ts`,
