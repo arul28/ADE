@@ -11010,9 +11010,15 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
   async function selectCursorCloudMachine() {
     fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ }));
-    // Cloud mode flips after the machine picker closes; Advanced lives on that
-    // settled shelf, so wait for the send label before looking for it.
+    // Opening the picker refetches repos; the cloud row stays disabled until that
+    // settles. Clicking it early is a no-op, which is what flakes "Advanced" /
+    // "Send to Cursor Cloud" on slow CI shards.
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("menuitemradio", { name: /Cursor Cloud/ }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+    });
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Cursor Cloud/ }));
     await screen.findByRole("button", { name: "Send to Cursor Cloud" });
   }
 
