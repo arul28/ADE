@@ -2609,6 +2609,31 @@ final class PluginActionResponseTests: XCTestCase {
     XCTAssertNil(try result(#"{"ok":true,"result":null}"#).openURL)
   }
 
+  /// A `navigate` carrying a placement this client has no places for.
+  ///
+  /// `target` is desktop's field: it chooses between the plugin's tab and the
+  /// Work tools rail, and the phone has neither of those two things to choose
+  /// between — it presents the plugin pane sheet whatever the answer says. So
+  /// the contract is that the key is IGNORED and the navigation still lands.
+  ///
+  /// That holds by construction here — the decoder reads a keyed container over
+  /// `panelId` and `context` only — and this pins it, because the failure mode
+  /// if it ever stopped holding is a phone that silently drops every navigation
+  /// from a plugin written for the desktop.
+  func testNavigateIgnoresAPlacementThePhoneHasNoPlacesFor() throws {
+    for target in [#""tools-pane""#, #""tab""#, #""a-place-invented-later""#, "7", "null"] {
+      let parsed = try result(
+        #"{"ok":true,"result":{"navigate":{"panelId":"stories","target":\#(target)}}}"#
+      )
+      XCTAssertEqual(parsed.navigate?.panelId, "stories", "target \(target) took the navigation with it")
+    }
+    let withContext = try result(
+      #"{"ok":true,"result":{"navigate":{"panelId":"stories","target":"tools-pane","context":{"feed":"ask"}}}}"#
+    )
+    XCTAssertEqual(withContext.navigate?.panelId, "stories")
+    XCTAssertEqual(withContext.navigate?.context?["feed"], .string("ask"))
+  }
+
   /// The refresh action rides inside `schema_json` because `plugin_panels` is a
   /// CRR with a frozen SQL shape. A row written before the key existed answers
   /// `nil`, which is the pane it always had.

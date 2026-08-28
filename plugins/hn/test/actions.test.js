@@ -164,22 +164,32 @@ describe("the header button and its menu", () => {
   });
 
   for (const [action, feed] of [["openTop", "top"], ["openNew", "new"], ["openAsk", "ask"]]) {
-    it(`${action} loads ${feed} and sends the reader to the panel`, async () => {
+    it(`${action} opens ${feed} on the same tick and fetches behind it`, async () => {
       const result = await plugin.actions[action]({});
-      assert.equal(result.message, `Loaded 30 ${feed} stories.`);
-      // `{navigate}` names a panel of this plugin; the host routes it to
-      // `/plugin/hn?panel=stories` on desktop and web, and to the plugin pane
-      // sheet on iOS. `resetState` moves the segmented onto the feed just
-      // opened, which is otherwise still showing the previous one.
+      // Answers BEFORE the fetch, not after it. The host honours `{navigate}`
+      // only once the action returns, so awaiting the list plus thirty items
+      // here left the header button looking dead for several seconds.
+      assert.equal(result.message, `Opening ${feed} stories.`);
+      // `{navigate}` names a panel of this plugin and NOT a place to put it.
+      // Absent `target`, each client picks: desktop opens the Work tools pane
+      // beside the chat this button sits in, because the plugin declares a
+      // `work-rail-pane` for the same panel; iOS presents the plugin pane sheet;
+      // `ade code` loads its plugin pane. A `target` here would take that choice
+      // away from three clients to serve one.
       assert.deepEqual(result.navigate, { panelId: "stories" });
+      assert.equal("target" in result.navigate, false);
       assert.deepEqual(result.resetState, ["feed"]);
+      // The fetch it started still lands.
+      await settled(host);
+      assert.equal((await host.sdk.collections.get("prefs", "feed")).feed, feed);
     });
   }
 
   it("openStories reopens whatever was loaded last", async () => {
     await plugin.actions.openAsk({});
+    await settled(host);
     const result = await plugin.actions.openStories({});
-    assert.equal(result.message, "Loaded 30 ask stories.");
+    assert.equal(result.message, "Opening ask stories.");
   });
 });
 

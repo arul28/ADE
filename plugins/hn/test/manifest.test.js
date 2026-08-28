@@ -54,11 +54,14 @@ describe("the accent and the button tint", () => {
 });
 
 describe("the chat-header socket", () => {
-  const socket = manifest.sockets[0];
+  const socket = manifest.sockets.find((entry) => entry.socket === "chat-header-action");
 
   it("is one chat-header-action on the work surface", () => {
-    assert.equal(manifest.sockets.length, 1);
-    assert.equal(socket.socket, "chat-header-action");
+    assert.ok(socket, "no chat-header-action declared");
+    assert.equal(
+      manifest.sockets.filter((entry) => entry.socket === "chat-header-action").length,
+      1,
+    );
     assert.equal(socket.surface, "work");
     assert.ok(socket.label.length > 0 && socket.label.length <= 24);
   });
@@ -80,6 +83,44 @@ describe("the chat-header socket", () => {
   it("uses icon tokens from the shared list", () => {
     const used = [manifest.icon, socket.icon, ...socket.menu.map((entry) => entry.icon)];
     for (const icon of used) assert.ok(ICONS.includes(icon), `${icon} is not a token this plugin declares`);
+  });
+});
+
+/**
+ * The two places the panel can be, and why the button names neither.
+ *
+ * The header button returns `{navigate: {panelId: "stories"}}` with no `target`,
+ * which is a request to open the panel wherever THIS client puts a panel. That
+ * only reads as "beside the conversation" on desktop because of the
+ * `work-rail-pane` below: the placement rule prefers a plugin's Work pane for a
+ * press that came from inside a chat, and falls back to the tab route when the
+ * plugin declares no pane for that panel.
+ *
+ * So the pane is not decoration. Delete it and the same button starts taking the
+ * whole tab away from the chat it sits above, with nothing in the plugin's own
+ * code changing.
+ */
+describe("where the panel opens", () => {
+  const rail = manifest.sockets.find((entry) => entry.socket === "work-rail-pane");
+  const tab = manifest.surfaces.find((entry) => entry.kind === "tab");
+
+  it("declares a Work tools pane drawing the same panel the button navigates to", () => {
+    assert.ok(rail, "no work-rail-pane declared");
+    assert.equal(rail.surface, "work");
+    assert.equal(rail.panelId, "stories");
+    assert.ok(rail.label.length > 0 && rail.label.length <= 24);
+  });
+
+  it("also declares a sidebar tab, which is the fallback everywhere else", () => {
+    assert.ok(tab, "no tab surface declared");
+    assert.equal(tab.panelId, "stories");
+    assert.equal(tab.title, "Hacker News");
+  });
+
+  it("sends no `target`, so each client places the panel its own way", () => {
+    const source = fs.readFileSync(path.join(root, "index.js"), "utf8");
+    assert.ok(source.includes('navigate: { panelId: "stories" }'));
+    assert.ok(!source.includes("target:"), "index.js pins a placement the clients should choose");
   });
 });
 

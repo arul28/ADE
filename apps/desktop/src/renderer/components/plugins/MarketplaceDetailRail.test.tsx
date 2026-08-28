@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import React from "react";
 
-import { WebhooksRail, WhereItShowsUpRail } from "./MarketplaceDetailRail";
+import { ContributionsRail, WebhooksRail, WhereItShowsUpRail } from "./MarketplaceDetailRail";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import type { PluginWebhookIngressStatus } from "../../../shared/plugins/sdk";
 
@@ -132,6 +132,66 @@ function ingressStatus(
     ...overrides,
   };
 }
+
+/**
+ * The switches, and the sentence that tells two of them apart.
+ *
+ * HN adds a button to the chat header and a pane to the Work tools rail. Both
+ * are labelled "HN" by their author and both are on the Work surface, so the
+ * rows read "HN · in Work" twice — two identical switches with two different
+ * effects, which is what the dogfood run met. The kind is the only thing that
+ * separates them, so it is on the row and on the accessible name.
+ */
+describe("ContributionsRail", () => {
+  const hn = manifest({
+    name: "hn",
+    displayName: "Hacker News",
+    panels: [{ id: "stories", title: "Hacker News" }],
+    sockets: [
+      { socket: "chat-header-action", surface: "work", id: "hn", label: "HN", actionId: "openStories" },
+      { socket: "work-rail-pane", surface: "work", id: "stories", label: "HN", panelId: "stories" },
+    ],
+  });
+
+  function mount(overrides: { disabled?: string[] } = {}) {
+    return render(
+      <ContributionsRail
+        manifest={hn}
+        adds={[]}
+        pluginId="hn"
+        disabledContributions={overrides.disabled ?? []}
+        canToggle
+        onError={() => {}}
+      />,
+    );
+  }
+
+  it("names the socket kind, so two same-label rows are not the same row", () => {
+    mount();
+
+    expect(screen.getByText("Chat header button in Work")).toBeTruthy();
+    expect(screen.getByText("Work tools pane in Work")).toBeTruthy();
+    expect(screen.getAllByText("HN")).toHaveLength(2);
+  });
+
+  it("puts the same sentence on the accessible name of each switch", () => {
+    mount();
+
+    expect(screen.getByRole("switch", { name: "HN — Chat header button in Work" })).toBeTruthy();
+    expect(screen.getByRole("switch", { name: "HN — Work tools pane in Work" })).toBeTruthy();
+  });
+
+  it("still reflects which of the two the reader switched off", () => {
+    mount({ disabled: ["stories"] });
+
+    expect(
+      screen.getByRole("switch", { name: "HN — Chat header button in Work" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      screen.getByRole("switch", { name: "HN — Work tools pane in Work" }).getAttribute("aria-checked"),
+    ).toBe("false");
+  });
+});
 
 describe("WebhooksRail", () => {
   it("shows the URL and copies it", async () => {

@@ -1258,8 +1258,8 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
   },
   plugin: {
     invoke: {
-      description: "Call a named handler exposed by an installed plugin. Treated as mutating: a handler may write anything.",
-      input: "object { pluginId: string, action: string, args?: object, argv?: string[] }",
+      description: "Call a named handler exposed by an installed plugin. Treated as mutating: a handler may write anything. `action` may also be spelled `actionId`, which is what a manifest socket calls the same field.",
+      input: "object { pluginId: string, action: string (alias: actionId), args?: object, argv?: string[] }",
       example: "ade actions run plugin.invoke --input-json '{\"pluginId\":\"graph\",\"action\":\"refresh\"}'",
     },
     list: {

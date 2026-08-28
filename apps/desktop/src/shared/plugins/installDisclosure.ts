@@ -28,7 +28,7 @@
 
 import { PLUGIN_SKILL_NEXT_TURN_NOTE } from "./clientRendering";
 import { PLUGIN_PROVIDER_KEY_LABELS, type PluginManifest } from "./manifest";
-import { PLUGIN_SURFACE_IDS, type PluginSurfaceId } from "./sockets";
+import { PLUGIN_SURFACE_IDS, type PluginSocketKind, type PluginSurfaceId } from "./sockets";
 
 /** The surface names a reader sees, canonical across the modal and the card. */
 export const PLUGIN_SURFACE_LABELS: Record<PluginSurfaceId, string> = {
@@ -41,6 +41,55 @@ export const PLUGIN_SURFACE_LABELS: Record<PluginSurfaceId, string> = {
   app: "App",
   settings: "Settings",
 };
+
+/**
+ * What each socket kind IS, in the words of someone who has never read the
+ * taxonomy.
+ *
+ * The Marketplace's per-contribution switches printed only the plugin author's
+ * own label and the surface, so HN's two additions — a button in the chat header
+ * and a pane in the Work tools rail — both read "HN in Work". Two identical rows
+ * with two different effects, and the only way to tell which switch did what was
+ * to flip one and go looking.
+ *
+ * These are nouns for a THING ON SCREEN, not the kind's identifier prettified.
+ * `work-rail-pane` is "Work tools pane" because that is the rail it appears in;
+ * nobody has to learn what a rail pane is to recognize one. The one place the
+ * kind's own word survives is where the product uses it too — a slash command
+ * is called a slash command everywhere.
+ */
+export const PLUGIN_SOCKET_KIND_LABELS: Record<PluginSocketKind, string> = {
+  "toolbar-action": "Toolbar button",
+  "row-badge": "Row badge",
+  "row-menu-item": "Row menu item",
+  "detail-section": "Detail section",
+  "empty-state": "Empty-state button",
+  "filter-chip": "Filter chip",
+  "file-viewer": "File viewer",
+  "composer-action": "Composer button",
+  "chat-header-action": "Chat header button",
+  "chat-card": "Chat card",
+  "slash-command": "Slash command",
+  "command-palette-action": "Command palette action",
+  "settings-section": "Settings section",
+  "work-rail-pane": "Work tools pane",
+  "drawer-tab": "Chat drawer tab",
+  "activity-entry": "Activity entry",
+  "dialog-section": "Dialog section",
+};
+
+/**
+ * "Chat header button in Work" — one contribution, said in full.
+ *
+ * Joined here rather than at each caller so the toggle row, its `aria-label` and
+ * anything that comes later cannot spell the same fact two ways.
+ */
+export function describePluginContributionPlacement(
+  socket: PluginSocketKind,
+  surface: PluginSurfaceId,
+): string {
+  return `${PLUGIN_SOCKET_KIND_LABELS[socket]} in ${PLUGIN_SURFACE_LABELS[surface]}`;
+}
 
 /**
  * `a`, `a and b`, `a, b and c`. Named for its first caller and used by every

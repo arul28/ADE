@@ -1,11 +1,12 @@
 import { showToast } from "../../app/toast/toastStore";
-import { navigateToAppTarget } from "../../../lib/openExternal";
+import { navigateToAppTarget, revealPluginWorkRailPane } from "../../../lib/openExternal";
 import {
   hasPluginActionComposerRequest,
   hasPluginActionWebviewRequest,
   readPluginActionComposerEdit,
   readPluginActionNavigation,
   readPluginActionWebview,
+  type PluginActionNavigation,
 } from "../../../../shared/plugins/sdk";
 import { applyPluginActionOpenUrl } from "../pluginActionOpenUrl";
 import type { PluginSurfaceContext } from "../../../../shared/plugins/context";
@@ -14,9 +15,15 @@ import {
   type PluginSocketKind,
 } from "../../../../shared/plugins/sockets";
 import { rootAppStoreApi } from "../../../state/appStore";
-import { invokePluginSocketAction } from "./contributionBridge";
+import { invokePluginSocketAction, manifestOf } from "./contributionBridge";
+import { derivedSetFor, rowsStoreFor, sourcesStore } from "./contributionStores";
+import { selectContributions } from "./contributionModel";
 import { applyPluginComposerEdit } from "./composerTarget";
 import { applyPluginDialogEdit } from "./dialogTarget";
+import {
+  resolvePluginNavigateTarget,
+  type PluginNavigateResolution,
+} from "./pluginNavigateTarget";
 import { openPluginWebviewOverlay } from "./pluginWebviewOverlayStore";
 
 /**
@@ -111,17 +118,9 @@ export function runPluginSocketAction(
       applyPluginActionOpenUrl(result, { pluginId, actionId });
 
       // An action may ask to be followed: "I filed the issue, here it is."
-      // Routed through the ordinary navigation target rather than a direct
-      // `navigate`, so it passes the same installed-and-enabled gate a `plugin`
-      // deeplink does and lands on the same addressable URL.
       const navigation = readPluginActionNavigation(result);
       if (!navigation) return;
-      navigateToAppTarget({
-        kind: "plugin",
-        pluginId,
-        panelId: navigation.panelId,
-        context: navigation.context ?? null,
-      });
+      applyPluginActionNavigation(navigation, { pluginId, context, socket: options?.socket });
     })
     .catch((cause: unknown) => {
       showToast({
@@ -130,4 +129,115 @@ export function runPluginSocketAction(
         tone: "error",
       });
     });
+}
+
+
+/**
+ * Send the reader where the action asked, or say why nobody could.
+ *
+ * Exported for the test that pins the placement rule; every caller in the app
+ * reaches it through {@link runPluginSocketAction}.
+ */
+export function applyPluginActionNavigation(
+  navigation: PluginActionNavigation,
+  press: {
+    pluginId: string;
+    /** The subject the button was pressed on — what selects per-chat rail rows. */
+    context: PluginSurfaceContext | null;
+    socket?: PluginSocketKind;
+  },
+): PluginNavigateResolution {
+  const resolution = resolvePluginNavigateTarget({
+    pluginId: press.pluginId,
+    navigation,
+    ...(press.socket ? { socket: press.socket } : {}),
+    ...readPluginNavigateEnvironment(press.pluginId, press.context),
+  });
+
+  if (resolution.kind === "unreachable") {
+    // The silence this replaces was the single most expensive bug of the alpha
+    // run: a press that resolved to nothing looked exactly like a plugin that
+    // had crashed, and neither the reader nor the author could tell which. A
+    // packaged app older than a renderer fix still cannot detect ITSELF — but it
+    // can always detect a panel that is not there, which is this branch.
+    showToast({
+      title: `${resolution.displayName} couldn’t open that panel`,
+      message: resolution.reason,
+      tone: "error",
+    });
+    return resolution;
+  }
+
+  if (resolution.kind === "tools-pane") {
+    // Beside the conversation, not instead of it. Selects the plugin's pane in
+    // the Work tools rail exactly as a click on the rail's own icon does.
+    revealPluginWorkRailPane({
+      pluginId: resolution.pluginId,
+      panelId: resolution.panelId,
+      slotId: resolution.slotId,
+    });
+    return resolution;
+  }
+
+  // Routed through the ordinary navigation target rather than a direct
+  // `navigate`, so it passes the same installed-and-enabled gate a `plugin`
+  // deeplink does and lands on the same addressable URL.
+  navigateToAppTarget({
+    kind: "plugin",
+    pluginId: resolution.pluginId,
+    panelId: resolution.panelId,
+    context: resolution.context,
+  });
+  return resolution;
+}
+
+/**
+ * The live facts the placement rule reads, off the same caches the UI draws from.
+ *
+ * `pluginsLoaded` rides along because an unresolved registry is an empty array,
+ * and reading that as "uninstalled" would refuse a press made during startup.
+ *
+ * The rail panes are selected the way `WorkSidebar` selects them — the "work"
+ * surface, the `work-rail-pane` socket, narrowed by the context the press
+ * carried — so "the plugin has a pane here" cannot mean one thing to the rule
+ * and another to the rail. A press whose Work surface has never been revealed
+ * reads empty stores and falls back to the tab route, which is the right answer:
+ * there is no rail on screen to open into.
+ */
+function readPluginNavigateEnvironment(
+  pluginId: string,
+  context: PluginSurfaceContext | null,
+): {
+  registryLoaded: boolean;
+  plugin: { displayName: string; enabled: boolean; surfacePanelIds: string[] } | null;
+  railPanelIds: string[];
+  declaredPanelIds: string[] | null;
+} {
+  const registry = rootAppStoreApi.getState();
+  const installed = registry.installedPlugins
+    .find((entry) => entry.pluginId === pluginId) ?? null;
+  const plugin = installed
+    ? {
+      displayName: installed.displayName,
+      enabled: installed.enabled,
+      surfacePanelIds: installed.tabs.map((tab) => tab.panelId),
+    }
+    : null;
+
+  const sources = sourcesStore.getSnapshot().sources;
+  const rows = rowsStoreFor("work").getSnapshot().rows;
+  const set = derivedSetFor("work", sources, rows);
+  const railPanelIds = selectContributions(set, "work-rail-pane", context)
+    .filter((contribution) => contribution.pluginId === pluginId)
+    .map((contribution) => contribution.payload.panelId);
+
+  // Null, not empty, when the manifest is not in hand: an empty list would read
+  // as "declares no panels" and refuse every navigation this plugin makes.
+  const source = sources.find((entry) => entry.pluginId === pluginId) ?? null;
+  const manifest = source ? manifestOf(source) : null;
+  const declaredPanelIds = Array.isArray(manifest?.panels)
+    ? manifest.panels.map((panel) => panel.id)
+    : null;
+
+  return { registryLoaded: registry.pluginsLoaded, plugin, railPanelIds, declaredPanelIds };
 }

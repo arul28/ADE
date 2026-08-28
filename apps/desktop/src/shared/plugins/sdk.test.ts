@@ -20,6 +20,9 @@ import {
   PLUGIN_WEBVIEW_POINTER_MAX_BYTES,
   pluginCollectionPutParams,
   readPluginActionComposerEdit,
+  readPluginActionNavigation,
+  readPluginInvokeAction,
+  pluginInvokeActionMissingMessage,
   readPluginActionDialogEdit,
   readPluginActionOpenUrl,
   readPluginActionWebview,
@@ -307,5 +310,75 @@ describe("reserved chat-delivery action names", () => {
   it("names the prefix in its refusal, so an author can see the rule", () => {
     expect(reservedPluginActionMessage("ade:chat.turn")).toContain("ade:");
     expect(reservedPluginActionMessage("ade:chat.turn")).toContain("reserved");
+  });
+});
+
+/**
+ * The navigate verb, and the one field on it that four clients read differently.
+ *
+ * `target` is the only part of a plugin's answer that names a PLACE rather than
+ * a thing, and only the desktop has more than one place to put a panel. So the
+ * contract is that it is optional, that an unknown value drops without taking
+ * the navigation with it, and that a client which cannot honour it still lands
+ * the reader on the panel. The terminal client shares this exact reader
+ * (`tuiClient/app.tsx` imports it), and iOS decodes `PluginInvokeNavigation`
+ * through a keyed container over `panelId` and `context` only, so an unknown key
+ * is ignored by construction there.
+ */
+describe("action navigation", () => {
+  it("reads a bare panel navigation, with no placement of its own", () => {
+    expect(readPluginActionNavigation({ navigate: { panelId: "stories" } }))
+      .toEqual({ panelId: "stories" });
+  });
+
+  it("carries an explicit placement through", () => {
+    expect(readPluginActionNavigation({ navigate: { panelId: "stories", target: "tools-pane" } }))
+      .toEqual({ panelId: "stories", target: "tools-pane" });
+    expect(readPluginActionNavigation({ navigate: { panelId: "stories", target: "tab" } }))
+      .toEqual({ panelId: "stories", target: "tab" });
+  });
+
+  it("drops a placement it does not recognize and keeps the navigation", () => {
+    // A plugin naming a place a future ADE has must still open its panel here.
+    for (const target of ["drawer", "", 7, null, {}]) {
+      expect(readPluginActionNavigation({ navigate: { panelId: "stories", target } }))
+        .toEqual({ panelId: "stories" });
+    }
+  });
+
+  it("keeps the placement beside a context, and beside a dropped one", () => {
+    expect(readPluginActionNavigation({
+      navigate: { panelId: "stories", target: "tools-pane", context: { feed: "ask" } },
+    })).toEqual({ panelId: "stories", context: { feed: "ask" }, target: "tools-pane" });
+    // Over the 2 KiB ceiling the context goes and the placement stays: the
+    // reader still pressed a button that named where to open.
+    expect(readPluginActionNavigation({
+      navigate: { panelId: "stories", target: "tools-pane", context: { blob: "x".repeat(4096) } },
+    })).toEqual({ panelId: "stories", target: "tools-pane" });
+  });
+
+  it("still refuses a navigation with no usable panel id", () => {
+    expect(readPluginActionNavigation({ navigate: { target: "tools-pane" } })).toBeNull();
+    expect(readPluginActionNavigation({ navigate: { panelId: "not a panel id" } })).toBeNull();
+    expect(readPluginActionNavigation({ message: "done" })).toBeNull();
+  });
+});
+
+describe("plugin.invoke action name", () => {
+  it("reads either spelling, preferring the canonical one", () => {
+    expect(readPluginInvokeAction({ action: "openStories" })).toBe("openStories");
+    expect(readPluginInvokeAction({ actionId: "openStories" })).toBe("openStories");
+    expect(readPluginInvokeAction({ action: "wins", actionId: "loses" })).toBe("wins");
+  });
+
+  it("treats a blank or non-string value as absent under both names", () => {
+    for (const args of [{}, { action: "" }, { action: "  " }, { actionId: 7 }, null, "openStories"]) {
+      expect(readPluginInvokeAction(args)).toBeNull();
+    }
+  });
+
+  it("names both spellings in the refusal", () => {
+    expect(pluginInvokeActionMissingMessage()).toContain('"action"');
+    expect(pluginInvokeActionMissingMessage()).toContain('"actionId"');
   });
 });

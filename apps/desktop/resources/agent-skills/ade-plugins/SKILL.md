@@ -188,6 +188,8 @@ Four things to know before you call `install`:
 - **The same plugin from the same directory does not re-ask** for the life of the ADE process, so a build-test-fix loop runs uninterrupted after the first approval. The memo is keyed on what the *host* resolved, not on what you passed — a different directory, a different plugin id at that directory, or any git URL asks again.
 - **`ade plugin dev` is the user's watcher, not yours.** It blocks until interrupted, so an agent cannot run it inside a turn. Edit files, then call `plugin.reload`.
 
+**`plugin.reload` reloads the PLUGIN. It cannot change ADE.** The reload loop above re-copies your source, re-reads your manifest and restarts your child — and that is its whole reach. Everything on the other side of the socket is the running app's own code: where a `{navigate}` opens, what a rail draws, which kinds a client renders, whether a manifest field is copied onto the summary a surface reads. A fix to any of those is a **renderer-side host fix, and it needs an app rebuild**. So a packaged ADE that predates a host fix keeps behaving the old way no matter how many times your plugin reloads — and it cannot detect that about itself, because the code that would notice is the code that is missing. `ade plugin doctor <id> --text` catches the shape of this it can see (its **Custom page** rung compares the manifest ADE parsed against the summary ADE serves); for the rest, the tell is a plugin whose manifest is plainly correct and whose behaviour does not match this document. Check the app's version before you debug your own JSON.
+
 **You can clean up after yourself.** A diagnostic run that installs a plugin can take it off again in the same conversation, and a plugin that has stopped working can be turned back on from the chat that noticed:
 
 ```bash
@@ -224,7 +226,7 @@ Two trapdoors worth knowing before you run any of it:
 ade plugin doctor <pluginId> --text
 ```
 
-One command walks the whole ladder with live checks — a rung each for **Source**, **Installed here**, **Running**, **Places**, **Last run**, **Panels**, **In this project** and **Agent skills** — then closes with a `Renders on:` line **derived from `PLUGIN_SOCKET_CLIENT_SUPPORT` itself**, so the per-client answer cannot drift from the table that decides it. Trust that line over any prose, including this skill's.
+One command walks the whole ladder with live checks — a rung each for **Source**, **Installed here**, **Running**, **Places**, **Last run**, **Panels**, **Panel reach**, **In this project** and **Agent skills** — then closes with a `Renders on:` line **derived from `PLUGIN_SOCKET_CLIENT_SUPPORT` itself**, so the per-client answer cannot drift from the table that decides it. Trust that line over any prose, including this skill's.
 
 ```
 Tipsy (ade-tipsy) 0.3.0
@@ -235,6 +237,7 @@ Tipsy (ade-tipsy) 0.3.0
   ✓ Places           composer-action in work, slash-command in work; 1 row published right now
   ✓ Last run         drink ran 2 minutes ago; 1 action never run
   ✓ Panels           1 published of 1 panel in the manifest
+  – Panel reach      no chat header button here, so nothing depends on where a navigate lands
   ✓ In this project  1 place, 1 panel, 4 stored rows
   ✓ Agent skills     1 skill · Affects agents from their next turn — running turns keep their current behavior.
 
@@ -246,6 +249,8 @@ Read that `Renders on:` line closely — it is the layer-6 answer per client and
 **Places is the contributions read-back.** It counts your declared sockets by kind and surface (`2× row-badge in lanes` when a kind is declared twice), then adds the live published count. Three variants to expect: `; 2 switched off here` when the user has disabled sockets — and if *all* of them are off the rung flips to `✗`, because the reader is here asking why they cannot see it; `; published rows unknown (ADE is not answering)` when the host is down; and `– Places  this plugin asks for no place in ADE's own screens` for a plugin that declares none, which is *not applicable*, never a failure.
 
 **Last run is the one rung about your own code.** Everything above it says the platform did its part; this one says whether a handler of yours was ever reached, and how the most recent attempt ended. It answers the question Places cannot: a button that is drawn and published still reads `✓ Places` when the action behind it never fires, so *"I pressed it and nothing happened"* used to need a reproduction before anyone could tell a wiring problem from a code problem. Read it as: `no action has run since ADE started` — nothing reached your code, so look at the declaration and the press path; `drink failed 4 minutes ago (invalid_args)` — your handler ran and threw, so look at the handler; `drink ran 4 minutes ago` — your handler ran and returned, so if the screen did not change, the bug is in what it did, not in whether it was called. Every route counts: a press, an `ade <id> <word>`, an agent tool, an automation step, a schedule. A refused invoke is an attempt too, and carries its code. It is **in memory**, so it says "since ADE started" and a restart empties it — and on a host too old to keep it, the rung reads `– Last run  this copy of ADE does not keep track of plugin action runs` rather than claiming nothing ever ran.
+
+**Panel reach is the rung every other rung hides.** It answers one question, about one shape: you declared a `chat-header-action`, and you declared panels, and a chat header button *invokes an action and draws nothing in place* — so where does its `{navigate}` land? If the manifest declares no `tab` surface and no `work-rail-pane`, the answer is nowhere, and the rung fails with both fixes named. Every rung above it passes in that state: the plugin parses, installs, runs, draws its button, fires its handler and publishes its panel. That is the whole Hacker News dogfood failure, and it is the reason this rung is read from the manifest rather than from anything live — the doctor cannot run your handler to see whether it navigates, but it can see a panel with nowhere to go. It is deliberately silent about a `composer-action`, whose canonical uses are about the draft: a rung that guesses is worse than no rung on a ladder scanned for the first `✗`.
 
 **Source names a gone folder.** For a `local` install, `✗ Source  the folder /path — gone, so a reload keeps running the installed copy` is the state to catch early: reload has nothing to re-copy from, so every edit you make elsewhere is invisible no matter how many times you reload.
 
@@ -275,6 +280,8 @@ The eight `key` values and the state union are a **stable contract**: a rung is 
 ade actions run plugin.invoke --input-json '{"pluginId":"ade-tipsy","action":"drink","args":{"context":{"kind":"session","id":"e755df3f-5d72-4af7-87ba-c842ca8bd37c","title":"Chat","provider":"claude","status":"idle"}}}'
 ade actions run plugin.invoke --input-json '{"pluginId":"ade-tipsy","action":"status","argv":["status","--json"]}'
 ```
+
+The handler is named by **`action`**, and **`actionId` is accepted as an alias for it** — the spelling a `sockets[]` entry uses for the same field, so reading your own manifest and typing what you see there works.
 
 Do this **first**, ahead of asking anyone to test in the UI. In the recorded round-2 run, an action that silently read the wrong field of its context cost a whole user round trip — *"I clicked it, nothing happened"* — that a ten-second invoke would have caught, and the author only reached for this partway through. A press by hand proves the chrome; an invoke proves the code, and the code is what you just wrote. Follow it with `ade plugin doctor <id> --text` and read the **Last run** rung: it says whether your handler ran and how it ended.
 
@@ -1173,6 +1180,26 @@ Eight surfaces: the six list-shaped tabs — `work`, `lanes`, `files`, `prs`, `a
 | `chat-header-action` | The chat's header | `session` — the conversation it sits above |
 
 A plugin that wants to act on *this conversation* cannot do it from `toolbar-action` without the host guessing which chat was meant.
+
+#### What a click does
+
+Read this before you build a chat button around a panel. The commonest wrong model — and the one the Hacker News dogfood run shipped — is that declaring a button next to a chat is how you put a panel next to a chat. It is not.
+
+| You declare | What the click does | What appears where the button is |
+|---|---|---|
+| `chat-header-action` | Invokes `actionId` with the `session` context | **Nothing.** The button shows a busy tint while the handler runs, and that is all it draws |
+| `composer-action` | Invokes `actionId` with the `composer` context | **Nothing.** Same busy tint |
+| `work-rail-pane` | Nothing — it is not a button | Your panel, as a pane in the Work tools rail, when the reader selects it |
+| `tab` surface | Nothing — it is not a button | Your panel, as a full page in the rail |
+
+So a button that is *meant* to show something has to say where it went:
+
+- Return **`{navigate: {panelId}}`** and the client opens that panel. Where it opens is the client's decision, and on desktop it depends on what else you declared: a press from a chat opens your **Work tools pane** if you have declared a `work-rail-pane` for that panel — the reader keeps the conversation — and otherwise opens your **tab**, which takes them off it. iOS presents the plugin pane sheet; `ade code` loads its plugin pane. **Declare the pane if the panel belongs beside the chat.** Without it there is no beside-the-chat to open into, and the same one-line handler behaves differently.
+- Return nothing and say it in **`{message}`** if the answer is one sentence. A banner under the panel, a notice in the TUI — every client shows it, and it costs no panel at all.
+
+`{navigate}` takes an optional **`target`**: `"tools-pane"` or `"tab"`. Send neither. The default is the client's, and a client that has no tools rail — every client except the desktop — ignores whichever you name. Reach for it only when the panel is genuinely too large for a rail (`"tab"`) or must never take the window (`"tools-pane"`).
+
+A navigation that cannot land now **says so** rather than doing nothing: an unknown `panelId`, an uninstalled plugin or one the reader switched off raises a toast naming the panel. If your button appears to do nothing and no toast appears, the handler returned no `navigate` at all.
 
 Declare it on `work`. One declaration mounts on the header **every work surface shares** — an existing conversation, a fresh pane once it has a chat, a CLI session terminal, and every Work grid tile, since a tile renders those same surfaces inside a floating pane. That is deliberate: the retrospective's plugin appeared only in a fresh pane and not in the chat the user was already having, which read as the contribution being absent entirely.
 

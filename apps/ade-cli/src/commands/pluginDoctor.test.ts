@@ -498,6 +498,89 @@ describe("webview surfaces on the ladder", () => {
   });
 });
 
+/**
+ * The rung the HN dogfood run needed, and the one every other rung hid.
+ *
+ * A chat button whose handler navigates to a panel, on a plugin with nowhere to
+ * put a panel, passes every check above it: it parses, installs, runs, draws,
+ * fires and publishes. The press still shows the reader nothing.
+ */
+describe("panel reach", () => {
+  const chatButton = {
+    socket: "chat-header-action" as const,
+    surface: "work" as const,
+    id: "hn",
+    label: "HN",
+    actionId: "openStories",
+  };
+  const railPane = {
+    socket: "work-rail-pane" as const,
+    surface: "work" as const,
+    id: "stories",
+    label: "HN",
+    panelId: "main",
+  };
+  const tab = { kind: "tab" as const, id: "stories", title: "Hacker News", panelId: "main" };
+
+  it("FAILS a chat button whose panel has nowhere to land", () => {
+    const reach = layer(healthy({ manifest: manifest({ sockets: [chatButton] }) }), "panelReach");
+    expect(reach.state).toBe("no");
+    expect(reach.detail).toContain("chat-header-action");
+    expect(reach.detail).toContain("nowhere to land");
+    // Both fixes named, in the order the placement rule prefers them.
+    expect(reach.detail).toContain("work-rail-pane");
+    expect(reach.detail).toContain("`tab` surface");
+  });
+
+  it("passes, and says the panel opens beside the conversation, once a pane exists", () => {
+    const reach = layer(
+      healthy({ manifest: manifest({ sockets: [chatButton, railPane] }) }),
+      "panelReach",
+    );
+    expect(reach.state).toBe("ok");
+    expect(reach.detail).toContain("beside the conversation");
+  });
+
+  it("passes with a tab alone, and says the reader loses the chat", () => {
+    const reach = layer(
+      healthy({ manifest: manifest({ sockets: [chatButton], surfaces: [tab] }) }),
+      "panelReach",
+    );
+    expect(reach.state).toBe("ok");
+    expect(reach.detail).toContain("taking the reader off the chat");
+  });
+
+  it("says nothing about a plugin with no chat header button", () => {
+    const reach = layer(
+      healthy({
+        manifest: manifest({
+          sockets: [{ socket: "slash-command", surface: "work", id: "s", command: "go", actionId: "go" }],
+        }),
+      }),
+      "panelReach",
+    );
+    expect(reach.state).toBe("na");
+    expect(reach.detail).toContain("nothing depends on where a navigate lands");
+  });
+
+  it("says nothing about a plugin with no panels at all", () => {
+    const reach = layer(
+      healthy({ manifest: manifest({ panels: [], sockets: [chatButton] }) }),
+      "panelReach",
+    );
+    expect(reach.state).toBe("na");
+  });
+
+  it("leaves a composer button alone, on purpose", () => {
+    // `composer-action` also invokes without drawing, and the default fixture
+    // declares one beside an unplaced panel. It is NOT flagged: a composer
+    // button's canonical uses are about the draft, so a panel it never opens is
+    // an ordinary plugin. Narrowing the rung to the one shape where an unplaced
+    // panel is evidence is what keeps the ladder scannable.
+    expect(layer(healthy(), "panelReach").state).toBe("na");
+  });
+});
+
 /* ── Network and provider keys ──────────────────────────────────────────── */
 
 describe("buildPluginDoctorReport network rung", () => {
