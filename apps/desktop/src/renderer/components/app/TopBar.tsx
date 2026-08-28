@@ -53,6 +53,7 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { modifierKeyLabel } from "../../lib/platform";
 import type {
   ProjectIcon,
   OpenProjectBinding,
@@ -2843,23 +2844,12 @@ export function TopBar({
           className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"
           style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         >
-          <button
-            type="button"
-            className={cn(
-              "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-              "transition-[background-color,color,border-color,box-shadow] duration-150",
-            )}
-            data-variant="ghost"
-            onClick={() => setFeedbackOpen(true)}
-            title="Report bug or suggest feature"
-            aria-label="Report bug or suggest feature"
+          <SmartTooltip
+            content={{
+              label: "Send feedback",
+              description: "Report a bug, suggest a feature, or ask a question — the report goes to the ADE team with helpful context attached.",
+            }}
           >
-            <ChatCircleDots size={13} weight="regular" />
-          </button>
-
-          <HelpMenu compact />
-
-          <div className="inline-flex items-center gap-0">
             <button
               type="button"
               className={cn(
@@ -2867,12 +2857,36 @@ export function TopBar({
                 "transition-[background-color,color,border-color,box-shadow] duration-150",
               )}
               data-variant="ghost"
-              onClick={zoomOut}
-              title="Zoom out"
-              aria-label="Zoom out"
+              onClick={() => setFeedbackOpen(true)}
+              aria-label="Report bug or suggest feature"
             >
-              <Minus size={11} weight="bold" />
+              <ChatCircleDots size={13} weight="regular" />
             </button>
+          </SmartTooltip>
+
+          <HelpMenu />
+
+          <div className="inline-flex items-center gap-0">
+            <SmartTooltip
+              content={{
+                label: "Zoom out",
+                description: "Shrink everything in the window.",
+                shortcut: `${modifierKeyLabel}-`,
+              }}
+            >
+              <button
+                type="button"
+                className={cn(
+                  "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
+                  "transition-[background-color,color,border-color,box-shadow] duration-150",
+                )}
+                data-variant="ghost"
+                onClick={zoomOut}
+                aria-label="Zoom out"
+              >
+                <Minus size={11} weight="bold" />
+              </button>
+            </SmartTooltip>
             <span
               className={cn(
                 "ade-shell-control-kbd ade-shell-header-utility-zoom inline-flex items-center justify-center border-x-0",
@@ -2881,19 +2895,26 @@ export function TopBar({
             >
               {zoom}%
             </span>
-            <button
-              type="button"
-              className={cn(
-                "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-                "transition-[background-color,color,border-color,box-shadow] duration-150",
-              )}
-              data-variant="ghost"
-              onClick={zoomIn}
-              title="Zoom in"
-              aria-label="Zoom in"
+            <SmartTooltip
+              content={{
+                label: "Zoom in",
+                description: "Enlarge everything in the window.",
+                shortcut: `${modifierKeyLabel}+`,
+              }}
             >
-              <Plus size={11} weight="bold" />
-            </button>
+              <button
+                type="button"
+                className={cn(
+                  "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
+                  "transition-[background-color,color,border-color,box-shadow] duration-150",
+                )}
+                data-variant="ghost"
+                onClick={zoomIn}
+                aria-label="Zoom in"
+              >
+                <Plus size={11} weight="bold" />
+              </button>
+            </SmartTooltip>
           </div>
         </div>
       </div>

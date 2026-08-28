@@ -39,7 +39,6 @@ import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import { LinearIssueBadge } from "./LinearIssueBadge";
 import { LanePrBadgePopover } from "./LanePrBadgePopover";
-import { HelpChip } from "../onboarding/HelpChip";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
   buildLaneActionClearedSearch,
@@ -2529,7 +2528,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         dataTour: "lanes.gitActionsPane",
         headerActions: (
           <>
-            <HelpChip termId="rebase" />
             {laneId ? (
               <SmartTooltip content={{ label: expandedGitActionsLaneId === laneId ? "Minimize" : "Expand", description: expandedGitActionsLaneId === laneId ? "Minimize the Git Actions pane back to its default size." : "Expand the Git Actions pane to fill the available space." }}>
                 <Button
@@ -3118,11 +3116,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
       {/* Lane tabs -- horizontal numbered tab bar */}
       <div className="flex items-center select-none overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
-        {filteredLanes.length > 0 ? (
-          <div className="flex items-center shrink-0 pl-2">
-            <HelpChip termId="lane" side="bottom" />
-          </div>
-        ) : null}
         {filteredLanes.map((lane, index) => {
           const isVisible = visibleLaneIds.includes(lane.id);
           const isSelected = selectedLaneId === lane.id;

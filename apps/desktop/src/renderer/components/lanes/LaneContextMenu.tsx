@@ -8,8 +8,11 @@ import {
   buildLaneMenuGroups,
   laneMenuHeaderStyle,
   type LaneMenuArgs,
+  type LaneMenuEntry,
   type LaneMenuGroup,
 } from "./laneContextMenuItems";
+import { OpenInSubmenu } from "../ui/OpenInSubmenu";
+import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
 export const menuItemStyle: React.CSSProperties = {
   display: "block",
@@ -69,7 +72,50 @@ export function HoverButton({
  * and by the "Lane ▸" submenu on a singleton lane's session card, so both read
  * the same groups out of `buildLaneMenuGroups`.
  */
-export function LaneMenuGroups({ groups }: { groups: LaneMenuGroup[] }) {
+function LaneMenuEntryView({
+  entry,
+  onClose,
+}: {
+  entry: LaneMenuEntry;
+  onClose: () => void;
+}) {
+  switch (entry.kind) {
+    case "custom":
+      return <>{entry.node}</>;
+    case "open-in":
+      return (
+        <OpenInSubmenu
+          rootPath={entry.rootPath}
+          remote={entry.remote}
+          onClose={onClose}
+          style={submenuTriggerStyle}
+          hoverBackground={COLORS.hoverBg}
+        />
+      );
+    case "action":
+      return (
+        <HoverButton
+          style={menuItemStyle}
+          dataTour={entry.dataTour}
+          onClick={entry.onSelect}
+        >
+          {entry.label}
+        </HoverButton>
+      );
+    default: {
+      const exhaustive: never = entry;
+      return exhaustive;
+    }
+  }
+}
+
+export function LaneMenuGroups({
+  groups,
+  onClose,
+}: {
+  groups: LaneMenuGroup[];
+  onClose: () => void;
+}) {
   return (
     <>
       {groups.map((group, index) => (
@@ -87,36 +133,14 @@ export function LaneMenuGroups({ groups }: { groups: LaneMenuGroup[] }) {
               panelMinWidth={220}
             >
               {group.entries.map((entry) => (
-                entry.kind === "custom"
-                  ? <React.Fragment key={entry.key}>{entry.node}</React.Fragment>
-                  : (
-                    <HoverButton
-                      key={entry.key}
-                      style={menuItemStyle}
-                      dataTour={entry.dataTour}
-                      onClick={entry.onSelect}
-                    >
-                      {entry.label}
-                    </HoverButton>
-                  )
+                <LaneMenuEntryView key={entry.key} entry={entry} onClose={onClose} />
               ))}
             </MenuSubmenu>
           ) : (
             <>
               {group.label ? <div style={laneMenuHeaderStyle}>{group.label}</div> : null}
               {group.entries.map((entry) => (
-                entry.kind === "custom"
-                  ? <React.Fragment key={entry.key}>{entry.node}</React.Fragment>
-                  : (
-                    <HoverButton
-                      key={entry.key}
-                      style={menuItemStyle}
-                      dataTour={entry.dataTour}
-                      onClick={entry.onSelect}
-                    >
-                      {entry.label}
-                    </HoverButton>
-                  )
+                <LaneMenuEntryView key={entry.key} entry={entry} onClose={onClose} />
               ))}
             </>
           )}
@@ -159,6 +183,7 @@ export function LaneContextMenu({
   workPinnedLaneIds?: string[];
 }) {
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
 
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(
@@ -181,6 +206,7 @@ export function LaneContextMenu({
     menuRef.current?.focus();
   }, []);
 
+  const openIn = resolveOpenInTarget({ worktreePath: ctxLane?.worktreePath, binding: projectBinding });
   const args: LaneMenuArgs = {
     laneId: laneContextMenu.laneId,
     lane: ctxLane,
@@ -198,6 +224,7 @@ export function LaneContextMenu({
     ...(onStartChatInLane ? { onStartChatInLane } : {}),
     ...(onToggleWorkPin ? { onToggleWorkPin } : {}),
     ...(workPinnedLaneIds ? { workPinnedLaneIds } : {}),
+    ...(openIn ? { openIn } : {}),
   };
 
   return (
@@ -220,7 +247,7 @@ export function LaneContextMenu({
       }}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <LaneMenuGroups groups={buildLaneMenuGroups(args)} />
+      <LaneMenuGroups groups={buildLaneMenuGroups(args)} onClose={onClose} />
     </div>
   );
 }

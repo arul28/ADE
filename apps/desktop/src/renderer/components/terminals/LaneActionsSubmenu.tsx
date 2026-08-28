@@ -5,6 +5,7 @@ import { buildLaneMenuGroups } from "../lanes/laneContextMenuItems";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { MenuSubmenu } from "../ui/MenuSubmenu";
 import { useLaneMenuActions } from "./useWorkLaneContextMenu";
+import { resolveOpenInTarget } from "../../../shared/editorTargets";
 
 /**
  * The lane menu, hosted as a submenu of a singleton lane's session menu.
@@ -42,6 +43,7 @@ export function LaneActionsSubmenu({
 }) {
   const lanes = useAppStore((s) => s.lanes);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const lanesById = useMemo(() => {
     const map = new Map<string, (typeof lanes)[number]>();
     for (const lane of lanes) map.set(lane.id, lane);
@@ -50,8 +52,9 @@ export function LaneActionsSubmenu({
   const lane = lanesById.get(laneId) ?? null;
   const actions = useLaneMenuActions({ close: onClose, onManageLane });
 
-  const groups = useMemo(
-    () => buildLaneMenuGroups({
+  const groups = useMemo(() => {
+    const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: projectBinding });
+    return buildLaneMenuGroups({
       laneId,
       lane,
       lanesById,
@@ -61,9 +64,9 @@ export function LaneActionsSubmenu({
       isRemoteProject,
       onClose,
       ...actions,
-    }),
-    [actions, isRemoteProject, lane, laneId, lanesById, onClose],
-  );
+      ...(openIn ? { openIn } : {}),
+    });
+  }, [actions, isRemoteProject, lane, laneId, lanesById, onClose, projectBinding]);
 
   return (
     <MenuSubmenu
@@ -77,7 +80,7 @@ export function LaneActionsSubmenu({
       panelMinWidth={220}
     >
       {lane ? (
-        <LaneMenuGroups groups={groups} />
+        <LaneMenuGroups groups={groups} onClose={onClose} />
       ) : (
         <button
           type="button"

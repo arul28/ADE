@@ -13,7 +13,7 @@ vi.mock("node:child_process", () => ({
   execFile: vi.fn(),
 }));
 
-import { normalizeExternalUrl, openExternalUrl } from "./externalLinks";
+import { normalizeEditorExternalUrl, normalizeExternalUrl, openExternalUrl } from "./externalLinks";
 
 const mockedExecFile = vi.mocked(execFile);
 
@@ -103,6 +103,22 @@ describe("externalLinks", () => {
     } finally {
       restorePlatform();
     }
+  });
+
+  it("allows vscode-family and Zed SSH routes only", () => {
+    expect(normalizeEditorExternalUrl("vscode://vscode-remote/ssh-remote+dev.example/home/ade")).toBe(
+      "vscode://vscode-remote/ssh-remote+dev.example/home/ade",
+    );
+    expect(normalizeEditorExternalUrl("zed://ssh/dev.example/home/ade")).toBe(
+      "zed://ssh/dev.example/home/ade",
+    );
+  });
+
+  it("rejects non-SSH editor URLs even with approved schemes", () => {
+    expect(() => normalizeEditorExternalUrl("vscode-remote://ssh-remote+dev.example/home/ade")).toThrow(/approved editor SSH/);
+    expect(() => normalizeEditorExternalUrl("vscode://vscode-remote/wsl+Ubuntu/home/ade")).toThrow(/approved editor SSH/);
+    expect(() => normalizeEditorExternalUrl("zed://file/home/ade")).toThrow(/approved editor SSH/);
+    expect(() => normalizeEditorExternalUrl("https://example.com")).toThrow(/approved editor SSH/);
   });
 
   it("uses /usr/bin/xdg-open on Linux", async () => {

@@ -1,5 +1,6 @@
 import React from "react";
 import type { LaneSummary } from "../../../shared/types";
+import type { OpenInTarget } from "../../../shared/editorTargets";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -34,7 +35,12 @@ export type LaneMenuCustom = {
   node: React.ReactNode;
 };
 
-export type LaneMenuEntry = LaneMenuAction | LaneMenuCustom;
+export type LaneMenuOpenIn = {
+  kind: "open-in";
+  key: string;
+} & OpenInTarget;
+
+export type LaneMenuEntry = LaneMenuAction | LaneMenuCustom | LaneMenuOpenIn;
 
 export type LaneMenuGroup = {
   key: string;
@@ -62,6 +68,7 @@ export type LaneMenuArgs = {
   onStartChatInLane?: (laneId: string) => void;
   onToggleWorkPin?: (laneId: string) => void;
   workPinnedLaneIds?: string[];
+  openIn?: OpenInTarget;
 };
 
 /**
@@ -106,6 +113,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     onStartChatInLane,
     onToggleWorkPin,
     workPinnedLaneIds,
+    openIn,
   } = args;
 
   const isInSplit = visibleLaneIds.includes(laneId);
@@ -260,6 +268,13 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     });
   }
   if (copy.length) groups.push({ key: "copy", label: "Copy", entries: copy, submenu: true });
+
+  if (lane && openIn) {
+    groups.push({
+      key: "open-in",
+      entries: [{ kind: "open-in", key: "open-in-editor", ...openIn }],
+    });
+  }
 
   // ── Tabs: everything about which lanes are on screen.
   const tabs: LaneMenuEntry[] = [];

@@ -1417,6 +1417,42 @@ describe("SessionListPane", () => {
           laneId: "lane-elsewhere",
           laneName: "Elsewhere Lane",
         }),
+        // No hostname on this foreign binding, so Open in stays hidden even
+        // though a headerless foreign card would otherwise keep it at session
+        // root (Lane ▸ cannot resolve a remote editor from the local store).
+        null,
+      );
+    });
+
+    it("keeps session-root Open in on a headerless foreign SSH lane", () => {
+      seedForeignMachine({
+        binding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Mac Studio (12)",
+          transport: "ssh",
+          hostname: "dev.example",
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+      });
+      const onContextMenu = vi.fn();
+      renderPane({ onContextMenu });
+
+      fireEvent.contextMenu(document.querySelector('[data-session-id="session-elsewhere"]')!);
+
+      expect(onContextMenu).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "session-elsewhere" }),
+        expect.anything(),
+        expect.objectContaining({ hostname: "dev.example", transport: "ssh" }),
+        "Mac Studio (12)",
+        expect.objectContaining({ laneId: "lane-elsewhere" }),
+        expect.objectContaining({
+          rootPath: "/tmp/known-lane",
+          remote: { hostname: "dev.example", transport: "ssh" },
+        }),
       );
     });
 
@@ -2117,6 +2153,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       undefined,
       expect.objectContaining({ laneId: "lane-solo", laneName: "Solo lane" }),
+      null,
     );
 
     // And the handle really opens the shared lane menu, rather than a stub.
@@ -2148,6 +2185,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       undefined,
       undefined,
+      expect.anything(),
     );
   });
 
@@ -3385,5 +3423,244 @@ describe("shortcutChipLabel", () => {
 
   it("keeps the other modifiers spelled out", () => {
     expect(shortcutChipLabel("Mod+Shift+Alt+P")).toBe("Ctrl+Alt+Shift+P");
+  });
+});
+
+describe("SessionListPane shared-branch clusters", () => {
+  afterEach(() => {
+    cleanup();
+    lanePrsByLaneIdForTest.clear();
+    useAppStore.setState({ crossMachineLanesByMachineId: {}, crossMachineLaneScopeKey: null });
+    resetCrossMachineLaneSyncForTest();
+    Reflect.deleteProperty(window, "ade");
+  });
+
+  function seedStudioLane(args: {
+    lane: LaneSummary;
+    session: TerminalSessionSummary;
+  }) {
+    useAppStore.setState({
+      crossMachineLanesByMachineId: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          binding: {
+            kind: "remote",
+            key: "remote:target-studio:project-a",
+            targetId: "target-studio",
+            runtimeName: "Mac Studio (12)",
+            projectId: "project-a",
+            rootPath: "/repo-a",
+            displayName: "Repo A",
+          },
+          online: true,
+          lanes: [args.lane],
+          sessions: [args.session],
+          prs: [],
+          lastSyncedAtMs: 1,
+          error: null,
+        },
+      },
+    });
+  }
+
+  it("parks same-branch local and foreign lanes together inside a dashed cluster", () => {
+    const localLane = makeLane({
+      id: "lane-local-mobile",
+      name: "ade/mobile-chat-scrolling",
+      branchRef: "refs/heads/ade/mobile-chat-scrolling",
+    });
+    const unrelatedLane = makeLane({
+      id: "lane-unrelated",
+      name: "Unrelated lane",
+      branchRef: "refs/heads/ade/unrelated",
+    });
+    const localSession = makeSession({
+      id: "session-local-mobile",
+      laneId: localLane.id,
+      laneName: localLane.name,
+      title: "iPhone 16 Pro Chat Scroll",
+    });
+    const unrelatedSession = makeSession({
+      id: "session-unrelated",
+      laneId: unrelatedLane.id,
+      laneName: unrelatedLane.name,
+      title: "Something else",
+    });
+    const studioLane = makeLane({
+      id: "lane-studio-mobile",
+      name: "Mobile Chat Scrolling",
+      branchRef: "refs/heads/ade/mobile-chat-scrolling",
+    });
+    const studioSession = makeSession({
+      id: "session-studio-mobile",
+      laneId: studioLane.id,
+      laneName: studioLane.name,
+      title: "Fix Mobile Chat Issues",
+    });
+    seedStudioLane({ lane: studioLane, session: studioSession });
+
+    const { container } = renderPane({
+      lanes: [unrelatedLane, localLane],
+      runningFiltered: [unrelatedSession, localSession],
+      allSessionsUnfiltered: [unrelatedSession, localSession],
+      sessionsGroupedByLane: new Map([
+        [unrelatedLane.id, [unrelatedSession]],
+        [localLane.id, [localSession]],
+      ]),
+    });
+
+    const cluster = container.querySelector('[data-testid="shared-branch-cluster"]') as HTMLElement;
+    expect(cluster).toBeTruthy();
+    expect(cluster.getAttribute("data-branch-cluster")).toBe("ade/mobile-chat-scrolling");
+    expect(cluster.className).toContain("border-dashed");
+
+    const groupIds = Array.from(cluster.querySelectorAll("[data-group-id]"))
+      .map((el) => el.getAttribute("data-group-id"));
+    expect(groupIds).toEqual(["lane-local-mobile", "target-studio:lane-studio-mobile"]);
+
+    const allGroupIds = Array.from(container.querySelectorAll("[data-group-id]"))
+      .map((el) => el.getAttribute("data-group-id") ?? "")
+      .filter((id) => id.startsWith("lane-") || id.includes(":"));
+    expect(allGroupIds.indexOf("lane-local-mobile")).toBeLessThan(
+      allGroupIds.indexOf("target-studio:lane-studio-mobile"),
+    );
+    expect(allGroupIds.indexOf("target-studio:lane-studio-mobile")).toBeLessThan(
+      allGroupIds.indexOf("lane-unrelated"),
+    );
+  });
+
+  it("does not cluster two Primaries that both track main", () => {
+    const localPrimary = makeLane({
+      id: "lane-primary",
+      name: "Primary",
+      laneType: "primary",
+      branchRef: "main",
+    });
+    const localSession = makeSession({
+      id: "session-primary",
+      laneId: localPrimary.id,
+      laneName: localPrimary.name,
+      title: "Primary chat",
+    });
+    seedStudioLane({
+      lane: makeLane({
+        id: "lane-primary-studio",
+        name: "Primary",
+        laneType: "primary",
+        branchRef: "main",
+      }),
+      session: makeSession({
+        id: "session-primary-studio",
+        laneId: "lane-primary-studio",
+        laneName: "Primary",
+        title: "Primary chat elsewhere",
+      }),
+    });
+
+    const { container } = renderPane({
+      lanes: [localPrimary],
+      workLaneSortMode: "manual",
+      runningFiltered: [localSession],
+      allSessionsUnfiltered: [localSession],
+      sessionsGroupedByLane: new Map([[localPrimary.id, [localSession]]]),
+    });
+
+    expect(container.querySelector('[data-testid="shared-branch-cluster"]')).toBeNull();
+  });
+
+  it("keeps a settled same-branch foreign lane in the inbox next to live work", () => {
+    const localLane = makeLane({
+      id: "lane-local-mobile",
+      name: "ade/mobile-chat-scrolling",
+      branchRef: "ade/mobile-chat-scrolling",
+    });
+    const localSession = makeSession({
+      id: "session-local-mobile",
+      laneId: localLane.id,
+      laneName: localLane.name,
+      title: "iPhone 16 Pro Chat Scroll",
+    });
+    const studioLane = makeLane({
+      id: "lane-studio-mobile",
+      name: "Mobile Chat Scrolling",
+      branchRef: "ade/mobile-chat-scrolling",
+    });
+    seedStudioLane({
+      lane: studioLane,
+      session: makeSession({
+        id: "session-studio-mobile",
+        laneId: studioLane.id,
+        laneName: studioLane.name,
+        title: "Fix Mobile Chat Issues",
+        status: "completed",
+        runtimeState: "idle",
+        settledAt: "2026-07-28T12:00:00.000Z",
+      }),
+    });
+
+    const { container } = renderPane({
+      lanes: [localLane],
+      runningFiltered: [localSession],
+      allSessionsUnfiltered: [localSession],
+      sessionsGroupedByLane: new Map([[localLane.id, [localSession]]]),
+    });
+
+    const cluster = container.querySelector('[data-testid="shared-branch-cluster"]');
+    expect(cluster).toBeTruthy();
+    expect(container.querySelector('[data-section-id="lane-shelf:settled"]')).toBeNull();
+    expect(cluster?.querySelector('[data-group-id="target-studio:lane-studio-mobile"]')).toBeTruthy();
+  });
+
+  it("keeps an entirely quiet same-branch pair together in the settled shelf", () => {
+    const localLane = makeLane({
+      id: "lane-local-mobile",
+      name: "ade/mobile-chat-scrolling",
+      branchRef: "ade/mobile-chat-scrolling",
+    });
+    const localSession = makeSession({
+      id: "session-local-mobile",
+      laneId: localLane.id,
+      laneName: localLane.name,
+      title: "iPhone 16 Pro Chat Scroll",
+      status: "completed",
+      runtimeState: "idle",
+      settledAt: "2026-07-28T12:00:00.000Z",
+    });
+    const studioLane = makeLane({
+      id: "lane-studio-mobile",
+      name: "Mobile Chat Scrolling",
+      branchRef: "ade/mobile-chat-scrolling",
+    });
+    seedStudioLane({
+      lane: studioLane,
+      session: makeSession({
+        id: "session-studio-mobile",
+        laneId: studioLane.id,
+        laneName: studioLane.name,
+        title: "Fix Mobile Chat Issues",
+        status: "completed",
+        runtimeState: "idle",
+        settledAt: "2026-07-28T12:00:00.000Z",
+      }),
+    });
+
+    const { container } = renderPane({
+      lanes: [localLane],
+      runningFiltered: [],
+      settledFiltered: [localSession],
+      allSessionsUnfiltered: [localSession],
+      sessionsGroupedByLane: new Map([[localLane.id, [localSession]]]),
+      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+    });
+
+    expect(container.querySelector('[data-section-id="lane-shelf:settled"]')).toBeTruthy();
+    const cluster = container.querySelector('[data-testid="shared-branch-cluster"]');
+    expect(cluster).toBeTruthy();
+    expect(container.querySelector('[data-testid="shelf-body-settled"]')?.contains(cluster)).toBe(true);
+    expect(cluster?.querySelector('[data-group-id="lane-local-mobile"]')).toBeTruthy();
+    expect(cluster?.querySelector('[data-group-id="target-studio:lane-studio-mobile"]')).toBeTruthy();
   });
 });

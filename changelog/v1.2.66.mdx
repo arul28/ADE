@@ -1,0 +1,38 @@
+---
+title: "v1.2.66"
+description: "Release notes for ADE v1.2.66 - August 27, 2026"
+---
+
+You can react to and edit pull request comments without leaving ADE, and open any lane in the editor you already have installed - including a lane that lives on another machine over SSH. Agents delegate through their own provider's subagents now, so short side-tasks stay in one thread. Two lanes on the same branch sit together in Work. The glossary and help chips are gone; hover tooltips took over.
+
+---
+
+## Pull requests you can answer
+
+- **React to a description, a comment, or an inline review note** from inside ADE. If GitHub rejects the reaction, it rolls back instead of lying.
+- **Edit your own comments.** Edit appears only when ADE has a GitHub login that can actually write, and the backend checks ownership before it saves.
+- **Inline review threads carry their reactions too**, not just top-level comments.
+- **`ade prs comment-edit <pr> --comment <id> --body "..."`** edits the same comment the UI edits.
+
+## Open in your editor
+
+- **Lane and session menus offer the editors you have installed**, detected rather than guessed.
+- **A lane on a remote machine opens over SSH** in VS Code-family editors and Zed. Paired remotes and chats with no project stay out of the menu, because there is nothing there to open.
+- **One Open in per menu.** A single-session lane no longer showed the same submenu twice.
+
+## Delegation stays in the thread
+
+- **Agents use their own provider's subagents for short side-tasks** - Claude's Agent and Task, and the Codex, Cursor, Droid, and OpenCode equivalents. A separate ADE chat is now for work that needs its own durable transcript, its own schedule, its own permissions, or a different provider.
+- **A Claude subagent keeps its name and model** in the transcript, even when its lifecycle events arrive before the tool call that started it.
+- **Drilling into a subagent transcript remembers where you were.** The parent's scroll position survives the trip, and a pinned child view opens at the tail.
+
+## Work
+
+- **Two lanes on the same branch sit together**, in a dashed cluster - the case where the same feature branch is checked out on two machines. Primaries and `main` stay unclustered.
+- **A quiet lane stays next to its live sibling** instead of filing itself away alone. A pair that has both gone quiet shelves together.
+
+## Help
+
+- **The glossary page, help chips, and "Did you know?" hints are gone.** The Help menu is Docs, replaying the welcome, and tooltips.
+- **Tooltips cover more of the app** - the shell, pull requests, files, and account actions - and show the keyboard shortcut where there is one.
+- **Tooltips open on the side that fits** and stay inside the window instead of running off the edge.

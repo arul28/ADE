@@ -45,6 +45,24 @@ describe("buildCursorSdkSystemPrompt", () => {
     expect(cloud.text).toContain("runtime: cloud");
   });
 
+  it("includes the native subagent routing contract", () => {
+    const out = buildCursorSdkSystemPrompt({ runtime: "local" });
+
+    expect(out.text).toContain("prefer Cursor's native task tool");
+    expect(out.text).toContain("independent durable transcript");
+  });
+
+  it("places subagent routing after the control-protocol section", () => {
+    const out = buildCursorSdkSystemPrompt({
+      runtime: "local",
+      cliHelpDigest: "C".repeat(50_000),
+      rulesText: "R".repeat(50_000),
+    });
+    const names = out.sections.map((section) => section.name);
+    expect(names.indexOf("control")).toBeGreaterThan(-1);
+    expect(names.indexOf("subagent-routing")).toBeGreaterThan(names.indexOf("control"));
+  });
+
   it("always emits control-protocol primer with all three block names", () => {
     const out = buildCursorSdkSystemPrompt({ runtime: "local" });
     expect(out.text).toContain("ade_update_plan");

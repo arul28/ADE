@@ -166,6 +166,21 @@ Two helpers summarise a parsed stream:
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
 
+## Subagent model attribution
+
+Subagent lifecycle rows may carry the child `model` and `reasoningEffort`. For
+Claude, the service resolves the model from the task lifecycle frame or the
+native `Agent`/`Task` tool input, including tool input that arrives after the
+lifecycle frame. If a start row was already emitted with inherited parent
+metadata, the late input updates the live snapshot and emits a corrected start
+row so the renderer's model chip reflects the child that actually ran.
+
+Claude `getSubagentTranscript` reads also attach `subagentMetadata` to the
+provider message shape with the child thread id, parent thread id, and the
+first model found across the historical/current SDK message shapes. The
+renderer treats a reported model as authoritative and shows the parent model
+as **inherited** only when no child model was reported.
+
 ## Claude context guardrails
 
 Live Claude occupancy emits at most once every five seconds and only after a

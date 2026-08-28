@@ -9,6 +9,7 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -20,7 +21,6 @@ import {
 } from "@phosphor-icons/react";
 
 import type {
-  PrReactionContent,
   PrReviewThread,
   PrReviewThreadComment,
 } from "../../../../shared/types";
@@ -35,6 +35,9 @@ import {
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrUserAvatar } from "./PrUserAvatar";
+import { PrCommentEditForm } from "./PrCommentEditForm";
+import { PrReactionBar } from "./PrReactionBar";
+import { usePrCommentEdit } from "./usePrCommentEdit";
 
 export type PrReviewThreadCardHandle = {
   focus: () => void;
@@ -51,35 +54,6 @@ type PrReviewThreadCardProps = {
   onNext?: () => void;
   onPrev?: () => void;
   onFocus?: () => void;
-};
-
-type ReactionCommentLite = PrReviewThreadComment & {
-  reactions?: ReactionLite[];
-};
-
-type ReactionLite = {
-  id?: string;
-  content: PrReactionContent;
-  user?: string;
-};
-
-const REACTION_OPTIONS: Array<{ content: PrReactionContent; label: string }> = [
-  { content: "+1", label: "👍" },
-  { content: "-1", label: "👎" },
-  { content: "laugh", label: "😄" },
-  { content: "heart", label: "❤️" },
-  { content: "hooray", label: "🎉" },
-];
-
-const REACTION_LABELS: Record<PrReactionContent, string> = {
-  "+1": "👍",
-  "-1": "👎",
-  laugh: "😄",
-  confused: "😕",
-  heart: "❤️",
-  hooray: "🎉",
-  rocket: "🚀",
-  eyes: "👀",
 };
 
 // One-line plain-text preview of a comment body for the collapsed thread card,
@@ -184,18 +158,6 @@ function DiffHunkBlock({ hunk, side }: { hunk: string; side: PrReviewThread["dif
   );
 }
 
-function getCommentReactions(comment: ReactionCommentLite): ReactionLite[] {
-  return Array.isArray(comment.reactions) ? comment.reactions : [];
-}
-
-function aggregateReactions(reactions: ReactionLite[]) {
-  const counts = new Map<PrReactionContent, number>();
-  for (const r of reactions) {
-    counts.set(r.content, (counts.get(r.content) ?? 0) + 1);
-  }
-  return Array.from(counts.entries()).map(([content, count]) => ({ content, count }));
-}
-
 function AvatarStack({ comments }: { comments: PrReviewThreadComment[] }) {
   const authors: Array<{ login: string; url: string | null }> = [];
   const seen = new Set<string>();
@@ -255,21 +217,65 @@ function CommentRow({
   prId,
   repoOwner,
   repoName,
-  canReact,
-  onReact,
+  viewerLogin,
+  onError,
 }: {
   comment: PrReviewThreadComment;
   prId: string;
   repoOwner: string;
   repoName: string;
-  /** Reactions mutate via row-based PR endpoints; gated off for unmapped PRs. */
-  canReact: boolean;
-  onReact: (commentId: string, content: PrReactionContent) => void;
+  viewerLogin: string | null;
+  onError: (error: unknown) => void;
 }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const reactions = getCommentReactions(comment as ReactionCommentLite);
-  const grouped = aggregateReactions(reactions);
-  const hasReactions = grouped.length > 0;
+  const {
+    body,
+    editing,
+    editValue,
+    setEditValue,
+    editBusy,
+    editError,
+    beginEdit,
+    cancelEdit,
+    saveEdit,
+    canEdit,
+  } = usePrCommentEdit({
+    prId,
+    commentId: comment.githubId,
+    source: "review",
+    initialBody: comment.body,
+    author: comment.author,
+    viewerLogin,
+  });
+
+  let bodyNode: ReactNode = null;
+  if (editing) {
+    bodyNode = (
+      <>
+        <PrCommentEditForm
+          editValue={editValue}
+          setEditValue={setEditValue}
+          editBusy={editBusy}
+          cancelEdit={cancelEdit}
+          saveEdit={saveEdit}
+          ariaLabel="Edit review comment"
+          cancelStyle={outlineButton({ height: 26, fontSize: 11 })}
+          saveStyle={outlineButton({
+            height: 26,
+            fontSize: 11,
+            color: COLORS.accent,
+            opacity: editBusy || !editValue.trim() ? 0.5 : 1,
+          })}
+        />
+        {editError ? <span className="text-[11px]" style={{ color: COLORS.danger }}>{editError}</span> : null}
+      </>
+    );
+  } else if (body) {
+    bodyNode = (
+      <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
+        {body}
+      </PrMarkdown>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-1.5 py-2" data-pr-thread-comment>
@@ -284,88 +290,26 @@ function CommentRow({
         <span>·</span>
         <span>{formatTimeAgo(comment.createdAt)}</span>
       </div>
-      {comment.body ? (
-        <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
-          {comment.body}
-        </PrMarkdown>
-      ) : null}
-      {/* Existing reactions stay visible read-only when unmapped; only the
-          add/toggle affordances are gated. */}
-      {canReact || hasReactions ? (
-        <div className="flex items-center gap-1.5">
-          {grouped.map((r) =>
-            canReact ? (
-              <button
-                key={r.content}
-                type="button"
-                onClick={() => onReact(comment.id, r.content)}
-                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-white/[0.04]"
-                style={{
-                  borderColor: COLORS.border,
-                  background: COLORS.recessedBg,
-                  color: COLORS.textSecondary,
-                  fontFamily: SANS_FONT,
-                }}
-              >
-                <span>{REACTION_LABELS[r.content]}</span>
-                <span>{r.count}</span>
-              </button>
-            ) : (
-              <span
-                key={r.content}
-                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
-                style={{
-                  borderColor: COLORS.border,
-                  background: COLORS.recessedBg,
-                  color: COLORS.textSecondary,
-                  fontFamily: SANS_FONT,
-                }}
-              >
-                <span>{REACTION_LABELS[r.content]}</span>
-                <span>{r.count}</span>
-              </span>
-            ),
-          )}
-          {canReact ? (
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setPickerOpen((v) => !v)}
-                aria-label="Add reaction"
-                aria-haspopup="true"
-                aria-expanded={pickerOpen}
-                className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full border text-[11px] transition-colors hover:bg-white/[0.04]"
-                style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
-              >
-                +
-              </button>
-              {pickerOpen ? (
-                <div
-                  role="menu"
-                  className="ade-liquid-glass-menu absolute left-0 top-[26px] z-20 flex items-center gap-0.5 px-1 py-1"
-                  data-pr-reaction-picker
-                  data-pr-id={prId}
-                >
-                  {REACTION_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.content}
-                      type="button"
-                      onClick={() => {
-                        onReact(comment.id, opt.content);
-                        setPickerOpen(false);
-                      }}
-                      aria-label={`React ${opt.content}`}
-                      className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-white/[0.08]"
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      {bodyNode}
+      <div className="flex items-center gap-2">
+        <PrReactionBar
+          prId={prId}
+          subjectId={comment.id}
+          reactions={comment.reactions}
+          viewerLogin={viewerLogin}
+          onError={onError}
+        />
+        {canEdit && !editing ? (
+          <button
+            type="button"
+              onClick={beginEdit}
+            className="text-[11px] hover:underline"
+            style={{ color: COLORS.textMuted }}
+          >
+            Edit
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -488,19 +432,6 @@ export const PrReviewThreadCard = memo(
         setBusy(null);
       }
     }, [localResolved, prId, thread.id]);
-
-    const handleReact = useCallback(
-      async (commentId: string, content: PrReactionContent) => {
-        const bridge = window.ade?.prs?.reactToComment;
-        if (!bridge) return;
-        try {
-          await bridge({ prId, commentId, content });
-        } catch (err) {
-          setError(err instanceof Error ? err.message : String(err));
-        }
-      },
-      [prId],
-    );
 
     const onKeyDown = useCallback(
       (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -638,8 +569,8 @@ export const PrReviewThreadCard = memo(
                 prId={prId}
                 repoOwner={repoOwner}
                 repoName={repoName}
-                canReact={canMutate}
-                onReact={handleReact}
+                viewerLogin={viewerLogin}
+                onError={(err) => setError(err instanceof Error ? err.message : String(err))}
               />
             </div>
           ))}

@@ -877,4 +877,62 @@ describe("PrTimeline", () => {
     expect(screen.getByTestId("pr-timeline-commit-divider").textContent).toContain("Fix scroll behavior");
     expect(screen.queryByTestId("pr-timeline-unresolved-fab")).toBeNull();
   });
+
+  it("hides comment mutation controls when writeViewerLogin is null", () => {
+    const events: PrTimelineEvent[] = [
+      makeEvent({
+        id: "c-edit",
+        type: "issue_comment",
+        commentId: "c-edit",
+        author: "alice",
+        body: "looks good",
+        isBot: false,
+        commentGithubId: 555,
+        commentNodeId: "IC_kwDO",
+      }),
+    ];
+    render(
+      <PrTimeline
+        events={events}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        writeViewerLogin={null}
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add reaction" })).toBeNull();
+  });
+
+  it("keeps comment mutation controls when writeViewerLogin is omitted", () => {
+    const events: PrTimelineEvent[] = [
+      makeEvent({
+        id: "c-edit-fallback",
+        type: "issue_comment",
+        commentId: "c-edit-fallback",
+        author: "alice",
+        body: "looks good",
+        isBot: false,
+        commentGithubId: 556,
+        commentNodeId: "IC_kwDP",
+      }),
+    ];
+    render(
+      <PrTimeline
+        events={events}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Edit" })).toBeTruthy();
+  });
 });

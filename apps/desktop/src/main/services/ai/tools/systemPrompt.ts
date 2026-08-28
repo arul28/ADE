@@ -21,11 +21,46 @@ export type AdeRuntimeKind =
 
 const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is available via `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text` or `ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"<task>\"}' --text`; relative delays are one-shot and avoid timezone arithmetic. Absolute one-shots use `--at <ISO-8601-with-offset-or-Z>` / `runAt`. Five-field cron remains available for recurring jobs but is interpreted in the ADE brain machine's local timezone, never UTC unless that machine is configured for UTC. The create result reports the computed next run time; verify it before ending the turn. The action targets your own tracked agent session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary, resumes an ended tracked provider CLI when necessary, and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
 
+const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat when the work needs an independent durable transcript, scheduling, cross-provider execution, or separately tracked lifecycle.";
+
+type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi";
+
+const nativeSubagentFamilyByRuntime: Record<AdeRuntimeKind, NativeSubagentFamily> = {
+  "claude-agent-sdk-query": "claude",
+  "claude-code-cli": "claude",
+  "codex-app-server": "codex",
+  "codex-cli": "codex",
+  "cursor-sdk": "cursor",
+  "droid-sdk": "droid",
+  opencode: "opencode",
+  "pi-sdk": "pi",
+};
+
+const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
+  claude: "For short-lived delegation whose result belongs in this Claude thread, prefer Claude's native `Agent`/`Task` tool, using its `model` override when you need another Anthropic-family model. Do not create an ADE `--type subagent` chat in the same lane merely to switch Claude models.",
+  codex: "For short-lived delegation whose result belongs in this Codex thread, prefer Codex's native subagent/collaboration tool.",
+  cursor: "For short-lived delegation whose result belongs in this Cursor thread, prefer Cursor's native task tool.",
+  droid: "For short-lived delegation whose result belongs in this Droid thread, prefer Droid's native worker/subagent capability.",
+  opencode: "For short-lived delegation whose result belongs in this OpenCode thread, prefer OpenCode's native `task` tool.",
+  pi: "Pi's SDK path has no ADE-supported native subagent lifecycle. Use an ADE `--type subagent` chat when you need independent delegation, and keep the child brief self-contained.",
+};
+
+export function buildNativeSubagentRoutingGuidance(runtime: AdeRuntimeKind): string {
+  const family = nativeSubagentFamilyByRuntime[runtime];
+  const nativeGuidance = nativeSubagentGuidanceByFamily[family];
+  return `**Subagent routing:** ${nativeGuidance}${family === "pi" ? "" : ` ${adeIndependentChildChatGuidance}`}`;
+}
+
+function describeSubagentRouting(runtime: AdeRuntimeKind): string {
+  return buildNativeSubagentRoutingGuidance(runtime);
+}
+
 function describeRuntime(runtime: AdeRuntimeKind): string[] {
   switch (runtime) {
     case "claude-agent-sdk-query":
       return [
         "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API.",
+        describeSubagentRouting(runtime),
         "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
         adeScheduledWorkGuidance,
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
@@ -33,36 +68,43 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
     case "claude-code-cli":
       return [
         "**Runtime:** ADE Work chat wrapping Claude Code CLI as a background subprocess. ADE owns the lane, transcript, lifecycle, and follow-up delivery.",
+        describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "codex-cli":
       return [
         "**Runtime:** ADE Work chat wrapping the Codex CLI as a subprocess. Your turns are driven through the Codex agent loop, but the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
+        describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "codex-app-server":
       return [
         "**Runtime:** ADE Work chat hosted on the Codex app-server protocol. Your turns are driven through Codex app-server JSON-RPC, while the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
+        describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "cursor-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Cursor SDK (`@cursor/sdk`).",
+        describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "droid-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Factory Droid SDK (`@factory/droid-sdk`) and backed by the local Droid CLI.",
+        describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "pi-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the user's Pi SDK installation. ADE owns the chat transcript and lane boundary; Pi owns its native session file and provider credentials.",
+        describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
     case "opencode":
       return [
         "**Runtime:** ADE Work chat wrapping an OpenCode session.",
+        describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
       ];
   }

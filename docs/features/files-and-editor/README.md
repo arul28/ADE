@@ -86,6 +86,11 @@ targets for the legacy IPC path.
   mode (staged vs working tree, commit-to-commit).
 - `apps/desktop/src/main/services/conflicts/conflictService.ts` —
   used by conflict mode for 3-way merge data.
+- `apps/desktop/src/main/services/editors/editorDetection.ts`,
+  `openPathInEditor.ts`, `editorProcessEnv.ts` — detect installed
+  editors from `EDITOR_TARGETS` and open a local workspace/file in one,
+  or mint an SSH remote editor URL. See
+  [Opening in an external editor](#opening-in-an-external-editor).
 
 Shared types and IPC:
 
@@ -94,6 +99,10 @@ Shared types and IPC:
   `FilesReadFileRangeResult`, `FilesGitStatusEvent`,
   `FilesGitBlameResult`, `FilesQuickOpenItem`, `FilesSearchTextMatch`,
   `FilesOpenExternalPathResult`, and the IPC arg shapes.
+- `apps/desktop/src/shared/editorTargets.ts` — `EDITOR_TARGETS`,
+  `EditorTarget`, `OpenPathTarget`, `OpenInTarget`, remote SSH URL
+  builders, and `resolveOpenInTarget` / `canOfferOpenIn`. Consumed by
+  main-process editor launch and by lane/session **Open in** menus.
 - `apps/desktop/src/shared/types/git.ts` (and related shared types) —
   `FileDiff`, `FilePatch`, and other shapes returned by `diffService`
   for the diff viewer.
@@ -109,6 +118,9 @@ Shared types and IPC:
   `filesSearchText`, `filesWatchChanges`, `filesStopWatching`,
   `filesOpenExternalPath`, plus
   `diffGetChanges`, `diffGetFile`, `diffGetFilePatch`).
+  Also `appGetInstalledEditors` / `appOpenPathInEditor`
+  (`ade.app.getInstalledEditors`, `ade.app.openPathInEditor`) for
+  detected-editor launch.
 
 Preload bridge:
 
@@ -163,6 +175,12 @@ Renderer:
   Files panel" from a chat click to the embedded workbench. Holds one pending
   request across the gap between the click and the panel mounting; the
   consumer clears the hold so a later mount cannot re-open it.
+- `apps/desktop/src/renderer/components/ui/OpenInSubmenu.tsx` — shared
+  **Open in** submenu used by lane and session context menus. Probes
+  `window.ade.app.getInstalledEditors`, filters to
+  `supportsRemote` when an SSH `remote` is set, and calls
+  `window.ade.app.openPathInEditor`. Projectless chats never mount
+  this menu.
 - `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
   virtualized file tree (`@tanstack/react-virtual`), inline rename/create,
   create/rename/delete controls, and context-menu wiring; git status coloring
@@ -572,6 +590,33 @@ that can turn it into a path, gets the "can't find that file" toast.
 See [../chat/README.md](../chat/README.md#source-file-map) for the parsing and
 resolution contract.
 
+## Opening in an external editor
+
+Lane and session context menus offer **Open in** for the worktree, not
+the in-app Monaco tab. Detection and launch are main-process work;
+the renderer only names a target from `EDITOR_TARGETS`.
+
+| Piece | Role |
+|-------|------|
+| `shared/editorTargets.ts` | Catalog (`vscode`, `cursor`, `zed`, JetBrains, Xcode, …), `OpenPathTarget` (`default` / `finder` / editor id), `OpenInTarget`, `resolveOpenInTarget` / `canOfferOpenIn` / `isRemoteEditorOpenRequest`, and `buildRemoteEditorUrl`. |
+| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Duplicate macOS apps that share `macAppName` (`zed` / `zeditor`) collapse to one. |
+| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
+| `ade.app.getInstalledEditors` / `ade.app.openPathInEditor` | Direct IPC (not a runtime action). Local `rootPath` must sit under a known workspace root. |
+| `OpenInSubmenu` | Shared UI on `LaneContextMenu`, `LaneActionsSubmenu`, `SessionContextMenu`, and `ForeignLaneContextMenu`. |
+
+Remote Open in is SSH-only. The main process mints:
+
+- VS Code family: `<scheme>://vscode-remote/ssh-remote+<host><path>` (`vscode`, `vscode-insiders`, `vscodium`)
+- Zed: `zed://ssh/<host><path>`
+
+`isRemoteEditorOpenRequest` requires a hostname and `transport !== "paired"`. Paired remotes have no SSH host ADE can hand an editor, so `resolveOpenInTarget` returns `null` and the submenu is omitted. Editors with `supportsRemote: false` (Cursor, Windsurf, JetBrains, Xcode, …) drop out of the remote picker.
+
+The CLI allowlist in `apps/ade-cli/src/lib/externalLinks.ts` (`normalizeEditorExternalUrl` / `openEditorExternalUrl`) accepts only those VS Code-family `vscode-remote` URLs and `zed://ssh/…`. Generic `openExternalUrl` still allows only `http(s)` and `mailto:`.
+
+Preload skips `assertNotRemoteProjectPathAction` when the request is a valid SSH remote editor open — the path is not opened locally. Files-tab Reveal in Finder / Open with default app still go through `openPathInEditor` with `target: "finder"` or `"default"` against a **local** root.
+
+Projectless personal chats must not mount **Open in**, lane, repo, or PR actions — they have no user-visible worktree. See [personal chats](../personal-chats/README.md).
+
 ## Git status overlay
 
 File tree listings include a `changeStatus`. The status map is cached
@@ -756,10 +801,19 @@ For deeper detail on the watcher + trust boundary, see
 - Lane worktrees are resolved through `laneService`, not directly from
   `.ade/worktrees/`. A lane deleted out-of-band will make its
   workspace disappear from the list on next refresh.
+- **Remote Open in is SSH URLs, not local paths.** Do not spawn `code`
+  against a remote worktree path on the laptop. Paired remotes
+  (`transport: "paired"`) have no hostname ADE can mint into
+  `vscode://` / `zed://`, so `canOfferOpenIn` is false. Do not widen
+  `openExternalUrl` to those schemes — they go through
+  `openEditorExternalUrl` only.
 
 ## Cross-links
 
 - Lane worktrees feed the workspace list: [../lanes/](../lanes/)
+- Lane and session **Open in** menus:
+  [../lanes/](../lanes/) and
+  [../terminals-and-sessions/](../terminals-and-sessions/)
 - Processes and tests can monitor the workspace for changes via the
   watcher — see [../terminals-and-sessions/](../terminals-and-sessions/)
   for the transcript and log story.

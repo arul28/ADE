@@ -5,4 +5,9 @@
  * rest of the dual-runtime helpers. This file keeps the desktop's existing
  * import path working.
  */
-export { normalizeExternalUrl, openExternalUrl } from "../../../../../ade-cli/src/lib/externalLinks";
+export {
+  normalizeEditorExternalUrl,
+  normalizeExternalUrl,
+  openEditorExternalUrl,
+  openExternalUrl,
+} from "../../../../../ade-cli/src/lib/externalLinks";

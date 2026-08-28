@@ -5075,6 +5075,9 @@ export function AgentChatPane({
   }, [pendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
+  const subagentViewCacheKey = subagentView
+    ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
+    : null;
   const subagentModelChipForView = subagentView
     ? formatSubagentModelChip(subagentModelAttribution({
       snapshotModel: subagentViewSnapshot?.model ?? subagentMetadata?.model,
@@ -13936,7 +13939,7 @@ export function AgentChatPane({
                     {!cloudConversationPending && !(cloudHydrateFailed && !chatHasMessages) ? (
                     <ChatInfoHostContext.Provider value={true}>
                       <AgentChatMessageList
-                        key={subagentView ? `subagent-${subagentView.taskId}` : renderedSessionId ?? "chat-draft"}
+                        key={renderedSessionId ?? "chat-draft"}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
                         showStreamingIndicator={subagentView
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
@@ -13949,6 +13952,7 @@ export function AgentChatPane({
                         surfaceMode={surfaceMode}
                         surfaceProfile={surfaceProfile}
                         assistantLabel={assistantLabel}
+                        scrollMemoryKey={subagentViewCacheKey ?? renderedSessionId}
                         hasOlderHistory={Boolean(
                           !subagentView
                           && renderedSessionId
@@ -13987,9 +13991,7 @@ export function AgentChatPane({
                         pendingApprovalIds={pendingApprovalIds}
                         laneId={laneId}
                         sessionId={renderedSessionId}
-                        transcriptCollapseCacheKey={subagentView
-                          ? `subagent:${renderedSessionId ?? "chat-draft"}:${subagentView.taskId}`
-                          : undefined}
+                        transcriptCollapseCacheKey={subagentViewCacheKey}
                         onInsertDraft={insertComposerDraft}
                         onRevealChatTerminal={revealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
