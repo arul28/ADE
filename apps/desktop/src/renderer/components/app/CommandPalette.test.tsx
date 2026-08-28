@@ -845,7 +845,8 @@ describe("CommandPalette", () => {
           matchRanges: [{ start: 4, end: 10 }],
           laneId: "lane-1",
           laneName: "redesign",
-          sessionId: "session-claude",
+          // Missing ownership metadata must not bypass the local provider facet.
+          sessionId: null,
           deepLink: "ade://work/session/session-claude?event=1",
           updatedAt: new Date().toISOString(),
         }],
@@ -950,6 +951,37 @@ describe("CommandPalette", () => {
         });
         expect(onOpenChange).toHaveBeenCalledWith(false);
       });
+    });
+
+    it("does not leave a draft when switching to a new-chat target fails", async () => {
+      const switchRemoteProject = vi.fn(async () => {
+        throw new Error("remote target unavailable");
+      });
+      const onOpenChange = vi.fn();
+      seedStore({
+        switchRemoteProject,
+        sessionsCacheByProject: { [PROJECT_ROOT]: [] },
+        workViewByProject: {},
+        crossMachineLanesByMachineId: {
+          "target-studio": makeForeignMachine(),
+        },
+      });
+
+      render(
+        <MemoryRouter initialEntries={["/lanes"]}>
+          <LocationProbe />
+          <CommandPalette open onOpenChange={onOpenChange} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "New chat in release" }),
+      );
+
+      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalled());
+      expect(useAppStore.getState().workViewByProject[REMOTE_BINDING.key]).toBeUndefined();
+      expect(screen.getByTestId("location").textContent).toBe("/lanes");
+      expect(onOpenChange).not.toHaveBeenCalledWith(false);
     });
 
     it("renders the status indicator from the shared tone classes", async () => {

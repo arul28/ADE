@@ -192,6 +192,26 @@ describe("shared Work search vocabulary", () => {
     expect(removeWorkSearchFilterToken(query, parsed.filterTokens[0]!)).toBe("migration");
   });
 
+  it("removes one value from a comma-separated facet chip", () => {
+    const query = "provider:codex,claude auth";
+    const parsed = parseWorkSearchQuery(query);
+
+    expect(removeWorkSearchFilterToken(query, parsed.filterTokens[0]!)).toBe(
+      "provider:claude auth",
+    );
+    const remaining = parseWorkSearchQuery("provider:claude auth");
+    expect(removeWorkSearchFilterToken("provider:claude auth", remaining.filterTokens[0]!)).toBe(
+      "auth",
+    );
+  });
+
+  it("keeps universal backend aliases out of local required terms", () => {
+    const parsed = parseWorkSearchQuery("since:7d session:session-1 auth");
+
+    expect(parsed.terms).toEqual(["auth"]);
+    expect(parsed.backendQuery).toBe("since:7d session:session-1 auth");
+  });
+
   it("keeps kind aliases local and fans repeated lanes out for backend search", () => {
     const parsed = parseWorkSearchQuery("kind:chat lane:auth lane:payments");
 

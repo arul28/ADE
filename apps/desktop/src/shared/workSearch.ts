@@ -19,6 +19,8 @@ export type WorkSearchFilterToken = {
   key: WorkSearchFilterKey;
   value: string;
   raw: string;
+  /** Position within a comma-separated filter token. */
+  valueIndex: number;
 };
 
 export type ParsedWorkSearch = {
@@ -100,9 +102,14 @@ export function parseWorkSearchQuery(query: string): ParsedWorkSearch {
     if (token.key && isWorkSearchFilterKey(token.key)) {
       const key = token.key;
       const values = value.split(",").map(tokenValue).filter(Boolean);
-      for (const filterValue of values) {
+      for (const [valueIndex, filterValue] of values.entries()) {
         filters[key].push(filterValue);
-        filterTokens.push({ key, value: filterValue, raw: token.raw });
+        filterTokens.push({
+          key,
+          value: filterValue,
+          raw: token.raw,
+          valueIndex,
+        });
       }
       // `lane:` is understood by the universal index too. Keep each value so
       // the backend can be queried once per lane; its parser stores one lane
@@ -116,9 +123,14 @@ export function parseWorkSearchQuery(query: string): ParsedWorkSearch {
     // hits instead of treating "chat" as ordinary free text.
     if (token.key === "kind") {
       const values = value.split(",").map(tokenValue).filter(Boolean);
-      for (const filterValue of values) {
+      for (const [valueIndex, filterValue] of values.entries()) {
         filters.type.push(filterValue);
-        filterTokens.push({ key: "type", value: filterValue, raw: token.raw });
+        filterTokens.push({
+          key: "type",
+          value: filterValue,
+          raw: token.raw,
+          valueIndex,
+        });
       }
       backendTokens.push(token.raw);
       continue;
@@ -126,6 +138,15 @@ export function parseWorkSearchQuery(query: string): ParsedWorkSearch {
 
     if (token.key === "tracked") {
       tracked = value;
+      continue;
+    }
+
+    // These are valid universal-search filters, but Work does not have a
+    // local representation for their semantics. Preserve them for the
+    // backend without making values such as "7d" or a session id required
+    // words in cached Work rows.
+    if (token.key === "since" || token.key === "session") {
+      backendTokens.push(token.raw);
       continue;
     }
 
@@ -235,6 +256,28 @@ export function removeWorkSearchFilterToken(
 ): string {
   const index = query.toLowerCase().indexOf(token.raw.toLowerCase());
   if (index < 0) return query;
+
+  const colon = token.raw.indexOf(":");
+  const rawValues = colon >= 0 ? token.raw.slice(colon + 1).split(",") : [];
+  if (rawValues.length > 1) {
+    const valueIndex = Math.min(token.valueIndex, rawValues.length - 1);
+    const valueStart = index + colon + 1;
+    const partStart = valueStart
+      + rawValues
+        .slice(0, valueIndex)
+        .reduce((offset, part) => offset + part.length + 1, 0);
+    const partEnd = partStart + rawValues[valueIndex]!.length;
+    const removeStart = valueIndex === rawValues.length - 1
+      ? partStart - 1
+      : partStart;
+    const removeEnd = valueIndex === rawValues.length - 1
+      ? partEnd
+      : partEnd + 1;
+    return `${query.slice(0, removeStart)}${query.slice(removeEnd)}`
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   return `${query.slice(0, index)} ${query.slice(index + token.raw.length)}`
     .replace(/\s+/g, " ")
     .trim();

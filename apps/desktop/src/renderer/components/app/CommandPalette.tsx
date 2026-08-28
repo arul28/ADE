@@ -1329,11 +1329,14 @@ export function CommandPalette({
 
   const clearWorkFilters = useCallback(() => {
     setQ((current) => {
-      const parsed = parseWorkSearchQuery(current);
-      return parsed.filterTokens.reduce(
-        (next, token) => removeWorkSearchFilterToken(next, token),
-        current,
-      );
+      let next = current;
+      while (true) {
+        const token = parseWorkSearchQuery(next).filterTokens[0];
+        if (!token) return next;
+        const updated = removeWorkSearchFilterToken(next, token);
+        if (updated === next) return next;
+        next = updated;
+      }
     });
     setSelectedIdx(0);
   }, []);

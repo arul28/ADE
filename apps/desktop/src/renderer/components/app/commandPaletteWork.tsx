@@ -319,6 +319,14 @@ export function buildWorkResults({
         parsedWorkQuery.tracked !== null
       ) continue;
     }
+    // A content result without an owning session cannot prove provider,
+    // status, type, or machine facets. Do not let it bypass a local facet just
+    // because the backend omitted sessionId.
+    if (
+      !item.sessionId &&
+      (parsedWorkQuery.filterTokens.length > 0 ||
+        parsedWorkQuery.tracked !== null)
+    ) continue;
     if (contentIds.has(item.id)) continue;
     contentIds.add(item.id);
     merged.push({
@@ -379,15 +387,6 @@ export function useWorkSessionActions({
           binding,
           projectRoot,
         );
-        setWorkViewState(destinationProjectKey, (previous) => ({
-          ...previous,
-          draftKind: "chat",
-          draftLaneId: session.laneId || null,
-          draftMachineId: binding?.kind === "remote" ? binding.targetId : null,
-          orchestratorEnabled: false,
-          activeItemId: null,
-          selectedItemId: null,
-        }));
         const currentProjectKey = projectStateKeyForBinding(
           projectBinding,
           projectRoot,
@@ -400,6 +399,15 @@ export function useWorkSessionActions({
               : switchProjectToPath(binding.rootPath);
         try {
           await switching;
+          setWorkViewState(destinationProjectKey, (previous) => ({
+            ...previous,
+            draftKind: "chat",
+            draftLaneId: session.laneId || null,
+            draftMachineId: binding?.kind === "remote" ? binding.targetId : null,
+            orchestratorEnabled: false,
+            activeItemId: null,
+            selectedItemId: null,
+          }));
           navigate("/work");
           onOpenChange(false);
         } catch (error) {
