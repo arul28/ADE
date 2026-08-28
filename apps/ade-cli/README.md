@@ -491,8 +491,10 @@ ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (
 ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
 ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
 ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
+ade lanes archive lane-id                                  # archive, and bring down the Docker services the lane's env init started (best-effort; a failed teardown still archives)
 ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane history/branch/chat; remove ADE-managed local files
-ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed
+ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed. A recreated worktree re-runs the whole env init before returning; a plain unarchive returns immediately and restarts Docker in the background, so don't assume services are up when the command exits
+ade lanes action initEnv --arg laneId=lane-id              # re-run the full env init (env files, copies, deps, mounts, setup script, docker)
 ade lanes delete lane-id --force --delete-branch
 ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <model> --no-parent
 ade lanes batch-create-from-linear --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'

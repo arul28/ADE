@@ -152,13 +152,45 @@ export function isWindowsPowerShellScript(command: string, platform: NodeJS.Plat
 }
 
 /**
+ * Resolve `powershell.exe` through the kernel's SystemRoot alias rather than
+ * `PATH`, for the same reason as {@link windowsTaskkillCommand}: a bare
+ * `"powershell.exe"` is PATH-relative, and a lane worktree is a repo the user
+ * did not necessarily write — a `powershell.exe` dropped at the repo root wins
+ * resolution when that root is the spawn cwd. `windows-quirks.md` §3 names
+ * trusted-tool resolution as the answer.
+ *
+ * Falls back to the PATH spelling if resolution throws, so a non-standard
+ * Windows install still runs its scripts.
+ *
+ * `platform` is a parameter, like every sibling in this module, so a
+ * cross-platform test can pin the trusted-path behavior instead of only ever
+ * exercising the non-Windows branch on CI. Note it is NOT forwarded to
+ * `resolveTrustedWindowsTool`: that resolver consults the real host, and
+ * telling it "win32" from macOS would send it probing a GLOBALROOT path that
+ * cannot exist there. Off Windows it already returns the deterministic kernel
+ * path, which is what the test asserts on.
+ */
+export function windowsPowerShellCommand(platform: NodeJS.Platform = process.platform): string {
+  if (platform !== "win32") return "powershell.exe";
+  try {
+    return resolveTrustedWindowsTool("powershell");
+  } catch {
+    return "powershell.exe";
+  }
+}
+
+/**
  * `.ps1` shims (npm writes one next to every `.cmd`) cannot be launched by
  * cmd.exe or by `spawn` directly — PowerShell has to interpret them. `-File`
  * keeps the remaining arguments literal rather than re-parsing them as script.
  */
-export function resolveWindowsPowerShellInvocation(command: string, args: string[]): SpawnInvocation {
+export function resolveWindowsPowerShellInvocation(
+  command: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+): SpawnInvocation {
   return {
-    command: "powershell.exe",
+    command: windowsPowerShellCommand(platform),
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", command, ...args],
     windowsVerbatimArguments: false,
   };
@@ -171,7 +203,7 @@ export function resolveCliSpawnInvocation(
   platform: NodeJS.Platform = process.platform,
 ): SpawnInvocation {
   if (isWindowsPowerShellScript(command, platform)) {
-    return resolveWindowsPowerShellInvocation(command, args);
+    return resolveWindowsPowerShellInvocation(command, args, platform);
   }
   if (shouldUseWindowsCmdWrapper(command, platform)) {
     return resolveWindowsCmdInvocation(command, args, env);

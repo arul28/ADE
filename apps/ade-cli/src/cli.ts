@@ -1788,11 +1788,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes import --branch <branch>            Create a lane for an existing branch, checked out in a new managed
                                                     worktree (fails if the branch is already checked out somewhere —
                                                     that worktree is already a lane)
-    $ ade lanes archive <lane>                      Archive a lane in ADE
+    $ ade lanes archive <lane>                      Archive a lane in ADE; also brings down the Docker services
+                                                    its env init started (best-effort — a failed teardown still archives)
     $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
     $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
                                                     Archive the lane, then remove its ADE-managed local files
-    $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed
+    $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed.
+                                                    Docker comes back up too: a recreated worktree re-runs the whole
+                                                    env init before returning, a plain unarchive returns immediately
+                                                    and restarts Docker in the background (watch lane env init events).
+                                                    Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>

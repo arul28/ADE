@@ -147,12 +147,54 @@ type LaneEnvInitConfig = {
   dependencies?: LaneDependencyInstallConfig[];
   mountPoints?: LaneMountPointConfig[];
   copyPaths?: LaneCopyPathConfig[];
+  setupScript?: LaneSetupScriptConfig;
 };
 ```
 
 Runs when a lane is created. Copies templated env files, starts
 docker-compose services, runs install commands, mounts agent profile
-paths, and copies project-level files into the worktree.
+paths, copies project-level files into the worktree, and finally runs
+the setup script when one is configured.
+
+Every field here, including `copyPaths` and `setupScript`, can be
+authored directly in `ade.yaml` / `local.yaml` as well as carried in
+from a lane template; when both a project-level and a template/overlay
+setup script exist the more specific one wins, and `copyPaths`
+concatenate. Because `ade.yaml` is shared (repo-committed), the
+setup-script step is gated on the shared config being trusted — see
+[`lanes/runtime.md`](../lanes/runtime.md#setup-script-execution) for the
+trust gate, shell semantics, available environment variables, and
+failure behavior.
+
+```ts
+type LaneSetupScriptConfig = {
+  commands?: string[];          // shell command lines, run in order
+  unixCommands?: string[];      // used on macOS/Linux instead of `commands`
+  windowsCommands?: string[];   // used on Windows instead of `commands`
+  scriptPath?: string;          // relative to the project root, run last
+  unixScriptPath?: string;
+  windowsScriptPath?: string;
+  injectPrimaryPath?: boolean;  // expose $PRIMARY_WORKTREE_PATH
+};
+```
+
+`laneSetupScriptHasWork(script)` (exported from
+`src/shared/types/config.ts`) is the shared "is a script configured at
+all" predicate: true when any command list or script path is non-empty
+after trimming, on any platform. Config parsing, normalization, and the
+template editor all use it, so a config carrying only
+`injectPrimaryPath` is dropped rather than persisted as a step that
+always succeeds without doing anything — and a `windowsCommands`-only
+script saved on macOS is not silently thrown away. Choosing what to run
+on *this* machine is a separate, platform-aware question answered by
+`resolveSetupScriptConfig`.
+
+Config parsing coerces every one of these fields (and `copyPaths`) on
+`laneEnvInit`, on `laneOverlayPolicies[].overrides.envInit`, and on
+`laneTemplates[]`. All three scopes merge through one kernel,
+`services/lanes/laneEnvInitMerge.ts`, rather than per-call-site copies:
+list fields concatenate, `docker` shallow-merges, and `setupScript` is
+last-wins.
 
 ## Lane templates
 
@@ -172,7 +214,14 @@ type LaneTemplate = {
 };
 ```
 
-Templates provide a reusable init recipe. `defaultLaneTemplate` (a
+Templates provide a reusable init recipe. `copyPaths` and `setupScript`
+round-trip through `local.yaml` / `ade.yaml` and are applied with the
+rest of the recipe. `portRange` is only a fallback for a lane that holds
+no port lease: lane creation takes a lease before the template is
+applied, and the lease always outranks the template value — so hand-
+editing `portRange` in YAML will not move a normally created lane's
+ports. Use `laneOverlayPolicies[].overrides.portRange` to pin a range.
+`defaultLaneTemplate` (a
 template id) is applied to new lanes. `NO_DEFAULT_LANE_TEMPLATE = "__ade_none__"`
 is a sentinel for explicitly overriding an inherited shared default
 back to "none" in `local.yaml`.
@@ -379,6 +428,29 @@ approved. `ProjectConfigTrust` tracks:
 
 `getExecutableConfig()` throws if `requiresSharedTrust` is true —
 callers that bypass must use `{ skipTrust: true }` deliberately.
+
+### What a save does to trust
+
+`save` takes both scopes, so a local-only writer
+(`laneTemplateService.saveTemplate` / `deleteTemplate` /
+`setDefaultTemplateId`, `setPrTranscriptGists`) still round-trips the
+loaded shared snapshot back to disk. Approving on every save therefore
+meant editing one lane template silently trusted an unreviewed,
+repo-committed `.ade/ade.yaml` — exactly the file the setup-script trust
+gate exists to stop. A save now re-approves the shared scope only when
+one of two things is true:
+
+- **The shared scope was actually edited.** The pre-write file is parsed
+  and re-serialized before comparing, so a formatting-only rewrite of an
+  untrusted file does not count as an edit.
+- **The pre-write bytes were already the trusted ones.** Trust is a hash
+  of raw bytes and every save rewrites `ade.yaml` as canonical YAML, so
+  without this a local-only save of a hand-formatted but already-trusted
+  file would revoke trust and pop the gate with no user action.
+  Re-affirming content the user already approved approves nothing new.
+
+An untrusted shared config that a save merely passed through stays
+untrusted. Both decisions are logged with the save.
 
 The trust confirmation dialog in `SettingsPage` calls `projectConfigService.confirmTrust()`, which
 writes the new approved hash. The Automations tab exposes the same

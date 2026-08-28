@@ -3084,8 +3084,15 @@ describe("lanes.unarchive", () => {
       rangeEnd: 4199,
       status: "active",
     };
-    const getLease = vi.fn().mockReturnValue(null);
-    const acquire = vi.fn().mockReturnValue(lease);
+    // Allocator fake that behaves like the real one: nothing held until
+    // `acquire`, the acquired lease afterwards — the overlay context reads the
+    // lease back off the allocator rather than being handed one.
+    let held: typeof lease | null = null;
+    const getLease = vi.fn(() => held);
+    const acquire = vi.fn(() => {
+      held = lease;
+      return lease;
+    });
     const getEffective = vi.fn().mockReturnValue({
       laneEnvInit: null,
       laneOverlayPolicies: [],

@@ -38,7 +38,14 @@ export function LaneEnvInitProgressPanel({ progress }: { progress: EnvInitProgre
               <span className="text-muted-fg/60 ml-auto">{(step.durationMs / 1000).toFixed(1)}s</span>
             )}
             {step.error && (
-              <span className="text-red-400/80 ml-auto max-w-[400px] break-words" title={step.error}>{step.error}</span>
+              // `skipped` carries a reason, not a fault — a step the user's own
+              // archive or delete cancelled is not a red failure.
+              <span
+                className={`ml-auto max-w-[400px] break-words ${step.status === "skipped" ? "text-muted-fg" : "text-red-400/80"}`}
+                title={step.error}
+              >
+                {step.error}
+              </span>
             )}
           </div>
         ))}
