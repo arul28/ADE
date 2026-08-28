@@ -2,23 +2,22 @@ import type {
   LaneDockerConfig,
   LaneEnvInitConfig,
   LaneOverlayOverrides,
-  LaneOverlayPolicy,
-  LaneSummary,
-  PortLease,
 } from "../../../shared/types";
-import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
 
 /**
- * One implementation of "merge two lane env-init configs" and one of "resolve
- * the effective env-init context for a lane".
+ * The lane env-init merge kernel: pure data merging, no service dependencies.
  *
- * These used to be hand-copied into four files (`laneEnvironmentService`,
- * `registerIpc`, `adeActions/registry`, and the ade-cli
+ * These used to be hand-copied into five files (`laneEnvironmentService`,
+ * `projectConfigService`, `registerIpc`, `adeActions/registry`, and the ade-cli
  * `syncRemoteCommandService`). Every field added to `LaneEnvInitConfig` had to
- * be added four times, and the copies had already drifted — `copyPaths` and
+ * be added five times, and the copies had already drifted — `copyPaths` and
  * `setupScript` reached some merges and not others. The ade-cli already imports
  * desktop lane services through `bootstrap.ts`, so a single desktop-side module
  * is reachable from every host.
+ *
+ * Keep this module dependency-free: `projectConfigService` imports it, and the
+ * service-dependent overlay resolver lives in `laneOverlayContext.ts` precisely
+ * so config parsing does not have to pull the lane services in.
  */
 
 function cloneDockerConfig(config: LaneDockerConfig): LaneDockerConfig {
@@ -72,70 +71,26 @@ export function mergeLaneEnvInitConfig(
   };
 }
 
-export function applyLeaseToOverrides(
-  overrides: LaneOverlayOverrides,
-  lease: PortLease | null,
-): LaneOverlayOverrides {
-  if (!lease || lease.status !== "active" || overrides.portRange) {
-    return { ...overrides };
-  }
-  return {
-    ...overrides,
-    portRange: { start: lease.rangeStart, end: lease.rangeEnd },
-  };
-}
-
-export type LaneOverlayContextDependencies = {
-  laneService: {
-    list: (options: { includeArchived?: boolean; includeStatus: boolean }) => Promise<LaneSummary[]>;
-  };
-  projectConfigService: {
-    getEffective: () => {
-      laneEnvInit?: LaneEnvInitConfig;
-      laneOverlayPolicies?: LaneOverlayPolicy[];
-    };
-  };
-  portAllocationService?: { getLease: (laneId: string) => PortLease | null } | null;
-  laneEnvironmentService?: {
-    resolveEnvInitConfig: (
-      config: LaneEnvInitConfig | undefined,
-      overrides: LaneOverlayOverrides,
-    ) => LaneEnvInitConfig | undefined;
-  } | null;
-};
-
-export type LaneOverlayContext = {
-  lane: LaneSummary;
-  overrides: LaneOverlayOverrides;
-  envInitConfig: LaneEnvInitConfig | undefined;
-  lease: PortLease | null;
-};
-
 /**
- * Resolve the lane, its overlay overrides (with an active port lease folded in)
- * and the effective env-init config in one place, so archive/delete/reclaim and
- * env-init all see the same answer on every host.
+ * Layer a partial set of overlay overrides (a template being applied) onto the
+ * lane's resolved overrides: scalars from `next` win, `env` maps union, and the
+ * env-init configs merge through the kernel above.
+ *
+ * Byte-identical in all three hosts before this move, which is how the IPC host
+ * and the sync host could have drifted on what applying a template means.
  */
-export async function resolveLaneOverlayContext(
-  dependencies: LaneOverlayContextDependencies,
-  laneId: string,
-  options: { includeArchived?: boolean } = {},
-): Promise<LaneOverlayContext> {
-  const lanes = await dependencies.laneService.list({
-    includeStatus: false,
-    ...(options.includeArchived === true ? { includeArchived: true } : {}),
-  });
-  const lane = lanes.find((entry) => entry.id === laneId);
-  if (!lane) throw new Error(`Lane not found: ${laneId}`);
-
-  const config = dependencies.projectConfigService.getEffective();
-  const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
-  const lease = dependencies.portAllocationService?.getLease(lane.id) ?? null;
-  const overrides = applyLeaseToOverrides(overlayOverrides, lease);
-  const envInitConfig = dependencies.laneEnvironmentService?.resolveEnvInitConfig(
-    config.laneEnvInit,
-    overrides,
-  );
-
-  return { lane, overrides, envInitConfig, lease };
+export function mergeLaneOverrides(
+  base: LaneOverlayOverrides,
+  next: Partial<LaneOverlayOverrides>,
+): LaneOverlayOverrides {
+  const envInit = mergeLaneEnvInitConfig(base.envInit, next.envInit);
+  return {
+    ...base,
+    ...next,
+    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
+    ...(base.testSuiteIds || next.testSuiteIds
+      ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] }
+      : {}),
+    ...(envInit ? { envInit } : {}),
+  };
 }

@@ -4043,19 +4043,29 @@ export function createLaneService({
   };
 
   /**
-   * The archive itself, with no environment teardown: guards, stop the lane's
-   * running work, write the archived status, invalidate caches, announce it.
+   * The archive itself: stop the lane's running work, run whatever the caller
+   * wants done between that and the status write, then write the archived
+   * status, invalidate caches, announce it.
    *
-   * `archiveAndReclaim` calls this directly because it runs its own environment
-   * teardown; the public `archive` wraps it with the late-bound teardown hook.
+   * Takes the already-validated row rather than re-reading it: the caller
+   * guards first, and `archive` awaits a teardown in between, so a second read
+   * here could find the lane gone and throw "Lane not found" out of an archive
+   * that had already stopped the lane's work.
+   *
+   * `afterStopWork` is how the public `archive` gets its environment teardown to
+   * run AFTER the processes are stopped — a `compose down` racing live PTYs
+   * still bound to the stack is how services came back up half-dead.
+   * `archiveAndReclaim` passes nothing and runs its own teardown later.
    */
-  const archiveLaneCore = async (laneId: string): Promise<void> => {
-    const row = readArchivableLaneRow(laneId);
-    if (!row) return;
-
+  const archiveLaneCore = async (
+    laneId: string,
+    row: LaneRow,
+    options: { afterStopWork?: () => Promise<void> } = {},
+  ): Promise<void> => {
     // Before the status write, so a failure leaves the lane visible and still
     // owned rather than hidden with live processes behind it.
     await stopLaneRuntimeWork(laneId);
+    await options.afterStopWork?.();
 
     const now = new Date().toISOString();
     db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
@@ -6713,7 +6723,8 @@ export function createLaneService({
         // `teardownEnv` below already runs the environment cleanup for this
         // path, so this goes straight to the core and never fires the archive
         // hook — otherwise `compose down` would run twice.
-        await archiveLaneCore(args.laneId);
+        const archivableRow = readArchivableLaneRow(args.laneId);
+        if (archivableRow) await archiveLaneCore(args.laneId, archivableRow);
         runtimeOpts?.onArchived?.();
         db.run(
           `insert into local_lane_storage_state(
@@ -6877,25 +6888,34 @@ export function createLaneService({
     async archive({ laneId }: { laneId: string }): Promise<void> {
       // Guards first: a lane that cannot be archived must not have its Docker
       // stack pulled out from under it on the way to the error.
-      if (!readArchivableLaneRow(laneId)) return;
+      const row = readArchivableLaneRow(laneId);
+      if (!row) return;
 
-      // Docker services the lane's env init started come down with it, keeping
-      // archive symmetric with the `compose up` unarchive re-runs. Best-effort:
-      // archive still succeeds if teardown fails, and it runs before the status
-      // write so a failure leaves the lane visible rather than hidden with live
-      // services behind it.
-      if (onLaneArchivedEnvTeardown) {
-        try {
-          await onLaneArchivedEnvTeardown(laneId);
-        } catch (error) {
-          logger.warn("lane.archive.env_teardown_failed", {
-            laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-
-      await archiveLaneCore(laneId);
+      // Captured: the hook is late-bound (`let`), and reading it once keeps the
+      // callback below from racing a rebind between the guard and the call.
+      const teardownEnv = onLaneArchivedEnvTeardown;
+      await archiveLaneCore(laneId, row, {
+        // Docker services the lane's env init started come down with it,
+        // keeping archive symmetric with the `compose up` unarchive re-runs.
+        //
+        // Ordering: AFTER the lane's chats/PTYs/watchers are stopped, so
+        // `compose down` cannot race processes still bound to the stack, and
+        // BEFORE the status write, so a failure leaves the lane visible rather
+        // than hidden with live services behind it. Best-effort — archive still
+        // succeeds if teardown fails.
+        afterStopWork: teardownEnv
+          ? async () => {
+            try {
+              await teardownEnv(laneId);
+            } catch (error) {
+              logger.warn("lane.archive.env_teardown_failed", {
+                laneId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          : undefined,
+      });
     },
 
     async unarchive({ laneId }: { laneId: string }): Promise<RestoreLaneResult> {

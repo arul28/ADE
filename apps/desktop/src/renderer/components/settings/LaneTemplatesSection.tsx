@@ -9,6 +9,7 @@ import {
   cardStyle,
 } from "../lanes/laneDesignTokens";
 import { SettingsDisclosure, SettingsToggle } from "./primitives";
+import { laneSetupScriptHasWork } from "../../../shared/types";
 import type {
   LaneTemplate,
   LaneCopyPathConfig,
@@ -147,20 +148,51 @@ function compact<T extends Record<string, unknown>>(obj: T): T {
 }
 
 /**
- * A setup script only does something when it has at least one command or a
- * script path on some platform. A config carrying nothing but
- * `injectPrimaryPath` runs no script, so it must not be shown as one.
+ * The setup-script half of the editor, as one form-state object. Kept flat and
+ * string-shaped (not `LaneSetupScriptConfig`) because these are raw textarea
+ * and input values — parsing into commands only happens on save.
  */
-function hasRunnableSetupScript(script: LaneSetupScriptConfig | undefined | null): boolean {
-  if (!script) return false;
-  return (
-    (script.commands?.length ?? 0) > 0 ||
-    (script.unixCommands?.length ?? 0) > 0 ||
-    (script.windowsCommands?.length ?? 0) > 0 ||
-    !!script.scriptPath?.trim() ||
-    !!script.unixScriptPath?.trim() ||
-    !!script.windowsScriptPath?.trim()
-  );
+type SetupScriptForm = {
+  commands: string;
+  scriptPath: string;
+  injectPrimaryPath: boolean;
+  unixCommands: string;
+  unixScriptPath: string;
+  windowsCommands: string;
+  windowsScriptPath: string;
+};
+
+function setupScriptFormFrom(script: LaneSetupScriptConfig | undefined): SetupScriptForm {
+  return {
+    commands: script?.commands?.join("\n") ?? "",
+    scriptPath: script?.scriptPath ?? "",
+    injectPrimaryPath: script?.injectPrimaryPath ?? false,
+    unixCommands: script?.unixCommands?.join("\n") ?? "",
+    unixScriptPath: script?.unixScriptPath ?? "",
+    windowsCommands: script?.windowsCommands?.join("\n") ?? "",
+    windowsScriptPath: script?.windowsScriptPath ?? "",
+  };
+}
+
+/**
+ * Turns the editor's raw text back into a config, or `undefined` when nothing in
+ * it would actually run. The same predicate the card's "setup script" chip uses
+ * decides that, so the editor and the card can never disagree.
+ */
+function setupScriptFromForm(form: SetupScriptForm): LaneSetupScriptConfig | undefined {
+  const commands = parseLines(form.commands);
+  const unixCommands = parseLines(form.unixCommands);
+  const windowsCommands = parseLines(form.windowsCommands);
+  const script: LaneSetupScriptConfig = compact({
+    commands: commands.length > 0 ? commands : undefined,
+    unixCommands: unixCommands.length > 0 ? unixCommands : undefined,
+    windowsCommands: windowsCommands.length > 0 ? windowsCommands : undefined,
+    scriptPath: form.scriptPath.trim() || undefined,
+    unixScriptPath: form.unixScriptPath.trim() || undefined,
+    windowsScriptPath: form.windowsScriptPath.trim() || undefined,
+    injectPrimaryPath: form.injectPrimaryPath || undefined,
+  });
+  return laneSetupScriptHasWork(script) ? script : undefined;
 }
 
 function updateAt<T>(items: T[], index: number, patch: Partial<T>): T[] {
@@ -335,7 +367,7 @@ function TemplateCard({
   if (template.copyPaths?.length) features.push(pluralize(template.copyPaths.length, "file"));
   if (template.envFiles?.length) features.push(pluralize(template.envFiles.length, "env file"));
   if (template.dependencies?.length) features.push(pluralize(template.dependencies.length, "install"));
-  if (hasRunnableSetupScript(template.setupScript)) features.push("setup script");
+  if (laneSetupScriptHasWork(template.setupScript)) features.push("setup script");
   if (template.mountPoints?.length) features.push(pluralize(template.mountPoints.length, "mount"));
   if (template.docker?.composePath) features.push("docker");
   if (template.envVars && Object.keys(template.envVars).length > 0) features.push("env vars");
@@ -395,7 +427,7 @@ function TemplateCard({
           {template.dependencies && template.dependencies.length > 0 && (
             <ConfigRow label="Install" items={template.dependencies.map((d) => d.command.join(" "))} />
           )}
-          {hasRunnableSetupScript(template.setupScript) && template.setupScript && (
+          {laneSetupScriptHasWork(template.setupScript) && template.setupScript && (
             <SetupScriptPreview script={template.setupScript} />
           )}
           {template.mountPoints && template.mountPoints.length > 0 && (
@@ -484,13 +516,12 @@ function TemplateEditor({
   const [dockerServices, setDockerServices] = useState(initial.docker?.services?.join(", ") ?? "");
 
   // Setup script state — one set of commands by default, per-platform variants on demand
-  const [setupCommands, setSetupCommands] = useState(initial.setupScript?.commands?.join("\n") ?? "");
-  const [setupUnixCommands, setSetupUnixCommands] = useState(initial.setupScript?.unixCommands?.join("\n") ?? "");
-  const [setupWindowsCommands, setSetupWindowsCommands] = useState(initial.setupScript?.windowsCommands?.join("\n") ?? "");
-  const [setupScriptPath, setSetupScriptPath] = useState(initial.setupScript?.scriptPath ?? "");
-  const [setupUnixScriptPath, setSetupUnixScriptPath] = useState(initial.setupScript?.unixScriptPath ?? "");
-  const [setupWindowsScriptPath, setSetupWindowsScriptPath] = useState(initial.setupScript?.windowsScriptPath ?? "");
-  const [setupInjectPrimaryPath, setSetupInjectPrimaryPath] = useState(initial.setupScript?.injectPrimaryPath ?? false);
+  const [setupScriptForm, setSetupScriptForm] = useState<SetupScriptForm>(() =>
+    setupScriptFormFrom(initial.setupScript)
+  );
+  const patchSetupScript = useCallback((patch: Partial<SetupScriptForm>) => {
+    setSetupScriptForm((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   // Per-platform variants and the advanced block start open only when they
   // already hold something, so an existing template never hides its own config.
@@ -510,28 +541,7 @@ function TemplateEditor({
   function handleSubmit() {
     if (!name.trim()) return;
 
-    const setupCmds = parseLines(setupCommands);
-    const setupUnixCmds = parseLines(setupUnixCommands);
-    const setupWinCmds = parseLines(setupWindowsCommands);
-    const hasSetupScript =
-      setupCmds.length > 0 ||
-      setupUnixCmds.length > 0 ||
-      setupWinCmds.length > 0 ||
-      setupScriptPath.trim() ||
-      setupUnixScriptPath.trim() ||
-      setupWindowsScriptPath.trim();
-
-    const setupScript: LaneSetupScriptConfig | undefined = hasSetupScript
-      ? compact({
-          commands: setupCmds.length > 0 ? setupCmds : undefined,
-          unixCommands: setupUnixCmds.length > 0 ? setupUnixCmds : undefined,
-          windowsCommands: setupWinCmds.length > 0 ? setupWinCmds : undefined,
-          scriptPath: setupScriptPath.trim() || undefined,
-          unixScriptPath: setupUnixScriptPath.trim() || undefined,
-          windowsScriptPath: setupWindowsScriptPath.trim() || undefined,
-          injectPrimaryPath: setupInjectPrimaryPath || undefined,
-        })
-      : undefined;
+    const setupScript = setupScriptFromForm(setupScriptForm);
 
     const filteredEnvVars = envVars.filter((v) => v.key.trim());
     const dockerServicesList = dockerServices.split(",").map((s) => s.trim()).filter(Boolean);
@@ -710,21 +720,9 @@ function TemplateEditor({
         </Field>
 
         <SetupScriptFields
-          commands={setupCommands}
-          onCommands={setSetupCommands}
-          scriptPath={setupScriptPath}
-          onScriptPath={setSetupScriptPath}
-          injectPrimaryPath={setupInjectPrimaryPath}
-          onInjectPrimaryPath={setSetupInjectPrimaryPath}
-          unixCommands={setupUnixCommands}
-          onUnixCommands={setSetupUnixCommands}
-          unixScriptPath={setupUnixScriptPath}
-          onUnixScriptPath={setSetupUnixScriptPath}
-          windowsCommands={setupWindowsCommands}
-          onWindowsCommands={setSetupWindowsCommands}
-          windowsScriptPath={setupWindowsScriptPath}
-          onWindowsScriptPath={setSetupWindowsScriptPath}
-          platformVariantsOpen={hasPlatformVariants}
+          value={setupScriptForm}
+          onChange={patchSetupScript}
+          defaultOpen={hasPlatformVariants}
         />
 
         <AdvancedFields
@@ -747,40 +745,28 @@ function TemplateEditor({
 // Editor blocks
 // ---------------------------------------------------------------------------
 
-/** The setup-script half of the editor: commands, script file, platform variants. */
+/**
+ * The setup-script half of the editor: commands, script file, platform variants.
+ * `defaultOpen` controls the per-platform disclosure only.
+ */
 function SetupScriptFields({
-  commands,
-  onCommands,
-  scriptPath,
-  onScriptPath,
-  injectPrimaryPath,
-  onInjectPrimaryPath,
-  unixCommands,
-  onUnixCommands,
-  unixScriptPath,
-  onUnixScriptPath,
-  windowsCommands,
-  onWindowsCommands,
-  windowsScriptPath,
-  onWindowsScriptPath,
-  platformVariantsOpen,
+  value,
+  onChange,
+  defaultOpen,
 }: {
-  commands: string;
-  onCommands: (value: string) => void;
-  scriptPath: string;
-  onScriptPath: (value: string) => void;
-  injectPrimaryPath: boolean;
-  onInjectPrimaryPath: (value: boolean) => void;
-  unixCommands: string;
-  onUnixCommands: (value: string) => void;
-  unixScriptPath: string;
-  onUnixScriptPath: (value: string) => void;
-  windowsCommands: string;
-  onWindowsCommands: (value: string) => void;
-  windowsScriptPath: string;
-  onWindowsScriptPath: (value: string) => void;
-  platformVariantsOpen: boolean;
+  value: SetupScriptForm;
+  onChange: (patch: Partial<SetupScriptForm>) => void;
+  defaultOpen: boolean;
 }) {
+  const {
+    commands,
+    scriptPath,
+    injectPrimaryPath,
+    unixCommands,
+    unixScriptPath,
+    windowsCommands,
+    windowsScriptPath,
+  } = value;
   return (
     <Field
       label="Setup script"
@@ -791,7 +777,7 @@ function SetupScriptFields({
           <textarea
             style={textareaStyle}
             value={commands}
-            onChange={(e) => onCommands(e.target.value)}
+            onChange={(e) => onChange({ commands: e.target.value })}
             placeholder={"npm run bootstrap\ncp $PRIMARY_WORKTREE_PATH/.env .env"}
             rows={3}
           />
@@ -806,7 +792,7 @@ function SetupScriptFields({
           <input
             style={monoInputStyle}
             value={scriptPath}
-            onChange={(e) => onScriptPath(e.target.value)}
+            onChange={(e) => onChange({ scriptPath: e.target.value })}
             placeholder="scripts/setup-lane.sh"
           />
           <div style={hintStyle}>
@@ -834,13 +820,13 @@ function SetupScriptFields({
           </div>
           <SettingsToggle
             checked={injectPrimaryPath}
-            onChange={onInjectPrimaryPath}
+            onChange={(next) => onChange({ injectPrimaryPath: next })}
             label="Pass the main folder path"
           />
         </div>
 
         {/* Per-platform variants — the script that runs depends on the OS */}
-        <SettingsDisclosure summary="Different commands on Windows" defaultOpen={platformVariantsOpen}>
+        <SettingsDisclosure summary="Different commands on Windows" defaultOpen={defaultOpen}>
           <div style={{ ...hintStyle, marginTop: 0 }}>
             When set, these run instead of the commands above on that platform.
           </div>
@@ -850,7 +836,7 @@ function SetupScriptFields({
               <textarea
                 style={{ ...textareaStyle, minHeight: 48 }}
                 value={unixCommands}
-                onChange={(e) => onUnixCommands(e.target.value)}
+                onChange={(e) => onChange({ unixCommands: e.target.value })}
                 placeholder={"chmod +x scripts/setup.sh\n./scripts/setup.sh"}
                 rows={2}
               />
@@ -859,7 +845,7 @@ function SetupScriptFields({
                 <input
                   style={monoInputStyle}
                   value={unixScriptPath}
-                  onChange={(e) => onUnixScriptPath(e.target.value)}
+                  onChange={(e) => onChange({ unixScriptPath: e.target.value })}
                   placeholder="scripts/setup-lane.sh"
                 />
               </div>
@@ -869,7 +855,7 @@ function SetupScriptFields({
               <textarea
                 style={{ ...textareaStyle, minHeight: 48 }}
                 value={windowsCommands}
-                onChange={(e) => onWindowsCommands(e.target.value)}
+                onChange={(e) => onChange({ windowsCommands: e.target.value })}
                 placeholder="powershell -File scripts\setup.ps1"
                 rows={2}
               />
@@ -878,7 +864,7 @@ function SetupScriptFields({
                 <input
                   style={monoInputStyle}
                   value={windowsScriptPath}
-                  onChange={(e) => onWindowsScriptPath(e.target.value)}
+                  onChange={(e) => onChange({ windowsScriptPath: e.target.value })}
                   placeholder="scripts\setup-lane.ps1"
                 />
               </div>

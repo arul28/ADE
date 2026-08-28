@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createLaneTemplateService } from "./laneTemplateService";
-import { resolveSetupScriptConfig } from "./setupScriptConfig";
+import { resolveSetupScriptConfig, unsupportedWindowsScriptPathError } from "./setupScriptConfig";
 import type {
   LaneTemplate,
   EffectiveProjectConfig,
@@ -611,6 +611,33 @@ describe("laneTemplateService", () => {
       expect(result).not.toBeNull();
       expect(result!.commands).toEqual(["powershell setup.ps1"]);
       expect(result!.scriptPath).toBe("scripts/win-setup.ps1");
+    });
+  });
+
+  describe("unsupportedWindowsScriptPathError", () => {
+    it("names the fix when Windows falls back to a script it cannot execute", () => {
+      // A template with only a generic `scriptPath: scripts/setup.sh` resolves
+      // to that .sh on win32. Spawning it there dies with a raw ENOEXEC that
+      // reads as an ADE bug, so the step has to say what to configure instead.
+      const message = unsupportedWindowsScriptPathError("scripts/setup.sh", "win32");
+
+      expect(message).toContain("scripts/setup.sh");
+      expect(message).toContain("windowsScriptPath");
+    });
+
+    it("rejects an extension-less script on Windows", () => {
+      expect(unsupportedWindowsScriptPathError("scripts/setup", "win32")).toContain("windowsScriptPath");
+    });
+
+    it("allows the extensions Windows can actually launch", () => {
+      for (const script of ["scripts\\setup.ps1", "setup.CMD", "setup.bat", "C:\\tools\\setup.exe"]) {
+        expect(unsupportedWindowsScriptPathError(script, "win32")).toBeNull();
+      }
+    });
+
+    it("never blocks a POSIX script, where the shebang decides", () => {
+      expect(unsupportedWindowsScriptPathError("scripts/setup.sh", "darwin")).toBeNull();
+      expect(unsupportedWindowsScriptPathError("scripts/setup", "linux")).toBeNull();
     });
   });
 });

@@ -29,7 +29,11 @@ import {
   type SpawnInvocation,
 } from "../shared/processExecution";
 import { mergeLaneEnvInitConfig } from "./laneEnvInitMerge";
-import { resolveSetupScriptConfig, type ResolvedSetupScript } from "./setupScriptConfig";
+import {
+  resolveSetupScriptConfig,
+  unsupportedWindowsScriptPathError,
+  type ResolvedSetupScript,
+} from "./setupScriptConfig";
 
 /** Resolve a relative path against `root` and throw if it escapes.  Logs a warning on escape. */
 function resolveCheckedPath(
@@ -120,31 +124,9 @@ function buildDockerProjectName(laneId: string, projectPrefix = "ade"): string {
  * `windowsVerbatimArguments`) so `%VAR%` expands the way the template UI
  * promises.
  */
-function resolveShellInvocation(
-  commandLine: string,
-  env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform = process.platform,
-): SpawnInvocation {
-  if (platform === "win32") return resolveWindowsCmdLineInvocation(commandLine, env);
+function resolveShellInvocation(commandLine: string, env: NodeJS.ProcessEnv): SpawnInvocation {
+  if (process.platform === "win32") return resolveWindowsCmdLineInvocation(commandLine, env);
   return { command: "/bin/sh", args: ["-c", commandLine], windowsVerbatimArguments: false };
-}
-
-/**
- * A configured setup SCRIPT FILE is a path, not a command line, so it gets a
- * real `SpawnInvocation` instead of being pasted into a shell string.
- * `resolveCliSpawnInvocation` is the repo's one answer for "spawn this file":
- * `.ps1` goes through an absolutely-resolved PowerShell (`windows-quirks.md`
- * §3/§8) rather than a PATH-relative `powershell.exe` that a file at the lane
- * worktree root could shadow, `.cmd`/`.bat` go through ComSpec, and POSIX keeps
- * invoking the script path directly — which requires the script to be
- * executable and carry a shebang.
- */
-function resolveScriptFileInvocation(
-  scriptPath: string,
-  env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform = process.platform,
-): SpawnInvocation {
-  return resolveCliSpawnInvocation(scriptPath, [], env, platform);
 }
 
 /** Timeout per setup command / script, matching the Docker step's budget. */
@@ -164,7 +146,7 @@ export function createLaneEnvironmentService({
   adeDir,
   logger,
   broadcastEvent,
-  projectConfigService = null
+  projectConfigService
 }: {
   projectRoot: string;
   adeDir: string;
@@ -177,10 +159,11 @@ export function createLaneEnvironmentService({
    * gated the same way test suites are (`getExecutableConfig` throws
    * `ADE_TRUST_REQUIRED` while the shared config is untrusted).
    *
-   * Every production host wires this. `null` disables the gate and exists for
-   * unit tests that construct the service without a config service.
+   * Required, not optional: a security gate whose default is "off" is one
+   * forgotten wiring away from running an untrusted repo's shell. Tests that do
+   * not exercise trust pass `{ getExecutableConfig: () => ({}) }`.
    */
-  projectConfigService?: { getExecutableConfig: () => unknown } | null;
+  projectConfigService: { getExecutableConfig: () => unknown };
 }) {
   // Track in-progress and completed init progress per lane
   const progressMap = new Map<string, LaneEnvInitProgress>();
@@ -455,7 +438,6 @@ export function createLaneEnvironmentService({
    * `ade.yaml`) propagate and fail the step with their own message.
    */
   function blockedBySharedConfigTrust(laneId: string): string | null {
-    if (!projectConfigService) return null;
     try {
       projectConfigService.getExecutableConfig();
       return null;
@@ -497,6 +479,14 @@ export function createLaneEnvironmentService({
     );
 
     if (resolved.scriptPath) {
+      const unsupported = unsupportedWindowsScriptPathError(resolved.scriptPath);
+      if (unsupported) {
+        logger.warn("lane_env_init.setup_script_not_runnable_on_windows", {
+          laneId,
+          scriptPath: resolved.scriptPath,
+        });
+        return unsupported;
+      }
       const scriptPath = resolveCheckedPath(
         projectRoot,
         resolved.scriptPath,
@@ -509,7 +499,16 @@ export function createLaneEnvironmentService({
         logger.warn("lane_env_init.setup_script_missing", { laneId, scriptPath: resolved.scriptPath });
         return `Setup script not found: ${resolved.scriptPath}`;
       }
-      steps.push({ label: scriptPath, invocation: resolveScriptFileInvocation(scriptPath, env) });
+      // A configured setup SCRIPT FILE is a path, not a command line, so it gets
+      // a real `SpawnInvocation` instead of being pasted into a shell string.
+      // `resolveCliSpawnInvocation` is the repo's one answer for "spawn this
+      // file": `.ps1` goes through an absolutely-resolved PowerShell
+      // (`windows-quirks.md` §3/§8) rather than a PATH-relative
+      // `powershell.exe` that a file at the lane worktree root could shadow,
+      // `.cmd`/`.bat` go through ComSpec, and POSIX keeps invoking the script
+      // path directly — which requires the script to be executable and carry a
+      // shebang.
+      steps.push({ label: scriptPath, invocation: resolveCliSpawnInvocation(scriptPath, [], env) });
     }
 
     for (const step of steps) {

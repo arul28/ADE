@@ -128,7 +128,6 @@ import type {
   LaneEnvInitProgress,
   LaneDetailPayload,
   LaneListSnapshot,
-  LaneOverlayOverrides,
   LaneStateSnapshotSummary,
   ListLanesArgs,
   ListIntegrationWorkflowsArgs,
@@ -273,14 +272,15 @@ import type { createAutoRebaseService } from "../../../../desktop/src/main/servi
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import {
   buildLaneEnvTeardown,
-  restoreRecreatedLaneRuntime,
-  restoreUnarchivedLaneDocker,
+  restoreUnarchivedLaneRuntime,
 } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
 import {
-  applyLeaseToOverrides,
   mergeLaneEnvInitConfig,
-  resolveLaneOverlayContext as resolveSharedLaneOverlayContext,
+  mergeLaneOverrides,
 } from "../../../../desktop/src/main/services/lanes/laneEnvInitMerge";
+import {
+  resolveLaneOverlayContext as resolveSharedLaneOverlayContext,
+} from "../../../../desktop/src/main/services/lanes/laneOverlayContext";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
@@ -3492,16 +3492,6 @@ function parseRecheckIntegrationStepArgs(value: Record<string, unknown>): Rechec
   };
 }
 
-function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
-  return {
-    ...base,
-    ...next,
-    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
-    ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
-    ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {}),
-  };
-}
-
 /**
  * Strict resolver for identity-pinned sessions (CTO + worker agents). Never
  * slips a foreign lane through via a `lanes[0]` fallback — if no primary lane
@@ -3527,7 +3517,7 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
 
 /**
  * Thin sync-host adapter over the shared resolver in the desktop
- * `lanes/laneEnvInitMerge` module, so the mobile command path and the desktop
+ * `lanes/laneOverlayContext` module, so the mobile command path and the desktop
  * hosts resolve a lane's env-init config identically.
  */
 async function resolveLaneOverlayContext(
@@ -3584,14 +3574,15 @@ async function unarchiveLaneWithRuntimeSetup(
   const archiveArgs = parseArchiveLaneArgs(payload, "lanes.unarchive");
   const result = await args.laneService.unarchive(archiveArgs);
   try {
-    // Archive brought the lane's Docker stack down. A recreated worktree needs
-    // the whole env init; a plain unarchive only needs its services back —
-    // re-copying files or reinstalling would clobber the worktree.
-    if (result.worktreeRecreated) {
-      await restoreRecreatedLaneRuntime(args, archiveArgs.laneId);
-    } else {
-      await restoreUnarchivedLaneDocker(args, archiveArgs.laneId);
-    }
+    await restoreUnarchivedLaneRuntime(args, archiveArgs.laneId, {
+      worktreeRecreated: result.worktreeRecreated === true,
+      onDockerError: (error) => {
+        args.logger.warn("sync_remote.lane_env_setup.post_unarchive_docker_failed", {
+          laneId: archiveArgs.laneId,
+          err: String(error),
+        });
+      },
+    });
   } catch (error) {
     // Keep the established mobile command response stable. The worktree was
     // restored successfully; environment setup can be retried separately.

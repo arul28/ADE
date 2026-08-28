@@ -5,7 +5,7 @@ import type {
   LaneSummary,
   PortLease,
 } from "../../../shared/types";
-import { resolveLaneOverlayContext } from "./laneEnvInitMerge";
+import { resolveLaneOverlayContext } from "./laneOverlayContext";
 
 type LaneRuntimeLifecycleDependencies = {
   laneService: {
@@ -158,14 +158,16 @@ export async function buildLaneEnvTeardown(
  * auto-archive, storage auto-archive — gets the same teardown that
  * archive-and-reclaim and delete already ran.
  *
- * Resolved while the lane is still active: the caller runs this before the
- * archived status write.
+ * Resolved while the lane is still active — the caller runs this before the
+ * archived status write — but `includeArchived` is passed anyway, as at every
+ * other teardown site: resolution must not start failing if that ordering ever
+ * changes, because the compose stack still needs to come down either way.
  */
 export async function teardownArchivedLaneEnvironment(
   dependencies: LaneEnvTeardownDependencies,
   laneId: string,
 ): Promise<void> {
-  const teardown = await buildLaneEnvTeardown(dependencies, laneId);
+  const teardown = await buildLaneEnvTeardown(dependencies, laneId, { includeArchived: true });
   await teardown?.();
 }
 
@@ -177,17 +179,28 @@ export async function teardownArchivedLaneEnvironment(
  * hands back a lane whose services are gone. Only the Docker step re-runs: env
  * files, dependencies, mounts, copies, and the setup script all survived in the
  * worktree, and re-running them would overwrite edits the user made.
+ *
+ * The port lease archive released is re-acquired first, exactly as
+ * `restoreRecreatedLaneRuntime` does: compose files are templated with
+ * `PORT_RANGE_START`/`PORT`, so bringing the stack up without a lease would
+ * bind whatever the fallback range is and leave the proxy pointing elsewhere.
  */
 export async function restoreUnarchivedLaneDocker(
-  dependencies: LaneEnvTeardownDependencies,
+  dependencies: LaneRuntimeLifecycleDependencies,
   laneId: string,
 ): Promise<void> {
+  const lease = await ensureActiveLanePortLease(dependencies, laneId);
   const environmentService = dependencies.laneEnvironmentService;
   const projectConfigService = dependencies.projectConfigService;
   if (!environmentService || !projectConfigService) return;
 
   const context = await resolveLaneOverlayContext(
-    { ...dependencies, projectConfigService, laneEnvironmentService: environmentService },
+    {
+      ...dependencies,
+      projectConfigService,
+      laneEnvironmentService: environmentService,
+      portAllocationService: lease ? { getLease: () => lease } : dependencies.portAllocationService,
+    },
     laneId,
   );
   const docker = context.envInitConfig?.docker;
@@ -216,4 +229,37 @@ export async function restoreRecreatedLaneRuntime(
   );
   if (!envInitConfig) return;
   await environmentService.initLaneEnvironment(lane, envInitConfig, overrides);
+}
+
+/**
+ * Restore a lane's runtime after `unarchive`, on every host.
+ *
+ * The branch used to be copy-pasted into `registerIpc`, `adeActions/registry`
+ * and the ade-cli sync host, comment and all.
+ *
+ * A recreated worktree needs the whole env init and is awaited: the caller is
+ * handing back a directory that does not have its env files, dependencies or
+ * mounts yet, so reporting "restored" before that finishes would be a lie, and
+ * the path is rare enough to afford the wait.
+ *
+ * The plain path is NOT awaited, deliberately. It only re-runs `docker compose
+ * up -d`, which has a 300s budget, while the mobile `lanes.unarchive` command
+ * has 30s — awaiting it timed the whole unarchive out on any Docker project and
+ * left the desktop's Unarchive button spinning for minutes on a lane that was
+ * already back. The lane-env-init progress broadcast is what reports the Docker
+ * step to the UI, so nothing is hidden by returning first; `onDockerError`
+ * exists only so each host can log a failure in its own voice.
+ */
+export async function restoreUnarchivedLaneRuntime(
+  dependencies: LaneRuntimeLifecycleDependencies,
+  laneId: string,
+  options: { worktreeRecreated?: boolean; onDockerError?: (error: unknown) => void } = {},
+): Promise<void> {
+  if (options.worktreeRecreated === true) {
+    await restoreRecreatedLaneRuntime(dependencies, laneId);
+    return;
+  }
+  void restoreUnarchivedLaneDocker(dependencies, laneId).catch((error: unknown) => {
+    options.onDockerError?.(error);
+  });
 }

@@ -65,7 +65,10 @@ describe("laneEnvironmentService", () => {
   });
 
   function createService(
-    projectConfigService: { getExecutableConfig: () => unknown } | null = null,
+    // Trusted by default: the gate is required in production, so the helper
+    // supplies a config service that always allows execution and each trust
+    // test passes its own.
+    projectConfigService: { getExecutableConfig: () => unknown } = { getExecutableConfig: () => ({}) },
   ) {
     return createLaneEnvironmentService({
       projectRoot,

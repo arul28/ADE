@@ -1,4 +1,7 @@
+import path from "node:path";
+
 import type { LaneSetupScriptConfig } from "../../../shared/types";
+import { laneSetupScriptHasWork } from "../../../shared/types";
 
 export type ResolvedSetupScript = {
   commands: string[];
@@ -19,7 +22,7 @@ export function resolveSetupScriptConfig(
   cfg: LaneSetupScriptConfig | undefined,
   platform: NodeJS.Platform = process.platform,
 ): ResolvedSetupScript | null {
-  if (!cfg) return null;
+  if (!laneSetupScriptHasWork(cfg)) return null;
 
   const isWindows = platform === "win32";
 
@@ -43,4 +46,32 @@ export function resolveSetupScriptConfig(
     ...(scriptPath ? { scriptPath } : {}),
     injectPrimaryPath: cfg.injectPrimaryPath ?? false,
   };
+}
+
+/** Extensions Windows can actually launch a script file with. */
+const WINDOWS_RUNNABLE_SCRIPT_EXTENSIONS = new Set([".ps1", ".cmd", ".bat", ".exe", ".com"]);
+
+/**
+ * Reject a script file Windows cannot execute, with a message that says what to
+ * do about it.
+ *
+ * On win32 a `scripts/setup.sh` (or an extension-less script) is not runnable:
+ * there is no shebang handling, and `shouldUseWindowsCmdWrapper` hands an
+ * extension-less path to `cmd.exe`, which fails with a raw `ENOEXEC` /
+ * "not recognized" that reads as an ADE bug rather than a config mistake. The
+ * fix the user needs is `windowsScriptPath` (or `windowsCommands`), so name it.
+ *
+ * Returns null when the path is fine — or on any non-Windows platform, where
+ * the executable bit and shebang decide.
+ */
+export function unsupportedWindowsScriptPathError(
+  scriptPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== "win32") return null;
+  const ext = path.win32.extname(scriptPath).toLowerCase();
+  if (WINDOWS_RUNNABLE_SCRIPT_EXTENSIONS.has(ext)) return null;
+  return `Windows cannot run the setup script "${scriptPath}"${
+    ext ? ` (${ext} files are not executable on Windows)` : " (no runnable file extension)"
+  }. Set a Windows setup script (windowsScriptPath) or Windows commands for this template.`;
 }

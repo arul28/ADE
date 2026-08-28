@@ -87,7 +87,6 @@ import type {
   LaneBranchDriftResolution,
   LaneEnvInitProgress,
   LaneListSnapshot,
-  LaneOverlayOverrides,
   LanePreviewInfo,
   ListSessionsArgs,
   ListLanesArgs,
@@ -117,13 +116,13 @@ import {
   buildLaneEnvTeardown,
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
-  restoreRecreatedLaneRuntime,
-  restoreUnarchivedLaneDocker,
+  restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
 import {
   mergeLaneEnvInitConfig,
-  resolveLaneOverlayContext as resolveSharedLaneOverlayContext,
+  mergeLaneOverrides,
 } from "../lanes/laneEnvInitMerge";
+import { resolveLaneOverlayContext as resolveSharedLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { runGit } from "../git/git";
@@ -2314,16 +2313,6 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   };
 }
 
-function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
-  return {
-    ...base,
-    ...next,
-    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
-    ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
-    ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {}),
-  };
-}
-
 function requireService<T>(service: T | null | undefined, message: string): T {
   if (!service) throw new Error(message);
   return service;
@@ -2342,7 +2331,7 @@ async function resolveActiveLaneIds(runtime: AdeRuntime): Promise<string[]> {
 }
 
 /**
- * Thin AdeRuntime adapter over the shared resolver in `lanes/laneEnvInitMerge`.
+ * Thin AdeRuntime adapter over the shared resolver in `lanes/laneOverlayContext`.
  * `includeArchived` matches `resolveLane` above: the action domain resolves
  * lanes that may already be archived.
  */
@@ -2541,14 +2530,15 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const result = await runtime.laneService.unarchive({ laneId });
       try {
-        // Archive brought the lane's Docker stack down. A recreated worktree
-        // needs the whole env init; a plain unarchive only needs its services
-        // back — re-copying files or reinstalling would clobber the worktree.
-        if (result.worktreeRecreated) {
-          await restoreRecreatedLaneRuntime(runtime, laneId);
-        } else {
-          await restoreUnarchivedLaneDocker(runtime, laneId);
-        }
+        await restoreUnarchivedLaneRuntime(runtime, laneId, {
+          worktreeRecreated: result.worktreeRecreated === true,
+          onDockerError: (error) => {
+            runtime.logger.warn("lane_env_setup.post_unarchive_docker_failed", {
+              laneId,
+              error: getErrorMessage(error),
+            });
+          },
+        });
         return result;
       } catch (error) {
         return { ...result, setupWarning: getErrorMessage(error) };

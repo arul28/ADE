@@ -638,7 +638,6 @@ import type {
   ComputerUseArtifactView,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  LaneOverlayOverrides,
   LaneTemplate,
   UpdateOAuthRedirectConfigArgs,
   GenerateRedirectUrisArgs,
@@ -688,13 +687,10 @@ import {
   buildLaneEnvTeardown,
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
-  restoreRecreatedLaneRuntime,
-  restoreUnarchivedLaneDocker,
+  restoreUnarchivedLaneRuntime,
 } from "../lanes/laneRuntimeLifecycle";
-import {
-  mergeLaneEnvInitConfig,
-  resolveLaneOverlayContext as resolveSharedLaneOverlayContext,
-} from "../lanes/laneEnvInitMerge";
+import { mergeLaneEnvInitConfig, mergeLaneOverrides } from "../lanes/laneEnvInitMerge";
+import { resolveLaneOverlayContext as resolveSharedLaneOverlayContext } from "../lanes/laneOverlayContext";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
@@ -1403,36 +1399,18 @@ async function resolvePrimaryLaneIdOnly(ctx: AppContext): Promise<string> {
 }
 
 /**
- * Thin AppContext adapter over the shared resolver in `lanes/laneEnvInitMerge`
+ * Thin AppContext adapter over the shared resolver in `lanes/laneOverlayContext`
  * — the merge/overlay logic lives there so the IPC host, the action registry
  * and the ade-cli sync host cannot drift apart.
  */
-async function resolveLaneOverlayContext(
-  ctx: AppContext,
-  laneId: string,
-  options: { includeArchived?: boolean } = {},
-) {
+async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
   requireAppContextServices(ctx, ["laneService", "projectConfigService"] as const);
-  return await resolveSharedLaneOverlayContext(
-    {
-      laneService: ctx.laneService,
-      projectConfigService: ctx.projectConfigService,
-      portAllocationService: ctx.portAllocationService,
-      laneEnvironmentService: ctx.laneEnvironmentService,
-    },
-    laneId,
-    options,
-  );
-}
-
-function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
-  return {
-    ...base,
-    ...next,
-    ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
-    ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
-    ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {})
-  };
+  return await resolveSharedLaneOverlayContext({
+    laneService: ctx.laneService,
+    projectConfigService: ctx.projectConfigService,
+    portAllocationService: ctx.portAllocationService,
+    laneEnvironmentService: ctx.laneEnvironmentService,
+  }, laneId);
 }
 
 async function buildLinearConnectionStatus(
@@ -6554,7 +6532,10 @@ export function registerIpc({
         .list({ includeArchived: true, includeStatus: false })
         .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
         .catch(() => null);
-      const teardownEnv = await buildLaneEnvTeardown(ctx, arg.laneId);
+      // `includeArchived`: teardown resolution must survive a status write
+      // landing first, and an archived lane's compose stack still needs to come
+      // down. Every teardown site on every host resolves this way.
+      const teardownEnv = await buildLaneEnvTeardown(ctx, arg.laneId, { includeArchived: true });
       return await ctx.laneService.archiveAndReclaim(arg, {
         onArchived: () => {
           try {
@@ -6572,14 +6553,15 @@ export function registerIpc({
     const ctx = ensureLaneContext();
     const result = await ctx.laneService.unarchive(arg);
     try {
-      // Archive brought the lane's Docker stack down. A recreated worktree
-      // needs the whole env init; a plain unarchive only needs its services
-      // back — re-copying files or reinstalling would clobber the worktree.
-      if (result.worktreeRecreated) {
-        await restoreRecreatedLaneRuntime(ctx, arg.laneId);
-      } else {
-        await restoreUnarchivedLaneDocker(ctx, arg.laneId);
-      }
+      await restoreUnarchivedLaneRuntime(ctx, arg.laneId, {
+        worktreeRecreated: result.worktreeRecreated === true,
+        onDockerError: (error) => {
+          ctx.logger.warn("lane_env_setup.post_unarchive_docker_failed", {
+            laneId: arg.laneId,
+            error: getErrorMessage(error),
+          });
+        },
+      });
       return result;
     } catch (error) {
       return { ...result, setupWarning: getErrorMessage(error) };
@@ -6589,6 +6571,7 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = ensureLaneContext();
     const teardownEnv = await buildLaneEnvTeardown(ctx, arg.laneId, {
+      includeArchived: true,
       onContextError: (error) => {
         ctx.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
           laneId: arg.laneId,

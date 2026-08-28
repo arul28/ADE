@@ -178,6 +178,37 @@ export type LaneSetupScriptConfig = {
   injectPrimaryPath?: boolean;
 };
 
+/**
+ * Does this setup script actually run anything?
+ *
+ * True when at least one command or script path is configured for some
+ * platform. `injectPrimaryPath` on its own configures nothing to run, so a
+ * config carrying only that key is NOT a setup script — persisting one emits an
+ * init step that always "succeeds" without doing anything, and showing one
+ * tells the user a script will run when none will.
+ *
+ * Platform-agnostic and trim-aware, and deliberately shared: the config
+ * coercer, the platform resolver and the template editor must agree, or the UI
+ * shows a script the executor skips (or the reverse).
+ */
+export function laneSetupScriptHasWork(
+  script: LaneSetupScriptConfig | undefined | null,
+): script is LaneSetupScriptConfig {
+  if (!script) return false;
+  const hasCommand = (list: string[] | undefined): boolean =>
+    Array.isArray(list) && list.some((entry) => typeof entry === "string" && entry.trim().length > 0);
+  const hasPath = (value: string | undefined): boolean =>
+    typeof value === "string" && value.trim().length > 0;
+  return (
+    hasCommand(script.commands)
+    || hasCommand(script.unixCommands)
+    || hasCommand(script.windowsCommands)
+    || hasPath(script.scriptPath)
+    || hasPath(script.unixScriptPath)
+    || hasPath(script.windowsScriptPath)
+  );
+}
+
 // --- Lane Cleanup / Lifecycle types ---
 
 /** Auto-cleanup policy for stale lanes. */
