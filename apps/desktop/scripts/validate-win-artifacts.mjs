@@ -572,6 +572,8 @@ async function validatePackageHygiene(resourcesPath) {
   await assertAsarEmbedsNoRuntimeFetchedToolPayload(appAsarPath);
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-arm64"), "macOS arm64 cr-sqlite payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "darwin-x64"), "macOS x64 cr-sqlite payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-arm64"), "Linux arm64 cr-sqlite payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-x64"), "Linux x64 cr-sqlite payload in Windows package");
 
   console.log("[validate-win-artifacts] Package hygiene passed.");
 }

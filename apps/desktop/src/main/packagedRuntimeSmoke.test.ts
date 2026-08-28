@@ -55,4 +55,11 @@ describe("packagedRuntimeSmoke", () => {
     );
     expect(result).toEqual({ ok: true, changeRows: 1 });
   });
+
+  it.skipIf(process.platform !== "linux")("loads the vendored Linux CR-SQLite extension and records a CRR change", () => {
+    const result = probeCrsqliteExtension(
+      path.resolve(process.cwd(), "vendor", "crsqlite", `linux-${process.arch}`, "crsqlite.so"),
+    );
+    expect(result).toEqual({ ok: true, changeRows: 1 });
+  });
 });

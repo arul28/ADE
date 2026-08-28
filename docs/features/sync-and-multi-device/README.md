@@ -70,7 +70,9 @@ path unless explicitly noted.
 
 Windows x64 can own the same machine sync authority as macOS/Linux. It uses a
 per-user/channel named pipe for local RPC and the packaged
-`vendor/crsqlite/win32-x64/crsqlite.dll` for CRR replication. The typed
+`vendor/crsqlite/win32-x64/crsqlite.dll` for CRR replication. Linux x64/arm64
+vendor `crsqlite.so` in the same layout and ship it in the standalone native
+tarball so `install.sh` brains host CRR like any other peer. The typed
 `crdtSyncAvailable` status prevents pairing when the extension is unavailable;
 Connections surfaces the failure with reinstall/restart guidance. Native
 macOS computer use and iOS Simulator are separate capabilities and do not gate
@@ -503,6 +505,11 @@ see your change.
 
 Runtime support files outside `services/sync/`:
 
+- `apps/desktop/src/main/services/state/crsqliteExtension.ts` and
+  `apps/ade-cli/scripts/package-native-deps.mjs` — loadable cr-sqlite for every
+  published runtime (`darwin-*`, `linux-*`, `win32-x64`). The packager copies the
+  matching payload into the standalone native tarball so `install.sh` brains
+  resolve it from `$ADE_HOME/runtime/<target>/vendor/crsqlite/`.
 - `apps/ade-cli/src/services/account/accountAuthService.ts` and
   `accountAttestationVerifier.ts` — the shared desktop/runtime Clerk session
   and Relay-token verifier. Access tokens are used only while their signed
