@@ -1,0 +1,40 @@
+---
+title: "v1.2.67"
+description: "Release notes for ADE v1.2.67 - August 28, 2026"
+---
+
+Click a measured context meter to compact Claude, Codex, or Pi without losing the draft. Rename a chat, its lane, and its status line from the session menu. Drop HEIC photos and files onto the whole chat surface. Lane templates can run setup scripts and tear Docker down when you archive. Linux brains stay in sync with macOS and Windows.
+
+---
+
+## Compact from the meter
+
+- **An idle context dial is a compact control** on Claude, Codex, and Pi. Click it to send `/compact` without replacing the unsent draft. Cursor, Droid, and OpenCode stay read-only.
+- **iOS has the same action** in the usage popover. Compact never steers an active turn. ADE still auto-compacts Claude at 97% at a turn boundary; 80% is a hint.
+
+## Name and status
+
+- **Refresh the chat title, lane name, and/or status line** from the session context menu. One model call returns all three; only the fields you picked are applied, and in-flight edits win.
+- **A menu-driven title counts as manually named**, so quiet auto-title does not overwrite it. Primary lanes skip lane-name generation.
+
+## Chat attachments
+
+- **HEIC and HEIF photos convert to JPEG on macOS** before they hit the transcript or a provider. Windows and Linux refuse conversion instead of attaching mislabeled bytes.
+- **Drop files onto the whole chat surface** — header, transcript, and composer — not only the composer.
+
+## Lanes
+
+- **Lane templates can run setup scripts** when a lane is created, and tear Docker down when you archive the lane.
+- **Settings for templates is simpler.** A cancelled setup is treated as incomplete so the next open re-runs it.
+
+## Codex approvals
+
+- **Stop, abort, teardown, and thread delete settle Codex approval cards.** A plan card that appeared after the turn already finished no longer blocks every later send. Stop-only still leaves the card for you to answer.
+
+## Linux brains
+
+- **Linux `install.sh` runtimes vendor cr-sqlite** for x64 and arm64, so a signed-in Linux brain hosts CRR like macOS and Windows instead of dropping out of the account directory.
+
+## Work search
+
+- **The command palette searches Work in any word order**, with typed filters, ranked content hits, and lifecycle actions on sessions.

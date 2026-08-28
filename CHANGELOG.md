@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.67] - 2026-08-28
+
+### Compact from the meter
+
+- An idle measured context dial is a compact control on Claude, Codex, and Pi: click sends `/compact` without replacing the unsent draft. Cursor, Droid, and OpenCode stay read-only (#1169).
+- iOS has the same action in the usage popover. Compact never steers an active turn. ADE still auto-compacts Claude at 97% at a turn boundary; 80% is a hint (#1169).
+
+### Name and status
+
+- Refresh the chat title, lane name, and/or status line from the session context menu. One model call returns all three; only the selected fields apply, and in-flight edits win (#1172).
+- A menu-driven title counts as manually named so quiet auto-title does not overwrite it. Primary lanes skip lane-name generation (#1172).
+
+### Chat attachments
+
+- HEIC and HEIF photos convert to JPEG on macOS before they hit the transcript or a provider. Windows and Linux refuse conversion instead of attaching mislabeled bytes (#1170).
+- Drop files onto the whole chat surface — header, transcript, and composer — not only the composer (#1170).
+
+### Lanes
+
+- Lane templates can run setup scripts when a lane is created, and tear Docker down when you archive the lane (#1173).
+- Settings for templates is simpler. A cancelled setup is treated as incomplete so the next open re-runs it (#1173).
+
+### Codex approvals
+
+- Stop, abort, teardown, and thread delete settle Codex approval cards, including a plan card that appeared after the turn already finished. Stop-only still leaves the card for you to answer (#1171).
+
+### Linux brains
+
+- Linux `install.sh` runtimes vendor cr-sqlite for x64 and arm64, so a signed-in Linux brain hosts CRR like macOS and Windows (#1168).
+
+### Work search
+
+- The command palette searches Work in any word order, with typed filters, ranked content hits, and lifecycle actions on sessions.
+
 ## [1.2.66] - 2026-08-27
 
 ### Pull requests
@@ -1772,7 +1806,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.66...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.67...HEAD
+[1.2.67]: https://github.com/arul28/ADE/compare/v1.2.66...v1.2.67
 [1.2.66]: https://github.com/arul28/ADE/compare/v1.2.65...v1.2.66
 [1.2.65]: https://github.com/arul28/ADE/compare/v1.2.64...v1.2.65
 [1.2.64]: https://github.com/arul28/ADE/compare/v1.2.63...v1.2.64
