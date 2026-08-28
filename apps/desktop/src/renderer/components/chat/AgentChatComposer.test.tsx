@@ -9,7 +9,10 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { AgentChatComposer } from "./AgentChatComposer";
+import {
+  AgentChatComposer,
+  HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
+} from "./AgentChatComposer";
 import { useAppStore } from "../../state/appStore";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
@@ -2918,6 +2921,97 @@ describe("AgentChatComposer", () => {
 
     await waitFor(() => expect(screen.queryByText("Drop files to attach")).toBeNull());
     expect(dropEvent.defaultPrevented).toBe(true);
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+  });
+
+  it.each(["heic", "HEIF"])("accepts a .%s image URL drop", (extension) => {
+    const props = renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const imageUrl = `https://example.com/photos/IMG_0001.${extension}`;
+    const dataTransfer = {
+      files: [],
+      types: ["text/uri-list"],
+      getData: vi.fn((type: string) => (type === "text/uri-list" ? imageUrl : "")),
+    };
+    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), { dataTransfer });
+
+    expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: imageUrl,
+      type: "image-url",
+      url: imageUrl,
+    });
+    expect(props.onAddAttachment).toHaveBeenCalledTimes(1);
+    expect(dataTransfer.getData).toHaveBeenCalledWith("text/uri-list");
+  });
+
+  it("converts HEIC uploads to JPEG before saving the attachment", async () => {
+    const convertImageToJpeg = vi.fn().mockResolvedValue({
+      ok: true,
+      data: "/9j/converted",
+      filename: "IMG_0001.jpg",
+      mimeType: "image/jpeg",
+    });
+    const saveTempAttachment = vi.fn().mockResolvedValue({
+      path: "/tmp/ade-IMG_0001.jpg",
+    });
+    (window as any).ade = {
+      app: { convertImageToJpeg },
+      agentChat: { saveTempAttachment },
+    };
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const file = new File([new Uint8Array([1, 2, 3])], "IMG_0001.HEIC", { type: "" });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+    const dataTransfer = {
+      files: [file],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+
+    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), { dataTransfer });
+
+    await waitFor(() => expect(convertImageToJpeg).toHaveBeenCalledWith({
+      data: "AQID",
+      filename: "IMG_0001.HEIC",
+      mimeType: null,
+    }));
+    await waitFor(() => expect(saveTempAttachment).toHaveBeenCalledWith({
+      data: "/9j/converted",
+      filename: "IMG_0001.jpg",
+    }, null));
+    expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: "/tmp/ade-IMG_0001.jpg",
+      type: "image",
+    });
+  });
+
+  it("explains the Windows-style no-codec fallback instead of attaching HEIC bytes as an image", async () => {
+    const convertImageToJpeg = vi.fn().mockResolvedValue({ ok: false, errorCode: "unavailable" });
+    const saveTempAttachment = vi.fn();
+    (window as any).ade = {
+      app: { convertImageToJpeg },
+      agentChat: { saveTempAttachment },
+    };
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const file = new File([new Uint8Array([1, 2, 3])], "IMG_0002.heic", { type: "image/heic" });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+    const dataTransfer = {
+      files: [file],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+
+    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), { dataTransfer });
+
+    expect(await screen.findByText(HEIC_CONVERSION_UNAVAILABLE_MESSAGE)).toBeTruthy();
+    expect(saveTempAttachment).not.toHaveBeenCalled();
     expect(props.onAddAttachment).not.toHaveBeenCalled();
   });
 

@@ -350,6 +350,45 @@ export type AgentChatImageUrlRef = {
 
 export type AgentChatFileRef = AgentChatLocalFileRef | AgentChatImageUrlRef;
 
+/** MIME/extension checks for photos from iPhone and other HEIF-producing cameras. */
+const HEIC_MIME_RE = /^image\/hei[cf](?:[-+;]|$)/i;
+const HEIC_EXTENSION_RE = /\.(heic|heif)$/i;
+
+export type HeicConversionErrorCode = "unavailable" | "failed";
+
+export type ConvertImageToJpegResult =
+  | { ok: true; data: string; filename: string; mimeType: "image/jpeg" }
+  | { ok: false; errorCode: HeicConversionErrorCode };
+
+const IMAGE_ATTACHMENT_MEDIA_TYPES: Readonly<Record<string, string>> = {
+  ".bmp": "image/bmp",
+  ".gif": "image/gif",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".webp": "image/webp",
+};
+
+/** Return the MIME type for a supported image filename/path, if its suffix is known. */
+export function getImageAttachmentMediaType(filePath: string): string | null {
+  const extension = filePath.match(/\.[^./\\]+$/)?.[0]?.toLowerCase();
+  return extension ? IMAGE_ATTACHMENT_MEDIA_TYPES[extension] ?? null : null;
+}
+
+export function isImageAttachmentPath(filePath: string): boolean {
+  return getImageAttachmentMediaType(filePath) !== null;
+}
+
+export function isHeicAttachment(filePath: string, mimeType?: string | null): boolean {
+  return HEIC_MIME_RE.test(mimeType ?? "") || HEIC_EXTENSION_RE.test(filePath);
+}
+
 export type AgentChatLinearIssueContextAttachment = {
   type: "linear_issue";
   issue: LaneLinearIssue;
@@ -391,8 +430,8 @@ export function inferAttachmentType(
   filePath: string,
   mimeType?: string | null,
 ): AgentChatLocalFileRef["type"] {
-  if (mimeType?.startsWith("image/")) return "image";
-  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
+  if (mimeType?.toLowerCase().startsWith("image/")) return "image";
+  return isImageAttachmentPath(filePath) ? "image" : "file";
 }
 
 /** Merge two attachment lists, deduplicating by path (last-write wins). */

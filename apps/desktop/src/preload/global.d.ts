@@ -726,6 +726,7 @@ import type {
   SearchRebuildResult,
 } from "../shared/types";
 import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
+import type { ConvertImageToJpegResult } from "../shared/types/chat";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   MaintenanceRunReport,
@@ -841,6 +842,12 @@ declare global {
           filename: string;
           mimeType: string;
         } | null>;
+        /** Convert a HEIC/HEIF upload locally before it is sent to any runtime. */
+        convertImageToJpeg?: (args: {
+          data: string;
+          filename: string;
+          mimeType?: string | null;
+        }) => Promise<ConvertImageToJpegResult>;
         saveClipboardImageAttachment: () => Promise<{
           path: string;
           mimeType: string;
