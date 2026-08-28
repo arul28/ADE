@@ -2,7 +2,8 @@ cr-sqlite (@vlcn.io)
 https://github.com/vlcn-io/cr-sqlite
 
 The cr-sqlite binaries vendored in this directory
-(darwin-arm64/crsqlite.dylib, darwin-x64/crsqlite.dylib, win32-x64/crsqlite.dll)
+(darwin-arm64/crsqlite.dylib, darwin-x64/crsqlite.dylib,
+linux-arm64/crsqlite.so, linux-x64/crsqlite.so, win32-x64/crsqlite.dll)
 are dual-licensed under the MIT License and the Apache License, Version 2.0.
 You may choose either license.
 
