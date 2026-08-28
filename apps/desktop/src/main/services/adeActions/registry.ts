@@ -122,7 +122,7 @@ import {
   mergeLaneEnvInitConfig,
   mergeLaneOverrides,
 } from "../lanes/laneEnvInitMerge";
-import { resolveLaneOverlayContext as resolveSharedLaneOverlayContext } from "../lanes/laneOverlayContext";
+import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import { mergeAiConfig } from "../config/projectConfigService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/diffService";
 import { runGit } from "../git/git";
@@ -2335,8 +2335,8 @@ async function resolveActiveLaneIds(runtime: AdeRuntime): Promise<string[]> {
  * `includeArchived` matches `resolveLane` above: the action domain resolves
  * lanes that may already be archived.
  */
-async function resolveLaneOverlayContext(runtime: AdeRuntime, laneId: string) {
-  return await resolveSharedLaneOverlayContext(
+async function resolveLaneOverlayContextForRuntime(runtime: AdeRuntime, laneId: string) {
+  return await resolveLaneOverlayContext(
     {
       laneService: runtime.laneService,
       projectConfigService: runtime.projectConfigService,
@@ -2488,15 +2488,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     delete: async (args?: DeleteLaneArgs): Promise<void> => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const teardownEnv = await buildLaneEnvTeardown(runtime, laneId, {
-        includeArchived: true,
-        onContextError: (error) => {
-          runtime.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
-            laneId,
-            error: getErrorMessage(error),
-          });
-        },
-      });
+      const teardownEnv = await buildLaneEnvTeardown(runtime, laneId, { includeArchived: true });
       await runtime.laneService.delete({ ...(args ?? {}), laneId }, { teardownEnv });
       releaseLaneRuntimeResources(runtime, laneId);
     },
@@ -2562,7 +2554,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     initEnv: async (args?: { laneId?: string }): Promise<LaneEnvInitProgress> => {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const context = await resolveLaneOverlayContext(runtime, laneId);
+      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
       if (!context.envInitConfig) {
         const now = new Date().toISOString();
         return { laneId, steps: [], startedAt: now, completedAt: now, overallStatus: "completed" };
@@ -2572,7 +2564,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     getEnvStatus: (args?: { laneId?: string }) =>
       runtime.laneEnvironmentService?.getProgress(requireNonEmptyString(args?.laneId, "laneId")) ?? null,
     getOverlay: async (args?: { laneId?: string }) => {
-      const context = await resolveLaneOverlayContext(runtime, requireNonEmptyString(args?.laneId, "laneId"));
+      const context = await resolveLaneOverlayContextForRuntime(runtime, requireNonEmptyString(args?.laneId, "laneId"));
       return context.overrides;
     },
     listTemplates: () => runtime.laneTemplateService?.listTemplates() ?? [],
@@ -2587,7 +2579,7 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const templateId = requireNonEmptyString(args?.templateId, "templateId");
-      const context = await resolveLaneOverlayContext(runtime, laneId);
+      const context = await resolveLaneOverlayContextForRuntime(runtime, laneId);
       const template = laneTemplateService.getTemplate(templateId);
       if (!template) throw new Error(`Template not found: ${templateId}`);
       const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);

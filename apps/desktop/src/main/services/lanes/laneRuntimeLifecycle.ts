@@ -43,17 +43,30 @@ type LaneRuntimeLifecycleDependencies = {
   laneProxyService?: {
     removeRoute: (laneId: string) => unknown;
   } | null;
+  /**
+   * Structural on purpose — the ade-cli sync host, the IPC host and the action
+   * registry all carry a logger with this shape, and this module has no
+   * business importing the desktop logger type to say so.
+   */
+  logger?: { warn: (event: string, meta?: Record<string, unknown>) => void } | null;
 };
+
+async function findActiveLane(
+  dependencies: Pick<LaneRuntimeLifecycleDependencies, "laneService">,
+  laneId: string,
+): Promise<LaneSummary | null> {
+  const lanes = await dependencies.laneService.list({
+    includeArchived: false,
+    includeStatus: false,
+  });
+  return lanes.find((entry) => entry.id === laneId) ?? null;
+}
 
 async function resolveActiveLane(
   dependencies: Pick<LaneRuntimeLifecycleDependencies, "laneService">,
   laneId: string,
 ): Promise<LaneSummary> {
-  const lanes = await dependencies.laneService.list({
-    includeArchived: false,
-    includeStatus: false,
-  });
-  const lane = lanes.find((entry) => entry.id === laneId);
+  const lane = await findActiveLane(dependencies, laneId);
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
   return lane;
 }
@@ -100,7 +113,11 @@ export function releaseLaneRuntimeResources(
 
 export type LaneEnvTeardownDependencies = Pick<
   LaneRuntimeLifecycleDependencies,
-  "laneService" | "projectConfigService" | "laneEnvironmentService" | "portAllocationService"
+  | "laneService"
+  | "projectConfigService"
+  | "laneEnvironmentService"
+  | "portAllocationService"
+  | "logger"
 >;
 
 /**
@@ -114,17 +131,18 @@ export type LaneEnvTeardownDependencies = Pick<
  * so two teardowns of the same lane could disagree about which compose file to
  * bring down.
  *
- * Context resolution failures are reported and swallow into `undefined`: a lane
- * that cannot be resolved has no environment we can safely act on, and refusing
- * to archive over it would be worse than skipping the compose down.
+ * Context resolution failures swallow into `undefined`: a lane that cannot be
+ * resolved has no environment we can safely act on, and refusing to archive
+ * over it would be worse than skipping the compose down. They are logged here
+ * rather than through a per-caller callback — that callback was optional, and
+ * two of the five call sites (both archive-and-reclaim paths) had quietly
+ * forgotten to pass it, so a resolution failure on the destructive path
+ * vanished.
  */
 export async function buildLaneEnvTeardown(
   dependencies: LaneEnvTeardownDependencies,
   laneId: string,
-  options: {
-    includeArchived?: boolean;
-    onContextError?: (error: unknown) => void;
-  } = {},
+  options: { includeArchived?: boolean } = {},
 ): Promise<(() => Promise<void>) | undefined> {
   const environmentService = dependencies.laneEnvironmentService;
   const projectConfigService = dependencies.projectConfigService;
@@ -138,7 +156,10 @@ export async function buildLaneEnvTeardown(
       options.includeArchived === true ? { includeArchived: true } : {},
     );
   } catch (error) {
-    options.onContextError?.(error);
+    dependencies.logger?.warn("lane_env_cleanup.teardown_context_failed", {
+      laneId,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return undefined;
   }
 
@@ -180,55 +201,110 @@ export async function teardownArchivedLaneEnvironment(
  * files, dependencies, mounts, copies, and the setup script all survived in the
  * worktree, and re-running them would overwrite edits the user made.
  *
- * The port lease archive released is re-acquired first, exactly as
+ * The port lease archive released is re-acquired, exactly as
  * `restoreRecreatedLaneRuntime` does: compose files are templated with
  * `PORT_RANGE_START`/`PORT`, so bringing the stack up without a lease would
  * bind whatever the fallback range is and leave the proxy pointing elsewhere.
+ * Unlike that path it is acquired only once there is Docker work to do.
  */
+type LaneEnvironmentService = NonNullable<
+  LaneRuntimeLifecycleDependencies["laneEnvironmentService"]
+>;
+
+type LaneRestoreContext = {
+  lane: LaneSummary;
+  overrides: LaneOverlayOverrides;
+  envInitConfig: LaneEnvInitConfig | undefined;
+  environmentService: LaneEnvironmentService;
+};
+
+/**
+ * Shared prelude for both restore paths: prove the runtime-backed services are
+ * actually wired, then resolve the lane's overlay context.
+ *
+ * `null` means "there is nothing to restore" — a host that runs without lane
+ * env services (remote/CLI contexts where they are legitimately absent) rather
+ * than a failure.
+ */
+async function resolveRestoreContext(
+  dependencies: LaneRuntimeLifecycleDependencies,
+  laneId: string,
+  options: { lease?: PortLease | null } = {},
+): Promise<LaneRestoreContext | null> {
+  const environmentService = dependencies.laneEnvironmentService;
+  const projectConfigService = dependencies.projectConfigService;
+  if (!environmentService || !projectConfigService) return null;
+
+  const { lane, overrides, envInitConfig } = await resolveLaneOverlayContext(
+    { ...dependencies, projectConfigService, laneEnvironmentService: environmentService },
+    laneId,
+    options.lease ? { lease: options.lease } : {},
+  );
+  return { lane, overrides, envInitConfig, environmentService };
+}
+
+/**
+ * Hand back a lease taken for a restore that turned out to have nothing to do.
+ * Best effort by design: the lane is already gone, and a failing route removal
+ * must not mask why the restore aborted.
+ */
+function releaseAbortedRestoreLease(
+  dependencies: LaneRuntimeLifecycleDependencies,
+  laneId: string,
+): void {
+  try {
+    releaseLaneRuntimeResources(dependencies, laneId);
+  } catch {
+    // Intentionally swallowed — see above.
+  }
+}
+
 export async function restoreUnarchivedLaneDocker(
   dependencies: LaneRuntimeLifecycleDependencies,
   laneId: string,
 ): Promise<void> {
-  const lease = await ensureActiveLanePortLease(dependencies, laneId);
-  const environmentService = dependencies.laneEnvironmentService;
-  const projectConfigService = dependencies.projectConfigService;
-  if (!environmentService || !projectConfigService) return;
+  const context = await resolveRestoreContext(dependencies, laneId);
+  // No lane env services, or this project has no Docker step: return before
+  // touching the allocator, so a Docker-less unarchive never acquires (and then
+  // strands) a port lease it has no use for.
+  if (!context?.envInitConfig?.docker) return;
 
-  const context = await resolveLaneOverlayContext(
-    {
-      ...dependencies,
-      projectConfigService,
-      laneEnvironmentService: environmentService,
-      portAllocationService: lease ? { getLease: () => lease } : dependencies.portAllocationService,
-    },
-    laneId,
-  );
-  const docker = context.envInitConfig?.docker;
-  if (!docker) return;
-  await environmentService.initLaneEnvironment(context.lane, { docker }, context.overrides);
+  const lease = await ensureActiveLanePortLease(dependencies, laneId);
+
+  // Re-resolve with the lease folded into the overrides — compose files are
+  // templated with `PORT_RANGE_START`/`PORT`, so bringing the stack up without
+  // one would bind the fallback range and leave the proxy pointing elsewhere.
+  //
+  // This restore is deliberately not awaited by its caller, so an archive can
+  // land in the window since the first resolve. Check the lane is still active
+  // immediately before starting `compose up` (a 300s job), and give the lease
+  // back the way archive does if it is not.
+  if ((await findActiveLane(dependencies, laneId)) == null) {
+    releaseAbortedRestoreLease(dependencies, laneId);
+    return;
+  }
+  const leased = await resolveRestoreContext(dependencies, laneId, { lease });
+  const docker = leased?.envInitConfig?.docker;
+  if (!leased || !docker) {
+    releaseAbortedRestoreLease(dependencies, laneId);
+    return;
+  }
+  await leased.environmentService.initLaneEnvironment(leased.lane, { docker }, leased.overrides);
 }
 
 export async function restoreRecreatedLaneRuntime(
   dependencies: LaneRuntimeLifecycleDependencies,
   laneId: string,
 ): Promise<void> {
-  await resolveActiveLane(dependencies, laneId);
+  // `ensureActiveLanePortLease` resolves (and asserts) the active lane itself.
   const lease = await ensureActiveLanePortLease(dependencies, laneId);
-  const environmentService = dependencies.laneEnvironmentService;
-  const projectConfigService = dependencies.projectConfigService;
-  if (!environmentService || !projectConfigService) return;
-
-  const { lane, overrides, envInitConfig } = await resolveLaneOverlayContext(
-    {
-      ...dependencies,
-      projectConfigService,
-      laneEnvironmentService: environmentService,
-      portAllocationService: lease ? { getLease: () => lease } : dependencies.portAllocationService,
-    },
-    laneId,
+  const context = await resolveRestoreContext(dependencies, laneId, { lease });
+  if (!context?.envInitConfig) return;
+  await context.environmentService.initLaneEnvironment(
+    context.lane,
+    context.envInitConfig,
+    context.overrides,
   );
-  if (!envInitConfig) return;
-  await environmentService.initLaneEnvironment(lane, envInitConfig, overrides);
 }
 
 /**
@@ -260,6 +336,14 @@ export async function restoreUnarchivedLaneRuntime(
     return;
   }
   void restoreUnarchivedLaneDocker(dependencies, laneId).catch((error: unknown) => {
-    options.onDockerError?.(error);
+    // The handler is host-supplied logging. It is the last catch on a detached
+    // promise, so a throwing logger here would surface as an unhandled
+    // rejection (and, in the main process, a crash dialog) instead of a failed
+    // Docker restore.
+    try {
+      options.onDockerError?.(error);
+    } catch {
+      // Nothing left to report to.
+    }
   });
 }

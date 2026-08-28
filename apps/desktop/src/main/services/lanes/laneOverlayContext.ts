@@ -69,7 +69,18 @@ export type LaneOverlayContext = {
 export async function resolveLaneOverlayContext(
   dependencies: LaneOverlayContextDependencies,
   laneId: string,
-  options: { includeArchived?: boolean } = {},
+  options: {
+    includeArchived?: boolean;
+    /**
+     * Lease to fold into the overrides instead of asking the allocator.
+     *
+     * The restore paths acquire a lease themselves and must resolve against it
+     * immediately — the allocator's own `getLease` is the authority everywhere
+     * else, but a caller holding a just-acquired lease should not have to
+     * fabricate a one-method allocator to say so.
+     */
+    lease?: PortLease | null;
+  } = {},
 ): Promise<LaneOverlayContext> {
   const lanes = await dependencies.laneService.list({
     includeStatus: false,
@@ -80,7 +91,7 @@ export async function resolveLaneOverlayContext(
 
   const config = dependencies.projectConfigService.getEffective();
   const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
-  const lease = dependencies.portAllocationService?.getLease(lane.id) ?? null;
+  const lease = options.lease ?? dependencies.portAllocationService?.getLease(lane.id) ?? null;
   const overrides = applyLeaseToOverrides(overlayOverrides, lease);
   const envInitConfig = dependencies.laneEnvironmentService?.resolveEnvInitConfig(
     config.laneEnvInit,

@@ -195,6 +195,27 @@ function setupScriptFromForm(form: SetupScriptForm): LaneSetupScriptConfig | und
   return laneSetupScriptHasWork(script) ? script : undefined;
 }
 
+/**
+ * The advanced half of the editor, as one form-state object — same shape as
+ * `SetupScriptForm` so both editor blocks take `{ value, onChange(patch) }`
+ * instead of one growing a fistful of value/setter pairs.
+ */
+type AdvancedForm = {
+  dockerCompose: string;
+  dockerServices: string;
+  mountPoints: LaneMountPointConfig[];
+  envVars: Array<{ key: string; value: string }>;
+};
+
+function advancedFormFrom(template: LaneTemplate): AdvancedForm {
+  return {
+    dockerCompose: template.docker?.composePath ?? "",
+    dockerServices: template.docker?.services?.join(", ") ?? "",
+    mountPoints: template.mountPoints ?? [],
+    envVars: Object.entries(template.envVars ?? {}).map(([key, value]) => ({ key, value })),
+  };
+}
+
 function updateAt<T>(items: T[], index: number, patch: Partial<T>): T[] {
   return items.map((item, i) => (i === index ? { ...item, ...patch } : item));
 }
@@ -498,10 +519,6 @@ function TemplateEditor({
   const [copyPaths, setCopyPaths] = useState<LaneCopyPathConfig[]>(initial.copyPaths ?? []);
   const [envFiles, setEnvFiles] = useState<LaneEnvFileConfig[]>(initial.envFiles ?? []);
   const [dependencies, setDependencies] = useState<LaneDependencyInstallConfig[]>(initial.dependencies ?? []);
-  const [mountPoints, setMountPoints] = useState<LaneMountPointConfig[]>(initial.mountPoints ?? []);
-  const [envVars, setEnvVars] = useState<Array<{ key: string; value: string }>>(
-    Object.entries(initial.envVars ?? {}).map(([key, value]) => ({ key, value }))
-  );
   /**
    * A lane's ports come from its own allocation, never from the template: a
    * port lease is taken at lane create, before `applyTemplate` runs, and
@@ -512,8 +529,10 @@ function TemplateEditor({
    */
   const preservedPortRange = initial.portRange;
 
-  const [dockerCompose, setDockerCompose] = useState(initial.docker?.composePath ?? "");
-  const [dockerServices, setDockerServices] = useState(initial.docker?.services?.join(", ") ?? "");
+  const [advancedForm, setAdvancedForm] = useState<AdvancedForm>(() => advancedFormFrom(initial));
+  const patchAdvanced = useCallback((patch: Partial<AdvancedForm>) => {
+    setAdvancedForm((prev) => ({ ...prev, ...patch }));
+  }, []);
 
   // Setup script state — one set of commands by default, per-platform variants on demand
   const [setupScriptForm, setSetupScriptForm] = useState<SetupScriptForm>(() =>
@@ -543,6 +562,7 @@ function TemplateEditor({
 
     const setupScript = setupScriptFromForm(setupScriptForm);
 
+    const { dockerCompose, dockerServices, mountPoints, envVars } = advancedForm;
     const filteredEnvVars = envVars.filter((v) => v.key.trim());
     const dockerServicesList = dockerServices.split(",").map((s) => s.trim()).filter(Boolean);
 
@@ -726,15 +746,9 @@ function TemplateEditor({
         />
 
         <AdvancedFields
+          value={advancedForm}
+          onChange={patchAdvanced}
           defaultOpen={hasAdvanced}
-          dockerCompose={dockerCompose}
-          onDockerCompose={setDockerCompose}
-          dockerServices={dockerServices}
-          onDockerServices={setDockerServices}
-          mountPoints={mountPoints}
-          onMountPoints={setMountPoints}
-          envVars={envVars}
-          onEnvVars={setEnvVars}
         />
       </div>
     </div>
@@ -878,26 +892,15 @@ function SetupScriptFields({
 
 /** Rarely-needed editor fields: docker, .ade files, extra variables. */
 function AdvancedFields({
+  value,
+  onChange,
   defaultOpen,
-  dockerCompose,
-  onDockerCompose,
-  dockerServices,
-  onDockerServices,
-  mountPoints,
-  onMountPoints,
-  envVars,
-  onEnvVars,
 }: {
+  value: AdvancedForm;
+  onChange: (patch: Partial<AdvancedForm>) => void;
   defaultOpen: boolean;
-  dockerCompose: string;
-  onDockerCompose: (value: string) => void;
-  dockerServices: string;
-  onDockerServices: (value: string) => void;
-  mountPoints: LaneMountPointConfig[];
-  onMountPoints: (value: LaneMountPointConfig[]) => void;
-  envVars: Array<{ key: string; value: string }>;
-  onEnvVars: (value: Array<{ key: string; value: string }>) => void;
 }) {
+  const { dockerCompose, dockerServices, mountPoints, envVars } = value;
   return (
     <SettingsDisclosure summary="Advanced" defaultOpen={defaultOpen}>
       <Field
@@ -910,7 +913,7 @@ function AdvancedFields({
             <input
               style={monoInputStyle}
               value={dockerCompose}
-              onChange={(e) => onDockerCompose(e.target.value)}
+              onChange={(e) => onChange({ dockerCompose: e.target.value })}
               placeholder="docker-compose.yml"
             />
           </div>
@@ -919,7 +922,7 @@ function AdvancedFields({
             <input
               style={monoInputStyle}
               value={dockerServices}
-              onChange={(e) => onDockerServices(e.target.value)}
+              onChange={(e) => onChange({ dockerServices: e.target.value })}
               placeholder="all services if empty"
             />
           </div>
@@ -935,22 +938,22 @@ function AdvancedFields({
             <input
               style={{ ...monoInputStyle, flex: 1 }}
               value={mp.source}
-              onChange={(e) => onMountPoints(updateAt(mountPoints, i, { source: e.target.value }))}
+              onChange={(e) => onChange({ mountPoints: updateAt(mountPoints, i, { source: e.target.value }) })}
               placeholder="agent-profiles/default.json"
             />
             <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
             <input
               style={{ ...monoInputStyle, flex: 1 }}
               value={mp.dest}
-              onChange={(e) => onMountPoints(updateAt(mountPoints, i, { dest: e.target.value }))}
+              onChange={(e) => onChange({ mountPoints: updateAt(mountPoints, i, { dest: e.target.value }) })}
               placeholder=".ade/profile.json"
             />
-            <button style={removeBtn} onClick={() => onMountPoints(removeAt(mountPoints, i))}>{"×"}</button>
+            <button style={removeBtn} onClick={() => onChange({ mountPoints: removeAt(mountPoints, i) })}>{"×"}</button>
           </div>
         ))}
         <button
           style={outlineButton({ height: 28, fontSize: 10 })}
-          onClick={() => onMountPoints([...mountPoints, { source: "", dest: "" }])}
+          onClick={() => onChange({ mountPoints: [...mountPoints, { source: "", dest: "" }] })}
         >
           + Add file
         </button>
@@ -970,22 +973,22 @@ function AdvancedFields({
             <input
               style={{ ...monoInputStyle, flex: 1 }}
               value={v.key}
-              onChange={(e) => onEnvVars(updateAt(envVars, i, { key: e.target.value }))}
+              onChange={(e) => onChange({ envVars: updateAt(envVars, i, { key: e.target.value }) })}
               placeholder="KEY"
             />
             <span style={{ color: COLORS.textDim, fontSize: 11 }}>=</span>
             <input
               style={{ ...monoInputStyle, flex: 2 }}
               value={v.value}
-              onChange={(e) => onEnvVars(updateAt(envVars, i, { value: e.target.value }))}
+              onChange={(e) => onChange({ envVars: updateAt(envVars, i, { value: e.target.value }) })}
               placeholder="value"
             />
-            <button style={removeBtn} onClick={() => onEnvVars(removeAt(envVars, i))}>{"×"}</button>
+            <button style={removeBtn} onClick={() => onChange({ envVars: removeAt(envVars, i) })}>{"×"}</button>
           </div>
         ))}
         <button
           style={outlineButton({ height: 28, fontSize: 10 })}
-          onClick={() => onEnvVars([...envVars, { key: "", value: "" }])}
+          onClick={() => onChange({ envVars: [...envVars, { key: "", value: "" }] })}
         >
           + Add variable
         </button>

@@ -3223,7 +3223,7 @@ app.whenReady().then(async () => {
     // the lane service is constructed before the project config service.
     laneService.setOnLaneArchivedEnvTeardown((laneId) =>
       teardownArchivedLaneEnvironment(
-        { laneService, projectConfigService, laneEnvironmentService },
+        { laneService, projectConfigService, laneEnvironmentService, logger },
         laneId,
       ),
     );

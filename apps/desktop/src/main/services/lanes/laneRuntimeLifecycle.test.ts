@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LaneSummary, PortLease } from "../../../shared/types";
+import type { LaneEnvInitConfig, LaneSummary, PortLease } from "../../../shared/types";
 import {
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
@@ -24,23 +24,71 @@ const lease: PortLease = {
   leasedAt: "2026-07-28T00:00:00.000Z",
 };
 
-function laneService() {
+const DOCKER_ONLY: LaneEnvInitConfig = { docker: { composePath: "docker-compose.yml" } };
+
+type Dependencies = Parameters<typeof restoreUnarchivedLaneDocker>[0];
+type EnvironmentService = NonNullable<Dependencies["laneEnvironmentService"]>;
+
+/**
+ * One dependency bag for every case in this file — the four services were
+ * re-typed by hand in each test, which made a signature change a find-and-
+ * replace and hid which service any given case actually cared about.
+ */
+function makeDeps(
+  overrides: {
+    lanes?: LaneSummary[];
+    laneEnvInit?: LaneEnvInitConfig;
+    initLaneEnvironment?: EnvironmentService["initLaneEnvironment"];
+    cleanupLaneEnvironment?: EnvironmentService["cleanupLaneEnvironment"];
+    portAllocationService?: Dependencies["portAllocationService"];
+    laneProxyService?: Dependencies["laneProxyService"];
+  } = {},
+): Dependencies {
+  const lanes = overrides.lanes ?? [lane];
   return {
-    list: vi.fn(async () => [lane]),
+    laneService: { list: vi.fn(async () => lanes) },
+    projectConfigService: {
+      getEffective: () => ({
+        laneEnvInit: overrides.laneEnvInit ?? { envFiles: [] },
+        laneOverlayPolicies: [],
+      }),
+    },
+    laneEnvironmentService: {
+      resolveEnvInitConfig: (config) => config,
+      initLaneEnvironment: overrides.initLaneEnvironment ?? vi.fn(async () => {}),
+      cleanupLaneEnvironment: overrides.cleanupLaneEnvironment ?? vi.fn(async () => {}),
+    },
+    ...(overrides.portAllocationService !== undefined
+      ? { portAllocationService: overrides.portAllocationService }
+      : {}),
+    ...(overrides.laneProxyService !== undefined
+      ? { laneProxyService: overrides.laneProxyService }
+      : {}),
+  };
+}
+
+/** Allocator that hands out `lease` on `acquire`, recording the order of events. */
+function recordingAllocator(order: string[], release = vi.fn()) {
+  return {
+    getLease: vi.fn(() => null),
+    acquire: vi.fn(() => {
+      order.push("lease");
+      return lease;
+    }),
+    release,
   };
 }
 
 describe("lane runtime lifecycle", () => {
   it("acquires an active lease for a restored lane", async () => {
     const acquire = vi.fn(() => lease);
-    const result = await ensureActiveLanePortLease({
-      laneService: laneService(),
-      portAllocationService: {
-        getLease: vi.fn(() => null),
-        acquire,
-        release: vi.fn(),
+    const result = await ensureActiveLanePortLease(
+      {
+        laneService: { list: vi.fn(async () => [lane]) },
+        portAllocationService: { getLease: vi.fn(() => null), acquire, release: vi.fn() },
       },
-    }, lane.id);
+      lane.id,
+    );
 
     expect(result).toEqual(lease);
     expect(acquire).toHaveBeenCalledWith(lane.id);
@@ -51,28 +99,13 @@ describe("lane runtime lifecycle", () => {
     const initLaneEnvironment = vi.fn(async () => {
       order.push("environment");
     });
-    await restoreRecreatedLaneRuntime({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({
-          laneEnvInit: { envFiles: [] },
-          laneOverlayPolicies: [],
-        }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
+    await restoreRecreatedLaneRuntime(
+      makeDeps({
         initLaneEnvironment,
-        cleanupLaneEnvironment: vi.fn(async () => {}),
-      },
-      portAllocationService: {
-        getLease: vi.fn(() => null),
-        acquire: vi.fn(() => {
-          order.push("lease");
-          return lease;
-        }),
-        release: vi.fn(),
-      },
-    }, lane.id);
+        portAllocationService: recordingAllocator(order),
+      }),
+      lane.id,
+    );
 
     expect(order).toEqual(["lease", "environment"]);
     expect(initLaneEnvironment).toHaveBeenCalledWith(
@@ -84,72 +117,61 @@ describe("lane runtime lifecycle", () => {
 
   it("tears down the lane docker environment when a lane is archived", async () => {
     const cleanupLaneEnvironment = vi.fn(async () => {});
-    await teardownArchivedLaneEnvironment({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({
-          laneEnvInit: { docker: { composePath: "docker-compose.yml" } },
-          laneOverlayPolicies: [],
-        }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
-        initLaneEnvironment: vi.fn(async () => {}),
-        cleanupLaneEnvironment,
-      },
-    }, lane.id);
+    await teardownArchivedLaneEnvironment(
+      makeDeps({ laneEnvInit: DOCKER_ONLY, cleanupLaneEnvironment }),
+      lane.id,
+    );
 
-    expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, {
-      docker: { composePath: "docker-compose.yml" },
-    });
+    expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY);
   });
 
   it("skips archive teardown when the lane has no docker services", async () => {
     const cleanupLaneEnvironment = vi.fn(async () => {});
-    await teardownArchivedLaneEnvironment({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({ laneEnvInit: { envFiles: [] }, laneOverlayPolicies: [] }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
-        initLaneEnvironment: vi.fn(async () => {}),
-        cleanupLaneEnvironment,
-      },
-    }, lane.id);
+    await teardownArchivedLaneEnvironment(makeDeps({ cleanupLaneEnvironment }), lane.id);
 
     expect(cleanupLaneEnvironment).not.toHaveBeenCalled();
   });
 
+  it("logs, rather than swallows, a teardown context failure", async () => {
+    // The `onContextError` callback this replaced was optional, and both
+    // archive-and-reclaim call sites had forgotten it — so a resolution failure
+    // on the destructive path vanished.
+    const warn = vi.fn();
+    const cleanupLaneEnvironment = vi.fn(async () => {});
+    const teardown = await teardownArchivedLaneEnvironment(
+      {
+        ...makeDeps({ lanes: [], laneEnvInit: DOCKER_ONLY, cleanupLaneEnvironment }),
+        logger: { warn },
+      },
+      lane.id,
+    );
+
+    expect(teardown).toBeUndefined();
+    expect(cleanupLaneEnvironment).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "lane_env_cleanup.teardown_context_failed",
+      expect.objectContaining({ laneId: lane.id }),
+    );
+  });
+
   it("brings only the docker step back up on a plain unarchive", async () => {
     const initLaneEnvironment = vi.fn(async () => {});
-    await restoreUnarchivedLaneDocker({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({
-          laneEnvInit: {
-            docker: { composePath: "docker-compose.yml" },
-            envFiles: [{ source: ".env.template", dest: ".env" }],
-            dependencies: [{ command: ["npm", "install"] }],
-            setupScript: { commands: ["echo hi"] },
-          },
-          laneOverlayPolicies: [],
-        }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
+    await restoreUnarchivedLaneDocker(
+      makeDeps({
+        laneEnvInit: {
+          ...DOCKER_ONLY,
+          envFiles: [{ source: ".env.template", dest: ".env" }],
+          dependencies: [{ command: ["npm", "install"] }],
+          setupScript: { commands: ["echo hi"] },
+        },
         initLaneEnvironment,
-        cleanupLaneEnvironment: vi.fn(async () => {}),
-      },
-    }, lane.id);
+      }),
+      lane.id,
+    );
 
     // Only docker: re-copying env files, reinstalling dependencies or re-running
     // the setup script would clobber a worktree that was never removed.
-    expect(initLaneEnvironment).toHaveBeenCalledWith(
-      lane,
-      { docker: { composePath: "docker-compose.yml" } },
-      {},
-    );
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY, {});
   });
 
   it("re-acquires the port lease archive released before bringing docker back up", async () => {
@@ -159,35 +181,66 @@ describe("lane runtime lifecycle", () => {
     const initLaneEnvironment = vi.fn(async () => {
       order.push("environment");
     });
-    await restoreUnarchivedLaneDocker({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({
-          laneEnvInit: { docker: { composePath: "docker-compose.yml" } },
-          laneOverlayPolicies: [],
-        }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
+    await restoreUnarchivedLaneDocker(
+      makeDeps({
+        laneEnvInit: DOCKER_ONLY,
         initLaneEnvironment,
-        cleanupLaneEnvironment: vi.fn(async () => {}),
-      },
-      portAllocationService: {
-        getLease: vi.fn(() => null),
-        acquire: vi.fn(() => {
-          order.push("lease");
-          return lease;
-        }),
-        release: vi.fn(),
-      },
-    }, lane.id);
+        portAllocationService: recordingAllocator(order),
+      }),
+      lane.id,
+    );
 
     expect(order).toEqual(["lease", "environment"]);
-    expect(initLaneEnvironment).toHaveBeenCalledWith(
-      lane,
-      { docker: { composePath: "docker-compose.yml" } },
-      { portRange: { start: 4100, end: 4199 } },
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY, {
+      portRange: { start: 4100, end: 4199 },
+    });
+  });
+
+  it("acquires no port lease when an unarchived lane has no docker step", async () => {
+    // The lease guard used to run first, so every Docker-less unarchive took a
+    // port range it would never use — and the plain path does not await this,
+    // so nothing gave it back either.
+    const acquire = vi.fn(() => lease);
+    await restoreUnarchivedLaneDocker(
+      makeDeps({
+        laneEnvInit: { envFiles: [{ source: ".env.template", dest: ".env" }] },
+        portAllocationService: { getLease: vi.fn(() => null), acquire, release: vi.fn() },
+      }),
+      lane.id,
     );
+
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it("hands the lease back when the lane is archived mid-restore", async () => {
+    // The restore is not awaited, so an archive can land between acquiring the
+    // lease and starting a 300s `compose up`. Stopping without releasing would
+    // strand the range on a lane nobody owns.
+    const release = vi.fn();
+    const removeRoute = vi.fn();
+    const initLaneEnvironment = vi.fn(async () => {});
+    let listed = 0;
+    const deps = makeDeps({
+      laneEnvInit: DOCKER_ONLY,
+      initLaneEnvironment,
+      portAllocationService: {
+        getLease: vi.fn(() => lease),
+        acquire: vi.fn(() => lease),
+        release,
+      },
+      laneProxyService: { removeRoute },
+    });
+    // Active for the first resolve and the lease check, archived by the re-check.
+    deps.laneService.list = vi.fn(async () => {
+      listed += 1;
+      return listed <= 2 ? [lane] : [];
+    });
+
+    await restoreUnarchivedLaneDocker(deps, lane.id);
+
+    expect(initLaneEnvironment).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledWith(lane.id);
+    expect(removeRoute).toHaveBeenCalledWith(lane.id);
   });
 
   it("returns before docker finishes on a plain unarchive", async () => {
@@ -203,20 +256,11 @@ describe("lane runtime lifecycle", () => {
       });
     });
 
-    await restoreUnarchivedLaneRuntime({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({
-          laneEnvInit: { docker: { composePath: "docker-compose.yml" } },
-          laneOverlayPolicies: [],
-        }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
-        initLaneEnvironment,
-        cleanupLaneEnvironment: vi.fn(async () => {}),
-      },
-    }, lane.id, { worktreeRecreated: false });
+    await restoreUnarchivedLaneRuntime(
+      makeDeps({ laneEnvInit: DOCKER_ONLY, initLaneEnvironment }),
+      lane.id,
+      { worktreeRecreated: false },
+    );
 
     // Resolved while compose is still running.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -228,25 +272,49 @@ describe("lane runtime lifecycle", () => {
     const failure = new Error("compose refused to start");
     const onDockerError = vi.fn();
 
-    await restoreUnarchivedLaneRuntime({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({
-          laneEnvInit: { docker: { composePath: "docker-compose.yml" } },
-          laneOverlayPolicies: [],
-        }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
+    await restoreUnarchivedLaneRuntime(
+      makeDeps({
+        laneEnvInit: DOCKER_ONLY,
         initLaneEnvironment: vi.fn(async () => {
           throw failure;
         }),
-        cleanupLaneEnvironment: vi.fn(async () => {}),
-      },
-    }, lane.id, { worktreeRecreated: false, onDockerError });
+      }),
+      lane.id,
+      { worktreeRecreated: false, onDockerError },
+    );
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(onDockerError).toHaveBeenCalledWith(failure);
+  });
+
+  it("survives a throwing docker error handler instead of crashing the process", async () => {
+    // The handler runs in the last `.catch` of a detached promise, so a throwing
+    // logger there surfaced as an unhandled rejection rather than a failed
+    // Docker restore.
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      await restoreUnarchivedLaneRuntime(
+        makeDeps({
+          laneEnvInit: DOCKER_ONLY,
+          initLaneEnvironment: vi.fn(async () => {
+            throw new Error("compose refused to start");
+          }),
+        }),
+        lane.id,
+        {
+          worktreeRecreated: false,
+          onDockerError: () => {
+            throw new Error("logger blew up");
+          },
+        },
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 
   it("awaits the full env init when the worktree was recreated", async () => {
@@ -258,37 +326,21 @@ describe("lane runtime lifecycle", () => {
       initFinished = true;
     });
 
-    await restoreUnarchivedLaneRuntime({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({
-          laneEnvInit: { docker: { composePath: "docker-compose.yml" }, envFiles: [] },
-          laneOverlayPolicies: [],
-        }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
+    await restoreUnarchivedLaneRuntime(
+      makeDeps({
+        laneEnvInit: { ...DOCKER_ONLY, envFiles: [] },
         initLaneEnvironment,
-        cleanupLaneEnvironment: vi.fn(async () => {}),
-      },
-    }, lane.id, { worktreeRecreated: true });
+      }),
+      lane.id,
+      { worktreeRecreated: true },
+    );
 
     expect(initFinished).toBe(true);
   });
 
   it("does nothing on a plain unarchive when the lane has no docker services", async () => {
     const initLaneEnvironment = vi.fn(async () => {});
-    await restoreUnarchivedLaneDocker({
-      laneService: laneService(),
-      projectConfigService: {
-        getEffective: () => ({ laneEnvInit: { envFiles: [] }, laneOverlayPolicies: [] }),
-      },
-      laneEnvironmentService: {
-        resolveEnvInitConfig: (config) => config,
-        initLaneEnvironment,
-        cleanupLaneEnvironment: vi.fn(async () => {}),
-      },
-    }, lane.id);
+    await restoreUnarchivedLaneDocker(makeDeps({ initLaneEnvironment }), lane.id);
 
     expect(initLaneEnvironment).not.toHaveBeenCalled();
   });
@@ -296,14 +348,17 @@ describe("lane runtime lifecycle", () => {
   it("removes the proxy route and releases an active lease", () => {
     const removeRoute = vi.fn();
     const release = vi.fn();
-    releaseLaneRuntimeResources({
-      laneProxyService: { removeRoute },
-      portAllocationService: {
-        getLease: vi.fn(() => lease),
-        acquire: vi.fn(() => lease),
-        release,
+    releaseLaneRuntimeResources(
+      {
+        laneProxyService: { removeRoute },
+        portAllocationService: {
+          getLease: vi.fn(() => lease),
+          acquire: vi.fn(() => lease),
+          release,
+        },
       },
-    }, lane.id);
+      lane.id,
+    );
 
     expect(removeRoute).toHaveBeenCalledWith(lane.id);
     expect(release).toHaveBeenCalledWith(lane.id);
@@ -313,18 +368,23 @@ describe("lane runtime lifecycle", () => {
     const routeError = new Error("proxy route is busy");
     const release = vi.fn();
 
-    expect(() => releaseLaneRuntimeResources({
-      laneProxyService: {
-        removeRoute: vi.fn(() => {
-          throw routeError;
-        }),
-      },
-      portAllocationService: {
-        getLease: vi.fn(() => lease),
-        acquire: vi.fn(() => lease),
-        release,
-      },
-    }, lane.id)).toThrow(routeError);
+    expect(() =>
+      releaseLaneRuntimeResources(
+        {
+          laneProxyService: {
+            removeRoute: vi.fn(() => {
+              throw routeError;
+            }),
+          },
+          portAllocationService: {
+            getLease: vi.fn(() => lease),
+            acquire: vi.fn(() => lease),
+            release,
+          },
+        },
+        lane.id,
+      ),
+    ).toThrow(routeError);
 
     expect(release).toHaveBeenCalledWith(lane.id);
   });

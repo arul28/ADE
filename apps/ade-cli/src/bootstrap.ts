@@ -998,7 +998,7 @@ export async function createAdeRuntime(args: {
     // the lane service is constructed before the project config service.
     laneService.setOnLaneArchivedEnvTeardown((laneId) =>
       teardownArchivedLaneEnvironment(
-        { laneService, projectConfigService, laneEnvironmentService },
+        { laneService, projectConfigService, laneEnvironmentService, logger },
         laneId,
       ),
     );

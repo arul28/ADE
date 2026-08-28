@@ -570,6 +570,49 @@ describe("projectConfigService - shared config trust on save", () => {
     expect(saved.trust.requiresSharedTrust).toBe(false);
     expect(service.get().trust.requiresSharedTrust).toBe(false);
   });
+
+  it("keeps an already-trusted hand-formatted shared config trusted across a local-only save", () => {
+    // Trust is a hash of the RAW bytes, but every save rewrites `.ade/ade.yaml`
+    // canonically. Without carrying trust across that reserialization, saving a
+    // lane template (a local-scope write) silently revoked trust on a shared
+    // file the user had already approved, and the trust gate reappeared with no
+    // user action behind it.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-trust-reserialize-");
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      [
+        "# hand-written, deliberately not canonical",
+        "version: 1",
+        "laneEnvInit:",
+        "  setupScript:",
+        "    commands:",
+        '      - "npm run bootstrap"',
+        "testSuites: []",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: quietLogger(),
+    });
+    expect(service.get().trust.requiresSharedTrust).toBe(true);
+    service.confirmTrust();
+    expect(service.get().trust.requiresSharedTrust).toBe(false);
+
+    const templateService = createLaneTemplateService({
+      projectConfigService: service,
+      logger: quietLogger(),
+    });
+    templateService.saveTemplate({ id: "tpl-1", name: "Backend" });
+
+    expect(service.get().trust.requiresSharedTrust).toBe(false);
+    expect(service.getEffective().laneEnvInit?.setupScript?.commands).toEqual(["npm run bootstrap"]);
+  });
 });
 
 describe("projectConfigService - AI mode migration", () => {

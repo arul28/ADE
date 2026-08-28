@@ -15,6 +15,7 @@ import type {
   LaneOverlayOverrides,
   LaneSummary
 } from "../../../shared/types";
+import { laneSetupScriptHasWork } from "../../../shared/types";
 
 import type { Logger } from "../logging/logger";
 import {
@@ -556,13 +557,46 @@ export function createLaneEnvironmentService({
       ...(config.dependencies?.length ? { dependencies: config.dependencies } : {}),
       ...(config.mountPoints?.length ? { mountPoints: config.mountPoints } : {}),
       ...(config.copyPaths?.length ? { copyPaths: config.copyPaths } : {}),
-      ...(resolveSetupScriptConfig(config.setupScript) ? { setupScript: config.setupScript } : {})
+      // Platform-agnostic on purpose: `resolveSetupScriptConfig` answers "is
+      // there work for THIS platform", so using it here dropped a
+      // windowsCommands-only script out of the normalized config on macOS —
+      // and the normalized config is what merges, persists, and ships to other
+      // hosts. `laneSetupScriptHasWork` is the configured-at-all predicate.
+      ...(laneSetupScriptHasWork(config.setupScript) ? { setupScript: config.setupScript } : {})
     };
 
     return Object.keys(normalized).length > 0 ? normalized : undefined;
   }
 
-  return {
+  /**
+   * One promise tail per lane, so init and cleanup for the SAME lane can never
+   * interleave.
+   *
+   * The unarchive Docker restore is deliberately not awaited by its caller
+   * (`docker compose up` has a 300s budget and the mobile unarchive command has
+   * 30s), so a quick archive/delete right after an unarchive used to run
+   * `compose down` while `compose up` was still bringing the stack up — leaving
+   * an archived lane with live containers. Different lanes stay fully parallel.
+   */
+  const laneQueues = new Map<string, Promise<unknown>>();
+
+  function withLaneQueue<T>(laneId: string, task: () => Promise<T>): Promise<T> {
+    const previous = laneQueues.get(laneId) ?? Promise.resolve();
+    // `then(task, task)` — a failed predecessor must not cancel the follower.
+    const run = previous.then(task, task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    laneQueues.set(laneId, tail);
+    void tail.then(() => {
+      // Only the current tail clears the entry; a later enqueue owns it now.
+      if (laneQueues.get(laneId) === tail) laneQueues.delete(laneId);
+    });
+    return run;
+  }
+
+  const service = {
     /**
      * Initialize environment for a newly created lane.
      * Runs env file templating, Docker startup, dependency install, and mount points.
@@ -762,6 +796,19 @@ export function createLaneEnvironmentService({
 
     dispose(): void {
       progressMap.clear();
+      laneQueues.clear();
     }
+  };
+
+  return {
+    ...service,
+    initLaneEnvironment: (
+      lane: LaneSummary,
+      config: LaneEnvInitConfig,
+      overrides: LaneOverlayOverrides,
+    ): Promise<LaneEnvInitProgress> =>
+      withLaneQueue(lane.id, () => service.initLaneEnvironment(lane, config, overrides)),
+    cleanupLaneEnvironment: (lane: LaneSummary, config: LaneEnvInitConfig | undefined): Promise<void> =>
+      withLaneQueue(lane.id, () => service.cleanupLaneEnvironment(lane, config)),
   };
 }

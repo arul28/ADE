@@ -279,7 +279,7 @@ import {
   mergeLaneOverrides,
 } from "../../../../desktop/src/main/services/lanes/laneEnvInitMerge";
 import {
-  resolveLaneOverlayContext as resolveSharedLaneOverlayContext,
+  resolveLaneOverlayContext,
 } from "../../../../desktop/src/main/services/lanes/laneOverlayContext";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
@@ -3520,13 +3520,13 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
  * `lanes/laneOverlayContext` module, so the mobile command path and the desktop
  * hosts resolve a lane's env-init config identically.
  */
-async function resolveLaneOverlayContext(
+async function resolveLaneOverlayContextForSyncHost(
   args: SyncRemoteCommandServiceArgs,
   laneId: string,
   options: { includeArchived?: boolean } = {},
 ) {
   const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-  return await resolveSharedLaneOverlayContext(
+  return await resolveLaneOverlayContext(
     {
       laneService: args.laneService,
       projectConfigService,
@@ -3549,17 +3549,10 @@ async function deleteLaneWithRuntimeCleanup(
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,
+      logger: args.logger,
     },
     deleteArgs.laneId,
-    {
-      includeArchived: true,
-      onContextError: (error) => {
-        args.logger.warn("sync_remote.lane_env_cleanup.pre_delete_context_failed", {
-          laneId: deleteArgs.laneId,
-          err: String(error),
-        });
-      },
-    },
+    { includeArchived: true },
   );
 
   await args.laneService.delete(deleteArgs, { teardownEnv });
@@ -4076,7 +4069,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.initEnv", { viewerAllowed: true, queueable: true }, async (payload) => {
     const laneEnvironmentService = requireService(args.laneEnvironmentService, "Lane environment service not available.");
     const laneId = requireString(payload.laneId, "lanes.initEnv requires laneId.");
-    const context = await resolveLaneOverlayContext(args, laneId);
+    const context = await resolveLaneOverlayContextForSyncHost(args, laneId);
     if (!context.envInitConfig) {
       const now = new Date().toISOString();
       return {
@@ -4096,7 +4089,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
       laneId: requireString(payload.laneId, "lanes.applyTemplate requires laneId."),
       templateId: requireString(payload.templateId, "lanes.applyTemplate requires templateId."),
     } satisfies ApplyLaneTemplateArgs;
-    const context = await resolveLaneOverlayContext(args, parsed.laneId);
+    const context = await resolveLaneOverlayContextForSyncHost(args, parsed.laneId);
     const template = laneTemplateService.getTemplate(parsed.templateId);
     if (!template) throw new Error(`Template not found: ${parsed.templateId}`);
     const templateEnvInit = laneTemplateService.resolveTemplateAsEnvInit(template);

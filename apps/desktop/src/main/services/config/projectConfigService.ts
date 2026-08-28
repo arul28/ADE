@@ -3172,10 +3172,21 @@ export function createProjectConfigService({
     // the attacker-supplied file the setup-script trust gate exists to stop.
     // Compared canonically (parse then re-serialize both sides) so a
     // formatting-only rewrite of an untrusted file is not mistaken for an edit.
+    const sharedOnDisk = readConfigFile(sharedPath);
     const sharedOnDiskYaml = toCanonicalYaml(
-      normalizeConfigFilePaths(coerceConfigFile(readConfigFile(sharedPath).config), projectRoot),
+      normalizeConfigFilePaths(coerceConfigFile(sharedOnDisk.config), projectRoot),
     );
     const sharedScopeEdited = sharedYaml !== sharedOnDiskYaml;
+
+    // Trust is a hash of the RAW bytes, but every save rewrites `.ade/ade.yaml`
+    // as canonical YAML — so a local-only save of an already-trusted but
+    // hand-formatted shared file changes the bytes and would silently revoke
+    // trust, popping the "trust this project" gate with no user action. Carry
+    // trust across the reserialization when the pre-write bytes were the ones
+    // the user already approved. That does not reopen the laundering hole the
+    // `sharedScopeEdited` gate closed: re-affirming content that was already
+    // approved (and, canonically, is unchanged) approves nothing new.
+    const sharedWasTrusted = getTrustedSharedHash() === hashContent(sharedOnDisk.raw);
 
     if (shouldWriteShared) {
       ensureSharedAdeProjectScaffold(projectRoot, { logger });
@@ -3189,10 +3200,10 @@ export function createProjectConfigService({
     writeFileAtomicSync(localPath, localYaml);
 
     const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
-    // Only a genuine shared edit carries trust with it — the user reviewed what
-    // they just wrote. An unchanged round-trip leaves the existing trust state
-    // exactly as it was, trusted or not.
-    if (shouldWriteShared && sharedScopeEdited) {
+    // Trust follows the new bytes when the save either edited the shared scope
+    // (the user reviewed what they just wrote) or merely reserialized bytes that
+    // were already trusted. An untrusted round-trip stays untrusted.
+    if (shouldWriteShared && (sharedScopeEdited || sharedWasTrusted)) {
       setTrustedSharedHash(sharedHash);
     }
 
@@ -3201,6 +3212,7 @@ export function createProjectConfigService({
       localPath,
       sharedHash,
       sharedScopeEdited,
+      sharedWasTrusted,
     });
 
     const snapshot = readSnapshotFromDisk();

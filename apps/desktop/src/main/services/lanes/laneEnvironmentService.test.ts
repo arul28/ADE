@@ -543,6 +543,90 @@ describe("laneEnvironmentService", () => {
         services: ["api"]
       });
     });
+
+    it("keeps a windows-only setup script in the normalized config on darwin", () => {
+      // Normalization used the PLATFORM-specific resolver as an existence
+      // check, so a `windowsCommands`-only template lost its setup script on
+      // macOS — and the normalized config is what merges and persists.
+      const service = createService();
+      const projectDefault: LaneEnvInitConfig = {
+        setupScript: { windowsCommands: ["pwsh -c ./setup.ps1"] }
+      };
+      const result = service.resolveEnvInitConfig(projectDefault, {});
+      expect(result?.setupScript).toEqual({ windowsCommands: ["pwsh -c ./setup.ps1"] });
+    });
+  });
+
+  describe("per-lane serialization", () => {
+    /**
+     * Real `docker` stub that sleeps, so "did these overlap?" is decided by
+     * actual concurrency rather than by microtask ordering.
+     */
+    function installSlowDockerStub(): { composePath: string; cleanup: () => void } {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-env-slow-bin-"));
+      fs.writeFileSync(
+        path.join(binDir, "docker"),
+        "#!/bin/sh\nsleep 0.4\n",
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+      fs.writeFileSync(path.join(projectRoot, "docker-compose.yml"), "services: {}\n");
+      return {
+        composePath: "docker-compose.yml",
+        cleanup: () => fs.rmSync(binDir, { recursive: true, force: true }),
+      };
+    }
+
+    it("never interleaves init and cleanup for the same lane", async () => {
+      // The unarchive Docker restore is not awaited by its caller, so a quick
+      // archive right after it used to run `compose down` while `compose up`
+      // was still bringing the stack up.
+      const { composePath, cleanup: removeStub } = installSlowDockerStub();
+      try {
+        const service = createService();
+        const config: LaneEnvInitConfig = { docker: { composePath } };
+        const order: string[] = [];
+
+        const lane = makeLane({ worktreePath: projectRoot });
+        const init = service.initLaneEnvironment(lane, config, {}).then(() => {
+          order.push("init");
+        });
+        const cleanup = service.cleanupLaneEnvironment(lane, config).then(() => {
+          order.push("cleanup");
+        });
+
+        await Promise.all([init, cleanup]);
+        expect(order).toEqual(["init", "cleanup"]);
+      } finally {
+        removeStub();
+      }
+    });
+
+    it("does not let one lane's environment work block another's", async () => {
+      const { composePath, cleanup: removeStub } = installSlowDockerStub();
+      try {
+        const service = createService();
+        const order: string[] = [];
+
+        const slow = service
+          .initLaneEnvironment(makeLane({ id: "lane-slow", worktreePath: projectRoot }), { docker: { composePath } }, {})
+          .then(() => {
+            order.push("slow");
+          });
+        // No steps at all: this resolves at once unless queued behind the
+        // other lane's compose run.
+        const fast = service
+          .initLaneEnvironment(makeLane({ id: "lane-fast", worktreePath: projectRoot }), {}, {})
+          .then(() => {
+            order.push("fast");
+          });
+
+        await Promise.all([slow, fast]);
+        expect(order).toEqual(["fast", "slow"]);
+      } finally {
+        removeStub();
+      }
+    });
   });
 
   describe("cleanupLaneEnvironment", () => {
