@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { crsqliteExtensionFileName, currentTarget } from "./package-native-deps.mjs";
 
 const probeScriptPath = fileURLToPath(import.meta.url);
+const LOCAL_ARCHIVE_NAME = "archive.tar.gz";
 
 function spawnHidden(command, args, options = {}) {
   return spawnSync(command, args, { ...options, windowsHide: true });
@@ -37,19 +38,20 @@ function expectedArchiveEntries(target) {
   ];
 }
 
-function tarExtractArgs(archive, entry) {
-  // Never pass `-C <windows-path>`: GNU tar treats `C:` as a remote host, which
-  // is what failed the win32-x64 runtime smoke (`C\:\\Users\\RUNNER~1\\...`).
-  // Callers must spawn with `cwd` set to the destination directory instead.
-  return ["-xzf", archive, entry];
+function tarListArgs() {
+  return ["-tzf", LOCAL_ARCHIVE_NAME];
 }
 
-function listArchive(archive) {
-  const result = spawnHidden("tar", ["-tzf", archive], { encoding: "utf8" });
+function tarExtractArgs(entry) {
+  return ["-xzf", LOCAL_ARCHIVE_NAME, entry];
+}
+
+function runTar(args, cwd) {
+  const result = spawnHidden("tar", args, { encoding: "utf8", cwd });
   if (result.status !== 0) {
-    throw new Error((result.stderr || `tar -tzf failed for ${archive}`).trim());
+    throw new Error((result.stderr || result.stdout || `tar ${args.join(" ")} failed`).trim());
   }
-  return result.stdout.split(/\r?\n/).filter(Boolean);
+  return result;
 }
 
 function probe(extensionPath) {
@@ -79,19 +81,13 @@ function isWindowsDeleteLockError(error) {
     && ["EPERM", "EACCES", "EBUSY"].includes(error.code);
 }
 
-function extractExtension(archive, entry) {
+function stageArchive(archive) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ade-crsqlite-probe-"));
-  const archivePath = path.resolve(archive);
-  const result = spawnHidden("tar", tarExtractArgs(archivePath, entry), {
-    encoding: "utf8",
-    cwd: tmp,
-  });
-  if (result.status !== 0) {
-    fs.rmSync(tmp, { recursive: true, force: true });
-    throw new Error((result.stderr || `failed to extract ${entry} from ${archivePath}`).trim());
-  }
+  // GNU tar treats `D:` / `C:` as a remote host. Copy with Node, then invoke
+  // tar with a relative name from this directory — never a Windows absolute path.
+  fs.copyFileSync(path.resolve(archive), path.join(tmp, LOCAL_ARCHIVE_NAME));
   return {
-    filePath: path.join(tmp, ...entry.replace(/^\.\//, "").split("/")),
+    tmp,
     cleanup() {
       try {
         fs.rmSync(tmp, { recursive: true, force: true });
@@ -101,6 +97,29 @@ function extractExtension(archive, entry) {
       }
     },
   };
+}
+
+function listStagedArchive(tmp) {
+  return runTar(tarListArgs(), tmp).stdout.split(/\r?\n/).filter(Boolean);
+}
+
+function extractStagedEntry(tmp, entry) {
+  runTar(tarExtractArgs(entry), tmp);
+  return path.join(tmp, ...entry.replace(/^\.\//, "").split("/"));
+}
+
+function extractExtension(archive, entry) {
+  const staged = stageArchive(archive);
+  try {
+    const filePath = extractStagedEntry(staged.tmp, entry);
+    return {
+      filePath,
+      cleanup: staged.cleanup,
+    };
+  } catch (error) {
+    staged.cleanup();
+    throw error;
+  }
 }
 
 function probeExtractedExtension(extensionPath) {
@@ -116,6 +135,30 @@ function probeExtractedExtension(extensionPath) {
   process.stdout.write(result.stdout);
 }
 
+function probeArchive(archive, target) {
+  const staged = stageArchive(archive);
+  try {
+    const listing = listStagedArchive(staged.tmp);
+    const found = expectedArchiveEntries(target).find((entry) => listing.includes(entry));
+    if (!found) {
+      throw new Error(
+        `Native archive ${path.resolve(archive)} is missing cr-sqlite for ${target} ` +
+          `(looked for ${expectedArchiveEntries(target).join(" or ")}).`,
+      );
+    }
+    process.stdout.write(`[probe-runtime-crsqlite] archive contains ${found}\n`);
+    if (currentTarget() !== target) {
+      process.stdout.write(
+        `[probe-runtime-crsqlite] skipped live load (host ${currentTarget()}, target ${target})\n`,
+      );
+      return;
+    }
+    probeExtractedExtension(extractStagedEntry(staged.tmp, found));
+  } finally {
+    staged.cleanup();
+  }
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.archive && !args.extension) {
@@ -125,28 +168,7 @@ function main() {
     if (!args.target) {
       throw new Error("--archive requires --target.");
     }
-    args.archive = path.resolve(args.archive);
-    const listing = listArchive(args.archive);
-    const found = expectedArchiveEntries(args.target).find((entry) => listing.includes(entry));
-    if (!found) {
-      throw new Error(
-        `Native archive ${args.archive} is missing cr-sqlite for ${args.target} ` +
-          `(looked for ${expectedArchiveEntries(args.target).join(" or ")}).`,
-      );
-    }
-    process.stdout.write(`[probe-runtime-crsqlite] archive contains ${found}\n`);
-    if (currentTarget() === args.target) {
-      const extracted = extractExtension(args.archive, found);
-      try {
-        probeExtractedExtension(extracted.filePath);
-      } finally {
-        extracted.cleanup();
-      }
-    } else {
-      process.stdout.write(
-        `[probe-runtime-crsqlite] skipped live load (host ${currentTarget()}, target ${args.target})\n`,
-      );
-    }
+    probeArchive(args.archive, args.target);
   }
   if (args.extension) {
     const changeRows = probe(args.extension);
@@ -156,7 +178,13 @@ function main() {
   }
 }
 
-export { expectedArchiveEntries, extractExtension, tarExtractArgs };
+export {
+  expectedArchiveEntries,
+  extractExtension,
+  LOCAL_ARCHIVE_NAME,
+  tarExtractArgs,
+  tarListArgs,
+};
 
 if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href) {
   try {

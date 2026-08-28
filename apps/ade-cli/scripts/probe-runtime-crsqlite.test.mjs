@@ -5,7 +5,20 @@ import path from "node:path";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { crsqliteExtensionFileName, currentTarget } from "./package-native-deps.mjs";
-import { expectedArchiveEntries, extractExtension, tarExtractArgs } from "./probe-runtime-crsqlite.mjs";
+import {
+  expectedArchiveEntries,
+  extractExtension,
+  LOCAL_ARCHIVE_NAME,
+  tarExtractArgs,
+  tarListArgs,
+} from "./probe-runtime-crsqlite.mjs";
+
+function assertTarArgsAreLocal(args) {
+  assert.equal(args.includes("-C"), false);
+  for (const arg of args) {
+    assert.equal(arg.includes(":"), false, arg);
+  }
+}
 
 test("probe helper names the vendored cr-sqlite path inside a native archive", () => {
   assert.equal(crsqliteExtensionFileName("linux-x64"), "crsqlite.so");
@@ -23,13 +36,18 @@ test("probe helper names the vendored cr-sqlite path inside a native archive", (
   ]);
 });
 
-test("tar extract args never pass -C so a Windows drive letter is not a remote host", () => {
-  const archive = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\ade-win32-x64.native.tar.gz";
-  const entry = "./vendor/crsqlite/win32-x64/crsqlite.dll";
-  assert.deepEqual(tarExtractArgs(archive, entry), ["-xzf", archive, entry]);
+test("tar args use a relative archive name and never a drive-letter path", () => {
+  assert.deepEqual(tarListArgs(), ["-tzf", LOCAL_ARCHIVE_NAME]);
+  assert.deepEqual(tarExtractArgs("./vendor/crsqlite/win32-x64/crsqlite.dll"), [
+    "-xzf",
+    LOCAL_ARCHIVE_NAME,
+    "./vendor/crsqlite/win32-x64/crsqlite.dll",
+  ]);
+  assertTarArgsAreLocal(tarListArgs());
+  assertTarArgsAreLocal(tarExtractArgs("vendor/crsqlite/win32-x64/crsqlite.dll"));
 });
 
-test("extractExtension unpacks an archive entry into cwd rather than tar -C", (t) => {
+test("extractExtension unpacks via a staged relative archive name", (t) => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ade-crsqlite-extract-"));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
   const payload = path.join(tmp, "payload");
