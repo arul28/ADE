@@ -372,7 +372,6 @@ import type {
   PendingInputSource,
   AgentChatRegenerateSessionMetadataArgs,
   AgentChatRegenerateSessionMetadataResult,
-  AgentChatSessionMetadataField,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   TerminalSessionStatus,
@@ -398,7 +397,6 @@ import {
   supportsActiveTurnDispatchMode,
   unsupportedActiveTurnDispatchModeMessage,
   waitingOnYouDescription,
-  normalizeAgentChatSessionMetadataFields,
 } from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
@@ -666,10 +664,9 @@ import {
   LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
   LEGACY_LANE_NAME_SYSTEM_PROMPT,
   MAX_NAMING_WORDS,
-  buildSessionMetadataPrompt,
   runNamingAcrossProviders,
-  runSessionMetadataGeneration,
 } from "./sessionNaming";
+import { createSessionMetadataRegenerator } from "./sessionMetadataService";
 import {
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
@@ -11779,18 +11776,45 @@ export function createAgentChatService(args: {
     }
   };
 
-  const syncClaudeSessionTitle = async (managed: ManagedChatSession, title: string): Promise<void> => {
-    const runtime = managed.runtime;
-    if (managed.session.provider !== "claude" || runtime?.kind !== "claude" || !runtime.sdkSessionId) return;
-    const sdkSessionId = runtime.sdkSessionId;
-    await renameClaudeSession(sdkSessionId, title, { dir: managed.laneWorktreePath }).catch((error) => {
-      logger.warn("agent_chat.claude_rename_session_failed", {
-        sessionId: managed.session.id,
-        sdkSessionId,
-        error: error instanceof Error ? error.message : String(error),
+  const claudeTitleSyncTails = new Map<string, Promise<void>>();
+  const syncClaudeSessionTitle = async (
+    managed: ManagedChatSession,
+    title: string,
+    options: { expectedTitleRevision?: number } = {},
+  ): Promise<void> => {
+    const expectedTitleRevision = options.expectedTitleRevision ?? managed.sessionMetadataTitleRevision;
+    const previous = claudeTitleSyncTails.get(managed.session.id) ?? Promise.resolve();
+    const operation = previous.catch(() => undefined).then(async () => {
+      const runtime = managed.runtime;
+      if (managed.session.provider !== "claude" || runtime?.kind !== "claude" || !runtime.sdkSessionId) return;
+      if (
+        managed.deleted
+        || managed.sessionMetadataTitleRevision !== expectedTitleRevision
+        || sessionService.get(managed.session.id)?.title?.trim() !== title.trim()
+      ) return;
+      const sdkSessionId = runtime.sdkSessionId;
+      await renameClaudeSession(sdkSessionId, title, { dir: managed.laneWorktreePath }).catch((error) => {
+        logger.warn("agent_chat.claude_rename_session_failed", {
+          sessionId: managed.session.id,
+          sdkSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
+      if (
+        managed.deleted
+        || managed.sessionMetadataTitleRevision !== expectedTitleRevision
+        || sessionService.get(managed.session.id)?.title?.trim() !== title.trim()
+      ) return;
+      mirrorClaudeSessionPointer(managed, sdkSessionId, { title });
     });
-    mirrorClaudeSessionPointer(managed, sdkSessionId, { title });
+    claudeTitleSyncTails.set(managed.session.id, operation);
+    try {
+      await operation;
+    } finally {
+      if (claudeTitleSyncTails.get(managed.session.id) === operation) {
+        claudeTitleSyncTails.delete(managed.session.id);
+      }
+    }
   };
 
   const setManagedSessionTitle = (
@@ -11824,8 +11848,9 @@ export function createAgentChatService(args: {
     if (!title) return null;
     const appliedTitle = persistSessionTitleMetadata(managed, title, true);
     if (!appliedTitle) return null;
+    const titleRevision = managed.sessionMetadataTitleRevision;
     syncCodexSessionTitle(managed, appliedTitle);
-    await syncClaudeSessionTitle(managed, appliedTitle);
+    await syncClaudeSessionTitle(managed, appliedTitle, { expectedTitleRevision: titleRevision });
     return appliedTitle;
   };
 
@@ -12022,224 +12047,74 @@ export function createAgentChatService(args: {
     }
   };
 
-  const regenerateSessionMetadata = async (
+  let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
+  const regenerateSessionMetadata = (
     args: AgentChatRegenerateSessionMetadataArgs,
   ): Promise<AgentChatRegenerateSessionMetadataResult> => {
-    const sessionId = args.sessionId.trim();
-    const managed = ensureManagedSession(sessionId);
-    const fields = normalizeAgentChatSessionMetadataFields(args.fields);
-    if (!fields.length) {
-      throw new Error("Choose at least one piece of session metadata to generate.");
-    }
-
-    // This version belongs to the explicit request, not to manual title edits.
-    // A later generation therefore cancels this whole result, while a manual
-    // title edit is handled per-field by comparing the title snapshot and
-    // revision below.
-    const generationVersion = ++managed.sessionMetadataGenerationVersion;
-    const initialRow = sessionService.get(sessionId);
-    if (!initialRow) throw new Error(`Chat session '${sessionId}' was not found.`);
-    const initialLane = await laneService.getSummary(managed.session.laneId, { includeStatus: false }).catch(() => null);
-    const snapshot = {
-      title: initialRow.title,
-      titleRevision: managed.sessionMetadataTitleRevision,
-      laneName: initialLane?.name ?? initialRow.laneName,
-      statusLine: initialRow.statusNote ?? null,
-    };
-    const applied: AgentChatSessionMetadataField[] = [];
-    const skipped: AgentChatSessionMetadataField[] = [];
-    let selectedModelId: string | null = null;
-    let attemptCount = 0;
-
-    const notifyOutcome = (outcome: "completed" | "partial" | "failed"): void => {
-      try {
-        onSessionMetadataRegenerated?.({ sessionId, outcome });
-      } catch (error) {
-        logger.warn("agent_chat.session_metadata_callback_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
+    sessionMetadataRegenerator ??= createSessionMetadataRegenerator<ManagedChatSession>({
+      ensureManagedSession,
+      getSession: (sessionId) => {
+        const row = sessionService.get(sessionId);
+        return row ? {
+          title: row.title,
+          laneName: row.laneName,
+          statusNote: row.statusNote ?? null,
+          lastOutputPreview: row.lastOutputPreview ?? null,
+          summary: row.summary ?? null,
+        } : null;
+      },
+      getLaneSummary: (laneId, options) => laneService.getSummary(laneId, options),
+      resolveModelCandidates: async (managed: ManagedChatSession) => {
+        const auth = await detectAuth();
+        const availableModels = await getAvailableRegistryModels(auth);
+        const config = resolveChatConfig();
+        // An existing OpenCode chat can outlive the inventory snapshot that was
+        // available when it was created. Keep its selected model eligible for an
+        // explicit refresh, but only if the registry resolves it to this chat's
+        // runtime provider. This preserves provider isolation without making a
+        // valid dynamic OpenCode model disappear from the action.
+        const sessionModelDescriptor = [managed.session.modelId, managed.session.model]
+          .map((modelRef) => typeof modelRef === "string" && modelRef.trim().length ? getModelById(modelRef) : undefined)
+          .find((descriptor) => descriptor && resolveProviderGroupForModel(descriptor) === managed.session.provider);
+        const metadataModels = sessionModelDescriptor && !availableModels.some((descriptor) => descriptor.id === sessionModelDescriptor.id)
+          ? [...availableModels, sessionModelDescriptor]
+          : availableModels;
+        return buildNamingModelCandidates({
+          availableModels: metadataModels,
+          provider: managed.session.provider,
+          preferred: [
+            config.titleModelId,
+            managed.session.modelId,
+            managed.session.model,
+            DEFAULT_AUTO_TITLE_MODEL_ID,
+            availableModels.find((descriptor) =>
+              resolveProviderGroupForModel(descriptor) === managed.session.provider)?.id,
+          ],
         });
-      }
-    };
-
-    try {
-      const auth = await detectAuth();
-      const availableModels = await getAvailableRegistryModels(auth);
-      const config = resolveChatConfig();
-      // An existing OpenCode chat can outlive the inventory snapshot that was
-      // available when it was created. Keep its selected model eligible for an
-      // explicit refresh, but only if the registry resolves it to this chat's
-      // runtime provider. This preserves provider isolation without making a
-      // valid dynamic OpenCode model disappear from the action.
-      const sessionModelDescriptor = [managed.session.modelId, managed.session.model]
-        .map((modelRef) => typeof modelRef === "string" && modelRef.trim().length ? getModelById(modelRef) : undefined)
-        .find((descriptor) => descriptor && resolveProviderGroupForModel(descriptor) === managed.session.provider);
-      const metadataModels = sessionModelDescriptor && !availableModels.some((descriptor) => descriptor.id === sessionModelDescriptor.id)
-        ? [...availableModels, sessionModelDescriptor]
-        : availableModels;
-      const candidateModelIds = buildNamingModelCandidates({
-        availableModels: metadataModels,
-        provider: managed.session.provider,
-        preferred: [
-          config.titleModelId,
-          managed.session.modelId,
-          managed.session.model,
-          DEFAULT_AUTO_TITLE_MODEL_ID,
-          availableModels.find((descriptor) =>
-            resolveProviderGroupForModel(descriptor) === managed.session.provider)?.id,
-        ],
-      });
-      if (!candidateModelIds.length) {
-        throw new Error("No AI model is available to generate session metadata.");
-      }
-
-      const recentConversation = buildRecentConversationContext(managed, 8).trim();
-      let latestOutputPreview: string | null = null;
-      const storedOutputPreview = initialRow.lastOutputPreview?.trim();
-      if (storedOutputPreview) {
-        latestOutputPreview = storedOutputPreview.slice(0, 1_000);
-      } else {
-        const managedOutputPreview = managed.preview?.trim();
-        if (managedOutputPreview) {
-          latestOutputPreview = managedOutputPreview.slice(0, 1_000);
-        }
-      }
-      const prompt = buildSessionMetadataPrompt({
-        provider: managed.session.provider,
-        chatModel: managed.session.modelId ?? managed.session.model,
-        currentLaneName: snapshot.laneName,
-        currentChatTitle: snapshot.title,
-        currentStatusLine: snapshot.statusLine,
-        goal: managed.session.goal?.trim().slice(0, 2_000) ?? null,
-        summary: initialRow.summary?.trim().slice(0, 2_000) ?? null,
-        latestOutputPreview,
-        originalRequest: managed.autoTitleSeed?.trim().slice(0, 2_000) ?? null,
-        recentConversation: recentConversation.slice(-8_000),
-      });
-
-      const generated = await runSessionMetadataGeneration({
-        candidateModelIds,
-        provider: managed.session.provider,
-        cwd: managed.laneWorktreePath,
+      },
+      buildRecentConversationContext: (managed, limit) =>
+        buildRecentConversationContext(managed, limit),
+      runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
+        cwd,
+        modelId,
         prompt,
-        runPrompt: ({ cwd, modelId, prompt: metadataPrompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
-          cwd,
-          modelId,
-          prompt: metadataPrompt,
-          systemPrompt,
-          jsonSchema,
-          taskType: "session_title",
-        }),
-        normalizeTitle: normalizeSuggestedLaneTitle,
-        normalizeStatusLine: normalizeSessionStatusNote,
-        shouldStop: () => managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion,
-        onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount: currentAttempt, error }) => {
-          logger.warn("agent_chat.session_metadata_generation_failed", {
-            sessionId,
-            modelId: descriptor.id,
-            provider,
-            providerLevelFailure,
-            attemptCount: currentAttempt,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      });
-      selectedModelId = generated.selectedModelId;
-      attemptCount = generated.attemptCount;
-      if (!generated.result) {
-        throw new Error("The AI returned no usable session metadata.");
-      }
-
-      // A newer explicit request cancels every field from this response. Manual
-      // edits do not change the request version, so untouched fields can still
-      // land while the edited title is protected by its value and revision
-      // comparison.
-      if (managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion) {
-        skipped.push(...fields);
-        notifyOutcome("partial");
-        return { sessionId, applied, skipped, modelId: selectedModelId };
-      }
-
-      const metadata = generated.result;
-      if (fields.includes("title")) {
-        const current = sessionService.get(sessionId);
-        if (
-          metadata.chatTitle && current?.title === snapshot.title
-          && managed.sessionMetadataTitleRevision === snapshot.titleRevision
-        ) {
-          const title = await setUserChosenGeneratedSessionTitle(managed, metadata.chatTitle);
-          if (title) applied.push("title");
-          else skipped.push("title");
-        } else {
-          skipped.push("title");
-        }
-      }
-
-      if (managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion) {
-        for (const field of fields) {
-          if (!applied.includes(field) && !skipped.includes(field)) skipped.push(field);
-        }
+        systemPrompt,
+        jsonSchema,
+        taskType: "session_title",
+      }),
+      normalizeTitle: normalizeSuggestedLaneTitle,
+      normalizeStatusLine: normalizeSessionStatusNote,
+      applyTitle: (managed, title) =>
+        setUserChosenGeneratedSessionTitle(managed, title),
+      setStatusNote: (sessionId, note) => sessionService.setStatusNote(sessionId, note),
+      renameLane: (renameArgs) => laneService.rename(renameArgs),
+      persistChatState: (managed) => {
         persistChatState(managed);
-        notifyOutcome("partial");
-        return { sessionId, applied, skipped, modelId: selectedModelId };
-      }
-
-      if (fields.includes("statusLine")) {
-        const current = sessionService.get(sessionId);
-        if (metadata.statusLine && current?.statusNote === snapshot.statusLine) {
-          if (sessionService.setStatusNote(sessionId, metadata.statusLine)) applied.push("statusLine");
-          else skipped.push("statusLine");
-        } else {
-          skipped.push("statusLine");
-        }
-      }
-
-      if (fields.includes("laneName")) {
-        const currentLane = await laneService.getSummary(managed.session.laneId, { includeStatus: false }).catch(() => null);
-        if (managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion) {
-          for (const field of fields) {
-            if (!applied.includes(field) && !skipped.includes(field)) skipped.push(field);
-          }
-          persistChatState(managed);
-          notifyOutcome("partial");
-          return { sessionId, applied, skipped, modelId: selectedModelId };
-        }
-        if (metadata.laneName && currentLane && currentLane.name === snapshot.laneName) {
-          try {
-            laneService.rename({ laneId: managed.session.laneId, name: metadata.laneName });
-            applied.push("laneName");
-          } catch (error) {
-            skipped.push("laneName");
-            logger.warn("agent_chat.session_metadata_lane_rename_failed", {
-              sessionId,
-              laneId: managed.session.laneId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        } else {
-          skipped.push("laneName");
-        }
-      }
-
-      persistChatState(managed);
-      logger.info("agent_chat.session_metadata_regenerated", {
-        sessionId,
-        appliedFields: applied.length,
-        requestedFields: fields.length,
-        attemptCount,
-      });
-      notifyOutcome(applied.length === fields.length ? "completed" : "partial");
-      return { sessionId, applied, skipped, modelId: selectedModelId };
-    } catch (error) {
-      notifyOutcome("failed");
-      logger.warn("agent_chat.session_metadata_generation_failed", {
-        sessionId,
-        modelId: selectedModelId,
-        attemptCount,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+      },
+      onRegenerated: onSessionMetadataRegenerated,
+      logger,
+    });
+    return sessionMetadataRegenerator(args);
   };
 
   // OpenCode handles API-key and local-model chats.
@@ -46350,7 +46225,10 @@ export function createAgentChatService(args: {
       // Preserve updateSession's existing provider-sync behavior; explicit
       // generated titles opt into the shared provider-sync path separately.
       persistSessionTitleMetadata(managed, effectiveTitle, userNamed);
-      if (hasExplicitTitle) await syncClaudeSessionTitle(managed, normalizedTitle);
+      if (hasExplicitTitle) {
+        const titleRevision = managed.sessionMetadataTitleRevision;
+        await syncClaudeSessionTitle(managed, normalizedTitle, { expectedTitleRevision: titleRevision });
+      }
     }
     if (tag !== undefined) {
       const normalizedTag = typeof tag === "string" ? tag.trim() : null;

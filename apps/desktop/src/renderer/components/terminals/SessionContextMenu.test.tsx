@@ -92,12 +92,21 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
 
 function renderMenu(
   session: TerminalSessionSummary,
-  onSetChatTag = vi.fn(),
-  onSettle = vi.fn(),
-  binding?: OpenProjectBinding | null,
-  laneActions?: SessionContextMenuLaneActions | null,
-  onRegenerateMetadata?: ReturnType<typeof vi.fn>,
-  laneType?: LaneSummary["laneType"] | null,
+  {
+    onSetChatTag = vi.fn(),
+    onSettle = vi.fn(),
+    binding,
+    laneActions,
+    onRegenerateMetadata,
+    laneType,
+  }: {
+    onSetChatTag?: ReturnType<typeof vi.fn>;
+    onSettle?: ReturnType<typeof vi.fn>;
+    binding?: OpenProjectBinding | null;
+    laneActions?: SessionContextMenuLaneActions | null;
+    onRegenerateMetadata?: ReturnType<typeof vi.fn>;
+    laneType?: LaneSummary["laneType"] | null;
+  } = {},
 ) {
   const onClose = vi.fn();
   const onCopySessionId = vi.fn();
@@ -193,7 +202,7 @@ describe("SessionContextMenu lane section", () => {
   afterEach(() => { vi.useRealTimers(); });
 
   it("expands the real lane menu items in a submenu rather than a second menu", () => {
-    renderMenu(makeSession(), vi.fn(), vi.fn(), null, laneActions);
+    renderMenu(makeSession(), { laneActions });
 
     const entry = screen.getByTestId("session-menu-lane-actions");
     // Names the lane, so a menu opened from a card still says which lane it acts on.
@@ -213,7 +222,7 @@ describe("SessionContextMenu lane section", () => {
   });
 
   it("keeps the deep lane copy links reachable through a nested submenu", () => {
-    renderMenu(makeSession(), vi.fn(), vi.fn(), null, laneActions);
+    renderMenu(makeSession(), { laneActions });
 
     openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
     openSubmenuByHover(screen.getByRole("menuitem", { name: "Copy" }));
@@ -230,10 +239,7 @@ describe("SessionContextMenu lane section", () => {
     const open = vi.fn();
     const { onClose } = renderMenu(
       makeSession(),
-      vi.fn(),
-      vi.fn(),
-      null,
-      { laneId: "lane-solo", laneName: "Solo lane", open },
+      { laneActions: { laneId: "lane-solo", laneName: "Solo lane", open } },
     );
 
     openSubmenuByHover(screen.getByTestId("session-menu-lane-actions"));
@@ -369,7 +375,7 @@ describe("SessionContextMenu grouped actions", () => {
   it("groups manual rename and the three AI metadata choices together", () => {
     const session = makeSession();
     const onRegenerateMetadata = vi.fn();
-    const { onClose } = renderMenu(session, vi.fn(), vi.fn(), null, null, onRegenerateMetadata);
+    const { onClose } = renderMenu(session, { onRegenerateMetadata });
 
     openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
 
@@ -392,7 +398,7 @@ describe("SessionContextMenu grouped actions", () => {
   it("keeps manual rename in the Name & status submenu", () => {
     const session = makeSession();
     const onRegenerateMetadata = vi.fn();
-    const { onClose, onRename } = renderMenu(session, vi.fn(), vi.fn(), null, null, onRegenerateMetadata);
+    const { onClose, onRename } = renderMenu(session, { onRegenerateMetadata });
 
     openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
     fireEvent.click(screen.getByRole("button", { name: "Rename…" }));
@@ -408,7 +414,7 @@ describe("SessionContextMenu grouped actions", () => {
 
   it("explains why lane-name generation is disabled for the primary lane", () => {
     const onRegenerateMetadata = vi.fn();
-    renderMenu(makeSession(), vi.fn(), vi.fn(), null, null, onRegenerateMetadata, "primary");
+    renderMenu(makeSession(), { onRegenerateMetadata, laneType: "primary" });
 
     openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
     const laneNameButton = screen.getByRole("button", { name: "Generate lane name" });
@@ -421,7 +427,7 @@ describe("SessionContextMenu grouped actions", () => {
   it("omits the immutable primary lane name from combined generation", () => {
     const session = makeSession();
     const onRegenerateMetadata = vi.fn();
-    const { onClose } = renderMenu(session, vi.fn(), vi.fn(), null, null, onRegenerateMetadata, "primary");
+    const { onClose } = renderMenu(session, { onRegenerateMetadata, laneType: "primary" });
 
     openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
     expect(screen.getByRole("button", { name: "Generate title & status" })).toBeTruthy();
@@ -490,7 +496,7 @@ describe("SessionContextMenu settle safety", () => {
       hostname: "studio.local",
     };
     const onSettle = vi.fn();
-    renderMenu(session, vi.fn(), onSettle, binding);
+    renderMenu(session, { onSettle, binding });
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss & settle" }));
 
@@ -515,7 +521,7 @@ describe("SessionContextMenu settle safety", () => {
       runtimeState: "waiting-input",
       pendingInputItemId: null,
       attentionRequestedAt: null,
-    }), vi.fn(), onSettle);
+    }), { onSettle });
 
     expect(screen.queryByRole("button", { name: "Resolve input to settle" })).toBeNull();
     expect(onSettle).not.toHaveBeenCalled();

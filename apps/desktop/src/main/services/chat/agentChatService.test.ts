@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import zlib, { gzipSync } from "node:zlib";
-import { getSessionInfo, getSessionMessages, getSubagentMessages, query, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, getSessionMessages, getSubagentMessages, query, renameSession, startup, tagSession } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { codexComputerUseClientCandidates } from "../../utils/codexComputerUse";
 import {
@@ -15519,6 +15519,59 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("updateSession", () => {
+    it("does not let a stale Claude title sync overwrite a newer rename", async () => {
+      const { service, sessionService, session } = await createClaudeStreamFixture({
+        sdkSessionId: "sdk-session-title-race",
+        messages: [
+          {
+            type: "assistant",
+            message: { content: [{ type: "text", text: "Ready" }], usage: { input_tokens: 1, output_tokens: 1 } },
+          },
+          {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-session-title-race",
+          },
+        ],
+      });
+
+      let releaseGenerated!: () => void;
+      const generatedGate = new Promise<void>((resolve) => { releaseGenerated = resolve; });
+      let markGeneratedStarted!: () => void;
+      const generatedStarted = new Promise<void>((resolve) => { markGeneratedStarted = resolve; });
+      const renameTitles: string[] = [];
+      vi.mocked(renameSession)
+        .mockImplementationOnce(async (_sessionId, title) => {
+          renameTitles.push(title);
+          markGeneratedStarted();
+          await generatedGate;
+        })
+        .mockImplementationOnce(async (_sessionId, title) => {
+          renameTitles.push(title);
+        });
+
+      const generated = service.updateSession({
+        sessionId: session.id,
+        title: "Generated Title",
+        manuallyNamed: true,
+      });
+      await generatedStarted;
+
+      const manual = service.updateSession({
+        sessionId: session.id,
+        title: "User Title",
+        manuallyNamed: true,
+      });
+      await vi.waitFor(() => expect(sessionService.get(session.id)?.title).toBe("User Title"));
+
+      releaseGenerated();
+      await Promise.all([generated, manual]);
+
+      expect(renameTitles).toEqual(["Generated Title", "User Title"]);
+      expect(sessionService.getClaudeSessionPointerByChatSessionId(session.id)?.title).toBe("User Title");
+    });
+
     it("broadcasts a session_meta_updated event with mode fields on a mode change", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

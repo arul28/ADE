@@ -156,7 +156,7 @@ export function buildSessionMetadataPrompt(args: {
 export async function runSessionMetadataGeneration(args: {
   candidateModelIds: string[];
   /** Session provider whose context is allowed to reach the model runner. */
-  provider?: string | null;
+  provider: string;
   cwd: string;
   prompt: string;
   runPrompt: SessionMetadataPromptRunner;
@@ -165,12 +165,10 @@ export async function runSessionMetadataGeneration(args: {
   shouldStop?: () => boolean;
   onFailure: (failure: NamingAttemptFailure) => void;
 }): Promise<{ result: GeneratedSessionMetadata | null; attemptCount: number; selectedModelId: string | null }> {
-  const candidateModelIds = args.provider
-    ? args.candidateModelIds.filter((modelId) => {
-      const descriptor = getModelById(modelId);
-      return descriptor && resolveProviderGroupForModel(descriptor) === args.provider;
-    })
-    : args.candidateModelIds;
+  const candidateModelIds = args.candidateModelIds.filter((modelId) => {
+    const descriptor = getModelById(modelId);
+    return descriptor && resolveProviderGroupForModel(descriptor) === args.provider;
+  });
   return runNamingAcrossProviders<GeneratedSessionMetadata>(candidateModelIds, {
     shouldStop: args.shouldStop,
     run: async (descriptor) => {
