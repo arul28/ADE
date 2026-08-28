@@ -152,13 +152,33 @@ export function isWindowsPowerShellScript(command: string, platform: NodeJS.Plat
 }
 
 /**
+ * Resolve `powershell.exe` through the kernel's SystemRoot alias rather than
+ * `PATH`, for the same reason as {@link windowsTaskkillCommand}: a bare
+ * `"powershell.exe"` is PATH-relative, and a lane worktree is a repo the user
+ * did not necessarily write — a `powershell.exe` dropped at the repo root wins
+ * resolution when that root is the spawn cwd. `windows-quirks.md` §3 names
+ * trusted-tool resolution as the answer.
+ *
+ * Falls back to the PATH spelling if resolution throws, so a non-standard
+ * Windows install still runs its scripts.
+ */
+export function windowsPowerShellCommand(): string {
+  if (process.platform !== "win32") return "powershell.exe";
+  try {
+    return resolveTrustedWindowsTool("powershell");
+  } catch {
+    return "powershell.exe";
+  }
+}
+
+/**
  * `.ps1` shims (npm writes one next to every `.cmd`) cannot be launched by
  * cmd.exe or by `spawn` directly — PowerShell has to interpret them. `-File`
  * keeps the remaining arguments literal rather than re-parsing them as script.
  */
 export function resolveWindowsPowerShellInvocation(command: string, args: string[]): SpawnInvocation {
   return {
-    command: "powershell.exe",
+    command: windowsPowerShellCommand(),
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", command, ...args],
     windowsVerbatimArguments: false,
   };

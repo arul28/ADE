@@ -12,7 +12,6 @@ import type {
   LaneMountPointConfig,
   LaneCopyPathConfig,
   LaneDockerConfig,
-  LaneSetupScriptConfig,
   LaneOverlayOverrides,
   LaneSummary
 } from "../../../shared/types";
@@ -24,14 +23,13 @@ import {
   secureWriteFileWithinRoot,
 } from "../shared/utils";
 import {
-  isWindowsPowerShellScript,
-  quoteWindowsCmdArg,
   resolveCliSpawnInvocation,
   resolveWindowsCmdLineInvocation,
   terminateProcessTree,
   type SpawnInvocation,
 } from "../shared/processExecution";
-import { resolveSetupScriptConfig } from "./laneTemplateService";
+import { mergeLaneEnvInitConfig } from "./laneEnvInitMerge";
+import { resolveSetupScriptConfig, type ResolvedSetupScript } from "./setupScriptConfig";
 
 /** Resolve a relative path against `root` and throw if it escapes.  Logs a warning on escape. */
 function resolveCheckedPath(
@@ -102,60 +100,6 @@ function secureCopyPath(
   }
 }
 
-function cloneDockerConfig(config: LaneDockerConfig): LaneDockerConfig {
-  return config.services
-    ? { ...config, services: [...config.services] }
-    : { ...config };
-}
-
-function mergeDockerConfig(
-  current: LaneDockerConfig | undefined,
-  next: LaneDockerConfig | undefined
-): LaneDockerConfig | undefined {
-  if (!current && !next) return undefined;
-  if (!current) return next ? cloneDockerConfig(next) : undefined;
-  if (!next) return cloneDockerConfig(current);
-  const services = next.services ?? current.services;
-  return {
-    ...current,
-    ...next,
-    ...(services ? { services: [...services] } : {})
-  };
-}
-
-function cloneEnvInitConfig(config: LaneEnvInitConfig): LaneEnvInitConfig {
-  const docker = mergeDockerConfig(undefined, config.docker);
-  return {
-    ...(config.envFiles ? { envFiles: [...config.envFiles] } : {}),
-    ...(docker ? { docker } : {}),
-    ...(config.dependencies ? { dependencies: [...config.dependencies] } : {}),
-    ...(config.mountPoints ? { mountPoints: [...config.mountPoints] } : {}),
-    ...(config.copyPaths ? { copyPaths: [...config.copyPaths] } : {}),
-    ...(config.setupScript ? { setupScript: { ...config.setupScript } } : {})
-  };
-}
-
-function mergeLaneEnvInitConfig(
-  current: LaneEnvInitConfig | undefined,
-  next: LaneEnvInitConfig | undefined
-): LaneEnvInitConfig | undefined {
-  if (!current && !next) return undefined;
-  if (!current) return next ? cloneEnvInitConfig(next) : undefined;
-  if (!next) return cloneEnvInitConfig(current);
-  const docker = mergeDockerConfig(current.docker, next.docker);
-  return {
-    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    ...(docker ? { docker } : {}),
-    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
-    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
-    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
-    // A lane runs one setup script; the more specific config (overlay/template) wins.
-    ...(next.setupScript ?? current.setupScript
-      ? { setupScript: { ...(next.setupScript ?? current.setupScript) } }
-      : {})
-  };
-}
-
 function escapeRegExp(value: string): string {
   return value.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&");
 }
@@ -168,16 +112,11 @@ function buildDockerProjectName(laneId: string, projectPrefix = "ade"): string {
   return `${projectPrefix}-${sanitizeLaneToken(laneId)}`;
 }
 
-/** Quote a single path so a POSIX shell sees it as one literal argument. */
-function quotePosixShellArg(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
 /**
- * Setup scripts are user-authored shell lines, not argv — they legitimately use
- * pipes, `&&`, and variable expansion — so they run through the platform shell
- * rather than a bare spawn. Windows goes through the canonical
- * `resolveWindowsCmdLineInvocation` helper (ComSpec + `/d /s /c` +
+ * Free-form setup COMMANDS are user-authored shell lines, not argv — they
+ * legitimately use pipes, `&&`, and variable expansion — so they run through
+ * the platform shell rather than a bare spawn. Windows goes through the
+ * canonical `resolveWindowsCmdLineInvocation` helper (ComSpec + `/d /s /c` +
  * `windowsVerbatimArguments`) so `%VAR%` expands the way the template UI
  * promises.
  */
@@ -190,38 +129,58 @@ function resolveShellInvocation(
   return { command: "/bin/sh", args: ["-c", commandLine], windowsVerbatimArguments: false };
 }
 
-/** Build the shell line that invokes a resolved setup script file. */
-function buildScriptInvocationLine(
+/**
+ * A configured setup SCRIPT FILE is a path, not a command line, so it gets a
+ * real `SpawnInvocation` instead of being pasted into a shell string.
+ * `resolveCliSpawnInvocation` is the repo's one answer for "spawn this file":
+ * `.ps1` goes through an absolutely-resolved PowerShell (`windows-quirks.md`
+ * §3/§8) rather than a PATH-relative `powershell.exe` that a file at the lane
+ * worktree root could shadow, `.cmd`/`.bat` go through ComSpec, and POSIX keeps
+ * invoking the script path directly — which requires the script to be
+ * executable and carry a shebang.
+ */
+function resolveScriptFileInvocation(
   scriptPath: string,
+  env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
-): string {
-  if (platform !== "win32") return quotePosixShellArg(scriptPath);
-  // `.ps1` cannot be launched by cmd.exe; PowerShell has to interpret it.
-  if (isWindowsPowerShellScript(scriptPath, platform)) {
-    return [
-      "powershell.exe",
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      quoteWindowsCmdArg(scriptPath),
-    ].join(" ");
-  }
-  return quoteWindowsCmdArg(scriptPath);
+): SpawnInvocation {
+  return resolveCliSpawnInvocation(scriptPath, [], env, platform);
 }
+
+/** Timeout per setup command / script, matching the Docker step's budget. */
+const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
+
+/**
+ * Shown when the project's shared (repo-committed) config has not been trusted
+ * yet. Setup scripts run unrestricted shell, and `.ade/ade.yaml` is a file any
+ * contributor can push, so an untrusted shared config fails the step rather
+ * than executing it — or silently skipping, which would look like success.
+ */
+const SHARED_CONFIG_UNTRUSTED_MESSAGE =
+  "This project's shared configuration isn't trusted yet. Trust it in Settings to run setup scripts.";
 
 export function createLaneEnvironmentService({
   projectRoot,
   adeDir,
   logger,
-  broadcastEvent
+  broadcastEvent,
+  projectConfigService = null
 }: {
   projectRoot: string;
   adeDir: string;
   logger: Logger;
   broadcastEvent: (ev: LaneEnvInitEvent) => void;
+  /**
+   * Trust gate for the setup-script step. `laneEnvInit` and `laneTemplates`
+   * both merge in from `.ade/ade.yaml`, which is repo-committed and therefore
+   * attacker-supplied on any clone, so the shell the setup step runs must be
+   * gated the same way test suites are (`getExecutableConfig` throws
+   * `ADE_TRUST_REQUIRED` while the shared config is untrusted).
+   *
+   * Every production host wires this. `null` disables the gate and exists for
+   * unit tests that construct the service without a config service.
+   */
+  projectConfigService?: { getExecutableConfig: () => unknown } | null;
 }) {
   // Track in-progress and completed init progress per lane
   const progressMap = new Map<string, LaneEnvInitProgress>();
@@ -332,15 +291,6 @@ export function createLaneEnvironmentService({
       return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Missing command" });
     }
     return runSpawn(resolveCliSpawnInvocation(cmd, args, process.env), cwd, process.env, timeoutMs);
-  }
-
-  function execShellCommand(
-    commandLine: string,
-    cwd: string,
-    env: NodeJS.ProcessEnv,
-    timeoutMs: number
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-    return runSpawn(resolveShellInvocation(commandLine, env), cwd, env, timeoutMs);
   }
 
   async function copyEnvFiles(
@@ -498,22 +448,43 @@ export function createLaneEnvironmentService({
     }
   }
 
-  /** Timeout per setup command / script, matching the Docker step's budget. */
-  const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
+  /**
+   * Refuse to execute setup scripts while the project's shared config is
+   * untrusted. Returns an operator-facing message to fail the step with, or
+   * null when execution is allowed. Non-trust config errors (a malformed
+   * `ade.yaml`) propagate and fail the step with their own message.
+   */
+  function blockedBySharedConfigTrust(laneId: string): string | null {
+    if (!projectConfigService) return null;
+    try {
+      projectConfigService.getExecutableConfig();
+      return null;
+    } catch (error) {
+      if ((error as { code?: string } | null)?.code === "ADE_TRUST_REQUIRED") {
+        logger.warn("lane_env_init.setup_script_untrusted", { laneId });
+        return SHARED_CONFIG_UNTRUSTED_MESSAGE;
+      }
+      throw error;
+    }
+  }
 
   /**
    * Run the template's setup script as the final init step: each configured
    * command in order, then the script file if one is configured. Fail-fast like
    * every other step — the first non-zero exit returns an error excerpt.
+   *
+   * Takes the already-resolved script: the caller resolved it to decide whether
+   * to emit the step at all, and resolving twice invites the two answers to
+   * disagree.
    */
   async function runSetupScript(
     worktreePath: string,
-    setupScript: LaneSetupScriptConfig,
+    resolved: ResolvedSetupScript,
     laneVars: Record<string, string>,
     laneId: string
   ): Promise<string | null> {
-    const resolved = resolveSetupScriptConfig(setupScript);
-    if (!resolved) return null;
+    const untrusted = blockedBySharedConfigTrust(laneId);
+    if (untrusted) return untrusted;
 
     const env: NodeJS.ProcessEnv = { ...process.env, ...laneVars };
     if (resolved.injectPrimaryPath) {
@@ -521,7 +492,9 @@ export function createLaneEnvironmentService({
       env.PRIMARY_WORKTREE_PATH = projectRoot;
     }
 
-    const lines = [...resolved.commands];
+    const steps: { label: string; invocation: SpawnInvocation }[] = resolved.commands.map(
+      (line) => ({ label: line, invocation: resolveShellInvocation(line, env) }),
+    );
 
     if (resolved.scriptPath) {
       const scriptPath = resolveCheckedPath(
@@ -536,22 +509,22 @@ export function createLaneEnvironmentService({
         logger.warn("lane_env_init.setup_script_missing", { laneId, scriptPath: resolved.scriptPath });
         return `Setup script not found: ${resolved.scriptPath}`;
       }
-      lines.push(buildScriptInvocationLine(scriptPath));
+      steps.push({ label: scriptPath, invocation: resolveScriptFileInvocation(scriptPath, env) });
     }
 
-    for (const line of lines) {
-      const result = await execShellCommand(line, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
+    for (const step of steps) {
+      const result = await runSpawn(step.invocation, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
       if (result.exitCode !== 0) {
         const detail = (result.stderr.trim() || result.stdout.trim()).slice(0, 500);
         logger.warn("lane_env_init.setup_script_failed", {
           laneId,
-          command: line,
+          command: step.label,
           exitCode: result.exitCode,
           stderr: detail,
         });
-        return `${line}: ${detail || `exited with code ${result.exitCode}`}`;
+        return `${step.label}: ${detail || `exited with code ${result.exitCode}`}`;
       }
-      logger.debug("lane_env_init.setup_script_command_ok", { laneId, command: line });
+      logger.debug("lane_env_init.setup_script_command_ok", { laneId, command: step.label });
     }
     return null;
   }
@@ -698,10 +671,9 @@ export function createLaneEnvironmentService({
 
       // Step 6: Setup script (user-authored shell commands, last so it can rely
       // on env files, services, dependencies, mounts, and copies being in place)
-      if (resolvedSetupScript && config.setupScript) {
-        const setupScript = config.setupScript;
+      if (resolvedSetupScript) {
         const ok = await runStep(progress, lane.id, "setup-script", () =>
-          runSetupScript(lane.worktreePath, setupScript, laneVars, lane.id));
+          runSetupScript(lane.worktreePath, resolvedSetupScript, laneVars, lane.id));
         if (!ok) return progress;
       }
 

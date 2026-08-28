@@ -2135,7 +2135,12 @@ function makeSession(
 describe("runtime lane snapshot actions", () => {
   it("runs lane delete with env teardown and port release in the runtime action domain", async () => {
     const lane = makeLane({ id: "lane-delete", name: "Delete me" });
-    const envInitConfig = { dependencies: ["npm install"] };
+    // Teardown is docker-scoped: `buildLaneEnvTeardown` only builds a closure
+    // when the resolved config actually has a compose stack to bring down.
+    const envInitConfig = {
+      dependencies: ["npm install"],
+      docker: { composePath: "docker-compose.yml" },
+    };
     const cleanupLaneEnvironment = vi.fn(async () => undefined);
     const release = vi.fn();
     const deleteLane = vi.fn(async (_args, opts?: { teardownEnv?: () => Promise<void> }) => {

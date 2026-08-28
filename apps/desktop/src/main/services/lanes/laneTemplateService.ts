@@ -1,56 +1,11 @@
 import type {
   LaneTemplate,
   LaneEnvInitConfig,
-  LaneSetupScriptConfig,
 } from "../../../shared/types";
 import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
-
-export type ResolvedSetupScript = {
-  commands: string[];
-  scriptPath?: string;
-  injectPrimaryPath: boolean;
-};
-
-/**
- * Pick the platform-appropriate setup commands / script path out of a setup
- * script config. Returns null when nothing is configured for this platform, so
- * callers can skip the step entirely instead of emitting an empty one.
- *
- * Module-level (not closed over the service) because `laneEnvironmentService`
- * is the executor and must resolve the same way the template UI promises.
- */
-export function resolveSetupScriptConfig(
-  cfg: LaneSetupScriptConfig | undefined,
-  platform: NodeJS.Platform = process.platform,
-): ResolvedSetupScript | null {
-  if (!cfg) return null;
-
-  const isWindows = platform === "win32";
-
-  // Platform-specific commands take precedence
-  const commands = (isWindows
-    ? (cfg.windowsCommands ?? cfg.commands ?? [])
-    : (cfg.unixCommands ?? cfg.commands ?? [])
-  )
-    .map((command) => command.trim())
-    .filter((command) => command.length > 0);
-
-  const scriptPath = (isWindows
-    ? (cfg.windowsScriptPath ?? cfg.scriptPath)
-    : (cfg.unixScriptPath ?? cfg.scriptPath)
-  )?.trim();
-
-  if (commands.length === 0 && !scriptPath) return null;
-
-  return {
-    commands,
-    ...(scriptPath ? { scriptPath } : {}),
-    injectPrimaryPath: cfg.injectPrimaryPath ?? false,
-  };
-}
 
 export function createLaneTemplateService({
   projectConfigService,
@@ -106,14 +61,6 @@ export function createLaneTemplateService({
     };
   }
 
-  /**
-   * Resolves the platform-appropriate setup script commands from a template.
-   * Returns null if no setup script is configured.
-   */
-  function resolveSetupScript(template: LaneTemplate): ResolvedSetupScript | null {
-    return resolveSetupScriptConfig(template.setupScript);
-  }
-
   function saveTemplate(template: LaneTemplate): void {
     const snapshot = projectConfigService.get();
     const existing = [...(snapshot.local.laneTemplates ?? [])];
@@ -153,7 +100,6 @@ export function createLaneTemplateService({
     getDefaultTemplateId,
     setDefaultTemplateId,
     resolveTemplateAsEnvInit,
-    resolveSetupScript,
     saveTemplate,
     deleteTemplate,
   };

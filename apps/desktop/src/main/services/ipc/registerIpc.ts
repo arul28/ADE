@@ -638,10 +638,8 @@ import type {
   ComputerUseArtifactView,
   ComputerUseOwnerSnapshot,
   ComputerUseOwnerSnapshotArgs,
-  LaneEnvInitConfig,
   LaneOverlayOverrides,
   LaneTemplate,
-  PortLease,
   UpdateOAuthRedirectConfigArgs,
   GenerateRedirectUrisArgs,
   EncodeOAuthStateArgs,
@@ -687,10 +685,16 @@ import type { createLaneTemplateService } from "../lanes/laneTemplateService";
 import type { createPortAllocationService } from "../lanes/portAllocationService";
 import type { createLaneProxyService } from "../lanes/laneProxyService";
 import {
+  buildLaneEnvTeardown,
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
   restoreRecreatedLaneRuntime,
+  restoreUnarchivedLaneDocker,
 } from "../lanes/laneRuntimeLifecycle";
+import {
+  mergeLaneEnvInitConfig,
+  resolveLaneOverlayContext as resolveSharedLaneOverlayContext,
+} from "../lanes/laneEnvInitMerge";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
 import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
@@ -1398,83 +1402,27 @@ async function resolvePrimaryLaneIdOnly(ctx: AppContext): Promise<string> {
   return lanes.find((lane) => lane.laneType === "primary")?.id ?? "";
 }
 
-async function resolveLaneOverlayContext(ctx: AppContext, laneId: string) {
-  requireAppContextServices(ctx, ["laneService", "projectConfigService"] as const);
-  const lanes = await ctx.laneService.list({ includeStatus: false });
-  const lane = lanes.find((entry) => entry.id === laneId);
-  if (!lane) throw new Error(`Lane not found: ${laneId}`);
-
-  const config = ctx.projectConfigService.getEffective();
-  const { matchLaneOverlayPolicies } = await import("../config/laneOverlayMatcher");
-  const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
-  const lease = ctx.portAllocationService?.getLease(lane.id) ?? null;
-  const overrides = applyLeaseToOverrides(overlayOverrides, lease);
-  const envInitConfig = ctx.laneEnvironmentService?.resolveEnvInitConfig(config.laneEnvInit, overrides);
-
-  return {
-    lane,
-    overrides,
-    envInitConfig,
-    lease
-  };
-}
-
-function mergeLaneDockerConfig(
-  current: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
-  next: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined
+/**
+ * Thin AppContext adapter over the shared resolver in `lanes/laneEnvInitMerge`
+ * — the merge/overlay logic lives there so the IPC host, the action registry
+ * and the ade-cli sync host cannot drift apart.
+ */
+async function resolveLaneOverlayContext(
+  ctx: AppContext,
+  laneId: string,
+  options: { includeArchived?: boolean } = {},
 ) {
-  if (!current && !next) return undefined;
-  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
-  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
-  return {
-    ...current,
-    ...next,
-    ...(next.services != null
-      ? { services: [...next.services] }
-      : current.services != null
-        ? { services: [...current.services] }
-        : {})
-  };
-}
-
-function mergeLaneEnvInitConfig(
-  current: LaneEnvInitConfig | undefined,
-  next: LaneEnvInitConfig | undefined
-): LaneEnvInitConfig | undefined {
-  if (!current && !next) return undefined;
-  if (!current) {
-    return next
-      ? {
-          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
-          ...(mergeLaneDockerConfig(undefined, next.docker) ? { docker: mergeLaneDockerConfig(undefined, next.docker) } : {}),
-          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
-          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {}),
-          ...(next.copyPaths ? { copyPaths: [...next.copyPaths] } : {}),
-          ...(next.setupScript ? { setupScript: { ...next.setupScript } } : {})
-        }
-      : undefined;
-  }
-  if (!next) {
-    return {
-      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
-      ...(mergeLaneDockerConfig(undefined, current.docker) ? { docker: mergeLaneDockerConfig(undefined, current.docker) } : {}),
-      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
-      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {}),
-      ...(current.copyPaths ? { copyPaths: [...current.copyPaths] } : {}),
-      ...(current.setupScript ? { setupScript: { ...current.setupScript } } : {})
-    };
-  }
-  return {
-    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    ...(mergeLaneDockerConfig(current.docker, next.docker) ? { docker: mergeLaneDockerConfig(current.docker, next.docker) } : {}),
-    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
-    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
-    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
-    // A lane runs one setup script; the more specific config (template) wins.
-    ...(next.setupScript ?? current.setupScript
-      ? { setupScript: { ...(next.setupScript ?? current.setupScript) } }
-      : {})
-  };
+  requireAppContextServices(ctx, ["laneService", "projectConfigService"] as const);
+  return await resolveSharedLaneOverlayContext(
+    {
+      laneService: ctx.laneService,
+      projectConfigService: ctx.projectConfigService,
+      portAllocationService: ctx.portAllocationService,
+      laneEnvironmentService: ctx.laneEnvironmentService,
+    },
+    laneId,
+    options,
+  );
 }
 
 function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
@@ -1484,16 +1432,6 @@ function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverla
     ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
     ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
     ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {})
-  };
-}
-
-function applyLeaseToOverrides(overrides: LaneOverlayOverrides, lease: PortLease | null): LaneOverlayOverrides {
-  if (!lease || lease.status !== "active" || overrides.portRange) {
-    return { ...overrides };
-  }
-  return {
-    ...overrides,
-    portRange: { start: lease.rangeStart, end: lease.rangeEnd }
   };
 }
 
@@ -6616,14 +6554,7 @@ export function registerIpc({
         .list({ includeArchived: true, includeStatus: false })
         .then((lanes) => lanes.find((entry) => entry.id === arg.laneId) ?? null)
         .catch(() => null);
-      const envContext = ctx.laneEnvironmentService
-        ? await resolveLaneOverlayContext(ctx, arg.laneId).catch(() => null)
-        : null;
-      const teardownEnv = ctx.laneEnvironmentService && envContext?.envInitConfig
-        ? async () => {
-            await ctx.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
-          }
-        : undefined;
+      const teardownEnv = await buildLaneEnvTeardown(ctx, arg.laneId);
       return await ctx.laneService.archiveAndReclaim(arg, {
         onArchived: () => {
           try {
@@ -6640,9 +6571,15 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesUnarchive, async (_event, arg: ArchiveLaneArgs): Promise<RestoreLaneResult> => {
     const ctx = ensureLaneContext();
     const result = await ctx.laneService.unarchive(arg);
-    if (!result.worktreeRecreated) return result;
     try {
-      await restoreRecreatedLaneRuntime(ctx, arg.laneId);
+      // Archive brought the lane's Docker stack down. A recreated worktree
+      // needs the whole env init; a plain unarchive only needs its services
+      // back — re-copying files or reinstalling would clobber the worktree.
+      if (result.worktreeRecreated) {
+        await restoreRecreatedLaneRuntime(ctx, arg.laneId);
+      } else {
+        await restoreUnarchivedLaneDocker(ctx, arg.laneId);
+      }
       return result;
     } catch (error) {
       return { ...result, setupWarning: getErrorMessage(error) };
@@ -6651,20 +6588,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesDelete, async (_event, arg: DeleteLaneArgs): Promise<void> => {
     const ctx = ensureLaneContext();
-    const envContext = ctx.laneEnvironmentService
-      ? await resolveLaneOverlayContext(ctx, arg.laneId).catch((error: unknown) => {
-          ctx.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
-            laneId: arg.laneId,
-            error: getErrorMessage(error)
-          });
-          return null;
-        })
-      : null;
-    const teardownEnv = ctx.laneEnvironmentService && envContext?.envInitConfig
-      ? async () => {
-          await ctx.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
-        }
-      : undefined;
+    const teardownEnv = await buildLaneEnvTeardown(ctx, arg.laneId, {
+      onContextError: (error) => {
+        ctx.logger.warn("lane_env_cleanup.pre_delete_context_failed", {
+          laneId: arg.laneId,
+          error: getErrorMessage(error)
+        });
+      }
+    });
     await ctx.laneService.delete(arg, { teardownEnv });
     releaseLaneRuntimeResources(ctx, arg.laneId);
   });

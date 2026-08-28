@@ -3136,14 +3136,6 @@ app.whenReady().then(async () => {
     });
     laneWorktreeLockService.sweepExpired();
 
-    const laneEnvironmentService = createLaneEnvironmentService({
-      projectRoot,
-      adeDir: adePaths.adeDir,
-      logger,
-      broadcastEvent: (ev) =>
-        emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
-    });
-
     // Late-bound: the chat service that owns the work does not exist yet at
     // this point, and the settle path must not depend on construction order.
     const settleTeardownRef: {
@@ -3209,6 +3201,17 @@ app.whenReady().then(async () => {
       logger,
     });
     const projectSecretService = createProjectSecretService(projectRoot);
+
+    const laneEnvironmentService = createLaneEnvironmentService({
+      projectRoot,
+      adeDir: adePaths.adeDir,
+      logger,
+      broadcastEvent: (ev) =>
+        emitProjectEvent(projectRoot, IPC.lanesEnvEvent, ev),
+      // Setup scripts run unrestricted shell and can come from repo-committed
+      // shared config, so the executor gets the same trust gate test suites use.
+      projectConfigService,
+    });
 
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,

@@ -4013,6 +4013,62 @@ export function createLaneService({
   }
 
   /**
+   * Validate that a lane may be archived. Throws for a missing lane, the
+   * primary lane, or a member of an active PR group; returns null when the lane
+   * is already archived (nothing to do) and the row otherwise.
+   *
+   * Split out so the public `archive` can run the guards before firing the
+   * environment-teardown hook, without the hook and the archive body having to
+   * repeat the checks.
+   */
+  const readArchivableLaneRow = (laneId: string): LaneRow | null => {
+    const row = getLaneRow(laneId);
+    if (!row) throw new Error(`Lane not found: ${laneId}`);
+    if (row.lane_type === "primary") {
+      throw new Error("Primary lane cannot be archived");
+    }
+    if (row.status === "archived") return null;
+
+    const activeGroupMember = db.get<{ group_id: string }>(
+      `select m.group_id from pr_group_members m
+       join pr_groups g on g.id = m.group_id
+       where m.lane_id = ? and g.project_id = ?
+       limit 1`,
+      [laneId, projectId]
+    );
+    if (activeGroupMember) {
+      throw new Error("Cannot archive a lane that is part of a PR group. Remove from the group first.");
+    }
+    return row;
+  };
+
+  /**
+   * The archive itself, with no environment teardown: guards, stop the lane's
+   * running work, write the archived status, invalidate caches, announce it.
+   *
+   * `archiveAndReclaim` calls this directly because it runs its own environment
+   * teardown; the public `archive` wraps it with the late-bound teardown hook.
+   */
+  const archiveLaneCore = async (laneId: string): Promise<void> => {
+    const row = readArchivableLaneRow(laneId);
+    if (!row) return;
+
+    // Before the status write, so a failure leaves the lane visible and still
+    // owned rather than hidden with live processes behind it.
+    await stopLaneRuntimeWork(laneId);
+
+    const now = new Date().toISOString();
+    db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
+    invalidateLanePathCaches();
+    broadcastLifecycleEvent({
+      type: "lane-archived",
+      laneId,
+      laneName: row.name,
+      color: row.color,
+    });
+  };
+
+  /**
    * Stop everything a lane is still running: chat sessions, PTY sessions, file
    * watchers, and the rebase machinery watching it.
    *
@@ -6655,8 +6711,9 @@ export function createLaneService({
           throw new Error("ADE will not reclaim generated data through a symbolic link.");
         }
         // `teardownEnv` below already runs the environment cleanup for this
-        // path; skip the archive hook so `compose down` does not run twice.
-        await laneServiceApi.archive({ laneId: args.laneId }, { skipEnvTeardown: true });
+        // path, so this goes straight to the core and never fires the archive
+        // hook — otherwise `compose down` would run twice.
+        await archiveLaneCore(args.laneId);
         runtimeOpts?.onArchived?.();
         db.run(
           `insert into local_lane_storage_state(
@@ -6817,37 +6874,17 @@ export function createLaneService({
      * Async for that reason, and the same teardown steps `delete` and
      * `archiveAndReclaim` already run — one list, not three.
      */
-    async archive(
-      { laneId }: { laneId: string },
-      internalOpts?: { skipEnvTeardown?: boolean },
-    ): Promise<void> {
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Lane not found: ${laneId}`);
-      if (row.lane_type === "primary") {
-        throw new Error("Primary lane cannot be archived");
-      }
-      if (row.status === "archived") return;
-
-      // Guard: prevent archiving if lane is a member of an active PR group
-      const activeGroupMember = db.get<{ group_id: string }>(
-        `select m.group_id from pr_group_members m
-         join pr_groups g on g.id = m.group_id
-         where m.lane_id = ? and g.project_id = ?
-         limit 1`,
-        [laneId, projectId]
-      );
-      if (activeGroupMember) {
-        throw new Error("Cannot archive a lane that is part of a PR group. Remove from the group first.");
-      }
-
-      // Before the status write, so a teardown failure leaves the lane visible
-      // and still owned rather than hidden with live processes behind it.
-      await stopLaneRuntimeWork(laneId);
+    async archive({ laneId }: { laneId: string }): Promise<void> {
+      // Guards first: a lane that cannot be archived must not have its Docker
+      // stack pulled out from under it on the way to the error.
+      if (!readArchivableLaneRow(laneId)) return;
 
       // Docker services the lane's env init started come down with it, keeping
-      // archive symmetric with the `compose up` that unarchive-with-recreate
-      // re-runs. Best-effort: archive still succeeds if teardown fails.
-      if (internalOpts?.skipEnvTeardown !== true && onLaneArchivedEnvTeardown) {
+      // archive symmetric with the `compose up` unarchive re-runs. Best-effort:
+      // archive still succeeds if teardown fails, and it runs before the status
+      // write so a failure leaves the lane visible rather than hidden with live
+      // services behind it.
+      if (onLaneArchivedEnvTeardown) {
         try {
           await onLaneArchivedEnvTeardown(laneId);
         } catch (error) {
@@ -6858,15 +6895,7 @@ export function createLaneService({
         }
       }
 
-      const now = new Date().toISOString();
-      db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
-      invalidateLanePathCaches();
-      broadcastLifecycleEvent({
-        type: "lane-archived",
-        laneId,
-        laneName: row.name,
-        color: row.color,
-      });
+      await archiveLaneCore(laneId);
     },
 
     async unarchive({ laneId }: { laneId: string }): Promise<RestoreLaneResult> {

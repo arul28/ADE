@@ -64,13 +64,26 @@ describe("laneEnvironmentService", () => {
     }
   });
 
-  function createService() {
+  function createService(
+    projectConfigService: { getExecutableConfig: () => unknown } | null = null,
+  ) {
     return createLaneEnvironmentService({
       projectRoot,
       adeDir,
       logger: createLogger(),
-      broadcastEvent: (ev) => events.push(ev)
+      broadcastEvent: (ev) => events.push(ev),
+      projectConfigService
     });
+  }
+
+  function untrustedConfigService() {
+    return {
+      getExecutableConfig: () => {
+        const error = new Error("ADE_TRUST_REQUIRED: shared config not trusted") as Error & { code?: string };
+        error.code = "ADE_TRUST_REQUIRED";
+        throw error;
+      }
+    };
   }
 
   describe("env file copying/templating", () => {
@@ -392,6 +405,70 @@ describe("laneEnvironmentService", () => {
       );
 
       expect(result.overallStatus).toBe("failed");
+    });
+
+    it("refuses to run setup scripts while the shared config is untrusted", async () => {
+      // `.ade/ade.yaml` is repo-committed, so `laneEnvInit`/`laneTemplates` can
+      // carry an attacker's shell. Failing loudly beats executing it, and beats
+      // skipping it silently (which reads as success).
+      const worktreePath = path.join(projectRoot, "wt-setup-untrusted");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-setup-untrusted", name: "untrusted", worktreePath });
+      const service = createService(untrustedConfigService());
+      const result = await service.initLaneEnvironment(
+        lane,
+        { setupScript: { commands: ["touch pwned.txt"] } },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("failed");
+      const step = result.steps.find((entry) => entry.kind === "setup-script");
+      expect(step?.status).toBe("failed");
+      expect(step?.error).toContain("isn't trusted yet");
+      expect(fs.existsSync(path.join(worktreePath, "pwned.txt"))).toBe(false);
+    });
+
+    it("runs setup scripts once the shared config is trusted", async () => {
+      const worktreePath = path.join(projectRoot, "wt-setup-trusted");
+      fs.mkdirSync(worktreePath, { recursive: true });
+
+      const lane = makeLane({ id: "lane-setup-trusted", name: "trusted", worktreePath });
+      const service = createService({ getExecutableConfig: () => ({}) });
+      const result = await service.initLaneEnvironment(
+        lane,
+        { setupScript: { commands: ["touch allowed.txt"] } },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("completed");
+      expect(fs.existsSync(path.join(worktreePath, "allowed.txt"))).toBe(true);
+    });
+
+    it("fails with the OS error when a script file is not executable", async () => {
+      // Script files are spawned directly rather than pasted into a shell line,
+      // so they must carry the executable bit and a shebang.
+      const worktreePath = path.join(projectRoot, "wt-setup-noexec");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      const scriptDir = path.join(projectRoot, "scripts");
+      fs.mkdirSync(scriptDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(scriptDir, "not-executable.sh"),
+        "#!/bin/sh" + String.fromCharCode(10) + "echo hi" + String.fromCharCode(10),
+        { mode: 0o644 },
+      );
+
+      const lane = makeLane({ id: "lane-setup-noexec", name: "noexec", worktreePath });
+      const service = createService();
+      const result = await service.initLaneEnvironment(
+        lane,
+        { setupScript: { scriptPath: "scripts/not-executable.sh" } },
+        {},
+      );
+
+      expect(result.overallStatus).toBe("failed");
+      const step = result.steps.find((entry) => entry.kind === "setup-script");
+      expect(step?.error).toContain("EACCES");
     });
 
     it("runs the setup script after every other init step", async () => {

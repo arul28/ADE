@@ -154,10 +154,17 @@ type LaneEnvInitConfig = {
 Runs when a lane is created. Copies templated env files, starts
 docker-compose services, runs install commands, mounts agent profile
 paths, copies project-level files into the worktree, and finally runs
-the setup script when one is configured. `setupScript` is carried here
-from the lane template — see
-[`lanes/runtime.md`](../lanes/runtime.md#setup-script-execution) for
-shell semantics, available environment variables, and failure behavior.
+the setup script when one is configured.
+
+Every field here, including `copyPaths` and `setupScript`, can be
+authored directly in `ade.yaml` / `local.yaml` as well as carried in
+from a lane template; when both a project-level and a template/overlay
+setup script exist the more specific one wins, and `copyPaths`
+concatenate. Because `ade.yaml` is shared (repo-committed), the
+setup-script step is gated on the shared config being trusted — see
+[`lanes/runtime.md`](../lanes/runtime.md#setup-script-execution) for the
+trust gate, shell semantics, available environment variables, and
+failure behavior.
 
 ## Lane templates
 
@@ -179,7 +186,12 @@ type LaneTemplate = {
 
 Templates provide a reusable init recipe. `copyPaths` and `setupScript`
 round-trip through `local.yaml` / `ade.yaml` and are applied with the
-rest of the recipe. `defaultLaneTemplate` (a
+rest of the recipe. `portRange` is only a fallback for a lane that holds
+no port lease: lane creation takes a lease before the template is
+applied, and the lease always outranks the template value — so hand-
+editing `portRange` in YAML will not move a normally created lane's
+ports. Use `laneOverlayPolicies[].overrides.portRange` to pin a range.
+`defaultLaneTemplate` (a
 template id) is applied to new lanes. `NO_DEFAULT_LANE_TEMPLATE = "__ade_none__"`
 is a sentinel for explicitly overriding an inherited shared default
 back to "none" in `local.yaml`.

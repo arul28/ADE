@@ -376,6 +376,126 @@ describe("projectConfigService - lane env init", () => {
   });
 });
 
+describe("projectConfigService - lane env init setup scripts and copy paths", () => {
+  it("keeps YAML-authored setupScript and copyPaths through parse and merge", () => {
+    // These two fields used to be dropped by the coercer, so a setup script
+    // authored in `ade.yaml` (rather than in a lane template) silently never
+    // ran even though the docs and the merge branch claimed it would.
+    const { root, adeDir } = makeProjectFixture("ade-project-config-lane-setup-");
+
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneEnvInit: {
+          copyPaths: [{ source: ".env.local" }],
+          setupScript: { commands: ["npm run bootstrap"], injectPrimaryPath: true },
+        },
+        laneOverlayPolicies: [],
+      }),
+      "utf8",
+    );
+
+    fs.writeFileSync(
+      path.join(adeDir, "local.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneEnvInit: {
+          copyPaths: [{ source: "certs", dest: "certs" }],
+          setupScript: { scriptPath: "scripts/setup.sh" },
+        },
+        laneOverlayPolicies: [],
+      }),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    const effective = service.get().effective;
+    // copyPaths concatenate; the more specific (local) setup script wins.
+    expect(effective.laneEnvInit?.copyPaths).toEqual([
+      { source: ".env.local" },
+      { source: "certs", dest: "certs" },
+    ]);
+    expect(effective.laneEnvInit?.setupScript).toEqual({ scriptPath: "scripts/setup.sh" });
+  });
+
+  it("drops a setup script whose only key is injectPrimaryPath", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-lane-setup-empty-");
+
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneEnvInit: { setupScript: { injectPrimaryPath: true } },
+        laneOverlayPolicies: [],
+      }),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    expect(service.get().effective.laneEnvInit).toBeUndefined();
+  });
+
+  it("keeps setupScript and copyPaths on lane overlay overrides", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-lane-overlay-setup-");
+
+    fs.writeFileSync(
+      path.join(adeDir, "ade.yaml"),
+      YAML.stringify({
+        version: 1,
+        testSuites: [],
+        automations: [],
+        laneOverlayPolicies: [
+          {
+            id: "backend-policy",
+            match: { tags: ["backend"] },
+            overrides: {
+              envInit: {
+                copyPaths: [{ source: ".env.local" }],
+                setupScript: { unixCommands: ["./scripts/seed.sh"] },
+              },
+            },
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    expect(service.get().effective.laneOverlayPolicies[0]?.overrides.envInit).toEqual({
+      copyPaths: [{ source: ".env.local" }],
+      setupScript: { unixCommands: ["./scripts/seed.sh"] },
+    });
+  });
+});
+
 describe("projectConfigService - AI mode migration", () => {
   it("ignores providers.mode and removes it on save", () => {
     const { root, adeDir } = makeProjectFixture("ade-project-config-");

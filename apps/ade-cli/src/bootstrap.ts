@@ -983,6 +983,9 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       logger,
       broadcastEvent: (event) => pushEvent("runtime", { type: "lane_env_event", event }),
+      // Setup scripts run unrestricted shell and can come from repo-committed
+      // shared config, so the executor gets the same trust gate test suites use.
+      projectConfigService,
     });
 
     const laneTemplateService = createLaneTemplateService({

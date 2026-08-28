@@ -1078,16 +1078,30 @@ function coerceLaneSetupScript(value: unknown): LaneSetupScriptConfig | undefine
   };
   const readPath = (candidate: unknown): string | undefined => asString(candidate)?.trim() || undefined;
 
-  const out: LaneSetupScriptConfig = {
-    ...(readCommands(value.commands) ? { commands: readCommands(value.commands) } : {}),
-    ...(readCommands(value.unixCommands) ? { unixCommands: readCommands(value.unixCommands) } : {}),
-    ...(readCommands(value.windowsCommands) ? { windowsCommands: readCommands(value.windowsCommands) } : {}),
-    ...(readPath(value.scriptPath) ? { scriptPath: readPath(value.scriptPath) } : {}),
-    ...(readPath(value.unixScriptPath) ? { unixScriptPath: readPath(value.unixScriptPath) } : {}),
-    ...(readPath(value.windowsScriptPath) ? { windowsScriptPath: readPath(value.windowsScriptPath) } : {}),
+  const commands = readCommands(value.commands);
+  const unixCommands = readCommands(value.unixCommands);
+  const windowsCommands = readCommands(value.windowsCommands);
+  const scriptPath = readPath(value.scriptPath);
+  const unixScriptPath = readPath(value.unixScriptPath);
+  const windowsScriptPath = readPath(value.windowsScriptPath);
+
+  // `injectPrimaryPath` on its own configures nothing to run, so a config with
+  // only that key is not a setup script — returning one would emit an empty
+  // init step that always "succeeds".
+  const hasWork = Boolean(
+    commands || unixCommands || windowsCommands || scriptPath || unixScriptPath || windowsScriptPath,
+  );
+  if (!hasWork) return undefined;
+
+  return {
+    ...(commands ? { commands } : {}),
+    ...(unixCommands ? { unixCommands } : {}),
+    ...(windowsCommands ? { windowsCommands } : {}),
+    ...(scriptPath ? { scriptPath } : {}),
+    ...(unixScriptPath ? { unixScriptPath } : {}),
+    ...(windowsScriptPath ? { windowsScriptPath } : {}),
     ...(asBool(value.injectPrimaryPath) === true ? { injectPrimaryPath: true } : {}),
   };
-  return Object.keys(out).length ? out : undefined;
 }
 
 function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined {
@@ -1105,8 +1119,22 @@ function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined 
   const mountPoints = Array.isArray(value.mountPoints)
     ? value.mountPoints.map(coerceLaneMountPoint).filter((entry): entry is LaneMountPointConfig => entry != null)
     : undefined;
+  // `copyPaths` and `setupScript` are documented on `laneEnvInit` and on lane
+  // overlay overrides, not just on templates. Dropping them here is why a
+  // YAML-authored setup script silently never ran.
+  const copyPaths = Array.isArray(value.copyPaths)
+    ? value.copyPaths.map(coerceLaneCopyPath).filter((entry): entry is LaneCopyPathConfig => entry != null)
+    : undefined;
+  const setupScript = coerceLaneSetupScript(value.setupScript);
 
-  if (!envFiles?.length && !docker && !dependencies?.length && !mountPoints?.length) {
+  if (
+    !envFiles?.length
+    && !docker
+    && !dependencies?.length
+    && !mountPoints?.length
+    && !copyPaths?.length
+    && !setupScript
+  ) {
     return undefined;
   }
 
@@ -1114,7 +1142,9 @@ function coerceLaneEnvInitConfig(value: unknown): LaneEnvInitConfig | undefined 
     ...(envFiles?.length ? { envFiles } : {}),
     ...(docker ? { docker } : {}),
     ...(dependencies?.length ? { dependencies } : {}),
-    ...(mountPoints?.length ? { mountPoints } : {})
+    ...(mountPoints?.length ? { mountPoints } : {}),
+    ...(copyPaths?.length ? { copyPaths } : {}),
+    ...(setupScript ? { setupScript } : {})
   };
 }
 
@@ -1123,7 +1153,9 @@ function normalizeLaneEnvInitConfig(value: LaneEnvInitConfig): LaneEnvInitConfig
     ...(value.envFiles && value.envFiles.length > 0 ? { envFiles: value.envFiles } : {}),
     ...(value.docker ? { docker: value.docker } : {}),
     ...(value.dependencies && value.dependencies.length > 0 ? { dependencies: value.dependencies } : {}),
-    ...(value.mountPoints && value.mountPoints.length > 0 ? { mountPoints: value.mountPoints } : {})
+    ...(value.mountPoints && value.mountPoints.length > 0 ? { mountPoints: value.mountPoints } : {}),
+    ...(value.copyPaths && value.copyPaths.length > 0 ? { copyPaths: value.copyPaths } : {}),
+    ...(value.setupScript ? { setupScript: value.setupScript } : {})
   };
 
   return Object.keys(normalized).length > 0 ? normalized : undefined;
@@ -1159,7 +1191,9 @@ function mergeLaneEnvInit(
           ...(over.envFiles ? { envFiles: [...over.envFiles] } : {}),
           ...(mergeLaneDockerConfig(undefined, over.docker) ? { docker: mergeLaneDockerConfig(undefined, over.docker) } : {}),
           ...(over.dependencies ? { dependencies: [...over.dependencies] } : {}),
-          ...(over.mountPoints ? { mountPoints: [...over.mountPoints] } : {})
+          ...(over.mountPoints ? { mountPoints: [...over.mountPoints] } : {}),
+          ...(over.copyPaths ? { copyPaths: [...over.copyPaths] } : {}),
+          ...(over.setupScript ? { setupScript: { ...over.setupScript } } : {})
         })
       : undefined;
   }
@@ -1168,15 +1202,21 @@ function mergeLaneEnvInit(
       ...(base.envFiles ? { envFiles: [...base.envFiles] } : {}),
       ...(mergeLaneDockerConfig(undefined, base.docker) ? { docker: mergeLaneDockerConfig(undefined, base.docker) } : {}),
       ...(base.dependencies ? { dependencies: [...base.dependencies] } : {}),
-      ...(base.mountPoints ? { mountPoints: [...base.mountPoints] } : {})
+      ...(base.mountPoints ? { mountPoints: [...base.mountPoints] } : {}),
+      ...(base.copyPaths ? { copyPaths: [...base.copyPaths] } : {}),
+      ...(base.setupScript ? { setupScript: { ...base.setupScript } } : {})
     });
   }
 
+  const overSetupScript = over.setupScript ?? base.setupScript;
   return normalizeLaneEnvInitConfig({
     envFiles: [...(base.envFiles ?? []), ...(over.envFiles ?? [])],
     ...(mergeLaneDockerConfig(base.docker, over.docker) ? { docker: mergeLaneDockerConfig(base.docker, over.docker) } : {}),
     dependencies: [...(base.dependencies ?? []), ...(over.dependencies ?? [])],
-    mountPoints: [...(base.mountPoints ?? []), ...(over.mountPoints ?? [])]
+    mountPoints: [...(base.mountPoints ?? []), ...(over.mountPoints ?? [])],
+    copyPaths: [...(base.copyPaths ?? []), ...(over.copyPaths ?? [])],
+    // A lane runs one setup script; the more specific config wins.
+    ...(overSetupScript ? { setupScript: { ...overSetupScript } } : {})
   });
 }
 

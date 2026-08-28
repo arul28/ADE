@@ -109,13 +109,30 @@ exist, the more specific one wins — a lane runs one setup script.
   `unixCommands` / `unixScriptPath` elsewhere, each falling back to the
   generic `commands` / `scriptPath`. If nothing resolves for the current
   platform, the step is not created at all.
-- **Shell semantics.** Setup lines are user-authored shell, not argv:
-  they run through `/bin/sh -c` on macOS/Linux and through
-  `cmd.exe /d /s /c` (via `resolveWindowsCmdLineInvocation`) on Windows,
-  so pipes, `&&`, and variable expansion work — `$VAR` on POSIX,
-  `%VAR%` on Windows. A `.ps1` script path is invoked through
-  PowerShell (`-NoLogo -NoProfile -NonInteractive -ExecutionPolicy
-  Bypass -File`) because cmd.exe cannot run one.
+- **Shell semantics (commands).** Configured `commands` are
+  user-authored shell, not argv: they run through `/bin/sh -c` on
+  macOS/Linux and through `cmd.exe /d /s /c` (via
+  `resolveWindowsCmdLineInvocation`) on Windows, so pipes, `&&`, and
+  variable expansion work — `$VAR` on POSIX, `%VAR%` on Windows.
+- **Script files are spawned, not shelled.** A configured `scriptPath`
+  is a path, so it goes through `resolveCliSpawnInvocation` as a real
+  argv spawn rather than being pasted into a shell line: `.ps1` runs
+  under an absolutely-resolved `powershell.exe`
+  (`windowsPowerShellCommand()`, `-NoLogo -NoProfile -NonInteractive
+  -ExecutionPolicy Bypass -File`) so a `powershell.exe` sitting at the
+  lane worktree root cannot win resolution, `.cmd`/`.bat` go through
+  ComSpec, and on macOS/Linux the script path is executed directly.
+  **A POSIX script file must therefore be executable (`chmod +x`) and
+  start with a shebang** — without both, the step fails with the OS
+  error (`EACCES` / `ENOEXEC`) rather than being interpreted by a
+  shell.
+- **Trust gate.** `laneEnvInit` and `laneTemplates` both merge in from
+  the repo-committed `.ade/ade.yaml`, so the setup-script step consults
+  `projectConfigService.getExecutableConfig()` first — the same gate
+  test suites use. While the project's shared config is untrusted the
+  step **fails** with "This project's shared configuration isn't trusted
+  yet…" instead of executing or silently skipping. Trust the shared
+  config in Settings to allow it.
 - **Order.** Configured commands run first, in order, then the script
   file if one is set. `scriptPath` is resolved against the project root
   with the same symlink-aware traversal check as env files.
@@ -143,7 +160,19 @@ for the lane's compose project. It runs on all four lifecycle paths:
 | Delete | `teardownEnv` passed by the caller into `laneService.delete` |
 | Archive & reclaim | `teardownEnv` passed into `laneService.archiveAndReclaim` |
 | Plain archive | The late-bound `setOnLaneArchivedEnvTeardown` hook, run inside `laneService.archive` |
-| Unarchive | Re-init runs `docker compose up` again when the worktree had to be recreated |
+| Unarchive | `docker compose up` runs again — full env init when the worktree had to be recreated, docker-only otherwise |
+
+**What "the lane's compose project" means, exactly.** Every teardown
+path resolves the config the same way, through
+`laneRuntimeLifecycle.buildLaneEnvTeardown` →
+`laneEnvInitMerge.resolveLaneOverlayContext`: project-level
+`laneEnvInit` merged with the matching lane overlay overrides. **A
+`docker.composePath` configured only on a lane template is not covered.**
+`applyTemplate` composes it up, but the applied template is not
+persisted per lane, so no teardown resolver can see it — archive,
+delete, and reclaim will all leave that stack running. Put a compose
+path on `laneEnvInit` (or on an overlay policy that matches the lane) if
+you want it torn down.
 
 Plain archive used to skip teardown, so an archived lane's containers
 kept running and holding ports with nothing in the UI pointing at them.
@@ -157,18 +186,25 @@ exists, resolved through
 
 Teardown on archive is best-effort: a failing `compose down` is logged
 (`lane.archive.env_teardown_failed`) and the archive still succeeds.
-Restoring an archived lane re-runs env init — and therefore
-`docker compose up` — only when the worktree had to be recreated; after
-a plain unarchive, run **Init env** (`lanes.initEnv`) to bring the
-services back.
+
+Restore is deliberately asymmetric. When the worktree had to be
+recreated, unarchive re-runs the whole env init
+(`restoreRecreatedLaneRuntime`). After a plain unarchive the worktree
+was never removed, so only the Docker step re-runs
+(`restoreUnarchivedLaneDocker`) — re-copying env files, reinstalling
+dependencies, or re-running the setup script would clobber work that
+survived the archive. Run **Init env** (`lanes.initEnv`) by hand if you
+do want the full sequence again.
 
 ## Lane templates (W2)
 
 Templates package a complete `LaneEnvInitConfig` + overlay overrides
-+ setup script. `laneTemplateService.resolveSetupScript(template)`
-returns the platform-appropriate command/script path at runtime or
-`null` if no script is configured; the same resolution is what
-`laneEnvironmentService` executes for the `setup-script` step.
++ setup script. `resolveSetupScriptConfig(setupScript, platform)` in
+`services/lanes/setupScriptConfig.ts` returns the platform-appropriate
+commands / script path or `null` if nothing is configured for that
+platform; it is a leaf module so `laneEnvironmentService` (the executor)
+resolves exactly what the template UI promises without importing
+template CRUD.
 
 The `NO_DEFAULT_LANE_TEMPLATE` sentinel distinguishes "no default
 set" from "default explicitly cleared" so the Settings UI can surface

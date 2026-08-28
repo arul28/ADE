@@ -7,8 +7,8 @@ import {
   outlineButton,
   primaryButton,
   cardStyle,
-  recessedStyle,
 } from "../lanes/laneDesignTokens";
+import { SettingsDisclosure, SettingsToggle } from "./primitives";
 import type {
   LaneTemplate,
   LaneCopyPathConfig,
@@ -136,8 +136,31 @@ function parseLines(text: string): string[] {
   return text.split("\n").map((s) => s.trim()).filter(Boolean);
 }
 
+/**
+ * Drops members that are `undefined` so a saved template carries no empty keys.
+ * The `as T` cast holds because every caller passes an object literal whose
+ * `undefined`-valued members are optional in the target type, so dropping them
+ * still produces a valid `T`.
+ */
 function compact<T extends Record<string, unknown>>(obj: T): T {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
+}
+
+/**
+ * A setup script only does something when it has at least one command or a
+ * script path on some platform. A config carrying nothing but
+ * `injectPrimaryPath` runs no script, so it must not be shown as one.
+ */
+function hasRunnableSetupScript(script: LaneSetupScriptConfig | undefined | null): boolean {
+  if (!script) return false;
+  return (
+    (script.commands?.length ?? 0) > 0 ||
+    (script.unixCommands?.length ?? 0) > 0 ||
+    (script.windowsCommands?.length ?? 0) > 0 ||
+    !!script.scriptPath?.trim() ||
+    !!script.unixScriptPath?.trim() ||
+    !!script.windowsScriptPath?.trim()
+  );
 }
 
 function updateAt<T>(items: T[], index: number, patch: Partial<T>): T[] {
@@ -312,7 +335,7 @@ function TemplateCard({
   if (template.copyPaths?.length) features.push(pluralize(template.copyPaths.length, "file"));
   if (template.envFiles?.length) features.push(pluralize(template.envFiles.length, "env file"));
   if (template.dependencies?.length) features.push(pluralize(template.dependencies.length, "install"));
-  if (template.setupScript) features.push("setup script");
+  if (hasRunnableSetupScript(template.setupScript)) features.push("setup script");
   if (template.mountPoints?.length) features.push(pluralize(template.mountPoints.length, "mount"));
   if (template.docker?.composePath) features.push("docker");
   if (template.envVars && Object.keys(template.envVars).length > 0) features.push("env vars");
@@ -372,7 +395,7 @@ function TemplateCard({
           {template.dependencies && template.dependencies.length > 0 && (
             <ConfigRow label="Install" items={template.dependencies.map((d) => d.command.join(" "))} />
           )}
-          {template.setupScript && (
+          {hasRunnableSetupScript(template.setupScript) && template.setupScript && (
             <SetupScriptPreview script={template.setupScript} />
           )}
           {template.mountPoints && template.mountPoints.length > 0 && (
@@ -686,204 +709,307 @@ function TemplateEditor({
           </button>
         </Field>
 
-        {/* Setup script */}
-        <Field
-          label="Setup script"
-          hint="Runs last, in the new lane's folder, once everything above is done. If a command fails, setup stops there."
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div>
-              <textarea
-                style={textareaStyle}
-                value={setupCommands}
-                onChange={(e) => setSetupCommands(e.target.value)}
-                placeholder={"npm run bootstrap\ncp $PRIMARY_WORKTREE_PATH/.env .env"}
-                rows={3}
-              />
-              <div style={hintStyle}>One command per line, run in order.</div>
-            </div>
+        <SetupScriptFields
+          commands={setupCommands}
+          onCommands={setSetupCommands}
+          scriptPath={setupScriptPath}
+          onScriptPath={setSetupScriptPath}
+          injectPrimaryPath={setupInjectPrimaryPath}
+          onInjectPrimaryPath={setSetupInjectPrimaryPath}
+          unixCommands={setupUnixCommands}
+          onUnixCommands={setSetupUnixCommands}
+          unixScriptPath={setupUnixScriptPath}
+          onUnixScriptPath={setSetupUnixScriptPath}
+          windowsCommands={setupWindowsCommands}
+          onWindowsCommands={setSetupWindowsCommands}
+          windowsScriptPath={setupWindowsScriptPath}
+          onWindowsScriptPath={setSetupWindowsScriptPath}
+          platformVariantsOpen={hasPlatformVariants}
+        />
 
-            <div>
-              <div style={subLabelStyle}>Or run a script file</div>
-              <input
-                style={monoInputStyle}
-                value={setupScriptPath}
-                onChange={(e) => setSetupScriptPath(e.target.value)}
-                placeholder="scripts/setup-lane.sh"
-              />
-              <div style={hintStyle}>
-                Runs after the commands above. Path is relative to your project folder, and the file has to exist or setup fails.
-              </div>
-            </div>
-
-            <div style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 16,
-              padding: "10px 12px",
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.borderMuted}`,
-              borderRadius: 8,
-            }}>
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 500, color: COLORS.textPrimary }}>Pass the main folder path</div>
-                <div style={hintStyle}>
-                  Sets <code style={codeStyle}>$PRIMARY_WORKTREE_PATH</code> so the script can copy files out of your main checkout.
-                </div>
-              </div>
-              <ToggleSwitch checked={setupInjectPrimaryPath} onChange={setSetupInjectPrimaryPath} />
-            </div>
-
-            {/* Per-platform variants — the script that runs depends on the OS */}
-            <Disclosure summary="Different commands on Windows" defaultOpen={hasPlatformVariants}>
-              <div style={{ ...hintStyle, marginTop: 0 }}>
-                When set, these run instead of the commands above on that platform.
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <div>
-                  <div style={subLabelStyle}>macOS and Linux</div>
-                  <textarea
-                    style={{ ...textareaStyle, minHeight: 48 }}
-                    value={setupUnixCommands}
-                    onChange={(e) => setSetupUnixCommands(e.target.value)}
-                    placeholder={"chmod +x scripts/setup.sh\n./scripts/setup.sh"}
-                    rows={2}
-                  />
-                  <div style={{ marginTop: 8 }}>
-                    <div style={subLabelStyle}>Script file</div>
-                    <input
-                      style={monoInputStyle}
-                      value={setupUnixScriptPath}
-                      onChange={(e) => setSetupUnixScriptPath(e.target.value)}
-                      placeholder="scripts/setup-lane.sh"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <div style={subLabelStyle}>Windows</div>
-                  <textarea
-                    style={{ ...textareaStyle, minHeight: 48 }}
-                    value={setupWindowsCommands}
-                    onChange={(e) => setSetupWindowsCommands(e.target.value)}
-                    placeholder="powershell -File scripts\setup.ps1"
-                    rows={2}
-                  />
-                  <div style={{ marginTop: 8 }}>
-                    <div style={subLabelStyle}>Script file</div>
-                    <input
-                      style={monoInputStyle}
-                      value={setupWindowsScriptPath}
-                      onChange={(e) => setSetupWindowsScriptPath(e.target.value)}
-                      placeholder="scripts\setup-lane.ps1"
-                    />
-                  </div>
-                </div>
-              </div>
-            </Disclosure>
-          </div>
-        </Field>
-
-        {/* Advanced — rarely needed */}
-        <Disclosure summary="Advanced" defaultOpen={hasAdvanced}>
-          <Field
-            label="Docker services"
-            hint="Started with Docker Compose when the lane is created, under a name of their own, and stopped when the lane is deleted."
-          >
-            <div style={{ display: "flex", gap: 12 }}>
-              <div style={{ flex: 2 }}>
-                <div style={subLabelStyle}>Compose file</div>
-                <input
-                  style={monoInputStyle}
-                  value={dockerCompose}
-                  onChange={(e) => setDockerCompose(e.target.value)}
-                  placeholder="docker-compose.yml"
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={subLabelStyle}>Services</div>
-                <input
-                  style={monoInputStyle}
-                  value={dockerServices}
-                  onChange={(e) => setDockerServices(e.target.value)}
-                  placeholder="all services if empty"
-                />
-              </div>
-            </div>
-          </Field>
-
-          <Field
-            label="Files from the .ade folder"
-            hint="Copied out of this project's .ade folder into the new lane when it's created. Mostly for agent profiles."
-          >
-            {mountPoints.map((mp, i) => (
-              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-                <input
-                  style={{ ...monoInputStyle, flex: 1 }}
-                  value={mp.source}
-                  onChange={(e) => setMountPoints(updateAt(mountPoints, i, { source: e.target.value }))}
-                  placeholder="agent-profiles/default.json"
-                />
-                <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
-                <input
-                  style={{ ...monoInputStyle, flex: 1 }}
-                  value={mp.dest}
-                  onChange={(e) => setMountPoints(updateAt(mountPoints, i, { dest: e.target.value }))}
-                  placeholder=".ade/profile.json"
-                />
-                <button style={removeBtn} onClick={() => setMountPoints(removeAt(mountPoints, i))}>{"×"}</button>
-              </div>
-            ))}
-            <button
-              style={outlineButton({ height: 28, fontSize: 10 })}
-              onClick={() => setMountPoints([...mountPoints, { source: "", dest: "" }])}
-            >
-              + Add file
-            </button>
-          </Field>
-
-          <Field
-            label="Extra variables"
-            hint={
-              <>
-                More <code style={codeStyle}>{"{{VALUES}}"}</code> for the env files above, and environment variables for the setup
-                script. They aren't set in lane terminals.
-              </>
-            }
-          >
-            {envVars.map((v, i) => (
-              <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-                <input
-                  style={{ ...monoInputStyle, flex: 1 }}
-                  value={v.key}
-                  onChange={(e) => setEnvVars(updateAt(envVars, i, { key: e.target.value }))}
-                  placeholder="KEY"
-                />
-                <span style={{ color: COLORS.textDim, fontSize: 11 }}>=</span>
-                <input
-                  style={{ ...monoInputStyle, flex: 2 }}
-                  value={v.value}
-                  onChange={(e) => setEnvVars(updateAt(envVars, i, { value: e.target.value }))}
-                  placeholder="value"
-                />
-                <button style={removeBtn} onClick={() => setEnvVars(removeAt(envVars, i))}>{"×"}</button>
-              </div>
-            ))}
-            <button
-              style={outlineButton({ height: 28, fontSize: 10 })}
-              onClick={() => setEnvVars([...envVars, { key: "", value: "" }])}
-            >
-              + Add variable
-            </button>
-          </Field>
-        </Disclosure>
+        <AdvancedFields
+          defaultOpen={hasAdvanced}
+          dockerCompose={dockerCompose}
+          onDockerCompose={setDockerCompose}
+          dockerServices={dockerServices}
+          onDockerServices={setDockerServices}
+          mountPoints={mountPoints}
+          onMountPoints={setMountPoints}
+          envVars={envVars}
+          onEnvVars={setEnvVars}
+        />
       </div>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Field + disclosure
+// Editor blocks
+// ---------------------------------------------------------------------------
+
+/** The setup-script half of the editor: commands, script file, platform variants. */
+function SetupScriptFields({
+  commands,
+  onCommands,
+  scriptPath,
+  onScriptPath,
+  injectPrimaryPath,
+  onInjectPrimaryPath,
+  unixCommands,
+  onUnixCommands,
+  unixScriptPath,
+  onUnixScriptPath,
+  windowsCommands,
+  onWindowsCommands,
+  windowsScriptPath,
+  onWindowsScriptPath,
+  platformVariantsOpen,
+}: {
+  commands: string;
+  onCommands: (value: string) => void;
+  scriptPath: string;
+  onScriptPath: (value: string) => void;
+  injectPrimaryPath: boolean;
+  onInjectPrimaryPath: (value: boolean) => void;
+  unixCommands: string;
+  onUnixCommands: (value: string) => void;
+  unixScriptPath: string;
+  onUnixScriptPath: (value: string) => void;
+  windowsCommands: string;
+  onWindowsCommands: (value: string) => void;
+  windowsScriptPath: string;
+  onWindowsScriptPath: (value: string) => void;
+  platformVariantsOpen: boolean;
+}) {
+  return (
+    <Field
+      label="Setup script"
+      hint="Runs last, in the new lane's folder, once everything above is done. If a command fails, setup stops there."
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div>
+          <textarea
+            style={textareaStyle}
+            value={commands}
+            onChange={(e) => onCommands(e.target.value)}
+            placeholder={"npm run bootstrap\ncp $PRIMARY_WORKTREE_PATH/.env .env"}
+            rows={3}
+          />
+          <div style={hintStyle}>
+            One command per line, run in order. (On Windows they run in cmd, where a variable
+            is written <code style={codeStyle}>%PRIMARY_WORKTREE_PATH%</code>.)
+          </div>
+        </div>
+
+        <div>
+          <div style={subLabelStyle}>Or run a script file</div>
+          <input
+            style={monoInputStyle}
+            value={scriptPath}
+            onChange={(e) => onScriptPath(e.target.value)}
+            placeholder="scripts/setup-lane.sh"
+          />
+          <div style={hintStyle}>
+            Runs after the commands above. Path is relative to your project folder. The file has to
+            exist, and on macOS and Linux it has to be executable (<code style={codeStyle}>chmod +x</code>),
+            or setup fails.
+          </div>
+        </div>
+
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 16,
+          padding: "10px 12px",
+          background: COLORS.recessedBg,
+          border: `1px solid ${COLORS.borderMuted}`,
+          borderRadius: 8,
+        }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 500, color: COLORS.textPrimary }}>Pass the main folder path</div>
+            <div style={hintStyle}>
+              Sets <code style={codeStyle}>$PRIMARY_WORKTREE_PATH</code> so the script can copy files out of your main checkout.
+            </div>
+          </div>
+          <SettingsToggle
+            checked={injectPrimaryPath}
+            onChange={onInjectPrimaryPath}
+            label="Pass the main folder path"
+          />
+        </div>
+
+        {/* Per-platform variants — the script that runs depends on the OS */}
+        <SettingsDisclosure summary="Different commands on Windows" defaultOpen={platformVariantsOpen}>
+          <div style={{ ...hintStyle, marginTop: 0 }}>
+            When set, these run instead of the commands above on that platform.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={subLabelStyle}>macOS and Linux</div>
+              <textarea
+                style={{ ...textareaStyle, minHeight: 48 }}
+                value={unixCommands}
+                onChange={(e) => onUnixCommands(e.target.value)}
+                placeholder={"chmod +x scripts/setup.sh\n./scripts/setup.sh"}
+                rows={2}
+              />
+              <div style={{ marginTop: 8 }}>
+                <div style={subLabelStyle}>Script file</div>
+                <input
+                  style={monoInputStyle}
+                  value={unixScriptPath}
+                  onChange={(e) => onUnixScriptPath(e.target.value)}
+                  placeholder="scripts/setup-lane.sh"
+                />
+              </div>
+            </div>
+            <div>
+              <div style={subLabelStyle}>Windows</div>
+              <textarea
+                style={{ ...textareaStyle, minHeight: 48 }}
+                value={windowsCommands}
+                onChange={(e) => onWindowsCommands(e.target.value)}
+                placeholder="powershell -File scripts\setup.ps1"
+                rows={2}
+              />
+              <div style={{ marginTop: 8 }}>
+                <div style={subLabelStyle}>Script file</div>
+                <input
+                  style={monoInputStyle}
+                  value={windowsScriptPath}
+                  onChange={(e) => onWindowsScriptPath(e.target.value)}
+                  placeholder="scripts\setup-lane.ps1"
+                />
+              </div>
+            </div>
+          </div>
+        </SettingsDisclosure>
+      </div>
+    </Field>
+  );
+}
+
+/** Rarely-needed editor fields: docker, .ade files, extra variables. */
+function AdvancedFields({
+  defaultOpen,
+  dockerCompose,
+  onDockerCompose,
+  dockerServices,
+  onDockerServices,
+  mountPoints,
+  onMountPoints,
+  envVars,
+  onEnvVars,
+}: {
+  defaultOpen: boolean;
+  dockerCompose: string;
+  onDockerCompose: (value: string) => void;
+  dockerServices: string;
+  onDockerServices: (value: string) => void;
+  mountPoints: LaneMountPointConfig[];
+  onMountPoints: (value: LaneMountPointConfig[]) => void;
+  envVars: Array<{ key: string; value: string }>;
+  onEnvVars: (value: Array<{ key: string; value: string }>) => void;
+}) {
+  return (
+    <SettingsDisclosure summary="Advanced" defaultOpen={defaultOpen}>
+      <Field
+        label="Docker services"
+        hint="Started with Docker Compose when the lane is created, under a name of their own, and stopped when the lane is deleted."
+      >
+        <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ flex: 2 }}>
+            <div style={subLabelStyle}>Compose file</div>
+            <input
+              style={monoInputStyle}
+              value={dockerCompose}
+              onChange={(e) => onDockerCompose(e.target.value)}
+              placeholder="docker-compose.yml"
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={subLabelStyle}>Services</div>
+            <input
+              style={monoInputStyle}
+              value={dockerServices}
+              onChange={(e) => onDockerServices(e.target.value)}
+              placeholder="all services if empty"
+            />
+          </div>
+        </div>
+      </Field>
+
+      <Field
+        label="Files from the .ade folder"
+        hint="Copied out of this project's .ade folder into the new lane when it's created. Mostly for agent profiles."
+      >
+        {mountPoints.map((mp, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+            <input
+              style={{ ...monoInputStyle, flex: 1 }}
+              value={mp.source}
+              onChange={(e) => onMountPoints(updateAt(mountPoints, i, { source: e.target.value }))}
+              placeholder="agent-profiles/default.json"
+            />
+            <span style={{ color: COLORS.textDim, fontSize: 11 }}>{"→"}</span>
+            <input
+              style={{ ...monoInputStyle, flex: 1 }}
+              value={mp.dest}
+              onChange={(e) => onMountPoints(updateAt(mountPoints, i, { dest: e.target.value }))}
+              placeholder=".ade/profile.json"
+            />
+            <button style={removeBtn} onClick={() => onMountPoints(removeAt(mountPoints, i))}>{"×"}</button>
+          </div>
+        ))}
+        <button
+          style={outlineButton({ height: 28, fontSize: 10 })}
+          onClick={() => onMountPoints([...mountPoints, { source: "", dest: "" }])}
+        >
+          + Add file
+        </button>
+      </Field>
+
+      <Field
+        label="Extra variables"
+        hint={
+          <>
+            More <code style={codeStyle}>{"{{VALUES}}"}</code> for the env files above, and environment variables for the setup
+            script. They aren't set in lane terminals.
+          </>
+        }
+      >
+        {envVars.map((v, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+            <input
+              style={{ ...monoInputStyle, flex: 1 }}
+              value={v.key}
+              onChange={(e) => onEnvVars(updateAt(envVars, i, { key: e.target.value }))}
+              placeholder="KEY"
+            />
+            <span style={{ color: COLORS.textDim, fontSize: 11 }}>=</span>
+            <input
+              style={{ ...monoInputStyle, flex: 2 }}
+              value={v.value}
+              onChange={(e) => onEnvVars(updateAt(envVars, i, { value: e.target.value }))}
+              placeholder="value"
+            />
+            <button style={removeBtn} onClick={() => onEnvVars(removeAt(envVars, i))}>{"×"}</button>
+          </div>
+        ))}
+        <button
+          style={outlineButton({ height: 28, fontSize: 10 })}
+          onClick={() => onEnvVars([...envVars, { key: "", value: "" }])}
+        >
+          + Add variable
+        </button>
+      </Field>
+    </SettingsDisclosure>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Field
 // ---------------------------------------------------------------------------
 
 /** One setting: plain label, one line of help, then the controls. */
@@ -902,92 +1028,6 @@ function Field({
       {hint ? <div style={hintStyle}>{hint}</div> : null}
       <div style={{ marginTop: 10 }}>{children}</div>
     </div>
-  );
-}
-
-/**
- * Native `<details>`, the same disclosure the rest of Settings uses (see
- * `ProvidersSection`), so rarely-needed fields stay out of the way.
- */
-function Disclosure({
-  summary,
-  defaultOpen,
-  children,
-}: {
-  summary: string;
-  defaultOpen?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <details
-      open={defaultOpen}
-      style={{
-        ...recessedStyle({ padding: 0, borderRadius: 10 }),
-        overflow: "hidden",
-      }}
-    >
-      <summary
-        style={{
-          cursor: "pointer",
-          padding: "10px 12px",
-          fontSize: 11,
-          fontWeight: 600,
-          fontFamily: SANS_FONT,
-          color: COLORS.textSecondary,
-        }}
-      >
-        {summary}
-      </summary>
-      <div
-        style={{
-          padding: 12,
-          borderTop: `1px solid ${COLORS.borderMuted}`,
-          display: "flex",
-          flexDirection: "column",
-          gap: 20,
-        }}
-      >
-        {children}
-      </div>
-    </details>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Toggle switch
-// ---------------------------------------------------------------------------
-
-function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(!checked)}
-      style={{
-        position: "relative",
-        width: 40,
-        height: 22,
-        border: "none",
-        padding: 0,
-        borderRadius: 11,
-        background: checked ? COLORS.accent : COLORS.border,
-        cursor: "pointer",
-        flexShrink: 0,
-        transition: "background 150ms ease",
-      }}
-    >
-      <span
-        style={{
-          position: "absolute",
-          top: 2,
-          left: checked ? 20 : 2,
-          width: 18,
-          height: 18,
-          background: checked ? COLORS.pageBg : COLORS.textMuted,
-          borderRadius: 9,
-          transition: "left 150ms ease",
-        }}
-      />
-    </button>
   );
 }
 

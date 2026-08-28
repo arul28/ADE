@@ -261,7 +261,6 @@ import {
   type createLinearOAuthService,
 } from "../../../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
-import { matchLaneOverlayPolicies } from "../../../../desktop/src/main/services/config/laneOverlayMatcher";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES, type createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
@@ -272,7 +271,16 @@ import type { createGithubService } from "../../../../desktop/src/main/services/
 import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
-import { restoreRecreatedLaneRuntime } from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import {
+  buildLaneEnvTeardown,
+  restoreRecreatedLaneRuntime,
+  restoreUnarchivedLaneDocker,
+} from "../../../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
+import {
+  applyLeaseToOverrides,
+  mergeLaneEnvInitConfig,
+  resolveLaneOverlayContext as resolveSharedLaneOverlayContext,
+} from "../../../../desktop/src/main/services/lanes/laneEnvInitMerge";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
@@ -3484,64 +3492,6 @@ function parseRecheckIntegrationStepArgs(value: Record<string, unknown>): Rechec
   };
 }
 
-function mergeLaneDockerConfig(
-  current: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
-  next: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
-) {
-  if (!current && !next) return undefined;
-  if (!current) return next ? { ...next, ...(next.services ? { services: [...next.services] } : {}) } : undefined;
-  if (!next) return { ...current, ...(current.services ? { services: [...current.services] } : {}) };
-  return {
-    ...current,
-    ...next,
-    ...(next.services != null
-      ? { services: [...next.services] }
-      : current.services != null
-        ? { services: [...current.services] }
-        : {}),
-  };
-}
-
-function mergeLaneEnvInitConfig(
-  current: LaneEnvInitConfig | undefined,
-  next: LaneEnvInitConfig | undefined,
-): LaneEnvInitConfig | undefined {
-  if (!current && !next) return undefined;
-  if (!current) {
-    return next
-      ? {
-          ...(next.envFiles ? { envFiles: [...next.envFiles] } : {}),
-          ...(mergeLaneDockerConfig(undefined, next.docker) ? { docker: mergeLaneDockerConfig(undefined, next.docker) } : {}),
-          ...(next.dependencies ? { dependencies: [...next.dependencies] } : {}),
-          ...(next.mountPoints ? { mountPoints: [...next.mountPoints] } : {}),
-          ...(next.copyPaths ? { copyPaths: [...next.copyPaths] } : {}),
-          ...(next.setupScript ? { setupScript: { ...next.setupScript } } : {}),
-        }
-      : undefined;
-  }
-  if (!next) {
-    return {
-      ...(current.envFiles ? { envFiles: [...current.envFiles] } : {}),
-      ...(mergeLaneDockerConfig(undefined, current.docker) ? { docker: mergeLaneDockerConfig(undefined, current.docker) } : {}),
-      ...(current.dependencies ? { dependencies: [...current.dependencies] } : {}),
-      ...(current.mountPoints ? { mountPoints: [...current.mountPoints] } : {}),
-      ...(current.copyPaths ? { copyPaths: [...current.copyPaths] } : {}),
-      ...(current.setupScript ? { setupScript: { ...current.setupScript } } : {}),
-    };
-  }
-  return {
-    envFiles: [...(current.envFiles ?? []), ...(next.envFiles ?? [])],
-    ...(mergeLaneDockerConfig(current.docker, next.docker) ? { docker: mergeLaneDockerConfig(current.docker, next.docker) } : {}),
-    dependencies: [...(current.dependencies ?? []), ...(next.dependencies ?? [])],
-    mountPoints: [...(current.mountPoints ?? []), ...(next.mountPoints ?? [])],
-    copyPaths: [...(current.copyPaths ?? []), ...(next.copyPaths ?? [])],
-    // A lane runs one setup script; the more specific config (template) wins.
-    ...(next.setupScript ?? current.setupScript
-      ? { setupScript: { ...(next.setupScript ?? current.setupScript) } }
-      : {}),
-  };
-}
-
 function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverlayOverrides>): LaneOverlayOverrides {
   return {
     ...base,
@@ -3549,19 +3499,6 @@ function mergeLaneOverrides(base: LaneOverlayOverrides, next: Partial<LaneOverla
     ...(base.env || next.env ? { env: { ...(base.env ?? {}), ...(next.env ?? {}) } } : {}),
     ...(base.testSuiteIds || next.testSuiteIds ? { testSuiteIds: [...(next.testSuiteIds ?? base.testSuiteIds ?? [])] } : {}),
     ...(mergeLaneEnvInitConfig(base.envInit, next.envInit) ? { envInit: mergeLaneEnvInitConfig(base.envInit, next.envInit) } : {}),
-  };
-}
-
-function applyLeaseToOverrides(
-  overrides: LaneOverlayOverrides,
-  lease: { status: string; rangeStart: number; rangeEnd: number } | null,
-): LaneOverlayOverrides {
-  if (!lease || lease.status !== "active" || overrides.portRange) {
-    return { ...overrides };
-  }
-  return {
-    ...overrides,
-    portRange: { start: lease.rangeStart, end: lease.rangeEnd },
   };
 }
 
@@ -3588,30 +3525,27 @@ function resolveLaneWorktreePathForSync(args: SyncRemoteCommandServiceArgs, lane
   return null;
 }
 
+/**
+ * Thin sync-host adapter over the shared resolver in the desktop
+ * `lanes/laneEnvInitMerge` module, so the mobile command path and the desktop
+ * hosts resolve a lane's env-init config identically.
+ */
 async function resolveLaneOverlayContext(
   args: SyncRemoteCommandServiceArgs,
   laneId: string,
   options: { includeArchived?: boolean } = {},
 ) {
   const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
-  const lanes = await args.laneService.list({
-    includeStatus: false,
-    ...(options.includeArchived === true ? { includeArchived: true } : {}),
-  });
-  const lane = lanes.find((entry) => entry.id === laneId);
-  if (!lane) throw new Error(`Lane not found: ${laneId}`);
-
-  const config = projectConfigService.getEffective();
-  const overlayOverrides = matchLaneOverlayPolicies(lane, config.laneOverlayPolicies ?? []);
-  const lease = args.portAllocationService?.getLease(lane.id) ?? null;
-  const overrides = applyLeaseToOverrides(overlayOverrides, lease);
-  const envInitConfig = args.laneEnvironmentService?.resolveEnvInitConfig(config.laneEnvInit, overrides);
-
-  return {
-    lane,
-    overrides,
-    envInitConfig,
-  };
+  return await resolveSharedLaneOverlayContext(
+    {
+      laneService: args.laneService,
+      projectConfigService,
+      portAllocationService: args.portAllocationService,
+      laneEnvironmentService: args.laneEnvironmentService,
+    },
+    laneId,
+    options,
+  );
 }
 
 async function deleteLaneWithRuntimeCleanup(
@@ -3619,20 +3553,24 @@ async function deleteLaneWithRuntimeCleanup(
   payload: Record<string, unknown>,
 ): Promise<{ ok: true }> {
   const deleteArgs = parseDeleteLaneArgs(payload);
-  const envContext = args.laneEnvironmentService
-    ? await resolveLaneOverlayContext(args, deleteArgs.laneId, { includeArchived: true }).catch((error: unknown) => {
+  const teardownEnv = await buildLaneEnvTeardown(
+    {
+      laneService: args.laneService,
+      projectConfigService: args.projectConfigService,
+      portAllocationService: args.portAllocationService,
+      laneEnvironmentService: args.laneEnvironmentService,
+    },
+    deleteArgs.laneId,
+    {
+      includeArchived: true,
+      onContextError: (error) => {
         args.logger.warn("sync_remote.lane_env_cleanup.pre_delete_context_failed", {
           laneId: deleteArgs.laneId,
           err: String(error),
         });
-        return null;
-      })
-    : null;
-  const teardownEnv = args.laneEnvironmentService && envContext?.envInitConfig
-    ? async () => {
-        await args.laneEnvironmentService!.cleanupLaneEnvironment(envContext.lane, envContext.envInitConfig);
-      }
-    : undefined;
+      },
+    },
+  );
 
   await args.laneService.delete(deleteArgs, { teardownEnv });
   args.portAllocationService?.release(deleteArgs.laneId);
@@ -3645,11 +3583,15 @@ async function unarchiveLaneWithRuntimeSetup(
 ): Promise<{ ok: true }> {
   const archiveArgs = parseArchiveLaneArgs(payload, "lanes.unarchive");
   const result = await args.laneService.unarchive(archiveArgs);
-  if (!result.worktreeRecreated) {
-    return { ok: true };
-  }
   try {
-    await restoreRecreatedLaneRuntime(args, archiveArgs.laneId);
+    // Archive brought the lane's Docker stack down. A recreated worktree needs
+    // the whole env init; a plain unarchive only needs its services back —
+    // re-copying files or reinstalling would clobber the worktree.
+    if (result.worktreeRecreated) {
+      await restoreRecreatedLaneRuntime(args, archiveArgs.laneId);
+    } else {
+      await restoreUnarchivedLaneDocker(args, archiveArgs.laneId);
+    }
   } catch (error) {
     // Keep the established mobile command response stable. The worktree was
     // restored successfully; environment setup can be retried separately.

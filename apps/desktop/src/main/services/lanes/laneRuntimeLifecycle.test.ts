@@ -4,6 +4,7 @@ import {
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
   restoreRecreatedLaneRuntime,
+  restoreUnarchivedLaneDocker,
   teardownArchivedLaneEnvironment,
 } from "./laneRuntimeLifecycle";
 
@@ -60,6 +61,7 @@ describe("lane runtime lifecycle", () => {
       laneEnvironmentService: {
         resolveEnvInitConfig: (config) => config,
         initLaneEnvironment,
+        cleanupLaneEnvironment: vi.fn(async () => {}),
       },
       portAllocationService: {
         getLease: vi.fn(() => null),
@@ -116,6 +118,54 @@ describe("lane runtime lifecycle", () => {
     }, lane.id);
 
     expect(cleanupLaneEnvironment).not.toHaveBeenCalled();
+  });
+
+  it("brings only the docker step back up on a plain unarchive", async () => {
+    const initLaneEnvironment = vi.fn(async () => {});
+    await restoreUnarchivedLaneDocker({
+      laneService: laneService(),
+      projectConfigService: {
+        getEffective: () => ({
+          laneEnvInit: {
+            docker: { composePath: "docker-compose.yml" },
+            envFiles: [{ source: ".env.template", dest: ".env" }],
+            dependencies: [{ command: ["npm", "install"] }],
+            setupScript: { commands: ["echo hi"] },
+          },
+          laneOverlayPolicies: [],
+        }),
+      },
+      laneEnvironmentService: {
+        resolveEnvInitConfig: (config) => config,
+        initLaneEnvironment,
+        cleanupLaneEnvironment: vi.fn(async () => {}),
+      },
+    }, lane.id);
+
+    // Only docker: re-copying env files, reinstalling dependencies or re-running
+    // the setup script would clobber a worktree that was never removed.
+    expect(initLaneEnvironment).toHaveBeenCalledWith(
+      lane,
+      { docker: { composePath: "docker-compose.yml" } },
+      {},
+    );
+  });
+
+  it("does nothing on a plain unarchive when the lane has no docker services", async () => {
+    const initLaneEnvironment = vi.fn(async () => {});
+    await restoreUnarchivedLaneDocker({
+      laneService: laneService(),
+      projectConfigService: {
+        getEffective: () => ({ laneEnvInit: { envFiles: [] }, laneOverlayPolicies: [] }),
+      },
+      laneEnvironmentService: {
+        resolveEnvInitConfig: (config) => config,
+        initLaneEnvironment,
+        cleanupLaneEnvironment: vi.fn(async () => {}),
+      },
+    }, lane.id);
+
+    expect(initLaneEnvironment).not.toHaveBeenCalled();
   });
 
   it("removes the proxy route and releases an active lease", () => {

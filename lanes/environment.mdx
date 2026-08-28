@@ -59,7 +59,11 @@ For lanes that need more than a running server, ADE can run an **env-init** sequ
   <Accordion title="Reusable templates" icon="copy">
     Rather than configure env init lane by lane, package it once as a **template** — a complete init recipe plus an optional setup script. Manage templates in **Settings → Lane Templates**, set a default, and new lanes pick it up. The setup script can carry platform-specific variants (Unix vs. Windows commands) and expose the primary worktree's path to its commands.
 
-    The setup script runs last, after every other init step, as shell commands in the lane's worktree — so pipes, `&&`, and variables work. Your commands see the lane's runtime variables (`PORT`, `PORT_RANGE_START`, `PORT_RANGE_END`, `HOSTNAME`, `PROXY_HOSTNAME`, `LANE_NAME`, `LANE_SLUG`, `LANE_BRANCH`, `LANE_WORKTREE`), plus `$PRIMARY_WORKTREE_PATH` when **Expose primary lane path** is on. Commands run in order and stop at the first one that fails; a script file that is configured but missing counts as a failure.
+    The setup script runs last, after every other init step, in the lane's worktree. Commands run as shell commands — so pipes, `&&`, and variables work. Your commands see the lane's runtime variables (`PORT`, `PORT_RANGE_START`, `PORT_RANGE_END`, `HOSTNAME`, `PROXY_HOSTNAME`, `LANE_NAME`, `LANE_SLUG`, `LANE_BRANCH`, `LANE_WORKTREE`), plus `$PRIMARY_WORKTREE_PATH` when **Pass the main folder path** is on. Commands run in order and stop at the first one that fails; a script file that is configured but missing counts as a failure.
+
+    A script *file* is run directly rather than through a shell, so on macOS and Linux it has to be executable (`chmod +x`) and start with a shebang line such as `#!/bin/sh`. On Windows, `.ps1` files run under PowerShell.
+
+    Setup scripts run shell commands, so they need the project's shared configuration to be trusted. If it isn't, the setup step fails and asks you to trust it in Settings first.
   </Accordion>
   <Accordion title="Where to find these settings" icon="sliders">
     - **Settings → Proxy & Preview** — start/stop the proxy and configure OAuth redirect.
