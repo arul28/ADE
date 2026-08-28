@@ -266,10 +266,11 @@ export function createLaneEnvironmentService({
     progress.overallStatus = "failed";
     progress.completedAt = new Date().toISOString();
     progressMap.set(laneId, progress);
-    // The steps after the failing one never ran, so the worktree is
-    // half-initialized: a later unarchive must re-run the whole sequence
-    // rather than assume only Docker is missing.
-    markInitIncomplete(laneId);
+    // Only a run that never reached some of its steps left the worktree
+    // half-built. A failure on the LAST step still wrote everything before
+    // it — marking that incomplete would make a later unarchive re-template
+    // env files and re-copy paths over whatever the user has since edited.
+    if (progress.steps.some((step) => step.status === "pending")) markInitIncomplete(laneId);
     broadcastEvent({ type: "lane-env-init", progress });
   }
 

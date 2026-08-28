@@ -722,6 +722,48 @@ describe("laneEnvironmentService", () => {
       }
     });
 
+    it("marks the init incomplete when a failure leaves later steps unrun", async () => {
+      const service = createService();
+      const worktreePath = path.join(projectRoot, "wt-early-fail");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, "copy-me.txt"), "payload");
+      const lane = makeLane({ id: "lane-early-fail", worktreePath });
+
+      // env-files runs first and fails on the escaping source; copy-paths
+      // never runs, so the worktree really is half-built.
+      const progress = await service.initLaneEnvironment(
+        lane,
+        {
+          envFiles: [{ source: "../outside.env", dest: ".env" }],
+          copyPaths: [{ source: "copy-me.txt", dest: "copied.txt" }],
+        },
+        {},
+      );
+
+      expect(progress.overallStatus).toBe("failed");
+      expect(progress.steps.find((step) => step.kind === "copy-paths")?.status).toBe("pending");
+      expect(service.wasLastInitIncomplete(lane.id)).toBe(true);
+    });
+
+    it("does not mark the init incomplete when only the last step fails", async () => {
+      const service = createService();
+      const worktreePath = path.join(projectRoot, "wt-last-fail");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      const lane = makeLane({ id: "lane-last-fail", worktreePath });
+
+      // A single planned step that fails: everything before it (nothing)
+      // completed, so unarchive must NOT re-template the worktree.
+      const progress = await service.initLaneEnvironment(
+        lane,
+        { copyPaths: [{ source: "../outside.txt", dest: "copied.txt" }] },
+        {},
+      );
+
+      expect(progress.overallStatus).toBe("failed");
+      expect(progress.steps.some((step) => step.status === "pending")).toBe(false);
+      expect(service.wasLastInitIncomplete(lane.id)).toBe(false);
+    });
+
     it("runs every step when no cleanup is queued", async () => {
       const { composePath, cleanup: removeStub } = installSlowDockerStub();
       try {
