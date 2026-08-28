@@ -2192,6 +2192,12 @@ afterEach(() => {
   mockState.droidPromptError = null;
   vi.useRealTimers();
   vi.restoreAllMocks();
+  // `vi.restoreAllMocks()` does not reset factory-created `vi.fn` mocks.
+  // Reinstall the default so mode-specific approval tests cannot leak it.
+  vi.mocked(mapPermissionToCodex).mockImplementation(() => ({
+    approvalPolicy: "on-request",
+    sandbox: "read-only",
+  } as const));
   if (ORIGINAL_CURSOR_API_KEY === undefined) {
     delete process.env.CURSOR_API_KEY;
   } else {
@@ -16024,11 +16030,11 @@ describe("createAgentChatService", () => {
 
       const result = await service.regenerateSessionMetadata({
         sessionId: session.id,
-        fields: ["title"],
+        fields: ["title", "statusLine"],
       });
 
       expect(result.applied).toEqual(["title"]);
-      expect(result.skipped).toEqual([]);
+      expect(result.skipped).toEqual(["statusLine"]);
       expect(sessionService.get(session.id)?.title).toBe(generatedMetadata.chatTitle);
       expect(sessionService.setStatusNote).not.toHaveBeenCalled();
     });

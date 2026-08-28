@@ -6882,16 +6882,20 @@ const adeBridge = {
       args: AgentChatRegenerateSessionMetadataArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<AgentChatRegenerateSessionMetadataResult> => {
-      agentChatSummaryCache.clear();
-      const result = await callPinnedOrBoundRuntimeActionOr<AgentChatRegenerateSessionMetadataResult>(
-        pin,
-        "chat",
-        "regenerateSessionMetadata",
-        { args },
-        () => ipcRenderer.invoke(IPC.agentChatRegenerateSessionMetadata, args),
+      return clearAround(
+        () => {
+          clearGitReadCaches();
+          agentChatSummaryCache.clear();
+        },
+        () =>
+          callPinnedOrBoundRuntimeActionOr<AgentChatRegenerateSessionMetadataResult>(
+            pin,
+            "chat",
+            "regenerateSessionMetadata",
+            { args },
+            () => ipcRenderer.invoke(IPC.agentChatRegenerateSessionMetadata, args),
+          ),
       );
-      agentChatSummaryCache.clear();
-      return result;
     },
     createScheduledWork: async (
       args: AgentChatCreateScheduledWorkArgs,
