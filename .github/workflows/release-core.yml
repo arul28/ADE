@@ -747,6 +747,7 @@ jobs:
             grep -E "$leak_pattern" "$archive_listing" | head -20 || true
             exit 1
           fi
+          node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$archive" --target "${{ matrix.target }}"
 
       - name: Assemble signed Windows standalone runtime bundle
         if: ${{ matrix.target == 'win32-x64' && (vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof) }}

@@ -232,6 +232,9 @@ async function assertBundledCrsqliteRuntime(unpackedPath, description, expectedA
     const dylibPath = path.join(unpackedPath, "vendor", "crsqlite", `darwin-${arch}`, "crsqlite.dylib");
     await assertPathExists(dylibPath, `bundled cr-sqlite runtime for ${description}`);
   }
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-arm64"), "Linux arm64 cr-sqlite payload in macOS package");
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-x64"), "Linux x64 cr-sqlite payload in macOS package");
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "win32-x64"), "Windows cr-sqlite payload in macOS package");
 }
 
 async function assertBundledAttentionNotch(resourcesPath, description) {

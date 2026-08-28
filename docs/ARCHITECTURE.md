@@ -493,7 +493,7 @@ ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with 
 - **Database file**: `<project_root>/.ade/ade.db`.
 - **WAL mode**: `openRawDatabase` sets `PRAGMA journal_mode = WAL` + `PRAGMA synchronous = NORMAL` at open. `flushNow()` forces pending WAL frames onto the main file with a `wal_checkpoint(TRUNCATE)` (used before shutdown and after a vacuum).
 - **CRRs**: eligible tables are marked via `SELECT crsql_as_crr('table_name')` at startup. Virtual/internal tables (`sqlite_%`, `crsql_%`) are excluded. Marking is dynamic — new tables are picked up automatically unless excluded.
-- **Native extension payloads**: macOS loads `crsqlite.dylib` and Windows x64 loads the vendored `crsqlite.dll`. **No extension is vendored for Linux**, so a Linux host is a remote runtime target only — it can run work driven by a macOS or Windows desktop, but it is not a sync peer and holds no CRR state. Its brain logs `db.crsqlite_unavailable` and disables CRR triggers at startup. Windows package validation loads the installed DLL into an in-memory `node:sqlite` database, converts a table to a CRR, writes one row, and requires at least one `crsql_changes` record. A missing/unloadable extension disables device sync and is surfaced in Connections with reinstall/restart guidance instead of remaining a log-only warning.
+- **Native extension payloads**: macOS loads `crsqlite.dylib`, Windows x64 loads `crsqlite.dll`, and Linux x64/arm64 load `crsqlite.so`. All five published runtime targets vendor the matching extension so `install.sh` / `install.ps1` + `ade connect` produces a first-class sync peer. A missing/unloadable extension disables device sync (the brain logs `db.crsqlite_unavailable` and skips CRR triggers) and is surfaced in Connections with reinstall/restart guidance instead of remaining a log-only warning. Windows package validation loads the installed DLL into an in-memory `node:sqlite` database, converts a table to a CRR, writes one row, and requires at least one `crsql_changes` record; Linux and macOS runtime builds run the same probe against the native tarball.
 - **Sync API** (`AdeDb.sync`): `getSiteId()`, `getDbVersion()`, `exportChangesSince(version, { maxRows?, throughDbVersion?, excludeTables?, rejectOversizedVersionGroup? })`, `applyChanges(changes)`. Used by the sync transport.
 - **Merge semantics**: last-writer-wins per column with Lamport timestamps; each device has a site ID at `.ade/secrets/sync-site-id`.
 - **Engineering rule under CRR retrofit**: app-level `ON CONFLICT(...)` upserts must target PK only; secondary UNIQUE constraints do not survive CRR marking.
@@ -1810,6 +1810,8 @@ ADE/
 ├── apps/desktop/vendor/crsqlite/
 │   ├── darwin-arm64/
 │   ├── darwin-x64/
+│   ├── linux-arm64/
+│   ├── linux-x64/
 │   └── win32-x64/      # Prebuilt cr-sqlite native binaries per platform
 ├── .github/workflows/
 │   ├── ci.yml
