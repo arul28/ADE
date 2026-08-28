@@ -146,6 +146,7 @@ import {
   selectActiveProjectRoot,
   useAppStore,
   type AppStoreApi,
+  type WorkSidebarTab,
 } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/filesTreeCache";
@@ -155,8 +156,10 @@ import {
   ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   ADE_OPEN_DEEPLINK_EVENT,
+  ADE_OPEN_PLUGIN_WORK_RAIL_PANE_EVENT,
   type NavigateTargetDetail,
   type OpenDeeplinkDetail,
+  type OpenPluginWorkRailPaneDetail,
 } from "../../lib/openExternal";
 import {
   githubRepoSlugsEqual,
@@ -445,6 +448,34 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
       window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, revealWorkBrowser);
       unsubscribeBrowserEvents?.();
     };
+  }, [active, isWorkRoute, navigate, projectRoot, setWorkViewState]);
+
+  /**
+   * A plugin's `{navigate}` that resolved to the Work tools rail.
+   *
+   * The same seam the browser reveal above crosses, for the same reason: the
+   * rail's selected tab is project-scoped view state, and the dispatcher that
+   * honours a plugin's answer (`sockets/pluginActionDispatch`) is a plain
+   * function with no store context. Only the ACTIVE surface acts on it, so two
+   * open project tabs do not both move their rail.
+   *
+   * `/work` is entered when the reader is elsewhere, because the rail only
+   * exists there — but this is still the placement that does not cost them the
+   * conversation, which is the whole point: a press inside a chat keeps the chat.
+   */
+  React.useEffect(() => {
+    if (!active || !projectRoot) return;
+    const onRevealPane = (event: Event) => {
+      const detail = (event as CustomEvent<OpenPluginWorkRailPaneDetail>).detail;
+      if (!detail?.slotId) return;
+      setWorkViewState(projectRoot, {
+        workSidebarOpen: true,
+        workSidebarTab: detail.slotId as WorkSidebarTab,
+      });
+      if (!isWorkRoute) navigate("/work");
+    };
+    window.addEventListener(ADE_OPEN_PLUGIN_WORK_RAIL_PANE_EVENT, onRevealPane);
+    return () => window.removeEventListener(ADE_OPEN_PLUGIN_WORK_RAIL_PANE_EVENT, onRevealPane);
   }, [active, isWorkRoute, navigate, projectRoot, setWorkViewState]);
 
   React.useEffect(() => {

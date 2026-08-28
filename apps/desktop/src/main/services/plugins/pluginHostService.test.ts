@@ -1357,6 +1357,50 @@ describe("plugin.invoke honours disabledContributions", () => {
   });
 });
 
+/**
+ * The name of the field, which two different files spell two different ways.
+ *
+ * A manifest socket names its handler `actionId`. `plugin.invoke` takes
+ * `action`. So an author reading their own `plugin.json` and calling
+ * `ade actions run plugin.invoke --input-json '{"pluginId":"hn","actionId":"openStories"}'`
+ * got `"action" is required.` back — an error naming the field they had not
+ * used and saying nothing about the one they had.
+ */
+describe("plugin.invoke takes the handler under either spelling", () => {
+  afterEach(closeScratch);
+
+  it("accepts actionId as an alias for action", async () => {
+    const { plugins } = await hostWithFixture({});
+    await expect(plugins.invoke({ pluginId: "hello-plugin", actionId: "syncNow" } as never))
+      .resolves.toBeNull();
+  });
+
+  it("prefers action when a caller sends both", async () => {
+    // Not an error: the two are one field, and the canonical name wins so a
+    // wrapper that fills in the alias cannot override its own caller.
+    const { plugins } = await hostWithFixture({});
+    await expect(plugins.invoke(
+      { pluginId: "hello-plugin", action: "syncNow", actionId: "ade:chat.turn" } as never,
+    )).resolves.toBeNull();
+  });
+
+  it("still refuses a reserved name arriving under the alias", async () => {
+    // The alias is a spelling, not a second door: the `ade:` prefix guard has to
+    // see whatever the caller actually named.
+    const { plugins } = await hostWithFixture({});
+    await expect(plugins.invoke({ pluginId: "hello-plugin", actionId: "ade:chat.turn" } as never))
+      .rejects.toMatchObject({ code: "not_permitted" });
+  });
+
+  it("names both spellings when neither arrived", async () => {
+    const { plugins } = await hostWithFixture({});
+    await expect(plugins.invoke({ pluginId: "hello-plugin" } as never))
+      .rejects.toMatchObject({ message: expect.stringContaining("actionId") });
+    await expect(plugins.invoke({ pluginId: "hello-plugin", action: "   " } as never))
+      .rejects.toMatchObject({ message: expect.stringContaining('"action"') });
+  });
+});
+
 describe("uninstall sweeps a plugin's schedules", () => {
   afterEach(closeScratch);
 

@@ -14,9 +14,9 @@ import {
   COVERAGE_LABEL,
   RailSection,
 } from "./marketplaceUi";
+import { describePluginContributionPlacement } from "../../../shared/plugins/installDisclosure";
 import {
   PLUGIN_STORAGE_REASSURANCE,
-  SURFACE_LABELS,
   describePluginStorage,
   type MachineCoverageRow,
   type MarketplaceListing,
@@ -185,7 +185,7 @@ export function ContributionsRail({
               pluginId={pluginId}
               socketId={socket.id}
               label={socket.label ?? socket.id}
-              surface={SURFACE_LABELS[socket.surface]}
+              placement={describePluginContributionPlacement(socket.socket, socket.surface)}
               initiallyEnabled={!disabledContributions.includes(socket.id)}
               onError={onError}
             />
@@ -215,18 +215,29 @@ export function ContributionsRail({
   );
 }
 
+/**
+ * One switch, and the sentence that says what it turns off.
+ *
+ * `placement` is the whole fix. The row used to print the plugin author's label
+ * over "in <surface>", which for a plugin with two additions to one tab is the
+ * same two lines twice: HN's chat-header button and its Work tools pane both
+ * read "HN · in Work", so the switches were indistinguishable until you flipped
+ * one. Naming the KIND is what separates them, and it is on the `aria-label`
+ * too — a screen reader had exactly the same problem.
+ */
 function ContributionToggle({
   pluginId,
   socketId,
   label,
-  surface,
+  placement,
   initiallyEnabled,
   onError,
 }: {
   pluginId: string;
   socketId: string;
   label: string;
-  surface: string;
+  /** "Chat header button in Work" — the kind and the surface, already joined. */
+  placement: string;
   initiallyEnabled: boolean;
   onError: (message: string) => void;
 }) {
@@ -238,13 +249,13 @@ function ContributionToggle({
     <li style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
       <span style={{ display: "grid", gap: 1, flex: 1, minWidth: 0 }}>
         <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textSecondary }}>{label}</span>
-        <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim }}>in {surface}</span>
+        <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim }}>{placement}</span>
       </span>
       <button
         type="button"
         role="switch"
         aria-checked={enabled}
-        aria-label={`${label} in ${surface}`}
+        aria-label={`${label} — ${placement}`}
         onClick={() => {
           const next = !enabled;
           setEnabled(next);

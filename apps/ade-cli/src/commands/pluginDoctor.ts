@@ -104,6 +104,7 @@ export type PluginDoctorLayerKey =
   | "lastRun"
   | "ingress"
   | "panels"
+  | "panelReach"
   | "synced"
   | "skills"
   | "network"
@@ -662,6 +663,87 @@ function panelsLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   };
 }
 
+/**
+ * Can a button that opens a panel actually SHOW one where it was pressed?
+ *
+ * The rung the HN dogfood run needed. That plugin declared a chat-header button
+ * whose handler returns `{navigate: {panelId}}`, one panel, and — at first —
+ * nowhere for a panel to appear. Every other rung was ✓: the source parsed, the
+ * plugin was installed and running, the button drew, the action fired, the panel
+ * published. The press still did nothing a reader could see, because a
+ * `chat-header-action` INVOKES a handler and draws no panel in place, and the
+ * plugin had declared neither a tab nor a Work tools pane for the navigation to
+ * land in.
+ *
+ * Decided from the manifest alone, because that is the whole point: the doctor
+ * cannot run a handler to see whether it navigates, but it can see that this
+ * plugin's only entry points are buttons and its only output is a panel with
+ * nowhere to go. The two fixes are named on the line, because "unreachable" with
+ * no next step is the kind of diagnosis that sends an author back to their own
+ * HTML.
+ *
+ * `na` — not ✗ — for a plugin whose panels are reachable another way. This rung
+ * answers one question and a plugin with a tab has already answered it.
+ */
+function panelReachLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
+  const label = "Panel reach";
+  const manifest = snapshot.manifest;
+  const panels = manifest?.panels ?? [];
+  if (!manifest || panels.length === 0) {
+    return { key: "panelReach", label, state: "na", detail: "this plugin draws no panels" };
+  }
+  // Deliberately `chat-header-action` alone, and not every socket that invokes
+  // without drawing. A composer button's canonical uses are about the DRAFT —
+  // record this, transcribe that — so a composer button beside an unplaced panel
+  // is an ordinary plugin, not a mistake. A chat header button's canonical uses
+  // are "summarize this conversation, hand it off, file it", which end in
+  // something to look at; that is the one shape where a panel with nowhere to go
+  // is evidence rather than a guess, and a rung that guesses is worse than no
+  // rung at all on a ladder whose whole job is to be scanned for the first ✗.
+  const chatButtons = manifest.sockets.filter(
+    (socket) => socket.socket === "chat-header-action",
+  );
+  if (chatButtons.length === 0) {
+    return {
+      key: "panelReach",
+      label,
+      state: "na",
+      detail: "no chat header button here, so nothing depends on where a navigate lands",
+    };
+  }
+  // Everywhere a panel of this plugin can actually be drawn.
+  const tabs = railSurfaces(manifest);
+  const panes = manifest.sockets.filter(
+    (socket) => socket.socket === "work-rail-pane" || socket.socket === "drawer-tab",
+  );
+  if (tabs.length === 0 && panes.length === 0) {
+    return {
+      key: "panelReach",
+      label,
+      state: "no",
+      detail: `a chat-header-action invokes an action and draws no panel in place`
+        + ` (${plural(chatButtons.length, "declared")}), and this plugin declares no tab and no`
+        + " Work tools pane — so a `{navigate}` from it has nowhere to land."
+        + " Add a `work-rail-pane` socket for the panel to open beside the chat, or a `tab`"
+        + " surface to open it as a page",
+    };
+  }
+  const places: string[] = [];
+  if (panes.length > 0) places.push(plural(panes.length, "pane"));
+  if (tabs.length > 0) places.push(plural(tabs.length, "tab"));
+  // Named in the order the placement rule prefers them: a press inside a chat
+  // opens the pane where one exists, and falls back to the tab where none does.
+  const note = panes.length > 0
+    ? "a navigate from a chat button opens beside the conversation"
+    : "a navigate from a chat button opens the tab, taking the reader off the chat";
+  return {
+    key: "panelReach",
+    label,
+    state: "ok",
+    detail: `${places.join(", ")} — ${note}`,
+  };
+}
+
 function syncedLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   const label = "In this project";
   if (!snapshot.live) return { key: "synced", label, state: "unknown", detail: UNREACHABLE };
@@ -854,6 +936,7 @@ export function buildPluginDoctorReport(
       lastRunLayer(snapshot, actions, now),
       ingressLayer(snapshot, now),
       panelsLayer(snapshot),
+      panelReachLayer(snapshot),
       syncedLayer(snapshot),
       skillsLayer(snapshot),
       // Last, because these are the rungs about what the plugin reaches beyond

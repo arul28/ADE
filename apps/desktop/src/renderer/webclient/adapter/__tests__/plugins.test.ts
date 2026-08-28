@@ -170,6 +170,7 @@ describe("web plugin namespace", () => {
       contributions: false,
       usage: false,
       inspect: false,
+      webhookIngress: false,
     });
     expect(pluginsAvailable()).toBe(true);
   });

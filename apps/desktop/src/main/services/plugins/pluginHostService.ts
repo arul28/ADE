@@ -41,6 +41,8 @@ import {
   isPluginEventName,
   isPluginPushEventName,
   isPluginRuntimeHookName,
+  pluginInvokeActionMissingMessage,
+  readPluginInvokeAction,
   PluginSdkError,
   type PluginActionInvokeRecord,
   type PluginAudioClip,
@@ -1431,9 +1433,11 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         if (typeof pluginId !== "string" || !pluginId) {
           throw new PluginSdkError("invalid_args", '"pluginId" is required.');
         }
-        const action = invokeArgs?.action;
-        if (typeof action !== "string" || !action) {
-          throw new PluginSdkError("invalid_args", '"action" is required.');
+        // Either spelling: the manifest calls a handler `actionId`, so that is
+        // what an author types here, and the refusal used to name only `action`.
+        const action = readPluginInvokeAction(invokeArgs);
+        if (!action) {
+          throw new PluginSdkError("invalid_args", pluginInvokeActionMissingMessage());
         }
         // The host's own chat delivery rides this same frame under an `ade:`
         // action name, and the name is the ONLY thing that tells the two apart

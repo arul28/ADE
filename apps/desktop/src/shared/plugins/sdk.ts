@@ -29,7 +29,7 @@
  * for it, and the data-owning machine computes every contribution.
  */
 
-import { isRecord } from "./parse";
+import { isRecord, oneOf } from "./parse";
 import { isValidPluginManifestIdentifier } from "./manifest";
 import type {
   PluginManifest,
@@ -1356,7 +1356,37 @@ export type PluginActionNavigation = {
    * that panel then dispatches. See `./vocabulary.ts`.
    */
   context?: Record<string, unknown>;
+  /**
+   * Where the panel should open. Absent means "wherever this client would put
+   * it", which is the value almost every plugin should send.
+   *
+   * It exists because the default is not one place. A button pressed inside a
+   * conversation asked for the panel BESIDE the conversation, and a plugin
+   * cannot know whether the client it is talking to has such a place: the
+   * desktop's Work tools rail is not a thing iOS or the terminal has. So the
+   * client decides — a chat-scoped press opens the plugin's Work pane where the
+   * plugin declares one — and this field is the override for the two cases where
+   * the plugin genuinely knows better: `"tab"` for a panel too large to sit in a
+   * rail, `"tools-pane"` for one that must not take the whole window.
+   *
+   * A client with no such place ignores it and opens the panel the one way it
+   * has, which is why an unknown value drops rather than refusing the
+   * navigation.
+   */
+  target?: PluginActionNavigationTarget;
 };
+
+/**
+ * The two places a client may be asked to put a navigated-to panel.
+ *
+ * Deliberately not a client-specific list. `tools-pane` names the idea of a
+ * panel beside the thing you were doing — the desktop's Work rail today — and a
+ * client that grows its own version of that renders it there without any plugin
+ * changing a manifest.
+ */
+export const PLUGIN_ACTION_NAVIGATION_TARGETS = ["tab", "tools-pane"] as const;
+
+export type PluginActionNavigationTarget = (typeof PLUGIN_ACTION_NAVIGATION_TARGETS)[number];
 
 /**
  * Read a navigation request out of whatever an action returned.
@@ -1373,18 +1403,26 @@ export function readPluginActionNavigation(result: unknown): PluginActionNavigat
   if (!isRecord(navigate)) return null;
   const panelId = navigate.panelId;
   if (typeof panelId !== "string" || !isValidPluginManifestIdentifier(panelId)) return null;
+  // Tolerant like the context below, and for a stronger reason: `target` is a
+  // preference, not an address. A value this build has never heard of drops and
+  // the client falls back to its own default, so a plugin naming a place a
+  // future ADE has still lands the reader on the panel.
+  const target = oneOf(navigate.target, PLUGIN_ACTION_NAVIGATION_TARGETS);
+  const placement = target ? { target } : {};
   const context = navigate.context;
-  if (!isRecord(context)) return { panelId };
+  if (!isRecord(context)) return { panelId, ...placement };
   let json: string;
   try {
     json = JSON.stringify(context) ?? "";
   } catch {
-    return { panelId };
+    return { panelId, ...placement };
   }
   // Over the ceiling drops the context and keeps the navigation: the user
   // pressed a button and should still land where it sent them.
-  if (!json || pluginUtf8ByteLength(json) > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return { panelId };
-  return { panelId, context };
+  if (!json || pluginUtf8ByteLength(json) > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) {
+    return { panelId, ...placement };
+  }
+  return { panelId, context, ...placement };
 }
 
 // ---------------------------------------------------------------------------
@@ -2670,6 +2708,28 @@ export type PluginUsageSummary = {
  * compile-time allowlist, so per-plugin domains are impossible by construction.
  * See D1 in the plugin platform design.
  */
+/**
+ * Which handler a `plugin.invoke` call named, under either spelling.
+ *
+ * Null when neither is a usable string, and the caller turns that into
+ * {@link pluginInvokeActionMissingMessage} — which names BOTH, because an error
+ * that mentions only the field you did not use tells you nothing about the one
+ * you did.
+ */
+export function readPluginInvokeAction(args: unknown): string | null {
+  if (!isRecord(args)) return null;
+  for (const key of ["action", "actionId"]) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim().length > 0) return value;
+  }
+  return null;
+}
+
+/** The refusal, naming both spellings so either one gets the reader unstuck. */
+export function pluginInvokeActionMissingMessage(): string {
+  return '"action" is required (its alias "actionId" is accepted too).';
+}
+
 export type PluginDomainService = {
   /**
    * Call a plugin's own named handler. Treated as MUTATING by the renderer.
@@ -2683,6 +2743,18 @@ export type PluginDomainService = {
   invoke(args: {
     pluginId: string;
     action: string;
+    /**
+     * The same field under the name the manifest uses for it.
+     *
+     * A `sockets[]` entry names its handler `actionId`, so that is the spelling
+     * an author reads all day and the one they type into `plugin.invoke` —
+     * which then refused with `"action" is required.` while the argument they
+     * had passed sat right there. Accepted as an alias rather than renamed:
+     * `action` is what every caller in the app sends and what the wire frame
+     * carries, and two spellings of one field are cheaper than a migration of
+     * every one of them. {@link readPluginInvokeAction} is the one reader.
+     */
+    actionId?: string;
     args?: Record<string, unknown>;
     argv?: string[];
     timeoutMs?: number;

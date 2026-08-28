@@ -148,6 +148,36 @@ describe("plugin tab page", () => {
 
     expect(screen.queryByText("Not installed here")).toBeNull();
   });
+
+  /**
+   * The restored-route case, which is what made `/plugin` a storable root
+   * questionable in the first place.
+   *
+   * A project tab remembers its last route (`app/projectRouteStorage.ts`) and
+   * replays it on the next launch, unvalidated — by design, because the registry
+   * has not resolved when the replay happens. So the route can name a plugin the
+   * reader has since uninstalled or switched off, arriving with no `?panel=`
+   * because that is how the rail's own click writes it.
+   *
+   * Both must state the case. A blank tab on launch is the failure this whole
+   * round is about, and it is also what the compiled surfaces answer with
+   * (`BuiltinSurfaceUnavailable`), so the two agree.
+   */
+  it("states the case when a restored route names a plugin that is gone", () => {
+    registry.plugins = [];
+    mount("");
+
+    expect(screen.getByText("Not installed here")).toBeTruthy();
+    expect(screen.queryByTestId("panel-host")).toBeNull();
+  });
+
+  it("states the case when a restored route names a plugin that is switched off", () => {
+    registry.plugins = [installed({ enabled: false })];
+    mount("");
+
+    expect(screen.getByText("Turned off")).toBeTruthy();
+    expect(screen.queryByTestId("panel-host")).toBeNull();
+  });
 });
 
 /**

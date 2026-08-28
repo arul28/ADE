@@ -39,6 +39,36 @@ export type NavigateTargetDetail = {
   target: AppNavigationTarget;
 };
 
+// Reveal one plugin's pane in the Work tools rail — the placement a `{navigate}`
+// from a chat-scoped socket resolves to. Deliberately an event rather than a
+// store write: the rail's selected tab lives on the PROJECT-scoped app store,
+// which only a mounted project surface can address, and the dispatcher that
+// honours a plugin's answer is a plain function with no React context. The Work
+// browser reveal (`ADE_OPEN_BUILT_IN_BROWSER_EVENT`) crosses the same seam the
+// same way.
+export const ADE_OPEN_PLUGIN_WORK_RAIL_PANE_EVENT = "ade:open-plugin-work-rail-pane";
+
+export type OpenPluginWorkRailPaneDetail = {
+  pluginId: string;
+  panelId: string;
+  /** `plugin:<pluginId>:<panelId>` — already encoded, so no consumer re-derives it. */
+  slotId: string;
+};
+
+export function revealPluginWorkRailPane(detail: OpenPluginWorkRailPaneDetail): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent<OpenPluginWorkRailPaneDetail>(
+        ADE_OPEN_PLUGIN_WORK_RAIL_PANE_EVENT,
+        { detail },
+      ),
+    );
+  } catch {
+    /* no-op */
+  }
+}
+
 export function navigateToAppTarget(target: AppNavigationTarget | null | undefined): void {
   if (!target || typeof window === "undefined") return;
   try {

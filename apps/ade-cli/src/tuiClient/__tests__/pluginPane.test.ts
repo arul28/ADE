@@ -23,7 +23,10 @@ import {
 } from "../pluginPane";
 import { defaultPluginPanelId, resolvePluginByName } from "../adeApi";
 import { PLUGIN_FIXTURES } from "../../../../desktop/src/renderer/components/plugins/pluginFixtures";
-import type { PluginSummary } from "../../../../desktop/src/shared/plugins/sdk";
+import {
+  readPluginActionNavigation,
+  type PluginSummary,
+} from "../../../../desktop/src/shared/plugins/sdk";
 import type { VocabField } from "../../../../desktop/src/shared/plugins/vocabulary";
 
 const FALLBACK = { title: "Graph", text: "Open ADE to see the graph.", deeplink: "ade://lane/lane-1" };
@@ -907,5 +910,30 @@ describe("plugin lookup", () => {
       surfaces: [{ kind: "tab", id: "graph", title: "Graph", panelId: "overview" }],
     }))).toBe("overview");
     expect(defaultPluginPanelId(summary({ surfaces: [] }))).toBe("main");
+  });
+});
+
+/**
+ * A `navigate` that names a placement the terminal has no places for.
+ *
+ * `target` chooses between the desktop's plugin tab and its Work tools rail.
+ * `ade code` has one plugin pane and opens the panel there whatever the answer
+ * says, so the contract is that the field is read and then ignored — never that
+ * it takes the navigation with it. The three call sites in `app.tsx` read
+ * `panelId` and `context` off this reader and nothing else, which is what makes
+ * that true; this pins the reader half.
+ */
+describe("plugin pane navigation from an action", () => {
+  it("keeps the panel whatever placement the plugin asked for", () => {
+    for (const target of ["tools-pane", "tab", "invented-later", 7, null]) {
+      expect(readPluginActionNavigation({ navigate: { panelId: "main", target } }))
+        .toMatchObject({ panelId: "main" });
+    }
+  });
+
+  it("still carries the context the pane loads with", () => {
+    expect(readPluginActionNavigation({
+      navigate: { panelId: "detail", target: "tools-pane", context: { issue: "ISS-14" } },
+    })).toMatchObject({ panelId: "detail", context: { issue: "ISS-14" } });
   });
 });
