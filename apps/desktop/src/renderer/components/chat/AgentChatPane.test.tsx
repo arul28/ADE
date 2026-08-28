@@ -1139,6 +1139,70 @@ function seedRemoteChatStore() {
   return rootPath;
 }
 
+describe("AgentChatPane attachment drop target", () => {
+  it("routes a file dropped on the chat header through the composer pipeline", async () => {
+    const session = buildSession("session-drop");
+    const mocks = installAdeMocks({ sessions: [session] });
+    seedDrawerStore();
+    const { container } = renderPane(session);
+
+    const shellHeader = await waitFor(() => {
+      const header = container.querySelector<HTMLElement>(".ade-chat-shell-header");
+      if (!header) throw new Error("chat header not rendered");
+      return header;
+    });
+    const file = new File([new Uint8Array([1, 2, 3])], "design.png", { type: "image/png" });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([1, 2, 3]).buffer),
+    });
+    const dataTransfer = {
+      files: [file],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+
+    fireEvent.dragOver(shellHeader, { dataTransfer });
+    expect(screen.getByText("Drop files to attach")).toBeTruthy();
+
+    fireEvent.drop(shellHeader, { dataTransfer });
+
+    await waitFor(() => expect(mocks.saveTempAttachment).toHaveBeenCalledWith({
+      data: "AQID",
+      filename: "design.png",
+    }, LOCAL_PROJECT_BINDING));
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
+  });
+
+  it("does not duplicate a drop already handled by the composer", async () => {
+    const session = buildSession("session-drop-composer");
+    const mocks = installAdeMocks({ sessions: [session] });
+    seedDrawerStore();
+    renderPane(session);
+
+    const composerDropTarget = await waitFor(() => screen.getByPlaceholderText("Type to vibecode..."));
+    const file = new File([new Uint8Array([4, 5, 6])], "composer-drop.txt", { type: "text/plain" });
+    Object.defineProperty(file, "arrayBuffer", {
+      configurable: true,
+      value: vi.fn(async () => new Uint8Array([4, 5, 6]).buffer),
+    });
+    const dataTransfer = {
+      files: [file],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+
+    fireEvent.drop(composerDropTarget, { dataTransfer });
+
+    await waitFor(() => expect(mocks.saveTempAttachment).toHaveBeenCalledWith({
+      data: "BAUG",
+      filename: "composer-drop.txt",
+    }, LOCAL_PROJECT_BINDING));
+    expect(mocks.saveTempAttachment).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
+  });
+});
+
 function renderDrawerPane() {
   const session = buildSession("session-1", { title: "Drawer audit chat" });
   installAdeMocks({ sessions: [session] });
@@ -3291,10 +3355,8 @@ describe("AgentChatPane submit recovery", () => {
 
     renderTabbedPane(session);
 
-    await waitFor(() => {
-      expect(screen.queryByLabelText("Agent working")).toBeNull();
-    });
-    expect(screen.getByLabelText("Ready for next prompt")).toBeTruthy();
+    expect(await screen.findByLabelText("Ready for next prompt")).toBeTruthy();
+    expect(screen.queryByLabelText("Agent working")).toBeNull();
   });
 
   it("keeps the draft cleared after send succeeds even if session refresh fails", async () => {

@@ -54,6 +54,11 @@ import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
+import {
+  convertHeicBufferToJpeg,
+  HeicAttachmentConversionError,
+} from "../chat/heicAttachmentConverter";
+import type { ConvertImageToJpegResult } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
 import { detectCliAuthStatuses } from "../ai/authDetector";
@@ -3878,6 +3883,49 @@ export function registerIpc({
       mimeType: "image/png",
     };
   });
+
+  ipcMain.handle(
+    IPC.appConvertImageToJpeg,
+    async (
+      event,
+      arg: { data?: string; filename?: string; mimeType?: string | null },
+    ): Promise<ConvertImageToJpegResult> => {
+      assertTrustedAppControlSender(event, IPC.appConvertImageToJpeg);
+      if (typeof arg?.data !== "string" || !arg.data.length) {
+        throw new Error("Image data is required.");
+      }
+      const filename = typeof arg.filename === "string" && arg.filename.trim()
+        ? arg.filename
+        : "photo.heic";
+      const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
+      if (arg.data.length > maxEncodedLength) {
+        throw new Error("Temporary attachments must be 10 MB or smaller.");
+      }
+      const content = Buffer.from(arg.data, "base64");
+      if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
+        throw new Error("Temporary attachments must be 10 MB or smaller.");
+      }
+      try {
+        const converted = await convertHeicBufferToJpeg(
+          content,
+          filename,
+          arg.mimeType,
+          { tempRoot: app.getPath("temp") },
+        );
+        return {
+          ok: true,
+          data: converted.data.toString("base64"),
+          filename: converted.filename,
+          mimeType: converted.mimeType,
+        };
+      } catch (error) {
+        if (error instanceof HeicAttachmentConversionError) {
+          return { ok: false, errorCode: error.code };
+        }
+        throw error;
+      }
+    },
+  );
 
   ipcMain.handle(IPC.appSaveClipboardImageAttachment, async (): Promise<{ path: string; mimeType: string; previewDataUrl: string | null } | null> => {
     const image = clipboard.readImage();

@@ -111,7 +111,12 @@ import {
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
-import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
+import {
+  AgentChatComposer,
+  type ParallelComposerControlSlot,
+} from "./AgentChatComposer";
+import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
+import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
@@ -3551,6 +3556,33 @@ export function AgentChatPane({
       : null,
   );
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const chatPaneDropTargetRef = useRef<AgentChatAttachmentDropTarget | null>(null);
+  const [chatPaneDropActive, setChatPaneDropActive] = useState(false);
+  const clearChatPaneDropActive = useCallback(() => setChatPaneDropActive(false), []);
+  const registerChatPaneDropTarget = useCallback((target: AgentChatAttachmentDropTarget | null) => {
+    chatPaneDropTargetRef.current = target;
+  }, []);
+  const handleChatPaneDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
+    const dropTarget = chatPaneDropTargetRef.current;
+    if (!dropTarget?.canHandle(event.dataTransfer)) {
+      setChatPaneDropActive(false);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setChatPaneDropActive(true);
+  }, []);
+  const handleChatPaneDragLeave = useCallback((event: React.DragEvent<HTMLElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setChatPaneDropActive(false);
+  }, []);
+  const handleChatPaneDrop = useCallback((event: React.DragEvent<HTMLElement>) => {
+    const dropTarget = chatPaneDropTargetRef.current;
+    setChatPaneDropActive(false);
+    if (!dropTarget?.canHandle(event.dataTransfer)) return;
+    event.preventDefault();
+    dropTarget.handle(event.dataTransfer);
+  }, []);
   const draftAttachmentOwnerBindingRef = useRef<OpenProjectBinding | null>(null);
   const [contextAttachments, setContextAttachments] = useState<AgentChatContextAttachment[]>([]);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
@@ -13117,6 +13149,7 @@ export function AgentChatPane({
               void approve(decision, responseText, answers);
             }}
             onAddAttachment={addAttachment}
+            onRegisterDropTarget={registerChatPaneDropTarget}
             onRemoveAttachment={removeAttachment}
             onAddContextAttachment={addContextAttachment}
             onRemoveContextAttachment={removeContextAttachment}
@@ -13629,6 +13662,12 @@ export function AgentChatPane({
         footer={isEmptyState || appPanelOpen
           ? undefined
           : composerWithTypographyRoot}
+        onDragOver={handleChatPaneDragOver}
+        onDragOverCapture={clearChatPaneDropActive}
+        onDragLeave={handleChatPaneDragLeave}
+        onDrop={handleChatPaneDrop}
+        onDropCapture={clearChatPaneDropActive}
+        dropOverlay={chatPaneDropActive ? <ChatAttachmentDropOverlay variant="pane" /> : undefined}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
