@@ -366,6 +366,45 @@ export type AgentChatImageUrlRef = {
 
 export type AgentChatFileRef = AgentChatLocalFileRef | AgentChatImageUrlRef;
 
+/** MIME/extension checks for photos from iPhone and other HEIF-producing cameras. */
+const HEIC_MIME_RE = /^image\/hei[cf](?:[-+;]|$)/i;
+const HEIC_EXTENSION_RE = /\.(heic|heif)$/i;
+
+export type HeicConversionErrorCode = "unavailable" | "failed";
+
+export type ConvertImageToJpegResult =
+  | { ok: true; data: string; filename: string; mimeType: "image/jpeg" }
+  | { ok: false; errorCode: HeicConversionErrorCode };
+
+const IMAGE_ATTACHMENT_MEDIA_TYPES: Readonly<Record<string, string>> = {
+  ".bmp": "image/bmp",
+  ".gif": "image/gif",
+  ".heic": "image/heic",
+  ".heif": "image/heif",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".tif": "image/tiff",
+  ".tiff": "image/tiff",
+  ".webp": "image/webp",
+};
+
+/** Return the MIME type for a supported image filename/path, if its suffix is known. */
+export function getImageAttachmentMediaType(filePath: string): string | null {
+  const extension = filePath.match(/\.[^./\\]+$/)?.[0]?.toLowerCase();
+  return extension ? IMAGE_ATTACHMENT_MEDIA_TYPES[extension] ?? null : null;
+}
+
+export function isImageAttachmentPath(filePath: string): boolean {
+  return getImageAttachmentMediaType(filePath) !== null;
+}
+
+export function isHeicAttachment(filePath: string, mimeType?: string | null): boolean {
+  return HEIC_MIME_RE.test(mimeType ?? "") || HEIC_EXTENSION_RE.test(filePath);
+}
+
 export type AgentChatLinearIssueContextAttachment = {
   type: "linear_issue";
   issue: LaneLinearIssue;
@@ -3223,6 +3262,21 @@ export type AgentChatUpdateSessionArgs = {
   cursorModeId?: string | null;
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
 };
+
+export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;
+export type AgentChatSessionMetadataField = (typeof AGENT_CHAT_SESSION_METADATA_FIELDS)[number];
+
+export function isAgentChatSessionMetadataField(value: unknown): value is AgentChatSessionMetadataField {
+  return AGENT_CHAT_SESSION_METADATA_FIELDS.some((field) => field === value);
+}
+
+export function normalizeAgentChatSessionMetadataFields(
+  fields?: readonly unknown[] | null,
+): AgentChatSessionMetadataField[] {
+  return Array.from(new Set(
+    (fields ?? AGENT_CHAT_SESSION_METADATA_FIELDS).filter(isAgentChatSessionMetadataField),
+  ));
+}
 
 /**
  * One command in the composer's slash menu.
