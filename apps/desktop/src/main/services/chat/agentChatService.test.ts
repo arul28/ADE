@@ -2518,6 +2518,21 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
+    it("does not steer /compact on an active Codex chat", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      void service.runSessionTurn({ sessionId: session.id, text: "Kick off a long turn." }).catch(() => undefined);
+      await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true));
+      mockState.codexRequestPayloads = [];
+
+      await expect(service.sendMessage(
+        { sessionId: session.id, text: "/compact" },
+        { routeActiveToSteer: true },
+      )).rejects.toThrow(/already active/i);
+      expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/steer" || p.method === "thread/compact/start")).toBe(false);
+      service.forceDisposeAll();
+    });
+
     it.each([
       ["warning monitor", { canPerform: vi.fn(() => ({ allowed: true, state: "warning" })) }],
       ["absent monitor", undefined],
@@ -37170,6 +37185,68 @@ describe("createAgentChatService", () => {
         && event.event.deliveryState !== "queued"
         && (event.event.displayText === "Follow up soon" || event.event.text === "Follow up soon")
       )).toBe(true);
+    });
+
+    it("does not steer /compact during an active Claude turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let finishActiveTurn!: () => void;
+      const activeTurnGate = new Promise<void>((resolve) => { finishActiveTurn = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-compact-no-steer", slash_commands: [] };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "Still working" }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        await activeTurnGate;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-compact-no-steer",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const activeTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Do the foreground work",
+        timeoutMs: 15_000,
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "text" && event.event.text.includes("Still working"),
+      );
+
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "/compact keep the tests",
+      }, { routeActiveToSteer: true })).rejects.toThrow(/already active/i);
+      expect(events.some((event) =>
+        event.event.type === "user_message" && String(event.event.text).includes("/compact")
+      )).toBe(false);
+      expect(send.mock.calls.map((call) => String(call[0])).some((prompt) => /\/compact/i.test(prompt))).toBe(false);
+
+      finishActiveTurn();
+      await activeTurn;
     });
 
     it("ignores empty active-turn sends but queues attachment-only steers", async () => {

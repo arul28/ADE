@@ -217,22 +217,38 @@ extension WorkChatSessionView {
     case .turnEndMarker(let marker):
       let activity = turnToolActivity.completedByTurnId[marker.turnId]
       let isLatestTurnEnd = marker.turnId == timelineSnapshot.latestTurnEndTurnId
-      WorkTurnEndMarkerView(
-        marker: marker,
-        toolCount: activity?.count ?? 0,
-        onOpenActivity: activity.map { _ in
-          { toolActivitySheet = .completed(marker.turnId) }
-        },
-        usageViewModel: isLatestTurnEnd
-          ? contextUsageViewModelCache.value(
+      let usageViewModel: WorkContextUsageViewModel? = isLatestTurnEnd
+        ? contextUsageViewModelCache.value(
             sessionId: session.id,
             transcript: transcript,
             transcriptRenderSignature: transcriptRenderSignature,
             provider: chatSummaryContext.provider,
             fallbackContextWindow: chatSummaryContext.contextWindowFallback
           )
-          : nil,
-        modelLabel: chatSummaryContext.modelLabel
+        : nil
+      let compact = workResolveContextCompactControl(
+        provider: chatSummaryContext.provider,
+        usageState: usageViewModel?.state,
+        canSend: canSendMessages,
+        pendingInput: hasPendingInputGate,
+        turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active"
+      )
+      WorkTurnEndMarkerView(
+        marker: marker,
+        toolCount: activity?.count ?? 0,
+        onOpenActivity: activity.map { _ in
+          { toolActivitySheet = .completed(marker.turnId) }
+        },
+        usageViewModel: usageViewModel,
+        modelLabel: chatSummaryContext.modelLabel,
+        compact: compact,
+        onCompact: compact == .hidden
+          ? nil
+          : {
+              Task { @MainActor in
+                _ = await onSend("/compact", [], .queue)
+              }
+            }
       )
     case .pendingQuestion(let question):
       // When offline, still render the card in a disabled (busy) state so the

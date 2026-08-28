@@ -75,6 +75,23 @@ func workChatShouldSteerActiveTurn(
   normalizedWorkChatSessionStatus(session: session, summary: summary) == "active"
 }
 
+func workChatIsManualCompactCommand(_ text: String) -> Bool {
+  let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+  let lowered = trimmed.lowercased()
+  if lowered == "/compact" { return true }
+  guard lowered.hasPrefix("/compact") else { return false }
+  let rest = trimmed.dropFirst("/compact".count)
+  return rest.first?.isWhitespace == true
+}
+
+func workChatBlocksManualCompactSend(
+  text: String,
+  shouldSteer: Bool,
+  turnHintActive: Bool
+) -> Bool {
+  workChatIsManualCompactCommand(text) && (shouldSteer || turnHintActive)
+}
+
 /// Which atomic dispatch modes an already-staged message can be promoted into
 /// on this session. Read off `WorkActiveSendCapability` — the hand mirror of
 /// the desktop's `ACTIVE_TURN_DISPATCH_MODES` — rather than restated here, so

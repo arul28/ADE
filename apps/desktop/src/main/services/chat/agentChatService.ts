@@ -558,6 +558,7 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { isManualCompactCommand } from "../../../shared/contextCompaction";
 import {
   deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
@@ -40082,6 +40083,9 @@ export function createAgentChatService(args: {
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
+      if (isManualCompactCommand(args.text)) {
+        throw new Error("A turn is already active. Use steer or interrupt.");
+      }
       const rerouted = {
         sessionId: args.sessionId,
         text: args.text,

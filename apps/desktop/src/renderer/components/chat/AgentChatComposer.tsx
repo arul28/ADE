@@ -84,6 +84,7 @@ import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCata
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, type PermissionOption } from "../shared/permissionOptions";
 import { ContextUsageDial } from "./usage/ContextUsageDial";
+import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import type { ContextUsageViewModel } from "./usage/contextUsageModel";
 import {
   ChatAttachmentTray,
@@ -1580,6 +1581,8 @@ export function AgentChatComposer({
   fastMode = false,
   usageViewModel = null,
   compactionPulse = false,
+  onCompactContext,
+  compactSessionProvider,
   draft,
   promptHistory = [],
   onPromptHistoryNavigate,
@@ -1714,6 +1717,14 @@ export function AgentChatComposer({
   fastMode?: boolean;
   usageViewModel?: ContextUsageViewModel | null;
   compactionPulse?: boolean;
+  /** Sends `/compact` without replacing the unsent draft. Claude/Codex/Pi only. */
+  onCompactContext?: () => void;
+  /**
+   * Provider of the open session. Compact must follow the live session, not the
+   * model picker, so a Cursor chat does not grow a compact control just because
+   * Claude is selected for the next turn.
+   */
+  compactSessionProvider?: string | null;
   draft: string;
   /** Chronological prompts from the selected chat, oldest first. */
   promptHistory?: readonly AgentChatPromptHistoryEntry[];
@@ -3788,6 +3799,29 @@ export function AgentChatComposer({
     onDraftChange(next);
   }, [onClearEvents, onDraftChange, setRichEditorText, useRichComposer]);
 
+  const hasPendingInput = Boolean(pendingInput);
+  const compactControl = useMemo(
+    () => resolveContextCompactControl({
+      provider: compactSessionProvider === undefined ? sessionProvider : compactSessionProvider,
+      state: usageViewModel?.state ?? "unknown",
+      enabled: Boolean(onCompactContext && usageViewModel),
+      turnActive,
+      busy,
+      pendingInput: hasPendingInput,
+      inputLocked: Boolean(externalInputLockMessage),
+    }),
+    [
+      busy,
+      compactSessionProvider,
+      externalInputLockMessage,
+      hasPendingInput,
+      onCompactContext,
+      sessionProvider,
+      turnActive,
+      usageViewModel,
+    ],
+  );
+
   const nativeControlsDisabled = permissionModeLocked;
   const slot = parallelControlSlot;
   const sp = slot?.sessionProvider ?? sessionProvider ?? "opencode";
@@ -5750,6 +5784,8 @@ export function AgentChatComposer({
               active={turnActive}
               compactionPulse={compactionPulse}
               modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey)?.displayName ?? undefined}
+              compactControl={compactControl}
+              onCompact={onCompactContext}
             />
           ) : null}
 

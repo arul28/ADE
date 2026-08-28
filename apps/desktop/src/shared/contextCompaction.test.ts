@@ -8,6 +8,9 @@ import {
   formatCompactTokenCount,
   mergeNormalizedContextCompact,
   normalizeContextCompactEvent,
+  isManualCompactCommand,
+  providerSupportsManualCompact,
+  resolveContextCompactControl,
   toContextCompactChatEvent,
 } from "./contextCompaction";
 
@@ -92,5 +95,64 @@ describe("contextCompaction", () => {
 
   it("uses compactionId as the merge key when present", () => {
     expect(contextCompactMergeKey({ compactionId: "item-1", turnId: "turn-2" })).toBe("item-1");
+  });
+
+  it("recognizes /compact the same way the host slash matcher does", () => {
+    expect(isManualCompactCommand("/compact")).toBe(true);
+    expect(isManualCompactCommand(" /Compact ")).toBe(true);
+    expect(isManualCompactCommand("/compact keep the tests")).toBe(true);
+    expect(isManualCompactCommand("/compaction")).toBe(false);
+    expect(isManualCompactCommand("please compact")).toBe(false);
+    expect(isManualCompactCommand(null)).toBe(false);
+  });
+
+  it("limits manual compact to Claude, Codex, and Pi", () => {
+    expect(providerSupportsManualCompact("claude")).toBe(true);
+    expect(providerSupportsManualCompact("codex")).toBe(true);
+    expect(providerSupportsManualCompact("pi")).toBe(true);
+    expect(providerSupportsManualCompact("opencode")).toBe(false);
+    expect(providerSupportsManualCompact("cursor")).toBe(false);
+    expect(providerSupportsManualCompact("droid")).toBe(false);
+    expect(providerSupportsManualCompact(null)).toBe(false);
+  });
+
+  it("hides compact when the composer is locked or the provider cannot compact", () => {
+    expect(resolveContextCompactControl({
+      provider: "claude",
+      state: "measured",
+      enabled: true,
+      inputLocked: true,
+    })).toEqual({ status: "hidden" });
+    expect(resolveContextCompactControl({
+      provider: "cursor",
+      state: "measured",
+      enabled: true,
+    })).toEqual({ status: "hidden" });
+  });
+
+  it("disables compact during a turn or pending input, and is ready when idle", () => {
+    expect(resolveContextCompactControl({
+      provider: "codex",
+      state: "measured",
+      enabled: true,
+      pendingInput: true,
+    })).toEqual({
+      status: "disabled",
+      reason: "Answer or decline the pending request before compacting.",
+    });
+    expect(resolveContextCompactControl({
+      provider: "pi",
+      state: "measured",
+      enabled: true,
+      turnActive: true,
+    })).toEqual({
+      status: "disabled",
+      reason: "Wait for this turn to finish before compacting.",
+    });
+    expect(resolveContextCompactControl({
+      provider: "claude",
+      state: "measured",
+      enabled: true,
+    })).toEqual({ status: "ready" });
   });
 });

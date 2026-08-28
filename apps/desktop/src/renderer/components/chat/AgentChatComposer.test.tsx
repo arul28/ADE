@@ -3473,4 +3473,100 @@ describe("AgentChatComposer", () => {
       expect(chip(container)).toBeNull();
     });
   });
+
+  describe("compact context dial", () => {
+    const usageViewModel = {
+      provider: "codex",
+      state: "measured" as const,
+      contextWindow: 200_000,
+      usedTokens: 160_000,
+      inputTokens: 160_000,
+      outputTokens: 500,
+      cacheReadTokens: null,
+      cacheWriteTokens: null,
+      reasoningTokens: null,
+      totalTokens: null,
+      ratio: 0.8,
+      windowSource: "runtime" as const,
+    };
+
+    it("sends compact from the meter without submitting the unsent draft", () => {
+      const onCompactContext = vi.fn();
+      const view = renderComposer({
+        turnActive: false,
+        sessionProvider: "codex",
+        usageViewModel,
+        onCompactContext,
+        draft: "keep this draft",
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Context usage: 80% full. Compact context" }));
+      expect(onCompactContext).toHaveBeenCalledTimes(1);
+      expect(view.onSubmit).not.toHaveBeenCalled();
+      expect(view.onDraftChange).not.toHaveBeenCalled();
+    });
+
+    it("disables compact while the turn is active", () => {
+      const onCompactContext = vi.fn();
+      renderComposer({
+        turnActive: true,
+        sessionProvider: "claude",
+        usageViewModel,
+        onCompactContext,
+      });
+
+      const button = screen.getByRole("button", {
+        name: "Context usage: 80% full. Wait for this turn to finish before compacting.",
+      });
+      expect(button).toHaveProperty("disabled", true);
+      fireEvent.click(button);
+      expect(onCompactContext).not.toHaveBeenCalled();
+    });
+
+    it("keeps the meter read-only for providers without /compact", () => {
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "cursor",
+        usageViewModel: { ...usageViewModel, provider: "cursor" },
+        onCompactContext: vi.fn(),
+      });
+
+      expect(screen.queryByRole("button", { name: /Compact context/i })).toBeNull();
+      expect(screen.getByLabelText("Context usage: 80% full")).toBeTruthy();
+    });
+
+    it("follows the live session provider, not the model picker", () => {
+      const onCompactContext = vi.fn();
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "claude",
+        compactSessionProvider: "cursor",
+        usageViewModel,
+        onCompactContext,
+      });
+      expect(screen.queryByRole("button", { name: /Compact context/i })).toBeNull();
+
+      cleanup();
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "cursor",
+        compactSessionProvider: "claude",
+        usageViewModel,
+        onCompactContext,
+      });
+      expect(screen.getByRole("button", { name: "Context usage: 80% full. Compact context" })).toBeTruthy();
+    });
+
+    it("hides compact while the composer is locked on a subagent view", () => {
+      renderComposer({
+        turnActive: false,
+        sessionProvider: "codex",
+        usageViewModel,
+        onCompactContext: vi.fn(),
+        inputLockMessage: "Viewing Explore",
+      });
+      expect(screen.queryByRole("button", { name: /Compact context/i })).toBeNull();
+      expect(screen.getByLabelText("Context usage: 80% full")).toBeTruthy();
+    });
+  });
 });
