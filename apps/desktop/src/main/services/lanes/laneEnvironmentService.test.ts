@@ -681,6 +681,42 @@ describe("laneEnvironmentService", () => {
         expect(warnings.map((entry) => entry.event)).toContain(
           "lane_env_cleanup.waiting_for_inflight_init",
         );
+        // The cleanup deleted the progress entry, so the marker is the only
+        // record that this worktree was left half-built — and unarchive reads
+        // it to decide between a docker-only restore and a full re-init.
+        expect(service.getProgress(lane.id)).toBeNull();
+        expect(service.wasLastInitIncomplete(lane.id)).toBe(true);
+        // Durable: an archive today and an unarchive after a restart is the
+        // whole point, so a fresh service must still see it.
+        expect(createService().wasLastInitIncomplete(lane.id)).toBe(true);
+      } finally {
+        removeStub();
+      }
+    });
+
+    it("clears the incomplete-init marker once a later init completes", async () => {
+      const { composePath, cleanup: removeStub } = installSlowDockerStub();
+      try {
+        const service = createService();
+        const worktreePath = path.join(projectRoot, "wt-repair");
+        fs.mkdirSync(worktreePath, { recursive: true });
+        const lane = makeLane({ id: "lane-repair", worktreePath });
+        fs.writeFileSync(path.join(projectRoot, "copy-me.txt"), "payload");
+        // Two steps, so the cancellation has a boundary to stop at.
+        const config: LaneEnvInitConfig = {
+          docker: { composePath },
+          copyPaths: [{ source: "copy-me.txt", dest: "copied.txt" }],
+        };
+
+        const init = service.initLaneEnvironment(lane, config, {});
+        await waitUntil(dockerStepRunning, "the docker step to start");
+        await Promise.all([init, service.cleanupLaneEnvironment(lane, config)]);
+        expect(service.wasLastInitIncomplete(lane.id)).toBe(true);
+
+        await service.initLaneEnvironment(lane, config, {});
+
+        expect(service.wasLastInitIncomplete(lane.id)).toBe(false);
+        expect(createService().wasLastInitIncomplete(lane.id)).toBe(false);
       } finally {
         removeStub();
       }

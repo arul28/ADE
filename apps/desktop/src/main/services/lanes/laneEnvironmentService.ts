@@ -169,6 +169,85 @@ export function createLaneEnvironmentService({
   // Track in-progress and completed init progress per lane
   const progressMap = new Map<string, LaneEnvInitProgress>();
 
+  /**
+   * Lanes whose most recent env init did not finish — cancelled by a teardown
+   * or failed on a step.
+   *
+   * `restoreUnarchivedLaneDocker` re-runs only the Docker step after a plain
+   * unarchive, on the premise that env files, dependencies, mounts, copies and
+   * the setup script all completed and would only be clobbered by a re-run.
+   * That premise is false for a lane archived mid-init, and the evidence is
+   * gone by the time anyone could look: cancellation marks the remaining steps
+   * `skipped`, and `cleanupLaneEnvironment` ends with `progressMap.delete`.
+   *
+   * Durable rather than in-memory because the gap it covers is measured in
+   * days: a lane can be archived today and unarchived after a restart. The file
+   * lives under `.ade/`, which is local runtime state and gitignored, next to
+   * the rest of the per-project state. Entries are removed when a later init
+   * for that lane completes; a lane deleted while marked leaves one stale id
+   * behind, which is inert (nothing ever unarchives it).
+   */
+  const incompleteInitMarkerPath = path.join(adeDir, "lane-env-init-incomplete.json");
+  let incompleteInitLanes: Set<string> | null = null;
+
+  function loadIncompleteInitLanes(): Set<string> {
+    if (incompleteInitLanes) return incompleteInitLanes;
+    const loaded = new Set<string>();
+    try {
+      if (fs.existsSync(incompleteInitMarkerPath)) {
+        const parsed = JSON.parse(fs.readFileSync(incompleteInitMarkerPath, "utf8"));
+        const laneIds = Array.isArray(parsed?.laneIds) ? parsed.laneIds : [];
+        for (const laneId of laneIds) {
+          if (typeof laneId === "string" && laneId.length > 0) loaded.add(laneId);
+        }
+      }
+    } catch (error) {
+      // A corrupt or unreadable marker file must not break init: treat it as
+      // "nothing known incomplete" and let the next write replace it.
+      logger.warn("lane_env_init.incomplete_marker_read_failed", {
+        path: incompleteInitMarkerPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    incompleteInitLanes = loaded;
+    return loaded;
+  }
+
+  function persistIncompleteInitLanes(laneIds: Set<string>): void {
+    try {
+      fs.mkdirSync(path.dirname(incompleteInitMarkerPath), { recursive: true });
+      if (laneIds.size === 0) {
+        fs.rmSync(incompleteInitMarkerPath, { force: true });
+        return;
+      }
+      fs.writeFileSync(
+        incompleteInitMarkerPath,
+        JSON.stringify({ laneIds: [...laneIds] }, null, 2),
+        "utf8",
+      );
+    } catch (error) {
+      // Best effort: losing the marker degrades unarchive back to docker-only,
+      // it must never fail the init or the teardown that triggered it.
+      logger.warn("lane_env_init.incomplete_marker_write_failed", {
+        path: incompleteInitMarkerPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  function markInitIncomplete(laneId: string): void {
+    const laneIds = loadIncompleteInitLanes();
+    if (laneIds.has(laneId)) return;
+    laneIds.add(laneId);
+    persistIncompleteInitLanes(laneIds);
+  }
+
+  function clearInitIncomplete(laneId: string): void {
+    const laneIds = loadIncompleteInitLanes();
+    if (!laneIds.delete(laneId)) return;
+    persistIncompleteInitLanes(laneIds);
+  }
+
   function makeStep(kind: LaneEnvInitStepKind, label: string): LaneEnvInitStep {
     return { kind, label, status: "pending" };
   }
@@ -187,6 +266,10 @@ export function createLaneEnvironmentService({
     progress.overallStatus = "failed";
     progress.completedAt = new Date().toISOString();
     progressMap.set(laneId, progress);
+    // The steps after the failing one never ran, so the worktree is
+    // half-initialized: a later unarchive must re-run the whole sequence
+    // rather than assume only Docker is missing.
+    markInitIncomplete(laneId);
     broadcastEvent({ type: "lane-env-init", progress });
   }
 
@@ -599,7 +682,9 @@ export function createLaneEnvironmentService({
   /** Inits that have been enqueued and not yet settled, per lane. */
   const inFlightInits = new Map<string, number>();
 
-  const CANCELLED_FOR_CLEANUP_MESSAGE = "Cancelled: lane is being archived";
+  // "Torn down", not "archived": the same cancellation fires for delete and
+  // archive-and-reclaim, and naming only archive was wrong for two of the three.
+  const CANCELLED_FOR_CLEANUP_MESSAGE = "Cancelled: lane is being torn down";
 
   /**
    * Stop an init whose lane is being torn down: every step that has not run is
@@ -619,6 +704,9 @@ export function createLaneEnvironmentService({
     progress.overallStatus = "failed";
     progress.completedAt = new Date().toISOString();
     progressMap.set(laneId, progress);
+    // Outlives both this progress entry (the teardown deletes it) and the
+    // process, so a later unarchive knows the worktree was left half-built.
+    markInitIncomplete(laneId);
     broadcastEvent({ type: "lane-env-init", progress: { ...progress, steps: [...progress.steps] } });
     logger.warn("lane_env_init.cancelled_for_cleanup", {
       laneId,
@@ -747,6 +835,7 @@ export function createLaneEnvironmentService({
           overallStatus: "completed"
         };
         progressMap.set(lane.id, progress);
+        clearInitIncomplete(lane.id);
         return progress;
       }
 
@@ -770,6 +859,9 @@ export function createLaneEnvironmentService({
       progress.overallStatus = "completed";
       progress.completedAt = new Date().toISOString();
       progressMap.set(lane.id, progress);
+      // Every planned step ran: whatever was left half-built by an earlier
+      // cancelled or failed init has now been redone.
+      clearInitIncomplete(lane.id);
       broadcastEvent({ type: "lane-env-init", progress });
       logger.info("lane_env_init.completed", { laneId: lane.id, steps: steps.length });
       return progress;
@@ -780,6 +872,17 @@ export function createLaneEnvironmentService({
      */
     getProgress(laneId: string): LaneEnvInitProgress | null {
       return progressMap.get(laneId) ?? null;
+    },
+
+    /**
+     * Did this lane's last env init stop before running every planned step?
+     *
+     * Read by `restoreUnarchivedLaneDocker` to decide between the docker-only
+     * restore and a full re-init. Cannot be answered from `getProgress`: the
+     * teardown that cancels an init also deletes its progress entry.
+     */
+    wasLastInitIncomplete(laneId: string): boolean {
+      return loadIncompleteInitLanes().has(laneId);
     },
 
     /**
@@ -856,6 +959,8 @@ export function createLaneEnvironmentService({
       laneQueues.clear();
       cleanupRequested.clear();
       inFlightInits.clear();
+      // Only the cache is dropped — the on-disk marker is the point.
+      incompleteInitLanes = null;
     }
   };
 

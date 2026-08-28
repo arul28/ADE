@@ -34,6 +34,13 @@ type LaneRuntimeLifecycleDependencies = {
       lane: LaneSummary,
       config: LaneEnvInitConfig | undefined,
     ) => Promise<void>;
+    /**
+     * Did the lane's last env init stop before running every planned step?
+     * Required, not optional: the docker-only unarchive restore is only correct
+     * when the answer is no, so a host that forgot to wire this would silently
+     * go back to handing back half-initialized worktrees.
+     */
+    wasLastInitIncomplete: (laneId: string) => boolean;
   } | null;
   portAllocationService?: {
     getLease: (laneId: string) => PortLease | null;
@@ -199,7 +206,9 @@ export async function teardownArchivedLaneEnvironment(
  * worktree was never removed, so `restoreRecreatedLaneRuntime` does not run)
  * hands back a lane whose services are gone. Only the Docker step re-runs: env
  * files, dependencies, mounts, copies, and the setup script all survived in the
- * worktree, and re-running them would overwrite edits the user made.
+ * worktree, and re-running them would overwrite edits the user made — unless
+ * the lane's last init never finished (cancelled by the archive itself, or
+ * failed), in which case they never got written and the whole config re-runs.
  *
  * The port lease archive released is re-acquired, exactly as
  * `restoreRecreatedLaneRuntime` does: compose files are templated with
@@ -265,10 +274,21 @@ export async function restoreUnarchivedLaneDocker(
   laneId: string,
 ): Promise<void> {
   const context = await resolveRestoreContext(dependencies, laneId);
-  // No lane env services, or this project has no Docker step: return before
-  // touching the allocator, so a Docker-less unarchive never acquires (and then
-  // strands) a port lease it has no use for.
-  if (!context?.envInitConfig?.docker) return;
+  if (!context?.envInitConfig) return;
+  /**
+   * Docker-only is the right restore precisely because the other steps already
+   * ran. When the last init was cancelled by a teardown (archive arriving
+   * mid-init) or failed on a step, they did not: the worktree is missing env
+   * files, dependencies, mounts or its setup script, and re-running only
+   * `compose up` would hand that back looking healthy. Run the whole config in
+   * that case — there is nothing of the user's to clobber that the interrupted
+   * init had not already been told to write.
+   */
+  const lastInitIncomplete = context.environmentService.wasLastInitIncomplete(laneId);
+  // No Docker step and nothing to repair: return before touching the allocator,
+  // so a Docker-less unarchive never acquires (and then strands) a port lease it
+  // has no use for.
+  if (!context.envInitConfig.docker && !lastInitIncomplete) return;
 
   await ensureActiveLanePortLease(dependencies, laneId);
 
@@ -286,12 +306,21 @@ export async function restoreUnarchivedLaneDocker(
     return;
   }
   const leased = await resolveRestoreContext(dependencies, laneId);
-  const docker = leased?.envInitConfig?.docker;
-  if (!leased || !docker) {
+  const config = leased?.envInitConfig;
+  // The full-init branch needs no explicit marker clear: completing the run is
+  // what clears it, inside the environment service.
+  const restoreConfig: LaneEnvInitConfig | null = !leased || !config
+    ? null
+    : lastInitIncomplete
+      ? config
+      : config.docker
+        ? { docker: config.docker }
+        : null;
+  if (!leased || !restoreConfig) {
     releaseAbortedRestoreLease(dependencies, laneId);
     return;
   }
-  await leased.environmentService.initLaneEnvironment(leased.lane, { docker }, leased.overrides);
+  await leased.environmentService.initLaneEnvironment(leased.lane, restoreConfig, leased.overrides);
 }
 
 export async function restoreRecreatedLaneRuntime(

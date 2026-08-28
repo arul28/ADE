@@ -160,7 +160,7 @@ for the lane's compose project. It runs on all four lifecycle paths:
 | Delete | `teardownEnv` passed by the caller into `laneService.delete` |
 | Archive & reclaim | `teardownEnv` passed into `laneService.archiveAndReclaim` |
 | Plain archive | The late-bound `setOnLaneArchivedEnvTeardown` hook, run inside `laneService.archive` |
-| Unarchive | `docker compose up` runs again — full env init when the worktree had to be recreated, docker-only otherwise |
+| Unarchive | `docker compose up` runs again — full env init when the worktree had to be recreated or the lane's last init never finished, docker-only otherwise |
 
 **What "the lane's compose project" means, exactly.** Every teardown
 path resolves the config the same way, through
@@ -199,6 +199,28 @@ was never removed, so only the Docker step re-runs
 dependencies, or re-running the setup script would clobber work that
 survived the archive. Run **Init env** (`lanes.initEnv`) by hand if you
 do want the full sequence again.
+
+### Cancelling an init that a teardown is waiting on
+
+Init and cleanup for the same lane are serialized on one promise queue,
+and an archive or delete arriving mid-init raises a flag that
+`initLaneEnvironment` reads at every step boundary: the remaining steps
+are marked `skipped` with "Cancelled: lane is being torn down" (neutral
+copy and neutral styling — it fires for delete and archive-and-reclaim
+too, not only archive) and the run ends `failed`. Already-spawned child
+processes keep their own timeouts; nothing is killed.
+
+That leaves a half-initialized worktree, and the evidence disappears
+with it: cleanup deletes the lane's progress entry. So an init that
+does not run every planned step — cancelled or failed — records the
+lane in `.ade/lane-env-init-incomplete.json` (local runtime state,
+gitignored). `restoreUnarchivedLaneDocker` reads it through
+`laneEnvironmentService.wasLastInitIncomplete(laneId)` and re-runs the
+**whole** env init instead of the docker-only restore, including for a
+lane with no Docker step at all. The marker is durable rather than
+in-memory because the gap it covers spans restarts; it is removed when
+a later init for that lane completes. A lane deleted while marked
+leaves an inert stale id behind.
 
 ## Lane templates (W2)
 

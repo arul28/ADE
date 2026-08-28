@@ -40,6 +40,7 @@ function makeDeps(
     laneEnvInit?: LaneEnvInitConfig;
     initLaneEnvironment?: EnvironmentService["initLaneEnvironment"];
     cleanupLaneEnvironment?: EnvironmentService["cleanupLaneEnvironment"];
+    lastInitIncomplete?: boolean;
     portAllocationService?: Dependencies["portAllocationService"];
     laneProxyService?: Dependencies["laneProxyService"];
   } = {},
@@ -57,6 +58,7 @@ function makeDeps(
       resolveEnvInitConfig: (config) => config,
       initLaneEnvironment: overrides.initLaneEnvironment ?? vi.fn(async () => {}),
       cleanupLaneEnvironment: overrides.cleanupLaneEnvironment ?? vi.fn(async () => {}),
+      wasLastInitIncomplete: vi.fn(() => overrides.lastInitIncomplete === true),
     },
     ...(overrides.portAllocationService !== undefined
       ? { portAllocationService: overrides.portAllocationService }
@@ -83,7 +85,10 @@ function statefulAllocator(onAcquire?: () => void, release = vi.fn()) {
       return lease;
     }),
     release: vi.fn((laneId: string) => {
-      held = null;
+      // The real allocator keeps the entry and flips its status rather than
+      // dropping it, so `getLease` after a release answers a released lease —
+      // which is what `ensureActiveLanePortLease` distinguishes from `null`.
+      held = { ...lease, status: "released", releasedAt: "2026-07-28T00:01:00.000Z" };
       release(laneId);
     }),
   };
@@ -187,6 +192,39 @@ describe("lane runtime lifecycle", () => {
     // Only docker: re-copying env files, reinstalling dependencies or re-running
     // the setup script would clobber a worktree that was never removed.
     expect(initLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY, {});
+  });
+
+  it("re-runs the whole env init when the lane's last init never completed", async () => {
+    // Archiving mid-init cancels the remaining steps, and the teardown deletes
+    // the progress entry that recorded it — so a docker-only restore would hand
+    // back a worktree with no env files, dependencies or setup script and call
+    // it healthy.
+    const initLaneEnvironment = vi.fn(async () => {});
+    const fullConfig: LaneEnvInitConfig = {
+      ...DOCKER_ONLY,
+      envFiles: [{ source: ".env.template", dest: ".env" }],
+      dependencies: [{ command: ["npm", "install"] }],
+      setupScript: { commands: ["echo hi"] },
+    };
+    await restoreUnarchivedLaneDocker(
+      makeDeps({ laneEnvInit: fullConfig, initLaneEnvironment, lastInitIncomplete: true }),
+      lane.id,
+    );
+
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, fullConfig, {});
+  });
+
+  it("repairs an incomplete init even when the lane has no docker step", async () => {
+    // The docker guard is what normally stops this path; a half-written
+    // worktree still needs its env files and dependencies back.
+    const initLaneEnvironment = vi.fn(async () => {});
+    const config: LaneEnvInitConfig = { envFiles: [{ source: ".env.template", dest: ".env" }] };
+    await restoreUnarchivedLaneDocker(
+      makeDeps({ laneEnvInit: config, initLaneEnvironment, lastInitIncomplete: true }),
+      lane.id,
+    );
+
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, config, {});
   });
 
   it("re-acquires the port lease archive released before bringing docker back up", async () => {
