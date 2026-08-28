@@ -25,7 +25,11 @@ import { PageErrorBoundary } from "./PageErrorBoundary";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
-import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
+import {
+  isProjectSurfacePathname,
+  readStoredProjectRoute,
+  writeStoredProjectRoute,
+} from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
@@ -278,19 +282,7 @@ function bindingForProject(
 
 function serializeProjectRoute(location: ReturnType<typeof useLocation>): string | null {
   const pathname = location.pathname || "/work";
-  const allowedRoots = [
-    "/lanes",
-    "/files",
-    "/work",
-    "/graph",
-    "/prs",
-    "/review",
-    "/history",
-    "/automations",
-    "/cto",
-    "/settings",
-  ];
-  if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
+  if (!isProjectSurfacePathname(pathname)) {
     return null;
   }
   return `${pathname}${location.search ?? ""}${location.hash ?? ""}`;

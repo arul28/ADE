@@ -8,6 +8,15 @@
   "vocabVersion": 1,
   "entry": "index.js",
   "network": { "hosts": ["hacker-news.firebaseio.com"] },
+  "surfaces": [
+    {
+      "kind": "tab",
+      "id": "stories",
+      "title": "Hacker News",
+      "panelId": "stories",
+      "icon": "trend"
+    }
+  ],
   "panels": [
     {
       "id": "stories",
@@ -31,6 +40,14 @@
         { "label": "New", "actionId": "openNew", "icon": "clock" },
         { "label": "Ask", "actionId": "openAsk", "icon": "chat" }
       ]
+    },
+    {
+      "socket": "work-rail-pane",
+      "surface": "work",
+      "id": "stories",
+      "label": "HN",
+      "panelId": "stories",
+      "icon": "trend"
     }
   ],
   "collections": {

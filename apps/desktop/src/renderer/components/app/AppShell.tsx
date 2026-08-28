@@ -15,6 +15,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { IntegrationBannerHost } from "./IntegrationBannerHost";
 import { TabNav } from "./TabNav";
+import { isProjectSurfacePathname } from "./projectRouteStorage";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
@@ -168,23 +169,10 @@ function projectRouteStorageKey(projectRoot: string): string {
 
 function serializeLocationRoute(location: ReturnType<typeof useLocation>): string | null {
   const pathname = location.pathname || "/work";
-  const route = `${pathname}${location.search ?? ""}${location.hash ?? ""}`;
-  const allowedRoots = [
-    "/lanes",
-    "/files",
-    "/work",
-    "/graph",
-    "/prs",
-    "/review",
-    "/history",
-    "/automations",
-    "/cto",
-    "/settings",
-  ];
-  if (!allowedRoots.some((root) => pathname === root || pathname.startsWith(`${root}/`))) {
+  if (!isProjectSurfacePathname(pathname)) {
     return null;
   }
-  return route;
+  return `${pathname}${location.search ?? ""}${location.hash ?? ""}`;
 }
 
 function writeStoredProjectRoute(projectRoot: string, route: string): void {

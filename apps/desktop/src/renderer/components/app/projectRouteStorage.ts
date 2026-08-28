@@ -14,7 +14,18 @@ const STORED_PROJECT_ROUTE_ROOTS = [
   "/automations",
   "/cto",
   "/settings",
+  // Plugin tabs and `{navigate:{panelId}}` from sockets. Omitting this made
+  // `/plugin/<id>` look like a click that did nothing: the URL changed, the
+  // rail highlighted, and ProjectSurface kept rendering the last Work route.
+  "/plugin",
 ] as const;
+
+/** True when this pathname is a project surface ADE should actually mount. */
+export function isProjectSurfacePathname(pathname: string): boolean {
+  return STORED_PROJECT_ROUTE_ROOTS.some(
+    (root) => pathname === root || pathname.startsWith(`${root}/`),
+  );
+}
 
 function projectRouteStorageKey(bindingKey: string): string {
   return `${PROJECT_ROUTE_STORAGE_PREFIX}${bindingKey}`;
@@ -29,10 +40,7 @@ export function readStoredProjectRoute(bindingKey: string): string | null {
       return "/work";
     }
     const pathname = value.split(/[?#]/, 1)[0] ?? "";
-    const isSupported = STORED_PROJECT_ROUTE_ROOTS.some(
-      (root) => pathname === root || pathname.startsWith(`${root}/`),
-    );
-    if (isSupported) return value;
+    if (isProjectSurfacePathname(pathname)) return value;
     removeStoredProjectRoute(bindingKey);
     return null;
   } catch {

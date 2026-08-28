@@ -215,9 +215,19 @@ exports.deactivate = async () => {
 };
 
 async function openFeed(feed) {
-  const count = await loadFeed(feed);
+  // Navigate on the same tick. Awaiting the HN list+item fetches here made the
+  // header button look dead for several seconds — the host only honours
+  // `{navigate}` after the action returns, and the busy tint is easy to miss.
+  const named = parseFeed(feed, lastFeed);
+  lastFeed = named;
+  void loadFeed(named).catch((error) => {
+    log("warn", "hn failed to load stories", {
+      error: error instanceof Error ? error.message : String(error),
+      feed: named,
+    });
+  });
   return {
-    message: `Loaded ${count} ${feed} stories.`,
+    message: `Opening ${named} stories.`,
     navigate: { panelId: "stories" },
     resetState: ["feed"],
   };
