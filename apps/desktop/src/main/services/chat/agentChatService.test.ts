@@ -15411,6 +15411,34 @@ describe("createAgentChatService", () => {
       expect(sessionService.get(session.id)?.manuallyNamed).toBe(false);
     });
 
+    it("allows a later runtime title after an explicit non-manual title write", async () => {
+      mockState.codexResponseOverrides.set("thread/start", () => ({
+        thread: { id: "thread-runtime-title-reset", name: "Initial Runtime Title" },
+      }));
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Use the initial runtime title." });
+      await waitForSessionTitle(sessionService, session.id, "Initial Runtime Title");
+
+      await service.updateSession({
+        sessionId: session.id,
+        title: "ADE Reset",
+        manuallyNamed: false,
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "thread/name/updated",
+        params: { threadId: "thread-runtime-title-reset", name: "Runtime Title After Reset" },
+      });
+
+      await waitForSessionTitle(sessionService, session.id, "Runtime Title After Reset");
+    });
+
     it("adopts Codex thread/name/updated notifications without overwriting manual names", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -15924,6 +15952,32 @@ describe("createAgentChatService", () => {
         manuallyNamed: true,
         statusNote: generatedMetadata.statusLine,
       });
+    });
+
+    it("applies a usable title when the model leaves the status line empty", async () => {
+      installAutoTitleAuth();
+      const { service, sessionService, aiIntegrationService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-2",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+      });
+      const sparseMetadata = { ...generatedMetadata, statusLine: "" };
+      aiIntegrationService.summarizeTerminal.mockResolvedValue({
+        text: JSON.stringify(sparseMetadata),
+        structuredOutput: sparseMetadata,
+      } as never);
+
+      const result = await service.regenerateSessionMetadata({
+        sessionId: session.id,
+        fields: ["title"],
+      });
+
+      expect(result.applied).toEqual(["title"]);
+      expect(result.skipped).toEqual([]);
+      expect(sessionService.get(session.id)?.title).toBe(generatedMetadata.chatTitle);
+      expect(sessionService.setStatusNote).not.toHaveBeenCalled();
     });
 
     it("keeps a same-text manual rename made while generation is in flight", async () => {

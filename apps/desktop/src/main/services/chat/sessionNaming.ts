@@ -92,9 +92,9 @@ export const SESSION_METADATA_JSON_SCHEMA = {
 } as const;
 
 export type GeneratedSessionMetadata = {
-  chatTitle: string;
-  laneName: string;
-  statusLine: string;
+  chatTitle: string | null;
+  laneName: string | null;
+  statusLine: string | null;
 };
 
 export type SessionMetadataPromptRunner = (args: {
@@ -121,7 +121,7 @@ export function parseGeneratedSessionMetadata(args: {
   const chatTitle = args.normalizeTitle(record.chatTitle);
   const laneName = args.normalizeTitle(record.laneName);
   const statusLine = args.normalizeStatusLine(record.statusLine);
-  if (!chatTitle || !laneName || !statusLine) return null;
+  if (!chatTitle && !laneName && !statusLine) return null;
   return { chatTitle, laneName, statusLine };
 }
 

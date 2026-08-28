@@ -11759,9 +11759,7 @@ export function createAgentChatService(args: {
     sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed });
     managed.sessionMetadataTitleRevision += 1;
     managed.manuallyNamed = manuallyNamed;
-    if (manuallyNamed) {
-      managed.runtimeTitleAdopted = false;
-    }
+    managed.runtimeTitleAdopted = false;
     emitTransientChatEnvelope(managed.session.id, {
       type: "session_meta_updated",
       title,
@@ -12152,7 +12150,7 @@ export function createAgentChatService(args: {
       if (fields.includes("title")) {
         const current = sessionService.get(sessionId);
         if (
-          current?.title === snapshot.title
+          metadata.chatTitle && current?.title === snapshot.title
           && managed.sessionMetadataTitleRevision === snapshot.titleRevision
         ) {
           const title = await setUserChosenGeneratedSessionTitle(managed, metadata.chatTitle);
@@ -12174,7 +12172,7 @@ export function createAgentChatService(args: {
 
       if (fields.includes("statusLine")) {
         const current = sessionService.get(sessionId);
-        if (current?.statusNote === snapshot.statusLine) {
+        if (metadata.statusLine && current?.statusNote === snapshot.statusLine) {
           if (sessionService.setStatusNote(sessionId, metadata.statusLine)) applied.push("statusLine");
           else skipped.push("statusLine");
         } else {
@@ -12192,7 +12190,7 @@ export function createAgentChatService(args: {
           notifyOutcome("partial");
           return { sessionId, applied, skipped, modelId: selectedModelId };
         }
-        if (currentLane && currentLane.name === snapshot.laneName) {
+        if (metadata.laneName && currentLane && currentLane.name === snapshot.laneName) {
           try {
             laneService.rename({ laneId: managed.session.laneId, name: metadata.laneName });
             applied.push("laneName");

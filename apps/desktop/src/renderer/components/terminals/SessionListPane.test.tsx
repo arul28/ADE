@@ -1421,6 +1421,7 @@ describe("SessionListPane", () => {
         // though a headerless foreign card would otherwise keep it at session
         // root (Lane ▸ cannot resolve a remote editor from the local store).
         null,
+        "worktree",
       );
     });
 
@@ -1453,6 +1454,7 @@ describe("SessionListPane", () => {
           rootPath: "/tmp/known-lane",
           remote: { hostname: "dev.example", transport: "ssh" },
         }),
+        "worktree",
       );
     });
 
@@ -2154,6 +2156,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       expect.objectContaining({ laneId: "lane-solo", laneName: "Solo lane" }),
       null,
+      "worktree",
     );
 
     // And the handle really opens the shared lane menu, rather than a stub.
@@ -2186,6 +2189,7 @@ describe("SessionListPane singleton lanes and shelves", () => {
       undefined,
       undefined,
       expect.anything(),
+      "worktree",
     );
   });
 
