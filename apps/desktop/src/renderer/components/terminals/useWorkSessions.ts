@@ -35,7 +35,12 @@ import {
   matchesWorkSessionFilters,
   type WorkSessionFilters,
 } from "./workSessionFilters";
-import { buildOptimisticChatSessionSummary } from "../../lib/sessions";
+import { buildOptimisticChatSessionSummary, isChatToolType } from "../../lib/sessions";
+import {
+  matchesWorkSearchFilters,
+  matchesWorkSearchTerms,
+  parseWorkSearchQuery,
+} from "../../../shared/workSearch";
 import {
   shouldRefreshSessionListForChatEvent,
   subscribeWorkChatSessionCreated,
@@ -1511,35 +1516,38 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const filtered = useMemo(() => {
     // Filtering here is active-binding-only: SessionListPane applies the same
     // controls to its separately rendered cross-machine rows.
-    const needle = q.trim().toLowerCase();
+    const parsedQuery = parseWorkSearchQuery(q);
+    const nowMs = Date.now();
     return sessions.filter((session) => {
       if (filterLaneId !== "all" && session.laneId !== filterLaneId) return false;
-      if (!needle) return true;
+      if (parsedQuery.tracked === "yes" || parsedQuery.tracked === "true") {
+        if (!session.tracked) return false;
+      } else if (parsedQuery.tracked === "no" || parsedQuery.tracked === "false") {
+        if (session.tracked) return false;
+      }
+      if (!matchesWorkSearchTerms(parsedQuery.terms, [
+        session.goal,
+        session.title,
+        session.laneName,
+        session.toolType,
+        session.lastOutputPreview,
+        session.summary,
+        session.claudeTag,
+        session.resumeCommand,
+      ])) return false;
 
-      if (needle.startsWith("lane:")) {
-        const value = needle.slice(5).trim();
-        return session.laneName.toLowerCase().includes(value);
-      }
-      if (needle.startsWith("type:")) {
-        const value = needle.slice(5).trim();
-        return (session.toolType ?? "").toLowerCase().includes(value);
-      }
-      if (needle.startsWith("tracked:")) {
-        const value = needle.slice(8).trim();
-        if (value === "yes" || value === "true") return session.tracked;
-        if (value === "no" || value === "false") return !session.tracked;
-        return true;
-      }
-
-      return (
-        (session.goal ?? session.title).toLowerCase().includes(needle) ||
-        session.laneName.toLowerCase().includes(needle) ||
-        (session.toolType ?? "").toLowerCase().includes(needle) ||
-        (session.lastOutputPreview ?? "").toLowerCase().includes(needle) ||
-        (session.summary ?? "").toLowerCase().includes(needle) ||
-        (session.claudeTag ?? "").toLowerCase().includes(needle) ||
-        (session.resumeCommand ?? "").toLowerCase().includes(needle)
-      );
+      // Keep the inline Work search and Cmd-K's typed facets on the same
+      // vocabulary. The machine facet is resolved by the palette's cross-
+      // machine index; this active-binding list has no machine dimension.
+      return matchesWorkSearchFilters(parsedQuery.filters, {
+        lane: [session.laneName],
+        provider: [session.toolType ?? ""],
+        status: [sessionFilingBucket(session, nowMs)],
+        type: [
+          session.toolType ?? "",
+          isChatToolType(session.toolType) ? "chat" : "terminal",
+        ],
+      });
     });
   }, [sessions, filterLaneId, q]);
 
