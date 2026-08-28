@@ -11011,6 +11011,9 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
   async function selectCursorCloudMachine() {
     fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
     fireEvent.click(await screen.findByRole("menuitemradio", { name: /Cursor Cloud/ }));
+    // Cloud mode flips after the machine picker closes; Advanced lives on that
+    // settled shelf, so wait for the send label before looking for it.
+    await screen.findByRole("button", { name: "Send to Cursor Cloud" });
   }
 
   function renderCursorCloudDraft(args?: Parameters<typeof renderAutoCreateDraftPane>[0]) {
