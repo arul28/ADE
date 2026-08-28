@@ -57,7 +57,7 @@ import {
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
-import { clearSessionWokeMarker } from "./sessionLifecycleActions";
+import { clearSessionWokeMarker, renameSession } from "./sessionLifecycleActions";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
@@ -1659,27 +1659,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           });
         }}
         onRename={(session, newTitle, runtimePin) => {
-          let renamePromise: Promise<unknown>;
-          if (isChatToolType(session.toolType)) {
-            renamePromise = runtimePin
-              ? window.ade.agentChat.updateSession(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-                runtimePin,
-              )
-              : window.ade.agentChat.updateSession(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-              );
-          } else {
-            renamePromise = runtimePin
-              ? window.ade.sessions.updateMeta(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-                runtimePin,
-              )
-              : window.ade.sessions.updateMeta(
-                { sessionId: session.id, title: newTitle, manuallyNamed: true },
-              );
-          }
-          runSessionMutation(session.id, renamePromise, {
+          runSessionMutation(session.id, renameSession(session, newTitle, runtimePin), {
             actionName: "rename session",
             errorLabel: "Rename",
             refreshLabel: "rename",

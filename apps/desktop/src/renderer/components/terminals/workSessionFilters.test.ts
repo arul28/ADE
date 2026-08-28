@@ -9,6 +9,14 @@ import {
   workToolFamily,
   type WorkSessionFilters,
 } from "./workSessionFilters";
+import {
+  appendWorkSearchFilter,
+  matchesWorkSearchFilters,
+  matchesWorkSearchTerms,
+  parseWorkSearchQuery,
+  removeWorkSearchFilterToken,
+  scoreWorkSearchTerms,
+} from "../../../shared/workSearch";
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
   return {
@@ -147,5 +155,56 @@ describe("activeWorkSessionFilterLabels", () => {
     expect(activeWorkSessionFilterLabels(filters({
       status: ["awaiting-input"], tool: ["claude"], hasPr: true,
     }))).toEqual(["Your move", "Claude", "Has PR"]);
+  });
+});
+
+describe("shared Work search vocabulary", () => {
+  it("matches every word in any order and keeps quoted phrases together", () => {
+    const parsed = parseWorkSearchQuery('migration auth "login flow"');
+
+    expect(parsed.terms).toEqual(["migration", "auth", "login flow"]);
+    expect(matchesWorkSearchTerms(parsed.terms, ["auth migration", "fix login flow"])).toBe(true);
+    expect(matchesWorkSearchTerms(parsed.terms, ["migration only", "auth"])).toBe(false);
+  });
+
+  it("ANDs facets across keys and ORs values within one key", () => {
+    const parsed = parseWorkSearchQuery("provider:codex provider:claude status:running");
+
+    expect(matchesWorkSearchFilters(parsed.filters, {
+      provider: ["codex-chat"],
+      status: ["running"],
+    })).toBe(true);
+    expect(matchesWorkSearchFilters(parsed.filters, {
+      provider: ["cursor"],
+      status: ["running"],
+    })).toBe(false);
+    expect(matchesWorkSearchFilters(parsed.filters, {
+      provider: ["codex"],
+      status: ["ended"],
+    })).toBe(false);
+  });
+
+  it("adds and removes a typed facet without disturbing free text", () => {
+    const query = appendWorkSearchFilter("migration", "lane", "auth flow");
+    const parsed = parseWorkSearchQuery(query);
+
+    expect(query).toBe('migration lane:"auth flow"');
+    expect(removeWorkSearchFilterToken(query, parsed.filterTokens[0]!)).toBe("migration");
+  });
+
+  it("keeps kind aliases local and fans repeated lanes out for backend search", () => {
+    const parsed = parseWorkSearchQuery("kind:chat lane:auth lane:payments");
+
+    expect(parsed.terms).toEqual([]);
+    expect(parsed.filters.type).toEqual(["chat"]);
+    expect(parsed.backendQueries).toEqual([
+      "kind:chat lane:auth",
+      "kind:chat lane:payments",
+    ]);
+  });
+
+  it("keeps the TUI subsequence fallback for compact command queries", () => {
+    expect(scoreWorkSearchTerms(["nch"], ["/new chat"])).not.toBeNull();
+    expect(scoreWorkSearchTerms(["nch"], ["/rename"])).toBeNull();
   });
 });

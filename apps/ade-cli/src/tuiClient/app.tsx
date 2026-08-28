@@ -161,6 +161,10 @@ import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "
 import { deriveChatInfoSnapshot, mergeSubagentSnapshots, snapshotFromRuntimeSubagent } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import {
+  parseWorkSearchQuery,
+  scoreWorkSearchTerms,
+} from "../../../desktop/src/shared/workSearch";
+import {
   resolveSessionTarget,
   resolveSnoozeChoice,
   resolveSnoozeChoices,
@@ -972,19 +976,8 @@ export function firstUrlInText(value: string): { url: string; index: number; wid
 }
 
 function paletteMatchScore(item: CommandPaletteItem, query: string): number | null {
-  const trimmed = query.trim().toLowerCase();
-  if (!trimmed) return 0;
-  const haystack = `${item.label} ${item.detail}`.toLowerCase();
-  if (haystack.includes(trimmed)) return haystack.indexOf(trimmed);
-  let cursor = 0;
-  let score = 0;
-  for (const char of trimmed) {
-    const found = haystack.indexOf(char, cursor);
-    if (found < 0) return null;
-    score += found - cursor;
-    cursor = found + 1;
-  }
-  return score + haystack.length;
+  const terms = parseWorkSearchQuery(query).terms;
+  return scoreWorkSearchTerms(terms, [item.label, item.detail]);
 }
 
 // Collapse a multi-line search snippet into a single trimmed detail line and cap

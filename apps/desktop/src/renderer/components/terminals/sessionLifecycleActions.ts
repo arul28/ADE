@@ -8,6 +8,7 @@ import {
   canonicalInputFromSummary,
   sessionNeedsYou,
 } from "../../lib/terminalAttention";
+import { isChatToolType } from "../../lib/sessions";
 import {
   snoozeConfirmationLabel,
   snoozeDeadlineIso,
@@ -21,6 +22,24 @@ import {
  */
 
 const UNDO_TOAST_MS = 5_000;
+
+/** Rename either a chat or a terminal through its owning runtime binding. */
+export async function renameSession(
+  session: Pick<TerminalSessionSummary, "id" | "toolType">,
+  title: string,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const input = { sessionId: session.id, title, manuallyNamed: true };
+  if (isChatToolType(session.toolType)) {
+    await (pin
+      ? window.ade.agentChat.updateSession(input, pin)
+      : window.ade.agentChat.updateSession(input));
+    return;
+  }
+  await (pin
+    ? window.ade.sessions.updateMeta(input, pin)
+    : window.ade.sessions.updateMeta(input));
+}
 
 function reportFailure(action: string, sessionId: string, error: unknown): void {
   console.error(`[sessionLifecycle] ${action} failed`, { sessionId, error });
