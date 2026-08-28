@@ -42,6 +42,8 @@ const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
   fields: AgentChatSessionMetadataField[];
   emphasis?: boolean;
   laneNameOnly?: boolean;
+  primaryLabel?: string;
+  primaryFields?: AgentChatSessionMetadataField[];
 }> = [
   { label: "Generate chat title", fields: ["title"] },
   { label: "Generate lane name", fields: ["laneName"], laneNameOnly: true },
@@ -50,6 +52,8 @@ const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
     label: "Generate all three",
     fields: ["title", "laneName", "statusLine"],
     emphasis: true,
+    primaryLabel: "Generate title & status",
+    primaryFields: ["title", "statusLine"],
   },
 ];
 
@@ -364,6 +368,8 @@ function SessionContextMenuPanel({
         </button>
         <MenuSeparator />
         {SESSION_METADATA_GENERATION_ACTIONS.map((action) => {
+          const label = isPrimaryLane && action.primaryLabel ? action.primaryLabel : action.label;
+          const fields = isPrimaryLane && action.primaryFields ? action.primaryFields : action.fields;
           const disabled = isRegeneratingMetadata || (action.laneNameOnly === true && isPrimaryLane);
           return (
             <button
@@ -372,9 +378,9 @@ function SessionContextMenuPanel({
               className={`${MENU_ITEM_CLASS}${action.laneNameOnly ? " disabled:cursor-not-allowed disabled:text-muted-fg/45" : ""}${action.emphasis ? " font-medium" : ""}`}
               disabled={disabled}
               title={action.laneNameOnly && isPrimaryLane ? "The primary lane keeps its name" : undefined}
-              onClick={() => { regenerateMetadata(session, action.fields, binding); onClose(); }}
+              onClick={() => { regenerateMetadata(session, fields, binding); onClose(); }}
             >
-              {isRegeneratingMetadata ? "Generating…" : action.label}
+              {isRegeneratingMetadata ? "Generating…" : label}
             </button>
           );
         })}

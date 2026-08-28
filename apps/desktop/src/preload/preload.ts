@@ -1430,6 +1430,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "dispatchSteer",
   "cancelDispatchedSteer",
   "createSession",
+  "regenerateSessionMetadata",
   "archiveSession",
   "unarchiveSession",
   "deleteSession",

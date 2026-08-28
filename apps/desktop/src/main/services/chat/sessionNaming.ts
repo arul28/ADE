@@ -155,6 +155,8 @@ export function buildSessionMetadataPrompt(args: {
 
 export async function runSessionMetadataGeneration(args: {
   candidateModelIds: string[];
+  /** Session provider whose context is allowed to reach the model runner. */
+  provider?: string | null;
   cwd: string;
   prompt: string;
   runPrompt: SessionMetadataPromptRunner;
@@ -163,7 +165,13 @@ export async function runSessionMetadataGeneration(args: {
   shouldStop?: () => boolean;
   onFailure: (failure: NamingAttemptFailure) => void;
 }): Promise<{ result: GeneratedSessionMetadata | null; attemptCount: number; selectedModelId: string | null }> {
-  return runNamingAcrossProviders<GeneratedSessionMetadata>(args.candidateModelIds, {
+  const candidateModelIds = args.provider
+    ? args.candidateModelIds.filter((modelId) => {
+      const descriptor = getModelById(modelId);
+      return descriptor && resolveProviderGroupForModel(descriptor) === args.provider;
+    })
+    : args.candidateModelIds;
+  return runNamingAcrossProviders<GeneratedSessionMetadata>(candidateModelIds, {
     shouldStop: args.shouldStop,
     run: async (descriptor) => {
       const result = await args.runPrompt({
@@ -226,8 +234,13 @@ export function buildNamingModelCandidates(args: {
   availableModels: ModelDescriptor[];
   /** Ordered preference list; unavailable and duplicate ids are dropped. */
   preferred: Array<string | null | undefined>;
+  /** Optional runtime provider scope for calls carrying provider-owned context. */
+  provider?: string | null;
 }): string[] {
-  const availableIds = new Set(args.availableModels.map((entry) => entry.id));
+  const scopedModels = args.provider
+    ? args.availableModels.filter((entry) => resolveProviderGroupForModel(entry) === args.provider)
+    : args.availableModels;
+  const availableIds = new Set(scopedModels.map((entry) => entry.id));
   const availableInOrder = (candidates: Array<string | null | undefined>): string[] =>
     candidates.reduce<string[]>((acc, candidate) => {
       const modelId = typeof candidate === "string" ? candidate.trim() : "";
@@ -247,10 +260,10 @@ export function buildNamingModelCandidates(args: {
     preferred.map(providerOf).filter((group): group is ModelProviderGroup => group !== null),
   );
   const primaryProvider = providerOf(primary);
-  const crossProviderFallback = args.availableModels.find(
+  const crossProviderFallback = scopedModels.find(
     (entry) => !leadingProviders.has(resolveProviderGroupForModel(entry)),
   )?.id;
-  const sameProviderFallback = args.availableModels.find(
+  const sameProviderFallback = scopedModels.find(
     (entry) => !preferred.includes(entry.id)
       && primaryProvider !== null
       && resolveProviderGroupForModel(entry) === primaryProvider,
@@ -262,7 +275,7 @@ export function buildNamingModelCandidates(args: {
     crossProviderFallback,
     ...preferred.slice(crossProviderSlot),
     sameProviderFallback,
-    args.availableModels.find((entry) => !preferred.includes(entry.id))?.id,
+    scopedModels.find((entry) => !preferred.includes(entry.id))?.id,
   ]);
 }
 

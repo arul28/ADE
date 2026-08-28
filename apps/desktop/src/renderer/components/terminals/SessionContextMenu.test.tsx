@@ -418,6 +418,21 @@ describe("SessionContextMenu grouped actions", () => {
     expect(onRegenerateMetadata).not.toHaveBeenCalled();
   });
 
+  it("omits the immutable primary lane name from combined generation", () => {
+    const session = makeSession();
+    const onRegenerateMetadata = vi.fn();
+    const { onClose } = renderMenu(session, vi.fn(), vi.fn(), null, null, onRegenerateMetadata, "primary");
+
+    openSubmenuByHover(screen.getByTestId("session-menu-name-status"));
+    expect(screen.getByRole("button", { name: "Generate title & status" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Generate all three" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate title & status" }));
+
+    expect(onRegenerateMetadata).toHaveBeenCalledWith(session, ["title", "statusLine"], null);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("re-resolves the snooze presets every time the submenu opens", () => {
     // 09:00 offers "This evening"; 21:00 must not, because it would silently
     // mean tomorrow. The presets are a snapshot of the clock at open time, so

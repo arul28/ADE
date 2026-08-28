@@ -12066,14 +12066,27 @@ export function createAgentChatService(args: {
       const auth = await detectAuth();
       const availableModels = await getAvailableRegistryModels(auth);
       const config = resolveChatConfig();
+      // An existing OpenCode chat can outlive the inventory snapshot that was
+      // available when it was created. Keep its selected model eligible for an
+      // explicit refresh, but only if the registry resolves it to this chat's
+      // runtime provider. This preserves provider isolation without making a
+      // valid dynamic OpenCode model disappear from the action.
+      const sessionModelDescriptor = [managed.session.modelId, managed.session.model]
+        .map((modelRef) => typeof modelRef === "string" && modelRef.trim().length ? getModelById(modelRef) : undefined)
+        .find((descriptor) => descriptor && resolveProviderGroupForModel(descriptor) === managed.session.provider);
+      const metadataModels = sessionModelDescriptor && !availableModels.some((descriptor) => descriptor.id === sessionModelDescriptor.id)
+        ? [...availableModels, sessionModelDescriptor]
+        : availableModels;
       const candidateModelIds = buildNamingModelCandidates({
-        availableModels,
+        availableModels: metadataModels,
+        provider: managed.session.provider,
         preferred: [
           config.titleModelId,
           managed.session.modelId,
           managed.session.model,
           DEFAULT_AUTO_TITLE_MODEL_ID,
-          availableModels[0]?.id,
+          availableModels.find((descriptor) =>
+            resolveProviderGroupForModel(descriptor) === managed.session.provider)?.id,
         ],
       });
       if (!candidateModelIds.length) {
@@ -12106,6 +12119,7 @@ export function createAgentChatService(args: {
 
       const generated = await runSessionMetadataGeneration({
         candidateModelIds,
+        provider: managed.session.provider,
         cwd: managed.laneWorktreePath,
         prompt,
         runPrompt: ({ cwd, modelId, prompt: metadataPrompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
