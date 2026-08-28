@@ -2924,6 +2924,28 @@ describe("AgentChatComposer", () => {
     expect(props.onAddAttachment).not.toHaveBeenCalled();
   });
 
+  it("accepts a file dragover before the browser exposes its file list", () => {
+    renderComposer({
+      turnActive: false,
+      draft: "",
+    });
+    const dataTransfer = {
+      files: [],
+      types: ["Files"],
+      getData: vi.fn(() => ""),
+    };
+    const dragOverEvent = new Event("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOverEvent, "dataTransfer", {
+      configurable: true,
+      value: dataTransfer,
+    });
+
+    fireEvent(screen.getByPlaceholderText("Type to vibecode..."), dragOverEvent);
+
+    expect(dragOverEvent.defaultPrevented).toBe(true);
+    expect(screen.getByText("Drop files to attach")).toBeTruthy();
+  });
+
   it.each(["heic", "HEIF"])("accepts a .%s image URL drop", (extension) => {
     const props = renderComposer({
       turnActive: false,

@@ -4549,7 +4549,8 @@ export function AgentChatComposer({
   const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
     event.stopPropagation();
     const hasImageUrl = event.dataTransfer.types.includes("text/uri-list");
-    if (!canAttach || (!event.dataTransfer.files.length && !hasImageUrl)) return;
+    const hasFiles = event.dataTransfer.files.length > 0 || event.dataTransfer.types.includes("Files");
+    if (!canAttach || (!hasFiles && !hasImageUrl)) return;
     event.preventDefault();
     setDragActive(true);
   };
