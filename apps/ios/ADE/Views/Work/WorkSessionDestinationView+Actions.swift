@@ -30,6 +30,14 @@ extension WorkSessionDestinationView {
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
     guard canSendChatMessages else { return false }
+    if workChatBlocksManualCompactSend(
+      text: text,
+      shouldSteer: useSteer,
+      turnHintActive: liveTurnActiveHint == true
+    ) {
+      errorMessage = "Wait for this turn to finish before compacting."
+      return false
+    }
 
     // The echo goes up before the upload, not after it. Saving attachments is a
     // per-image round-trip to the host; waiting for it left the tap with no
@@ -102,6 +110,13 @@ extension WorkSessionDestinationView {
             attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
           )
         } catch where workChatErrorIndicatesActiveTurn(error) {
+          if workChatIsManualCompactCommand(text) {
+            ADEHaptics.error()
+            localEchoMessages.removeAll { $0.id == echoId }
+            WorkPendingUploadPreviewStore.shared.release(pendingUploadRefs)
+            errorMessage = "Wait for this turn to finish before compacting."
+            return false
+          }
           // The row said idle but the runtime is busy. Resend as a steer — with
           // the mode attached, so an atomic send stays an atomic send and the
           // echo keeps its "sending" state instead of flashing "queued".

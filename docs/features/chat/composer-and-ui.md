@@ -736,6 +736,10 @@ that could not work without it.
   count it stays `recalculating`; a failed authoritative read shows `?` /
   `unknown`. Streamed usage can move the dial during a turn, but the
   control-channel snapshot after settle/compaction is the authoritative value.
+  On Claude, Codex, and Pi, an idle measured dial is a compact control: click
+  sends `/compact` without replacing the unsent draft. Cursor, Droid, and
+  OpenCode stay read-only. Compacting while a turn or pending input is live is
+  disabled; ADE already auto-compacts Claude at 97% at a turn boundary.
 - **Question answering.** When a question-type pending input is active, the
   question card *replaces* the composer textarea (`AskQuestionComposer`) and
   the model / permission / effort footer is hidden until it resolves. Selecting

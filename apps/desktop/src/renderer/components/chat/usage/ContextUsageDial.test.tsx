@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
-import { describe, it, expect } from "vitest";
-import { render } from "@testing-library/react";
-import { ContextUsageDial, buildContent } from "./ContextUsageDial";
+import { describe, it, expect, vi } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
+import { ContextUsageDial, buildContent, resolveContextCompactControl } from "./ContextUsageDial";
 import type { ContextUsageViewModel } from "./contextUsageModel";
 
 function vm(partial: Partial<ContextUsageViewModel>): ContextUsageViewModel {
@@ -92,5 +92,80 @@ describe("ContextUsageDial", () => {
   it("omits the cache-write segment when there is no cache-write usage", () => {
     const content = buildContent(vm({ cacheWriteTokens: null }));
     expect(content.gitCommand ?? "").not.toContain("cache write");
+  });
+
+  it("keeps the meter read-only without a compact action", () => {
+    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.82 })} />);
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector('[aria-label="Context usage: 82% full"]')).toBeTruthy();
+  });
+
+  it("tells an idle Claude/Codex/Pi dial to compact on click", () => {
+    const onCompact = vi.fn();
+    const compact = resolveContextCompactControl({
+      provider: "codex",
+      state: "measured",
+      enabled: true,
+    });
+    const { getByRole } = render(
+      <ContextUsageDial usage={vm({ ratio: 0.82 })} compactControl={compact} onCompact={onCompact} />,
+    );
+    const button = getByRole("button", { name: "Context usage: 82% full. Compact context" });
+    fireEvent.click(button);
+    expect(onCompact).toHaveBeenCalledTimes(1);
+    const content = buildContent(vm({ ratio: 0.82 }), undefined, compact);
+    expect(content.label).toBe("Compact context");
+    expect(content.warning).toContain("click to compact");
+    expect(content.description).toContain("Your visible chat stays");
+  });
+
+  it("disables compact while a turn is active", () => {
+    const onCompact = vi.fn();
+    const compact = resolveContextCompactControl({
+      provider: "claude",
+      state: "measured",
+      enabled: true,
+      turnActive: true,
+    });
+    const { getByRole } = render(
+      <ContextUsageDial usage={vm({ ratio: 0.4 })} compactControl={compact} onCompact={onCompact} />,
+    );
+    const button = getByRole("button", {
+      name: "Context usage: 40% full. Wait for this turn to finish before compacting.",
+    });
+    expect(button).toHaveProperty("disabled", true);
+    fireEvent.click(button);
+    expect(onCompact).not.toHaveBeenCalled();
+  });
+
+  it("hides the compact action while occupancy is not measured", () => {
+    const compact = resolveContextCompactControl({
+      provider: "pi",
+      state: "compacting",
+      enabled: true,
+    });
+    const { container } = render(
+      <ContextUsageDial usage={vm({ ratio: 1, state: "compacting" })} compactControl={compact} onCompact={vi.fn()} />,
+    );
+    expect(compact.status).toBe("hidden");
+    expect(container.querySelector("button")).toBeNull();
+  });
+
+  it("does not offer compact for Cursor, Droid, or OpenCode", () => {
+    expect(resolveContextCompactControl({
+      provider: "cursor",
+      state: "measured",
+      enabled: true,
+    }).status).toBe("hidden");
+    expect(resolveContextCompactControl({
+      provider: "droid",
+      state: "measured",
+      enabled: true,
+    }).status).toBe("hidden");
+    expect(resolveContextCompactControl({
+      provider: "opencode",
+      state: "measured",
+      enabled: true,
+    }).status).toBe("hidden");
   });
 });

@@ -117,6 +117,7 @@ import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
+import { providerSupportsManualCompact, resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
   getSharedRuntimeCatalog,
@@ -11061,6 +11062,51 @@ export function AgentChatPane({
     orchestratorEnabled,
   ]);
 
+  const compactContext = useCallback(async () => {
+    const sessionId = composerSessionId ?? selectedSessionId;
+    const liveProvider = selectedSession?.provider;
+    if (!sessionId || subagentView || !providerSupportsManualCompact(liveProvider)) return;
+    const control = resolveContextCompactControl({
+      provider: liveProvider,
+      state: selectedUsageViewModel?.state ?? "unknown",
+      enabled: Boolean(selectedUsageViewModel),
+      turnActive,
+      busy: busy || parallelLaunchBusy || projectTransitionBlocksChat || submitInFlightRef.current,
+      pendingInput: Boolean(pendingInput),
+      inputLocked: Boolean(subagentView),
+    });
+    if (control.status !== "ready") {
+      if (control.status === "disabled") setError(control.reason);
+      return;
+    }
+    submitInFlightRef.current = true;
+    setBusy(true);
+    setError(null);
+    try {
+      await window.ade.agentChat.send({
+        sessionId,
+        text: "/compact",
+      }, chatRuntimePinRef.current);
+    } catch (compactError) {
+      const message = compactError instanceof Error ? compactError.message : String(compactError);
+      setError(message);
+    } finally {
+      submitInFlightRef.current = false;
+      setBusy(false);
+    }
+  }, [
+    busy,
+    composerSessionId,
+    parallelLaunchBusy,
+    pendingInput,
+    projectTransitionBlocksChat,
+    selectedSession?.provider,
+    selectedSessionId,
+    selectedUsageViewModel,
+    subagentView,
+    turnActive,
+  ]);
+
   // Staged-row dispatch/edit remain fire-and-forget IPC. New active-turn sends
   // are atomic through steer({ dispatchMode }) and never enter the staged queue.
   const dispatchSteerSafely = useCallback(
@@ -12897,6 +12943,8 @@ export function AgentChatPane({
             fastMode={fastMode}
             usageViewModel={selectedUsageViewModel}
             compactionPulse={contextCompactionPulse}
+            onCompactContext={compactContext}
+            compactSessionProvider={selectedSession?.provider ?? null}
             draft={draft}
             promptHistory={promptHistory}
             onPromptHistoryNavigate={handlePromptHistoryNavigate}

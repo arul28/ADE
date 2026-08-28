@@ -1,6 +1,67 @@
-import type { AgentChatEvent } from "./types";
+import type { AgentChatContextUsageState, AgentChatEvent } from "./types";
 
 export type ContextCompactProvider = "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi";
+
+/** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
+export type ManualCompactProvider = "claude" | "codex" | "pi";
+
+export function providerSupportsManualCompact(
+  provider: string | null | undefined,
+): provider is ManualCompactProvider {
+  switch (provider) {
+    case "claude":
+    case "codex":
+    case "pi":
+      return true;
+    default:
+      return false;
+  }
+}
+
+export const COMPACT_BLOCKED_PENDING_INPUT =
+  "Answer or decline the pending request before compacting.";
+export const COMPACT_BLOCKED_TURN_ACTIVE =
+  "Wait for this turn to finish before compacting.";
+
+export type ContextCompactControl =
+  | { status: "hidden" }
+  | { status: "disabled"; reason: string }
+  | { status: "ready" };
+
+export const HIDDEN_CONTEXT_COMPACT: ContextCompactControl = { status: "hidden" };
+
+export function resolveContextCompactControl(args: {
+  provider?: string | null;
+  state: AgentChatContextUsageState;
+  enabled: boolean;
+  turnActive?: boolean;
+  busy?: boolean;
+  pendingInput?: boolean;
+  inputLocked?: boolean;
+}): ContextCompactControl {
+  if (!args.enabled || args.inputLocked || !providerSupportsManualCompact(args.provider)) {
+    return HIDDEN_CONTEXT_COMPACT;
+  }
+  switch (args.state) {
+    case "compacting":
+    case "recalculating":
+    case "unknown":
+      return HIDDEN_CONTEXT_COMPACT;
+    case "measured":
+      break;
+    default: {
+      const exhaustive: never = args.state;
+      return exhaustive;
+    }
+  }
+  if (args.pendingInput) {
+    return { status: "disabled", reason: COMPACT_BLOCKED_PENDING_INPUT };
+  }
+  if (args.turnActive || args.busy) {
+    return { status: "disabled", reason: COMPACT_BLOCKED_TURN_ACTIVE };
+  }
+  return { status: "ready" };
+}
 
 export type ContextCompactEvent = Extract<AgentChatEvent, { type: "context_compact" }>;
 

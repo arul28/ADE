@@ -1,5 +1,44 @@
 import SwiftUI
 
+/// Claude, Codex, and Pi honor `/compact` as a real compact action. Other
+/// providers would treat the same text as a normal prompt.
+func workProviderSupportsManualCompact(_ provider: String) -> Bool {
+  switch provider.lowercased() {
+  case "claude", "codex", "pi":
+    return true
+  default:
+    return false
+  }
+}
+
+enum WorkContextCompactControl: Equatable {
+  case hidden
+  case disabled(reason: String)
+  case ready
+}
+
+func workResolveContextCompactControl(
+  provider: String,
+  usageState: WorkContextUsageState?,
+  canSend: Bool,
+  pendingInput: Bool,
+  turnBusy: Bool
+) -> WorkContextCompactControl {
+  guard canSend,
+        usageState == .measured,
+        workProviderSupportsManualCompact(provider)
+  else {
+    return .hidden
+  }
+  if pendingInput {
+    return .disabled(reason: "Answer or decline the pending request before compacting.")
+  }
+  if turnBusy {
+    return .disabled(reason: "Wait for this turn to finish before compacting.")
+  }
+  return .ready
+}
+
 struct WorkContextUsageMeter: View {
   let usage: WorkContextUsageViewModel
   @Binding var isPresented: Bool
@@ -12,7 +51,7 @@ struct WorkContextUsageMeter: View {
   private var ringColor: Color {
     guard let ratio = usage.ratio else { return ADEColor.textSecondary }
     if ratio >= 0.9 { return ADEColor.danger }
-    if ratio >= 0.7 { return ADEColor.warning }
+    if ratio >= 0.8 { return ADEColor.warning }
     return Color(red: 0.22, green: 0.74, blue: 0.97)
   }
 
@@ -88,6 +127,8 @@ struct WorkContextUsageMeter: View {
 struct WorkContextUsagePopover: View {
   let usage: WorkContextUsageViewModel
   let modelLabel: String?
+  var compact: WorkContextCompactControl = .hidden
+  var onCompact: (() -> Void)? = nil
 
   private var percent: Int? {
     guard usage.state == .measured else { return nil }
@@ -145,6 +186,16 @@ struct WorkContextUsagePopover: View {
     return "\(usedLabel ?? "--") / \(windowLabel) tokens · \(percent)% full"
   }
 
+  private var compactAvailable: Bool {
+    if case .hidden = compact { return false }
+    return true
+  }
+
+  private var compactDisabledReason: String? {
+    if case .disabled(let reason) = compact { return reason }
+    return nil
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
       Text("Context usage")
@@ -179,9 +230,60 @@ struct WorkContextUsagePopover: View {
       }
 
       if usage.state == .measured, let ratio = usage.ratio, ratio >= 0.8 {
-        Text("Nearing the limit; older context may be auto-trimmed or compacted.")
+        Text(
+          compactAvailable
+            ? "Nearing the limit."
+            : "Nearing the limit; older context may be auto-trimmed or compacted."
+        )
           .font(.caption2)
           .foregroundStyle(ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if compactAvailable {
+        if let compactDisabledReason {
+          Text(compactDisabledReason)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.warning)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        Button {
+          onCompact?()
+        } label: {
+          Text("Compact context")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(compactDisabledReason == nil ? ADEColor.accent : ADEColor.textMuted)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(
+              ADEColor.cardBackground.opacity(0.62),
+              in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                  compactDisabledReason == nil ? ADEColor.accent.opacity(0.28) : ADEColor.border.opacity(0.45),
+                  lineWidth: 1
+                )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(compactDisabledReason != nil || onCompact == nil)
+        .accessibilityLabel("Compact context")
+        .accessibilityHint("Summarizes for the model. Your visible chat stays.")
+        .adeInspectable(
+          "Work.Chat.Composer.CompactContext",
+          metadata: [
+            "label": "Compact context",
+            "role": "button",
+            "disabled": compactDisabledReason == nil ? "false" : "true"
+          ]
+        )
+
+        Text("Summarizes for the model. Your visible chat stays.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
