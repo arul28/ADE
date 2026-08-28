@@ -352,6 +352,9 @@ session-lifecycle commands
 `session.clearWokeMarker`) are optional for the same reason: the phone
 feature-detects them before showing settle and snooze controls, while an older
 mobile build that never calls them must not push a newer host into `limited`.
+`chat.regenerateSessionMetadata` is also optional: newer controllers may
+feature-detect the one-call chat metadata refresh, while older phones never
+invoke it and therefore remain compatible.
 See `remote-commands.md` and `../linear-integration/README.md`.
 
 ## What syncs, what does not
@@ -1247,17 +1250,20 @@ Cross-machine Work chat handoff:
   pill.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` — authoritative
   source readiness, capsule creation and validation, destination preflight,
-  deterministic lane/chat acceptance, durable replay record, and source notice.
+  deterministic lane/chat acceptance, durable replay record, and source notice;
+  it also owns the one-call session metadata regeneration action for bound chats.
 - `apps/desktop/src/shared/crossMachineHandoff.ts` and
   `apps/desktop/src/shared/types/chat.ts` — portable Git identity/sanitization,
-  untrusted response decoders, capsule DTO, and preflight/result contracts.
+  untrusted response decoders, capsule DTO, preflight/result contracts, and the
+  shared session-metadata field/result DTOs.
 - `apps/desktop/src/main/services/remoteRuntime/remoteConnectionPool.ts`,
   `remoteConnectionService.ts`, and `apps/desktop/src/main/services/ipc/runtimeBridge.ts`
   — destination machine capability checks, storage preflight dispatch, route
   pinning, paired/SSH runtime JSON-RPC routing, request-local timeout policy,
   and non-replayable action reconciliation when confirmation is lost.
 - `apps/desktop/src/preload/preload.ts` — source project-runtime routing plus
-  the renderer bridge for machine-level project setup and destination actions.
+  the renderer bridge for machine-level project setup and destination actions,
+  including the bound `agentChat.regenerateSessionMetadata` call.
 
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
@@ -1743,7 +1749,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `prs.getMobileSnapshot`, `lanes.presence.*`,
   `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
-  `work.importExternalSession`, `chat.recoverCodexTurn`, `modelPicker.*`, …).
+  `work.importExternalSession`, `chat.recoverCodexTurn`, `chat.regenerateSessionMetadata`, `modelPicker.*`, …).
   The cross-machine handoff family (`chat.prepareCrossMachineHandoff`,
   `chat.validateCrossMachineSource`, `chat.preflightCrossMachineDestination`,
   `chat.fastForwardCrossMachineHandoffLane`,

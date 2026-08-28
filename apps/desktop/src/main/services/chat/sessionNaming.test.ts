@@ -85,6 +85,17 @@ describe("buildNamingModelCandidates", () => {
     expect(attempted.some((id) => id.startsWith("anthropic/"))).toBe(true);
   });
 
+  it("can scope candidates to the selected runtime provider", () => {
+    const candidates = buildNamingModelCandidates({
+      availableModels: ALL_MODELS,
+      preferred: [OPENAI_MODELS[0]?.id, ANTHROPIC_MODELS[0]?.id],
+      provider: "codex",
+    });
+
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.every((id) => id.startsWith("openai/"))).toBe(true);
+  });
+
   it("drops unavailable and duplicate preferences instead of attempting them", () => {
     const candidates = buildNamingModelCandidates({
       availableModels: ALL_MODELS,

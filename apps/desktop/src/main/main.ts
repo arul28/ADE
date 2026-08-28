@@ -75,7 +75,11 @@ import {
   getSharedProductAnalyticsService,
 } from "./services/analytics/productAnalyticsService";
 import { detectInstallSource } from "./services/analytics/installSource";
-import { captureAgentTurnSettledAnalytics, captureChatMentionsExpandedAnalytics } from "./services/analytics/agentTurnProductAnalytics";
+import {
+  captureAgentTurnSettledAnalytics,
+  captureChatMentionsExpandedAnalytics,
+  captureSessionMetadataRegeneratedAnalytics,
+} from "./services/analytics/agentTurnProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -3873,6 +3877,11 @@ app.whenReady().then(async () => {
         analytics: productAnalyticsService,
         projectId,
         sessionId: event.sessionId,
+      }),
+      onSessionMetadataRegenerated: (event) => captureSessionMetadataRegeneratedAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        event,
       }),
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {

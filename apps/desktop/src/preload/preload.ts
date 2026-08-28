@@ -470,6 +470,8 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatKillDroidWorkerArgs,
+  AgentChatRegenerateSessionMetadataArgs,
+  AgentChatRegenerateSessionMetadataResult,
   AgentChatUpdateSessionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -1428,6 +1430,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "dispatchSteer",
   "cancelDispatchedSteer",
   "createSession",
+  "regenerateSessionMetadata",
   "archiveSession",
   "unarchiveSession",
   "deleteSession",
@@ -6874,6 +6877,25 @@ const adeBridge = {
       );
       agentChatSummaryCache.clear();
       return session;
+    },
+    regenerateSessionMetadata: async (
+      args: AgentChatRegenerateSessionMetadataArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatRegenerateSessionMetadataResult> => {
+      return clearAround(
+        () => {
+          clearGitReadCaches();
+          agentChatSummaryCache.clear();
+        },
+        () =>
+          callPinnedOrBoundRuntimeActionOr<AgentChatRegenerateSessionMetadataResult>(
+            pin,
+            "chat",
+            "regenerateSessionMetadata",
+            { args },
+            () => ipcRenderer.invoke(IPC.agentChatRegenerateSessionMetadata, args),
+          ),
+      );
     },
     createScheduledWork: async (
       args: AgentChatCreateScheduledWorkArgs,

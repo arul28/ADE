@@ -371,7 +371,9 @@ Metadata-only user rows and provider transport wrappers are excluded from the
 visible transcript, while user-authored JSX/XML and ordinary text beginning
 with `User request:` remain intact. Failed Claude tool results preserve their
 failed status. If the caller did not provide a title, the chat title falls back
-to the first imported user or assistant text.
+to the first imported user or assistant text. That provider-derived title is
+replaceable metadata, not a manual rename, so the desktop **Name & status**
+action can refresh it later.
 
 Claude chat import reads JSONL from `CLAUDE_CONFIG_DIR` or
 `~/.claude/projects`. If the user asks to fork, or if the source cwd differs

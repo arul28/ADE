@@ -1,5 +1,10 @@
-import { useState, useRef, useEffect } from "react";
-import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import { useState, useRef, useEffect, type ReactNode } from "react";
+import type {
+  AgentChatSessionMetadataField,
+  LaneType,
+  OpenProjectBinding,
+  TerminalSessionSummary,
+} from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
@@ -32,6 +37,26 @@ const MENU_ITEM_CLASS =
 const DESTRUCTIVE_ITEM_CLASS =
   "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 transition-colors hover:bg-red-500/10";
 
+const SESSION_METADATA_GENERATION_ACTIONS: ReadonlyArray<{
+  label: string;
+  fields: AgentChatSessionMetadataField[];
+  emphasis?: boolean;
+  laneNameOnly?: boolean;
+  primaryLabel?: string;
+  primaryFields?: AgentChatSessionMetadataField[];
+}> = [
+  { label: "Generate chat title", fields: ["title"] },
+  { label: "Generate lane name", fields: ["laneName"], laneNameOnly: true },
+  { label: "Generate status line", fields: ["statusLine"] },
+  {
+    label: "Generate all three",
+    fields: ["title", "laneName", "statusLine"],
+    emphasis: true,
+    primaryLabel: "Generate title & status",
+    primaryFields: ["title", "statusLine"],
+  },
+];
+
 /**
  * Carried only by a row whose lane renders WITHOUT a divider (the singleton
  * form). That row is the lane's only visible surface, so right-clicking it is
@@ -60,6 +85,7 @@ export type SessionContextMenuState = {
   binding?: OpenProjectBinding | null;
   machineName?: string | null;
   openIn?: SessionContextMenuOpenIn | null;
+  laneType?: LaneType | null;
   /** Present only for a singleton lane's card (see the type above). */
   laneActions?: SessionContextMenuLaneActions | null;
   x: number;
@@ -96,6 +122,12 @@ type SessionContextMenuProps = {
     newTitle: string,
     binding?: OpenProjectBinding | null,
   ) => void;
+  onRegenerateMetadata?: (
+    session: TerminalSessionSummary,
+    fields: AgentChatSessionMetadataField[],
+    binding?: OpenProjectBinding | null,
+  ) => void;
+  regeneratingMetadataSessionIds?: ReadonlySet<string>;
   onSetChatTag?: (
     session: TerminalSessionSummary,
     tag: string | null,
@@ -152,6 +184,8 @@ function SessionContextMenuPanel({
   onGoToLane,
   onCopySessionId,
   onRename,
+  onRegenerateMetadata,
+  regeneratingMetadataSessionIds,
   onSetChatTag,
   onCopySessionDeepLink,
   onOpenSessionInWeb,
@@ -195,10 +229,20 @@ function SessionContextMenuPanel({
     }
   }, [renaming, tagging]);
 
-  const { session, binding = null, laneActions = null, openIn = null, x, y } = menu;
+  const {
+    session,
+    binding = null,
+    laneActions = null,
+    openIn = null,
+    laneType = null,
+    x,
+    y,
+  } = menu;
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
+  const isPrimaryLane = laneType === "primary";
+  const isRegeneratingMetadata = regeneratingMetadataSessionIds?.has(session.id) ?? false;
   const canonicalPhase = sessionCanonicalUiState(session).phase;
   const isActivelyRunning = sessionIsMidFlight(session);
   const canDismissNeedsYou =
@@ -233,6 +277,26 @@ function SessionContextMenuPanel({
     onSetChatTag?.(session, trimmed.length ? trimmed : null, binding);
     onClose();
   };
+
+  const renameInput = (
+    <div className="px-3 py-1.5">
+      <input
+        ref={inputRef}
+        type="text"
+        aria-label="Rename session"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+          if (e.key === "Escape") { e.preventDefault(); finalizedRef.current = true; onClose(); }
+        }}
+        onBlur={commitRename}
+        className="w-full rounded border border-border/30 bg-transparent px-2 py-1 text-xs text-[--color-fg] outline-none focus:border-[--color-accent]"
+        placeholder="Enter title..."
+        maxLength={48}
+      />
+    </div>
+  );
 
   // Hoisted out of the JSX only because the settle branch is a four-way chain;
   // inline it would bury the grouping it sits inside.
@@ -283,6 +347,74 @@ function SessionContextMenuPanel({
 
   const deletingLabel = deletingSessionId === session.id ? "Deleting…" : null;
 
+  const showNameStatusSubmenu = !tagging && isChat && Boolean(onRegenerateMetadata);
+  const renderNameStatusContent = (): ReactNode => {
+    if (renaming) return renameInput;
+    const regenerateMetadata = onRegenerateMetadata;
+    if (!regenerateMetadata) return null;
+
+    return (
+      <>
+        <button
+          type="button"
+          className={MENU_ITEM_CLASS}
+          onClick={() => {
+            finalizedRef.current = false;
+            setDraft(session.title);
+            setRenaming(true);
+          }}
+        >
+          Rename…
+        </button>
+        <MenuSeparator />
+        {SESSION_METADATA_GENERATION_ACTIONS.map((action) => {
+          const label = isPrimaryLane && action.primaryLabel ? action.primaryLabel : action.label;
+          const fields = isPrimaryLane && action.primaryFields ? action.primaryFields : action.fields;
+          const disabled = isRegeneratingMetadata || (action.laneNameOnly === true && isPrimaryLane);
+          return (
+            <button
+              key={action.label}
+              type="button"
+              className={`${MENU_ITEM_CLASS}${action.laneNameOnly ? " disabled:cursor-not-allowed disabled:text-muted-fg/45" : ""}${action.emphasis ? " font-medium" : ""}`}
+              disabled={disabled}
+              title={action.laneNameOnly && isPrimaryLane ? "The primary lane keeps its name" : undefined}
+              onClick={() => { regenerateMetadata(session, fields, binding); onClose(); }}
+            >
+              {isRegeneratingMetadata ? "Generating…" : label}
+            </button>
+          );
+        })}
+      </>
+    );
+  };
+
+  const renderIdentityContent = (): ReactNode => {
+    if (showNameStatusSubmenu) {
+      return (
+        <MenuSubmenu
+          label="Name & status"
+          className={MENU_ITEM_CLASS}
+          data-testid="session-menu-name-status"
+          title="Rename this chat or refresh its visible metadata with AI"
+        >
+          {renderNameStatusContent()}
+        </MenuSubmenu>
+      );
+    }
+    if (!renaming && !tagging) {
+      return (
+        <button
+          type="button"
+          className={MENU_ITEM_CLASS}
+          onClick={() => { setDraft(session.title); setRenaming(true); }}
+        >
+          Rename
+        </button>
+      );
+    }
+    return null;
+  };
+
   return (
     <>
       {/* Backdrop */}
@@ -300,25 +432,7 @@ function SessionContextMenuPanel({
       >
         {/* ── Identity: what this row is called and where it sits. Unlabelled;
             it is the first block under the cursor and needs no signpost. ── */}
-        {renaming && (
-          <div className="px-3 py-1.5">
-            <input
-              ref={inputRef}
-              type="text"
-              aria-label="Rename session"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); commitRename(); }
-                if (e.key === "Escape") { e.preventDefault(); finalizedRef.current = true; onClose(); }
-              }}
-              onBlur={commitRename}
-              className="w-full rounded border border-border/30 bg-transparent px-2 py-1 text-xs text-[--color-fg] outline-none focus:border-[--color-accent]"
-              placeholder="Enter title..."
-              maxLength={48}
-            />
-          </div>
-        )}
+        {renaming && !(isChat && onRegenerateMetadata) ? renameInput : null}
         {tagging && (
           <div className="px-3 py-1.5">
             <input
@@ -338,15 +452,7 @@ function SessionContextMenuPanel({
             />
           </div>
         )}
-        {!renaming && !tagging && (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { setDraft(session.title); setRenaming(true); }}
-          >
-            Rename
-          </button>
-        )}
+        {renderIdentityContent()}
         {/* Tag writes need a live Claude SDK runtime (updateSession throws for
             ended sessions), so only offer the item while the session runs. */}
         {!renaming && !tagging && session.toolType === "claude-chat" && isRunning && onSetChatTag ? (

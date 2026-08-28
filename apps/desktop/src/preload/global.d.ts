@@ -213,6 +213,8 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
   AgentChatKillDroidWorkerArgs,
+  AgentChatRegenerateSessionMetadataArgs,
+  AgentChatRegenerateSessionMetadataResult,
   AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
   AutomationManualTriggerRequest,
@@ -1898,6 +1900,10 @@ declare global {
           args: AgentChatUpdateSessionArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSession>;
+        regenerateSessionMetadata: (
+          args: AgentChatRegenerateSessionMetadataArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AgentChatRegenerateSessionMetadataResult>;
         createScheduledWork: (
           args: AgentChatCreateScheduledWorkArgs,
           pin?: OpenProjectBinding | null,

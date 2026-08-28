@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { isAgentChatTurnRecoveryAction } from "../../../../desktop/src/shared/types/chat";
+import {
+  isAgentChatTurnRecoveryAction,
+  normalizeAgentChatSessionMetadataFields,
+} from "../../../../desktop/src/shared/types/chat";
 import { runWithAbortSignal } from "./abortSignal";
 import type {
   AgentChatCreateArgs,
@@ -62,6 +65,7 @@ import type {
   AgentChatRecoverTurnArgs,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatUpdateSessionArgs,
+  AgentChatRegenerateSessionMetadataArgs,
   AgentChatSetSpawnKindArgs,
   AgentChatDismissSubagentTakeoverPromptArgs,
   AddGitHubPrStackPullRequestsArgs,
@@ -2675,6 +2679,21 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   return parsed;
 }
 
+function parseAgentChatRegenerateSessionMetadataArgs(
+  value: Record<string, unknown>,
+): AgentChatRegenerateSessionMetadataArgs {
+  const sessionId = requireString(value.sessionId, "chat.regenerateSessionMetadata requires sessionId.");
+  if (value.fields === undefined) return { sessionId };
+  if (!Array.isArray(value.fields)) {
+    throw new Error("chat.regenerateSessionMetadata fields must be an array.");
+  }
+  const fields = normalizeAgentChatSessionMetadataFields(value.fields);
+  if (!fields.length) {
+    throw new Error("chat.regenerateSessionMetadata fields must include title, laneName, or statusLine.");
+  }
+  return { sessionId, fields };
+}
+
 function parseAgentChatSetSpawnKindArgs(value: Record<string, unknown>): AgentChatSetSpawnKindArgs {
   const spawnKind = requireString(value.spawnKind, "chat.setSpawnKind requires spawnKind.");
   if (spawnKind !== "subagent" && spawnKind !== "peer") {
@@ -4714,6 +4733,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("chat.updateSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").updateSession(parseAgentChatUpdateSessionArgs(payload)));
+  register("chat.regenerateSessionMetadata", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").regenerateSessionMetadata(
+      parseAgentChatRegenerateSessionMetadataArgs(payload),
+    ));
   register("chat.setSpawnKind", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").setSpawnKind(parseAgentChatSetSpawnKindArgs(payload)));
   register("chat.dismissSubagentTakeoverPrompt", { viewerAllowed: true, queueable: true }, async (payload) =>

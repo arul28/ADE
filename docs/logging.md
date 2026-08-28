@@ -473,6 +473,16 @@ one-hour minimum interval bounds it to at most 24 accepted events per UTC day,
 inside the existing `ade_feature_used` and shared ceilings. The keystroke-rate
 `chat.listMentionSuggestions` read stays untracked by design.
 
+Explicitly regenerating a chat's visible metadata records the existing coarse
+`ade_feature_used` event at the chat service boundary via
+`captureSessionMetadataRegeneratedAnalytics`, with `feature: "chat"`,
+`action: "metadata_regenerated"`, `outcome` (`completed`, `partial`, or
+`failed`), and `source: "runtime"`. This measures the user's explicit choice,
+not menu opens or model attempts. It carries no generated title, lane name,
+status line, prompt, response, model identifier, or raw session/project
+identifier; the normal analytics sanitizer and existing `ade_feature_used`
+limits apply.
+
 Lane “Archive & Reclaim” records the existing coarse `ade_feature_used`
 mutation fact with `feature: "lanes"` and
 `action: "lanes.archiveAndReclaim"` through the same durable `usage_events`

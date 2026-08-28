@@ -3094,6 +3094,34 @@ export type AgentChatUpdateSessionArgs = {
   cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
 };
 
+export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;
+export type AgentChatSessionMetadataField = (typeof AGENT_CHAT_SESSION_METADATA_FIELDS)[number];
+
+export function isAgentChatSessionMetadataField(value: unknown): value is AgentChatSessionMetadataField {
+  return AGENT_CHAT_SESSION_METADATA_FIELDS.some((field) => field === value);
+}
+
+export function normalizeAgentChatSessionMetadataFields(
+  fields?: readonly unknown[] | null,
+): AgentChatSessionMetadataField[] {
+  return Array.from(new Set(
+    (fields ?? AGENT_CHAT_SESSION_METADATA_FIELDS).filter(isAgentChatSessionMetadataField),
+  ));
+}
+
+export type AgentChatRegenerateSessionMetadataArgs = {
+  sessionId: string;
+  /** Defaults to all three fields when omitted. Duplicate fields are ignored. */
+  fields?: AgentChatSessionMetadataField[];
+};
+
+export type AgentChatRegenerateSessionMetadataResult = {
+  sessionId: string;
+  applied: AgentChatSessionMetadataField[];
+  skipped: AgentChatSessionMetadataField[];
+  modelId: string | null;
+};
+
 export type AgentChatSlashCommand = {
   name: string;
   description: string;

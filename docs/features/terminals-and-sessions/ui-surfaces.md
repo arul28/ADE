@@ -959,8 +959,11 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
 
 The right-click menu uses one grouped, liquid-glass menu vocabulary:
 
-- The unlabelled identity block carries Rename (inline text input,
-  `manuallyNamed: true`), optional Set tag, pin, and grid removal.
+- Chat rows put **Rename…**, **Generate chat title**, **Generate lane name**,
+  **Generate status line**, and **Generate all three** in a **Name & status**
+  submenu. Non-chat rows keep Rename in the unlabelled identity block (inline
+  text input, `manuallyNamed: true`), alongside optional Set tag, pin, and grid
+  removal.
 - **Lifecycle** carries runtime stop, Snooze/Wake, and Settle/Un-settle.
 - **Go to** carries lane and optional web navigation.
 - **Copy** is a hover/keyboard submenu for the session ID and deep link.
@@ -979,6 +982,11 @@ The right-click menu uses one grouped, liquid-glass menu vocabulary:
   through the backend settlement transaction; it interrupts the provider and
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
+- Chat metadata generation makes one structured request for all three visible
+  fields and applies only the selected fields. It may intentionally replace a
+  manual title because the menu action is explicit user intent; edits made while
+  the request is running win per field. Generate lane name is disabled for the
+  primary lane, and a busy session disables duplicate generation.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
   and Settle/Unsettle when the runtime is not actively working (same shared
   predicate). A tracked CLI's
@@ -1007,9 +1015,10 @@ A singleton lane has no divider to right-click, so its session menu adds a
 the actions. Menu subpanels share `MenuSubmenu`'s 180 ms open delay, 300 ms
 pointer-safe close grace, viewport clamping, and keyboard navigation.
 
-The rename input uses a local state and submits via
-`sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble
-up to `renameError` in `TerminalsPage`.
+The rename input uses local state. Chat rows submit through
+`agentChat.updateSession({ title, manuallyNamed: true })`; PTY rows submit
+through `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble up
+to `renameError` in `TerminalsPage`.
 
 `Set tag…` is a second inline editor that reuses the same input chrome.
 It appears only for running `claude-chat` sessions (writing a tag needs a
