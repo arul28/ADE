@@ -226,15 +226,22 @@ async function assertNoRuntimeFetchedToolPayload(nodeModulesPath, description) {
   });
 }
 
-async function assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch) {
+async function assertNoForeignCrsqlitePayloads(unpackedPath) {
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-arm64"), "Linux arm64 cr-sqlite payload in macOS package");
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-x64"), "Linux x64 cr-sqlite payload in macOS package");
+  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "win32-x64"), "Windows cr-sqlite payload in macOS package");
+}
+
+async function assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch) {
   const arches = expectedArch === "universal" ? ["arm64", "x64"] : [expectedArch];
   for (const arch of arches) {
     const dylibPath = path.join(unpackedPath, "vendor", "crsqlite", `darwin-${arch}`, "crsqlite.dylib");
     await assertPathExists(dylibPath, `bundled cr-sqlite runtime for ${description}`);
   }
-  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-arm64"), "Linux arm64 cr-sqlite payload in macOS package");
-  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "linux-x64"), "Linux x64 cr-sqlite payload in macOS package");
-  await assertPathMissing(path.join(unpackedPath, "vendor", "crsqlite", "win32-x64"), "Windows cr-sqlite payload in macOS package");
+  const trees = unpackedPaths.length > 0 ? unpackedPaths : [unpackedPath];
+  for (const candidate of trees) {
+    await assertNoForeignCrsqlitePayloads(candidate);
+  }
 }
 
 async function assertBundledAttentionNotch(resourcesPath, description) {
@@ -426,6 +433,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = await resolveRuntimeUnpackedPath(resourcesPath);
+  const unpackedPaths = await resolveRuntimeUnpackedPaths(resourcesPath);
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
@@ -449,7 +457,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertBundledAttentionNotch(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
-  await assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch);
+  await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);
   assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));
   await assertRemoteRuntimeBundle(resourcesPath, description, expectedArch);
   await validatePackageHygiene(appPath, description, expectedArch);

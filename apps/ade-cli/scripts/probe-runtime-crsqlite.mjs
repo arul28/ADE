@@ -37,6 +37,13 @@ function expectedArchiveEntries(target) {
   ];
 }
 
+function tarExtractArgs(archive, entry) {
+  // Never pass `-C <windows-path>`: GNU tar treats `C:` as a remote host, which
+  // is what failed the win32-x64 runtime smoke (`C\:\\Users\\RUNNER~1\\...`).
+  // Callers must spawn with `cwd` set to the destination directory instead.
+  return ["-xzf", archive, entry];
+}
+
 function listArchive(archive) {
   const result = spawnHidden("tar", ["-tzf", archive], { encoding: "utf8" });
   if (result.status !== 0) {
@@ -74,10 +81,14 @@ function isWindowsDeleteLockError(error) {
 
 function extractExtension(archive, entry) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ade-crsqlite-probe-"));
-  const result = spawnHidden("tar", ["-xzf", archive, "-C", tmp, entry], { encoding: "utf8" });
+  const archivePath = path.resolve(archive);
+  const result = spawnHidden("tar", tarExtractArgs(archivePath, entry), {
+    encoding: "utf8",
+    cwd: tmp,
+  });
   if (result.status !== 0) {
     fs.rmSync(tmp, { recursive: true, force: true });
-    throw new Error((result.stderr || `failed to extract ${entry} from ${archive}`).trim());
+    throw new Error((result.stderr || `failed to extract ${entry} from ${archivePath}`).trim());
   }
   return {
     filePath: path.join(tmp, ...entry.replace(/^\.\//, "").split("/")),
@@ -114,6 +125,7 @@ function main() {
     if (!args.target) {
       throw new Error("--archive requires --target.");
     }
+    args.archive = path.resolve(args.archive);
     const listing = listArchive(args.archive);
     const found = expectedArchiveEntries(args.target).find((entry) => listing.includes(entry));
     if (!found) {
@@ -144,7 +156,7 @@ function main() {
   }
 }
 
-export { expectedArchiveEntries };
+export { expectedArchiveEntries, extractExtension, tarExtractArgs };
 
 if (import.meta.url === pathToFileURL(path.resolve(process.argv[1] ?? "")).href) {
   try {
