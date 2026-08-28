@@ -33,7 +33,10 @@ fallback target; the ADE runtime hosts the canonical instances.
 
 | Service | Workstream | Responsibility |
 |---------|-----------|----------------|
-| `laneEnvironmentService.ts` | W1 | Env file templating, docker services, dependency install, mount points, copy paths |
+| `laneEnvironmentService.ts` | W1 | Env file templating, docker services, dependency install, mount points, copy paths, setup script; docker teardown on archive/delete/reclaim; the per-lane init/cleanup queue and the incomplete-init marker |
+| `laneEnvInitMerge.ts` | W1 | Dependency-free merge kernel for `LaneEnvInitConfig` / `LaneOverlayOverrides` (`mergeLaneEnvInitConfig`, `mergeLaneDockerConfig`, `cloneLaneEnvInitConfig`, `mergeLaneOverrides`). Imported by `projectConfigService`, `registerIpc`, the action-domain registry, and the ade-cli sync command service, which each used to carry their own copy. Kept free of service types so config parsing can import it without a cycle. |
+| `laneOverlayContext.ts` | W1 | `resolveLaneOverlayContext` — the one answer for "which lane, which overlay overrides, which env-init config", with the lane's active port lease folded in (`applyLeaseToOverrides`). Used by env init and by every teardown path so two teardowns of the same lane cannot disagree about which compose file to bring down. |
+| `setupScriptConfig.ts` | W2 | Leaf module resolving a `LaneSetupScriptConfig` to the platform's commands / script path (`resolveSetupScriptConfig`) and rejecting script files Windows cannot launch (`unsupportedWindowsScriptPathError`). Lets the executor resolve exactly what the template UI promises without importing template CRUD. |
 | `laneTemplateService.ts` | W2 | CRUD for reusable init recipes, platform-specific setup scripts, default-template selection |
 | `portAllocationService.ts` | W3 | Lease-based port range allocation, conflict detection, orphan recovery |
 | `laneProxyService.ts` | W4 | `*.localhost` reverse proxy, per-lane hostname routes |
@@ -75,7 +78,12 @@ steps in order:
    otherwise there is no step and nothing runs.
 
 Each step is reported through `LaneEnvInitProgress` IPC events with
-status (`pending | running | done | failed`) and a duration.
+status (`pending | running | completed | failed | skipped`) and a
+duration. `skipped` carries a reason rather than a fault — it is what a
+cancelled run marks its remaining steps with — so both the desktop
+(`LaneEnvInitProgress.tsx`) and iOS (`LaneEnvInitProgressView.swift`)
+renderers show a `skipped` step's message in muted text instead of the
+red used for `failed`.
 `CreateLaneDialogHost` decides how that progress is surfaced. In the
 Lanes tab it keeps `CreateLaneDialog` open and renders
 `LaneEnvInitProgress` inline so the user can watch or retry setup in the
@@ -108,7 +116,15 @@ exist, the more specific one wins — a lane runs one setup script.
   `windowsCommands` / `windowsScriptPath` on Windows and
   `unixCommands` / `unixScriptPath` elsewhere, each falling back to the
   generic `commands` / `scriptPath`. If nothing resolves for the current
-  platform, the step is not created at all.
+  platform, the step is not created at all. "Is there work for *this*
+  platform" is a different question from "is a script configured at
+  all", and only the second one may decide what persists:
+  normalization, merging, and the config that ships to other hosts use
+  the platform-agnostic `laneSetupScriptHasWork` predicate (exported
+  from `src/shared/types/config.ts`), so a `windowsCommands`-only script
+  survives a save made on macOS. A config carrying only
+  `injectPrimaryPath` fails both tests — it configures nothing to run,
+  so it is not a setup script.
 - **Shell semantics (commands).** Configured `commands` are
   user-authored shell, not argv: they run through `/bin/sh -c` on
   macOS/Linux and through `cmd.exe /d /s /c` (via
@@ -125,14 +141,21 @@ exist, the more specific one wins — a lane runs one setup script.
   **A POSIX script file must therefore be executable (`chmod +x`) and
   start with a shebang** — without both, the step fails with the OS
   error (`EACCES` / `ENOEXEC`) rather than being interpreted by a
-  shell.
+  shell. On Windows the reverse case is caught before spawning:
+  `unsupportedWindowsScriptPathError` fails the step for a script whose
+  extension Windows cannot launch (anything outside `.ps1`, `.cmd`,
+  `.bat`, `.exe`, `.com` — a `scripts/setup.sh` or an extension-less
+  path), with a message naming `windowsScriptPath` / `windowsCommands`
+  as the fix, instead of a raw `ENOEXEC` that reads like an ADE bug.
 - **Trust gate.** `laneEnvInit` and `laneTemplates` both merge in from
   the repo-committed `.ade/ade.yaml`, so the setup-script step consults
   `projectConfigService.getExecutableConfig()` first — the same gate
   test suites use. While the project's shared config is untrusted the
   step **fails** with "This project's shared configuration isn't trusted
   yet…" instead of executing or silently skipping. Trust the shared
-  config in Settings to allow it.
+  config in Settings to allow it. Only `ADE_TRUST_REQUIRED` is handled
+  that way; any other config error (a malformed `ade.yaml`) propagates
+  and fails the step with its own message.
 - **Order.** Configured commands run first, in order, then the script
   file if one is set. `scriptPath` is resolved against the project root
   with the same symlink-aware traversal check as env files.
@@ -259,8 +282,11 @@ The matcher in `src/main/services/config/laneOverlayMatcher.ts` evaluates polici
 at lane creation:
 
 - `portRange`, `proxyHostname`, `computeBackend`: last-wins merge
-- `envInit`: deep-merged (env files, docker configs, dependencies,
-  and mount points concatenate across policies)
+- `envInit`: deep-merged through `laneEnvInitMerge.ts` — env files,
+  dependencies, mount points, and copy paths concatenate across
+  policies; docker configs shallow-merge (a later `services` list
+  replaces an earlier one); `setupScript` is last-wins, because a lane
+  runs exactly one setup script
 
 `computeBackend` is retained for back-compat with older configs but
 is no longer part of the active lane runtime direction.

@@ -140,7 +140,7 @@ const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
  * than executing it — or silently skipping, which would look like success.
  */
 const SHARED_CONFIG_UNTRUSTED_MESSAGE =
-  "This project's shared configuration isn't trusted yet. Trust it in Settings to run setup scripts.";
+  "This project's shared configuration isn't trusted yet. Trust it in ADE's desktop Settings to run setup scripts.";
 
 export function createLaneEnvironmentService({
   projectRoot,
