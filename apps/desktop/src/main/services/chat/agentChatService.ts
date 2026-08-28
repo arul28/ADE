@@ -17603,12 +17603,35 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     options: { preserveRecoverablePlanApprovals?: boolean } = {},
   ): void => {
+    const resolvedItemIds = new Set<string>();
+    const resolveOnce = (itemId: string, turnId: string | null): void => {
+      if (resolvedItemIds.has(itemId)) return;
+      resolvedItemIds.add(itemId);
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId,
+        questions: [],
+      });
+    };
+    // Answering a plan approval stages the follow-up and deliberately leaves
+    // the approval entry in place until the drain, so one item can sit in both
+    // stores at once. Take the staged responses first: an item with one was
+    // already answered, so it is neither a card to preserve nor a second
+    // receipt to write.
+    const stagedFollowups = runtime.pendingPlanFollowups.splice(0);
+    const stagedItemIds = new Set(stagedFollowups.map((followup) => followup.itemId));
+
     for (const [itemId, pending] of [...runtime.approvals]) {
       runtime.approvals.delete(itemId);
       // The entry goes either way — the runtime holding it is finished. What
       // the flag preserves is the *card*, by withholding its receipt, which is
       // what `respondToInput` needs to rebuild it from the transcript.
-      if (options.preserveRecoverablePlanApprovals && pending.kind === "plan_approval") continue;
+      if (
+        options.preserveRecoverablePlanApprovals
+        && pending.kind === "plan_approval"
+        && !stagedItemIds.has(itemId)
+      ) continue;
       // A plan approval is synthesized locally from the plan item, so there is
       // no server request behind it to answer.
       if (runtime.process.stdin?.writable && pending.kind !== "plan_approval") {
@@ -17635,20 +17658,10 @@ export function createAgentChatService(args: {
           // The turn interrupt may already have closed the server request.
         }
       }
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: "cancel",
-        turnId: pending.request?.turnId ?? null,
-        questions: [],
-      });
+      resolveOnce(itemId, pending.request?.turnId ?? null);
     }
-    for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-      emitPendingInputResolved(managed, {
-        itemId: followup.itemId,
-        decision: "cancel",
-        turnId: followup.turnId,
-        questions: [],
-      });
+    for (const followup of stagedFollowups) {
+      resolveOnce(followup.itemId, followup.turnId);
     }
     // A Codex turn owns the `ade` cards raised by ADE's own tools during it as
     // well as its own, and both block the next send.

@@ -29597,6 +29597,63 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
     });
 
+    it("writes one receipt when stopping a plan approval whose response is already staged", async () => {
+      // Answering a plan approval mid-turn stages the follow-up but leaves the
+      // approval entry in place, so the item sits in both stores at once. Stop
+      // does not run settlement's de-duplication, so the helper has to be the
+      // thing that keeps it to one durable receipt.
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-staged-receipt-1",
+            type: "plan",
+            text: "<proposed_plan>Answer this while the turn still runs.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+
+      // Still mid-turn, so the response is staged rather than dispatched.
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: approvalEvent.event.itemId,
+        decision: "accept",
+      });
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(1);
+    });
+
     it("declines an outstanding Codex command approval on stop and resolves it exactly once", async () => {
       // `edit` has to stay `edit`: a session that lands in `plan` refuses
       // provider-native approvals outright and never raises the card.
