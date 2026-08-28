@@ -3182,6 +3182,15 @@ type ManagedChatSession = {
       responseText?: string | null;
     }) => void;
   }>;
+  /**
+   * While a settlement runs, every item id it has already resolved. Settlement
+   * drains several card stores and then emits a receipt for each card it
+   * remembered up front, so without this the same card gets two
+   * `pending_input_resolved` events — both durable, both synced.
+   */
+  pendingInputSettlementResolvedIds?: Set<string>;
+  /** The settle in flight for this session, so a second one joins it. */
+  pendingInputSettlement?: Promise<void>;
   /** Live HTTP MCP leases, at most one per tool set. */
   httpMcpServers: Partial<Record<"orchestration" | "cto", HttpMcpLease>>;
   activeBashControllers: Set<AbortController>;
@@ -16909,6 +16918,7 @@ export function createAgentChatService(args: {
       ...(recordedAnswers ? { answers: recordedAnswers } : {}),
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
+    managed.pendingInputSettlementResolvedIds?.add(args.itemId);
     persistChatState(managed);
   };
 
@@ -16970,74 +16980,6 @@ export function createAgentChatService(args: {
     if (!isSessionCodexFullAuto(managed.session)) return;
     for (const [itemId, pending] of [...runtime.approvals.entries()]) {
       autoApproveCodexRuntimeApproval(managed, runtime, itemId, pending);
-    }
-  };
-
-  /**
-   * Settle every Codex card still waiting on the user, so a turn that ends
-   * early cannot leave one behind.
-   *
-   * A Codex approval is an open JSON-RPC server request: the app-server holds
-   * it until ADE answers, and `runtime.approvals` is the only record of that
-   * waiter. Each path that ends a turn early therefore has to answer the
-   * request, drop the entry, and emit one `pending_input_resolved` receipt.
-   * Clearing the map alone leaves the chat rendering a card nobody can answer,
-   * keeps `hasLivePendingInput` reporting the session as blocked so the next
-   * send is refused, and strands the app-server on a reply that never comes.
-   * `pendingPlanFollowups` hold an already-clicked plan response staged to
-   * drain on the next idle; an early end has to cancel those for the same
-   * reason.
-   *
-   * The map is cleared as each entry is settled, so a second call — the
-   * app-server's own `turn/aborted` landing after a local interrupt already
-   * settled — finds nothing and cannot resolve the same card twice.
-   */
-  const settleCodexPendingInputs = (
-    managed: ManagedChatSession,
-    runtime: CodexRuntime,
-  ): void => {
-    for (const [itemId, pending] of [...runtime.approvals]) {
-      runtime.approvals.delete(itemId);
-      // A plan approval is synthesized locally from the plan item, so there is
-      // no server request behind it to answer.
-      if (runtime.process.stdin.writable && pending.kind !== "plan_approval") {
-        try {
-          if (pending.kind === "mcp_elicitation") {
-            runtime.sendResponse(pending.requestId, {
-              action: "cancel",
-              content: null,
-              _meta: null,
-            });
-          } else if (pending.kind === "permissions") {
-            runtime.sendResponse(pending.requestId, {
-              permissions: {},
-              scope: "turn",
-            });
-          } else if (pending.kind === "structured_question") {
-            runtime.sendResponse(pending.requestId, { answers: {} });
-          } else {
-            runtime.sendResponse(pending.requestId, {
-              decision: mapApprovalDecisionForCodex("decline"),
-            });
-          }
-        } catch {
-          // The turn interrupt may already have closed the server request.
-        }
-      }
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: "cancel",
-        turnId: pending.request?.turnId ?? null,
-        questions: [],
-      });
-    }
-    for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-      emitPendingInputResolved(managed, {
-        itemId: followup.itemId,
-        decision: "cancel",
-        turnId: followup.turnId,
-        questions: [],
-      });
     }
   };
 
@@ -17596,19 +17538,16 @@ export function createAgentChatService(args: {
    * blocked so the next send is refused, and a late answer would reply into a
    * session that is already gone.
    *
-   * Pass every source the ending turn owns. A Codex turn owns both its own
-   * `codex` cards and the `ade` cards raised by ADE's own tools during it, so
+   * Pass every source the ending turn owns. A turn owns both its provider's
+   * own cards and the `ade` cards raised by ADE's own tools during it, so
    * cancelling one source alone still leaves the session blocked.
    */
   const cancelPendingInputsFrom = (
     managed: ManagedChatSession,
-    source: PendingInputSource | readonly PendingInputSource[],
+    ...sources: [PendingInputSource, ...PendingInputSource[]]
   ): void => {
-    const sources = new Set<PendingInputSource>(
-      typeof source === "string" ? [source] : source,
-    );
     for (const [itemId, pending] of [...managed.localPendingInputs]) {
-      if (!sources.has(pending.request.source)) continue;
+      if (!sources.includes(pending.request.source)) continue;
       managed.localPendingInputs.delete(itemId);
       pending.resolve({ decision: "cancel" });
       emitPendingInputResolved(managed, {
@@ -17618,6 +17557,102 @@ export function createAgentChatService(args: {
         questions: pending.request.questions,
       });
     }
+  };
+
+  /**
+   * Settle every Claude approval still waiting on the user.
+   *
+   * A Claude approval is a `canUseTool` callback promise: it can only be
+   * answered on the query that raised it, so once that query is finished the
+   * waiter would otherwise hang forever and hold the session's gates shut.
+   */
+  const settleClaudePendingApprovals = (runtime: ClaudeRuntime): void => {
+    for (const pending of runtime.approvals.values()) {
+      pending.resolve({ decision: "cancel" });
+    }
+    runtime.approvals.clear();
+  };
+
+  /**
+   * Settle every Codex card still waiting on the user, so a turn that ends
+   * early cannot leave one behind.
+   *
+   * A Codex approval is an open JSON-RPC server request: the app-server holds
+   * it until ADE answers, and `runtime.approvals` is the only record of that
+   * waiter. Each path that ends a turn early therefore has to answer the
+   * request, drop the entry, and emit one `pending_input_resolved` receipt.
+   * Clearing the map alone leaves the chat rendering a card nobody can answer,
+   * keeps `hasLivePendingInput` reporting the session as blocked so the next
+   * send is refused, and strands the app-server on a reply that never comes.
+   * `pendingPlanFollowups` hold an already-clicked plan response staged to
+   * drain on the next idle; an early end has to cancel those for the same
+   * reason.
+   *
+   * The map is cleared as each entry is settled, so a second call — the
+   * app-server's own `turn/aborted` landing after a local interrupt already
+   * settled — finds nothing and cannot resolve the same card twice.
+   *
+   * `preserveRecoverablePlanApprovals` is for the paths where the runtime died
+   * rather than the user ending the turn. A plan approval outlives its runtime
+   * by design: `respondToInput` rebuilds it from the transcript and stages the
+   * follow-up, so a crash or an idle teardown has to leave that card clickable.
+   * Every other kind dies with the process and still needs its receipt.
+   */
+  const settleCodexPendingInputs = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    options: { preserveRecoverablePlanApprovals?: boolean } = {},
+  ): void => {
+    for (const [itemId, pending] of [...runtime.approvals]) {
+      runtime.approvals.delete(itemId);
+      // The entry goes either way — the runtime holding it is finished. What
+      // the flag preserves is the *card*, by withholding its receipt, which is
+      // what `respondToInput` needs to rebuild it from the transcript.
+      if (options.preserveRecoverablePlanApprovals && pending.kind === "plan_approval") continue;
+      // A plan approval is synthesized locally from the plan item, so there is
+      // no server request behind it to answer.
+      if (runtime.process.stdin?.writable && pending.kind !== "plan_approval") {
+        try {
+          if (pending.kind === "mcp_elicitation") {
+            runtime.sendResponse(pending.requestId, {
+              action: "cancel",
+              content: null,
+              _meta: null,
+            });
+          } else if (pending.kind === "permissions") {
+            runtime.sendResponse(pending.requestId, {
+              permissions: {},
+              scope: "turn",
+            });
+          } else if (pending.kind === "structured_question") {
+            runtime.sendResponse(pending.requestId, { answers: {} });
+          } else {
+            runtime.sendResponse(pending.requestId, {
+              decision: mapApprovalDecisionForCodex("decline"),
+            });
+          }
+        } catch {
+          // The turn interrupt may already have closed the server request.
+        }
+      }
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId: pending.request?.turnId ?? null,
+        questions: [],
+      });
+    }
+    for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+      emitPendingInputResolved(managed, {
+        itemId: followup.itemId,
+        decision: "cancel",
+        turnId: followup.turnId,
+        questions: [],
+      });
+    }
+    // A Codex turn owns the `ade` cards raised by ADE's own tools during it as
+    // well as its own, and both block the next send.
+    cancelPendingInputsFrom(managed, "codex", "ade");
   };
 
   const CURSOR_PERMISSION_WAITER_CLOSED_REASON =
@@ -17679,15 +17714,7 @@ export function createAgentChatService(args: {
         runtime.pending,
         `Codex app-server runtime was torn down (${openCodeReason}).`,
       );
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        emitPendingInputResolved(managed, {
-          itemId: followup.itemId,
-          decision: "cancel",
-          turnId: followup.turnId,
-          questions: [],
-        });
-      }
-      runtime.approvals.clear();
+      settleCodexPendingInputs(managed, runtime, { preserveRecoverablePlanApprovals: true });
       runtime.codexAgentIndexByTurn.clear();
       if (shouldMarkInterrupted) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
@@ -17780,10 +17807,7 @@ export function createAgentChatService(args: {
       runtime.taskToolInputByToolUseId.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
-      for (const pending of runtime.approvals.values()) {
-        pending.resolve({ decision: "cancel" });
-      }
-      runtime.approvals.clear();
+      settleClaudePendingApprovals(runtime);
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "opencode") {
@@ -17823,7 +17847,7 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       rt.interrupted = true;
       cancelQueuedSteers(managed, rt, "interrupted");
-      cancelPendingInputsFrom(managed, "pi");
+      cancelPendingInputsFrom(managed, "pi", "ade");
       if (preserveProviderResumeState) persistChatState(managed);
       if (isPiSdkPooledAlive(rt.sdk)) {
         void rt.sdk.abort().catch(() => {});
@@ -24780,7 +24804,7 @@ export function createAgentChatService(args: {
         // TUI or CLI on the same server aborts, `session.error` sets
         // `interrupted`, and the loop settles here instead of throwing. Without
         // this call that second route stranded the card.
-        cancelPendingInputsFrom(managed, "opencode");
+        cancelPendingInputsFrom(managed, "opencode", "ade");
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
@@ -24838,7 +24862,7 @@ export function createAgentChatService(args: {
       setOpenCodeRuntimeBusy(runtime, false);
       runtime.activeTurnId = null;
       runtime.eventAbortController = null;
-      cancelPendingInputsFrom(managed, "opencode");
+      cancelPendingInputsFrom(managed, "opencode", "ade");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
@@ -28619,7 +28643,8 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       runtime.pendingTurnPlanningApprovalGuarded = null;
-      runtime.approvals.clear();
+      // The thread is gone, so nothing here can be recovered or answered later.
+      settleCodexPendingInputs(managed, runtime);
       await interruptActiveCodexSubagentTurns(managed, runtime);
       markSessionIdleWithFreshCache(managed);
       if (managed.session.threadId === deletedThreadId) {
@@ -29611,6 +29636,15 @@ export function createAgentChatService(args: {
       });
     });
 
+    // A replaced runtime's process can exit long after its successor started.
+    // The approvals settled here are this runtime's, but the local cards belong
+    // to the session, so settling from a stale handler would cancel a card the
+    // live turn is waiting on.
+    const settleThisRuntimesCardsIfStillCurrent = (): void => {
+      if (managed.runtime && managed.runtime !== runtime) return;
+      settleCodexPendingInputs(managed, runtime, { preserveRecoverablePlanApprovals: true });
+    };
+
     proc.on("error", (error) => {
       const message = `Codex app-server failed to start: ${error instanceof Error ? error.message : String(error)}`;
       logger.warn("agent_chat.codex_spawn_failed", {
@@ -29622,15 +29656,7 @@ export function createAgentChatService(args: {
       });
 
       rejectPendingCodexRequests(pending, message);
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        emitPendingInputResolved(managed, {
-          itemId: followup.itemId,
-          decision: "cancel",
-          turnId: followup.turnId,
-          questions: [],
-        });
-      }
-      runtime.approvals.clear();
+      settleThisRuntimesCardsIfStillCurrent();
       runtime.suppressExitError = true;
 
       if (managed.closed || managed.session.status === "ended") return;
@@ -29652,15 +29678,7 @@ export function createAgentChatService(args: {
 
       rejectPendingCodexRequests(pending, message);
 
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        emitPendingInputResolved(managed, {
-          itemId: followup.itemId,
-          decision: "cancel",
-          turnId: followup.turnId,
-          questions: [],
-        });
-      }
-      runtime.approvals.clear();
+      settleThisRuntimesCardsIfStillCurrent();
 
       if (runtime.suppressExitError) return;
       if (cleanExit) return;
@@ -32559,12 +32577,8 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId: interruptedTurnId });
         emitChatEvent(managed, { type: "done", turnId: interruptedTurnId, status: "interrupted" });
       }
-      // Approvals registered through canUseTool can only be answered on their
-      // now-dead query; settle them like teardown so the gate below passes.
-      for (const pending of runtime.approvals.values()) {
-        pending.resolve({ decision: "cancel" });
-      }
-      runtime.approvals.clear();
+      // Settle the canUseTool approvals so the gate below passes.
+      settleClaudePendingApprovals(runtime);
       await clearClaudeSubagentStartIdsAfterSettlement(
         runtime,
         stopActiveClaudeSubagents(
@@ -41574,7 +41588,7 @@ export function createAgentChatService(args: {
         rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
-      cancelPendingInputsFrom(managed, "opencode");
+      cancelPendingInputsFrom(managed, "opencode", "ade");
       return result;
     }
 
@@ -41628,7 +41642,7 @@ export function createAgentChatService(args: {
         // ignore
       }
       if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
-      cancelPendingInputsFrom(managed, "pi");
+      cancelPendingInputsFrom(managed, "pi", "ade");
       persistChatState(managed);
       return result;
     }
@@ -41685,17 +41699,25 @@ export function createAgentChatService(args: {
       // completes and `activeTurnId` is already null, so the early return
       // below is the common case for the one card that blocks every later
       // send until it is answered.
-      const settleCodexCardsForInterrupt = (): void => {
+      //
+      // `stop_only` stops the work without discarding what the user still owns,
+      // exactly as it spares queued follow-ups above. An unanswered card is the
+      // user's to answer, so a settle teardown leaves it alone; the user-facing
+      // dismissal runs through `dismissPendingInputForSettlement` instead. That
+      // only spares the arms below, where no turn is running — a card attached
+      // to a turn that IS running still goes when the app-server aborts it,
+      // because the request behind the card dies with the turn either way.
+      const settleCardsIfClearing = (): void => {
+        if (mode !== "stop_and_clear") return;
         settleCodexPendingInputs(managed, runtime);
-        cancelPendingInputsFrom(managed, ["codex", "ade"]);
       };
       if (!managed.session.threadId) {
-        settleCodexCardsForInterrupt();
+        settleCardsIfClearing();
         persistChatState(managed);
         return result;
       }
       if (!runtime.activeTurnId) {
-        settleCodexCardsForInterrupt();
+        settleCardsIfClearing();
         await interruptActiveCodexSubagentTurns(managed, runtime);
         failOpenCodexCompactions(managed, runtime, "interrupted");
         persistChatState(managed);
@@ -41756,11 +41778,10 @@ export function createAgentChatService(args: {
           return result;
         }
       }
-      // `turn/aborted` normally settles these on its way in, and does so first
-      // when it wins the race. Settling again is a no-op once the map is
-      // empty, and it is the only settle that runs when the app-server
-      // acknowledges the interrupt without ever sending the abort.
-      settleCodexCardsForInterrupt();
+      // This is the settle that runs when the app-server acknowledges the
+      // interrupt without ever sending `turn/aborted`; when the abort does
+      // land first, it has already emptied the map.
+      settleCardsIfClearing();
       await interruptActiveCodexSubagentTurns(managed, runtime);
       failOpenCodexCompactions(managed, runtime, "interrupted");
       persistChatState(managed);
@@ -41908,11 +41929,7 @@ export function createAgentChatService(args: {
         result.recoveryExpiresAt = recovery.expiresAt;
       }
     }
-    // Drain pending approvals so their promises settle instead of hanging forever
-    for (const pending of runtime.approvals.values()) {
-      pending.resolve({ decision: "cancel" });
-    }
-    runtime.approvals.clear();
+    settleClaudePendingApprovals(runtime);
 
     persistChatState(managed);
     logger.info("agent_chat.turn_interrupt_completed", {
@@ -43928,10 +43945,10 @@ export function createAgentChatService(args: {
    * follow-ups, and persist the cleared awaitingInput marker even when the
    * original provider waiter disappeared during restart/recovery.
    */
-  const dismissPendingInputForSettlement = async (
-    { sessionId }: { sessionId: string },
+  const runPendingInputSettlement = async (
+    managed: ManagedChatSession,
   ): Promise<void> => {
-    const managed = ensureManagedSession(sessionId);
+    const sessionId = managed.session.id;
     const persisted = readPersistedState(sessionId);
     const pendingItems = new Map<string, string | null>();
     const rememberPendingItem = (itemId: string | null | undefined, turnId?: string | null): void => {
@@ -43943,97 +43960,110 @@ export function createAgentChatService(args: {
       );
     };
 
-    for (const [itemId, pending] of managed.localPendingInputs) {
-      rememberPendingItem(itemId, pending.request.turnId);
-    }
-    const runtime = managed.runtime;
-    if (runtime?.kind === "codex") {
-      for (const [itemId, pending] of runtime.approvals) {
-        rememberPendingItem(itemId, pending.request?.turnId);
+    // Remembering a card here is how a restored session still gets a receipt
+    // for a waiter its runtime no longer holds. The drains below also emit for
+    // the cards they find, so collect what they resolved and skip those at the
+    // end rather than sending a second event for the same card. The sink is
+    // armed under try/finally: leaving it set after a throw would silence the
+    // receipts of every later settle on this session.
+    const alreadyResolved = new Set<string>();
+    managed.pendingInputSettlementResolvedIds = alreadyResolved;
+    try {
+      for (const [itemId, pending] of managed.localPendingInputs) {
+        rememberPendingItem(itemId, pending.request.turnId);
       }
-      // A previously-clicked plan response must never drain after settlement.
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        rememberPendingItem(followup.itemId, followup.turnId);
+      const runtime = managed.runtime;
+      if (runtime?.kind === "codex") {
+        for (const [itemId, pending] of runtime.approvals) {
+          rememberPendingItem(itemId, pending.request?.turnId);
+        }
+        // A previously-clicked plan response must never drain after settlement.
+        // Take the staged follow-ups now, before the first await: a
+        // `turn/completed` landing during the interrupt would otherwise drain
+        // one and start a fresh turn on the session the user just settled.
+        for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+          rememberPendingItem(followup.itemId, followup.turnId);
+        }
+      } else if (runtime?.kind === "claude") {
+        for (const [itemId, pending] of runtime.approvals) {
+          rememberPendingItem(itemId, pending.request?.turnId);
+        }
+      } else if (runtime?.kind === "opencode") {
+        for (const [itemId, pending] of runtime.pendingApprovals) {
+          rememberPendingItem(itemId, pending.request?.turnId);
+        }
+      } else if (runtime?.kind === "cursor" || runtime?.kind === "droid") {
+        for (const itemId of runtime.permissionWaiters.keys()) {
+          rememberPendingItem(itemId, runtime.activeTurnId);
+        }
       }
-    } else if (runtime?.kind === "claude") {
-      for (const [itemId, pending] of runtime.approvals) {
-        rememberPendingItem(itemId, pending.request?.turnId);
+      if (persisted?.awaitingInput === true) {
+        rememberPendingItem(await latestPendingInputItemIdForSession(sessionId, managed));
       }
-    } else if (runtime?.kind === "opencode") {
-      for (const [itemId, pending] of runtime.pendingApprovals) {
-        rememberPendingItem(itemId, pending.request?.turnId);
-      }
-    } else if (runtime?.kind === "cursor" || runtime?.kind === "droid") {
-      for (const itemId of runtime.permissionWaiters.keys()) {
-        rememberPendingItem(itemId, runtime.activeTurnId);
-      }
-    }
-    if (persisted?.awaitingInput === true) {
-      rememberPendingItem(await latestPendingInputItemIdForSession(sessionId, managed));
-    }
 
-    if (runtime) {
-      try {
-        await interrupt({ sessionId });
-      } catch (error) {
-        // Provider interruption is best-effort. The local lifecycle contract
-        // still has to clear a restored/stale request and settle the card.
-        logger.warn("agent_chat.pending_input_settle_interrupt_failed", {
-          sessionId,
-          provider: managed.session.provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
+      if (runtime) {
+        try {
+          await interrupt({ sessionId });
+        } catch (error) {
+          // Provider interruption is best-effort. The local lifecycle contract
+          // still has to clear a restored/stale request and settle the card.
+          logger.warn("agent_chat.pending_input_settle_interrupt_failed", {
+            sessionId,
+            provider: managed.session.provider,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
-    }
 
-    for (const pending of managed.localPendingInputs.values()) {
-      pending.resolve({ decision: "cancel" });
-    }
-    managed.localPendingInputs.clear();
-
-    if (runtime?.kind === "codex") {
-      // The interrupt above settles these too. This is the net for the cases
-      // where it could not run or bailed early: no runtime, no thread id, or a
-      // provider interrupt that threw and was only logged.
-      settleCodexPendingInputs(managed, runtime);
-    } else if (runtime?.kind === "claude") {
-      for (const pending of runtime.approvals.values()) {
+      for (const pending of managed.localPendingInputs.values()) {
         pending.resolve({ decision: "cancel" });
       }
-      runtime.approvals.clear();
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-    } else if (runtime?.kind === "opencode") {
-      runtime.pendingApprovals.clear();
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-    } else if (runtime?.kind === "cursor") {
-      for (const waiter of runtime.permissionWaiters.values()) {
-        cancelCursorPermissionWaiter(waiter, "Cursor input was dismissed because the session was settled.");
+      managed.localPendingInputs.clear();
+
+      if (runtime?.kind === "codex") {
+        // The interrupt above settles these too. This is the net for the cases
+        // where it could not run or bailed early: no runtime, no thread id, or a
+        // provider interrupt that threw and was only logged.
+        settleCodexPendingInputs(managed, runtime);
+      } else if (runtime?.kind === "claude") {
+        settleClaudePendingApprovals(runtime);
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+      } else if (runtime?.kind === "opencode") {
+        runtime.pendingApprovals.clear();
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+      } else if (runtime?.kind === "cursor") {
+        for (const waiter of runtime.permissionWaiters.values()) {
+          cancelCursorPermissionWaiter(waiter, "Cursor input was dismissed because the session was settled.");
+        }
+        runtime.permissionWaiters.clear();
+        clearCursorSdkSilenceWatch(runtime);
+        // The interrupt above is best-effort and its failure is only logged, so
+        // clearing `busy` here can leave a run still registered as active on the
+        // Cursor agent. Always arm the one-shot expiry: interrupt may already
+        // have dropped ADE's busy flag while the agent-side run is still live,
+        // and the next send must expire that run rather than bounce as busy.
+        // Settlement is a deliberate abandonment, unlike a normal send, which
+        // must never kill a turn that is genuinely still working.
+        managed.cursorSdkForceExpireNextSend = true;
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.activeCloudRunId = null;
+      } else if (runtime?.kind === "droid") {
+        for (const waiter of runtime.permissionWaiters.values()) {
+          cancelDroidPermissionWaiter(waiter, "Droid input was dismissed because the session was settled.");
+        }
+        runtime.permissionWaiters.clear();
+        runtime.busy = false;
+        runtime.activeTurnId = null;
       }
-      runtime.permissionWaiters.clear();
-      clearCursorSdkSilenceWatch(runtime);
-      // The interrupt above is best-effort and its failure is only logged, so
-      // clearing `busy` here can leave a run still registered as active on the
-      // Cursor agent. Always arm the one-shot expiry: interrupt may already
-      // have dropped ADE's busy flag while the agent-side run is still live,
-      // and the next send must expire that run rather than bounce as busy.
-      // Settlement is a deliberate abandonment, unlike a normal send, which
-      // must never kill a turn that is genuinely still working.
-      managed.cursorSdkForceExpireNextSend = true;
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-      runtime.activeCloudRunId = null;
-    } else if (runtime?.kind === "droid") {
-      for (const waiter of runtime.permissionWaiters.values()) {
-        cancelDroidPermissionWaiter(waiter, "Droid input was dismissed because the session was settled.");
-      }
-      runtime.permissionWaiters.clear();
-      runtime.busy = false;
-      runtime.activeTurnId = null;
+    } finally {
+      managed.pendingInputSettlementResolvedIds = undefined;
     }
 
     for (const [itemId, turnId] of pendingItems) {
+      if (alreadyResolved.has(itemId)) continue;
       emitPendingInputResolved(managed, {
         itemId,
         decision: "cancel",
@@ -44043,6 +44073,28 @@ export function createAgentChatService(args: {
     }
     markSessionIdleWithFreshCache(managed);
     persistChatState(managed);
+  };
+
+  const dismissPendingInputForSettlement = async (
+    { sessionId }: { sessionId: string },
+  ): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    // Two settles racing on one session — a double-click, or the desktop and
+    // the phone dismissing at once — would each overwrite the other's resolved
+    // ids and reintroduce the duplicate receipts they exist to prevent.
+    // Settling twice at once means nothing, so the second caller joins the
+    // first rather than starting a second pass. Every await inside the pass is
+    // bounded by a request timeout; a future unbounded one would strand every
+    // later settle on this session behind a promise that never resolves.
+    const inFlight = managed.pendingInputSettlement;
+    if (inFlight) return inFlight;
+    const settlement = runPendingInputSettlement(managed);
+    managed.pendingInputSettlement = settlement;
+    try {
+      await settlement;
+    } finally {
+      managed.pendingInputSettlement = undefined;
+    }
   };
 
   const respondToInput = async ({
