@@ -165,8 +165,12 @@ for the lane's compose project. It runs on all four lifecycle paths:
 **What "the lane's compose project" means, exactly.** Every teardown
 path resolves the config the same way, through
 `laneRuntimeLifecycle.buildLaneEnvTeardown` →
-`laneEnvInitMerge.resolveLaneOverlayContext`: project-level
-`laneEnvInit` merged with the matching lane overlay overrides. **A
+`laneOverlayContext.resolveLaneOverlayContext`: project-level
+`laneEnvInit` merged with the matching lane overlay overrides. That
+resolver lives in `laneOverlayContext.ts` rather than in the merge
+kernel `laneEnvInitMerge.ts`, which stays free of service types so
+`projectConfigService` can import it without dragging the lane services
+(and an import cycle) in with it. **A
 `docker.composePath` configured only on a lane template is not covered.**
 `applyTemplate` composes it up, but the applied template is not
 persisted per lane, so no teardown resolver can see it — archive,

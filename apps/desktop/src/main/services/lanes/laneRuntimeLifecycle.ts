@@ -229,16 +229,17 @@ type LaneRestoreContext = {
 async function resolveRestoreContext(
   dependencies: LaneRuntimeLifecycleDependencies,
   laneId: string,
-  options: { lease?: PortLease | null } = {},
 ): Promise<LaneRestoreContext | null> {
   const environmentService = dependencies.laneEnvironmentService;
   const projectConfigService = dependencies.projectConfigService;
   if (!environmentService || !projectConfigService) return null;
 
+  // No lease is threaded through: `ensureActiveLanePortLease` has already
+  // updated the allocator, and the allocator's own `getLease` is what
+  // `resolveLaneOverlayContext` reads.
   const { lane, overrides, envInitConfig } = await resolveLaneOverlayContext(
     { ...dependencies, projectConfigService, laneEnvironmentService: environmentService },
     laneId,
-    options.lease ? { lease: options.lease } : {},
   );
   return { lane, overrides, envInitConfig, environmentService };
 }
@@ -269,11 +270,12 @@ export async function restoreUnarchivedLaneDocker(
   // strands) a port lease it has no use for.
   if (!context?.envInitConfig?.docker) return;
 
-  const lease = await ensureActiveLanePortLease(dependencies, laneId);
+  await ensureActiveLanePortLease(dependencies, laneId);
 
-  // Re-resolve with the lease folded into the overrides — compose files are
-  // templated with `PORT_RANGE_START`/`PORT`, so bringing the stack up without
-  // one would bind the fallback range and leave the proxy pointing elsewhere.
+  // Re-resolve now that the lease exists so it folds into the overrides —
+  // compose files are templated with `PORT_RANGE_START`/`PORT`, so bringing the
+  // stack up without one would bind the fallback range and leave the proxy
+  // pointing elsewhere.
   //
   // This restore is deliberately not awaited by its caller, so an archive can
   // land in the window since the first resolve. Check the lane is still active
@@ -283,7 +285,7 @@ export async function restoreUnarchivedLaneDocker(
     releaseAbortedRestoreLease(dependencies, laneId);
     return;
   }
-  const leased = await resolveRestoreContext(dependencies, laneId, { lease });
+  const leased = await resolveRestoreContext(dependencies, laneId);
   const docker = leased?.envInitConfig?.docker;
   if (!leased || !docker) {
     releaseAbortedRestoreLease(dependencies, laneId);
@@ -296,9 +298,10 @@ export async function restoreRecreatedLaneRuntime(
   dependencies: LaneRuntimeLifecycleDependencies,
   laneId: string,
 ): Promise<void> {
-  // `ensureActiveLanePortLease` resolves (and asserts) the active lane itself.
-  const lease = await ensureActiveLanePortLease(dependencies, laneId);
-  const context = await resolveRestoreContext(dependencies, laneId, { lease });
+  // `ensureActiveLanePortLease` resolves (and asserts) the active lane itself,
+  // and leaves the lease on the allocator for the overlay context to read.
+  await ensureActiveLanePortLease(dependencies, laneId);
+  const context = await resolveRestoreContext(dependencies, laneId);
   if (!context?.envInitConfig) return;
   await context.environmentService.initLaneEnvironment(
     context.lane,

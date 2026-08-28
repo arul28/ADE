@@ -69,11 +69,12 @@ describe("laneEnvironmentService", () => {
     // supplies a config service that always allows execution and each trust
     // test passes its own.
     projectConfigService: { getExecutableConfig: () => unknown } = { getExecutableConfig: () => ({}) },
+    logger: any = createLogger(),
   ) {
     return createLaneEnvironmentService({
       projectRoot,
       adeDir,
-      logger: createLogger(),
+      logger,
       broadcastEvent: (ev) => events.push(ev),
       projectConfigService
     });
@@ -623,6 +624,89 @@ describe("laneEnvironmentService", () => {
 
         await Promise.all([slow, fast]);
         expect(order).toEqual(["fast", "slow"]);
+      } finally {
+        removeStub();
+      }
+    });
+
+    /** Poll until `predicate` holds, so the test observes real async progress. */
+    async function waitUntil(predicate: () => boolean, label: string): Promise<void> {
+      const deadline = Date.now() + 5000;
+      while (!predicate()) {
+        if (Date.now() > deadline) throw new Error(`Timed out waiting for ${label}`);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+    }
+
+    function dockerStepRunning(): boolean {
+      return events.some((ev) =>
+        ev.progress.steps.some((step: any) => step.kind === "docker" && step.status === "running"),
+      );
+    }
+
+    it("stops an in-flight init at the next step boundary when cleanup is queued", async () => {
+      // Cleanup is serialized behind init, and a full init can run for minutes
+      // (120s/300s budgets per step), so an archive arriving mid-init used to
+      // wait the whole sequence out for a lane that is going away.
+      const { composePath, cleanup: removeStub } = installSlowDockerStub();
+      try {
+        const warnings: { event: string; meta?: any }[] = [];
+        const service = createService(undefined, {
+          ...createLogger(),
+          warn: (event: string, meta?: any) => warnings.push({ event, meta }),
+        });
+
+        const worktreePath = path.join(projectRoot, "wt-cancel");
+        fs.mkdirSync(worktreePath, { recursive: true });
+        fs.writeFileSync(path.join(projectRoot, "copy-me.txt"), "payload");
+        const lane = makeLane({ id: "lane-cancel", worktreePath });
+        // Docker runs first and is slow; copy-paths is the step that must not run.
+        const config: LaneEnvInitConfig = {
+          docker: { composePath },
+          copyPaths: [{ source: "copy-me.txt", dest: "copied.txt" }],
+        };
+
+        const init = service.initLaneEnvironment(lane, config, {});
+        await waitUntil(dockerStepRunning, "the docker step to start");
+
+        const cleanup = service.cleanupLaneEnvironment(lane, config);
+        const [progress] = await Promise.all([init, cleanup]);
+
+        expect(fs.existsSync(path.join(worktreePath, "copied.txt"))).toBe(false);
+        expect(progress.overallStatus).toBe("failed");
+        expect(progress.steps.find((step) => step.kind === "docker")?.status).toBe("completed");
+        const copyStep = progress.steps.find((step) => step.kind === "copy-paths");
+        expect(copyStep?.status).toBe("skipped");
+        expect(copyStep?.error).toContain("Cancelled");
+        expect(warnings.map((entry) => entry.event)).toContain(
+          "lane_env_cleanup.waiting_for_inflight_init",
+        );
+      } finally {
+        removeStub();
+      }
+    });
+
+    it("runs every step when no cleanup is queued", async () => {
+      const { composePath, cleanup: removeStub } = installSlowDockerStub();
+      try {
+        const service = createService();
+        const worktreePath = path.join(projectRoot, "wt-normal");
+        fs.mkdirSync(worktreePath, { recursive: true });
+        fs.writeFileSync(path.join(projectRoot, "copy-me.txt"), "payload");
+        const lane = makeLane({ id: "lane-normal", worktreePath });
+
+        const progress = await service.initLaneEnvironment(
+          lane,
+          {
+            docker: { composePath },
+            copyPaths: [{ source: "copy-me.txt", dest: "copied.txt" }],
+          },
+          {},
+        );
+
+        expect(progress.overallStatus).toBe("completed");
+        expect(progress.steps.map((step) => step.status)).toEqual(["completed", "completed"]);
+        expect(fs.existsSync(path.join(worktreePath, "copied.txt"))).toBe(true);
       } finally {
         removeStub();
       }

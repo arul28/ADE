@@ -580,6 +580,53 @@ export function createLaneEnvironmentService({
    */
   const laneQueues = new Map<string, Promise<unknown>>();
 
+  /**
+   * Lanes whose cleanup is waiting behind an in-flight init.
+   *
+   * Serializing is not enough on its own: a full init can legitimately run for
+   * minutes (dependency installs and `docker compose up` have 120s/300s budgets
+   * each, and lane creation kicks init off detached), so an archive or delete
+   * arriving mid-init would sit in the queue that whole time with no signal.
+   * The cleanup wrapper raises the flag before it enqueues and `runPlannedInit`
+   * reads it at every step boundary, so init stops at the next boundary instead
+   * of running the rest of a sequence whose lane is about to go away.
+   *
+   * Cooperative by design: already-spawned children keep their own timeouts,
+   * they are not killed here.
+   */
+  const cleanupRequested = new Set<string>();
+
+  /** Inits that have been enqueued and not yet settled, per lane. */
+  const inFlightInits = new Map<string, number>();
+
+  const CANCELLED_FOR_CLEANUP_MESSAGE = "Cancelled: lane is being archived";
+
+  /**
+   * Stop an init whose lane is being torn down: every step that has not run is
+   * marked `skipped` with the cancellation reason, and the run ends as `failed`
+   * because it did not do what it set out to do.
+   */
+  function abortInitForCleanup(
+    progress: LaneEnvInitProgress,
+    laneId: string,
+  ): LaneEnvInitProgress {
+    for (const step of progress.steps) {
+      if (step.status === "pending") {
+        step.status = "skipped";
+        step.error = CANCELLED_FOR_CLEANUP_MESSAGE;
+      }
+    }
+    progress.overallStatus = "failed";
+    progress.completedAt = new Date().toISOString();
+    progressMap.set(laneId, progress);
+    broadcastEvent({ type: "lane-env-init", progress: { ...progress, steps: [...progress.steps] } });
+    logger.warn("lane_env_init.cancelled_for_cleanup", {
+      laneId,
+      skipped: progress.steps.filter((step) => step.status === "skipped").length,
+    });
+    return progress;
+  }
+
   function withLaneQueue<T>(laneId: string, task: () => Promise<T>): Promise<T> {
     const previous = laneQueues.get(laneId) ?? Promise.resolve();
     // `then(task, task)` — a failed predecessor must not cancel the follower.
@@ -606,29 +653,90 @@ export function createLaneEnvironmentService({
       config: LaneEnvInitConfig,
       overrides: LaneOverlayOverrides
     ): Promise<LaneEnvInitProgress> {
-      const steps: LaneEnvInitStep[] = [];
-      if (config.envFiles && config.envFiles.length > 0) {
-        steps.push(makeStep("env-files", `Copy ${config.envFiles.length} env file(s)`));
+      const laneVars = buildLaneVars(lane, overrides);
+
+      /**
+       * The steps to announce and the work each one does, planned together so
+       * the two can't disagree about which steps exist — and so the run loop has
+       * exactly one boundary at which to honour a queued cleanup.
+       *
+       * Order is the contract: the setup script runs last, after env files,
+       * services, dependencies, mounts and copies are in place.
+       */
+      const planned: {
+        kind: LaneEnvInitStepKind;
+        label: string;
+        run: () => Promise<string | null>;
+      }[] = [];
+
+      const envFiles = config.envFiles;
+      if (envFiles && envFiles.length > 0) {
+        planned.push({
+          kind: "env-files",
+          label: `Copy ${envFiles.length} env file(s)`,
+          run: async () => {
+            await copyEnvFiles(lane.worktreePath, envFiles, laneVars);
+            return null;
+          },
+        });
       }
-      if (config.docker) {
-        steps.push(makeStep("docker", "Start Docker services"));
+      const docker = config.docker;
+      if (docker) {
+        planned.push({
+          kind: "docker",
+          label: "Start Docker services",
+          run: async () => {
+            const result = await startDocker(lane.worktreePath, docker, lane.id);
+            return result.exitCode !== 0 ? result.stderr.slice(0, 500) : null;
+          },
+        });
       }
-      if (config.dependencies && config.dependencies.length > 0) {
-        steps.push(makeStep("dependencies", `Install dependencies (${config.dependencies.length} command(s))`));
+      const dependencies = config.dependencies;
+      if (dependencies && dependencies.length > 0) {
+        planned.push({
+          kind: "dependencies",
+          label: `Install dependencies (${dependencies.length} command(s))`,
+          run: async () => {
+            const { failures } = await installDependencies(lane.worktreePath, dependencies);
+            return failures.length > 0 ? failures.join("; ") : null;
+          },
+        });
       }
-      if (config.mountPoints && config.mountPoints.length > 0) {
-        steps.push(makeStep("mount-points", `Setup ${config.mountPoints.length} mount point(s)`));
+      const mountPoints = config.mountPoints;
+      if (mountPoints && mountPoints.length > 0) {
+        planned.push({
+          kind: "mount-points",
+          label: `Setup ${mountPoints.length} mount point(s)`,
+          run: async () => {
+            setupMountPoints(lane.worktreePath, mountPoints);
+            return null;
+          },
+        });
       }
-      if (config.copyPaths && config.copyPaths.length > 0) {
-        steps.push(makeStep("copy-paths", `Copy ${config.copyPaths.length} path(s)`));
+      const copyPaths = config.copyPaths;
+      if (copyPaths && copyPaths.length > 0) {
+        planned.push({
+          kind: "copy-paths",
+          label: `Copy ${copyPaths.length} path(s)`,
+          run: async () => {
+            setupCopyPaths(lane.worktreePath, copyPaths);
+            return null;
+          },
+        });
       }
       // Resolved up front so an unconfigured (or platform-empty) setup script
       // never shows up as an empty step.
       const resolvedSetupScript = resolveSetupScriptConfig(config.setupScript);
       if (resolvedSetupScript) {
         const commandCount = resolvedSetupScript.commands.length + (resolvedSetupScript.scriptPath ? 1 : 0);
-        steps.push(makeStep("setup-script", `Run setup script (${commandCount} command(s))`));
+        planned.push({
+          kind: "setup-script",
+          label: `Run setup script (${commandCount} command(s))`,
+          run: () => runSetupScript(lane.worktreePath, resolvedSetupScript, laneVars, lane.id),
+        });
       }
+
+      const steps: LaneEnvInitStep[] = planned.map((entry) => makeStep(entry.kind, entry.label));
 
       if (steps.length === 0) {
         const progress: LaneEnvInitProgress = {
@@ -651,62 +759,11 @@ export function createLaneEnvironmentService({
       progressMap.set(lane.id, progress);
       broadcastEvent({ type: "lane-env-init", progress });
 
-      const laneVars = buildLaneVars(lane, overrides);
-
-      // Step 1: Env files
-      if (config.envFiles && config.envFiles.length > 0) {
-        const ok = await runStep(progress, lane.id, "env-files", async () => {
-          await copyEnvFiles(lane.worktreePath, config.envFiles!, laneVars);
-          return null;
-        });
-        if (!ok) return progress;
-      }
-
-      // Step 2: Docker
-      if (config.docker) {
-        const docker = config.docker;
-        const ok = await runStep(progress, lane.id, "docker", async () => {
-          const result = await startDocker(lane.worktreePath, docker, lane.id);
-          return result.exitCode !== 0 ? result.stderr.slice(0, 500) : null;
-        });
-        if (!ok) return progress;
-      }
-
-      // Step 3: Dependencies
-      if (config.dependencies && config.dependencies.length > 0) {
-        const deps = config.dependencies;
-        const ok = await runStep(progress, lane.id, "dependencies", async () => {
-          const { failures } = await installDependencies(lane.worktreePath, deps);
-          return failures.length > 0 ? failures.join("; ") : null;
-        });
-        if (!ok) return progress;
-      }
-
-      // Step 4: Mount points
-      if (config.mountPoints && config.mountPoints.length > 0) {
-        const mounts = config.mountPoints;
-        const ok = await runStep(progress, lane.id, "mount-points", async () => {
-          setupMountPoints(lane.worktreePath, mounts);
-          return null;
-        });
-        if (!ok) return progress;
-      }
-
-      // Step 5: Copy paths (files and directories from project root)
-      if (config.copyPaths && config.copyPaths.length > 0) {
-        const paths = config.copyPaths;
-        const ok = await runStep(progress, lane.id, "copy-paths", async () => {
-          setupCopyPaths(lane.worktreePath, paths);
-          return null;
-        });
-        if (!ok) return progress;
-      }
-
-      // Step 6: Setup script (user-authored shell commands, last so it can rely
-      // on env files, services, dependencies, mounts, and copies being in place)
-      if (resolvedSetupScript) {
-        const ok = await runStep(progress, lane.id, "setup-script", () =>
-          runSetupScript(lane.worktreePath, resolvedSetupScript, laneVars, lane.id));
+      for (const entry of planned) {
+        // Cooperative cancellation point: a queued archive/delete must not wait
+        // out the rest of a multi-minute sequence for a lane that is going away.
+        if (cleanupRequested.has(lane.id)) return abortInitForCleanup(progress, lane.id);
+        const ok = await runStep(progress, lane.id, entry.kind, entry.run);
         if (!ok) return progress;
       }
 
@@ -797,8 +854,16 @@ export function createLaneEnvironmentService({
     dispose(): void {
       progressMap.clear();
       laneQueues.clear();
+      cleanupRequested.clear();
+      inFlightInits.clear();
     }
   };
+
+  function noteInitSettled(laneId: string): void {
+    const remaining = (inFlightInits.get(laneId) ?? 1) - 1;
+    if (remaining > 0) inFlightInits.set(laneId, remaining);
+    else inFlightInits.delete(laneId);
+  }
 
   return {
     ...service,
@@ -806,9 +871,25 @@ export function createLaneEnvironmentService({
       lane: LaneSummary,
       config: LaneEnvInitConfig,
       overrides: LaneOverlayOverrides,
-    ): Promise<LaneEnvInitProgress> =>
-      withLaneQueue(lane.id, () => service.initLaneEnvironment(lane, config, overrides)),
-    cleanupLaneEnvironment: (lane: LaneSummary, config: LaneEnvInitConfig | undefined): Promise<void> =>
-      withLaneQueue(lane.id, () => service.cleanupLaneEnvironment(lane, config)),
+    ): Promise<LaneEnvInitProgress> => {
+      inFlightInits.set(lane.id, (inFlightInits.get(lane.id) ?? 0) + 1);
+      return withLaneQueue(lane.id, () =>
+        service.initLaneEnvironment(lane, config, overrides),
+      ).finally(() => noteInitSettled(lane.id));
+    },
+    cleanupLaneEnvironment: (lane: LaneSummary, config: LaneEnvInitConfig | undefined): Promise<void> => {
+      // Raised BEFORE enqueuing so an init already running for this lane sees it
+      // at its next step boundary rather than after the whole sequence.
+      if (inFlightInits.has(lane.id)) {
+        cleanupRequested.add(lane.id);
+        logger.warn("lane_env_cleanup.waiting_for_inflight_init", { laneId: lane.id });
+      }
+      return withLaneQueue(lane.id, () => {
+        // Cleared as cleanup starts: a later init for this lane (unarchive,
+        // re-init) must not inherit a cancellation meant for this teardown.
+        cleanupRequested.delete(lane.id);
+        return service.cleanupLaneEnvironment(lane, config);
+      });
+    },
   };
 }

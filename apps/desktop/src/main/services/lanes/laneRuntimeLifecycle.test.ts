@@ -67,31 +67,46 @@ function makeDeps(
   };
 }
 
-/** Allocator that hands out `lease` on `acquire`, recording the order of events. */
-function recordingAllocator(order: string[], release = vi.fn()) {
+/**
+ * Allocator fake that behaves like the real one: `getLease` reports nothing
+ * until `acquire` hands a lease out, and the acquired lease afterwards. A fake
+ * that answered `null` forever hid that the overlay context reads the allocator
+ * back rather than being handed a lease by its caller.
+ */
+function statefulAllocator(onAcquire?: () => void, release = vi.fn()) {
+  let held: PortLease | null = null;
   return {
-    getLease: vi.fn(() => null),
+    getLease: vi.fn(() => held),
     acquire: vi.fn(() => {
-      order.push("lease");
+      onAcquire?.();
+      held = lease;
       return lease;
     }),
-    release,
+    release: vi.fn((laneId: string) => {
+      held = null;
+      release(laneId);
+    }),
   };
+}
+
+/** Allocator that records the moment the lease is acquired, for ordering asserts. */
+function recordingAllocator(order: string[], release = vi.fn()) {
+  return statefulAllocator(() => order.push("lease"), release);
 }
 
 describe("lane runtime lifecycle", () => {
   it("acquires an active lease for a restored lane", async () => {
-    const acquire = vi.fn(() => lease);
+    const allocator = statefulAllocator();
     const result = await ensureActiveLanePortLease(
       {
         laneService: { list: vi.fn(async () => [lane]) },
-        portAllocationService: { getLease: vi.fn(() => null), acquire, release: vi.fn() },
+        portAllocationService: allocator,
       },
       lane.id,
     );
 
     expect(result).toEqual(lease);
-    expect(acquire).toHaveBeenCalledWith(lane.id);
+    expect(allocator.acquire).toHaveBeenCalledWith(lane.id);
   });
 
   it("restores the port lease before initializing the lane environment", async () => {
@@ -200,16 +215,16 @@ describe("lane runtime lifecycle", () => {
     // The lease guard used to run first, so every Docker-less unarchive took a
     // port range it would never use — and the plain path does not await this,
     // so nothing gave it back either.
-    const acquire = vi.fn(() => lease);
+    const allocator = statefulAllocator();
     await restoreUnarchivedLaneDocker(
       makeDeps({
         laneEnvInit: { envFiles: [{ source: ".env.template", dest: ".env" }] },
-        portAllocationService: { getLease: vi.fn(() => null), acquire, release: vi.fn() },
+        portAllocationService: allocator,
       }),
       lane.id,
     );
 
-    expect(acquire).not.toHaveBeenCalled();
+    expect(allocator.acquire).not.toHaveBeenCalled();
   });
 
   it("hands the lease back when the lane is archived mid-restore", async () => {
@@ -223,11 +238,7 @@ describe("lane runtime lifecycle", () => {
     const deps = makeDeps({
       laneEnvInit: DOCKER_ONLY,
       initLaneEnvironment,
-      portAllocationService: {
-        getLease: vi.fn(() => lease),
-        acquire: vi.fn(() => lease),
-        release,
-      },
+      portAllocationService: statefulAllocator(undefined, release),
       laneProxyService: { removeRoute },
     });
     // Active for the first resolve and the lease check, archived by the re-check.

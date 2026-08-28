@@ -34,7 +34,7 @@ When you create a lane, ADE leases it a port range and can route a `<slug>.local
 The **Run** tab's lane runtime bar shows the live state at a glance: a health dot, the responding port, proxy and preview status, and the OAuth callback URL for the selected lane.
 
 <Tip>
-Stop a lane's dev server when you're done with it, or delete the lane — both return its leased ports to the pool. Archiving a lane also brings down the Docker Compose services its env init started; restoring the lane starts them again when ADE has to recreate the worktree, and **Init env** restarts them otherwise. If a lane ever flaps unhealthy on a slow cold start, the health bar settles once the server finishes binding.
+Stop a lane's dev server when you're done with it, or delete the lane — both return its leased ports to the pool. Archiving a lane also brings down the Docker Compose services its env init started, and unarchiving starts them again — the whole env-init sequence when ADE had to recreate the worktree, and just the Docker step when it did not, so your env files and installed dependencies are left alone. Use **Init env** only when you want the full sequence re-run. If a lane ever flaps unhealthy on a slow cold start, the health bar settles once the server finishes binding.
 </Tip>
 
 ## Per-lane environment init
