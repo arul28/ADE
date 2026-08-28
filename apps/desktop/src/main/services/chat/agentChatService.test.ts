@@ -29537,6 +29537,17 @@ describe("createAgentChatService", () => {
 
       expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
         .toHaveLength(turnStartsBeforeSettle);
+      // The staged response is not silently dropped either: it gets the same
+      // cancel receipt as the card it came from.
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: approvalEvent.event.itemId,
+          resolution: "cancelled",
+        }),
+      }));
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
     });
 
     it("stops a Codex chat whose only pending card is a plan approval from the completed turn", async () => {
