@@ -29449,6 +29449,157 @@ describe("createAgentChatService", () => {
       }));
     });
 
+    it("stops a Codex chat whose only pending card is a plan approval from the completed turn", async () => {
+      // A Codex plan approval is raised after `turn/completed` has already
+      // nulled `activeTurnId`, so Stop takes the no-active-turn path. That path
+      // used to return without settling anything, leaving the card rendered and
+      // every later send refused by the pending-input guard.
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-stop-1",
+            type: "plan",
+            text: "<proposed_plan>Inspect the interrupt path and patch it.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      });
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+      await service.interrupt({ sessionId: session.id });
+
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: approvalEvent.event.itemId,
+          resolution: "cancelled",
+        }),
+      }));
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      // The send gate reads the same state: the next message must reach Codex
+      // rather than bounce off a card for a turn that already ended.
+      const turnStartsBeforeSend = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Different approach, please.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length)
+          .toBeGreaterThan(turnStartsBeforeSend);
+      });
+    });
+
+    it("declines an outstanding Codex command approval on stop and resolves it exactly once", async () => {
+      // `edit` has to stay `edit`: a session that lands in `plan` refuses
+      // provider-native approvals outright and never raises the card.
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "edit") {
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "edit",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run the migration.",
+      }, { awaitDispatch: true });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "codex-exec-approval-req-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          turnId: "turn-1",
+          itemId: "codex-exec-approval-1",
+          command: "/bin/zsh -lc 'npm run migrate'",
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request" && event.event.itemId === "codex-exec-approval-1",
+      );
+
+      await service.interrupt({ sessionId: session.id });
+
+      // The app-server holds the request open until ADE answers it, so a stop
+      // that only drops the local entry strands it.
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads).toContainEqual(expect.objectContaining({
+          id: "codex-exec-approval-req-1",
+          result: expect.objectContaining({ decision: "decline" }),
+        }));
+      });
+
+      const resolutionsFor = (): AgentChatEventEnvelope[] => events.filter((envelope) =>
+        envelope.event.type === "pending_input_resolved"
+        && envelope.event.itemId === approvalEvent.event.itemId);
+      expect(resolutionsFor()).toHaveLength(1);
+
+      // The app-server's own abort lands after the local settle. It must not
+      // resolve the same card a second time.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/aborted",
+        params: { turnId: "turn-1" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((envelope) =>
+          envelope.event.type === "done" && envelope.event.status === "interrupted")).toBe(true);
+      });
+      expect(resolutionsFor()).toHaveLength(1);
+    });
+
     it("emits a terminal event when a streamed native Codex plan item completes", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
