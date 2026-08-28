@@ -1,7 +1,8 @@
 /* @vitest-environment jsdom */
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
-import { ContextUsageDial, buildContent, resolveContextCompactControl } from "./ContextUsageDial";
+import { resolveContextCompactControl } from "../../../../shared/contextCompaction";
+import { ContextUsageDial, buildContent } from "./ContextUsageDial";
 import type { ContextUsageViewModel } from "./contextUsageModel";
 
 function vm(partial: Partial<ContextUsageViewModel>): ContextUsageViewModel {
@@ -149,23 +150,5 @@ describe("ContextUsageDial", () => {
     );
     expect(compact.status).toBe("hidden");
     expect(container.querySelector("button")).toBeNull();
-  });
-
-  it("does not offer compact for Cursor, Droid, or OpenCode", () => {
-    expect(resolveContextCompactControl({
-      provider: "cursor",
-      state: "measured",
-      enabled: true,
-    }).status).toBe("hidden");
-    expect(resolveContextCompactControl({
-      provider: "droid",
-      state: "measured",
-      enabled: true,
-    }).status).toBe("hidden");
-    expect(resolveContextCompactControl({
-      provider: "opencode",
-      state: "measured",
-      enabled: true,
-    }).status).toBe("hidden");
   });
 });

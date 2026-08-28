@@ -5,6 +5,12 @@ export type ContextCompactProvider = "claude" | "codex" | "opencode" | "cursor" 
 /** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
 export type ManualCompactProvider = "claude" | "codex" | "pi";
 
+/** Matches the host `/compact` slash, including optional trailing instructions. */
+export function isManualCompactCommand(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return /^\/compact(?:\s|$)/i.test(text.trim());
+}
+
 export function providerSupportsManualCompact(
   provider: string | null | undefined,
 ): provider is ManualCompactProvider {

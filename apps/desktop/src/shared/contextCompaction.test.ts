@@ -8,6 +8,7 @@ import {
   formatCompactTokenCount,
   mergeNormalizedContextCompact,
   normalizeContextCompactEvent,
+  isManualCompactCommand,
   providerSupportsManualCompact,
   resolveContextCompactControl,
   toContextCompactChatEvent,
@@ -94,6 +95,15 @@ describe("contextCompaction", () => {
 
   it("uses compactionId as the merge key when present", () => {
     expect(contextCompactMergeKey({ compactionId: "item-1", turnId: "turn-2" })).toBe("item-1");
+  });
+
+  it("recognizes /compact the same way the host slash matcher does", () => {
+    expect(isManualCompactCommand("/compact")).toBe(true);
+    expect(isManualCompactCommand(" /Compact ")).toBe(true);
+    expect(isManualCompactCommand("/compact keep the tests")).toBe(true);
+    expect(isManualCompactCommand("/compaction")).toBe(false);
+    expect(isManualCompactCommand("please compact")).toBe(false);
+    expect(isManualCompactCommand(null)).toBe(false);
   });
 
   it("limits manual compact to Claude, Codex, and Pi", () => {

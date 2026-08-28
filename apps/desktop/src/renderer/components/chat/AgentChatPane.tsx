@@ -122,7 +122,7 @@ import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
-import { providerSupportsManualCompact, resolveContextCompactControl } from "../../../shared/contextCompaction";
+import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
   getSharedRuntimeCatalog,
@@ -11100,7 +11100,7 @@ export function AgentChatPane({
   const compactContext = useCallback(async () => {
     const sessionId = composerSessionId ?? selectedSessionId;
     const liveProvider = selectedSession?.provider;
-    if (!sessionId || subagentView || !providerSupportsManualCompact(liveProvider)) return;
+    if (!sessionId) return;
     const control = resolveContextCompactControl({
       provider: liveProvider,
       state: selectedUsageViewModel?.state ?? "unknown",

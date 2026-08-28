@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import {
   HIDDEN_CONTEXT_COMPACT,
-  resolveContextCompactControl,
   type ContextCompactControl,
 } from "../../../../shared/contextCompaction";
 import { SmartTooltip, type SmartTooltipContent } from "../../ui/SmartTooltip";
@@ -252,5 +251,4 @@ export function ContextUsageDial({
   );
 }
 
-export { resolveContextCompactControl };
 export default ContextUsageDial;
