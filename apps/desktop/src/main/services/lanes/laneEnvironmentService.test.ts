@@ -764,6 +764,104 @@ describe("laneEnvironmentService", () => {
       expect(service.wasLastInitIncomplete(lane.id)).toBe(false);
     });
 
+    it("skips a queued init whose precondition no longer holds when the queue reaches it", async () => {
+      // Ordering, not politeness: the caller's own "is this lane still active?"
+      // check runs before it enqueues, so a teardown already queued ahead of it
+      // runs first and the init would `compose up` a lane that is now archived.
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-env-precond-bin-"));
+      try {
+        const dockerLogPath = path.join(projectRoot, "docker-args.log");
+        fs.writeFileSync(
+          path.join(binDir, "docker"),
+          "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$ADE_TEST_DOCKER_LOG\"\n",
+          { mode: 0o755 },
+        );
+        process.env.PATH = `${binDir}:${originalPath ?? ""}`;
+        process.env.ADE_TEST_DOCKER_LOG = dockerLogPath;
+        fs.writeFileSync(path.join(projectRoot, "docker-compose.yml"), "services: {}\n");
+
+        const service = createService();
+        const worktreePath = path.join(projectRoot, "wt-precond");
+        fs.mkdirSync(worktreePath, { recursive: true });
+        const lane = makeLane({ id: "lane-precond", worktreePath });
+        const config: LaneEnvInitConfig = { docker: { composePath: "docker-compose.yml" } };
+        const dockerArgs = (): string =>
+          fs.existsSync(dockerLogPath) ? fs.readFileSync(dockerLogPath, "utf-8") : "";
+
+        // The teardown goes in first; the restore's init lands behind it while
+        // the lane still looks active, exactly as the unarchive race does.
+        const cleanup = service.cleanupLaneEnvironment(lane, config);
+        const init = service.initLaneEnvironment(lane, config, {}, {
+          precondition: async () => !dockerArgs().includes("down"),
+        });
+        const [, progress] = await Promise.all([cleanup, init]);
+
+        expect(dockerArgs()).toContain("down");
+        expect(dockerArgs()).not.toContain("up");
+        expect(progress.steps).toEqual([]);
+        // Nothing ran, so nothing was announced to the UI either.
+        expect(events).toEqual([]);
+      } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
+    it("leaves the incomplete-init marker untouched when the precondition skips the run", async () => {
+      const service = createService();
+      const worktreePath = path.join(projectRoot, "wt-precond-marker");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, "copy-me.txt"), "payload");
+      const lane = makeLane({ id: "lane-precond-marker", worktreePath });
+      const copyPaths = [{ source: "copy-me.txt", dest: "copied.txt" }];
+
+      // env-files fails first, so copy-paths never runs and the worktree is
+      // recorded as half-built.
+      await service.initLaneEnvironment(
+        lane,
+        { envFiles: [{ source: "../outside.env", dest: ".env" }], copyPaths },
+        {},
+      );
+      expect(service.wasLastInitIncomplete(lane.id)).toBe(true);
+
+      const progress = await service.initLaneEnvironment(lane, { copyPaths }, {}, {
+        precondition: async () => false,
+      });
+
+      expect(progress.steps).toEqual([]);
+      expect(fs.existsSync(path.join(worktreePath, "copied.txt"))).toBe(false);
+      // A skipped run repaired nothing, so it must not report the lane healthy.
+      expect(service.wasLastInitIncomplete(lane.id)).toBe(true);
+    });
+
+    it("sees another service instance's incomplete-init mark without being recreated", async () => {
+      // Desktop main and the ade-cli brain build this service over the same
+      // `.ade` directory, so a marker cached for the life of a process let one
+      // host keep answering "that init completed" after the other cancelled it.
+      const writer = createService();
+      const reader = createService();
+      const worktreePath = path.join(projectRoot, "wt-cross-process");
+      fs.mkdirSync(worktreePath, { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, "copy-me.txt"), "payload");
+      const lane = makeLane({ id: "lane-cross-process", worktreePath });
+      const copyPaths = [{ source: "copy-me.txt", dest: "copied.txt" }];
+
+      // The reader answers — and would have cached — before the mark exists.
+      expect(reader.wasLastInitIncomplete(lane.id)).toBe(false);
+
+      await writer.initLaneEnvironment(
+        lane,
+        { envFiles: [{ source: "../outside.env", dest: ".env" }], copyPaths },
+        {},
+      );
+
+      expect(reader.wasLastInitIncomplete(lane.id)).toBe(true);
+
+      // And the clear crosses back the same way.
+      await writer.initLaneEnvironment(lane, { copyPaths }, {});
+
+      expect(reader.wasLastInitIncomplete(lane.id)).toBe(false);
+    });
+
     it("runs every step when no cleanup is queued", async () => {
       const { composePath, cleanup: removeStub } = installSlowDockerStub();
       try {

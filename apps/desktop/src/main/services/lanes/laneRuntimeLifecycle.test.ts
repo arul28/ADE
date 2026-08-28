@@ -38,6 +38,7 @@ function makeDeps(
   overrides: {
     lanes?: LaneSummary[];
     laneEnvInit?: LaneEnvInitConfig;
+    resolveEnvInitConfig?: EnvironmentService["resolveEnvInitConfig"];
     initLaneEnvironment?: EnvironmentService["initLaneEnvironment"];
     cleanupLaneEnvironment?: EnvironmentService["cleanupLaneEnvironment"];
     lastInitIncomplete?: boolean;
@@ -55,7 +56,7 @@ function makeDeps(
       }),
     },
     laneEnvironmentService: {
-      resolveEnvInitConfig: (config) => config,
+      resolveEnvInitConfig: overrides.resolveEnvInitConfig ?? ((config) => config),
       initLaneEnvironment: overrides.initLaneEnvironment ?? vi.fn(async () => {}),
       cleanupLaneEnvironment: overrides.cleanupLaneEnvironment ?? vi.fn(async () => {}),
       wasLastInitIncomplete: vi.fn(() => overrides.lastInitIncomplete === true),
@@ -145,9 +146,27 @@ describe("lane runtime lifecycle", () => {
     expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY);
   });
 
-  it("skips archive teardown when the lane has no docker services", async () => {
+  it("still tears down a docker-less lane so a mid-init setup script is cancelled", async () => {
+    // Gating the teardown on Docker meant a script-only lane never entered the
+    // environment service on archive, so the cleanup flag an in-flight init
+    // watches never rose and `npm install` kept running into a worktree that
+    // delete was about to remove.
     const cleanupLaneEnvironment = vi.fn(async () => {});
-    await teardownArchivedLaneEnvironment(makeDeps({ cleanupLaneEnvironment }), lane.id);
+    const envInit: LaneEnvInitConfig = { setupScript: { commands: ["npm install"] } };
+    await teardownArchivedLaneEnvironment(
+      makeDeps({ laneEnvInit: envInit, cleanupLaneEnvironment }),
+      lane.id,
+    );
+
+    expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, envInit);
+  });
+
+  it("skips archive teardown when the lane has no env init config at all", async () => {
+    const cleanupLaneEnvironment = vi.fn(async () => {});
+    await teardownArchivedLaneEnvironment(
+      makeDeps({ cleanupLaneEnvironment, resolveEnvInitConfig: () => undefined }),
+      lane.id,
+    );
 
     expect(cleanupLaneEnvironment).not.toHaveBeenCalled();
   });
@@ -191,7 +210,9 @@ describe("lane runtime lifecycle", () => {
 
     // Only docker: re-copying env files, reinstalling dependencies or re-running
     // the setup script would clobber a worktree that was never removed.
-    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY, {});
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY, {}, {
+      precondition: expect.any(Function),
+    });
   });
 
   it("re-runs the whole env init when the lane's last init never completed", async () => {
@@ -211,7 +232,9 @@ describe("lane runtime lifecycle", () => {
       lane.id,
     );
 
-    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, fullConfig, {});
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, fullConfig, {}, {
+      precondition: expect.any(Function),
+    });
   });
 
   it("repairs an incomplete init even when the lane has no docker step", async () => {
@@ -224,7 +247,9 @@ describe("lane runtime lifecycle", () => {
       lane.id,
     );
 
-    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, config, {});
+    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, config, {}, {
+      precondition: expect.any(Function),
+    });
   });
 
   it("re-acquires the port lease archive released before bringing docker back up", async () => {
@@ -244,9 +269,12 @@ describe("lane runtime lifecycle", () => {
     );
 
     expect(order).toEqual(["lease", "environment"]);
-    expect(initLaneEnvironment).toHaveBeenCalledWith(lane, DOCKER_ONLY, {
-      portRange: { start: 4100, end: 4199 },
-    });
+    expect(initLaneEnvironment).toHaveBeenCalledWith(
+      lane,
+      DOCKER_ONLY,
+      { portRange: { start: 4100, end: 4199 } },
+      { precondition: expect.any(Function) },
+    );
   });
 
   it("acquires no port lease when an unarchived lane has no docker step", async () => {
@@ -290,6 +318,73 @@ describe("lane runtime lifecycle", () => {
     expect(initLaneEnvironment).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledWith(lane.id);
     expect(removeRoute).toHaveBeenCalledWith(lane.id);
+  });
+
+  it("hands the init a precondition that fails once the lane is archived in the queue", async () => {
+    // `initLaneEnvironment` is serialized per lane, so an archive's cleanup
+    // queued a moment before this restore runs FIRST — and the pre-flight check
+    // this function already did would have passed. The precondition re-asks
+    // inside the queue, immediately before the first step, and the lease this
+    // function took still has to go back.
+    const release = vi.fn();
+    const removeRoute = vi.fn();
+    let stillActiveInQueue: boolean | undefined;
+    const initLaneEnvironment = vi.fn(
+      async (
+        _lane: LaneSummary,
+        _config: LaneEnvInitConfig,
+        _overrides: unknown,
+        options?: { precondition?: () => Promise<boolean> },
+      ) => {
+        stillActiveInQueue = await options?.precondition?.();
+      },
+    );
+    let listed = 0;
+    const deps = makeDeps({
+      laneEnvInit: DOCKER_ONLY,
+      initLaneEnvironment,
+      portAllocationService: statefulAllocator(undefined, release),
+      laneProxyService: { removeRoute },
+    });
+    // Active through the first resolve, the lease check, the pre-flight re-check
+    // and the leased re-resolve; archived by the time the queued init starts.
+    deps.laneService.list = vi.fn(async () => {
+      listed += 1;
+      return listed <= 4 ? [lane] : [];
+    });
+
+    await restoreUnarchivedLaneDocker(deps, lane.id);
+
+    expect(stillActiveInQueue).toBe(false);
+    expect(release).toHaveBeenCalledWith(lane.id);
+    expect(removeRoute).toHaveBeenCalledWith(lane.id);
+  });
+
+  it("leaves a normal restore's lease alone when the precondition holds", async () => {
+    const release = vi.fn();
+    let stillActiveInQueue: boolean | undefined;
+    const initLaneEnvironment = vi.fn(
+      async (
+        _lane: LaneSummary,
+        _config: LaneEnvInitConfig,
+        _overrides: unknown,
+        options?: { precondition?: () => Promise<boolean> },
+      ) => {
+        stillActiveInQueue = await options?.precondition?.();
+      },
+    );
+
+    await restoreUnarchivedLaneDocker(
+      makeDeps({
+        laneEnvInit: DOCKER_ONLY,
+        initLaneEnvironment,
+        portAllocationService: statefulAllocator(undefined, release),
+      }),
+      lane.id,
+    );
+
+    expect(stillActiveInQueue).toBe(true);
+    expect(release).not.toHaveBeenCalled();
   });
 
   it("returns before docker finishes on a plain unarchive", async () => {

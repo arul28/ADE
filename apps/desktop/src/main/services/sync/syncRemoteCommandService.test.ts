@@ -800,8 +800,8 @@ describe("createSyncRemoteCommandService", () => {
         laneType: "feature",
         worktreePath: "/repo/.ade/worktrees/lane-1",
       };
-      // Teardown is docker-scoped: `buildLaneEnvTeardown` only builds a closure
-      // when the resolved config actually has a compose stack to bring down.
+      // `buildLaneEnvTeardown` builds a closure whenever the lane resolves an
+      // env-init config at all; this one has a compose stack to bring down.
       const envInitConfig = {
         dependencies: ["npm install"],
         docker: { composePath: "docker-compose.yml" },

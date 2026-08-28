@@ -29,6 +29,11 @@ type LaneRuntimeLifecycleDependencies = {
       lane: LaneSummary,
       config: LaneEnvInitConfig,
       overrides: LaneOverlayOverrides,
+      /**
+       * Re-checked inside the environment service's per-lane queue, immediately
+       * before any step runs — see `LaneEnvInitOptions`.
+       */
+      options?: { precondition?: () => Promise<boolean> },
     ) => Promise<unknown>;
     cleanupLaneEnvironment: (
       lane: LaneSummary,
@@ -170,9 +175,14 @@ export async function buildLaneEnvTeardown(
     return undefined;
   }
 
-  // `cleanupLaneEnvironment` no-ops without a Docker config, so this guard is
-  // only about not spawning work that has nothing to do.
-  if (!context.envInitConfig?.docker) return undefined;
+  // Any env-init config at all is enough, not just a Docker one. The teardown
+  // does more than `compose down`: entering the environment service is what
+  // raises this lane's cleanup flag, which is how an init still running its
+  // setup script or `npm install` learns to stop at the next step boundary.
+  // Gating on Docker meant a script-only lane kept installing into a worktree
+  // that archive had just retired — and that delete was about to remove.
+  // (`cleanupLaneEnvironment` no-ops the Docker half by itself.)
+  if (!context.envInitConfig) return undefined;
   const { lane, envInitConfig } = context;
   return async () => {
     await environmentService.cleanupLaneEnvironment(lane, envInitConfig);
@@ -301,7 +311,19 @@ export async function restoreUnarchivedLaneDocker(
   // land in the window since the first resolve. Check the lane is still active
   // immediately before starting `compose up` (a 300s job), and give the lease
   // back the way archive does if it is not.
-  if ((await findActiveLane(dependencies, laneId)) == null) {
+  //
+  // The same check is handed to the init as a precondition, because passing it
+  // here proves nothing on its own: `initLaneEnvironment` is serialized per
+  // lane, so an archive's cleanup queued a moment earlier runs first and this
+  // init would `compose up` a lane that is archived by the time it starts. The
+  // precondition re-runs inside that queue, immediately before the first step.
+  let abandoned = false;
+  const laneStillActive = async (): Promise<boolean> => {
+    if ((await findActiveLane(dependencies, laneId)) != null) return true;
+    abandoned = true;
+    return false;
+  };
+  if (!(await laneStillActive())) {
     releaseAbortedRestoreLease(dependencies, laneId);
     return;
   }
@@ -320,7 +342,16 @@ export async function restoreUnarchivedLaneDocker(
     releaseAbortedRestoreLease(dependencies, laneId);
     return;
   }
-  await leased.environmentService.initLaneEnvironment(leased.lane, restoreConfig, leased.overrides);
+  await leased.environmentService.initLaneEnvironment(
+    leased.lane,
+    restoreConfig,
+    leased.overrides,
+    { precondition: laneStillActive },
+  );
+  // The precondition is also the abort signal: an init skipped because the lane
+  // went away inside the queue still holds the lease this function acquired, and
+  // nothing else is coming to give it back.
+  if (abandoned) releaseAbortedRestoreLease(dependencies, laneId);
 }
 
 export async function restoreRecreatedLaneRuntime(

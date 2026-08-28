@@ -142,6 +142,24 @@ const SETUP_SCRIPT_TIMEOUT_MS = 300_000;
 const SHARED_CONFIG_UNTRUSTED_MESSAGE =
   "This project's shared configuration isn't trusted yet. Trust it in ADE's desktop Settings to run setup scripts.";
 
+export type LaneEnvInitOptions = {
+  /**
+   * Last-moment "is this init still wanted?" check, evaluated INSIDE the lane
+   * queue immediately before any step is planned or run. When it resolves
+   * false the init is abandoned: no steps run, no progress is published, and
+   * the incomplete-init marker is left exactly as it was.
+   *
+   * The queue is why the callers' own pre-checks are not enough. The unarchive
+   * Docker restore checks the lane is still active and then enqueues, so an
+   * archive whose cleanup is already queued ahead of it would run first and the
+   * restore would `compose up` a lane that is now archived.
+   *
+   * Must not call back into this service: it runs inside the queued task, so
+   * anything that enqueues for the same lane would deadlock.
+   */
+  precondition?: () => Promise<boolean>;
+};
+
 export function createLaneEnvironmentService({
   projectRoot,
   adeDir,
@@ -186,12 +204,17 @@ export function createLaneEnvironmentService({
    * the rest of the per-project state. Entries are removed when a later init
    * for that lane completes; a lane deleted while marked leaves one stale id
    * behind, which is inert (nothing ever unarchives it).
+   *
+   * Read fresh on every access, never cached: the desktop main process and the
+   * ade-cli brain both build this service over the same `adeDir`, so a
+   * process-lifetime cache would let one host archive a lane mid-init while the
+   * other still believed that lane's last init had completed — and hand back a
+   * half-built worktree on unarchive. The reads are rare (archive, unarchive and
+   * init boundaries) and the file holds a list of lane ids.
    */
   const incompleteInitMarkerPath = path.join(adeDir, "lane-env-init-incomplete.json");
-  let incompleteInitLanes: Set<string> | null = null;
 
   function loadIncompleteInitLanes(): Set<string> {
-    if (incompleteInitLanes) return incompleteInitLanes;
     const loaded = new Set<string>();
     try {
       if (fs.existsSync(incompleteInitMarkerPath)) {
@@ -209,7 +232,6 @@ export function createLaneEnvironmentService({
         error: error instanceof Error ? error.message : String(error),
       });
     }
-    incompleteInitLanes = loaded;
     return loaded;
   }
 
@@ -740,8 +762,26 @@ export function createLaneEnvironmentService({
     async initLaneEnvironment(
       lane: LaneSummary,
       config: LaneEnvInitConfig,
-      overrides: LaneOverlayOverrides
+      overrides: LaneOverlayOverrides,
+      options?: LaneEnvInitOptions
     ): Promise<LaneEnvInitProgress> {
+      // Runs inside the lane queue, so this is the first moment that reflects
+      // everything queued ahead of this init — a teardown, most importantly.
+      if (options?.precondition && !(await options.precondition())) {
+        logger.warn("lane_env_init.skipped_precondition", { laneId: lane.id });
+        // Deliberately not recorded and not broadcast: nothing ran, and
+        // overwriting the progress entry (or clearing the incomplete-init
+        // marker) would erase what the run ahead of this one recorded.
+        const now = new Date().toISOString();
+        return {
+          laneId: lane.id,
+          steps: [],
+          startedAt: now,
+          completedAt: now,
+          overallStatus: "completed",
+        };
+      }
+
       const laneVars = buildLaneVars(lane, overrides);
 
       /**
@@ -960,8 +1000,7 @@ export function createLaneEnvironmentService({
       laneQueues.clear();
       cleanupRequested.clear();
       inFlightInits.clear();
-      // Only the cache is dropped — the on-disk marker is the point.
-      incompleteInitLanes = null;
+      // The on-disk marker is deliberately left alone: it outlives the process.
     }
   };
 
@@ -977,10 +1016,11 @@ export function createLaneEnvironmentService({
       lane: LaneSummary,
       config: LaneEnvInitConfig,
       overrides: LaneOverlayOverrides,
+      options?: LaneEnvInitOptions,
     ): Promise<LaneEnvInitProgress> => {
       inFlightInits.set(lane.id, (inFlightInits.get(lane.id) ?? 0) + 1);
       return withLaneQueue(lane.id, () =>
-        service.initLaneEnvironment(lane, config, overrides),
+        service.initLaneEnvironment(lane, config, overrides, options),
       ).finally(() => noteInitSettled(lane.id));
     },
     cleanupLaneEnvironment: (lane: LaneSummary, config: LaneEnvInitConfig | undefined): Promise<void> => {
