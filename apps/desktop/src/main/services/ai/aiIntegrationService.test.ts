@@ -99,7 +99,7 @@ vi.mock("../opencode/openCodeBinaryManager", () => ({
 }));
 
 import { createDynamicCursorCliModelDescriptor, getLocalProviderDefaultEndpoint } from "../../../shared/modelRegistry";
-import { createAiIntegrationService } from "./aiIntegrationService";
+import { createAiIntegrationService, missingFeatureModelMessage } from "./aiIntegrationService";
 
 type ServiceFactoryOptions = {
   aiConfig?: Record<string, unknown>;
@@ -354,9 +354,12 @@ describe("aiIntegrationService", () => {
     }));
   });
 
-  it("resolves a default task model when model is omitted", async () => {
+  it("uses the feature model override when executeTask omits model", async () => {
     const { service } = makeService({
-      aiConfig: { features: { orchestrator: true } },
+      aiConfig: {
+        features: { orchestrator: true },
+        featureModelOverrides: { orchestrator: "openai/gpt-5.4" },
+      },
     });
 
     await service.executeTask({
@@ -368,7 +371,42 @@ describe("aiIntegrationService", () => {
 
     expect(mockState.runProviderTask).toHaveBeenCalledTimes(1);
     const firstCall = mockState.runProviderTask.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(firstCall.descriptor).toMatchObject({ id: expect.any(String) });
+    expect(firstCall.descriptor).toMatchObject({ id: "openai/gpt-5.4" });
+  });
+
+  it("skips AI instead of picking a default model when no setting is configured", async () => {
+    const { service } = makeService({
+      aiConfig: { features: { orchestrator: true } },
+    });
+
+    await expect(
+      service.executeTask({
+        feature: "orchestrator",
+        taskType: "implementation",
+        prompt: "Implement feature",
+        cwd: "/tmp"
+      })
+    ).rejects.toThrow(missingFeatureModelMessage("orchestrator"));
+    expect(mockState.runProviderTask).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit model for session intelligence tasks", async () => {
+    const { service } = makeService({
+      aiConfig: {
+        features: { terminal_summaries: true },
+        featureModelOverrides: { terminal_summaries: "openai/gpt-5.4" },
+      },
+    });
+
+    await expect(
+      service.executeTask({
+        feature: "terminal_summaries",
+        taskType: "session_title",
+        prompt: "Title this chat",
+        cwd: "/tmp",
+      })
+    ).rejects.toThrow(/Session intelligence task 'session_title' requires an explicit model/);
+    expect(mockState.runProviderTask).not.toHaveBeenCalled();
   });
 
   it("fails in guest mode when no providers are available", async () => {

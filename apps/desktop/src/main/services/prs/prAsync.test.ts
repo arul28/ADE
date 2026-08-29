@@ -1958,6 +1958,7 @@ describe("createPrSummaryService", () => {
       };
 
       const aiIntegrationService = {
+        getConfiguredFeatureModel: vi.fn(() => "openai/gpt-5.5"),
         draftPrDescription: vi.fn(async () => ({
           text: '{"summary":"ok","riskAreas":["a"],"reviewerHotspots":["b"],"unresolvedConcerns":["c"]}',
           durationMs: 10,

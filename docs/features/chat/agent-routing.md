@@ -875,9 +875,11 @@ on the Claude Agent SDK:
    `metadata.hideFullPrompt`, so desktop transcripts do not show or copy
    the internal brief body as ordinary user-authored text.
    `buildDeterministicHandoffBrief()` provides a deterministic
-   fallback when the LLM summarization call fails or no eligible
-   summarizer is available; `AgentChatHandoffResult.usedFallbackSummary`
-   surfaces which path was taken.
+   fallback when the session-intelligence chain is empty, the LLM
+   summarization call fails, or no eligible summarizer is available;
+   `AgentChatHandoffResult.usedFallbackSummary` surfaces which path was
+   taken. An empty candidate list still returns that brief — it does
+   not throw or skip the handoff.
 
 ## Auto-title generation
 
@@ -893,27 +895,54 @@ Sessions auto-title through two stages when
 `ai.sessionIntelligence.titles.refreshOnComplete` (default true) triggers a final
 refresh after a turn completes.
 
-Both stages walk the shared naming chain built by `buildNamingModelCandidates`
-in `sessionNaming.ts` — the configured `titleModelId`, the default title model,
-the model the chat itself was launched with, then a model from a provider none
-of those belong to — and run it through `runNamingAcrossProviders`. A
-provider-level failure (missing CLI, auth, quota, or an account that cannot run
-the requested model) condemns every remaining model behind that provider, so
-one provider being down cannot end titling outright.
+Both stages walk the shared naming chain built by `buildSessionIntelligenceModelCandidates`
+in `sessionNaming.ts` — the configured `titleModelId` when set, then this
+chat's model — and run it through `runNamingAcrossProviders`. There is no
+hardcoded Haiku or "first available" namer. A provider-level failure
+condemns every remaining model behind that provider. An empty candidate
+list is a no-op walk and still uses the deterministic title; naming does
+not throw or skip just because no model is configured.
 
 Six words is the guideline the prompt gives the model, not a rejection rule: a
 seven-word title is clamped to the first six rather than discarded, and an
 over-long title is cut on a word boundary so it never stops mid-word. If every
-candidate fails, the chat falls back to a title derived deterministically from
-the seed prompt — the same derivation an automatically created lane uses — so a
-chat with a real prompt never sits on its provider default title. The fallback
-only rescues a still-default title, and only when it produces at least two
-words.
+candidate fails (or none exist), the chat falls back to a title derived
+deterministically from the seed prompt — the same derivation an automatically
+created lane uses — so a chat with a real prompt never sits on its provider
+default title. The fallback only rescues a still-default title, and only when
+it produces at least two words.
 
 Manual renaming sets `manuallyNamed: true`, which permanently
 suppresses further auto-title generation. The manual-rename check runs *before*
 the title write, not after, because adopting a title has side effects (session
 meta, runtime push) that a rename landing mid-request must stop.
+
+The same chain — Settings title/summary model, then this session's model,
+then deterministic — covers chat titles, end-of-session summaries, explicit
+session-metadata regeneration, automatic lane names, handoff briefs, and
+identity-continuity summaries. CLI titles and terminal summaries are
+separate: they try the title/summary setting, then the stored launch model,
+and skip the AI call when both are missing. See
+[AI-driven titles](../terminals-and-sessions/pty-and-sessions.md#ai-driven-titles).
+
+## One-shot utility tasks
+
+Commit messages, PR drafts/summaries, and conflict proposals pick a
+model once: the caller argument, else the feature picker in Settings,
+else skip or throw a Settings prompt. Review start requires an explicit
+run `modelId` (not a Settings feature picker). There is no hardcoded
+Haiku / Sonnet / "first available" namer.
+
+- Commit messages and conflict proposals throw `Choose a … model in Settings`.
+- PR drafts and PR AI summaries use the deterministic template when the
+  picker is empty; `requireAi` callers throw the Settings prompt instead
+  of a stub.
+- Review start requires an explicit `modelId` on the run. Empty throws
+  `Choose a review model before starting a review.` Launch context may
+  advertise a Codex catalog `recommendedModelId` as a picker hint; the
+  service never fills a model if the caller omits one.
+- Live chat compaction is unchanged — it always uses the chat's own
+  provider.
 
 ## CTO vs. regular chat routing
 

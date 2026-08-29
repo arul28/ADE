@@ -414,6 +414,9 @@ function createHarness(overrides: {
     canPerform: ReturnType<typeof vi.fn>;
   } | null;
   getAdeCliAgentEnv?: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+  projectConfigService?: {
+    get: ReturnType<typeof vi.fn>;
+  };
 } = {}) {
   const mockPty = createMockPty();
   const broadcastData = vi.fn();
@@ -557,6 +560,7 @@ function createHarness(overrides: {
     ...(overrides.aiIntegrationService ? { aiIntegrationService: overrides.aiIntegrationService as any } : {}),
     ...(overrides.diskPressureMonitor !== undefined ? { diskPressureMonitor: overrides.diskPressureMonitor as any } : {}),
     ...(overrides.getAdeCliAgentEnv ? { getAdeCliAgentEnv: overrides.getAdeCliAgentEnv } : {}),
+    ...(overrides.projectConfigService ? { projectConfigService: overrides.projectConfigService as any } : {}),
     logger: logger as any,
     broadcastData,
     broadcastExit,
@@ -2852,6 +2856,12 @@ describe("ptyService", () => {
           args: ["--no-alt-screen"],
           startupCommand: "codex --no-alt-screen",
           initialInput: "print cwd",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: null,
+            launch: { model: "openai/gpt-5.4" },
+          },
         });
 
         const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
@@ -2869,6 +2879,7 @@ describe("ptyService", () => {
           expect.objectContaining({
             prompt: expect.stringContaining("print cwd"),
             taskType: "session_title",
+            model: "openai/gpt-5.4",
           }),
         );
       } finally {
@@ -6059,6 +6070,12 @@ describe("ptyService", () => {
           cols: 80,
           rows: 24,
           toolType,
+          resumeMetadata: {
+            provider: "claude",
+            targetKind: "session",
+            targetId: null,
+            launch: { model: "openai/gpt-5.4" },
+          },
         });
         // Mark the metadata file as non-existent so readPersistedChatManuallyNamed returns false
         const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
@@ -6086,6 +6103,7 @@ describe("ptyService", () => {
             cwd: "/tmp/test-worktree/subdir",
             prompt: expect.stringContaining("Fix the flaky login tests"),
             timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
+            model: "openai/gpt-5.4",
           }),
         );
       } finally {
@@ -6324,6 +6342,12 @@ describe("ptyService", () => {
           cols: 80,
           rows: 24,
           toolType: "claude",
+          resumeMetadata: {
+            provider: "claude",
+            targetKind: "session",
+            targetId: null,
+            launch: { model: "anthropic/claude-sonnet-5" },
+          },
         });
 
         const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
@@ -6343,6 +6367,7 @@ describe("ptyService", () => {
           expect.objectContaining({
             prompt: expect.stringContaining("Fix the flaky login tests"),
             taskType: "session_title",
+            model: "anthropic/claude-sonnet-5",
           }),
         );
         expect(sessionService.get(createdSessionId)?.title).toBe("ADE generated title");
@@ -6999,6 +7024,12 @@ describe("ptyService", () => {
         title: "Summary session",
         cols: 80,
         rows: 24,
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: null,
+          launch: { model: "openai/gpt-5.4" },
+        },
       });
 
       laneService.getLaneBaseAndBranch.mockReturnValue({
@@ -7013,7 +7044,155 @@ describe("ptyService", () => {
       });
 
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
-        expect.objectContaining({ cwd: "/tmp/test-worktree/subdir" }),
+        expect.objectContaining({ cwd: "/tmp/test-worktree/subdir", model: "openai/gpt-5.4" }),
+      );
+    });
+
+    it("skips AI titles and summaries when no setting or launch model is configured", async () => {
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async () => ({ text: "Should not run" })),
+      };
+      const { service, mockPty, sessionService } = createHarness({ aiIntegrationService });
+      await service.create({
+        laneId: "lane-1",
+        title: "Summary session",
+        cols: 80,
+        rows: 24,
+      });
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      await vi.waitFor(() => {
+        expect(sessionService.setSummary).toHaveBeenCalled();
+      });
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("walks from the titles/summaries setting to the launch model when the setting fails", async () => {
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async ({ model }: { model?: string }) => {
+          if (model === "anthropic/claude-haiku-4-5") {
+            throw new Error("quota exceeded");
+          }
+          return { text: "Used launch model" };
+        }),
+      };
+      const { service, mockPty } = createHarness({
+        aiIntegrationService,
+        projectConfigService: {
+          get: vi.fn(() => ({
+            effective: {
+              ai: {
+                sessionIntelligence: {
+                  titles: { enabled: true, modelId: "anthropic/claude-haiku-4-5" },
+                  summaries: { enabled: true, modelId: "anthropic/claude-haiku-4-5" },
+                },
+              },
+            },
+          })),
+        },
+      });
+      await service.create({
+        laneId: "lane-1",
+        title: "Summary session",
+        cols: 80,
+        rows: 24,
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: null,
+          launch: { model: "openai/gpt-5.4" },
+        },
+      });
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      await vi.waitFor(() => {
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+          expect.objectContaining({ model: "openai/gpt-5.4" }),
+        );
+      });
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ model: "anthropic/claude-haiku-4-5" }),
+      );
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ model: "openai/gpt-5.4" }),
+      );
+    });
+
+    it("persists the runtime launch model onto existing session resume metadata", async () => {
+      const { service, sessionService } = createHarness();
+      createDetachedResumableSession(sessionService, { sessionId: "session-launch-model" });
+      await service.create({
+        laneId: "lane-1",
+        sessionId: "session-launch-model",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --resume claude-session-123",
+        runtimeCliLaunch: {
+          provider: "claude",
+          permissionMode: "default",
+          model: "anthropic/claude-sonnet-4-5",
+        },
+      });
+      expect(sessionService.updateMeta).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-launch-model",
+          resumeMetadata: expect.objectContaining({
+            launch: expect.objectContaining({ model: "anthropic/claude-sonnet-4-5" }),
+          }),
+        }),
+      );
+    });
+
+    it("does not overwrite an existing launch model when backfilling resume metadata", async () => {
+      const { service, sessionService } = createHarness();
+      sessionService.create({
+        sessionId: "session-keep-model",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Claude CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-keep-model.log",
+        toolType: "claude",
+        resumeCommand: "claude --resume claude-session-123",
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: "claude-session-123",
+          launch: { permissionMode: "default", model: "anthropic/claude-opus-4-6" },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-keep-model",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: null,
+        status: "detached",
+      });
+      await service.create({
+        laneId: "lane-1",
+        sessionId: "session-keep-model",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --resume claude-session-123",
+        runtimeCliLaunch: {
+          provider: "claude",
+          permissionMode: "default",
+          model: "anthropic/claude-sonnet-4-5",
+        },
+      });
+      expect(sessionService.updateMeta).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: "session-keep-model",
+          resumeMetadata: expect.anything(),
+        }),
       );
     });
 

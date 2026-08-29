@@ -175,8 +175,9 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   `LaneDetailGitActionsPane.swift` is the single git surface embedded
   in the lane detail (a port of desktop's `LaneGitActionsPane`):
   commit message + amend with an AI "Suggest message" button (calls
-  `aiCommitMessages.generate` and shows an inline setup hint when the
-  host reports AI commit messages aren't configured), pull/push/fetch,
+  `aiCommitMessages.generate`, which requires the Commit Messages model
+  from Settings and shows an inline setup hint when that picker is
+  empty — it does not fall through to Haiku), pull/push/fetch,
   staged and unstaged files with per-file and bulk stage / unstage /
   discard / restore / open-diff / open-files affordances, stash
   push/apply/pop/drop, recent-commit history with revert / cherry-pick
@@ -222,7 +223,9 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   title's slug first; only then do remaining collisions receive `-2`, `-3`,
   and later suffixes. A manual lane or branch rename wins over a late
   result. Automatic lane identity uses the same model chain as chat auto-title
-  (configured naming model → default title model → launched chat model). Mobile
+  (configured naming model when set, then the launched chat model, then
+  deterministic). An empty candidate list still uses the deterministic name
+  — it does not throw or skip naming. Mobile
   calls the same host operation through `SyncService.suggestLaneName`
   (the non-queueable `lanes.suggestName` sync command →
   `agentChatService.generateAutoLaneIdentity` on the host).

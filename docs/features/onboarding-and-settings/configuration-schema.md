@@ -291,9 +291,22 @@ type AiConfig = {
 };
 ```
 
-`effective.ai.mode` is the source of truth for guest vs subscription
-behavior. Legacy `providers.mode` migration is still in the service
-but idempotent.
+`featureModelOverrides` / `featureReasoningOverrides` are the per-feature
+model pickers in Settings → Agents & Models → Background helpers
+(commit messages, PR descriptions, terminal summaries, conflict
+proposals). An empty picker **skips AI** for that one-shot — ADE does
+not fall through to Haiku, Sonnet, or the first available model.
+Commit messages and conflict proposals refuse with a Settings prompt;
+PR drafts and PR AI summaries use the deterministic template instead.
+Review start is not a feature picker: the run requires an explicit
+`modelId`, and empty throws `Choose a review model before starting a review.`
+Session intelligence (chat titles, summaries, metadata, lane names,
+handoff, continuity) uses the title/summary setting, then this session's
+model, then deterministic. An empty candidate list still uses
+deterministic naming — it does not throw or skip. CLI titles and
+terminal summaries try the setting, then the stored launch model, and
+skip the AI call when both are missing. Live chat compaction stays on
+the chat's own provider.
 
 ### Custom providers and model slugs
 
@@ -360,6 +373,12 @@ end-of-session summaries:
 - `summaries.enabled`
 - `summaries.modelId` (`null` clears a project override)
 - `summaries.reasoningEffort`
+
+Chat, lane, metadata, handoff, and continuity callers walk
+`titles.modelId` / `summaries.modelId` and then this session's model.
+An empty list still uses the deterministic name. CLI title/summary
+callers walk the same settings and then `resumeMetadata.launch.model`,
+and skip AI when both are missing.
 
 Legacy `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleModelId`, and
 `ai.chat.autoTitleRefreshOnComplete` are read on load and migrated

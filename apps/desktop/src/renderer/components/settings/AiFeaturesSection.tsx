@@ -16,7 +16,7 @@ import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { Alarm, ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
+import { Alarm, ChatCircleDots, GitPullRequest, GitCommit, GitMerge, ChatText, type Icon } from "@phosphor-icons/react";
 import { useOpenProviderSignIn } from "../shared/useOpenProviderSignIn";
 
 type FeatureInfo = {
@@ -38,6 +38,7 @@ const FEATURES: FeatureInfo[] = [
   { key: "terminal_summaries", label: "Summarize completed chats and terminals", description: "Replace raw last output with a concise session summary when work completes", subtitle: "Show what happened instead of the last terminal line", icon: ChatCircleDots },
   { key: "pr_descriptions", label: "PR description drafting", description: "Draft PR descriptions when you trigger the action in the PR flows", subtitle: "Get a head start on PR descriptions when you're ready to merge", icon: GitPullRequest },
   { key: "commit_messages", label: "Commit messages", description: "Generate a brief git commit subject when the field is empty", subtitle: "Meaningful commit messages generated from your staged changes", icon: GitCommit },
+  { key: "conflict_proposals", label: "Conflict proposals", description: "Draft a merge-conflict resolution when you request one", subtitle: "Propose a patch when you request AI conflict resolution", icon: GitMerge },
 ];
 
 function normalizeModelSetting(value: unknown): string {

@@ -233,7 +233,7 @@ Proposals (AI + apply/undo):
 |---------|-------------|
 | `ade.conflicts.listProposals` | Proposals for a lane |
 | `ade.conflicts.prepareProposal` | Build bounded context, return preview |
-| `ade.conflicts.requestProposal` | Dispatch to provider via `aiIntegrationService` |
+| `ade.conflicts.requestProposal` | Dispatch to the Conflict Proposals model from Settings via `aiIntegrationService`; empty picker throws `Choose a Conflict Proposals model in Settings` rather than defaulting to Sonnet or the first available provider |
 | `ade.conflicts.applyProposal` | Apply via `git apply --3way`, record operation |
 | `ade.conflicts.undoProposal` | Reverse-apply via `git apply -R` |
 

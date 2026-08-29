@@ -7,6 +7,7 @@ import type {
 import { normalizeAgentChatSessionMetadataFields } from "../../../shared/types/chat";
 import {
   buildSessionMetadataPrompt,
+  deriveDeterministicSessionMetadata,
   runSessionMetadataGeneration,
   type SessionMetadataPromptRunner,
 } from "./sessionNaming";
@@ -109,10 +110,6 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
 
     try {
       const candidateModelIds = await dependencies.resolveModelCandidates(managed);
-      if (!candidateModelIds.length) {
-        throw new Error("No AI model is available to generate session metadata.");
-      }
-
       const recentConversation = dependencies.buildRecentConversationContext(managed, 8).trim();
       let latestOutputPreview: string | null = null;
       const storedOutputPreview = initialRow.lastOutputPreview?.trim();
@@ -124,43 +121,65 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
           latestOutputPreview = managedOutputPreview.slice(0, 1_000);
         }
       }
-      const prompt = buildSessionMetadataPrompt({
-        provider: managed.session.provider,
-        chatModel: managed.session.modelId ?? managed.session.model,
-        currentLaneName: snapshot.laneName,
-        currentChatTitle: snapshot.title,
-        currentStatusLine: snapshot.statusLine,
-        goal: managed.session.goal?.trim().slice(0, 2_000) ?? null,
-        summary: initialRow.summary?.trim().slice(0, 2_000) ?? null,
-        latestOutputPreview,
-        originalRequest: managed.autoTitleSeed?.trim().slice(0, 2_000) ?? null,
-        recentConversation: recentConversation.slice(-8_000),
-      });
 
-      const generated = await runSessionMetadataGeneration({
-        candidateModelIds,
-        provider: managed.session.provider,
-        cwd: managed.laneWorktreePath,
-        prompt,
-        runPrompt: dependencies.runPrompt,
-        normalizeTitle: dependencies.normalizeTitle,
-        normalizeStatusLine: dependencies.normalizeStatusLine,
-        shouldStop: () => managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion,
-        onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount: currentAttempt, error }) => {
-          dependencies.logger.warn("agent_chat.session_metadata_generation_failed", {
-            sessionId,
-            modelId: descriptor.id,
-            provider,
-            providerLevelFailure,
-            attemptCount: currentAttempt,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      });
+      let generated: {
+        result: ReturnType<typeof deriveDeterministicSessionMetadata>;
+        selectedModelId: string | null;
+        attemptCount: number;
+      } = { result: null, selectedModelId: null, attemptCount: 0 };
+      if (candidateModelIds.length) {
+        const prompt = buildSessionMetadataPrompt({
+          provider: managed.session.provider,
+          chatModel: managed.session.modelId ?? managed.session.model,
+          currentLaneName: snapshot.laneName,
+          currentChatTitle: snapshot.title,
+          currentStatusLine: snapshot.statusLine,
+          goal: managed.session.goal?.trim().slice(0, 2_000) ?? null,
+          summary: initialRow.summary?.trim().slice(0, 2_000) ?? null,
+          latestOutputPreview,
+          originalRequest: managed.autoTitleSeed?.trim().slice(0, 2_000) ?? null,
+          recentConversation: recentConversation.slice(-8_000),
+        });
+        generated = await runSessionMetadataGeneration({
+          candidateModelIds,
+          cwd: managed.laneWorktreePath,
+          prompt,
+          runPrompt: dependencies.runPrompt,
+          normalizeTitle: dependencies.normalizeTitle,
+          normalizeStatusLine: dependencies.normalizeStatusLine,
+          shouldStop: () => managed.deleted || managed.sessionMetadataGenerationVersion !== generationVersion,
+          onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount: currentAttempt, error }) => {
+            dependencies.logger.warn("agent_chat.session_metadata_generation_failed", {
+              sessionId,
+              modelId: descriptor.id,
+              provider,
+              providerLevelFailure,
+              attemptCount: currentAttempt,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        });
+      }
       selectedModelId = generated.selectedModelId;
       attemptCount = generated.attemptCount;
-      if (!generated.result) {
+      const metadata = generated.result ?? deriveDeterministicSessionMetadata({
+        seeds: [
+          initialRow.summary,
+          latestOutputPreview,
+          managed.autoTitleSeed,
+          recentConversation,
+        ],
+        normalizeTitle: dependencies.normalizeTitle,
+        normalizeStatusLine: dependencies.normalizeStatusLine,
+      });
+      if (!metadata) {
         throw new Error("The AI returned no usable session metadata.");
+      }
+      if (!generated.result) {
+        dependencies.logger.info("agent_chat.session_metadata_deterministic_fallback", {
+          sessionId,
+          attemptCount,
+        });
       }
 
       // A newer explicit request cancels every field from this response. Manual
@@ -173,7 +192,6 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         return { sessionId, applied, skipped, modelId: selectedModelId };
       }
 
-      const metadata = generated.result;
       if (fields.includes("title")) {
         const current = dependencies.getSession(sessionId);
         if (
