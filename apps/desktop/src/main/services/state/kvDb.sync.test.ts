@@ -185,6 +185,69 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db.close();
   });
 
+  it("exports one table subset, finds its version floor, and remembers a peer's plugin watermark", async () => {
+    // The three primitives the host's plugin catch-up is built on. It has to
+    // ship rows for four named tables out of a backlog whose cursor has already
+    // moved past them, which needs an INCLUDE filter; it has to skip the
+    // (usually enormous) prefix before the first plugin row, which needs the
+    // clock floor because `crsql_changes` does not push a table predicate down;
+    // and it has to remember what it sent so a phone that reconnects all day is
+    // swept once.
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-plugin-catchup-"), createLogger() as any);
+
+    db.run("begin immediate");
+    for (let index = 0; index < 5; index += 1) {
+      db.run("insert into kv(key, value) values (?, ?)", [`before-${index}`, `value-${index}`]);
+    }
+    db.run("commit");
+    const beforePluginRows = db.sync.getDbVersion();
+
+    db.run(
+      `insert into plugin_panels(plugin_id, panel_id, title, icon, surface, schema_json, vocab_version, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["hn", "stories", "Top", "", "work", '{"mobile":true}', 1, "2026-08-28T00:00:00.000Z"],
+    );
+    db.run("insert into kv(key, value) values (?, ?)", ["after", "value-after"]);
+
+    const pluginOnly = db.sync.exportChangesSince(0, { includeTables: ["plugin_panels"] });
+    expect(pluginOnly.length).toBeGreaterThan(0);
+    expect(pluginOnly.every((change) => change.table === "plugin_panels")).toBe(true);
+
+    // An empty include list is "nothing", never "no filter" — the dangerous
+    // reading would send a whole backlog to a peer that asked for one table.
+    expect(db.sync.exportChangesSince(0, { includeTables: [] })).toEqual([]);
+
+    // Both filters compose: exclude wins over include for the same table.
+    expect(db.sync.exportChangesSince(0, {
+      includeTables: ["plugin_panels"],
+      excludeTables: ["plugin_panels"],
+    })).toEqual([]);
+
+    const floor = db.sync.minDbVersionForTables(["plugin_panels", "plugin_collections"]);
+    expect(floor).not.toBeNull();
+    expect(floor as number).toBeGreaterThan(beforePluginRows);
+    // A table nobody has written to has no floor, which is what tells the host
+    // there is nothing to sweep at all.
+    expect(db.sync.minDbVersionForTables(["plugin_collections"])).toBeNull();
+    expect(db.sync.minDbVersionForTables(["not_a_table_here"])).toBeNull();
+
+    expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(0);
+    db.sync.setPluginTablesWatermark("phone-1", 42);
+    expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(42);
+    // Monotonic: a later, lower claim must not un-send rows already sent.
+    db.sync.setPluginTablesWatermark("phone-1", 7);
+    expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(42);
+    expect(db.sync.getPluginTablesWatermark("phone-2")).toBe(0);
+
+    // Local-only: the watermark describes this host's own link, so it must
+    // never appear in a changeset bound for a peer.
+    expect(db.sync.exportChangesSince(0).some(
+      (change) => change.table === "sync_peer_plugin_watermarks",
+    )).toBe(false);
+
+    db.close();
+  });
+
   it("normalizes legacy text primary keys before applying remote CRDT changes", async () => {
     const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-legacy-pk-a-"), createLogger() as any);
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-legacy-pk-b-"), createLogger() as any);

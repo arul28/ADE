@@ -19,7 +19,11 @@ import {
   getPluginPresenceService,
   PLUGIN_MACHINE_UNREACHABLE_CODE,
 } from "../plugins/pluginPresenceService";
-import { readPluginContributions } from "../plugins/pluginTableWriters";
+import {
+  readPluginCollectionRows,
+  readPluginContributions,
+  readPluginPanel,
+} from "../plugins/pluginTableWriters";
 import {
   isPluginEntityKind,
   isPluginSocketKind,
@@ -6167,6 +6171,69 @@ function registerPluginRemoteCommands({ args, register }: RemoteCommandRegistrat
       });
     }
     return { contributions };
+  });
+
+  /**
+   * One materialized panel, read straight off this project's database.
+   *
+   * The repair path for a mirror that does not have the row. A phone draws a
+   * plugin pane from its replicated `plugin_panels`, and that replica can
+   * legitimately lag the machine — a reseed that could not fit the plugin
+   * tables, a build that gained the `pluginTables` capability after its cursor
+   * was already at head. Before this action the phone had no way to ask, so it
+   * told the user the plugin had published nothing, which was never true.
+   *
+   * PROJECT-scoped and answered from `args.db` for the same reason as
+   * `plugins.contributions` above: `plugin_panels` is a per-project table, so
+   * this instance's database is the only one that can answer for the project
+   * the caller is looking at.
+   *
+   * `viewerAllowed`: it returns exactly what the replica would have carried on
+   * its own. A row a viewer can read by syncing is not a row worth gating here.
+   *
+   * `null` is a real answer — this machine has no such panel — and the client
+   * relies on being able to tell it apart from a failed read.
+   */
+  register("plugins.getPanel", { viewerAllowed: true }, async (payload) => {
+    const pluginId = parsePluginId(payload);
+    const panelId = typeof payload.panelId === "string" ? payload.panelId.trim() : "";
+    if (!panelId) throw new Error("A plugin panel id is required.");
+    // NEVER `null` here. `null` is this action's way of saying "this machine
+    // has no such panel", and the client is entitled to tell the user the
+    // plugin published nothing when it hears it. No project database bound is
+    // "cannot answer", which is a different sentence and a different gesture.
+    if (!args.db) {
+      throw codedError(
+        "This computer has no project open to read plugin panels from.",
+        PLUGIN_SERVICE_UNAVAILABLE_CODE,
+      );
+    }
+    return readPluginPanel(args.db, pluginId, panelId);
+  });
+
+  /**
+   * Rows of one collection, for a bound component whose mirror rows never
+   * arrived. Same scope, same policy and same reasoning as
+   * `plugins.getPanel` — a fetched panel that binds to a collection is not
+   * renderable without its rows, so the two travel together.
+   */
+  register("plugins.getCollection", { viewerAllowed: true }, async (payload) => {
+    const pluginId = parsePluginId(payload);
+    const collection = typeof payload.collection === "string" ? payload.collection.trim() : "";
+    if (!collection) throw new Error("A plugin collection name is required.");
+    // Same rule as the panel read above: an empty list is an answer about the
+    // collection, and a host with no project open has not earned it.
+    if (!args.db) {
+      throw codedError(
+        "This computer has no project open to read plugin data from.",
+        PLUGIN_SERVICE_UNAVAILABLE_CODE,
+      );
+    }
+    const keyPrefix = typeof payload.keyPrefix === "string" ? payload.keyPrefix : null;
+    const limit = typeof payload.limit === "number" && Number.isFinite(payload.limit)
+      ? payload.limit
+      : undefined;
+    return readPluginCollectionRows(args.db, { pluginId, collection, keyPrefix, limit });
   });
 
   // Read-only: this machine reporting its own install state. The CALLER files

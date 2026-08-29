@@ -19,7 +19,12 @@ struct PluginPaneSheet: View {
       pluginId: request.pluginId,
       panelId: request.panelId,
       context: request.context,
-      sync: syncService
+      sync: syncService,
+      // The one surface allowed to go and get what the mirror is missing. The
+      // pane is a screen the user asked for, so an empty one is the entire
+      // answer — and the machine's copy of the panel is the only thing that can
+      // tell "the replica is behind" apart from "the plugin published nothing".
+      fetchesMissingRows: true
     ))
   }
 
@@ -134,12 +139,43 @@ struct PluginPaneSheet: View {
         deeplink: fallback?.deeplink
       )
 
+    // Reached only when the machine itself answered that it has no such panel,
+    // or that the panel it has is not one the phone shows. That answer is the
+    // licence for this sentence: before the live read existed, a replica that
+    // was simply behind rendered here and told users a working plugin was
+    // empty.
     case .missing:
       ADEEmptyStateView(
         symbol: "puzzlepiece.extension",
         title: "No panels yet",
         message: "\(store.displayName) has not published anything to show here."
       )
+
+    case .notReceived(.fetching):
+      HStack(spacing: 10) {
+        ProgressView()
+        Text("Getting this from your computer.")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .center)
+      .padding(.vertical, 32)
+
+    // Offline, a dropped socket, or a computer running an ADE too old to be
+    // asked. One sentence because they are one situation to the reader and one
+    // gesture to fix.
+    case .notReceived(.unavailable):
+      ADEEmptyStateView(
+        symbol: "wifi.exclamationmark",
+        title: "This panel hasn't arrived yet",
+        message: "ADE couldn't get it from your computer just now."
+      ) {
+        Button("Try again") {
+          ADEHaptics.light()
+          store.retryFetch()
+        }
+        .buttonStyle(.borderedProminent)
+      }
     }
   }
 

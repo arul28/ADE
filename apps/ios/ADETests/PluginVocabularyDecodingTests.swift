@@ -2649,3 +2649,439 @@ final class PluginActionResponseTests: XCTestCase {
     XCTAssertNil(PluginPanelRecord.refreshAction(inSchemaJSON: "[1,2]"))
   }
 }
+
+/// The pane's answer when the mirror does not have the panel.
+///
+/// The bug these pin: on a live pairing the phone could invoke a plugin over
+/// the socket and then draw "<plugin> has not published anything to show here"
+/// for a panel the machine had published, because `plugin_panels` never
+/// replicated. Two halves are under test — that the pane goes and ASKS, and
+/// that it only blames the plugin when the machine itself said so.
+@MainActor
+final class PluginPaneFallbackTests: XCTestCase {
+  private enum FetchFailure: Error { case unreachable }
+
+  /// Stands in for `SyncService`. Counts round trips, so a cached answer is
+  /// distinguishable from a fresh one.
+  @MainActor
+  private final class FakePaneSync: PluginPaneSyncing {
+    var canInvokePluginActions = true
+    var canFetchPluginPanelsRemotely = true
+    var pluginFallbackScope = "machine-a"
+
+    var localPanels: [PluginPanelRecord] = []
+    var localEntries: [PluginCollectionEntry] = []
+    /// `nil` inside the success case models the machine answering "no such
+    /// panel"; a thrown error models a machine that could not be reached.
+    var panelReply: Result<PluginPanelRecord?, Error> = .success(nil)
+    var collectionReply: Result<[PluginCollectionEntry], Error> = .success([])
+
+    var panelFetchCount = 0
+    var collectionFetchCount = 0
+
+    func pluginPresenceCatalog() -> PluginPresenceCatalog { PluginPresenceCatalog() }
+
+    func pluginPanels(pluginId: String?) -> [PluginPanelRecord] {
+      guard let pluginId else { return localPanels }
+      return localPanels.filter { $0.pluginId == pluginId }
+    }
+
+    func pluginCollectionEntries(
+      binding: PluginVocabBinding,
+      pluginId: String,
+      limit: Int
+    ) -> [PluginCollectionEntry] {
+      localEntries.filter { $0.pluginId == pluginId && $0.collection == binding.collection }
+    }
+
+    func invokePluginAction(
+      pluginId: String,
+      actionId: String,
+      payload: [String: Any]
+    ) async throws -> PluginInvokeResult {
+      PluginInvokeResult()
+    }
+
+    func fetchPluginPanel(pluginId: String, panelId: String) async throws -> PluginPanelRecord? {
+      panelFetchCount += 1
+      return try panelReply.get()
+    }
+
+    func fetchPluginCollectionEntries(
+      pluginId: String,
+      collection: String,
+      keyPrefix: String?,
+      limit: Int
+    ) async throws -> [PluginCollectionEntry] {
+      collectionFetchCount += 1
+      return try collectionReply.get()
+    }
+  }
+
+  private static let listSchema = #"""
+  {
+    "v": 1,
+    "title": "Top stories",
+    "fallback": { "title": "Top stories", "text": "Hacker News." },
+    "body": [{ "component": "list", "bind": { "collection": "stories" } }]
+  }
+  """#
+
+  private func record(
+    panelId: String = "stories",
+    schemaJSON: String = PluginPaneFallbackTests.listSchema
+  ) -> PluginPanelRecord {
+    PluginPanelRecord(
+      pluginId: "hn",
+      panelId: panelId,
+      title: "Top stories",
+      icon: "",
+      surface: "work",
+      schemaJSON: schemaJSON,
+      vocabVersion: 1,
+      updatedAt: "2026-08-28T19:26:00Z",
+      mobile: PluginPanelRecord.mobileFlag(inSchemaJSON: schemaJSON),
+      refreshAction: nil
+    )
+  }
+
+  private func store(
+    _ sync: FakePaneSync,
+    cache: PluginPanelFallbackCache,
+    panelId: String? = "stories"
+  ) -> PluginPaneStore {
+    PluginPaneStore(
+      pluginId: "hn",
+      panelId: panelId,
+      sync: sync,
+      fetchesMissingRows: true,
+      fallbackCache: cache,
+      openExternalURL: { _ in }
+    )
+  }
+
+  /// The live read is deliberately detached so presenting never waits on a
+  /// socket, so a test has to let it land. Bounded rather than slept on.
+  private func settle(_ store: PluginPaneStore) async {
+    for _ in 0..<200 {
+      guard case .notReceived(.fetching) = store.presentation else { return }
+      await Task.yield()
+    }
+  }
+
+  // MARK: - The mirror stays the primary source
+
+  func testALocalRowRendersAndNothingIsAskedOfTheMachine() async {
+    let sync = FakePaneSync()
+    sync.localPanels = [record()]
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(pane)
+
+    guard case .panel = pane.presentation else {
+      return XCTFail("A replicated row must render on its own, got \(pane.presentation)")
+    }
+    XCTAssertEqual(sync.panelFetchCount, 0, "The mirror answered; the socket must not be touched.")
+  }
+
+  /// The CRR row is the writer's, the cache is a read-through copy. When sync
+  /// finally delivers the row, it has to take the pane back over.
+  func testAReplicatedRowArrivingLaterWinsOverTheCachedFetch() async {
+    let sync = FakePaneSync()
+    let cache = PluginPanelFallbackCache()
+    sync.panelReply = .success(record(schemaJSON: #"{"v":1,"fallback":{"title":"T","text":"t"},"body":[{"component":"text","text":"fetched"}]}"#))
+    let pane = store(sync, cache: cache)
+    pane.load()
+    await settle(pane)
+    XCTAssertEqual(sync.panelFetchCount, 1)
+
+    sync.localPanels = [record(schemaJSON: #"{"v":1,"fallback":{"title":"T","text":"t"},"body":[{"component":"text","text":"replicated"}]}"#)]
+    pane.load()
+    await settle(pane)
+
+    guard case let .panel(schema) = pane.presentation,
+          let node = schema.body.first,
+          case let .text(text) = node else {
+      return XCTFail("expected a panel, got \(pane.presentation)")
+    }
+    XCTAssertEqual(text.text, "replicated", "The CRR row is the writer's; the cache is only a read-through copy.")
+  }
+
+  // MARK: - The fallback
+
+  func testAMissingRowIsFetchedAndTheNextOpenIsFree() async {
+    let sync = FakePaneSync()
+    let cache = PluginPanelFallbackCache()
+    sync.panelReply = .success(record())
+
+    let first = store(sync, cache: cache)
+    first.load()
+    await settle(first)
+
+    guard case .panel = first.presentation else {
+      return XCTFail("A panel the machine has must render, got \(first.presentation)")
+    }
+    XCTAssertEqual(first.panels.map(\.panelId), ["stories"])
+    XCTAssertEqual(sync.panelFetchCount, 1)
+
+    // A second present builds a new store; the cache is what makes it instant,
+    // and it is in memory rather than in the CRR tables on purpose.
+    let second = store(sync, cache: cache)
+    second.load()
+    await settle(second)
+
+    guard case .panel = second.presentation else {
+      return XCTFail("expected the cached panel, got \(second.presentation)")
+    }
+    XCTAssertEqual(sync.panelFetchCount, 1, "The second open must not repeat the round trip.")
+  }
+
+  /// The whole point of the split: a phone that could not ask has no business
+  /// telling a user the plugin published nothing.
+  func testAFailedReadSaysTheReplicaIsBehindRatherThanBlamingThePlugin() async {
+    let sync = FakePaneSync()
+    sync.panelReply = .failure(FetchFailure.unreachable)
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(pane)
+
+    XCTAssertEqual(pane.presentation, .notReceived(.unavailable))
+    XCTAssertNotEqual(pane.presentation, .missing, "A dropped socket is not a claim about the plugin.")
+    XCTAssertEqual(sync.panelFetchCount, 1)
+  }
+
+  func testAHostThatCannotBeAskedLandsInTheSameStateWithoutAsking() async {
+    let sync = FakePaneSync()
+    sync.canFetchPluginPanelsRemotely = false
+    sync.panelReply = .success(record())
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(pane)
+
+    XCTAssertEqual(pane.presentation, .notReceived(.unavailable))
+    XCTAssertEqual(sync.panelFetchCount, 0, "An unadvertised action must not be attempted.")
+  }
+
+  /// A failure is never cached, so the gesture the empty state offers can
+  /// actually change the answer.
+  func testTryAgainRepeatsTheReadAndCanSucceed() async {
+    let sync = FakePaneSync()
+    sync.panelReply = .failure(FetchFailure.unreachable)
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+    pane.load()
+    await settle(pane)
+    XCTAssertEqual(pane.presentation, .notReceived(.unavailable))
+
+    sync.panelReply = .success(record())
+    pane.retryFetch()
+    await settle(pane)
+
+    guard case .panel = pane.presentation else {
+      return XCTFail("expected the retried read to render, got \(pane.presentation)")
+    }
+    XCTAssertEqual(sync.panelFetchCount, 2)
+  }
+
+  func testOnlyTheMachineSayingNoSuchPanelEarnsThePublishedNothingCopy() async {
+    let sync = FakePaneSync()
+    sync.panelReply = .success(nil)
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(pane)
+
+    XCTAssertEqual(pane.presentation, .missing)
+    XCTAssertEqual(sync.panelFetchCount, 1)
+    // And the answer is not asked for twice: it is a real answer, so it caches.
+    pane.load()
+    await settle(pane)
+    XCTAssertEqual(sync.panelFetchCount, 1)
+  }
+
+  // MARK: - The mobile flag, on the fetched path
+
+  /// Back-compat contract, and it has to hold identically however the row
+  /// arrived: a schema with no `mobile` key is a panel the phone shows.
+  func testAFetchedPanelWithNoMobileKeyIsShown() async {
+    let sync = FakePaneSync()
+    let schema: [String: Any] = [
+      "v": 1,
+      "fallback": ["title": "T", "text": "t"] as [String: Any],
+      "body": [["component": "text", "text": "hi"] as [String: Any]],
+    ]
+    let payload: [String: Any] = [
+      "pluginId": "hn",
+      "panelId": "stories",
+      "title": "Top stories",
+      "schema": schema,
+      "vocabVersion": 1,
+      "updatedAt": "2026-08-28T19:26:00Z",
+    ]
+    let fetched = PluginPanelRecord.remote(payload: payload, pluginId: "hn", panelId: "stories")
+    XCTAssertEqual(fetched?.mobile, true)
+    sync.panelReply = .success(fetched)
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(pane)
+
+    guard case .panel = pane.presentation else {
+      return XCTFail("A panel with no mobile key is a panel the phone shows, got \(pane.presentation)")
+    }
+  }
+
+  /// The mirror path filters `mobile == false` out before the pane ever sees
+  /// it. The fetched path has to do the same, or a desktop-only panel would
+  /// appear on the phone only when sync was broken.
+  func testAFetchedDesktopOnlyPanelIsTreatedTheWayTheMirrorTreatsOne() async {
+    let sync = FakePaneSync()
+    let schema = #"{"v":1,"mobile":false,"fallback":{"title":"T","text":"t"},"body":[{"component":"text","text":"hi"}]}"#
+    sync.panelReply = .success(record(schemaJSON: schema))
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(pane)
+
+    XCTAssertEqual(pane.presentation, .missing, "Desktop-only is the machine's own answer about this phone.")
+    XCTAssertTrue(pane.panels.isEmpty)
+    // Asked once and never again: the machine already answered.
+    pane.load()
+    await settle(pane)
+    XCTAssertEqual(sync.panelFetchCount, 1)
+  }
+
+  // MARK: - Bound collections
+
+  /// The sync bug drops `plugin_panels` and `plugin_collections` together, so a
+  /// fetched panel whose list stayed empty would still be a blank pane.
+  func testABoundListWithNoMirrorRowsIsFilledFromTheMachine() async {
+    let sync = FakePaneSync()
+    sync.localPanels = [record()]
+    sync.collectionReply = .success([
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: "1",
+        valueJSON: #"{"title":"Show HN: a thing"}"#,
+        updatedAt: ""
+      ),
+    ])
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    // The read is detached and the rows land on a later pass, so wait for the
+    // redraw rather than for the call.
+    for _ in 0..<200 {
+      if boundItems(of: pane)?.isEmpty == false { break }
+      await Task.yield()
+    }
+
+    XCTAssertEqual(boundItems(of: pane)?.count, 1)
+    XCTAssertEqual(boundItems(of: pane)?.first?.title, "Show HN: a thing")
+    XCTAssertEqual(sync.collectionFetchCount, 1)
+  }
+
+  /// The rows of the pane's first node, when it is a list that resolved.
+  private func boundItems(of pane: PluginPaneStore) -> [PluginVocabListItem]? {
+    guard case let .panel(schema) = pane.presentation,
+          let node = schema.body.first,
+          case let .list(list) = node else {
+      return nil
+    }
+    return list.items
+  }
+
+  func testMirrorRowsWinAndNoCollectionIsAskedFor() async {
+    let sync = FakePaneSync()
+    sync.localPanels = [record()]
+    sync.localEntries = [
+      PluginCollectionEntry(
+        pluginId: "hn",
+        collection: "stories",
+        key: "1",
+        valueJSON: #"{"title":"From the mirror"}"#,
+        updatedAt: ""
+      ),
+    ]
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.load()
+    await settle(pane)
+
+    XCTAssertEqual(boundItems(of: pane)?.first?.title, "From the mirror")
+    XCTAssertEqual(sync.collectionFetchCount, 0, "The mirror answered; the socket must not be touched.")
+  }
+
+  // MARK: - Wire shape
+
+  /// Shape taken from the host's own reader — `readPanel` in
+  /// `pluginDataStore.ts` — rather than guessed: `schema` arrives DECODED and
+  /// there is no `icon` or `surface` on this wire.
+  func testThePanelReplyIsReadTheWayTheHostWritesIt() throws {
+    let schema: [String: Any] = [
+      "v": 1,
+      "mobile": true,
+      "refreshAction": "openStories",
+      "body": [] as [Any],
+    ]
+    let payload: [String: Any] = [
+      "pluginId": "hn",
+      "panelId": "stories",
+      "title": "Top stories",
+      "schema": schema,
+      "vocabVersion": 1,
+      "updatedAt": "2026-08-28T19:26:00Z",
+    ]
+    let parsed = try XCTUnwrap(PluginPanelRecord.remote(payload: payload, pluginId: "hn", panelId: "stories"))
+    XCTAssertEqual(parsed.pluginId, "hn")
+    XCTAssertEqual(parsed.panelId, "stories")
+    XCTAssertEqual(parsed.title, "Top stories")
+    XCTAssertEqual(parsed.vocabVersion, 1)
+    XCTAssertEqual(parsed.updatedAt, "2026-08-28T19:26:00Z")
+    XCTAssertEqual(parsed.mobile, true)
+    XCTAssertEqual(parsed.refreshAction, "openStories")
+    XCTAssertTrue(parsed.icon.isEmpty, "The wire carries no icon; inventing one would be a guess.")
+    XCTAssertTrue(parsed.surface.isEmpty)
+
+    // `null` for the whole reply is the machine saying it has no such panel.
+    XCTAssertNil(PluginPanelRecord.remote(payload: NSNull(), pluginId: "hn", panelId: "stories"))
+    XCTAssertNil(PluginPanelRecord.remote(payload: nil, pluginId: "hn", panelId: "stories"))
+
+    // A row the host could not parse comes back with a null schema. It is still
+    // a record, and an unreadable schema is what the fallback card is for.
+    let corruptPayload: [String: Any] = [
+      "pluginId": "hn", "panelId": "stories", "schema": NSNull(), "vocabVersion": 1,
+    ]
+    let corrupt = try XCTUnwrap(PluginPanelRecord.remote(payload: corruptPayload, pluginId: "hn", panelId: "stories"))
+    XCTAssertEqual(corrupt.schemaJSON, "")
+  }
+
+  func testTheCollectionReplyIsReadTheWayTheHostWritesIt() throws {
+    let rowPayload: [String: Any] = [
+      "collection": "stories",
+      "key": "1",
+      "value": ["title": "A"] as [String: Any],
+      "updatedAt": "2026-08-28T19:26:00Z",
+    ]
+    let row = try XCTUnwrap(PluginCollectionEntry.remote(payload: rowPayload, pluginId: "hn"))
+    XCTAssertEqual(row.pluginId, "hn")
+    XCTAssertEqual(row.collection, "stories")
+    XCTAssertEqual(row.key, "1")
+    XCTAssertEqual((row.value as? [String: Any])?["title"] as? String, "A")
+
+    // A scalar value is legal — `value` is `unknown` on the wire.
+    let scalarPayload: [String: Any] = ["collection": "read", "key": "1", "value": true]
+    let scalar = try XCTUnwrap(PluginCollectionEntry.remote(payload: scalarPayload, pluginId: "hn"))
+    XCTAssertEqual(scalar.valueJSON, "true")
+
+    let noCollection: [String: Any] = ["key": "1"]
+    let noKey: [String: Any] = ["collection": "stories"]
+    let complete: [String: Any] = ["collection": "stories", "key": "1"]
+    XCTAssertNil(PluginCollectionEntry.remote(payload: noCollection, pluginId: "hn"))
+    XCTAssertNil(PluginCollectionEntry.remote(payload: noKey, pluginId: "hn"))
+    XCTAssertNil(PluginCollectionEntry.remote(payload: complete, pluginId: ""))
+  }
+}

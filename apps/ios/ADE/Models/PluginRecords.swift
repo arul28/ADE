@@ -161,6 +161,61 @@ struct PluginPanelRecord: Equatable, Identifiable {
   }
 }
 
+extension PluginPanelRecord {
+  /// Read one `plugin.getPanel` reply.
+  ///
+  /// Wire shape, taken from the host's own reader rather than guessed:
+  /// `apps/desktop/src/main/services/plugins/pluginDataStore.ts:292-319`
+  /// (`readPanel`) returns `{pluginId, panelId, title: string|null,
+  /// schema: unknown, vocabVersion: number, updatedAt: string|null}`, typed as
+  /// `PluginPanelRecord` in `apps/desktop/src/shared/plugins/sdk.ts:2544-2551`
+  /// and handed straight back by `pluginHostService.ts:1693-1697`. `null` for
+  /// the whole reply means the machine has no such panel — the caller, not this
+  /// reader, turns that into copy.
+  ///
+  /// Two columns the SQL mirror has are NOT on this wire: `icon` and `surface`.
+  /// Neither is read by anything that draws a panel — the pane titles itself
+  /// from `title` and the sheet is the surface — so they stay empty rather than
+  /// being invented.
+  ///
+  /// `mobile` and `refreshAction` are read out of the schema exactly as the
+  /// mirror path reads them (`Database.fetchPluginPanels`), which is what keeps
+  /// a fetched panel and a replicated one the same panel: the host stamps both
+  /// into `schema_json`, and an absent `mobile` means shown.
+  static func remote(payload: Any?, pluginId: String, panelId: String) -> PluginPanelRecord? {
+    guard let object = payload as? [String: Any] else { return nil }
+    let schema = object["schema"]
+    // A schema the host could not parse comes back as null (its own comment
+    // says the record is still returned so the client can draw the declared
+    // fallback). An empty string here parses as `damaged`, which is that same
+    // outcome on the phone.
+    let schemaJSON: String = {
+      guard let schema, !(schema is NSNull) else { return "" }
+      guard let data = try? adeJSONData(withJSONObject: schema) else { return "" }
+      return String(data: data, encoding: .utf8) ?? ""
+    }()
+    let resolvedPluginId = (object["pluginId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? pluginId
+    let resolvedPanelId = (object["panelId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? panelId
+    guard !resolvedPluginId.isEmpty, !resolvedPanelId.isEmpty else { return nil }
+    return PluginPanelRecord(
+      pluginId: resolvedPluginId,
+      panelId: resolvedPanelId,
+      title: (object["title"] as? String) ?? "",
+      icon: "",
+      surface: "",
+      schemaJSON: schemaJSON,
+      // Absent reads as this build's own version, which is the tolerant answer:
+      // the schema carries its own version and the parser is the thing that
+      // decides skew. The column only exists so a client can refuse without
+      // parsing, and a host that did not send it has not refused.
+      vocabVersion: (object["vocabVersion"] as? NSNumber)?.intValue ?? PluginVocabulary.version,
+      updatedAt: (object["updatedAt"] as? String) ?? "",
+      mobile: PluginPanelRecord.mobileFlag(inSchemaJSON: schemaJSON),
+      refreshAction: PluginPanelRecord.refreshAction(inSchemaJSON: schemaJSON)
+    )
+  }
+}
+
 /// One row of `plugin_collections`: render-ready data the plugin materialized on
 /// its own machine. `valueJSON` is opaque until a bound component reads it.
 struct PluginCollectionEntry: Equatable, Identifiable {
@@ -174,6 +229,39 @@ struct PluginCollectionEntry: Equatable, Identifiable {
   var value: Any? {
     guard let data = valueJSON.data(using: .utf8) else { return nil }
     return try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+  }
+
+  /// Read one row of a `plugin.getCollection` reply.
+  ///
+  /// Wire shape from `PluginCollectionRow` in
+  /// `apps/desktop/src/shared/plugins/sdk.ts:337-342` — `{collection, key,
+  /// value: unknown, updatedAt}` — produced by
+  /// `pluginDataStore.ts:212-242` (`listCollection`) and returned unchanged by
+  /// `pluginHostService.ts:1699-1706`. `value` arrives DECODED, where the
+  /// mirror stores it as text, so it is re-serialized here: every bound
+  /// component downstream reads `valueJSON`.
+  ///
+  /// `pluginId` is the caller's, because the row does not carry one — the read
+  /// was already scoped to one plugin.
+  static func remote(payload: Any?, pluginId: String) -> PluginCollectionEntry? {
+    guard let object = payload as? [String: Any],
+          let key = object["key"] as? String, !key.isEmpty,
+          let collection = object["collection"] as? String, !collection.isEmpty,
+          !pluginId.isEmpty else {
+      return nil
+    }
+    let valueJSON: String = {
+      guard let value = object["value"], !(value is NSNull) else { return "null" }
+      guard let data = try? adeJSONData(withJSONObject: value) else { return "null" }
+      return String(data: data, encoding: .utf8) ?? "null"
+    }()
+    return PluginCollectionEntry(
+      pluginId: pluginId,
+      collection: collection,
+      key: key,
+      valueJSON: valueJSON,
+      updatedAt: (object["updatedAt"] as? String) ?? ""
+    )
   }
 }
 

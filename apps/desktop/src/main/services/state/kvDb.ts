@@ -126,8 +126,37 @@ export type AdeDbSyncApi = {
     maxRows?: number;
     throughDbVersion?: number;
     excludeTables?: readonly string[];
+    /**
+     * Narrow the export to these tables. The inverse of `excludeTables` and
+     * mutually intelligible with it (both are plain SQL `[table]` predicates),
+     * for a caller that owes one peer a specific subset of the backlog — see
+     * the plugin catch-up in `syncHostService`.
+     *
+     * An EMPTY array means "no tables" and exports nothing, rather than
+     * meaning "no filter": a caller that computed an empty table set is asking
+     * for nothing, and answering with everything would be the dangerous
+     * reading.
+     */
+    includeTables?: readonly string[];
     rejectOversizedVersionGroup?: boolean;
   }) => CrsqlChangeRow[];
+  /**
+   * The lowest `db_version` any of these tables still carries, or `null` when
+   * none of them has a single row.
+   *
+   * Read from each table's `__crsql_clock` shadow table, which cr-sqlite indexes
+   * on `db_version` — so this is an index seek, not a scan. It exists because
+   * `crsql_changes` does NOT push a table predicate down (verified: an
+   * `EXPLAIN QUERY PLAN` for a `[table] = ?` filter still reports only
+   * `INDEX 2:WHERE db_vrsn > ?`), so a filtered export starting at version 0
+   * pays for the whole backlog before it reaches the first matching row. A
+   * caller that starts at this floor skips the empty prefix instead.
+   *
+   * Unknown table names are ignored rather than throwing: the caller's table
+   * list is a constant, and a database that predates one of them is not an
+   * error.
+   */
+  minDbVersionForTables: (tables: readonly string[]) => number | null;
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
    * Claim inbound settle-tuple writes so they are reconciled through the settle
@@ -141,6 +170,20 @@ export type AdeDbSyncApi = {
    * peers.
    */
   discardUnpublishedChangesForTables: (tableNames: string[]) => void;
+  /**
+   * How far this host has sent the plugin tables to one paired device, or 0 for
+   * a device it has never sent them to.
+   *
+   * Kept apart from the peer's changeset cursor on purpose. The cursor says
+   * what the peer applied; this says what the host actually PUT ON THE WIRE for
+   * the capability-gated tables. They diverge whenever plugin rows are withheld
+   * — an old peer, or a capped reseed — and the host advances the cursor
+   * anyway. Persisted (rather than held per connection) so a phone that
+   * reconnects ten times an hour is swept once, not ten times.
+   */
+  getPluginTablesWatermark: (deviceId: string) => number;
+  /** Record plugin rows as sent through `throughDbVersion`. Never moves backward. */
+  setPluginTablesWatermark: (deviceId: string, throughDbVersion: number) => void;
 };
 
 /**
@@ -1007,6 +1050,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // for `ai_usage_log` above. Keeping it local also keeps it out of the plugin
   // SDK's `collections` surface, so a plugin cannot read or forge its own meter.
   "plugin_wire_meter_daily",
+  // Per-peer record of how far this host has sent the plugin tables. It
+  // describes one host's outbound link, so it is meaningless anywhere else, and
+  // replicating a table about the sync process itself is circular — the same
+  // rule that keeps `local_crr_change_suppressions` local.
+  "sync_peer_plugin_watermarks",
   // Host-local record of work a settle teardown could not confirm it stopped.
   // Not replicated: it describes processes on THIS host, and a peer showing
   // "1 job could not be stopped" for a machine it cannot see would be a lie.
@@ -4301,6 +4349,27 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // PLUGIN_TABLE_DDL, which is the single copy of that SQL.
   for (const statement of PLUGIN_TABLE_DDL) db.run(statement);
 
+  // How far each paired peer has been sent the plugin tables.
+  //
+  // Separate from the peer's changeset cursor because the two genuinely differ:
+  // the cursor is what the PEER reports it has applied, while plugin rows are
+  // withheld from a peer that cannot apply them (no `pluginTables` capability)
+  // and from a capped mobile reseed that had to drop them to fit. Both cases
+  // advance the cursor past versions whose plugin rows the peer never received,
+  // and without this row the host has no way to know it owes them.
+  //
+  // LOCAL-ONLY on purpose (see LOCAL_ONLY_CRR_EXCLUDED_TABLES): it describes
+  // what THIS host sent over THIS host's link, it is meaningless on any other
+  // machine, and replicating a table about the sync process itself is circular.
+  db.run(`
+    create table if not exists sync_peer_plugin_watermarks (
+      device_id text not null,
+      through_db_version integer not null default 0,
+      updated_at text not null default '',
+      primary key (device_id)
+    )
+  `);
+
   // Per-plugin wire accounting. LOCAL-ONLY on purpose (see
   // LOCAL_ONLY_CRR_EXCLUDED_TABLES) — it measures one machine's link.
   db.run(`
@@ -4771,9 +4840,12 @@ export async function openKvDb(
       maxRows?: number;
       throughDbVersion?: number;
       excludeTables?: readonly string[];
+      includeTables?: readonly string[];
       rejectOversizedVersionGroup?: boolean;
     }) => {
       if (!crsqliteLoaded) return [];
+      // An empty include list is "nothing", not "no filter" — see the type.
+      if (options?.includeTables && options.includeTables.length === 0) return [];
       const suppressions = new Map<string, number>(
         allRows<{ table_name: string; through_db_version: number }>(
           db,
@@ -4803,15 +4875,25 @@ export async function openKvDb(
           .map((table) => table.trim())
           .filter(Boolean),
       )];
-      const tableFilterSql = excludedTables.length > 0
-        ? ` and [table] not in (${excludedTables.map(() => "?").join(", ")})`
-        : "";
+      const includedTables = options?.includeTables
+        ? [...new Set(options.includeTables.map((table) => table.trim()).filter(Boolean))]
+        : [];
+      const tableFilterSql = [
+        excludedTables.length > 0
+          ? ` and [table] not in (${excludedTables.map(() => "?").join(", ")})`
+          : "",
+        includedTables.length > 0
+          ? ` and [table] in (${includedTables.map(() => "?").join(", ")})`
+          : "",
+      ].join("");
+      // Bound to the same order they appear in the SQL above.
+      const tableFilterParams = [...excludedTables, ...includedTables];
       const rangeSql = throughDbVersion != null
         ? `where db_version > ? and db_version <= ?${tableFilterSql}`
         : `where db_version > ?${tableFilterSql}`;
       const rangeParams = throughDbVersion != null
-        ? [version, throughDbVersion, ...excludedTables]
-        : [version, ...excludedTables];
+        ? [version, throughDbVersion, ...tableFilterParams]
+        : [version, ...tableFilterParams];
       const selectSql = `select [table] as table_name,
                 pk,
                 cid,
@@ -4861,8 +4943,8 @@ export async function openKvDb(
           let scanFromVersion = version;
           for (;;) {
             const scanParams = throughDbVersion != null
-              ? [scanFromVersion, throughDbVersion, ...excludedTables]
-              : [scanFromVersion, ...excludedTables];
+              ? [scanFromVersion, throughDbVersion, ...tableFilterParams]
+              : [scanFromVersion, ...tableFilterParams];
             let fetched = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...scanParams, maxRows + 1]);
             let truncated = false;
             if (fetched.length > maxRows) {
@@ -4897,7 +4979,7 @@ export async function openKvDb(
            from crsql_changes
           where db_version > ? and db_version <= ?${tableFilterSql}
           order by db_version asc, cl asc, seq asc`,
-                  [scanFromVersion, tailVersion, ...excludedTables],
+                  [scanFromVersion, tailVersion, ...tableFilterParams],
                 );
               }
             }
@@ -4930,6 +5012,48 @@ export async function openKvDb(
           cl: Number(row.cl),
           seq: Number(row.seq),
         }));
+    },
+    minDbVersionForTables: (tables: readonly string[]) => {
+      if (!crsqliteLoaded) return null;
+      let lowest: number | null = null;
+      for (const table of new Set(tables.map((name) => name.trim()).filter(Boolean))) {
+        // The clock table's name is derived, so a stray character in `table`
+        // would be an identifier here. Every caller passes a compile-time
+        // constant; this keeps that true rather than trusting it.
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) continue;
+        if (!rawHasTable(db, `${table}__crsql_clock`)) continue;
+        const row = get<{ min_db_version: number | null }>(
+          `select min(db_version) as min_db_version from "${table}__crsql_clock"`,
+        );
+        const candidate = row?.min_db_version;
+        if (candidate == null || !Number.isFinite(Number(candidate))) continue;
+        const value = Number(candidate);
+        lowest = lowest == null ? value : Math.min(lowest, value);
+      }
+      return lowest;
+    },
+    getPluginTablesWatermark: (deviceId: string) => {
+      const key = deviceId.trim();
+      if (!key) return 0;
+      const row = get<{ through_db_version: number }>(
+        "select through_db_version from sync_peer_plugin_watermarks where device_id = ?",
+        [key],
+      );
+      const value = Number(row?.through_db_version ?? 0);
+      return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+    },
+    setPluginTablesWatermark: (deviceId: string, throughDbVersion: number) => {
+      const key = deviceId.trim();
+      if (!key || !Number.isFinite(throughDbVersion)) return;
+      const version = Math.max(0, Math.floor(throughDbVersion));
+      run(
+        `insert into sync_peer_plugin_watermarks(device_id, through_db_version, updated_at)
+         values (?, ?, ?)
+         on conflict(device_id) do update set
+           through_db_version = max(sync_peer_plugin_watermarks.through_db_version, excluded.through_db_version),
+           updated_at = excluded.updated_at`,
+        [key, version, new Date().toISOString()],
+      );
     },
     setRemoteSettleTupleHandler: (handler: ((changes: RemoteSettleTupleChange[]) => void) | null) => {
       remoteSettleTupleHandler = handler;

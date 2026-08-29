@@ -689,6 +689,111 @@ describe("plugin start and panel materialization", () => {
 });
 
 /**
+ * Retiring a panel the manifest dropped.
+ *
+ * The seeder only ever wrote rows, so a panel taken out of a manifest kept its
+ * last published row on every surface for good — `ade plugin doctor` reported a
+ * live plugin as "4 published / 3 in manifest" and the fourth panel still
+ * opened. These pin the three halves of the fix that can go wrong quietly:
+ * the drop happens, a manifest that could not be READ drops nothing, and one
+ * plugin's manifest never speaks for another plugin's rows.
+ */
+const TWO_PANEL_PLUGIN_ID = "atlas-plugin";
+
+function writeTwoPanelManifest(root: string, panelIds: string[]): void {
+  fs.writeFileSync(
+    path.join(root, "plugin.json"),
+    JSON.stringify({
+      name: TWO_PANEL_PLUGIN_ID,
+      version: "1.0.0",
+      displayName: "Atlas",
+      description: "Ships panels and no code at all.",
+      vocabVersion: 1,
+      surfaces: panelIds.map((id) => ({ kind: "tab", id, title: id, panelId: id })),
+      panels: panelIds.map((id) => ({ id, schemaFile: `panels/${id}.json`, title: id })),
+    }),
+    "utf8",
+  );
+}
+
+/** A codeless plugin declaring two panels, whose manifest the tests rewrite. */
+function twoPanelPluginDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-plugin-two-panel-"));
+  scratchDirs.push(dir);
+  const root = path.join(dir, TWO_PANEL_PLUGIN_ID);
+  fs.mkdirSync(path.join(root, "panels"), { recursive: true });
+  writeTwoPanelManifest(root, ["main", "history"]);
+  for (const id of ["main", "history"]) {
+    fs.writeFileSync(
+      path.join(root, "panels", `${id}.json`),
+      JSON.stringify({ v: 1, title: id, fallback: { title: id, text: "x" }, body: [] }),
+      "utf8",
+    );
+  }
+  return root;
+}
+
+describe("panels the manifest no longer declares", () => {
+  afterEach(closeScratch);
+
+  it("drops the row for a panel a reloaded manifest dropped, and nobody else's", async () => {
+    const source = twoPanelPluginDir();
+    const { plugins, store } = await hostWithFixture({ source });
+    // A second, unrelated plugin. Its own panel row is the control: a prune
+    // scoped by anything looser than the plugin id would take it too.
+    await plugins.install({ source: fixtureRoot });
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "main")).not.toBeNull();
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "history")).not.toBeNull();
+
+    writeTwoPanelManifest(source, ["main"]);
+    fs.rmSync(path.join(source, "panels", "history.json"));
+    await plugins.reload({ pluginId: TWO_PANEL_PLUGIN_ID });
+
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "main")).not.toBeNull();
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "history")).toBeNull();
+    expect(store!.readPanel("hello-plugin", "main")).not.toBeNull();
+  });
+
+  it("retires every row for a manifest that declares no panels at all", async () => {
+    // The loop-shaped bug: a prune written inside the seed loop never runs for
+    // a manifest with an empty `panels`, so a plugin that gave up its panels
+    // keeps all of them.
+    const source = twoPanelPluginDir();
+    const { plugins, store } = await hostWithFixture({ source });
+
+    writeTwoPanelManifest(source, []);
+    await plugins.reload({ pluginId: TWO_PANEL_PLUGIN_ID });
+
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "main")).toBeNull();
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "history")).toBeNull();
+  });
+
+  it("prunes nothing when the manifest could not be read", async () => {
+    const source = twoPanelPluginDir();
+    const { plugins, pluginsRoot, store } = await hostWithFixture({ source });
+
+    // Recorded as a git install so the reload reads the install directory in
+    // place: a `local` reload would re-copy the intact source folder and heal
+    // the manifest before anything could read it as unreadable.
+    const statePath = path.join(pluginsRoot, "state.json");
+    const state = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      plugins: Record<string, { source: unknown }>;
+    };
+    state.plugins[TWO_PANEL_PLUGIN_ID]!.source = { kind: "git", url: "https://example.test/atlas.git" };
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
+    fs.writeFileSync(path.join(pluginsRoot, TWO_PANEL_PLUGIN_ID, "plugin.json"), "{ not json", "utf8");
+
+    await plugins.reload({ pluginId: TWO_PANEL_PLUGIN_ID });
+
+    // No manifest is no opinion about which panels are stale. A failed reload
+    // that wiped the rows would blank a working plugin on every surface.
+    expect(await plugins.getManifest({ pluginId: TWO_PANEL_PLUGIN_ID })).toBeNull();
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "main")).not.toBeNull();
+    expect(store!.readPanel(TWO_PANEL_PLUGIN_ID, "history")).not.toBeNull();
+  });
+});
+
+/**
  * Observe-only runtime hooks, at the host's end.
  *
  * The chat runtime's half is pinned in `chat/pluginRuntimeHookObserver.test.ts`.

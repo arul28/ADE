@@ -1,6 +1,7 @@
 import {
   deleteAllPluginRows,
   deletePluginCollectionValue,
+  deleteUndeclaredPluginPanels,
   isPluginBudgetExceeded,
   publishPluginContribution,
   putPluginCollectionValue,
@@ -84,6 +85,12 @@ export type PluginDataStore = {
   ): void;
   /** The materialized panel row, which is what every client actually renders. */
   readPanel(pluginId: string, panelId: string): PluginPanelRecord | null;
+  /**
+   * Drop this plugin's panel rows whose id `declaredPanelIds` does not name,
+   * and answer with the ids that went. The manifest's panel list is the only
+   * legitimate argument — see the writer.
+   */
+  prunePanels(pluginId: string, declaredPanelIds: readonly string[]): string[];
   usage(pluginId?: string): PluginUsageSummary;
   removePluginData(pluginId: string): void;
 };
@@ -317,6 +324,14 @@ export function createPluginDataStore(deps: {
         vocabVersion: Number(row.vocab_version ?? 1),
         updatedAt: row.updated_at || null,
       };
+    },
+
+    prunePanels(pluginId, declaredPanelIds) {
+      const removed = deleteUndeclaredPluginPanels(db, pluginId, declaredPanelIds);
+      // One event per row that went, the same shape `updatePanel` emits: a
+      // client holding a removed panel has to refetch it to learn it is gone.
+      for (const panelId of removed) emitPluginChange({ kind: "panels", pluginId, panelId });
+      return removed;
     },
 
     usage(pluginId) {

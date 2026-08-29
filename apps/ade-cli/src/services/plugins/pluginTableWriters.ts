@@ -420,6 +420,153 @@ export function deleteAllPluginRows(db: PluginWriterDb, pluginId: string): void 
   });
 }
 
+/**
+ * Drop the `plugin_panels` rows one plugin holds whose panel id its manifest no
+ * longer declares, and answer with the ids that went.
+ *
+ * The manifest is the whole truth for which panels a plugin may own: the SDK's
+ * `panels.update` refuses a panel id the manifest does not declare
+ * (`pluginSdkServer.ts` `requireDeclaredPanel`), so a row outside the declared
+ * set is unreachable by the plugin that wrote it — nothing will ever update it
+ * and no client should draw it. Without this, dropping a panel from a manifest
+ * left its last published row on every surface forever.
+ *
+ * A plain `delete` on the base table is the right and only supported way to
+ * remove a CRR row — the crsql trigger turns it into a replicated delete — so
+ * this is the same statement shape `deleteAllPluginRows` uses, one panel at a
+ * time so the ids can be reported. The ids are read inside the same
+ * `begin immediate` transaction as the deletes so what is reported is exactly
+ * what went.
+ *
+ * `declaredPanelIds` is every panel the manifest declares, not only the ones
+ * that ship a `schemaFile`: a declared panel with no schema is still a panel
+ * the plugin may publish into at runtime.
+ */
+export function deleteUndeclaredPluginPanels(
+  db: PluginWriterDb,
+  pluginId: string,
+  declaredPanelIds: readonly string[],
+): string[] {
+  const declared = new Set(declaredPanelIds);
+  return inWriteTransaction(db, () => {
+    const stale = db
+      .all<{ panel_id: string }>("select panel_id from plugin_panels where plugin_id = ?", [pluginId])
+      .map((row) => String(row.panel_id))
+      .filter((panelId) => !declared.has(panelId));
+    for (const panelId of stale) {
+      db.run("delete from plugin_panels where plugin_id = ? and panel_id = ?", [pluginId, panelId]);
+    }
+    return stale;
+  });
+}
+
+/** One materialized panel, shaped exactly as the desktop store answers it. */
+export type PluginPanelReadRow = {
+  pluginId: string;
+  panelId: string;
+  title: string | null;
+  /** Decoded, not the stored text: `null` when the row's JSON is unreadable. */
+  schema: unknown;
+  vocabVersion: number;
+  updatedAt: string | null;
+};
+
+/**
+ * Read one panel for a client whose replica does not have the row.
+ *
+ * Byte-for-byte the same answer as `pluginDataStore.readPanel`
+ * (apps/desktop/src/main/services/plugins/pluginDataStore.ts:299) — same
+ * columns, same decode, same "a corrupt schema still returns the record so the
+ * client draws its declared fallback". Two readers that disagree would mean a
+ * panel that renders over sync and not over IPC, which is the class of bug this
+ * whole repair path exists to end.
+ */
+export function readPluginPanel(
+  db: PluginWriterDb,
+  pluginId: string,
+  panelId: string,
+): PluginPanelReadRow | null {
+  const row = db.get<{
+    title: string;
+    schema_json: string;
+    vocab_version: number;
+    updated_at: string;
+  }>(
+    `select title, schema_json, vocab_version, updated_at
+       from plugin_panels where plugin_id = ? and panel_id = ?`,
+    [pluginId, panelId],
+  );
+  if (!row) return null;
+  let schema: unknown = null;
+  try {
+    schema = JSON.parse(row.schema_json) as unknown;
+  } catch {
+    schema = null;
+  }
+  return {
+    pluginId,
+    panelId,
+    title: row.title || null,
+    schema,
+    vocabVersion: Number(row.vocab_version ?? 1),
+    updatedAt: row.updated_at || null,
+  };
+}
+
+/** One row of a collection, shaped as `PluginCollectionRow` on the wire. */
+export type PluginCollectionReadRow = {
+  collection: string;
+  key: string;
+  /** Decoded, like the panel schema above. */
+  value: unknown;
+  updatedAt: string;
+};
+
+/** Default and ceiling for one collection read, mirroring the desktop store. */
+export const PLUGIN_COLLECTION_READ_DEFAULT_LIMIT = 200;
+export const PLUGIN_COLLECTION_READ_MAX_LIMIT = 1_000;
+
+/**
+ * Read rows of one collection, optionally narrowed by key prefix.
+ *
+ * The sibling of {@link readPluginPanel}, and the same copy of
+ * `pluginDataStore.listCollection` (pluginDataStore.ts:219): same ordering,
+ * same bounds, and the same `escape` clause so a `%` or `_` inside a
+ * caller-supplied prefix filters literally instead of widening the scan to the
+ * whole collection.
+ */
+export function readPluginCollectionRows(
+  db: PluginWriterDb,
+  args: { pluginId: string; collection: string; keyPrefix?: string | null; limit?: number },
+): PluginCollectionReadRow[] {
+  const limit = Math.min(
+    Math.max(1, Math.trunc(args.limit ?? PLUGIN_COLLECTION_READ_DEFAULT_LIMIT)),
+    PLUGIN_COLLECTION_READ_MAX_LIMIT,
+  );
+  const prefix = typeof args.keyPrefix === "string" && args.keyPrefix.length > 0 ? args.keyPrefix : null;
+  const rows = prefix === null
+    ? db.all<{ key: string; value_json: string; updated_at: string }>(
+      `select key, value_json, updated_at from plugin_collections
+         where plugin_id = ? and collection = ? order by key limit ?`,
+      [args.pluginId, args.collection, limit],
+    )
+    : db.all<{ key: string; value_json: string; updated_at: string }>(
+      `select key, value_json, updated_at from plugin_collections
+         where plugin_id = ? and collection = ? and key like ? escape '\\'
+         order by key limit ?`,
+      [args.pluginId, args.collection, `${prefix.replace(/[\\%_]/g, "\\$&")}%`, limit],
+    );
+  return rows.map((row) => {
+    let value: unknown = null;
+    try {
+      value = JSON.parse(row.value_json) as unknown;
+    } catch {
+      value = null;
+    }
+    return { collection: args.collection, key: row.key, value, updatedAt: row.updated_at };
+  });
+}
+
 export type PluginPresenceRow = {
   pluginId: string;
   version: string;

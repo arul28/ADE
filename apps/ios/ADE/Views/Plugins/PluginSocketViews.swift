@@ -774,7 +774,9 @@ private struct PluginDetailSection: View {
         symbol: "exclamationmark.triangle",
         text: fallback?.text ?? "\(store.displayName) sent a section ADE could not read."
       )
-    case .missing:
+    // A section is a guest on someone else's screen and never goes fetching, so
+    // both of these are the same nothing it always drew.
+    case .missing, .notReceived:
       EmptyView()
     }
   }
@@ -1275,8 +1277,9 @@ struct PluginChatCardPanel: View {
           text: fallback?.text ?? "\(store.displayName) sent a card ADE could not read."
         )
       // The card above already said what happened; a missing panel row adds an
-      // empty frame and no information.
-      case .missing:
+      // empty frame and no information. A chat card never goes fetching either,
+      // so it cannot reach any other gap state.
+      case .missing, .notReceived:
         EmptyView()
       }
     }

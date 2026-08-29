@@ -9566,6 +9566,118 @@ final class SyncService: ObservableObject {
     supportsRemoteAction("plugins.list")
   }
 
+  // MARK: - Panel read fallback
+
+  /// The action names a host may advertise for "read one materialized panel".
+  ///
+  /// `plugins.getPanel` is what the sync socket registers
+  /// (`apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`), matching
+  /// every other `plugins.*` command a phone can call. `plugin.getPanel` is the
+  /// same read under the desktop action registry's spelling
+  /// (`apps/desktop/src/shared/ipc.ts:465`,
+  /// `apps/desktop/src/main/services/adeActions/registry.ts:1278`), kept as an
+  /// alternate so the phone asks by the name the machine actually advertised
+  /// rather than by one this build was compiled believing in.
+  ///
+  /// An unadvertised action is not attempted at all — the same gate
+  /// ``supportsPluginSocketDeclarations`` puts in front of `plugins.list`. That
+  /// is what makes an older machine read as "not here yet" instead of as a
+  /// plugin that published nothing.
+  ///
+  /// The host answers `null` ONLY to mean "this machine has no such panel", and
+  /// throws when it cannot answer at all — no project bound, for one. The two
+  /// are different sentences to a user, and the pane keeps them apart.
+  private static let pluginGetPanelActions = ["plugins.getPanel", "plugin.getPanel"]
+  private static let pluginGetCollectionActions = ["plugins.getCollection", "plugin.getCollection"]
+
+  private func advertisedPluginReadAction(_ candidates: [String]) -> String? {
+    candidates.first { supportsViewerRemoteAction($0) }
+  }
+
+  /// Whether this machine can be ASKED for a panel the phone's mirror is
+  /// missing. False on a host that predates the read action, which the pane
+  /// reports as "not here yet" rather than as a plugin that published nothing.
+  var canFetchPluginPanelsRemotely: Bool {
+    advertisedPluginReadAction(Self.pluginGetPanelActions) != nil
+  }
+
+  /// The scope a fetched panel is cached under: which machine's project this
+  /// phone is mirroring. Attaching somewhere else must not serve that machine's
+  /// panels; a plugin data change within one machine must not, because the
+  /// mirror is the primary read and it already won.
+  var pluginFallbackScope: String {
+    activeProjectHostIdentity ?? "-"
+  }
+
+  /// Read one materialized panel straight off the socket.
+  ///
+  /// The fallback for a phone whose `plugin_panels` mirror is missing a row the
+  /// machine has. `nil` means the MACHINE says there is no such panel — the one
+  /// answer that earns "this plugin has not published anything". Everything
+  /// else throws, and the pane says it could not reach the machine.
+  func fetchPluginPanel(pluginId: String, panelId: String) async throws -> PluginPanelRecord? {
+    guard !pluginId.isEmpty, !panelId.isEmpty else { return nil }
+    guard let action = advertisedPluginReadAction(Self.pluginGetPanelActions) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "This computer can't send panels to your phone yet. Update ADE on the computer.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    let response = try await sendCommand(
+      action: action,
+      args: ["pluginId": pluginId, "panelId": panelId],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    // A queued read is not an answer: the pane is on screen now, and replaying
+    // this later would resolve into a store that no longer exists.
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: action)
+    }
+    return PluginPanelRecord.remote(payload: response, pluginId: pluginId, panelId: panelId)
+  }
+
+  /// Read rows of one collection straight off the socket, for a bound component
+  /// whose mirror rows never arrived. Same gate and same failure meaning as
+  /// ``fetchPluginPanel(pluginId:panelId:)``.
+  func fetchPluginCollectionEntries(
+    pluginId: String,
+    collection: String,
+    keyPrefix: String?,
+    limit: Int
+  ) async throws -> [PluginCollectionEntry] {
+    guard !pluginId.isEmpty, !collection.isEmpty, limit > 0 else { return [] }
+    guard let action = advertisedPluginReadAction(Self.pluginGetCollectionActions) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "This computer can't send plugin data to your phone yet. Update ADE on the computer.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    var args: [String: Any] = ["pluginId": pluginId, "collection": collection, "limit": limit]
+    if let keyPrefix, !keyPrefix.isEmpty { args["keyPrefix"] = keyPrefix }
+    let response = try await sendCommand(
+      action: action,
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: action)
+    }
+    guard let rows = response as? [Any] else { return [] }
+    return rows.compactMap { PluginCollectionEntry.remote(payload: $0, pluginId: pluginId) }
+  }
+
   /// Declarations for the current scope, resolving once and reusing after.
   ///
   /// A failed or unsupported read answers "none", which is exactly the

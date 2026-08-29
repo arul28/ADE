@@ -19464,6 +19464,24 @@ function formatSyncStatus(value: unknown): string {
   const peers = Array.isArray(snapshot.connectedPeers)
     ? snapshot.connectedPeers.length
     : null;
+  // A socket that has not sent hello has no identity, so it is not in
+  // `connectedPeers` at all. Saying so is the difference between "no phone is
+  // attached" and "a phone is attached and still shaking hands" — the two read
+  // identically as a bare zero, and one of them sent a plugin dogfood chasing
+  // the wrong bug for a day.
+  const connectingPeers = typeof snapshot.connectingPeerCount === "number"
+    && Number.isFinite(snapshot.connectingPeerCount)
+    ? Math.max(0, Math.floor(snapshot.connectingPeerCount))
+    : null;
+  const peersRow = peers == null
+    ? null
+    : connectingPeers == null
+      // Older runtime: it cannot report handshaking sockets, so do not let this
+      // number be read as a complete count.
+      ? `${peers} (identified only)`
+      : connectingPeers > 0
+        ? `${peers} · ${connectingPeers} still connecting`
+        : `${peers}`;
   const listenerState = listener.listenerBound === true
     ? listener.loopbackAdeValidated === true
       ? `ready${typeof listener.port === "number" ? ` on ${listener.port}` : ""}`
@@ -19531,7 +19549,7 @@ function formatSyncStatus(value: unknown): string {
     ["role", snapshot.role],
     ["runtime role", snapshot.runtimeRole],
     ["runtime name", snapshot.runtimeName],
-    ["connected peers", peers],
+    ["connected peers", peersRow],
     ["listener", listenerState],
     ["tailscale", tailscaleState],
     ["relay", relayState],

@@ -663,6 +663,12 @@ export type SyncRoleSnapshot = {
   runtimeName: string | null;
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
+  /**
+   * Sockets connected and authenticating that have not sent hello yet, so they
+   * have no identity to appear in `connectedPeers`. Absent on older runtimes.
+   * Reported so a peer count of zero is never mistaken for "nothing attached".
+   */
+  connectingPeerCount?: number;
   tailnetDiscovery: SyncTailnetDiscoveryStatus;
   routeHealth: SyncRouteHealth;
   client: SyncClientStatus;
@@ -1793,6 +1799,17 @@ export type SyncBrainStatusPayload = {
     commandConflictCount?: number;
     lastCommandResultLatencyMs?: number | null;
     lastChangesetAckLatencyMs?: number | null;
+    /**
+     * Sockets that are connected and authenticating but have not sent hello
+     * yet, so they carry no identity to report in `connectedPeers`.
+     *
+     * Reported because the absence used to read as "no phone is attached": a
+     * device mid-handshake is invisible in the peer list, and an operator
+     * comparing "connected peers 0" against a phone that is demonstrably
+     * talking to this host has no way to tell the two apart. Absent on older
+     * runtimes.
+     */
+    connectingPeerCount?: number;
   };
   /** Mirrors `SyncHelloOkPayload.cloudRelayWssUrl` for connected clients. */
   cloudRelayWssUrl?: string | null;
@@ -2210,6 +2227,16 @@ export type SyncRemoteCommandAction =
   // unlike its siblings here, because the table is per project — see the
   // registration for why that is correctness rather than preference.
   | "plugins.contributions"
+  // One materialized panel, and rows of one collection. PROJECT-scoped for the
+  // same reason as `plugins.contributions`: both tables are per project.
+  //
+  // These exist because a phone's `plugin_panels` mirror can legitimately lag
+  // the machine — the replica is a cache, not the contract — and before them a
+  // phone with a missing row had no way to ask. The pane reads its mirror
+  // first and only falls back here, so this is a repair path, not the steady
+  // state.
+  | "plugins.getPanel"
+  | "plugins.getCollection"
   | "plugins.presenceList"
   | "plugins.presenceSync"
   // Read-only account-wide coverage matrix. Read-only is why it is

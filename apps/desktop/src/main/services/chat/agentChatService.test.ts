@@ -42181,6 +42181,126 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     expect(result.answers.plugin_install).toEqual(["install"]);
   });
 
+  it("carries a plugin card's identity to the surfaces that draw it", async () => {
+    // The hop this test exists for: the host resolves WHICH plugin a card is
+    // about, and every surface that draws the card reads it back off this
+    // event. Dropped here, the install gate reads "ADE · Approval" above a
+    // decision about third-party code — the defect this field exists to fix —
+    // and nothing else in the chain can tell, because `source` is still a
+    // perfectly valid "ade".
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Install Focus 1.0.0?",
+      body: "Adds:\n- Focus tab",
+      description: "Adds:\n- Focus tab",
+      source: "ade",
+      kind: "approval",
+      origin: {
+        kind: "plugin",
+        pluginId: "ade-focus",
+        displayName: "Focus",
+        icon: "timer",
+        accent: "#7C6FF0",
+      },
+      allowsFreeform: false,
+      questions: [{
+        id: "plugin_install",
+        header: "Plugin install",
+        question: "Install Focus 1.0.0?",
+        allowsFreeform: false,
+        options: [
+          { label: "Install", value: "install", decision: "accept" },
+          { label: "Don't install", value: "deny", decision: "decline" },
+        ],
+      }],
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Install Focus 1.0.0?";
+      },
+    );
+
+    const request = (approvalEvent.event.detail as { request: PendingInputRequest }).request;
+    expect(request.source).toBe("ade");
+    expect(request.origin).toEqual({
+      kind: "plugin",
+      pluginId: "ade-focus",
+      displayName: "Focus",
+      icon: "timer",
+      accent: "#7C6FF0",
+    });
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "accept",
+      answers: { plugin_install: "install" },
+    });
+    await requestPromise;
+  });
+
+  it("leaves a card that names no plugin exactly as it was", async () => {
+    // Additive, and provably so: a caller that sets nothing must produce a
+    // request with no `origin` key at all, not one carrying an empty object a
+    // renderer would have to defend against.
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.4",
+    });
+
+    const requestPromise = service.requestChatInput({
+      chatSessionId: session.id,
+      title: "Host question",
+      body: "Which path should we take?",
+    });
+
+    const approvalEvent = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => {
+        const detail = event.event.type === "approval_request"
+          ? (event.event.detail as { request?: { title?: string } } | undefined)
+          : undefined;
+        return event.event.type === "approval_request" && detail?.request?.title === "Host question";
+      },
+    );
+
+    const request = (approvalEvent.event.detail as { request: PendingInputRequest }).request;
+    expect("origin" in request).toBe(false);
+
+    await service.respondToInput({
+      sessionId: session.id,
+      itemId: approvalEvent.event.itemId,
+      decision: "decline",
+    });
+    await requestPromise;
+  });
+
   it("still describes an ordinary question card by its question, not its body", async () => {
     // The other half of the same branch: a caller that supplies no description
     // keeps the old fallback, so question cards read exactly as before.

@@ -969,6 +969,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       requireProject(pluginId).data.publishContribution(id, entityKind, entityId, socket, payload),
     updatePanel: (id, panelId, panelArgs) => requireProject(pluginId).data.updatePanel(id, panelId, panelArgs),
     readPanel: (id, panelId) => requireProject(pluginId).data.readPanel(id, panelId),
+    prunePanels: (id, declaredPanelIds) => requireProject(pluginId).data.prunePanels(id, declaredPanelIds),
     usage: (id) => requireProject(pluginId).data.usage(id),
     removePluginData: (id) => requireProject(pluginId).data.removePluginData(id),
   });
@@ -1197,7 +1198,8 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
 
   /**
    * Materialize the panels a manifest DECLARES, so a plugin that ships no code
-   * still renders.
+   * still renders — and retire the rows it no longer declares, so the table
+   * says exactly what the manifest on disk says.
    *
    * `plugin_panels` is the only thing any client reads — desktop, phone, TUI
    * and web all render the row, never the manifest — so before this a declared
@@ -1266,6 +1268,39 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+      }
+    }
+    // Then drop the rows this manifest no longer accounts for. AFTER the seed
+    // loop, so a panel that is both declared and already published is rewritten
+    // rather than deleted-and-reinserted, and outside it, so a manifest that
+    // declares NO panels still retires every row the last one left behind.
+    //
+    // Reachable only past the `!manifest` guard at the top of this function
+    // (and `reconcile`'s own, which skips a plugin whose manifest is null).
+    // That guard is load-bearing for the prune in a way it is not for the
+    // seed: a manifest that could not be read — a bad edit mid-`plugin dev`,
+    // a half-written file, a reload that refused — leaves `installed.manifest`
+    // null, and pruning against a manifest we do not have would read as "this
+    // plugin declares nothing" and wipe a working plugin's panels off every
+    // surface, on every client, over a transient bad read. No manifest means
+    // no opinion about which panels are stale.
+    const declaredPanelIds = manifest.panels.map((panel) => panel.id);
+    for (const attached of projects.values()) {
+      try {
+        const pruned = attached.data.prunePanels(pluginId, declaredPanelIds);
+        if (pruned.length > 0) {
+          logger.info("plugin.panels_pruned", {
+            pluginId,
+            projectId: attached.binding.projectId,
+            panelIds: pruned,
+          });
+        }
+      } catch (error) {
+        logger.warn("plugin.panel_prune_failed", {
+          pluginId,
+          projectId: attached.binding.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   };

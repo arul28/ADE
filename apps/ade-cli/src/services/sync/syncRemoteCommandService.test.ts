@@ -3518,6 +3518,106 @@ describe("plugin remote commands", () => {
     }
   });
 
+  describe("plugins.getPanel / plugins.getCollection", () => {
+    /**
+     * The repair path for a replica that is missing plugin rows.
+     *
+     * These two actions did not exist on the socket at all, and their absence
+     * was half of a P0: a phone draws its plugin pane from the replicated
+     * `plugin_panels`, that replica can legitimately lag the machine, and with
+     * no way to ask, the pane told users the plugin had published nothing.
+     */
+    function panelDb(row: Record<string, unknown> | null, rows: Record<string, unknown>[] = []) {
+      return {
+        run: vi.fn(),
+        runChanged: vi.fn(),
+        get: vi.fn().mockReturnValue(row),
+        all: vi.fn().mockReturnValue(rows),
+      };
+    }
+
+    it("is project-scoped and viewer-readable, like plugins.contributions", () => {
+      const { service } = createService({});
+      for (const action of ["plugins.getPanel", "plugins.getCollection"]) {
+        // Both tables are per project, so a runtime-scoped registration would
+        // answer from whichever project the daemon considered current.
+        expect(service.getDescriptor(action)?.scope).toBe("project");
+        // A row a viewer can already read by syncing is not one worth gating.
+        expect(service.getDescriptor(action)?.policy).toEqual({ viewerAllowed: true });
+      }
+    });
+
+    it("answers one panel in the same shape the desktop store returns", async () => {
+      const db = panelDb({
+        title: "Top stories",
+        schema_json: '{"kind":"list","mobile":true}',
+        vocab_version: 1,
+        updated_at: "2026-08-28T00:00:00.000Z",
+      });
+      const { service } = createService({ db } as never);
+
+      await expect(service.execute(makePayload("plugins.getPanel", { pluginId: "hn", panelId: "stories" })))
+        .resolves.toEqual({
+          pluginId: "hn",
+          panelId: "stories",
+          title: "Top stories",
+          // Decoded, not the stored text: the phone re-serializes it and reads
+          // the host's `mobile` stamp out of it exactly as the mirror path does.
+          schema: { kind: "list", mobile: true },
+          vocabVersion: 1,
+          updatedAt: "2026-08-28T00:00:00.000Z",
+        });
+    });
+
+    it("answers null for a panel the machine does not have, which is a real answer", async () => {
+      const { service } = createService({ db: panelDb(null) } as never);
+      // `null` is what earns the "this plugin has not published anything" copy
+      // on the client. Everything else means the phone could not ask.
+      await expect(service.execute(makePayload("plugins.getPanel", { pluginId: "hn", panelId: "ghost" })))
+        .resolves.toBeNull();
+    });
+
+    it("refuses rather than answering null when no project database is bound", async () => {
+      // `null` means "this machine has no such panel", and the client turns
+      // that into "the plugin published nothing". A host with no project open
+      // has not earned that sentence, so it says it cannot answer instead.
+      const { service } = createService({ db: undefined } as never);
+      await expect(service.execute(makePayload("plugins.getPanel", { pluginId: "hn", panelId: "stories" })))
+        .rejects.toThrow(/no project open/i);
+      await expect(service.execute(makePayload("plugins.getCollection", { pluginId: "hn", collection: "stories" })))
+        .rejects.toThrow(/no project open/i);
+    });
+
+    it("requires both ids rather than answering for the wrong row", async () => {
+      const { service } = createService({ db: panelDb(null) } as never);
+      await expect(service.execute(makePayload("plugins.getPanel", { pluginId: "hn" })))
+        .rejects.toThrow(/panel id/i);
+      await expect(service.execute(makePayload("plugins.getPanel", { panelId: "stories" })))
+        .rejects.toThrow(/plugin id/i);
+      await expect(service.execute(makePayload("plugins.getCollection", { pluginId: "hn" })))
+        .rejects.toThrow(/collection/i);
+    });
+
+    it("answers collection rows with their values decoded", async () => {
+      const db = panelDb(null, [
+        { key: "1", value_json: '{"title":"A"}', updated_at: "t1" },
+        { key: "2", value_json: "not json", updated_at: "t2" },
+      ]);
+      const { service } = createService({ db } as never);
+
+      await expect(service.execute(makePayload("plugins.getCollection", {
+        pluginId: "hn",
+        collection: "stories",
+        limit: 10,
+      }))).resolves.toEqual([
+        { collection: "stories", key: "1", value: { title: "A" }, updatedAt: "t1" },
+        // Plugin-authored content: one unreadable row is one null value, never
+        // a throw that loses the list.
+        { collection: "stories", key: "2", value: null, updatedAt: "t2" },
+      ]);
+    });
+  });
+
   describe("plugins.contributions", () => {
     /** One `plugin_contributions` row as the table stores it. */
     function dbRow(overrides: Record<string, unknown> = {}) {

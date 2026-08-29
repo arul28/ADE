@@ -1473,6 +1473,7 @@ export function createSyncService(args: SyncServiceArgs) {
               })
             : null,
         connectedPeers,
+        connectingPeerCount: hostService?.getBrainStatusSnapshot().metrics.connectingPeerCount ?? 0,
         tailnetDiscovery,
         routeHealth,
         client,

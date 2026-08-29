@@ -6996,7 +6996,7 @@ describe("outbound changeset ack retries", () => {
     projectRoot: string,
     state: { dbVersion: number; changes: CrsqlChangeRow[] },
     logger = createDiscoveryLogger(),
-    options: { pollIntervalMs?: number } = {},
+    options: { pollIntervalMs?: number; pluginWatermarks?: Map<string, number> } = {},
   ) {
     const base = createHostArgs(projectRoot, []);
     const exportChangesSince = vi.fn(
@@ -7004,14 +7004,25 @@ describe("outbound changeset ack retries", () => {
         maxRows?: number;
         throughDbVersion?: number;
         excludeTables?: readonly string[];
+        includeTables?: readonly string[];
         rejectOversizedVersionGroup?: boolean;
       }) =>
         state.changes
           .filter((change) => Number(change.db_version) > fromDbVersion)
           .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
           .filter((change) => !options?.excludeTables?.includes(change.table))
+          .filter((change) => !options?.includeTables || options.includeTables.includes(change.table))
           .slice(0, options?.maxRows ?? state.changes.length),
     );
+    // The persisted per-device plugin watermark, as a map so a test can read
+    // what the host recorded and hand it back on a reconnect.
+    const pluginWatermarks = options.pluginWatermarks ?? new Map<string, number>();
+    const minDbVersionForTables = vi.fn((tables: readonly string[]) => {
+      const versions = state.changes
+        .filter((change) => tables.includes(change.table))
+        .map((change) => Number(change.db_version));
+      return versions.length > 0 ? Math.min(...versions) : null;
+    });
     const host = createSyncHostService({
       ...base,
       logger,
@@ -7022,6 +7033,11 @@ describe("outbound changeset ack retries", () => {
           getSiteId: () => "site-host-controlled",
           getDbVersion: () => state.dbVersion,
           exportChangesSince,
+          minDbVersionForTables,
+          getPluginTablesWatermark: (deviceId: string) => pluginWatermarks.get(deviceId) ?? 0,
+          setPluginTablesWatermark: (deviceId: string, throughDbVersion: number) => {
+            pluginWatermarks.set(deviceId, Math.max(pluginWatermarks.get(deviceId) ?? 0, throughDbVersion));
+          },
           applyChanges: () => ({ appliedCount: 0 }),
           discardUnpublishedChangesForTables: () => {},
         },
@@ -7031,7 +7047,7 @@ describe("outbound changeset ack retries", () => {
         upsertPeerMetadata: vi.fn(),
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
-    return { host, logger, exportChangesSince };
+    return { host, logger, exportChangesSince, pluginWatermarks };
   }
 
   it("reseeds a far-behind iOS replica once, then resumes incrementally from the acknowledged watermark", async () => {
@@ -7547,6 +7563,162 @@ describe("outbound changeset ack retries", () => {
       );
     } finally {
       peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("still owes a pluginTables phone the rows a capped reseed had to drop (P0)", async () => {
+    // The reseed above recovers by rebuilding WITHOUT the plugin tables, and it
+    // acks the phone all the way to `targetDbVersion`. For a phone that CAN
+    // apply plugin rows that used to be permanent data loss: the incremental
+    // export resumes at the acked cursor, so nothing ever looked at the skipped
+    // versions again and the phone's plugin pane stayed empty while the machine
+    // had the panels. The debt is now recorded per device and paid back here.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const bulkyValue = "x".repeat(200_000);
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      changes: [
+        ...Array.from({ length: 400 }, (_, index) => makeChange(index + 1, index)),
+        ...Array.from({ length: 30 }, (_, index) => ({
+          ...makeChange(400 + index + 1, 400 + index, bulkyValue),
+          table: "plugin_collections",
+          cid: "value_json",
+          pk: `plugin-key-${index}`,
+        })),
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host, pluginWatermarks } = createControlledChangesetHost(projectRoot, state, logger);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-plugin-capable", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+      });
+
+      const reseedEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "reseed recovered after excluding plugin tables",
+      );
+      const reseed = reseedEnvelope.payload as SyncChangesetBatchPayload;
+      // The reseed itself is unchanged: it still could not fit the plugin rows.
+      expect(reseed.reason).toBe("catchup");
+      expect(reseed.toDbVersion).toBe(state.dbVersion);
+      expect(reseed.changes.every((change) => change.table === "kv")).toBe(true);
+      // And it earns NO plugin watermark, which is the whole fix.
+      expect(pluginWatermarks.get("ios-plugin-capable") ?? 0).toBe(0);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: reseed.batchId,
+        payload: {
+          batchId: reseed.batchId,
+          fromDbVersion: reseed.fromDbVersion,
+          toDbVersion: reseed.toDbVersion,
+          appliedDbVersion: reseed.toDbVersion,
+          appliedCount: reseed.changes.length,
+          ok: true,
+        },
+      }));
+
+      // The phone's cursor is now at head, and the plugin rows still arrive.
+      const catchUpEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => {
+          if (candidate.type !== "changeset_batch") return false;
+          const batch = candidate.payload as SyncChangesetBatchPayload;
+          return batch.batchId !== reseed.batchId
+            && batch.changes.some((change) => change.table === "plugin_collections");
+        }),
+        "plugin catch-up after a reseed that dropped plugin tables",
+      );
+      const catchUp = catchUpEnvelope.payload as SyncChangesetBatchPayload;
+      expect(catchUp.changes.every((change) => change.table === "plugin_collections")).toBe(true);
+      // The catch-up must not drag the phone's own cursor backwards through the
+      // versions it already applied.
+      expect(catchUp.fromDbVersion).toBe(state.dbVersion);
+      expect(logger.info).toHaveBeenCalledWith(
+        "sync_host.plugin_tables_catchup_sent",
+        expect.objectContaining({ peerDeviceId: "ios-plugin-capable" }),
+      );
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("re-exports the plugin tables to a device that gained the capability at head (P0)", async () => {
+    // The second half of the same bug, and it needs no oversized database at
+    // all. A phone that paired on a build without `pluginTables` had its cursor
+    // advanced through every plugin version (the outbound filter drops rows and
+    // does not hold the watermark), and updating the app does not rewind it —
+    // the cursor is reported BY the phone. Without a per-device plugin
+    // watermark the host reads "at head" and never sends a single plugin row.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 20,
+      changes: [
+        ...Array.from({ length: 4 }, (_, index) => makeChange(index + 1, index)),
+        { ...makeChange(9, 9), table: "plugin_panels", cid: "schema_json", pk: "hn/stories" },
+        { ...makeChange(10, 10), table: "plugin_collections", cid: "value_json", pk: "hn/stories/1" },
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host, pluginWatermarks } = createControlledChangesetHost(projectRoot, state, logger);
+    let upgraded: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let legacy: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // A build that never advertised the capability keeps its head cursor and
+      // is sent nothing — it would throw on a table its schema lacks.
+      legacy = await connectPeer(port, host.getBootstrapToken(), "ios-legacy", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+        dbVersion: state.dbVersion,
+        dbVersionBySite: { "site-host-controlled": state.dbVersion },
+      });
+      upgraded = await connectPeer(port, host.getBootstrapToken(), "ios-upgraded", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+        dbVersion: state.dbVersion,
+        dbVersionBySite: { "site-host-controlled": state.dbVersion },
+      });
+
+      const catchUpEnvelope = await waitForValue(
+        () => upgraded?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "plugin re-export for an upgraded device at head",
+      );
+      const catchUp = catchUpEnvelope.payload as SyncChangesetBatchPayload;
+      expect(catchUp.changes.map((change) => change.table).sort())
+        .toEqual(["plugin_collections", "plugin_panels"]);
+
+      upgraded.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: catchUp.batchId,
+        payload: {
+          batchId: catchUp.batchId,
+          fromDbVersion: catchUp.fromDbVersion,
+          toDbVersion: catchUp.toDbVersion,
+          appliedDbVersion: catchUp.toDbVersion,
+          appliedCount: catchUp.changes.length,
+          ok: true,
+        },
+      }));
+
+      // Recorded, so the next connection from this device does not sweep again.
+      await waitForValue(
+        () => (pluginWatermarks.get("ios-upgraded") ?? 0) > 0 ? true : undefined,
+        "persisted plugin watermark",
+      );
+      // The legacy peer is untouched by all of this: no plugin rows, and no
+      // catch-up batch invented for a schema that cannot apply one.
+      const legacyBatches = (legacy?.envelopes ?? [])
+        .filter((candidate) => candidate.type === "changeset_batch")
+        .flatMap((candidate) => (candidate.payload as SyncChangesetBatchPayload).changes);
+      expect(legacyBatches.some((change) => change.table.startsWith("plugin_"))).toBe(false);
+    } finally {
+      upgraded?.ws.close();
+      legacy?.ws.close();
       await host.dispose();
       cleanup();
     }
@@ -13383,6 +13555,7 @@ describe("plugin table sync", () => {
     const cache = {
       status: "ready" as const,
       targetDbVersion: 12,
+      pluginTablesExcluded: false,
       scanFromDbVersion: 12,
       approximateBytes: 0,
       buildSteps: 1,

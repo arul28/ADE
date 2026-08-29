@@ -19,6 +19,17 @@ export const MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL = 8;
 
 export type MobileReplicaReseedCache = {
   targetDbVersion: number;
+  /**
+   * True when this build EXCLUDED the plugin tables at the source (the retry
+   * after a `too_large` first pass).
+   *
+   * The recipient's plugin watermark turns on this flag: a reseed built with
+   * the plugin tables in it carries their whole compacted state, so it makes
+   * the peer current on them; one built without must leave the watermark alone
+   * even though it moves the peer's changeset cursor to `targetDbVersion`,
+   * because those rows were never on the wire.
+   */
+  pluginTablesExcluded: boolean;
   scanFromDbVersion: number;
   changes: CrsqlChangeRow[];
   approximateBytes: number;
@@ -27,9 +38,13 @@ export type MobileReplicaReseedCache = {
   status: "building" | "ready" | "too_large";
 };
 
-export function createMobileReplicaReseedCache(targetDbVersion: number): MobileReplicaReseedCache {
+export function createMobileReplicaReseedCache(
+  targetDbVersion: number,
+  options: { pluginTablesExcluded?: boolean } = {},
+): MobileReplicaReseedCache {
   return {
     targetDbVersion,
+    pluginTablesExcluded: options.pluginTablesExcluded === true,
     scanFromDbVersion: 0,
     changes: [],
     approximateBytes: 0,

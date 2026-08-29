@@ -10,6 +10,22 @@ protocol PluginPaneSyncing: AnyObject {
   func pluginPanels(pluginId: String?) -> [PluginPanelRecord]
   func pluginCollectionEntries(binding: PluginVocabBinding, pluginId: String, limit: Int) -> [PluginCollectionEntry]
   func invokePluginAction(pluginId: String, actionId: String, payload: [String: Any]) async throws -> PluginInvokeResult
+
+  // MARK: Live reads, for what the mirror is missing
+
+  /// Whether the attached machine advertises the panel read at all.
+  var canFetchPluginPanelsRemotely: Bool { get }
+  /// Which machine's project the fetched rows would belong to.
+  var pluginFallbackScope: String { get }
+  /// One panel, read live. `nil` means the machine says there is no such panel.
+  func fetchPluginPanel(pluginId: String, panelId: String) async throws -> PluginPanelRecord?
+  /// Rows of one collection, read live.
+  func fetchPluginCollectionEntries(
+    pluginId: String,
+    collection: String,
+    keyPrefix: String?,
+    limit: Int
+  ) async throws -> [PluginCollectionEntry]
 }
 
 extension SyncService: PluginPaneSyncing {}
@@ -26,9 +42,100 @@ enum PluginPanelPresentation: Equatable {
   case updateRequired(PluginPanelFallback?)
   /// Structurally unusable — bad JSON, no `fallback`, over the node ceiling.
   case damaged(PluginPanelFallback?)
-  /// No such row. Usually a plugin uninstalled on the machine while its pane
-  /// was open, or a panel the owning machine has not published yet.
+  /// The MACHINE says there is no such panel: it answered the live read with
+  /// nothing, or the panel it has is one it marked desktop-only. This is the
+  /// only state that may tell a user the plugin published nothing.
   case missing
+  /// The phone has no copy of the panel and cannot say the plugin is at fault.
+  ///
+  /// Its own state because the copy has to be different. A missing mirror row
+  /// used to render as ``missing``, which told users a plugin that HAD
+  /// published was empty — the P0 this state exists to stop.
+  case notReceived(PluginPanelFetchGap)
+}
+
+/// Why a panel is not on screen when the plugin is not the reason.
+enum PluginPanelFetchGap: Equatable {
+  /// The live read is running right now.
+  case fetching
+  /// The machine could not be asked, or the ask failed: offline, a dropped
+  /// socket, or a host too old to advertise the read. All one state because
+  /// they are one sentence to a user and one gesture to fix — try again.
+  case unavailable
+}
+
+/// Panels and collection rows read live because the mirror was missing them.
+///
+/// Process-lifetime and MainActor-isolated, because the sheet's store is
+/// recreated on every present: without a shared cache, closing and reopening a
+/// pane would pay for the round trip again, which is exactly the "instant on
+/// second open" this is for.
+///
+/// It is deliberately NOT the sqlite mirror. `plugin_panels` and
+/// `plugin_collections` are cr-sqlite CRR tables: a row this phone inserted
+/// would be exported back to the machine on the next changeset and fight the
+/// host's own writer column by column under last-writer-wins, so a phone
+/// caching a read would end up authoring the machine's plugin data. The mirror
+/// stays write-only-by-the-host; this cache is read-through and forgettable.
+@MainActor
+final class PluginPanelFallbackCache {
+  static let shared = PluginPanelFallbackCache()
+
+  /// Which machine's project the entries belong to. Attaching elsewhere drops
+  /// everything rather than serving another machine's panels.
+  private var scope = ""
+  private var panels: [String: PluginPanelRecord] = [:]
+  /// Panels the machine itself answered "no such panel" for. Cached because it
+  /// is a real answer; a FAILED read is never cached, so Retry can work.
+  private var absent: Set<String> = []
+  private var collections: [String: [PluginCollectionEntry]] = [:]
+
+  init() {}
+
+  private func align(to scope: String) {
+    guard scope != self.scope else { return }
+    self.scope = scope
+    panels.removeAll()
+    absent.removeAll()
+    collections.removeAll()
+  }
+
+  static func panelKey(pluginId: String, panelId: String) -> String { "\(pluginId)|\(panelId)" }
+
+  static func collectionKey(pluginId: String, collection: String, keyPrefix: String?) -> String {
+    "\(pluginId)|\(collection)|\(keyPrefix ?? "")"
+  }
+
+  func panel(scope: String, key: String) -> PluginPanelRecord? {
+    align(to: scope)
+    return panels[key]
+  }
+
+  func isAbsentOnHost(scope: String, key: String) -> Bool {
+    align(to: scope)
+    return absent.contains(key)
+  }
+
+  func store(scope: String, key: String, panel: PluginPanelRecord?) {
+    align(to: scope)
+    if let panel {
+      panels[key] = panel
+      absent.remove(key)
+    } else {
+      panels[key] = nil
+      absent.insert(key)
+    }
+  }
+
+  func entries(scope: String, key: String) -> [PluginCollectionEntry]? {
+    align(to: scope)
+    return collections[key]
+  }
+
+  func store(scope: String, key: String, entries: [PluginCollectionEntry]) {
+    align(to: scope)
+    collections[key] = entries
+  }
 }
 
 /// Which components this build draws richly.
@@ -115,6 +222,31 @@ final class PluginPaneStore: ObservableObject {
 
   private let sync: PluginPaneSyncing
   private var presenceCatalog = PluginPresenceCatalog()
+
+  /// Whether this pane may ask the machine for rows the mirror is missing.
+  ///
+  /// On for the full pane sheet, which is a screen the user asked for and the
+  /// one place an empty result is the whole answer. Off for a plugin's guest
+  /// surfaces — a detail section, a chat card — which draw nothing when their
+  /// panel row is absent and would otherwise spend a round trip each just to
+  /// keep drawing nothing.
+  private let fetchesMissingRows: Bool
+  private let fallbackCache: PluginPanelFallbackCache
+  /// The panel this pane was ASKED for, as opposed to the one it settled on.
+  ///
+  /// Kept apart from ``selectedPanelId`` because the mirror can be missing the
+  /// requested row: without it, a pane opened on `stories` would fall to
+  /// whatever panel the mirror did have, and there would be nothing left to ask
+  /// the machine about.
+  private var requestedPanelId: String?
+  private var panelFetchTask: Task<Void, Never>?
+  /// A live read that failed. Not cached, and not retried on its own: the pane
+  /// says so and offers the gesture.
+  private var panelFetchFailed = false
+  /// Collection reads to run after this pass, keyed the way the cache is.
+  private var pendingCollectionFetches: [String: (collection: String, keyPrefix: String?, limit: Int)] = [:]
+  private var attemptedCollectionKeys: Set<String> = []
+  private var collectionFetchTask: Task<Void, Never>?
   /// How the `{openUrl}` verb reaches the system browser.
   ///
   /// Injected so a test can assert what a plugin asked to open without Safari
@@ -126,12 +258,17 @@ final class PluginPaneStore: ObservableObject {
     panelId: String? = nil,
     context: [String: RemoteJSONValue] = [:],
     sync: PluginPaneSyncing,
+    fetchesMissingRows: Bool = false,
+    fallbackCache: PluginPanelFallbackCache = .shared,
     openExternalURL: @escaping (URL) -> Void = { UIApplication.shared.open($0) }
   ) {
     self.pluginId = pluginId
     self.selectedPanelId = panelId
+    self.requestedPanelId = panelId
     self.context = context
     self.sync = sync
+    self.fetchesMissingRows = fetchesMissingRows
+    self.fallbackCache = fallbackCache
     self.openExternalURL = openExternalURL
   }
 
@@ -151,16 +288,124 @@ final class PluginPaneStore: ObservableObject {
     return panels.first { $0.panelId == selectedPanelId }
   }
 
-  /// Reload everything from the local mirror. Cheap and synchronous under the
-  /// hood, so it is safe to call on every `pluginsProjectionRevision` bump.
+  /// Reload everything from the local mirror, then close the gaps.
+  ///
+  /// The mirror is read FIRST and wins outright, every time: a replicated row
+  /// that has since arrived replaces whatever a live read cached, so sync
+  /// catching up quietly takes the pane back over. Only what the mirror does
+  /// not have is asked of the machine, and only on a pane allowed to ask.
+  ///
+  /// Still cheap and synchronous, so it is safe on every
+  /// `pluginsProjectionRevision` bump. The live reads it may start are detached
+  /// — nothing here waits on a socket, and the sheet presents at once.
   func load() {
     presenceCatalog = sync.pluginPresenceCatalog()
-    panels = sync.pluginPanels(pluginId: pluginId)
-    if selectedPanelId == nil || !panels.contains(where: { $0.panelId == selectedPanelId }) {
-      selectedPanelId = panels.first?.panelId
+    panels = mergedPanels(sync.pluginPanels(pluginId: pluginId))
+    selectedPanelId = resolveSelection()
+    if selectedPanel == nil, fetchesMissingRows {
+      beginPanelFetch()
     }
     presentation = resolvePresentation()
     phase = .loaded
+  }
+
+  /// Ask again for everything this pane could not get. The gesture behind the
+  /// "Try again" button, and the only thing that clears a failed read.
+  func retryFetch() {
+    panelFetchFailed = false
+    attemptedCollectionKeys.removeAll()
+    load()
+  }
+
+  /// The mirror's rows, plus a live-read panel the mirror does not have.
+  ///
+  /// Appended rather than merged in place, and only for the panel this pane was
+  /// actually asked for: the cache answers "the machine has this one", never
+  /// "here is the plugin's panel list", which stays the mirror's to say.
+  private func mergedPanels(_ local: [PluginPanelRecord]) -> [PluginPanelRecord] {
+    guard fetchesMissingRows else { return local }
+    let scope = sync.pluginFallbackScope
+    var merged = local
+    for panelId in [requestedPanelId, selectedPanelId].compactMap({ $0 }) {
+      guard !panelId.isEmpty, !merged.contains(where: { $0.panelId == panelId }) else { continue }
+      let key = PluginPanelFallbackCache.panelKey(pluginId: pluginId, panelId: panelId)
+      // The mobile filter is the mirror path's, applied here for the same
+      // reason: a panel the machine marked desktop-only is not one this phone
+      // draws, however it arrived.
+      guard let fetched = fallbackCache.panel(scope: scope, key: key), fetched.mobile else { continue }
+      merged.append(fetched)
+    }
+    return merged
+  }
+
+  private func resolveSelection() -> String? {
+    // An explicit request is never redirected on a pane that can go and get it.
+    // Falling through to `panels.first` is what made a missing mirror row look
+    // like a working navigation into someone else's panel.
+    if fetchesMissingRows, let requestedPanelId, !requestedPanelId.isEmpty {
+      return requestedPanelId
+    }
+    if let selectedPanelId, panels.contains(where: { $0.panelId == selectedPanelId }) {
+      return selectedPanelId
+    }
+    return panels.first?.panelId
+  }
+
+  private func beginPanelFetch() {
+    guard let panelId = selectedPanelId, !panelId.isEmpty else { return }
+    guard !panelFetchFailed, panelFetchTask == nil else { return }
+    let scope = sync.pluginFallbackScope
+    let key = PluginPanelFallbackCache.panelKey(pluginId: pluginId, panelId: panelId)
+    // The machine has already answered — with nothing, or with a panel this
+    // phone does not draw. Either way there is no second question to ask.
+    guard fallbackCache.panel(scope: scope, key: key) == nil,
+          !fallbackCache.isAbsentOnHost(scope: scope, key: key) else { return }
+    guard sync.canFetchPluginPanelsRemotely else {
+      panelFetchFailed = true
+      return
+    }
+    panelFetchTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let record = try await self.sync.fetchPluginPanel(pluginId: self.pluginId, panelId: panelId)
+        // `nil` is the machine's own answer that no such panel exists, and it
+        // is the only thing that earns "this plugin published nothing".
+        self.fallbackCache.store(scope: scope, key: key, panel: record)
+      } catch {
+        // Never cached: the panel may well be there and the socket blinked.
+        self.panelFetchFailed = true
+      }
+      self.panelFetchTask = nil
+      self.load()
+    }
+  }
+
+  /// Run the collection reads this pass queued, then redraw if anything landed.
+  private func scheduleCollectionFetches() {
+    guard fetchesMissingRows, collectionFetchTask == nil, !pendingCollectionFetches.isEmpty else { return }
+    let scope = sync.pluginFallbackScope
+    let requests = pendingCollectionFetches
+    pendingCollectionFetches = [:]
+    // Marked attempted before the reads run, so a collection that is genuinely
+    // empty on the machine costs one round trip per pane rather than one per
+    // redraw.
+    attemptedCollectionKeys.formUnion(requests.keys)
+    collectionFetchTask = Task { [weak self] in
+      guard let self else { return }
+      var landed = false
+      for (key, request) in requests {
+        guard let rows = try? await self.sync.fetchPluginCollectionEntries(
+          pluginId: self.pluginId,
+          collection: request.collection,
+          keyPrefix: request.keyPrefix,
+          limit: request.limit
+        ) else { continue }
+        self.fallbackCache.store(scope: scope, key: key, entries: rows)
+        landed = landed || !rows.isEmpty
+      }
+      self.collectionFetchTask = nil
+      if landed { self.load() }
+    }
   }
 
   /// The action a refresh gesture on the selected panel dispatches, when the
@@ -189,8 +434,11 @@ final class PluginPaneStore: ObservableObject {
   func selectPanel(_ panelId: String) {
     guard panelId != selectedPanelId else { return }
     selectedPanelId = panelId
+    requestedPanelId = panelId
     clearPanelState()
-    presentation = resolvePresentation()
+    // A new panel gets its own read: the last one's failure is not this one's.
+    panelFetchFailed = false
+    load()
   }
 
   /// Follow the `navigate` an action returned.
@@ -203,12 +451,19 @@ final class PluginPaneStore: ObservableObject {
   func navigate(to navigation: PluginInvokeNavigation) {
     context = navigation.context ?? [:]
     selectedPanelId = navigation.panelId
+    requestedPanelId = navigation.panelId
     clearPanelState()
-    presentation = resolvePresentation()
+    panelFetchFailed = false
+    // Re-reads the mirror and, on a pane allowed to ask, goes and gets the
+    // destination panel when the mirror has no row for it. The navigation
+    // itself never waits on that — it lands here and the pane fills in.
+    load()
   }
 
   private func resolvePresentation() -> PluginPanelPresentation {
-    guard let record = selectedPanel else { return .missing }
+    pendingCollectionFetches = [:]
+    defer { scheduleCollectionFetches() }
+    guard let record = selectedPanel else { return unresolvedPresentation() }
     // The column check comes first and without parsing: a panel written by a
     // newer vocabulary should say "update" rather than "damaged", and the
     // writer's declared version answers that before the schema is touched.
@@ -225,6 +480,27 @@ final class PluginPaneStore: ObservableObject {
       }
       return .damaged(fallback)
     }
+  }
+
+  /// What to say when there is no panel to draw.
+  ///
+  /// The whole point of the split. "This plugin has not published anything" is
+  /// a claim about the PLUGIN, and only the machine can make it — a phone whose
+  /// replica is behind has no idea. So the copy follows who answered: the
+  /// machine saying no earns ``PluginPanelPresentation/missing``, and every
+  /// other reason for an empty pane says the panel has not reached the phone.
+  private func unresolvedPresentation() -> PluginPanelPresentation {
+    // A guest surface draws nothing either way and never asks, so it keeps the
+    // state it always had.
+    guard fetchesMissingRows, let panelId = selectedPanelId, !panelId.isEmpty else { return .missing }
+    let scope = sync.pluginFallbackScope
+    let key = PluginPanelFallbackCache.panelKey(pluginId: pluginId, panelId: panelId)
+    // The machine answered: no such panel, or one it marked desktop-only.
+    // Both mean there is nothing for this phone to show, on the machine's own
+    // authority rather than on a guess.
+    if fallbackCache.isAbsentOnHost(scope: scope, key: key) { return .missing }
+    if fallbackCache.panel(scope: scope, key: key) != nil { return .missing }
+    return .notReceived(panelFetchTask == nil ? .unavailable : .fetching)
   }
 
   // MARK: - Panel state
@@ -356,12 +632,35 @@ final class PluginPaneStore: ObservableObject {
     var fetch = binding
     if filtered { fetch.limit = nil }
     let rows = reservedEntries(for: binding, limit: filtered ? limit : min(limit, binding.limit ?? limit))
-      ?? sync.pluginCollectionEntries(binding: fetch, pluginId: pluginId, limit: limit)
+      ?? mirrorOrFetchedEntries(binding: fetch, limit: limit)
     guard filtered else { return rows }
     let kept = PluginVocabState.filter(binding.whereClauses, rows, state: panelState) { $0.value }
     // Filter first, cap second — the order every client shares.
     guard let cap = binding.limit, kept.count > cap else { return kept }
     return Array(kept.prefix(cap))
+  }
+
+  /// Mirror rows, falling back to what the machine can be asked for.
+  ///
+  /// The same split the panel gets and in the same order: the replicated rows
+  /// are the answer whenever there are any, and a live read only fills a
+  /// collection the mirror has nothing for. A panel that renders while its list
+  /// is empty is the shape this closes — the sync bug drops `plugin_panels` and
+  /// `plugin_collections` together, so a fetched panel with an unfetched list
+  /// would still be a blank pane.
+  private func mirrorOrFetchedEntries(binding: PluginVocabBinding, limit: Int) -> [PluginCollectionEntry] {
+    let local = sync.pluginCollectionEntries(binding: binding, pluginId: pluginId, limit: limit)
+    guard local.isEmpty, fetchesMissingRows else { return local }
+    let key = PluginPanelFallbackCache.collectionKey(
+      pluginId: pluginId,
+      collection: binding.collection,
+      keyPrefix: binding.keyPrefix
+    )
+    if let cached = fallbackCache.entries(scope: sync.pluginFallbackScope, key: key) { return cached }
+    if !attemptedCollectionKeys.contains(key) {
+      pendingCollectionFetches[key] = (collection: binding.collection, keyPrefix: binding.keyPrefix, limit: limit)
+    }
+    return []
   }
 
   /// Rows for a binding ADE answers itself, or `nil` when the plugin owns it.

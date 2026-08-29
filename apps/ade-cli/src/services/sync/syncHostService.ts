@@ -309,6 +309,16 @@ export const ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD = true;
 // windowed crsql_changes scan completes in milliseconds.
 const SYNC_EXPORT_VERSION_WINDOW = 250_000;
 
+// The plugin catch-up sweep's own window, and how many of them one poll may
+// cross. Deliberately wider than the ordinary window: the sweep is a repair,
+// it runs at most once per device, and its windows are usually EMPTY — a
+// db_version range constraint is pushed down to the indexed clock tables, so an
+// empty window costs a few milliseconds while a version desert crossed one
+// 250k window per poll would take minutes on a long-lived project. Bounded per
+// poll so the repair can never monopolize the pump.
+const SYNC_PLUGIN_CATCHUP_VERSION_WINDOW = 1_000_000;
+const SYNC_PLUGIN_CATCHUP_MAX_WINDOWS_PER_POLL = 4;
+
 // High-churn / large-row tables the phone never reads (verified against the
 // iOS Database.swift query surface). Excluding them from phone changesets is
 // a PowerSync-style sync rule: it removes the multi-megabyte transcript and
@@ -586,8 +596,15 @@ const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES = [
  * including the majority that were never going to receive a plugin row anyway
  * (`sendMobileReplicaReseed` already drops them per peer). Retrying without
  * `SYNC_PLUGIN_TABLES` gets those phones their reseed back; a plugin-capable
- * phone simply does not get plugin rows from THIS fast path and falls back to
- * the ordinary windowed incremental catch-up for them.
+ * phone does not get plugin rows from THIS fast path and is owed them
+ * afterwards.
+ *
+ * "Owed" is the load-bearing word, and it used to be a lie: the reseed acks the
+ * phone all the way to `targetDbVersion`, so the ordinary incremental export —
+ * which starts at that cursor — would never look at the skipped versions again,
+ * and a plugin pane on that phone stayed empty forever. The debt is now
+ * recorded per peer (`pluginTablesThroughDbVersion`) and paid by
+ * `sendPluginTablesCatchUp`, which is why excluding them here is survivable.
  */
 const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES_NO_PLUGINS = [
   ...MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
@@ -1005,6 +1022,22 @@ type PeerState = {
   lastSeenAt: string;
   lastAppliedAt: string | null;
   lastKnownServerDbVersion: number;
+  /**
+   * How far the PLUGIN tables have been sent to this peer, which is not the
+   * same fact as `lastKnownServerDbVersion`.
+   *
+   * The cursor above is what the peer has applied. Plugin rows are withheld
+   * from a peer that never advertised `pluginTables` and from a mobile reseed
+   * that had to drop them to fit its budget, and in both cases the cursor
+   * advances through those versions anyway. Tracking the two separately is what
+   * lets the host notice it owes a peer plugin rows and send them, instead of
+   * treating an advanced cursor as proof they arrived.
+   *
+   * Seeded from the persisted per-device watermark at hello, clamped to the
+   * peer's own cursor so a phone that wiped its database is not told it already
+   * has rows it does not.
+   */
+  pluginTablesThroughDbVersion: number;
   latencyMs: number | null;
   awaitingHeartbeatAt: string | null;
   missedHeartbeatCount: number;
@@ -1091,6 +1124,14 @@ type PendingChangesetBatch = {
   batchId: string;
   fromDbVersion: number;
   toDbVersion: number;
+  /**
+   * The plugin watermark this batch earns ON ACK, or null when it earns none.
+   *
+   * Null is the load-bearing case: a reseed that omitted the plugin tables
+   * moves the peer's cursor to the reseed target and must leave the plugin
+   * watermark exactly where it was, so the catch-up path still owes those rows.
+   */
+  pluginTablesToDbVersion: number | null;
   changes: CrsqlChangeRow[];
   reason: SyncChangesetBatchPayload["reason"];
   sentAtMs: number;
@@ -3479,6 +3520,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       framesReceived: 0,
       lastAppliedAt: null,
       lastKnownServerDbVersion: 0,
+      pluginTablesThroughDbVersion: 0,
       latencyMs: null,
       awaitingHeartbeatAt: null,
       missedHeartbeatCount: 0,
@@ -3817,6 +3859,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           snapshotServerDbSiteId: snapshot.serverDbSiteId,
           snapshotLastKnownServerDbVersion: snapshot.lastKnownServerDbVersion,
         });
+        peer.pluginTablesThroughDbVersion = initialPluginTablesWatermark(
+          peer,
+          peer.lastKnownServerDbVersion,
+        );
         // Restore live subscriptions so streaming does not silently stop for
         // a peer that never observes a disconnect. Sessions from a different
         // project simply no-op on this host; the phone that REQUESTED a
@@ -4776,6 +4822,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reason: payload.reason,
       fromDbVersion: payload.fromDbVersion,
       toDbVersion: payload.toDbVersion,
+      // Earned by nothing until a caller says otherwise. Every path that KNOWS
+      // its batch carried the plugin tables sets this explicitly, so a new
+      // send path defaults to not advancing the watermark — the safe direction,
+      // costing one repeated sweep rather than losing rows forever.
+      pluginTablesToDbVersion: null,
       changes: payload.changes,
       sentAtMs: 0,
       attemptCount: 0,
@@ -4860,11 +4911,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             : MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
           // Plugin rows stay IN the shared cache on the FIRST pass and are
           // dropped per peer at send time (`sendMobileReplicaReseed`).
-          // Excluding them from the build looks safer and is not: the reseed
-          // advances a phone's cursor all the way to `targetDbVersion`, so a
-          // phone that CAN apply plugin rows would skip every one in the
-          // reseeded range and never see them again. The retry pass already
-          // excludes them at the source, so this filter is a no-op there.
+          // Excluding them from the build is what the retry pass does, and the
+          // reseed advances a phone's cursor all the way to `targetDbVersion`,
+          // so a phone that CAN apply plugin rows skips every one in the
+          // reseeded range — which is exactly the debt
+          // `pluginTablesThroughDbVersion` records and
+          // `sendPluginTablesCatchUp` pays back. This filter is a no-op on the
+          // retry pass, which already excluded them at the source.
           includeChange: (change) =>
             !isHostAuthoritativeTable(change)
             && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
@@ -4902,9 +4955,188 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         targetDbVersion: advancedCache.targetDbVersion,
       });
       mobileReplicaReseedRetriedWithoutPlugins = true;
-      mobileReplicaReseedCache = createMobileReplicaReseedCache(targetDbVersion);
+      mobileReplicaReseedCache = createMobileReplicaReseedCache(targetDbVersion, {
+        pluginTablesExcluded: true,
+      });
     }
     return mobileReplicaReseedCache;
+  }
+
+  /**
+   * Whether the host keeps a plugin watermark for this peer at all.
+   *
+   * Only a peer that can APPLY plugin rows has one. A compact-invalidation
+   * browser advertises the capability (its changesets are rewritten into table
+   * names, so nothing can fail to apply) but holds no replica to be missing
+   * rows from, and sweeping plugin history for it would emit invalidations for
+   * data it never stored.
+   */
+  function peerTracksPluginTables(peer: PeerState): boolean {
+    return peerAcceptsPluginTables(peer) && !isCompactInvalidationBrowserPeer(peer.metadata);
+  }
+
+  function readPersistedPluginTablesWatermark(deviceId: string): number {
+    const read = args.db.sync.getPluginTablesWatermark;
+    if (typeof read !== "function") return 0;
+    try {
+      const stored = Number(read.call(args.db.sync, deviceId));
+      return Number.isFinite(stored) && stored > 0 ? Math.floor(stored) : 0;
+    } catch (error) {
+      args.logger.warn("sync_host.plugin_watermark_read_failed", {
+        peerDeviceId: deviceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return 0;
+    }
+  }
+
+  /**
+   * Where this peer's plugin catch-up starts on this connection.
+   *
+   * Clamped to the peer's own changeset cursor, which is what makes a phone
+   * that deleted its database heal: the ordinary backlog replay carries the
+   * plugin rows with it, so claiming the stored (higher) watermark would skip
+   * exactly the rows the wipe destroyed.
+   */
+  function initialPluginTablesWatermark(peer: PeerState, cursor: number): number {
+    if (!peerTracksPluginTables(peer)) return cursor;
+    const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "";
+    if (!deviceId) return 0;
+    return Math.min(readPersistedPluginTablesWatermark(deviceId), Math.max(0, cursor));
+  }
+
+  function advancePluginTablesWatermark(peer: PeerState, throughDbVersion: number): void {
+    if (!peerTracksPluginTables(peer)) return;
+    if (!Number.isFinite(throughDbVersion) || throughDbVersion <= peer.pluginTablesThroughDbVersion) return;
+    peer.pluginTablesThroughDbVersion = Math.floor(throughDbVersion);
+    const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "";
+    if (!deviceId) return;
+    const write = args.db.sync.setPluginTablesWatermark;
+    if (typeof write !== "function") return;
+    try {
+      write.call(args.db.sync, deviceId, peer.pluginTablesThroughDbVersion);
+    } catch (error) {
+      // A watermark that fails to persist costs one repeated sweep on the next
+      // connection, which is idempotent. It must never fail the send.
+      args.logger.warn("sync_host.plugin_watermark_write_failed", {
+        peerDeviceId: deviceId,
+        throughDbVersion: peer.pluginTablesThroughDbVersion,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  function pluginTablesMinDbVersion(): number | null {
+    const read = args.db.sync.minDbVersionForTables;
+    if (typeof read !== "function") return null;
+    try {
+      const value = read.call(args.db.sync, SYNC_PLUGIN_TABLES);
+      return typeof value === "number" && Number.isFinite(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Send the plugin rows this peer is owed, one bounded window at a time.
+   *
+   * Runs only when the peer's plugin watermark is BEHIND its changeset cursor,
+   * which happens exactly twice: after a capped reseed that had to drop the
+   * plugin tables to fit, and on the first connection of a build that gained
+   * the `pluginTables` capability while its cursor was already at head. Both
+   * used to be permanent — the cursor had moved on, so no later export would
+   * ever look at those versions again — which is why a phone showed an empty
+   * plugin pane while the machine had the rows.
+   *
+   * Windowed for the same reason the ordinary export is: `crsql_changes` pushes
+   * a db_version RANGE down to the indexed clock tables but does NOT push down
+   * a table predicate, so an unbounded plugin-only scan pays for the entire
+   * backlog in one synchronous poll. The floor from `minDbVersionForTables`
+   * skips the empty prefix before the first plugin row ever written, which on a
+   * long-lived project is nearly all of it.
+   *
+   * Returns true when it consumed the poll (sent a batch), false when the peer
+   * is caught up or has nothing owed.
+   */
+  function sendPluginTablesCatchUp(peer: PeerState, nowMs: number): boolean {
+    if (!peerTracksPluginTables(peer)) return false;
+    const cursor = peer.lastKnownServerDbVersion;
+    if (peer.pluginTablesThroughDbVersion >= cursor) return false;
+
+    // Nothing has ever been written to the plugin tables, or everything in them
+    // is already past this peer's watermark by construction: mark the peer
+    // current rather than sweeping versions that cannot contain a plugin row.
+    const floor = pluginTablesMinDbVersion();
+    if (floor == null) {
+      advancePluginTablesWatermark(peer, cursor);
+      return false;
+    }
+    let scanFrom = Math.max(peer.pluginTablesThroughDbVersion, Math.max(0, floor - 1));
+    if (scanFrom >= cursor) {
+      advancePluginTablesWatermark(peer, cursor);
+      return false;
+    }
+
+    for (let window = 0; window < SYNC_PLUGIN_CATCHUP_MAX_WINDOWS_PER_POLL; window += 1) {
+      const scanThrough = Math.min(scanFrom + SYNC_PLUGIN_CATCHUP_VERSION_WINDOW, cursor);
+      const exported = args.db.sync.exportChangesSince(scanFrom, {
+        maxRows: maxChangesetBatchRows * 4,
+        throughDbVersion: scanThrough,
+        includeTables: SYNC_PLUGIN_TABLES,
+      });
+      const exportedThrough = exported.length > 0
+        ? Number(exported[exported.length - 1].db_version)
+        : scanThrough;
+      const changes = exported
+        .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId)
+        .filter((change: CrsqlChangeRow) => isPluginChangeAllowedForPeer(change, peer));
+      if (changes.length === 0) {
+        // An empty window is still progress, and recording it is what stops the
+        // sweep restarting from the same desert on every poll.
+        advancePluginTablesWatermark(peer, exportedThrough);
+        scanFrom = exportedThrough;
+        if (scanFrom >= cursor) return false;
+        continue;
+      }
+      const pending = sendNextChangesetBatch(
+        peer,
+        "catchup",
+        peer.lastKnownServerDbVersion,
+        // The batch's own cursor range is a no-op for the peer: these versions
+        // are BEHIND what it already applied, and both ends take the max of
+        // what they hold. Carrying the peer's cursor rather than the window's
+        // end is what keeps the phone from regressing its own watermark and
+        // re-requesting the whole backlog.
+        peer.lastKnownServerDbVersion,
+        changes,
+        changesetBatchLimits(peer),
+      );
+      if (!pending) return false;
+      // A truncated chunk earns only what it carried. `selectChangesetBatchChunk`
+      // splits on a db_version boundary, so the last version in the batch is
+      // complete and claiming exactly that is safe; claiming the window's end
+      // would drop the rows the split left behind.
+      pending.pluginTablesToDbVersion = pending.changes.length < changes.length
+        ? pending.toDbVersion
+        : exportedThrough;
+      args.logger.info("sync_host.plugin_tables_catchup_sent", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+        fromDbVersion: scanFrom,
+        toDbVersion: exportedThrough,
+        cursorDbVersion: cursor,
+        rows: pending.changes.length,
+        truncated: pending.changes.length < changes.length,
+      });
+      if (peerSupportsChangesetAck(peer) && !isCompactInvalidationBrowserPeer(peer.metadata)) {
+        peer.pendingChangesetBatch = pending;
+      } else {
+        advancePluginTablesWatermark(peer, pending.pluginTablesToDbVersion);
+      }
+      finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
+      lastBroadcastAt = nowIso();
+      return true;
+    }
+    return false;
   }
 
   function sendMobileReplicaReseed(
@@ -4929,11 +5161,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     const pending = sendChangesetBatchPayload(peer, payload);
     if (pending) {
+      // A reseed built WITH the plugin tables carries their entire compacted
+      // state, so it makes this peer current on them whatever its watermark was
+      // — that is what heals a device the capped retry left behind. A reseed
+      // built without them earns nothing here, even though the peer's cursor
+      // jumps to the target.
+      const pluginRowsSent = !cache.pluginTablesExcluded && peerTracksPluginTables(peer);
+      pending.pluginTablesToDbVersion = pluginRowsSent ? cache.targetDbVersion : null;
       args.logger.info("sync_host.mobile_replica_reseed_sent", {
         peerDeviceId: deviceId,
         fromDbVersion: payload.fromDbVersion,
         toDbVersion: payload.toDbVersion,
         rows: payload.changes.length,
+        pluginTables: peerTracksPluginTables(peer),
+        pluginTablesExcluded: cache.pluginTablesExcluded,
+        pluginRowsSent: payload.changes.filter((change) => PLUGIN_SYNCED_TABLES.has(change.table)).length,
+        pluginTablesThroughDbVersion: peer.pluginTablesThroughDbVersion,
       });
       return { status: "sent", pending };
     }
@@ -5686,6 +5929,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const connectedPeers = [...peers]
       .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
       .filter((peer): peer is SyncPeerConnectionState => peer != null);
+    // Counted, not dropped. `toSyncPeerConnectionState` answers null for a
+    // socket that has not sent hello, so a device mid-handshake left no trace
+    // at all and "connected peers 0" read as "nothing is attached".
+    const connectingPeerCount = [...peers].filter((peer) => peer.metadata == null).length;
     return {
       brain: {
         ...brainMetadata,
@@ -5712,6 +5959,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         commandConflictCount,
         lastCommandResultLatencyMs,
         lastChangesetAckLatencyMs,
+        connectingPeerCount,
       },
       cloudRelayWssUrl,
     };
@@ -6199,6 +6447,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) {
+        // "Nothing new" is not "nothing owed". A peer whose cursor is at head
+        // can still be missing plugin rows from a range that cursor already
+        // passed — a reseed that dropped them, or a build that gained the
+        // capability afterwards — and this used to be the return that made that
+        // permanent. The repair is bounded (one batch, and only while the peer
+        // is not in ack recovery), so it does not need the backpressure
+        // deferral the ordinary backlog does.
+        if (nowMs >= peer.changesetRecoveryNotBeforeMs && sendPluginTablesCatchUp(peer, nowMs)) return;
         finishChangesetPriorityDeferral(peer, "no_changes", nowMs);
         return;
       }
@@ -6223,6 +6479,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } else {
         finishChangesetPriorityDeferral(peer, "pressure_relieved", nowMs);
       }
+      // Plugin rows this peer is owed go FIRST. They are a bounded, one-time
+      // repair, and running them ahead of the ordinary export means a phone
+      // whose pane is empty right now gets its panel on the next poll rather
+      // than after the whole backlog drains.
+      if (sendPluginTablesCatchUp(peer, nowMs)) return;
+
       const replicaLag = currentDbVersion - peer.lastKnownServerDbVersion;
       if (
         !peer.mobileReplicaReseedDisabled
@@ -6302,6 +6564,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Only advance through what was actually scanned — with a bounded
         // export, versions past the truncation point have not been seen.
         peer.lastKnownServerDbVersion = exportedThroughDbVersion;
+        // The same range held no plugin row this peer had to receive, so it is
+        // as covered as a sent batch would have made it — provided the peer had
+        // no older debt, which the catch-up above would have paid first.
+        if (peer.pluginTablesThroughDbVersion >= previousDbVersion) {
+          advancePluginTablesWatermark(peer, exportedThroughDbVersion);
+        }
         args.logger.debug("sync_host.changeset_advanced_without_send", {
           peerDeviceId: peer.metadata?.deviceId ?? null,
           fromDbVersion: previousDbVersion,
@@ -6311,6 +6579,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         finishChangesetPriorityDeferral(peer, "no_changes", nowMs);
         return;
       }
+      const previousCursorDbVersion = peer.lastKnownServerDbVersion;
       const pending = sendNextChangesetBatch(
         peer,
         "broadcast",
@@ -6321,10 +6590,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       );
       if (pending) {
         peer.changesetRecoveryNotBeforeMs = 0;
+        // This export included the plugin tables for a peer that can apply them
+        // (the filter above only drops them for a peer that cannot), so the
+        // batch earns the watermark — but only when the peer had no older debt
+        // outstanding. With a debt, the catch-up above owns the range and the
+        // gap below it must not be claimed by a batch that never covered it.
+        pending.pluginTablesToDbVersion = peerTracksPluginTables(peer)
+          && peer.pluginTablesThroughDbVersion >= previousCursorDbVersion
+          ? pending.toDbVersion
+          : null;
         if (peerSupportsChangesetAck(peer) && !isCompactInvalidationBrowserPeer(peer.metadata)) {
           peer.pendingChangesetBatch = pending;
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
+          advancePluginTablesWatermark(peer, pending.pluginTablesToDbVersion ?? 0);
         }
         finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
         lastBroadcastAt = nowIso();
@@ -6358,6 +6637,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         toDbVersion: pending.toDbVersion,
         attemptCount: pending.attemptCount,
         retryInMs,
+        // A nack that carried plugin rows is the one shape that means "this
+        // peer says it can apply the plugin tables and cannot", which no other
+        // signal distinguishes from an ordinary transport failure.
+        pluginRows: pending.changes.filter((change) => PLUGIN_SYNCED_TABLES.has(change.table)).length,
         error: message,
       });
       return;
@@ -6365,6 +6648,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (payload.toDbVersion < pending.toDbVersion) return;
     const recoveryLevel = peer.changesetRecoveryLevel;
     peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
+    // Only what the batch actually carried. A reseed that omitted the plugin
+    // tables leaves this null on purpose, so the peer stays owed those rows
+    // even though the line above just moved its cursor to the reseed target.
+    if (pending.pluginTablesToDbVersion != null) {
+      advancePluginTablesWatermark(peer, pending.pluginTablesToDbVersion);
+    }
     peer.pendingChangesetBatch = null;
     peer.changesetRecoveryLevel = 0;
     peer.changesetRecoveryNotBeforeMs = 0;
@@ -7970,6 +8259,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer: hello.peer,
         serverDbSiteId: ownSiteId,
         serverDbVersion,
+      });
+      // The plugin debt, resolved once per connection. A device that never
+      // received the plugin tables — an older build, or one whose reseed had to
+      // drop them — starts at 0 here even though its cursor is at head, which
+      // is what makes a capability upgrade re-export instead of inheriting a
+      // watermark taken while the peer could not apply a single plugin row.
+      peer.pluginTablesThroughDbVersion = initialPluginTablesWatermark(
+        peer,
+        peer.lastKnownServerDbVersion,
+      );
+      args.logger.info("sync_host.peer_plugin_tables_state", {
+        peerDeviceId: hello.peer.deviceId,
+        deviceType: hello.peer.deviceType ?? null,
+        pluginTables: peerAcceptsPluginTables(peer),
+        tracked: peerTracksPluginTables(peer),
+        cursorDbVersion: peer.lastKnownServerDbVersion,
+        pluginTablesThroughDbVersion: peer.pluginTablesThroughDbVersion,
+        owedVersions: Math.max(0, peer.lastKnownServerDbVersion - peer.pluginTablesThroughDbVersion),
       });
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),
