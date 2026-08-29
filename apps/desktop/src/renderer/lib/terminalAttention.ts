@@ -297,6 +297,40 @@ export function sessionFilingBucket(
     : canonicalStatusBucket(phase);
 }
 
+/**
+ * Resolve relationship-aware filing without changing a child session's real
+ * runtime state. A non-chat helper attached to a settled chat files with its
+ * parent unless it currently needs the user's attention.
+ */
+export function effectiveSessionFilingBuckets(
+  sessions: readonly TerminalSessionSummary[],
+  nowMs: number = Date.now(),
+): Map<string, SessionFilingBucket> {
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const buckets = new Map<string, SessionFilingBucket>();
+
+  for (const session of sessions) {
+    buckets.set(session.id, sessionFilingBucket(session, nowMs));
+  }
+
+  for (const session of sessions) {
+    const parentId = session.chatSessionId;
+    if (!parentId || parentId === session.id || isChatToolType(session.toolType)) continue;
+    const parent = byId.get(parentId);
+    if (
+      !parent
+      || parent.laneId !== session.laneId
+      || !isChatToolType(parent.toolType)
+      || buckets.get(session.id) === "snoozed"
+      || buckets.get(parent.id) !== "settled"
+      || sessionNeedsYou(canonicalInputFromSummary(session))
+    ) continue;
+    buckets.set(session.id, "settled");
+  }
+
+  return buckets;
+}
+
 export function sessionMatchesStatusFilter(
   args: SessionCanonicalUiInput,
   filter: SessionStatusFilter,

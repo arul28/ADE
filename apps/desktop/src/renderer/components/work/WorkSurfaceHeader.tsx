@@ -3,7 +3,7 @@ import { SidebarSimple } from "@phosphor-icons/react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
-import { SessionLifecycleChips } from "./SessionLifecycleChips";
+import { SessionSnoozeChip } from "./SessionLifecycleChips";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
@@ -198,12 +198,10 @@ export type WorkSurfaceHeaderProps = {
    */
   showCacheBadge?: boolean;
   cacheIdleSinceAt?: string | null;
-  /**
-   * Session id whose lifecycle (settled / snoozed) should surface as ambient
-   * header chips. Chips render only when the session is actually in one of those
-   * states; the composer slot below is owned by lane branch drift.
-   */
+  /** Session id whose metadata-generation state controls the title shimmer. */
   lifecycleSessionId?: string | null;
+  /** Session id whose snooze state should surface as an ambient header chip. */
+  snoozeSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
   showGitToolbar?: boolean;
   /** Chat session owning the header; lets PR badges stay chat-specific. */
@@ -258,6 +256,7 @@ export function WorkSurfaceHeader({
   showCacheBadge = false,
   cacheIdleSinceAt,
   lifecycleSessionId = null,
+  snoozeSessionId = null,
   showGitToolbar = false,
   prSessionId = null,
   onTogglePrPane,
@@ -307,7 +306,7 @@ export function WorkSurfaceHeader({
             />
           ) : null}
           {laneId ? <LaneBranchDriftChip laneId={laneId} /> : null}
-          {lifecycleSessionId ? <SessionLifecycleChips sessionId={lifecycleSessionId} /> : null}
+          {snoozeSessionId ? <SessionSnoozeChip sessionId={snoozeSessionId} runtimePin={runtimePin} /> : null}
           {showCacheBadge ? (
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}

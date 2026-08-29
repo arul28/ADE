@@ -1,33 +1,28 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Moon } from "@phosphor-icons/react";
 
-import type { TerminalSessionSummary } from "../../../shared/types";
-import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
-import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
-import { isSessionSnoozed, snoozeWakeLabel } from "../../lib/sessionSnooze";
-import {
-  unsettleSession,
-  wakeSessionNow,
-} from "../terminals/sessionLifecycleActions";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import { selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
+import { isSessionSnoozed, nextSnoozeDeadlineMs, snoozeWakeLabel } from "../../lib/sessionSnooze";
+import { wakeSessionNow } from "../terminals/sessionLifecycleActions";
 import { cn } from "../ui/cn";
 
 /**
- * Ambient lifecycle chips for a chat surface header. The chat pane had zero
- * lifecycle awareness: a settled or snoozed chat looked identical to a live one
- * once you were inside it.
+ * Ambient snooze chip for a chat surface header.
  *
- * These are HEADER chips, not a strip above the composer — that slot belongs to
- * lane branch drift. State is resolved from the same derived helpers the Work
- * sidebar uses (`sessionCanonicalUiState` + `isSessionSnoozed`), so the chip and
- * the row can never disagree.
+ * Settled state lives only in the compact composer-adjacent pill; repeating it
+ * in the header added chrome without adding information. Snooze stays here
+ * because its wake deadline is useful away from the composer too.
  */
 
 const CHIP_CLASS =
   "inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.04] px-1.5 font-sans text-[10px] font-medium text-muted-fg/75 transition-colors hover:border-white/[0.18] hover:text-fg/85";
+const LIFECYCLE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 
 /**
- * Read a chat's terminal-session row out of the per-project cache the Work tab
- * already mirrors into the store. No extra IPC, and it stays as fresh as the
+ * Read a chat's terminal-session row out of the local per-project cache the Work
+ * tab already mirrors into the store, falling back to the root cross-machine
+ * snapshot for a foreign chat. No extra IPC, and it stays as fresh as the
  * sidebar it is mirroring.
  */
 export function useSessionLifecycleSnapshot(
@@ -37,11 +32,35 @@ export function useSessionLifecycleSnapshot(
   const cached = useAppStore((state) =>
     (projectStateKey ? state.sessionsCacheByProject[projectStateKey] : undefined),
   );
-  return useMemo(() => {
+  const crossMachineLanesByMachineId = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const snapshot = useMemo(() => {
     const id = sessionId?.trim();
-    if (!id || !cached) return null;
-    return cached.find((session) => session.id === id) ?? null;
-  }, [cached, sessionId]);
+    if (!id) return null;
+    const local = cached?.find((session) => session.id === id);
+    if (local) return local;
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      const foreign = machine.sessions.find((session) => session.id === id);
+      if (foreign) return foreign;
+    }
+    return null;
+  }, [cached, crossMachineLanesByMachineId, sessionId]);
+
+  // A snooze is represented by a persisted deadline, not a scheduler event.
+  // Arm one deadline timer here so an open chat header/composer re-renders when
+  // the row becomes live even if the session cache object never changes.
+  const [lifecycleEpoch, setLifecycleEpoch] = useState(0);
+  useEffect(() => {
+    const deadlineMs = nextSnoozeDeadlineMs(snapshot ? [snapshot] : []);
+    if (deadlineMs == null) return undefined;
+    const delay = Math.min(
+      Math.max(deadlineMs - Date.now(), 250),
+      LIFECYCLE_TICK_MAX_DELAY_MS,
+    );
+    const timer = window.setTimeout(() => setLifecycleEpoch((value) => value + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [lifecycleEpoch, snapshot]);
+
+  return snapshot;
 }
 
 function ChipMenu({
@@ -80,89 +99,49 @@ function ChipMenu({
   );
 }
 
-export function SessionLifecycleChips({
+export function SessionSnoozeChip({
   sessionId,
   className,
+  runtimePin = null,
 }: {
   sessionId: string | null | undefined;
   className?: string;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const session = useSessionLifecycleSnapshot(sessionId);
-  const [openChip, setOpenChip] = useState<"snoozed" | "settled" | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   if (!session) return null;
 
   const snoozed = isSessionSnoozed(session);
-  const settled = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "settled";
-  if (!snoozed && !settled) return null;
+  if (!snoozed) return null;
 
   const wakeLabel = snoozeWakeLabel(session.snoozedUntil);
 
   return (
-    <>
-      {snoozed ? (
-        <span className={cn("relative inline-flex", className)}>
-          <button
-            type="button"
-            className={CHIP_CLASS}
-            data-testid="chat-session-snoozed-chip"
-            aria-haspopup="menu"
-            aria-expanded={openChip === "snoozed"}
-            aria-label={wakeLabel ? `Snoozed, ${wakeLabel}` : "Snoozed"}
-            title={wakeLabel ? `Snoozed — ${wakeLabel}` : "Snoozed"}
-            onClick={() => setOpenChip((current) => (current === "snoozed" ? null : "snoozed"))}
-          >
-            <Moon size={10} weight="fill" aria-hidden />
-            snoozed
-          </button>
-          {openChip === "snoozed" ? (
-            <ChipMenu
-              label="Snoozed session"
-              onClose={() => setOpenChip(null)}
-              items={[
-                { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session); } },
-              ]}
-            />
-          ) : null}
-        </span>
+    <span className={cn("relative inline-flex", className)}>
+      <button
+        type="button"
+        className={CHIP_CLASS}
+        data-testid="chat-session-snoozed-chip"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={wakeLabel ? `Snoozed, ${wakeLabel}` : "Snoozed"}
+        title={wakeLabel ? `Snoozed — ${wakeLabel}` : "Snoozed"}
+        onClick={() => setMenuOpen((current) => !current)}
+      >
+        <Moon size={10} weight="fill" aria-hidden />
+        snoozed
+      </button>
+      {menuOpen ? (
+        <ChipMenu
+          label="Snoozed session"
+          onClose={() => setMenuOpen(false)}
+          items={[
+            { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session, runtimePin); } },
+          ]}
+        />
       ) : null}
-
-      {settled ? (
-        <span className={cn("relative inline-flex", className)}>
-          <button
-            type="button"
-            className={CHIP_CLASS}
-            data-testid="chat-session-settled-chip"
-            aria-haspopup="menu"
-            aria-expanded={openChip === "settled"}
-            aria-label="Settled"
-            title="Settled"
-            onClick={() => setOpenChip((current) => (current === "settled" ? null : "settled"))}
-          >
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full border bg-transparent"
-              style={{ borderColor: "rgba(255,255,255,0.4)" }}
-              aria-hidden
-            />
-            settled
-          </button>
-          {openChip === "settled" ? (
-            <ChipMenu
-              label="Settled session"
-              onClose={() => setOpenChip(null)}
-              items={[
-                {
-                  key: "unsettle",
-                  label: "Unsettle",
-                  // The declared-vs-derived branch lives in the shared action so
-                  // the chip and the Work row menu can never disagree.
-                  onSelect: () => { void unsettleSession(session); },
-                },
-              ]}
-            />
-          ) : null}
-        </span>
-      ) : null}
-    </>
+    </span>
   );
 }

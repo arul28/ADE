@@ -1202,7 +1202,11 @@ Cross-machine Work union:
   `SessionListPane.tsx`, and
   `apps/desktop/src/renderer/lib/terminalAttention.ts` — route chat-created
   ownership metadata into the local or foreign optimistic path and render both
-  through the shared `sessionFilingBucket` lifecycle-plus-snooze contract.
+  through the relationship-aware `effectiveSessionFilingBuckets` wrapper around
+  the shared `sessionFilingBucket` lifecycle-plus-snooze contract. Open chat and
+  lifecycle controls read the local cache first, then the root cross-machine
+  snapshot for a foreign row, and keep their filing fresh with bounded
+  render-only deadline timers.
 - `apps/desktop/src/renderer/components/terminals/useWorkMachineRouter.ts` —
   per-session machine routing for the union. A CLI or shell session on another
   machine opens **in place** with its owning `OpenProjectBinding` carried as a

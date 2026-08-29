@@ -1497,6 +1497,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             endedFiltered={work.endedFiltered}
             settledFiltered={work.settledFiltered}
             snoozedFiltered={work.snoozedFiltered}
+            effectiveFilingBuckets={work.effectiveFilingBuckets}
             allSessionsUnfiltered={work.sessions}
             loading={work.loading}
             filterLaneId={work.filterLaneId}
