@@ -3392,7 +3392,7 @@ const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
  */
 export const CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS = 90_000;
 /** Upper bound on the best-effort cancel issued while recycling a wedged thread. */
-const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
+export const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
 const CURSOR_SDK_SILENT_RUN_MESSAGE =
   "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.";
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
