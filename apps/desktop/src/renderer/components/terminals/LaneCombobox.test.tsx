@@ -56,15 +56,15 @@ describe("computeLanePopoverPlacement", () => {
     expect(placement.left).toBeGreaterThanOrEqual(10);
   });
 
-  it("opens upward and stays off the top edge when the trigger sits low", () => {
+  it("opens upward from the trigger top so a short list stays flush, not floated by maxHeight", () => {
     const placement = computeLanePopoverPlacement({
       trigger: { top: 672, bottom: 700, left: 20, width: 200 },
       viewport: { width: 900, height: 745 },
     });
     expect(placement.openAbove).toBe(true);
-    expect(placement.bottom).toBeDefined();
-    const top = 745 - (placement.bottom ?? 0) - placement.maxHeight;
-    expect(top).toBeGreaterThanOrEqual(10);
+    expect(placement.top).toBe(672);
+    expect(placement.transform).toBe("translateY(calc(-100% - 4px))");
+    expect(placement.maxHeight).toBeGreaterThan(0);
   });
 
   it("detaches from the anchor rather than overflowing when neither side fits", () => {

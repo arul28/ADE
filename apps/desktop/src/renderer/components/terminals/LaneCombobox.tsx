@@ -209,9 +209,18 @@ export type LanePopoverPlacement = {
   left: number;
   width: number;
   maxHeight: number;
-  /** Exactly one of these is set; `bottom` anchors an upward-opening popover. */
-  top?: number;
-  bottom?: number;
+  /**
+   * Always a `top` offset from the same rect space as `left`. Do not mix
+   * `window.innerHeight` into a `bottom` value: hosted-web CSS zoom multiplies
+   * `bottom` while leaving innerHeight in viewport pixels, which parks the
+   * menu at the top of the window (the permission-picker failure mode).
+   *
+   * When `openAbove` is true, `top` is the trigger's top edge and `transform`
+   * shifts the box by its own height so a short list stays flush above the
+   * trigger (the old `bottom` behavior) without measuring first.
+   */
+  top: number;
+  transform?: string;
   openAbove: boolean;
 };
 
@@ -259,9 +268,17 @@ export function computeLanePopoverPlacement(input: {
     return { left, width, maxHeight, top, openAbove: false };
   }
 
-  return openAbove
-    ? { left, width, maxHeight: fitted, bottom: viewport.height - trigger.top + POPOVER_GAP, openAbove }
-    : { left, width, maxHeight: fitted, top: trigger.bottom + POPOVER_GAP, openAbove };
+  if (openAbove) {
+    return {
+      left,
+      width,
+      maxHeight: fitted,
+      top: trigger.top,
+      transform: `translateY(calc(-100% - ${POPOVER_GAP}px))`,
+      openAbove,
+    };
+  }
+  return { left, width, maxHeight: fitted, top: trigger.bottom + POPOVER_GAP, openAbove };
 }
 
 type LaneComboboxProps = {
@@ -458,13 +475,19 @@ export function LaneCombobox({
       ? null
       : (customLaneColor ?? COLORS.accent);
 
-  const popoverStyle: React.CSSProperties = {
+  const popoverAnchorStyle: React.CSSProperties = {
+    // Owns `position: fixed` and the upward `translateY`. `.ade-lane-popover`
+    // is `position: relative` so framer-motion's `y` cannot overwrite it.
+    position: "fixed",
+    zIndex: 9999,
     left: placement?.left ?? 0,
     width: placement?.width ?? POPOVER_MIN_WIDTH,
+    top: placement?.top ?? 0,
+    transform: placement?.transform,
+  };
+  const popoverStyle: React.CSSProperties = {
+    width: "100%",
     maxHeight: placement?.maxHeight ?? POPOVER_PREFERRED_MAX_HEIGHT,
-    ...(placement?.bottom !== undefined
-      ? { bottom: placement.bottom }
-      : { top: placement?.top ?? 0 }),
     // The stylesheet ships a CSS keyframe entrance for this class; framer owns
     // the entrance now, and running both double-animates the open.
     animation: "none",
@@ -523,6 +546,7 @@ export function LaneCombobox({
       */}
       {open
         ? createPortal(
+          <div style={popoverAnchorStyle}>
             <motion.div
               ref={popoverRef}
               tabIndex={-1}
@@ -637,7 +661,8 @@ export function LaneCombobox({
                   })
                 )}
               </div>
-            </motion.div>,
+            </motion.div>
+          </div>,
             document.body,
           )
         : null}

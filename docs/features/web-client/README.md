@@ -402,12 +402,19 @@ Browser `window.ade` adapter:
   so the web adapter synthesizes a completed onboarding state in browser-local
   storage — left to the fallback proxy those reads resolve to null and
   `CtoPage` parks forever, because its ensure-session effect bails while
-  onboarding state is null. `app.ts` applies the display zoom preference to
-  `<body>` rather than the root element, since percentages resolve across the
-  zoom boundary and body/`#root` then still measure exactly one viewport at
-  every level; it is applied at install as well as on `AppShell` mount, so a
-  reload paints at the user's zoom instead of flashing 100% first, and a failure
-  there can never take the adapter down.
+  onboarding state is null. `misc.ts` applies the display zoom preference
+  through `applyHostedWebZoom`: CSS zoom still lives on `<body>` (the root
+  element is reserved for browser pinch-zoom), but the body's specified
+  width/height are divided by the factor first so the zoomed used box is
+  exactly one viewport. At identity zoom (displayed 90%) the inverse px box
+  is skipped and body stays `height: 100%` so `h-full` still has a containing
+  block — Vite's `index.html` does not set one, unlike `webclient.html`. A
+  bare `body { zoom }` multiplied `height: 100%` past
+  the html overflow clip — session cards, the chat column, and the launch
+  shelf cropped, and `position: fixed` menus that mixed `window.innerHeight`
+  into `bottom` jumped to the top of the window. Applied at install as well
+  as on `AppShell` mount, so a reload paints at the user's zoom instead of
+  flashing 100% first, and a failure there can never take the adapter down.
   `personalChats.ts` invokes
   runtime-scoped `personalChats.*` actions with `requireProject: false`, adds
   explicit `chatScope: "personal"` transcript subscriptions, dedupes their
@@ -531,11 +538,19 @@ Reused desktop renderer (web-mode adaptation):
   loads, and `WEB_CLIENT_TAB_PATHS` lists the only surfaced tabs
   (`/work`, `/lanes`, `/files`, `/prs`, `/chats`). There is no hosted-only
   landing route: the pre-project surface is the shared welcome page on `/work`.
-  Desktop-only chrome
+  `isCssZoomedBrowserSurface()` is true for the hosted client and the Vite
+  `browserMock` preview so `AppShell` fills the inverse-sized body with
+  `h-full` instead of `100vh`. Desktop-only chrome
   (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
-  `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
-  updater, the onboarding tour, and tabs with no sync-protocol backing instead
-  of rendering broken affordances.
+  `WelcomeVideoGate.tsx`) reads the web-client flag to hide native window
+  controls, the updater, the onboarding tour, and tabs with no sync-protocol
+  backing instead of rendering broken affordances.
+- `apps/desktop/src/renderer/lib/webZoom.ts` - hosted-web stand-in for
+  Electron `webFrame` zoom. Inverse-sizes `<body>` then applies CSS `zoom` so
+  the used box is one viewport.
+- `apps/desktop/src/renderer/lib/fixedMenuPlacement.ts` - `position: fixed`
+  menus that open above an anchor use `top` plus `translateY(-100%)` so
+  vertical math never mixes `window.innerHeight` with a CSS-zoomed rect.
 - `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx`
   and `ActivityPane.tsx` - the project-independent header popover and the
   expanded pane its "Open all" raises. Activity is a global utility surface, not

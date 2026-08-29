@@ -140,9 +140,8 @@ export function CursorCloudAdvancedMenu({
               width: placement?.width ?? MENU_WIDTH,
               left: placement?.left ?? 0,
               maxHeight: placement?.maxHeight,
-              ...(placement?.bottom !== undefined
-                ? { bottom: placement.bottom }
-                : { top: placement?.top ?? 0 }),
+              top: placement?.top ?? 0,
+              transform: placement?.transform,
             }}
           >
             {attachPr ? (

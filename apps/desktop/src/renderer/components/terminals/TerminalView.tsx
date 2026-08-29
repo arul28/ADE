@@ -1638,8 +1638,10 @@ function ensureOpen(runtime: CachedRuntime): boolean {
 /**
  * The compounded CSS `zoom` the terminal would otherwise inherit.
  *
- * The hosted client scales its whole UI with `body { zoom: <factor> }`
- * (webclient/adapter/misc.ts), which defaults to 1.1 at the "100%" setting.
+ * The hosted client scales its whole UI with CSS zoom on <body>
+ * (webclient/adapter/misc.ts via applyHostedWebZoom), which defaults to 1.1
+ * at the "100%" setting. The body's layout box is inverse-sized so the zoomed
+ * used size still fills one viewport.
  */
 function webZoomFactor(): number {
   if (typeof document === "undefined") return 1;

@@ -1059,22 +1059,30 @@ h6 {
   display: none;
 }
 
-/* Work split gutter: 1px divider at rest; wider only while hovering/dragging */
+/* Work split gutter: keep the generic 8px hit target; paint a 1px
+   full-height line so the divider stays grabbable under hosted-web CSS
+   zoom (a 1px layout box misses pointer hit-testing once zoom desyncs
+   layout pixels from the painted line). */
 .ade-work-surface .ade-pane-gutter.vertical {
-  width: 1px !important;
-  min-width: 1px !important;
-  background: var(--work-pane-border) !important;
+  background: transparent !important;
   border: none !important;
   box-shadow: none !important;
 }
 
 .ade-work-surface .ade-pane-gutter.vertical::before {
-  opacity: 0;
+  opacity: 1;
+  top: 0;
+  left: 50%;
+  width: 1px;
+  height: 100%;
+  transform: translateX(-50%);
+  border-radius: 0;
+  background: var(--work-pane-border);
+  box-shadow: none;
 }
 
 .ade-work-surface .ade-pane-gutter.vertical:hover,
 .ade-work-surface .ade-pane-gutter.vertical[data-resize-handle-active] {
-  width: 4px !important;
   background: color-mix(in srgb, var(--color-accent) 14%, transparent) !important;
   border-radius: 2px;
 }
@@ -1082,6 +1090,8 @@ h6 {
 .ade-work-surface .ade-pane-gutter.vertical:hover::before,
 .ade-work-surface .ade-pane-gutter.vertical[data-resize-handle-active]::before {
   opacity: 1;
+  width: 2px;
+  height: 100%;
   background: var(--color-accent);
   box-shadow: 0 0 6px 1px color-mix(in srgb, var(--color-accent) 35%, transparent);
 }
@@ -1094,7 +1104,7 @@ h6 {
 /* Lane Combobox Popover */
 
 .ade-lane-popover {
-  position: fixed;
+  position: relative;
   z-index: 9999;
   min-width: 200px;
   max-width: 280px;
