@@ -6,42 +6,19 @@ import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
 import { unsettleSession, wakeSessionNow } from "../terminals/sessionLifecycleActions";
 import { cn } from "../ui/cn";
 
-/**
- * "This chat is parked" notice, pinned directly above the composer.
- *
- * The header already carries ambient settled/snoozed CHIPS
- * (`SessionLifecycleChips`) — a 10px marker you have to already be looking at.
- * This is the other half: when you are typing, your eyes are at the bottom of
- * the pane, and the one fact that matters is that this thread is currently out
- * of the way and what sending will do about it. The chip identifies the state;
- * this explains the consequence. Both read from the same derived helpers
- * (`sessionCanonicalUiState` + `isSessionSnoozed`) so they cannot disagree.
- *
- * Colour follows the shared status vocabulary in
- * `shared/sessionStatusPresentation.ts`: emerald for settled ("finished
- * cleanly"), neutral for snoozed (a VISIBILITY OVERLAY, not a lifecycle state —
- * it is `tone: "neutral"` there for exactly this reason). Amber is spent
- * entirely on "your move" and appears in neither variant.
- *
- * Layout note: the composer sits at the bottom of a column, so this banner
- * grows upward into the transcript rather than pushing the composer down, and
- * it renders `null` — not a reserved-height placeholder — when neither state
- * applies. Nothing under it moves when it appears.
- */
-
-const CARD_BASE_CLASS =
-  "mb-1.5 flex items-start gap-2.5 rounded-[calc(var(--chat-radius-card)-8px)] border px-3 py-2.5";
-const ICON_TILE_CLASS =
-  "flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border";
+/** Compact lifecycle pill that floats over the transcript above the composer. */
+const PILL_BASE_CLASS =
+  "pointer-events-auto inline-flex min-w-0 max-w-[calc(100%-1.5rem)] items-center gap-1.5 rounded-full border px-2.5 py-1 font-sans shadow-[0_10px_28px_rgba(0,0,0,0.28)] backdrop-blur-xl";
 const BUTTON_BASE_CLASS =
-  "inline-flex shrink-0 items-center rounded-md border px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold transition-colors disabled:pointer-events-none disabled:opacity-40";
+  "ml-0.5 inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9.5/14)] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40";
 
 type LifecycleVariant = "settled" | "snoozed";
 
 const VARIANT_CHROME: Record<LifecycleVariant, {
-  card: string;
-  iconTile: string;
+  pill: string;
+  iconClass: string;
   title: string;
+  detail: string;
   button: string;
   // Phosphor's own component type, borrowed from an existing icon (the idiom
   // ChatContinuityRecoveryCard uses) — `ComponentType<…>` does not match its
@@ -51,23 +28,25 @@ const VARIANT_CHROME: Record<LifecycleVariant, {
   // Emerald = "finished cleanly, you have not looked yet" — the same hue the
   // sidebar spends on Done, so a settled chat reads as an outcome, not a warning.
   settled: {
-    card: "border-emerald-400/16 bg-emerald-400/[0.05]",
-    iconTile: "border-emerald-400/18 bg-emerald-400/[0.08] text-emerald-200",
+    pill: "border-emerald-300/18 bg-[#101b18]/92",
+    iconClass: "text-emerald-300/85",
     title: "text-emerald-50/90",
+    detail: "text-emerald-50/55",
     // focus-visible mirrors hover exactly: keyboard users never see hover, and
     // this button is the only way out of the state the banner describes.
     button:
-      "border-emerald-300/22 bg-emerald-400/[0.07] text-emerald-50/80 hover:border-emerald-200/38 hover:bg-emerald-400/[0.13] focus-visible:border-emerald-200/38 focus-visible:bg-emerald-400/[0.13]",
+      "text-emerald-100/70 hover:bg-emerald-300/[0.10] hover:text-emerald-50 focus-visible:bg-emerald-300/[0.10] focus-visible:text-emerald-50",
     icon: CheckCircle,
   },
   // Neutral on purpose: snooze hides a row, it does not change what the row IS.
   // Giving it a hue would claim a lifecycle change that never happened.
   snoozed: {
-    card: "border-white/[0.09] bg-white/[0.028]",
-    iconTile: "border-white/[0.10] bg-white/[0.05] text-muted-fg/80",
+    pill: "border-white/[0.10] bg-[#17161c]/92",
+    iconClass: "text-muted-fg/75",
     title: "text-fg/85",
+    detail: "text-fg/50",
     button:
-      "border-white/[0.10] bg-white/[0.035] text-fg/70 hover:border-white/[0.2] hover:bg-white/[0.07] hover:text-fg/90 focus-visible:border-white/[0.2] focus-visible:bg-white/[0.07] focus-visible:text-fg/90",
+      "text-fg/65 hover:bg-white/[0.07] hover:text-fg/90 focus-visible:bg-white/[0.07] focus-visible:text-fg/90",
     icon: Moon,
   },
 };
@@ -82,10 +61,10 @@ const VARIANT_CHROME: Record<LifecycleVariant, {
  * "until now" would be nonsense if a render ever straddled the deadline, so it
  * falls back with the null case.
  */
-function snoozeLine(snoozedUntil: string | null | undefined, nowMs?: number): string {
+function snoozeDetail(snoozedUntil: string | null | undefined, nowMs?: number): string {
   const when = snoozeWakeDescription(snoozedUntil, nowMs);
   const until = !when || when === "now" ? "it wakes" : when;
-  return `Hidden from the sidebar until ${until}. Snooze only hides the row — this chat keeps running.`;
+  return `Hidden until ${until}`;
 }
 
 export function ChatLifecycleBanner({
@@ -110,46 +89,34 @@ export function ChatLifecycleBanner({
   const chrome = VARIANT_CHROME[variant];
   const Icon = chrome.icon;
 
-  const title = snoozed ? "This chat is snoozed" : "This chat is settled";
-  const line = snoozed
-    ? snoozeLine(session.snoozedUntil)
-    // Truthful for ADE, not borrowed copy: `sessionCanonicalState` clears
-    // `settledAt` at the write site on real activity (user turn start / PTY
-    // output), so sending is literally what un-settles it.
-    : "Sending a message clears the settle and moves this chat back to Active in the sidebar.";
+  const title = snoozed ? "Snoozed" : "Settled";
+  const detail = snoozed
+    ? snoozeDetail(session.snoozedUntil)
+    : "Sending reopens this chat";
   const actionLabel = snoozed ? "Wake now" : "Un-settle";
 
   return (
     <div
       data-testid="chat-lifecycle-banner"
       data-lifecycle-variant={variant}
-      className={cn(CARD_BASE_CLASS, chrome.card, className)}
+      className={cn(PILL_BASE_CLASS, chrome.pill, className)}
     >
-      <div className={cn(ICON_TILE_CLASS, chrome.iconTile)}>
-        <Icon size={13} weight="fill" aria-hidden />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div
-          className={cn(
-            "font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold",
-            chrome.title,
-          )}
-        >
-          {title}
-        </div>
-        <div className="mt-1 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/60">
-          {line}
-        </div>
-      </div>
+      <Icon size={12} weight="fill" aria-hidden className={cn("shrink-0", chrome.iconClass)} />
+      <span className={cn("shrink-0 text-[length:calc(var(--chat-font-size)*10.5/14)] font-semibold", chrome.title)}>
+        {title}
+      </span>
+      <span aria-hidden className={cn("shrink-0 text-[10px]", chrome.detail)}>·</span>
+      <span className={cn("min-w-0 truncate text-[length:calc(var(--chat-font-size)*10/14)]", chrome.detail)}>
+        {detail}
+      </span>
       <button
         type="button"
         data-testid={snoozed ? "chat-lifecycle-wake" : "chat-lifecycle-unsettle"}
         className={cn(BUTTON_BASE_CLASS, chrome.button)}
         onClick={() => {
           // Both route through the shared Work-tab lifecycle actions rather than
-          // calling `window.ade.sessions` directly, so this banner, the header
-          // chip and the sidebar row menu perform the identical write (pin-aware
-          // single-session call) and report failures the same way.
+          // calling `window.ade.sessions` directly, so this pill, the snooze
+          // header chip, and the sidebar menu use the same write and failure path.
           void (snoozed ? wakeSessionNow(session) : unsettleSession(session));
         }}
       >

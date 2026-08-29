@@ -10,7 +10,7 @@ import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./
 import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
 import {
   canonicalInputFromSummary,
-  sessionFilingBucket,
+  effectiveSessionFilingBuckets,
   sessionNeedsYou,
   sessionStatusBucket,
 } from "../../lib/terminalAttention";
@@ -325,9 +325,9 @@ function partitionQuietSessions(sessions: readonly TerminalSessionSummary[]): {
   const active: TerminalSessionSummary[] = [];
   const snoozed: TerminalSessionSummary[] = [];
   const settled: TerminalSessionSummary[] = [];
-  const nowMs = Date.now();
+  const buckets = effectiveSessionFilingBuckets(sessions);
   for (const session of sessions) {
-    const bucket = sessionFilingBucket(session, nowMs);
+    const bucket = buckets.get(session.id) ?? null;
     if (bucket === "snoozed") {
       snoozed.push(session);
     } else if (bucket === "settled") {
@@ -1181,12 +1181,12 @@ export const SessionListPane = React.memo(function SessionListPane({
   // `isSessionFiledAsSnoozed` — so a lane where everything is snoozed but one
   // row has raised its hand is not snoozed here either, for free.
   const unfilteredQuietBuckets = useMemo(() => {
-    const nowMs = Date.now();
     const snoozed = new Set<string>();
     const settled = new Set<string>();
     const all = new Set<string>();
+    const buckets = effectiveSessionFilingBuckets(allSessionsUnfiltered);
     for (const session of allSessionsUnfiltered) {
-      const bucket = sessionFilingBucket(session, nowMs);
+      const bucket = buckets.get(session.id) ?? null;
       if (bucket === "snoozed") {
         snoozed.add(session.id);
         all.add(session.id);
@@ -2400,8 +2400,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         layoutDependency={laneOrderSignature}
         quietCounts={laneQuiet && collapsed
           ? {
-              snoozed: list.filter((session) => snoozedIdSet.has(session.id)).length,
-              settled: list.filter((session) => settledIdSet.has(session.id)).length,
+              snoozed: list.filter((session) => unfilteredQuietBuckets.snoozed.has(session.id)).length,
+              settled: list.filter((session) => unfilteredQuietBuckets.settled.has(session.id)).length,
             }
           : null}
         onToggleCollapsed={() => {

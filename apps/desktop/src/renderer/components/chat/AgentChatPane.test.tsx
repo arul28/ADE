@@ -22,6 +22,7 @@ import type {
   PrSummary,
   TerminalSessionChangedEvent,
   TerminalSessionDetail,
+  TerminalSessionSummary,
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
@@ -8450,9 +8451,158 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     expect(await screen.findByText("Check PR CI")).toBeTruthy();
-    expect(screen.queryByText(/While you were away:/)).toBeNull();
+    expect(screen.queryByTestId("chat-away-digest")).toBeNull();
     expect(window.localStorage.getItem(`ade.chat.lastViewed.v1:${session.sessionId}`))
       .toBe(String(openedAtMs));
+  });
+
+  it("shows unattended scheduled wakes as one compact review card", async () => {
+    const openedAtMs = Date.parse("2026-07-10T12:00:00.000Z");
+    vi.spyOn(Date, "now").mockReturnValue(openedAtMs);
+    const session = buildSession("session-1", { title: "Scheduled work" });
+    window.localStorage.setItem(
+      `ade.chat.lastViewed.v1:${session.sessionId}`,
+      String(Date.parse("2026-07-10T10:00:00.000Z")),
+    );
+    const longOutcome = "Deployment completed after a very long diagnostic summary that should remain in the transcript instead of being crammed into the notice.";
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T10:30:00.000Z",
+            sequence: 1,
+            event: {
+              type: "user_message",
+              text: "Check CI",
+              deliveryState: "delivered",
+              turnId: "turn-wake-1",
+              metadata: {
+                scheduledWake: {
+                  scheduleId: "wake-1",
+                  kind: "wakeup",
+                  firedAt: "2026-07-10T10:30:00.000Z",
+                  reason: "Check CI",
+                },
+              },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T10:31:00.000Z",
+            sequence: 2,
+            event: { type: "text", text: longOutcome, turnId: "turn-wake-1" },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T11:30:00.000Z",
+            sequence: 3,
+            event: {
+              type: "user_message",
+              text: "Check deployment",
+              deliveryState: "delivered",
+              turnId: "turn-wake-2",
+              metadata: {
+                scheduledWake: {
+                  scheduleId: "wake-2",
+                  kind: "wakeup",
+                  firedAt: "2026-07-10T11:30:00.000Z",
+                  reason: "Check deployment",
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    const digest = await screen.findByTestId("chat-away-digest");
+    expect(digest.className).toContain("rounded-2xl");
+    expect(digest.className).not.toContain("w-full");
+    expect(within(digest).getByText("While you were away")).toBeTruthy();
+    expect(within(digest).getByText("2 scheduled wakeups ran")).toBeTruthy();
+    expect(within(digest).queryByText(longOutcome)).toBeNull();
+    expect(screen.getByTestId("chat-composer-notice-overlay").contains(digest)).toBe(true);
+
+    const review = within(digest).getByRole("button", { name: "Review" });
+    expect(review.getAttribute("title")).toBe("First wakeup: Check CI");
+    expect(within(digest).getAllByRole("button")).toHaveLength(2);
+
+    fireEvent.click(within(digest).getByRole("button", { name: "Dismiss while-you-were-away summary" }));
+    await waitFor(() => expect(screen.queryByTestId("chat-away-digest")).toBeNull());
+  });
+
+  it("does not reserve an empty notice row above a live app-panel composer", async () => {
+    const session = buildSession("session-1", { title: "Live app-control chat" });
+    writeChatCompanionUiState(session.sessionId, {
+      ...DEFAULT_CHAT_COMPANION_UI_STATE,
+      appControlOpen: true,
+    });
+    installAdeMocks({ sessions: [session] });
+
+    const { container } = renderPane(session);
+
+    expect(await screen.findByPlaceholderText("Type to vibecode...")).toBeTruthy();
+    expect(screen.queryByTestId("chat-lifecycle-banner")).toBeNull();
+    expect(screen.queryByTestId("chat-app-panel-notice-stack")).toBeNull();
+    const emptyPaddedNoticeRows = [...container.querySelectorAll("div")].filter((element) =>
+      element.childElementCount === 0
+      && element.classList.contains("items-center")
+      && element.classList.contains("py-1.5"),
+    );
+    expect(emptyPaddedNoticeRows).toHaveLength(0);
+  });
+
+  it("centers a lifecycle pill above an app-panel composer", async () => {
+    const session = buildSession("session-1", { title: "Settled app-control chat" });
+    writeChatCompanionUiState(session.sessionId, {
+      ...DEFAULT_CHAT_COMPANION_UI_STATE,
+      appControlOpen: true,
+    });
+    const projectRoot = "/tmp/project-under-test";
+    const settledSession: TerminalSessionSummary = {
+      id: session.sessionId,
+      laneId: session.laneId,
+      laneName: "Lane 1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "codex-chat",
+      title: session.title ?? "Settled app-control chat",
+      status: "completed",
+      startedAt: "2026-07-10T10:00:00.000Z",
+      endedAt: "2026-07-10T11:00:00.000Z",
+      exitCode: 0,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: null,
+      summary: null,
+      runtimeState: "exited",
+      resumeCommand: null,
+      settledAt: "2026-07-10T11:01:00.000Z",
+    };
+    useAppStore.setState({
+      project: { rootPath: projectRoot } as never,
+      projectBinding: null,
+      sessionsCacheByProject: { [projectRoot]: [settledSession] },
+    });
+    installAdeMocks({ sessions: [session] });
+
+    renderPane(session);
+
+    const pill = await screen.findByTestId("chat-lifecycle-banner");
+    expect(pill.className).toContain("flex");
+    expect(pill.className).toContain("w-fit");
+    expect(pill.className).toContain("mx-auto");
+    expect(pill.className).not.toContain("inline-flex");
   });
 
   it("validates empty legacy event-history snapshots before treating them as loaded", async () => {

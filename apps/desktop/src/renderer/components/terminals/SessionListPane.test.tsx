@@ -2518,6 +2518,47 @@ describe("SessionListPane singleton lanes and shelves", () => {
     expect(screen.queryByText("Already done")).toBeNull();
   });
 
+  it("files a settled chat and its still-running attached shell together in the settled shelf", () => {
+    const parent = makeSession({
+      id: "settled-parent-chat",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Settled parent chat",
+      status: "completed",
+      runtimeState: "exited",
+      endedAt: "2026-07-23T12:00:00.000Z",
+      settledAt: "2026-07-23T12:01:00.000Z",
+    });
+    const child = makeSession({
+      id: "attached-running-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Attached running shell",
+      ptyId: "pty-attached-running",
+      chatSessionId: parent.id,
+      status: "running",
+      runtimeState: "running",
+      endedAt: null,
+      settledAt: null,
+    });
+
+    const { container } = renderPane({
+      lanes: [makeLane()],
+      runningFiltered: [child],
+      settledFiltered: [parent],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane: new Map([["lane-known", [parent, child]]]),
+      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+    });
+
+    const settledShelf = container.querySelector('[data-testid="shelf-body-settled"]');
+    expect(settledShelf).toBeTruthy();
+    expect(settledShelf?.contains(screen.getByText("Settled parent chat"))).toBe(true);
+    expect(settledShelf?.contains(screen.getByText("Attached running shell"))).toBe(true);
+    expect(screen.getByRole("button", { name: /1 shell/i })).toBeTruthy();
+  });
+
   it("files a lane mixing both quiet kinds by the dominant one, still flat", () => {
     const [settledA, settledB] = settledPair();
     const asleep = makeSession({

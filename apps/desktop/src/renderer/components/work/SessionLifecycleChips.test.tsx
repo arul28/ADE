@@ -4,8 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
-import { showToast } from "../app/toast/toastStore";
-import { SessionLifecycleChips } from "./SessionLifecycleChips";
+import { SessionSnoozeChip } from "./SessionLifecycleChips";
 
 vi.mock("../app/toast/toastStore", () => ({
   showToast: vi.fn(),
@@ -47,7 +46,7 @@ function seedSessions(sessions: TerminalSessionSummary[]): void {
   });
 }
 
-describe("SessionLifecycleChips", () => {
+describe("SessionSnoozeChip", () => {
   let sessionsApi: Record<string, ReturnType<typeof vi.fn>>;
 
   beforeEach(() => {
@@ -71,7 +70,7 @@ describe("SessionLifecycleChips", () => {
 
   it("renders nothing for a live chat", () => {
     seedSessions([makeSession()]);
-    const { container } = render(<SessionLifecycleChips sessionId="session-1" />);
+    const { container } = render(<SessionSnoozeChip sessionId="session-1" />);
     expect(container.textContent).toBe("");
   });
 
@@ -80,7 +79,7 @@ describe("SessionLifecycleChips", () => {
       snoozedUntil: new Date(Date.now() + 3_600_000).toISOString(),
       snoozedAt: new Date(Date.now() - 60_000).toISOString(),
     })]);
-    render(<SessionLifecycleChips sessionId="session-1" />);
+    render(<SessionSnoozeChip sessionId="session-1" />);
 
     fireEvent.click(screen.getByTestId("chat-session-snoozed-chip"));
     fireEvent.click(screen.getByRole("menuitem", { name: "Wake now" }));
@@ -88,57 +87,18 @@ describe("SessionLifecycleChips", () => {
     await waitFor(() => expect(sessionsApi.wakeSession).toHaveBeenCalledWith("session-1", "manual"));
   });
 
-  it("does not render a settled chip for a clean process exit", () => {
+  it("does not render a header chip for settled sessions", () => {
     seedSessions([makeSession({
-      toolType: "shell",
       status: "completed",
       runtimeState: "exited",
       endedAt: "2026-07-09T11:00:00.000Z",
-      exitCode: 0,
-      settledAt: null,
+      settledAt: "2026-07-09T11:01:00.000Z",
     })]);
-    render(<SessionLifecycleChips sessionId="session-1" />);
+    const { container } = render(<SessionSnoozeChip sessionId="session-1" />);
 
+    expect(container.firstChild).toBeNull();
     expect(screen.queryByTestId("chat-session-settled-chip")).toBeNull();
     expect(sessionsApi.unsettle).not.toHaveBeenCalled();
     expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
-  });
-
-  it("clears a declared settle through the settle column", async () => {
-    seedSessions([makeSession({
-      status: "completed",
-      runtimeState: "exited",
-      endedAt: "2026-07-09T11:00:00.000Z",
-      settledAt: "2026-07-09T11:01:00.000Z",
-    })]);
-    render(<SessionLifecycleChips sessionId="session-1" />);
-
-    fireEvent.click(screen.getByTestId("chat-session-settled-chip"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle" }));
-
-    await waitFor(() => expect(sessionsApi.unsettle).toHaveBeenCalledWith("session-1"));
-    expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
-  });
-
-  it("surfaces a failed unsettle instead of swallowing it", async () => {
-    // Regression: the chip used to call `unsettle` with a bare `.catch(() => {})`,
-    // so a rejected write left the settled chip in place with no feedback.
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    sessionsApi.unsettle.mockRejectedValue(new Error("host refused"));
-    seedSessions([makeSession({
-      status: "completed",
-      runtimeState: "exited",
-      endedAt: "2026-07-09T11:00:00.000Z",
-      settledAt: "2026-07-09T11:01:00.000Z",
-    })]);
-    render(<SessionLifecycleChips sessionId="session-1" />);
-
-    fireEvent.click(screen.getByTestId("chat-session-settled-chip"));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Unsettle" }));
-
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: "Unsettle failed", message: "host refused", tone: "error" }),
-    ));
-    consoleError.mockRestore();
   });
 });

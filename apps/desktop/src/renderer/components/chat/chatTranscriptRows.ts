@@ -1825,9 +1825,15 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
-  // Codex token usage drives the chat-bottom token footer; inline transcript
-  // rows would be duplicate noise.
-  if (event.type === "codex_token_usage" || event.type === "codex_moderation_metadata") {
+  // Provider token usage drives the end-of-turn footer; inline transcript rows
+  // would be duplicate noise. Cursor's `tokens` event used to fall through to
+  // the generic renderer and draw a bare horizontal divider labelled "event"
+  // immediately above the footer that already contained the same numbers.
+  if (
+    event.type === "tokens"
+    || event.type === "codex_token_usage"
+    || event.type === "codex_moderation_metadata"
+  ) {
     return;
   }
 

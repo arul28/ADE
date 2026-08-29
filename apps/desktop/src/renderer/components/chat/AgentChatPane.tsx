@@ -119,6 +119,7 @@ import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -4346,18 +4347,6 @@ export function AgentChatPane({
       }];
     }).sort((left, right) => left.firedAtMs - right.firedAtMs);
   }, [selectedEventsForDisplay, selectedSessionId, wakeAwayWindow]);
-  const latestUnattendedOutcome = useMemo(() => {
-    const latest = unattendedWakeTurns[unattendedWakeTurns.length - 1];
-    if (!latest) return null;
-    const text = selectedEventsForDisplay
-      .filter((envelope) => envelope.event.type === "text" && envelope.event.turnId === latest.turnId)
-      .map((envelope) => envelope.event.type === "text" ? envelope.event.text : "")
-      .join("")
-      .replace(/\s+/g, " ")
-      .trim();
-    return (text || latest.reason || selectedSession?.lastOutputPreview || "Scheduled work ran while this chat was closed.")
-      .slice(0, 180);
-  }, [selectedEventsForDisplay, selectedSession?.lastOutputPreview, unattendedWakeTurns]);
   const dispatchedAuthRecoveryRef = useRef<Set<string>>(new Set());
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
@@ -12478,15 +12467,15 @@ export function AgentChatPane({
           type="button"
           onClick={() => navigateToSpawnedChat(spawnLineage.parentId, null)}
           className={cn(
-            "inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
+            "inline-flex max-w-[220px] items-center gap-1.5 px-0.5 py-0.5 font-sans text-[10px] font-medium underline-offset-2 transition-colors hover:underline",
             spawnLineage.spawnKind === "peer"
-              ? "border-slate-400/18 bg-slate-400/[0.06] text-slate-300/75 hover:border-slate-300/30 hover:text-slate-100/90"
-              : "border-violet-400/20 bg-violet-400/[0.06] text-violet-200/80 hover:border-violet-300/32 hover:text-violet-100",
+              ? "text-slate-300/70 hover:text-slate-100/90"
+              : "text-violet-200/75 hover:text-violet-100",
           )}
           title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "View parent thread"}
         >
-          <span aria-hidden className="shrink-0">↳</span>
-          <span className="min-w-0 truncate">View parent thread</span>
+          <ArrowBendUpRight size={12} weight="regular" aria-hidden className="shrink-0" />
+          <span className="min-w-0 truncate">Go to parent thread</span>
         </button>
       ) : null}
       {chatTerminalVisible && selectedSessionId ? (
@@ -12729,9 +12718,9 @@ export function AgentChatPane({
         onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
-        // Ambient settled/snoozed chips — the chat pane otherwise has no
-        // lifecycle awareness at all. The composer slot below stays with drift.
-        lifecycleSessionId={selectedSessionId ?? null}
+        // Snooze keeps a small header affordance; settled state is shown only
+        // in the compact pill floating directly above the composer.
+        snoozeSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
         // Only wire the pane toggle where the pane actually renders (a selected
@@ -12882,11 +12871,16 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
-  // Settled/snoozed notice pinned above the composer. The header chips say WHAT
-  // the state is; this says what sending will do about it, where the eye already
-  // is while typing. Renders null for a live chat, so nothing below it moves.
-  const lifecycleBanner = composerSessionId ? (
+  const lifecyclePill = composerSessionId ? (
     <ChatLifecycleBanner sessionId={composerSessionId} />
+  ) : null;
+  const lifecycleOverlay = lifecyclePill ? (
+    <div
+      data-testid="chat-lifecycle-overlay"
+      className="flex justify-center"
+    >
+      {lifecyclePill}
+    </div>
   ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
@@ -13394,35 +13388,31 @@ export function AgentChatPane({
       />
   );
 
-  const awayDigestStrip = unattendedWakeTurns.length > 0 ? (
-    <div className="flex shrink-0 items-center gap-2 border-t border-amber-200/[0.08] bg-amber-300/[0.055] px-3 py-1.5 font-sans text-[11px] text-amber-100/75">
-      <span className="min-w-0 flex-1 truncate">
-        While you were away: {unattendedWakeTurns.length} wakeup{unattendedWakeTurns.length === 1 ? "" : "s"}
-        {latestUnattendedOutcome ? ` · ${latestUnattendedOutcome}` : ""}
-      </span>
-      <span className="flex shrink-0 items-center gap-1" aria-label="Jump to scheduled wakeups">
-        {unattendedWakeTurns.slice(-3).map((wake, index) => (
-          <button
-            key={`${wake.scheduleId}:${wake.turnId}`}
-            type="button"
-            className="rounded px-1 py-0.5 text-amber-200/65 underline-offset-2 hover:bg-amber-200/10 hover:text-amber-100 hover:underline"
-            onClick={() => setWakeJumpRequest((current) => ({
-              key: `scheduled-wake:${wake.scheduleId}:${wake.turnId}`,
-              requestId: (current?.requestId ?? 0) + 1,
-            }))}
-          >
-            {Math.max(1, unattendedWakeTurns.length - Math.min(3, unattendedWakeTurns.length) + index + 1)}
-          </button>
-        ))}
-      </span>
-      <button
-        type="button"
-        aria-label="Dismiss while-you-were-away summary"
-        className="grid h-5 w-5 shrink-0 place-items-center rounded text-amber-100/45 hover:bg-amber-200/10 hover:text-amber-100/80"
-        onClick={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
-      >
-        <X size={11} weight="bold" />
-      </button>
+  const firstUnattendedWake = unattendedWakeTurns[0] ?? null;
+  const awayDigestCard = firstUnattendedWake ? (
+    <ChatAwayDigestCard
+      count={unattendedWakeTurns.length}
+      firstReason={firstUnattendedWake.reason}
+      onReview={() => setWakeJumpRequest((current) => ({
+        key: `scheduled-wake:${firstUnattendedWake.scheduleId}:${firstUnattendedWake.turnId}`,
+        requestId: (current?.requestId ?? 0) + 1,
+      }))}
+      onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
+    />
+  ) : null;
+  const appPanelLifecyclePill = composerSessionId ? (
+    <ChatLifecycleBanner
+      sessionId={composerSessionId}
+      className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
+    />
+  ) : null;
+  const composerNoticeOverlay = awayDigestCard || lifecycleOverlay ? (
+    <div
+      data-testid="chat-composer-notice-overlay"
+      className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
+    >
+      {awayDigestCard}
+      {lifecycleOverlay}
     </div>
   ) : null;
 
@@ -13540,9 +13530,7 @@ export function AgentChatPane({
         );
       })}
       {authStickyBar}
-      {awayDigestStrip}
       <LaneBranchDriftStrip laneId={laneId} />
-      {lifecycleBanner}
       {takeoverBanner}
       {composerElement}
     </div>
@@ -13820,7 +13808,7 @@ export function AgentChatPane({
                     data-chat-sync-pending={selectedSyncPending ? "true" : undefined}
                     style={{ ...chatAppearanceRootStyle, ...splitChatColStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
                     className={cn(
-                      "flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
+                      "relative flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
                     )}
                   >
@@ -14054,6 +14042,7 @@ export function AgentChatPane({
                       />
                     </ChatInfoHostContext.Provider>
                     ) : null}
+                    {!appPanelOpen ? composerNoticeOverlay : null}
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
                         <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
@@ -14063,9 +14052,13 @@ export function AgentChatPane({
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}
-                        {awayDigestStrip}
                         <LaneBranchDriftStrip laneId={laneId} />
-                        {lifecycleBanner}
+                        {awayDigestCard ? (
+                          <div data-testid="chat-app-panel-notice-stack" className="flex flex-col items-center gap-1.5 px-3 py-1.5">
+                            {awayDigestCard}
+                            {appPanelLifecyclePill}
+                          </div>
+                        ) : appPanelLifecyclePill}
                         {takeoverBanner}
                         {composerElement}
                       </div>

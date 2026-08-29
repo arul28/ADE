@@ -1433,7 +1433,7 @@ describe("formatDoneTurnTokenLine", () => {
 });
 
 describe("chatTranscriptRows edge cases", () => {
-  it("filters out step_boundary and activity events", () => {
+  it("filters out non-visual activity and token accounting events", () => {
     const rows = collapseChatTranscriptEvents([
       {
         sessionId: "session-1",
@@ -1444,6 +1444,11 @@ describe("chatTranscriptRows edge cases", () => {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:01.000Z",
         event: { type: "activity", activity: "reading", detail: "foo.ts", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "tokens", turnId: "turn-1", inputTokens: 406_700, outputTokens: 1_200 },
       },
     ]);
     expect(rows).toHaveLength(0);

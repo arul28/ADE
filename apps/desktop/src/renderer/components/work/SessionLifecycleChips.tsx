@@ -3,23 +3,16 @@ import { Moon } from "@phosphor-icons/react";
 
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
-import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { isSessionSnoozed, snoozeWakeLabel } from "../../lib/sessionSnooze";
-import {
-  unsettleSession,
-  wakeSessionNow,
-} from "../terminals/sessionLifecycleActions";
+import { wakeSessionNow } from "../terminals/sessionLifecycleActions";
 import { cn } from "../ui/cn";
 
 /**
- * Ambient lifecycle chips for a chat surface header. The chat pane had zero
- * lifecycle awareness: a settled or snoozed chat looked identical to a live one
- * once you were inside it.
+ * Ambient snooze chip for a chat surface header.
  *
- * These are HEADER chips, not a strip above the composer — that slot belongs to
- * lane branch drift. State is resolved from the same derived helpers the Work
- * sidebar uses (`sessionCanonicalUiState` + `isSessionSnoozed`), so the chip and
- * the row can never disagree.
+ * Settled state lives only in the compact composer-adjacent pill; repeating it
+ * in the header added chrome without adding information. Snooze stays here
+ * because its wake deadline is useful away from the composer too.
  */
 
 const CHIP_CLASS =
@@ -80,7 +73,7 @@ function ChipMenu({
   );
 }
 
-export function SessionLifecycleChips({
+export function SessionSnoozeChip({
   sessionId,
   className,
 }: {
@@ -88,81 +81,39 @@ export function SessionLifecycleChips({
   className?: string;
 }) {
   const session = useSessionLifecycleSnapshot(sessionId);
-  const [openChip, setOpenChip] = useState<"snoozed" | "settled" | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   if (!session) return null;
 
   const snoozed = isSessionSnoozed(session);
-  const settled = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "settled";
-  if (!snoozed && !settled) return null;
+  if (!snoozed) return null;
 
   const wakeLabel = snoozeWakeLabel(session.snoozedUntil);
 
   return (
-    <>
-      {snoozed ? (
-        <span className={cn("relative inline-flex", className)}>
-          <button
-            type="button"
-            className={CHIP_CLASS}
-            data-testid="chat-session-snoozed-chip"
-            aria-haspopup="menu"
-            aria-expanded={openChip === "snoozed"}
-            aria-label={wakeLabel ? `Snoozed, ${wakeLabel}` : "Snoozed"}
-            title={wakeLabel ? `Snoozed — ${wakeLabel}` : "Snoozed"}
-            onClick={() => setOpenChip((current) => (current === "snoozed" ? null : "snoozed"))}
-          >
-            <Moon size={10} weight="fill" aria-hidden />
-            snoozed
-          </button>
-          {openChip === "snoozed" ? (
-            <ChipMenu
-              label="Snoozed session"
-              onClose={() => setOpenChip(null)}
-              items={[
-                { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session); } },
-              ]}
-            />
-          ) : null}
-        </span>
+    <span className={cn("relative inline-flex", className)}>
+      <button
+        type="button"
+        className={CHIP_CLASS}
+        data-testid="chat-session-snoozed-chip"
+        aria-haspopup="menu"
+        aria-expanded={menuOpen}
+        aria-label={wakeLabel ? `Snoozed, ${wakeLabel}` : "Snoozed"}
+        title={wakeLabel ? `Snoozed — ${wakeLabel}` : "Snoozed"}
+        onClick={() => setMenuOpen((current) => !current)}
+      >
+        <Moon size={10} weight="fill" aria-hidden />
+        snoozed
+      </button>
+      {menuOpen ? (
+        <ChipMenu
+          label="Snoozed session"
+          onClose={() => setMenuOpen(false)}
+          items={[
+            { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session); } },
+          ]}
+        />
       ) : null}
-
-      {settled ? (
-        <span className={cn("relative inline-flex", className)}>
-          <button
-            type="button"
-            className={CHIP_CLASS}
-            data-testid="chat-session-settled-chip"
-            aria-haspopup="menu"
-            aria-expanded={openChip === "settled"}
-            aria-label="Settled"
-            title="Settled"
-            onClick={() => setOpenChip((current) => (current === "settled" ? null : "settled"))}
-          >
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full border bg-transparent"
-              style={{ borderColor: "rgba(255,255,255,0.4)" }}
-              aria-hidden
-            />
-            settled
-          </button>
-          {openChip === "settled" ? (
-            <ChipMenu
-              label="Settled session"
-              onClose={() => setOpenChip(null)}
-              items={[
-                {
-                  key: "unsettle",
-                  label: "Unsettle",
-                  // The declared-vs-derived branch lives in the shared action so
-                  // the chip and the Work row menu can never disagree.
-                  onSelect: () => { void unsettleSession(session); },
-                },
-              ]}
-            />
-          ) : null}
-        </span>
-      ) : null}
-    </>
+    </span>
   );
 }
