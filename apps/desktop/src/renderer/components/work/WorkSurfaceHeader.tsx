@@ -198,6 +198,8 @@ export type WorkSurfaceHeaderProps = {
    */
   showCacheBadge?: boolean;
   cacheIdleSinceAt?: string | null;
+  /** Session id whose metadata-generation state controls the title shimmer. */
+  lifecycleSessionId?: string | null;
   /** Session id whose snooze state should surface as an ambient header chip. */
   snoozeSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
@@ -253,6 +255,7 @@ export function WorkSurfaceHeader({
   onLaneChipClick,
   showCacheBadge = false,
   cacheIdleSinceAt,
+  lifecycleSessionId = null,
   snoozeSessionId = null,
   showGitToolbar = false,
   prSessionId = null,

@@ -12724,6 +12724,7 @@ export function AgentChatPane({
         onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
+        lifecycleSessionId={selectedSessionId ?? null}
         // Snooze keeps a small header affordance; settled state is shown only
         // in the compact pill floating directly above the composer.
         snoozeSessionId={selectedSessionId ?? null}
