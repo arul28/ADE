@@ -20,8 +20,10 @@ class FakeSdkChild extends EventEmitter {
   killed = false;
   disposeCount = 0;
   initPayloads: unknown[] = [];
+  sent: unknown[] = [];
 
   send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
+    this.sent.push(message);
     if (message.type === "init" && message.requestId) {
       this.initPayloads.push(message.payload);
       queueMicrotask(() => {
@@ -34,6 +36,16 @@ class FakeSdkChild extends EventEmitter {
             currentModelId: "droid-model",
             availableModels: [{ id: "droid-model" }],
           },
+        });
+      });
+    }
+    if (message.type === "send" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: true,
+          result: {},
         });
       });
     }
@@ -132,6 +144,46 @@ describe("Droid SDK pool", () => {
 
     releaseDroidSdkConnection(poolKey, second.generation);
     expect(child.disposeCount).toBe(1);
+  });
+
+  it("sends screenshot paths over worker IPC instead of inline bytes", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-image-paths:${Date.now()}:${Math.random()}`;
+    const acquired = await acquireDroidSdkConnection({
+      poolKey,
+      droidPath: "/usr/local/bin/droid",
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      sessionId: "session-1",
+      settings: {
+        modelId: "droid-model",
+        autonomyLevel: "medium",
+        interactionMode: "auto",
+      },
+    });
+
+    await acquired.pooled.sendPrompt({
+      promptText: "compare these screens",
+      images: [
+        { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
+        { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
+      ],
+      settings: { modelId: "droid-model" },
+    });
+
+    const sendReq = child.sent.find((message) => (
+      message
+      && typeof message === "object"
+      && "type" in message
+      && message.type === "send"
+    )) as { payload?: { images?: Array<{ path?: string; data?: string }> } } | undefined;
+    expect(sendReq?.payload?.images).toEqual([
+      { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
+      { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
+    ]);
+    expect(sendReq?.payload?.images?.some((image) => image.data)).toBeFalsy();
+
+    releaseDroidSdkConnection(poolKey, acquired.generation);
   });
 
   it("rejects initialization instead of throwing when the worker IPC channel closes", async () => {

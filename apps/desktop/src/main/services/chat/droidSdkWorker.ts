@@ -14,6 +14,7 @@ import { droidDisabledToolIdsForCategories, droidInteractionModeValue, droidMcpT
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
 import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
+import { materializeWorkerImages } from "./workerAttachmentImages";
 
 // Must run before the SDK spawns `droid`; see droidSdkWindowsHide.ts.
 ensureDroidSpawnsAreWindowless();
@@ -408,13 +409,19 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
   let tokenUsage: unknown = null;
   let firstError: unknown = null;
   try {
-    const images = payload.payload.images?.map((image) => ({
-      type: "base64" as const,
-      data: image.data,
-      mediaType: image.mimeType as DroidSdkTypes.Base64ImageSource["mediaType"],
-    }));
+    const materialized = await materializeWorkerImages(payload.payload.images, { label: "Droid SDK" });
+    const images = materialized.map((image) => {
+      if (!("data" in image)) {
+        throw new Error("Droid SDK image URLs are not supported.");
+      }
+      return {
+        type: "base64" as const,
+        data: image.data,
+        mediaType: image.mimeType as DroidSdkTypes.Base64ImageSource["mediaType"],
+      };
+    });
     for await (const event of session.stream(payload.payload.promptText, {
-      ...(images?.length ? { images } : {}),
+      ...(images.length ? { images } : {}),
       abortSignal: controller.signal,
     })) {
       if ((event as { type?: string }).type === "token_usage_update") tokenUsage = event;

@@ -120,10 +120,30 @@ export type DroidSdkWorkerInit = {
   allowedMcpServerNames?: string[];
 };
 
-export type DroidSdkUserImage = {
-  data: string;
-  mimeType: string;
-};
+/**
+ * Worker-IPC image reference. Prefer `path` — never put multi-megabyte
+ * screenshot bytes on this object. The worker materializes `{ data, mimeType }`
+ * for `@factory/droid-sdk` locally. `data` remains for tests and tiny inline
+ * cases. Droid's stream API has no remote-URL image form, so `url` is not part
+ * of this union. Path images include `rootPath` so the worker re-opens through
+ * the attachment sandbox.
+ */
+export type DroidSdkUserImage =
+  | { path: string; mimeType: string; rootPath: string }
+  | { data: string; mimeType: string };
+
+export function isDroidSdkUserImage(image: unknown): image is DroidSdkUserImage {
+  if (!image || typeof image !== "object") return false;
+  const rec = image as Record<string, unknown>;
+  if (typeof rec.url === "string" && rec.url.trim()) return false;
+  const data = typeof rec.data === "string" ? rec.data.trim() : "";
+  const filePath = typeof rec.path === "string" ? rec.path.trim() : "";
+  const mimeType = typeof rec.mimeType === "string" ? rec.mimeType.trim() : "";
+  const rootPath = typeof rec.rootPath === "string" ? rec.rootPath.trim() : "";
+  if (data) return !filePath && mimeType.length > 0;
+  if (filePath) return mimeType.length > 0 && rootPath.length > 0;
+  return false;
+}
 
 export type DroidSdkSendPrompt = {
   promptText: string;
