@@ -42858,6 +42858,49 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
   });
 
+  it("sends Droid screenshots as attachment paths over worker IPC", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const imagePath = path.join(tmpRoot, "droid-shot.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Look at this screenshot.",
+      attachments: [{ path: imagePath, type: "image" }],
+    }, { awaitDispatch: true });
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      } => event.event.type === "done" && event.sessionId === session.id,
+    );
+
+    const sentImages = mockState.droidPromptCalls[0]?.images as Array<{
+      path?: string;
+      data?: string;
+      mimeType?: string;
+      rootPath?: string;
+    }> | undefined;
+    expect(sentImages).toHaveLength(1);
+    expect(sentImages?.[0]?.data).toBeUndefined();
+    expect(sentImages?.[0]?.mimeType).toBe("image/png");
+    expect(sentImages?.[0]?.rootPath).toBe(tmpRoot);
+    expect(path.basename(sentImages?.[0]?.path ?? "")).toBe("droid-shot.png");
+    expect(String(mockState.droidPromptCalls[0]?.promptText ?? "")).toContain("Look at this screenshot.");
+    expect(String(mockState.droidPromptCalls[0]?.promptText ?? "")).not.toMatch(/iVBORw0KGgo/u);
+  });
+
   it("uses Droid spec mode for ADE plan mode", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
@@ -44542,8 +44585,11 @@ describe("orchestrator-lead provider-native tool denial", () => {
       expect(mockState.droidAcquireCalls.at(-1)?.settings).toMatchObject({
         disabledToolCategories: ["edit", "execute"],
       });
-      expect(mockState.droidPromptCalls.at(-1)?.settings).toMatchObject({
-        disabledToolCategories: ["edit", "execute"],
+      // awaitDispatch returns at onDispatched, which is before sendPrompt.
+      await vi.waitFor(() => {
+        expect(mockState.droidPromptCalls.at(-1)?.settings).toMatchObject({
+          disabledToolCategories: ["edit", "execute"],
+        });
       });
 
       const worker = await service.createSession({
@@ -44554,8 +44600,10 @@ describe("orchestrator-lead provider-native tool denial", () => {
         ...workerArgs(created),
       });
       await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      expect(mockState.droidPromptCalls.at(-1)?.settings)
-        .not.toHaveProperty("disabledToolCategories");
+      await vi.waitFor(() => {
+        expect(mockState.droidPromptCalls.at(-1)?.settings)
+          .not.toHaveProperty("disabledToolCategories");
+      });
     } finally {
       await orchestrationService.dispose();
     }

@@ -120,10 +120,17 @@ export type DroidSdkWorkerInit = {
   allowedMcpServerNames?: string[];
 };
 
-export type DroidSdkUserImage = {
-  data: string;
-  mimeType: string;
-};
+/**
+ * Worker-IPC image reference. Prefer `path` — never put multi-megabyte
+ * screenshot bytes on this object. The worker materializes `{ data, mimeType }`
+ * for `@factory/droid-sdk` locally. `data` remains for tests and tiny inline
+ * cases. Droid's stream API has no remote-URL image form, so `url` is not part
+ * of this union. Path images include `rootPath` so the worker re-opens through
+ * the attachment sandbox.
+ */
+export type DroidSdkUserImage =
+  | { path: string; mimeType: string; rootPath: string }
+  | { data: string; mimeType: string };
 
 export type DroidSdkSendPrompt = {
   promptText: string;

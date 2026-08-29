@@ -23,7 +23,8 @@ export type WorkerMaterializedImage =
 /**
  * Path-only worker-IPC images. Never inline bytes — stuffing screenshot
  * base64 through `child.send` JSON can fill the pipe and stall the turn.
- * Remote URLs are a Cursor-only send shape and stay at that call site.
+ * Remote URLs are a Cursor-only send shape and stay at that call site;
+ * Pi and Droid turn image URLs into prompt text instead.
  */
 export function workerPathImagesFromAttachments(
   attachments: readonly WorkerPathImageSource[],

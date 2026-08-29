@@ -36705,7 +36705,7 @@ export function createAgentChatService(args: {
     ],
   });
 
-  const buildPiWorkerPrompt = async (
+  const buildPathOnlyWorkerPrompt = async (
     promptText: string,
     resolvedAttachments: ResolvedAgentChatFileRef[],
   ): Promise<{ promptText: string; images: Array<{ path: string; mimeType: string; rootPath: string }> }> => {
@@ -36720,6 +36720,8 @@ export function createAgentChatService(args: {
       images: pathImagesFromResolved(resolvedAttachments),
     };
   };
+  const buildPiWorkerPrompt = buildPathOnlyWorkerPrompt;
+  const buildDroidWorkerPrompt = buildPathOnlyWorkerPrompt;
 
   const mapChatDecisionToDroidPermission = (
     decision: AgentChatApprovalDecision | undefined,
@@ -39566,14 +39568,10 @@ export function createAgentChatService(args: {
         "## User Request",
         composed,
       ].join("\n");
-      const promptBlocks = await buildAgentPromptBlocks(sdkInput, args.resolvedAttachments);
-      const sdkPromptText = promptBlocks
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n\n");
-      const images = promptBlocks
-        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-        .map((block) => ({ data: block.data, mimeType: block.mimeType }));
+      const { promptText: sdkPromptText, images } = await buildDroidWorkerPrompt(
+        sdkInput,
+        args.resolvedAttachments,
+      );
       const result = await runtime.sdk.sendPrompt({
         promptText: sdkPromptText,
         ...(images.length ? { images } : {}),
