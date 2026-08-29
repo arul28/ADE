@@ -12,10 +12,12 @@ import {
   type PiSdkModelRef,
   type PiSdkReady,
   type PiSdkSessionTarget,
+  type PiSdkImage,
   type PiSdkWorkerInit,
   type PiSdkWorkerRequest,
   type PiSdkWorkerResponse,
 } from "./piSdkProtocol";
+import { materializeWorkerImages } from "./workerAttachmentImages";
 import { piSessionHeaderMatchesCwd, readPiSessionHeader } from "./piSessionStore";
 import {
   PI_ASK_USER_TOOL_NAME,
@@ -721,10 +723,16 @@ function requireSession(): PiSession {
   return session;
 }
 
-function imageContents(images: Array<{ data: string; mimeType: string }> | undefined): unknown[] | undefined {
-  return images?.length
-    ? images.map((image) => ({ type: "image", data: image.data, mimeType: image.mimeType }))
-    : undefined;
+async function imageContents(images: PiSdkImage[] | undefined): Promise<unknown[] | undefined> {
+  const materialized = await materializeWorkerImages(images, { label: "Pi SDK" });
+  const contents: Array<{ type: "image"; data: string; mimeType: string }> = [];
+  for (const image of materialized) {
+    if (!("data" in image)) {
+      throw new Error("Pi SDK image URLs are not supported.");
+    }
+    contents.push({ type: "image", data: image.data, mimeType: image.mimeType });
+  }
+  return contents.length ? contents : undefined;
 }
 
 async function sendPrompt(request: Extract<PiSdkWorkerRequest, { type: "send" }>): Promise<JsonValue> {
@@ -733,7 +741,7 @@ async function sendPrompt(request: Extract<PiSdkWorkerRequest, { type: "send" }>
   post({ protocolVersion: PI_SDK_PROTOCOL_VERSION, type: "lifecycle", event: "prompt_started", requestId: request.requestId });
   try {
     const promptOptions: Record<string, unknown> = {};
-    const images = imageContents(request.payload.images);
+    const images = await imageContents(request.payload.images);
     if (images) promptOptions.images = images;
     if (request.payload.streamingBehavior) promptOptions.streamingBehavior = request.payload.streamingBehavior;
     await method(active, "prompt").call(active, request.payload.prompt, promptOptions);
@@ -910,12 +918,12 @@ async function dispatch(request: PiSdkWorkerRequest): Promise<JsonValue | undefi
     case "send": return await sendPrompt(request);
     case "steer": {
       const active = requireSession();
-      await method(active, "steer").call(active, request.payload.prompt, imageContents(request.payload.images));
+      await method(active, "steer").call(active, request.payload.prompt, await imageContents(request.payload.images));
       return null;
     }
     case "follow_up": {
       const active = requireSession();
-      await method(active, "followUp").call(active, request.payload.prompt, imageContents(request.payload.images));
+      await method(active, "followUp").call(active, request.payload.prompt, await imageContents(request.payload.images));
       return null;
     }
     case "abort": {

@@ -77,6 +77,8 @@ export type CursorSdkPooled = {
   updatePolicy: (policy: CursorSdkPermissionPolicy) => Promise<void>;
   cancel: () => Promise<void>;
   dispose: () => void;
+  /** Resolves only after the worker process has actually exited. */
+  waitForExit: () => Promise<void>;
 };
 
 let cursorSdkGenCounter = 0;
@@ -93,6 +95,8 @@ type CursorSdkPoolEntry = {
 
 const pools = new Map<string, CursorSdkPoolEntry>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
+/** Poisoned/released workers still shutting down, keyed by pool key. */
+const departingWorkers = new Map<string, Promise<void>>();
 const STALE_INIT_RETRY_LIMIT = 2;
 /**
  * How long the worker gets to answer the IPC `dispose` request before the pool
@@ -100,6 +104,8 @@ const STALE_INIT_RETRY_LIMIT = 2;
  * closing the SDK agent, and on Windows it is the only orderly path there is.
  */
 const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
+/** Cap how long a replacement waits for the previous worker of the same pool key. */
+export const CURSOR_SDK_REPLACE_WAIT_MS = CURSOR_SDK_DISPOSE_GRACE_MS + 500;
 const CURSOR_SDK_WORKER_ENV_DENYLIST = [
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
@@ -140,13 +146,20 @@ function resolveWorkerPath(): string {
   return candidates[0]!;
 }
 
-function socketPathFor(poolKey: string): string {
+function socketPathFor(poolKey: string, instanceId: string): string {
+  const trimmedInstance = instanceId.trim();
+  if (!trimmedInstance) {
+    throw new Error("Cursor SDK worker instance id is required.");
+  }
   const name = hashKey(poolKey);
+  const instance = hashKey(trimmedInstance);
   if (process.platform === "win32") {
-    return `\\\\.\\pipe\\ade-cursor-sdk-${name}`;
+    return `\\\\.\\pipe\\ade-cursor-sdk-${name}-${instance}`;
   }
   const userPart = typeof process.getuid === "function" ? String(process.getuid()) : hashKey(os.homedir());
-  return path.join(os.tmpdir(), `ade-cursor-sdk-${userPart}`, name, "hook.sock");
+  // Per-instance directory so a dying worker's close()/unlink cannot delete
+  // the replacement's hook socket (same pool key, overlapping shutdown).
+  return path.join(os.tmpdir(), `ade-cursor-sdk-${userPart}`, name, instance, "hook.sock");
 }
 
 export function sanitizeCursorSdkWorkerBaseEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -376,10 +389,18 @@ function ensurePrivateDirectory(dir: string): void {
 
 function ensurePrivateSocketPath(socketPath: string): void {
   if (process.platform === "win32") return;
-  const rootDir = path.dirname(path.dirname(socketPath));
-  const socketDir = path.dirname(socketPath);
-  ensurePrivateDirectory(rootDir);
-  ensurePrivateDirectory(socketDir);
+  const dirs: string[] = [];
+  let dir = path.dirname(socketPath);
+  for (let i = 0; i < 6; i += 1) {
+    dirs.push(dir);
+    if (path.basename(dir).startsWith("ade-cursor-sdk-")) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  for (let i = dirs.length - 1; i >= 0; i -= 1) {
+    ensurePrivateDirectory(dirs[i]!);
+  }
 }
 
 export function resolveCursorSdkUserHome(env: NodeJS.ProcessEnv = process.env): string {
@@ -392,6 +413,7 @@ export function resolveCursorSdkUserHome(env: NodeJS.ProcessEnv = process.env): 
 export function buildCursorSdkPaths(args: {
   projectRoot: string;
   poolKey: string;
+  instanceId: string;
   stateKey?: string;
   userHomeDir?: string;
 }): { userHomeDir: string; cacheRoot: string; stateRoot: string; socketPath: string } {
@@ -401,7 +423,7 @@ export function buildCursorSdkPaths(args: {
     userHomeDir: args.userHomeDir?.trim() || resolveCursorSdkUserHome(),
     cacheRoot,
     stateRoot: path.join(cacheRoot, "state"),
-    socketPath: socketPathFor(args.poolKey),
+    socketPath: socketPathFor(args.poolKey, args.instanceId),
   };
 }
 
@@ -454,6 +476,7 @@ export async function acquireCursorSdkConnection(args: {
       return { pooled: existing.pooled, generation: existing.generation };
     }
     if (existing) disposeCursorSdkPoolEntry(args.poolKey, existing);
+    await waitForDepartingCursorSdkWorker(args.poolKey);
 
     let initOwner = false;
     let init = pendingInits.get(args.poolKey);
@@ -484,9 +507,11 @@ export async function acquireCursorSdkConnection(args: {
 
 async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSdkConnection>[0]): Promise<CursorSdkPooled> {
   const workerPath = resolveWorkerPath();
+  const instanceId = randomUUID();
   const paths = buildCursorSdkPaths({
     projectRoot: args.projectRoot,
     poolKey: args.poolKey,
+    instanceId,
     stateKey: args.stateKey,
   });
   fs.mkdirSync(paths.stateRoot, { recursive: true });
@@ -524,6 +549,16 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     error instanceof Error ? error : new Error(String(error))
   );
   let lastStderr = "";
+  let resolveExit!: () => void;
+  let exitSettled = false;
+  const settleExit = (): void => {
+    if (exitSettled) return;
+    exitSettled = true;
+    resolveExit();
+  };
+  const exitPromise = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+  });
   const rememberStderr = (text: string): void => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -641,6 +676,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       disposeTimer = setTimeout(escalate, CURSOR_SDK_DISPOSE_GRACE_MS);
       disposeTimer.unref();
     },
+    waitForExit: () => exitPromise,
   };
 
   child.on("message", (raw: unknown) => {
@@ -784,7 +820,19 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
 
   child.on("error", (error) => {
     rejectPending(normalizeIpcSendError(error));
-    cleanupPoolEntry(pooled);
+    if (child.pid == null) {
+      cleanupPoolEntry(pooled);
+      settleExit();
+      return;
+    }
+    // A live worker with a broken IPC channel is still holding state/index.db.
+    // Evict through dispose so the next acquire waits for a real `exit`.
+    for (const [poolKey, entry] of pools) {
+      if (entry.pooled === pooled) {
+        disposeCursorSdkPoolEntry(poolKey, entry);
+        return;
+      }
+    }
   });
 
   child.on("exit", (code, signal) => {
@@ -795,6 +843,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     disposeTimer = null;
     killTimer = null;
     rejectPending(workerExitedError(code, signal));
+    settleExit();
     cleanupPoolEntry(pooled);
   });
 
@@ -819,6 +868,13 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     // If init fails, the worker child is still alive — dispose it so we don't
     // leak a fork()'d process per failed connection attempt.
     pooled.dispose();
+    await Promise.race([
+      pooled.waitForExit(),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, CURSOR_SDK_REPLACE_WAIT_MS);
+        timer.unref();
+      }),
+    ]).catch(() => {});
     if (args.cleanupStateRoot) {
       cleanupCursorSdkRuntimePaths({
         cacheRoot: paths.cacheRoot,
@@ -877,6 +933,9 @@ export function cleanupCursorSdkRuntimePaths(entry: {
   const targets = new Set<string>();
   targets.add(entry.cacheRoot ?? entry.stateRoot);
   if (process.platform !== "win32" && entry.socketPath) {
+    // Per-instance socket directory (`.../<pool>/<instance>/hook.sock`). Do not
+    // walk up to the pool directory — a replacement worker may already be
+    // listening there.
     targets.add(path.dirname(entry.socketPath));
   }
   for (const target of targets) {
@@ -902,8 +961,33 @@ function clearCursorSdkIdleTimer(entry: CursorSdkPoolEntry): void {
 function disposeCursorSdkPoolEntry(poolKey: string, entry: CursorSdkPoolEntry): void {
   clearCursorSdkIdleTimer(entry);
   pools.delete(poolKey);
+  trackDepartingCursorSdkWorker(poolKey, entry.pooled.waitForExit());
   entry.pooled.dispose();
   cleanupCursorSdkRuntimePaths(entry);
+}
+
+function trackDepartingCursorSdkWorker(poolKey: string, wait: Promise<void>): void {
+  const tracked = wait.finally(() => {
+    if (departingWorkers.get(poolKey) === tracked) departingWorkers.delete(poolKey);
+  });
+  departingWorkers.set(poolKey, tracked);
+}
+
+async function waitForDepartingCursorSdkWorker(poolKey: string): Promise<void> {
+  const prior = departingWorkers.get(poolKey);
+  if (!prior) return;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const outcome = await Promise.race([
+    prior.then(() => "exited" as const),
+    new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), CURSOR_SDK_REPLACE_WAIT_MS);
+      timer.unref();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (outcome === "timeout") {
+    throw new Error("Cursor SDK worker did not exit before replacement.");
+  }
 }
 
 /**

@@ -921,6 +921,7 @@ import {
   writeSessionLinearIssueContextFile,
   createAgentChatService,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
+  CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
 import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
@@ -2435,6 +2436,22 @@ describe("buildLinearSessionDirective", () => {
 const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
 
 /**
+ * Recycle races `cancel()` against a 3s timeout. Advancing only the 90s
+ * watchdog schedules that timer; it does not flush it. Nested timers created
+ * during the watchdog callback are not included in the same advance.
+ */
+const flushCursorSdkSilenceRecycle = async (): Promise<void> => {
+  await Promise.resolve();
+  await vi.advanceTimersByTimeAsync(CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS);
+  await Promise.resolve();
+};
+
+const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
+  await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+  await flushCursorSdkSilenceRecycle();
+};
+
+/**
  * Real async setup work still needs event-loop turns while the clock is faked,
  * so pump the fake clock instead of assuming a fixed number of ticks.
  *
@@ -2450,6 +2467,8 @@ const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => 
     await vi.advanceTimersByTimeAsync(tripWatchdog
       ? CURSOR_SILENCE_WATCHDOG_TRIP_MS
       : 1);
+    if (tripWatchdog) await flushCursorSdkSilenceRecycle();
+    await Promise.resolve();
   }
   if (!ready()) throw new Error(`pumpUntil timed out waiting for: ${label}`);
 };
@@ -17025,7 +17044,7 @@ describe("createAgentChatService", () => {
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
         mockState.cursorSendPromptGate = null;
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         // Re-send, then the carried steer delivered as its own turn.
         await pumpUntil("steer delivered after recovery", () => mockState.cursorSdkSendCalls.length >= 3);
 
@@ -17440,9 +17459,9 @@ describe("createAgentChatService", () => {
         await pumpUntil("queued steer", () => events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
 
         // Settled, and settled once: the attempt body and the wrapper cover
@@ -17537,7 +17556,7 @@ describe("createAgentChatService", () => {
         await pumpUntil("carried steer queued", () => events.filter((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 1);
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
 
         // Queued during attempt 2 — lands on the rebuilt runtime, which the
@@ -17546,7 +17565,7 @@ describe("createAgentChatService", () => {
         await pumpUntil("second steer queued", () => events.filter((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 2);
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
 
         const cancelNotices = events.filter((event) =>
@@ -17603,11 +17622,11 @@ describe("createAgentChatService", () => {
 
         // Attempt 2 succeeds and delivers the carried steer.
         mockState.cursorSendPromptGate = null;
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("steer delivered", () => mockState.cursorSdkSendCalls.length >= 3);
         // The delivered steer's turn is silent in turn; its recovery re-send
         // (send 4) succeeds and leaves a different runtime on the session.
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("nested recovery", () => mockState.cursorSdkSendCalls.length >= 4);
         // Let the nested chain unwind fully, so the outer wrapper's finally
         // runs while the session is on a different runtime than it re-queued on.
@@ -17698,9 +17717,9 @@ describe("createAgentChatService", () => {
           text: "Both attempts go silent.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal failure", () => mockState.cursorSdkPoisonCalls.length >= 2);
       } finally {
         vi.useRealTimers();
@@ -17948,7 +17967,7 @@ describe("createAgentChatService", () => {
         // The retry must run against a healthy worker.
         mockState.cursorSendPromptGate = null;
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 3);
 
         expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
@@ -17995,9 +18014,9 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal error event", () => events.some((event) => event.event.type === "error"));
 
         const errorEvent = events.find((event) =>

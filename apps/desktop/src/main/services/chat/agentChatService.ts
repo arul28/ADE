@@ -713,6 +713,7 @@ import {
   type CursorSdkHookRequest,
   type CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
+import { workerPathImagesFromAttachments, type WorkerIpcImage } from "./workerAttachmentImages";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
@@ -3391,7 +3392,7 @@ const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
  */
 export const CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS = 90_000;
 /** Upper bound on the best-effort cancel issued while recycling a wedged thread. */
-const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
+export const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
 const CURSOR_SDK_SILENT_RUN_MESSAGE =
   "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.";
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
@@ -23810,14 +23811,10 @@ export function createAgentChatService(args: {
         const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
         if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
       }
-      const promptBlocks = await buildAgentPromptBlocks(prompt, args.resolvedAttachments ?? []);
-      const promptText = promptBlocks
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n\n");
-      const images = promptBlocks
-        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-        .map(({ data, mimeType }) => ({ data, mimeType }));
+      const { promptText, images } = await buildPiWorkerPrompt(
+        prompt,
+        args.resolvedAttachments ?? [],
+      );
       args.onDispatched?.();
       const accepted = runtime.sdk.sendPrompt({
         prompt: promptText,
@@ -36722,6 +36719,69 @@ export function createAgentChatService(args: {
     return blocks;
   };
 
+  const promptTextWithoutInlineImages = async (
+    promptText: string,
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Promise<string> => {
+    const promptBlocks = await buildAgentPromptBlocks(
+      promptText,
+      resolvedAttachments.filter((attachment) => attachment.type !== "image" && attachment.type !== "image-url"),
+    );
+    return promptBlocks
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text)
+      .join("\n\n");
+  };
+
+  const pathImagesFromResolved = (
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Array<{ path: string; mimeType: string; rootPath: string }> => (
+    workerPathImagesFromAttachments(
+      resolvedAttachments.flatMap((attachment) => {
+        if (attachment.type !== "image") return [];
+        const rootPath = attachment._rootPath.trim();
+        if (!rootPath) return [];
+        return [{
+          path: attachment.path,
+          resolvedPath: attachment._resolvedPath,
+          rootPath,
+        }];
+      }),
+    )
+  );
+
+  const buildCursorWorkerPrompt = async (
+    promptText: string,
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Promise<{ promptText: string; images: WorkerIpcImage[] }> => ({
+    promptText: await promptTextWithoutInlineImages(promptText, resolvedAttachments),
+    images: [
+      ...pathImagesFromResolved(resolvedAttachments),
+      ...resolvedAttachments.flatMap((attachment) => {
+        if (attachment.type !== "image-url") return [];
+        const url = attachment.url?.trim();
+        if (!url) return [];
+        return [{ url }];
+      }),
+    ],
+  });
+
+  const buildPiWorkerPrompt = async (
+    promptText: string,
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Promise<{ promptText: string; images: Array<{ path: string; mimeType: string; rootPath: string }> }> => {
+    const text = await promptTextWithoutInlineImages(promptText, resolvedAttachments);
+    const urlHints = resolvedAttachments.flatMap((attachment) => {
+      if (attachment.type !== "image-url") return [];
+      const url = attachment.url?.trim();
+      return url ? [`Image URL: ${url}`] : [];
+    });
+    return {
+      promptText: [...(text ? [text] : []), ...urlHints].join("\n\n"),
+      images: pathImagesFromResolved(resolvedAttachments),
+    };
+  };
+
   const mapChatDecisionToDroidPermission = (
     decision: AgentChatApprovalDecision | undefined,
     request: DroidSdkPermissionRequest,
@@ -37562,14 +37622,7 @@ export function createAgentChatService(args: {
         }
       }
 
-      const promptBlocks = await buildAgentPromptBlocks(composed, args.resolvedAttachments);
-      const promptText = promptBlocks
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n\n");
-      const images = promptBlocks
-        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-        .map((block) => ({ data: block.data, mimeType: block.mimeType }));
+      const { promptText, images } = await buildCursorWorkerPrompt(composed, args.resolvedAttachments);
 
       const modelParams = resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId);
       persistChatState(managed);
@@ -37583,6 +37636,7 @@ export function createAgentChatService(args: {
         approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
         fullAuto: policy.fullAuto,
         transport: "sdk",
+        imageCount: images.length,
       });
 
       if (args.onDispatched) {
@@ -37630,7 +37684,7 @@ export function createAgentChatService(args: {
       const { watch: silenceWatch, guard: silenceGuard } = armCursorSdkSilenceWatch(runtime, turnId);
       const sendPromise = runtime.sdk.sendPrompt({
         promptText,
-        images,
+        ...(images.length ? { images } : {}),
         modelSdkId: runtime.modelSdkId,
         ...(modelParams?.length ? { modelParams } : {}),
         // Set only when ADE deliberately abandoned the previous run (recovery
@@ -38325,11 +38379,7 @@ export function createAgentChatService(args: {
         cloudComposed = `${injected}\n\n${cloudComposed}`;
       }
     }
-    const promptBlocks = await buildAgentPromptBlocks(cloudComposed, args.resolvedAttachments);
-    const promptText = promptBlocks
-      .filter((block): block is { type: "text"; text: string } => block.type === "text")
-      .map((block) => block.text)
-      .join("\n\n");
+    const { promptText, images } = await buildCursorWorkerPrompt(cloudComposed, args.resolvedAttachments);
 
     const cloudLogModelParams = runtime.modelSdkId
       ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
@@ -38342,6 +38392,7 @@ export function createAgentChatService(args: {
       hasAgentId: Boolean(managed.session.cursorCloudAgentId),
       ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
       ...(cloudLogModelParams?.length ? { modelParams: cursorModelParamsForLog(cloudLogModelParams) } : {}),
+      imageCount: images.length,
     });
 
     if (args.onDispatched) {
@@ -38366,6 +38417,7 @@ export function createAgentChatService(args: {
           apiKey,
           agentId: managed.session.cursorCloudAgentId,
           promptText,
+          ...(images.length ? { images } : {}),
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "followup"),
           mode: sdkMode,
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
@@ -38411,6 +38463,7 @@ export function createAgentChatService(args: {
         const payload: CursorSdkCloudSendStreamPayload = {
           apiKey,
           promptText,
+          ...(images.length ? { images } : {}),
           repoUrl,
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "create"),
           mode: sdkMode,
@@ -40556,14 +40609,10 @@ export function createAgentChatService(args: {
           allowActiveSession: true,
         });
         if (!preparedSteer) return { steerId, queued: false };
-        const promptBlocks = await buildAgentPromptBlocks(preparedSteer.submittedText, preparedSteer.resolvedAttachments);
-        const promptText = promptBlocks
-          .filter((block): block is { type: "text"; text: string } => block.type === "text")
-          .map((block) => block.text)
-          .join("\n\n");
-        const images = promptBlocks
-          .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-          .map(({ data, mimeType }) => ({ data, mimeType }));
+        const { promptText, images } = await buildPiWorkerPrompt(
+          preparedSteer.submittedText,
+          preparedSteer.resolvedAttachments,
+        );
         await runtime.sdk.steer(promptText, images);
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
