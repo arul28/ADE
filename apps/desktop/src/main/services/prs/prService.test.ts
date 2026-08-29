@@ -45,6 +45,7 @@ vi.mock("../shared/remoteTrackingBranch", () => ({
   fetchRemoteTrackingBranch: vi.fn(),
 }));
 
+import { missingFeatureModelMessage } from "../ai/aiIntegrationService";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { githubReadFailureBackoffMs } from "./githubReadBackoff";
 import {
@@ -5873,7 +5874,7 @@ describe("prService.draftDescription", () => {
     const { service } = buildService({ aiIntegrationService });
 
     await expect(
-      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
+      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true, model: "openai/gpt-5.5" }),
     ).rejects.toThrow(/AI draft failed: the model returned an empty response\./);
   });
 
@@ -5884,8 +5885,57 @@ describe("prService.draftDescription", () => {
     const { service } = buildService({ aiIntegrationService });
 
     await expect(
-      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
+      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true, model: "openai/gpt-5.5" }),
     ).rejects.toThrow(/AI draft failed: No AI provider is available\./);
+  });
+
+  it("refuses requireAi drafts when no PR Descriptions model is configured", async () => {
+    const aiIntegrationService = makeAi();
+    const { service } = buildService({ aiIntegrationService });
+
+    await expect(
+      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
+    ).rejects.toThrow(missingFeatureModelMessage("pr_descriptions"));
+    expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
+  });
+
+  it("returns the deterministic template (no AI call) when subscription mode has no PR model", async () => {
+    const aiIntegrationService = makeAi();
+    const { service } = buildService({
+      aiIntegrationService,
+      projectConfigService: {
+        get: () => ({ effective: { providerMode: "subscription", ai: {} } }),
+      },
+    });
+
+    const draft = await (service as any).draftDescription({ laneId: LANE_ID });
+
+    expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
+    expect(draft.body).toContain("## Summary");
+  });
+
+  it("uses the configured PR Descriptions model when the caller omits model", async () => {
+    const aiIntegrationService = makeAi(async () => ({ text: "Drafted from settings." }));
+    const { service } = buildService({
+      aiIntegrationService,
+      projectConfigService: {
+        get: () => ({
+          effective: {
+            providerMode: "subscription",
+            ai: { featureModelOverrides: { pr_descriptions: "openai/gpt-5.5" } },
+          },
+        }),
+      },
+    });
+
+    const draft = await (service as any).draftDescription({ laneId: LANE_ID });
+
+    expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledTimes(1);
+    expect(aiIntegrationService.draftPrDescription.mock.calls[0][0]).toMatchObject({
+      laneId: LANE_ID,
+      model: "openai/gpt-5.5",
+    });
+    expect(draft.body).toContain("Drafted from settings.");
   });
 });
 

@@ -931,6 +931,7 @@ import {
   writeSessionLinearIssueContextFile,
   createAgentChatService,
   CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
+  CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
 } from "./agentChatService";
 import { createChatRuntimeBudget } from "./chatRuntimeBudget";
 import { readThreadPointerLedger } from "./threadPointerLedger";
@@ -1672,7 +1673,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   const projectConfigService = createMockProjectConfigService();
   const aiIntegrationService = {
     summarizeTerminal: vi.fn(async () => ({
-      text: "Generated session intelligence",
+      text: "",
       structuredOutput: null,
       provider: "claude",
       model: "anthropic/claude-haiku-4-5",
@@ -2449,6 +2450,22 @@ describe("buildLinearSessionDirective", () => {
 const CURSOR_SILENCE_WATCHDOG_TRIP_MS = CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS + 1;
 
 /**
+ * Recycle races `cancel()` against a 3s timeout. Advancing only the 90s
+ * watchdog schedules that timer; it does not flush it. Nested timers created
+ * during the watchdog callback are not included in the same advance.
+ */
+const flushCursorSdkSilenceRecycle = async (): Promise<void> => {
+  await Promise.resolve();
+  await vi.advanceTimersByTimeAsync(CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS);
+  await Promise.resolve();
+};
+
+const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
+  await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+  await flushCursorSdkSilenceRecycle();
+};
+
+/**
  * Real async setup work still needs event-loop turns while the clock is faked,
  * so pump the fake clock instead of assuming a fixed number of ticks.
  *
@@ -2464,6 +2481,8 @@ const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => 
     await vi.advanceTimersByTimeAsync(tripWatchdog
       ? CURSOR_SILENCE_WATCHDOG_TRIP_MS
       : 1);
+    if (tripWatchdog) await flushCursorSdkSilenceRecycle();
+    await Promise.resolve();
   }
   if (!ready()) throw new Error(`pumpUntil timed out waiting for: ${label}`);
 };
@@ -5038,7 +5057,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("codex");
       expect(result.session.threadId).toBe("forked-thread-1");
       expect(mockState.sessions.get(result.session.id)?.goal ?? null).toBeNull();
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
       const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
       expect(handoffPayloads).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -5206,7 +5227,9 @@ describe("createAgentChatService", () => {
       expect(mockState.openCodeForkCalls.length).toBeGreaterThanOrEqual(1);
       expect(persisted.providerSessionId).toEqual(expect.stringMatching(/-fork$/));
       expect(promptCountAfterFork).toBe(promptCountBeforeFork);
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Droid chat and resumes the forked session id", async () => {
@@ -5237,7 +5260,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("droid");
       expect(sourcePooled.request).toHaveBeenCalledWith("fork_session");
       expect(persisted.droidSdkSessionId).toEqual(expect.stringMatching(/^droid-forked-/));
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Cursor chat onto a fresh agent replaying the full source transcript", async () => {
@@ -5281,7 +5306,9 @@ describe("createAgentChatService", () => {
       expect(persisted.pendingTranscriptReplay).toContain("Investigate the flaky migration test.");
       expect(result.replayFork).toBeUndefined();
       // No brief was generated — fork carries the conversation, not a summary.
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Cursor chat onto another provider by replaying the full transcript", async () => {
@@ -5312,7 +5339,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("codex");
       expect(persisted.pendingTranscriptReplay).toContain("Keep the banner aligned with the composer.");
       expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Claude chat onto a Codex model with a full transcript replay", async () => {
@@ -5342,7 +5371,9 @@ describe("createAgentChatService", () => {
       expect(result.replayFork).toBeUndefined();
       expect(persisted.pendingTranscriptReplay).toContain("Replay this turn across providers.");
       expect(persisted.pendingTranscriptReplay).not.toMatch(/This is a brief/i);
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("gives a forked Cursor chat's first send the source conversation as context", async () => {
@@ -5933,7 +5964,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("claude");
       expect(result.session.interactionMode).toBe("plan");
       expect(result.session.permissionMode).toBe("plan");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
       await vi.waitFor(() => {
         expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith(
           sourceSdkSessionId,
@@ -14174,6 +14207,22 @@ describe("createAgentChatService", () => {
 
       const { service, sessionService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        projectConfigService: {
+          get: vi.fn(() => ({
+            effective: {
+              ai: {
+                permissions: {
+                  cli: { mode: "edit" },
+                  inProcess: { mode: "edit" },
+                },
+                chat: {},
+                sessionIntelligence: { titles: { enabled: false } },
+              },
+            },
+          })),
+          getAll: vi.fn(() => ({})),
+          set: vi.fn(),
+        } as any,
       });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       if (args.manuallyName) {
@@ -15629,7 +15678,9 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "Use runtime title." }, { awaitDispatch: true });
 
       await waitForSessionTitle(sessionService, session.id, "OpenCode Native Title");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
       expect(vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ title: null }),
       );
@@ -17162,7 +17213,7 @@ describe("createAgentChatService", () => {
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
         mockState.cursorSendPromptGate = null;
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         // Re-send, then the carried steer delivered as its own turn.
         await pumpUntil("steer delivered after recovery", () => mockState.cursorSdkSendCalls.length >= 3);
 
@@ -17577,9 +17628,9 @@ describe("createAgentChatService", () => {
         await pumpUntil("queued steer", () => events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
 
         // Settled, and settled once: the attempt body and the wrapper cover
@@ -17674,7 +17725,7 @@ describe("createAgentChatService", () => {
         await pumpUntil("carried steer queued", () => events.filter((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 1);
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
 
         // Queued during attempt 2 — lands on the rebuilt runtime, which the
@@ -17683,7 +17734,7 @@ describe("createAgentChatService", () => {
         await pumpUntil("second steer queued", () => events.filter((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 2);
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
 
         const cancelNotices = events.filter((event) =>
@@ -17740,11 +17791,11 @@ describe("createAgentChatService", () => {
 
         // Attempt 2 succeeds and delivers the carried steer.
         mockState.cursorSendPromptGate = null;
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("steer delivered", () => mockState.cursorSdkSendCalls.length >= 3);
         // The delivered steer's turn is silent in turn; its recovery re-send
         // (send 4) succeeds and leaves a different runtime on the session.
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("nested recovery", () => mockState.cursorSdkSendCalls.length >= 4);
         // Let the nested chain unwind fully, so the outer wrapper's finally
         // runs while the session is on a different runtime than it re-queued on.
@@ -17835,9 +17886,9 @@ describe("createAgentChatService", () => {
           text: "Both attempts go silent.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal failure", () => mockState.cursorSdkPoisonCalls.length >= 2);
       } finally {
         vi.useRealTimers();
@@ -18085,7 +18136,7 @@ describe("createAgentChatService", () => {
         // The retry must run against a healthy worker.
         mockState.cursorSendPromptGate = null;
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 3);
 
         expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
@@ -18132,9 +18183,9 @@ describe("createAgentChatService", () => {
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
 
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await tripCursorSdkSilenceWatchAndRecycle();
         await pumpUntil("terminal error event", () => events.some((event) => event.event.type === "error"));
 
         const errorEvent = events.find((event) =>
@@ -19175,7 +19226,25 @@ describe("createAgentChatService", () => {
         sdkSessionId: "sdk-legacy-owner-unavailable",
         responseText: "Done.",
       });
-      const { service, sessionService, logger } = createService({ db: scheduledWork.db });
+      const { service, sessionService, logger } = createService({
+        db: scheduledWork.db,
+        projectConfigService: {
+          get: vi.fn(() => ({
+            effective: {
+              ai: {
+                permissions: {
+                  cli: { mode: "edit" },
+                  inProcess: { mode: "edit" },
+                },
+                chat: {},
+                sessionIntelligence: { titles: { enabled: false } },
+              },
+            },
+          })),
+          getAll: vi.fn(() => ({})),
+          set: vi.fn(),
+        } as any,
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -19187,10 +19256,15 @@ describe("createAgentChatService", () => {
       });
       await service.dispose({ sessionId: session.id });
       const sessionRow = sessionService.get(session.id);
-      sessionService.get
-        .mockImplementationOnce(() => sessionRow)
-        .mockImplementationOnce(() => null)
-        .mockImplementation((sessionId: string) => sessionId === session.id ? sessionRow : null);
+      // Probe once for the still-present chat, then fail later lookups so the
+      // wake cannot proceed. Call-count once() mocks are consumed by unrelated
+      // session-intelligence reads after a turn.
+      let cancelLookups = 0;
+      sessionService.get.mockImplementation((id: string) => {
+        if (id !== session.id) return null;
+        cancelLookups += 1;
+        return cancelLookups === 1 ? sessionRow : null;
+      });
 
       await expect(service.cancelScheduledWork({
         sessionId: session.id,
@@ -43258,6 +43332,49 @@ it("fails a cleanly ended OpenCode event stream and clears active child sessions
     expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
   });
 
+  it("sends Droid screenshots as attachment paths over worker IPC", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const imagePath = path.join(tmpRoot, "droid-shot.png");
+    fs.writeFileSync(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "droid",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
+    });
+
+    await service.sendMessage({
+      sessionId: session.id,
+      text: "Look at this screenshot.",
+      attachments: [{ path: imagePath, type: "image" }],
+    }, { awaitDispatch: true });
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "done" }>;
+      } => event.event.type === "done" && event.sessionId === session.id,
+    );
+
+    const sentImages = mockState.droidPromptCalls[0]?.images as Array<{
+      path?: string;
+      data?: string;
+      mimeType?: string;
+      rootPath?: string;
+    }> | undefined;
+    expect(sentImages).toHaveLength(1);
+    expect(sentImages?.[0]?.data).toBeUndefined();
+    expect(sentImages?.[0]?.mimeType).toBe("image/png");
+    expect(sentImages?.[0]?.rootPath).toBe(tmpRoot);
+    expect(path.basename(sentImages?.[0]?.path ?? "")).toBe("droid-shot.png");
+    expect(String(mockState.droidPromptCalls[0]?.promptText ?? "")).toContain("Look at this screenshot.");
+    expect(String(mockState.droidPromptCalls[0]?.promptText ?? "")).not.toMatch(/iVBORw0KGgo/u);
+  });
+
   it("uses Droid spec mode for ADE plan mode", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
@@ -43834,7 +43951,7 @@ describe("suggestLaneNameFromPrompt", () => {
 
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix null model clearing for background jobs",
-      modelId: "",
+      modelId: "anthropic/claude-sonnet-5",
       laneId: "lane-1",
     });
 
@@ -43842,8 +43959,11 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(expect.objectContaining({
       model: "openai/gpt-5.4-mini",
     }));
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(expect.objectContaining({
       model: "anthropic/claude-haiku-4-5",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "anthropic/claude-sonnet-5",
     }));
   });
 
@@ -44045,6 +44165,7 @@ describe("suggestLaneNameFromPrompt", () => {
 
   it("retries the next model when structured fields are unusable, then falls back deterministically", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
     const { service, aiIntegrationService } = createSuggestService();
@@ -44064,9 +44185,44 @@ describe("suggestLaneNameFromPrompt", () => {
       branchFragment: "claude-auth-login-button-hangs",
       source: "deterministic",
     });
-    // An unusable answer no longer ends the chain: the remaining candidates
-    // still get a turn before naming settles for the deterministic slug.
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(3);
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "openai/gpt-5.4",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the launched chat model when the title setting answers unusably", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService({ titleModelId: "openai/gpt-5.4-mini" });
+    vi.mocked(aiIntegrationService.summarizeTerminal)
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ laneTitle: "Fix", branchFragment: "refs/heads/NOPE" }),
+      } as any)
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ laneTitle: "Claude OAuth Login", branchFragment: "claude-oauth-login" }),
+      } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "The Claude auth login button hangs after OAuth redirects.",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(result).toMatchObject({
+      laneTitle: "Claude OAuth Login",
+      branchFragment: "claude-oauth-login",
+      source: "ai",
+    });
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "openai/gpt-5.4-mini",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: "openai/gpt-5.4",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(2);
   });
 
   it("uses the configured naming model before the launched model", async () => {
@@ -44090,7 +44246,7 @@ describe("suggestLaneNameFromPrompt", () => {
     }));
   });
 
-  it("uses the default title model before the launched chat model", async () => {
+  it("uses the launched chat model when no title model is configured", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
@@ -44109,7 +44265,7 @@ describe("suggestLaneNameFromPrompt", () => {
     });
 
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "anthropic/claude-haiku-4-5",
+      model: "openai/gpt-5.4",
     }));
   });
 
@@ -44903,8 +45059,11 @@ describe("orchestrator-lead provider-native tool denial", () => {
       expect(mockState.droidAcquireCalls.at(-1)?.settings).toMatchObject({
         disabledToolCategories: ["edit", "execute"],
       });
-      expect(mockState.droidPromptCalls.at(-1)?.settings).toMatchObject({
-        disabledToolCategories: ["edit", "execute"],
+      // awaitDispatch returns at onDispatched, which is before sendPrompt.
+      await vi.waitFor(() => {
+        expect(mockState.droidPromptCalls.at(-1)?.settings).toMatchObject({
+          disabledToolCategories: ["edit", "execute"],
+        });
       });
 
       const worker = await service.createSession({
@@ -44915,8 +45074,10 @@ describe("orchestrator-lead provider-native tool denial", () => {
         ...workerArgs(created),
       });
       await service.sendMessage({ sessionId: worker.id, text: "Do the work." }, { awaitDispatch: true });
-      expect(mockState.droidPromptCalls.at(-1)?.settings)
-        .not.toHaveProperty("disabledToolCategories");
+      await vi.waitFor(() => {
+        expect(mockState.droidPromptCalls.at(-1)?.settings)
+          .not.toHaveProperty("disabledToolCategories");
+      });
     } finally {
       await orchestrationService.dispose();
     }

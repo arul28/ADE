@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.68] - 2026-08-29
+
+### Agent reliability
+
+- Background helpers use the Settings model, then this session's model. If neither is usable, ADE skips the helper or chooses a deterministic fallback instead of silently picking Haiku or the first available model. Session-model aliases remain eligible for naming (#1178).
+- Cursor worker recycling waits for the dying process and fails closed on timeout. A replacement worker no longer shares a poisoned socket or policy state with its predecessor (#1177).
+- Cursor, Pi, and Droid send screenshot attachment paths over worker IPC. The worker reopens each file through the attachment sandbox instead of copying screenshot base64 through the parent process (#1177, #1179).
+
+### Hosted web
+
+- Browser zoom fills one viewport. CSS zoom now sizes the body to match the displayed viewport, keeps upward menus on their anchors, and preserves a usable Work-tab hit target at higher zoom levels (#1176).
+- Hosted-web adapters tolerate test and partial-window environments. Display-preference setup no longer takes the adapter down when optional event-target methods are absent (#1176).
+
 ## [1.2.67] - 2026-08-28
 
 ### Compact from the meter
@@ -1806,7 +1819,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.67...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.68...HEAD
+[1.2.68]: https://github.com/arul28/ADE/compare/v1.2.67...v1.2.68
 [1.2.67]: https://github.com/arul28/ADE/compare/v1.2.66...v1.2.67
 [1.2.66]: https://github.com/arul28/ADE/compare/v1.2.65...v1.2.66
 [1.2.65]: https://github.com/arul28/ADE/compare/v1.2.64...v1.2.65

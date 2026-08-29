@@ -25,7 +25,6 @@ import type {
 import {
   decodeOpenCodeRegistryId,
   replaceDynamicPiModelDescriptors,
-  getDefaultModelDescriptor,
   getModelById,
   getAvailableModels,
   getLocalProviderDefaultEndpoint,
@@ -216,11 +215,6 @@ export type ExecuteAiTaskResult = {
   durationMs: number;
 };
 
-type RuntimeTaskDefaults = {
-  modelId: string;
-  timeoutMs: number;
-};
-
 function readCursorSdkAgentName(agent: object): string {
   if (!("name" in agent)) return "";
   const name: unknown = (agent as { name: unknown }).name;
@@ -237,67 +231,49 @@ const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
   initial_context: true,
 };
 
-const DEFAULT_CLAUDE_TASK_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
-const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.6-sol";
+const SESSION_INTELLIGENCE_TASK_TYPES: ReadonlySet<AiTaskType> = new Set([
+  "session_title",
+  "session_summary",
+  "handoff_summary",
+  "continuity_summary",
+]);
 
-const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
-  planning: {
-    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
-    timeoutMs: 45_000
-  },
-  implementation: {
-    modelId: DEFAULT_CODEX_TASK_MODEL_ID,
-    timeoutMs: 120_000
-  },
-  review: {
-    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
-    timeoutMs: 30_000
-  },
-  conflict_resolution: {
-    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
-    timeoutMs: 60_000
-  },
-  commit_message: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 20_000
-  },
-  narrative: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 45_000
-  },
-  pr_description: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 30_000
-  },
-  terminal_summary: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 20_000
-  },
-  session_title: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 20_000
-  },
-  session_summary: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 45_000
-  },
-  handoff_summary: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 45_000
-  },
-  continuity_summary: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 45_000
-  },
-  context_compaction: {
-    modelId: "anthropic/claude-haiku-4-5",
-    timeoutMs: 120_000
-  },
-  initial_context: {
-    modelId: DEFAULT_CLAUDE_TASK_MODEL_ID,
-    timeoutMs: 120_000
+/** These one-shots must receive a caller-chosen model. They never read feature pickers. */
+const EXPLICIT_MODEL_ONLY_TASK_TYPES: ReadonlySet<AiTaskType> = new Set([
+  ...SESSION_INTELLIGENCE_TASK_TYPES,
+  "context_compaction",
+]);
+
+export function readConfiguredFeatureModel(aiConfig: unknown, feature: AiFeatureKey): string | null {
+  if (!isRecord(aiConfig)) return null;
+  const overrides = isRecord(aiConfig.featureModelOverrides) ? aiConfig.featureModelOverrides : {};
+  const raw = overrides[feature];
+  const modelId = typeof raw === "string" ? raw.trim() : "";
+  return modelId.length ? modelId : null;
+}
+
+export function missingFeatureModelMessage(feature: AiFeatureKey): string {
+  switch (feature) {
+    case "commit_messages":
+      return "Choose a Commit Messages model in Settings or type a commit message manually.";
+    case "pr_descriptions":
+      return "Choose a PR Descriptions model in Settings or write the description manually.";
+    case "terminal_summaries":
+      return "Choose a Summaries model in Settings.";
+    case "conflict_proposals":
+      return "Choose a Conflict Proposals model in Settings.";
+    case "narratives":
+      return "Choose a Narratives model in Settings.";
+    case "orchestrator":
+      return "Choose an Orchestrator model in Settings.";
+    case "initial_context":
+      return "Choose an Initial Context model in Settings.";
+    default: {
+      const _exhaustive: never = feature;
+      return _exhaustive;
+    }
   }
-};
+}
 
 const CODEX_FALLBACK_MODELS: AgentModelDescriptor[] = listModelDescriptorsForProvider("codex")
   .map((descriptor) => ({ id: descriptor.id, label: descriptor.displayName }));
@@ -1513,11 +1489,15 @@ export function createAiIntegrationService(args: {
     );
   };
 
-  const resolveModelForTask = async (
+  const getConfiguredFeatureModel = (feature: AiFeatureKey): string | null => {
+    return readConfiguredFeatureModel(extractAiConfig(projectConfigService.get()), feature);
+  };
+
+  const resolveModelForTask = (
     taskType: AiTaskType,
     modelIdHint?: string,
-    authHint?: DetectedAuth[],
-  ): Promise<string> => {
+    feature?: AiFeatureKey,
+  ): string => {
     const snapshot = projectConfigService.get();
     const aiConfig = extractAiConfig(snapshot);
     const taskRouting = isRecord(aiConfig.taskRouting) ? aiConfig.taskRouting : {};
@@ -1525,37 +1505,26 @@ export function createAiIntegrationService(args: {
     const overrideModelId = toStringOrNull(taskOverride.model);
     const requestedModelHint = modelIdHint ?? overrideModelId ?? undefined;
 
-    // If explicit model ID provided and valid, use it
     if (requestedModelHint) {
       const exact = getModelById(requestedModelHint);
       if (exact) return exact.id;
-    }
-
-    // Resolve from alias (e.g. "sonnet" -> "anthropic/claude-sonnet-5")
-    if (requestedModelHint) {
       const resolved = resolveModelAlias(requestedModelHint);
       if (resolved) return resolved.id;
+      throw new Error(`Unknown model '${requestedModelHint}'.`);
     }
 
-    // Check task defaults and map provider family to model ID.
-    const defaults = TASK_DEFAULTS[taskType];
-    const auth = authHint ?? await detectAuth();
-    const available = getAvailableModels(auth);
-
-    if (!available.length) {
-      throw new Error("No AI providers detected. Install Claude Code CLI, Codex CLI, or configure an API key.");
+    if (SESSION_INTELLIGENCE_TASK_TYPES.has(taskType)) {
+      throw new Error(`Session intelligence task '${taskType}' requires an explicit model.`);
+    }
+    if (taskType === "context_compaction") {
+      throw new Error("Context compaction requires an explicit model.");
     }
 
-    const preferredDescriptor = getModelById(defaults.modelId) ?? resolveModelAlias(defaults.modelId);
-    if (preferredDescriptor) {
-      const exactMatch = available.find((candidate) => candidate.id === preferredDescriptor.id || candidate.shortId === preferredDescriptor.shortId);
-      if (exactMatch) return exactMatch.id;
-      const familyMatch = available.find((candidate) => candidate.family === preferredDescriptor.family);
-      if (familyMatch) return familyMatch.id;
-    }
-
-    // Fall back to first available
-    return available[0].id;
+    throw new Error(
+      feature
+        ? missingFeatureModelMessage(feature)
+        : "Choose a model in Settings before running this AI task.",
+    );
   };
 
   const executeProviderTaskPath = async (
@@ -1636,7 +1605,10 @@ export function createAiIntegrationService(args: {
     }
 
     checkBudget(args.feature);
-    const requestedModel = toStringOrNull(args.model);
+    const featureModel = EXPLICIT_MODEL_ONLY_TASK_TYPES.has(args.taskType)
+      ? null
+      : getConfiguredFeatureModel(args.feature);
+    const requestedModel = toStringOrNull(args.model) ?? featureModel;
     const explicitDescriptor = requestedModel
       ? (getModelById(requestedModel) ?? resolveModelAlias(requestedModel))
       : null;
@@ -1644,7 +1616,8 @@ export function createAiIntegrationService(args: {
       throw new Error(`Unknown model '${requestedModel}'.`);
     }
 
-    const resolvedModelId = explicitDescriptor?.id ?? await resolveModelForTask(args.taskType, requestedModel ?? undefined, auth);
+    const resolvedModelId = explicitDescriptor?.id
+      ?? resolveModelForTask(args.taskType, requestedModel ?? undefined, args.feature);
     logger.info("ai.task.begin", {
       requestId,
       taskType: args.taskType,
@@ -2093,6 +2066,7 @@ export function createAiIntegrationService(args: {
 
     getAvailabilityAsync,
     resolveModelForTask,
+    getConfiguredFeatureModel,
     invalidateProviderReadinessCaches,
 
     // Backward-compatible convenience methods used by migrated services.

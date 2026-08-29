@@ -8,6 +8,7 @@ import {
   buildCursorSdkPaths,
   buildCursorSdkWorkerEnv,
   cleanupCursorSdkRuntimePaths,
+  CURSOR_SDK_REPLACE_WAIT_MS,
   isCursorSdkPooledAlive,
   poisonCursorSdkConnection,
   releaseCursorSdkConnection,
@@ -37,11 +38,60 @@ vi.mock("node:child_process", () => ({
 class FakeSdkChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
+  pid = 4242;
   exitCode: number | null = null;
   killed = false;
+  connected = true;
   disposeCount = 0;
+  sent: unknown[] = [];
+  private exited = false;
 
-  send(message: { type?: string; requestId?: string }): boolean {
+  send(message: { type?: string; requestId?: string; payload?: unknown }): boolean {
+    this.sent.push(message);
+    if (message.type === "init" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: true,
+          result: { agentId: "agent-1" },
+        });
+      });
+    }
+    if (message.type === "send" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: true,
+          result: {},
+        });
+      });
+    }
+    if (message.type === "dispose") {
+      this.disposeCount += 1;
+      queueMicrotask(() => this.finishExit(0, null));
+    }
+    return true;
+  }
+
+  finishExit(code: number | null, signal: NodeJS.Signals | null): void {
+    if (this.exited) return;
+    this.exited = true;
+    this.exitCode = code;
+    this.connected = false;
+    this.emit("exit", code, signal);
+  }
+
+  kill(signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    this.finishExit(null, signal ?? "SIGTERM");
+    return true;
+  }
+}
+
+class DelayedExitChild extends FakeSdkChild {
+  override send(message: { type?: string; requestId?: string }): boolean {
     if (message.type === "init" && message.requestId) {
       queueMicrotask(() => {
         this.emit("message", {
@@ -57,10 +107,12 @@ class FakeSdkChild extends EventEmitter {
     }
     return true;
   }
+}
 
-  kill(signal?: NodeJS.Signals): boolean {
+/** Dispose/kill never reaps the pid — the replace wait must not fork over it. */
+class StuckExitChild extends DelayedExitChild {
+  override kill(): boolean {
     this.killed = true;
-    this.emit("exit", null, signal ?? "SIGTERM");
     return true;
   }
 }
@@ -168,6 +220,11 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function forkedSocketPath(callIndex: number): string | undefined {
+  const options = forkMock.mock.calls[callIndex]?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+  return options?.env?.ADE_CURSOR_SDK_SOCKET;
+}
+
 describe("Cursor SDK pool paths", () => {
   it("uses the real user home while keeping ADE runtime state under the project cache", () => {
     const projectRoot = path.join(os.tmpdir(), "ade-project");
@@ -175,6 +232,7 @@ describe("Cursor SDK pool paths", () => {
     const paths = buildCursorSdkPaths({
       projectRoot,
       poolKey: "lane:/repo:session",
+      instanceId: "worker-a",
       userHomeDir,
     });
 
@@ -186,6 +244,26 @@ describe("Cursor SDK pool paths", () => {
     } else {
       expect(paths.socketPath).toContain(`ade-cursor-sdk-${process.getuid?.() ?? ""}`);
       expect(path.basename(paths.socketPath)).toBe("hook.sock");
+    }
+  });
+
+  it("gives each worker instance its own hook socket while sharing the pool state root", () => {
+    const projectRoot = path.join(os.tmpdir(), "ade-project");
+    const args = {
+      projectRoot,
+      poolKey: "lane:/repo:session",
+      userHomeDir: path.join(os.tmpdir(), "real-home"),
+    };
+    const first = buildCursorSdkPaths({ ...args, instanceId: "worker-a" });
+    const second = buildCursorSdkPaths({ ...args, instanceId: "worker-b" });
+    expect(first.socketPath).not.toBe(second.socketPath);
+    expect(first.stateRoot).toBe(second.stateRoot);
+    if (process.platform === "win32") {
+      expect(first.socketPath.startsWith("\\\\.\\pipe\\ade-cursor-sdk-")).toBe(true);
+      expect(second.socketPath.startsWith("\\\\.\\pipe\\ade-cursor-sdk-")).toBe(true);
+    } else {
+      expect(path.dirname(first.socketPath)).not.toBe(path.dirname(second.socketPath));
+      expect(path.basename(first.socketPath)).toBe("hook.sock");
     }
   });
 
@@ -236,17 +314,73 @@ describe("Cursor SDK pool paths", () => {
     const first = buildCursorSdkPaths({
       projectRoot,
       poolKey: "session-1:composer-2.5:full-auto",
+      instanceId: "shared",
       stateKey: "session-1:lane-1:state",
     });
     const second = buildCursorSdkPaths({
       projectRoot,
       poolKey: "session-1:claude-sonnet-5:edit",
+      instanceId: "shared",
       stateKey: "session-1:lane-1:state",
     });
 
     expect(second.stateRoot).toBe(first.stateRoot);
     expect(second.cacheRoot).toBe(first.cacheRoot);
     expect(second.socketPath).not.toBe(first.socketPath);
+  });
+
+  it("gives each worker instance its own hook socket while keeping durable state stable", () => {
+    const projectRoot = path.join(os.tmpdir(), "ade-project");
+    const shared = {
+      projectRoot,
+      poolKey: "session-1:composer-2.5:full-auto",
+      stateKey: "session-1:lane-1:state",
+    };
+    const first = buildCursorSdkPaths({ ...shared, instanceId: "worker-a" });
+    const second = buildCursorSdkPaths({ ...shared, instanceId: "worker-b" });
+
+    expect(second.stateRoot).toBe(first.stateRoot);
+    expect(second.cacheRoot).toBe(first.cacheRoot);
+    expect(second.socketPath).not.toBe(first.socketPath);
+    if (process.platform !== "win32") {
+      expect(path.basename(first.socketPath)).toBe("hook.sock");
+      expect(path.basename(second.socketPath)).toBe("hook.sock");
+      expect(path.dirname(second.socketPath)).not.toBe(path.dirname(first.socketPath));
+    }
+  });
+
+  it("refuses an empty worker instance id", () => {
+    expect(() => buildCursorSdkPaths({
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      poolKey: "session-1:composer-2.5:full-auto",
+      instanceId: "  ",
+    })).toThrow(/instance id is required/);
+  });
+
+  it.skipIf(process.platform === "win32")("does not delete a sibling worker's hook socket directory during cleanup", () => {
+    const cacheRoot = makeTempDir("ade-cursor-cleanup-socket-");
+    const stateRoot = path.join(cacheRoot, "state");
+    fs.mkdirSync(stateRoot, { recursive: true });
+    const poolRoot = makeTempDir("ade-cursor-sdk-pool-");
+    const firstInstance = path.join(poolRoot, "worker-a");
+    const secondInstance = path.join(poolRoot, "worker-b");
+    fs.mkdirSync(firstInstance, { recursive: true });
+    fs.mkdirSync(secondInstance, { recursive: true });
+    const firstSock = path.join(firstInstance, "hook.sock");
+    const secondSock = path.join(secondInstance, "hook.sock");
+    fs.writeFileSync(firstSock, "");
+    fs.writeFileSync(secondSock, "");
+
+    cleanupCursorSdkRuntimePaths({
+      cacheRoot,
+      stateRoot,
+      socketPath: firstSock,
+      cleanupStateRoot: true,
+    });
+
+    expect(fs.existsSync(firstInstance)).toBe(false);
+    expect(fs.existsSync(secondSock)).toBe(true);
+    expect(fs.existsSync(poolRoot)).toBe(true);
   });
 
   it("builds a worker environment with real HOME parity, the channel identity, and no ADE brain ownership metadata", () => {
@@ -564,8 +698,160 @@ describe("Cursor SDK pool paths", () => {
     const third = await acquireCursorSdkConnection(args);
     expect(third.pooled).not.toBe(first.pooled);
     expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(forkedSocketPath(1)).toBeTruthy();
+    expect(forkedSocketPath(1)).not.toBe(forkedSocketPath(0));
 
     releaseCursorSdkConnection(poolKey, third.generation);
+  });
+
+  it("does not fork a replacement until the poisoned worker has exited", async () => {
+    const firstChild = new DelayedExitChild();
+    const nextChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild);
+    const poolKey = `test-replace-wait:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
+    expect(firstChild.disposeCount).toBe(1);
+
+    forkMock.mockReturnValue(nextChild);
+    let replaced = false;
+    const pending = acquireCursorSdkConnection(args).then((result) => {
+      replaced = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(replaced).toBe(false);
+
+    firstChild.finishExit(0, null);
+    const second = await pending;
+    expect(replaced).toBe(true);
+    expect(second.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+    expect(forkedSocketPath(1)).not.toBe(forkedSocketPath(0));
+
+    releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
+  it("fails acquire if the poisoned worker outlives the replace wait", async () => {
+    const firstChild = new StuckExitChild();
+    const nextChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild);
+    const poolKey = `test-replace-timeout:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    vi.useFakeTimers();
+    try {
+      expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
+      forkMock.mockReturnValue(nextChild);
+      const pending = expect(acquireCursorSdkConnection(args)).rejects.toThrow(
+        /did not exit before replacement/,
+      );
+      await vi.advanceTimersByTimeAsync(CURSOR_SDK_REPLACE_WAIT_MS);
+      await pending;
+      expect(forkMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    firstChild.finishExit(0, null);
+    const second = await acquireCursorSdkConnection(args);
+    expect(second.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+
+    releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
+  it("does not treat a dispatched kill plus IPC error as the worker exiting", async () => {
+    const firstChild = new DelayedExitChild();
+    const nextChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild);
+    const poolKey = `test-replace-epipe:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
+    firstChild.killed = true;
+    firstChild.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+
+    forkMock.mockReturnValue(nextChild);
+    let replaced = false;
+    const pending = acquireCursorSdkConnection(args).then((result) => {
+      replaced = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(replaced).toBe(false);
+
+    firstChild.finishExit(null, "SIGTERM");
+    const second = await pending;
+    expect(replaced).toBe(true);
+    expect(second.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+
+    releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
+  it("waits for exit when a live worker's IPC channel errors before dispose", async () => {
+    const firstChild = new DelayedExitChild();
+    const nextChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild);
+    const poolKey = `test-live-epipe:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    firstChild.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+
+    forkMock.mockReturnValue(nextChild);
+    let replaced = false;
+    const pending = acquireCursorSdkConnection(args).then((result) => {
+      replaced = true;
+      return result;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(replaced).toBe(false);
+    expect(firstChild.disposeCount).toBe(1);
+
+    firstChild.finishExit(null, "SIGTERM");
+    const second = await pending;
+    expect(replaced).toBe(true);
+    expect(second.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
+
+    releaseCursorSdkConnection(poolKey, second.generation);
   });
 
   it("reuses a oneshot worker during idle instead of colliding on cleanup", async () => {
@@ -622,6 +908,42 @@ describe("Cursor SDK pool paths", () => {
         requestId: "req-cursor-1",
       },
     });
+
+    releaseCursorSdkConnection(poolKey, acquired.generation);
+  });
+
+  it("sends screenshot paths over worker IPC instead of inline bytes", async () => {
+    const child = new FakeSdkChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-image-paths:${Date.now()}:${Math.random()}`;
+    const acquired = await acquireCursorSdkConnection({
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    });
+
+    await acquired.pooled.sendPrompt({
+      promptText: "compare these screens",
+      images: [
+        { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
+        { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
+      ],
+    });
+
+    const sendReq = child.sent.find((message) => (
+      message
+      && typeof message === "object"
+      && "type" in message
+      && message.type === "send"
+    )) as { payload?: { images?: Array<{ path?: string; data?: string }> } } | undefined;
+    expect(sendReq?.payload?.images).toEqual([
+      { path: "/repo/.ade/attachments/a.png", mimeType: "image/png", rootPath: "/repo" },
+      { path: "/repo/.ade/attachments/b.png", mimeType: "image/png", rootPath: "/repo" },
+    ]);
+    expect(sendReq?.payload?.images?.some((image) => image.data)).toBeFalsy();
 
     releaseCursorSdkConnection(poolKey, acquired.generation);
   });

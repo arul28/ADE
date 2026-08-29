@@ -148,7 +148,7 @@ import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionSer
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { missingFeatureModelMessage, readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
@@ -6791,7 +6791,7 @@ export function createPrService({
   };
 
   const draftDescription = async (args: DraftPrDescriptionArgs): Promise<{ title: string; body: string }> => {
-    const { laneId, model, reasoningEffort } = args;
+    const { laneId, reasoningEffort } = args;
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
@@ -6832,6 +6832,11 @@ export function createPrService({
     };
 
     const providerMode = projectConfigService.get().effective.providerMode ?? "guest";
+    const configuredModel = readConfiguredFeatureModel(
+      projectConfigService.get().effective.ai,
+      "pr_descriptions",
+    );
+    const model = (args.model?.trim() || configuredModel) || undefined;
     const defaultTitle = lane.linearIssue
       ? buildLinearPrTitle(lane.linearIssue)
       : lane.name.replace(/[-_/]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim() || lane.name;
@@ -6862,7 +6867,11 @@ export function createPrService({
       );
     }
 
-    if (aiIntegrationService && (providerMode !== "guest" || args.requireAi)) {
+    if (args.requireAi && !model) {
+      throw new Error(missingFeatureModelMessage("pr_descriptions"));
+    }
+
+    if (aiIntegrationService && model && (providerMode !== "guest" || args.requireAi)) {
       const prompt = [
         "You are ADE's PR drafting assistant. Keep content factual and concise.",
         "Return JSON only with shape: {\"title\": string, \"body\": string}.",
@@ -6878,7 +6887,7 @@ export function createPrService({
           laneId,
           cwd: lane.worktreePath,
           prompt,
-          ...(model ? { model } : {}),
+          model,
           ...(reasoningEffort ? { reasoningEffort } : {})
         });
         const parsed = parsePrDraftJson(draft.text);
@@ -12378,7 +12387,13 @@ export function createPrService({
         // Continue without files
       }
 
-      if (aiIntegrationService) {
+      const configuredModel = readConfiguredFeatureModel(
+        projectConfigService.get().effective.ai,
+        "pr_descriptions",
+      );
+      const model = (args.model?.trim() || configuredModel) || undefined;
+
+      if (aiIntegrationService && model) {
         const diffSummary = files
           .map((f) => `${f.status} ${f.filename} (+${f.additions}/-${f.deletions})`)
           .join("\n");
@@ -12403,7 +12418,7 @@ export function createPrService({
             laneId: row.lane_id,
             cwd: projectRoot,
             prompt,
-            ...(args.model ? { model: args.model } : {})
+            model,
           });
           const rawJson = extractFirstJsonObject(draft.text);
           if (rawJson) {

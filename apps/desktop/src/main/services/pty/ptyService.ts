@@ -2512,6 +2512,38 @@ export function createPtyService({
     return typeof raw === "string" && raw.trim().length ? raw.trim() : null;
   };
 
+  const resolveSessionLaunchModelId = (
+    session: { resumeMetadata?: TerminalResumeMetadata | null } | null | undefined,
+  ): string | undefined => {
+    const raw = session?.resumeMetadata?.launch?.model;
+    return typeof raw === "string" && raw.trim().length ? raw.trim() : undefined;
+  };
+
+  const uniqueCliModelIds = (...ids: Array<string | undefined>): string[] => {
+    const out: string[] = [];
+    for (const id of ids) {
+      if (!id || out.includes(id)) continue;
+      out.push(id);
+    }
+    return out;
+  };
+
+  const tryCliAiModels = async <T>(
+    modelIds: string[],
+    run: (modelId: string) => Promise<T | null | undefined>,
+    onFailure: (modelId: string, error: unknown) => void,
+  ): Promise<T | null> => {
+    for (const modelId of modelIds) {
+      try {
+        const result = await run(modelId);
+        if (result) return result;
+      } catch (error) {
+        onFailure(modelId, error);
+      }
+    }
+    return null;
+  };
+
   // Generate an early CLI session title from the first user input PLUS a slice
   // of the actual session output, so the name reflects what the session is doing
   // (e.g. "Inspect GitHub login screenshot") rather than echoing the opening
@@ -2530,8 +2562,9 @@ export function createPtyService({
     }
     const laneName = session.laneName?.trim() || "Current lane";
     const outputSlice = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n").trim().slice(-4000);
-    const titleModelId = resolveTitleModelId();
+    const titleModelIds = uniqueCliModelIds(resolveTitleModelId(), resolveSessionLaunchModelId(session));
     const titleReasoningEffort = resolveTitleReasoningEffort();
+    if (!titleModelIds.length) return;
     const prompt = [
       "Write a concise title for this CLI coding session.",
       "Return only plain text, max 80 characters, no punctuation at the end.",
@@ -2544,29 +2577,30 @@ export function createPtyService({
       ...(outputSlice ? ["", "Session output so far:", outputSlice] : []),
     ].join("\n");
     const capturedAi = aiIntegrationService;
-    try {
+    const title = await tryCliAiModels(titleModelIds, async (modelId) => {
       const result = await capturedAi.summarizeTerminal({
         cwd: entry.boundCwd || entry.laneWorktreePath,
         prompt,
         taskType: "session_title",
         timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
-        ...(titleModelId ? { model: titleModelId } : {}),
+        model: modelId,
         ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
       });
-      if (entry.disposed) return;
-      const title = sanitizeGeneratedCliTitle(result.text);
-      if (!title) return;
-      if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
-        logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
-        return;
-      }
-      sessionService.updateMeta({ sessionId: entry.sessionId, title, manuallyNamed: false });
-    } catch (err) {
+      if (entry.disposed) return null;
+      return sanitizeGeneratedCliTitle(result.text);
+    }, (modelId, err) => {
       logger.warn("pty.cli_user_title_generation_failed", {
         sessionId: entry.sessionId,
+        modelId,
         error: err instanceof Error ? err.message : String(err),
       });
+    });
+    if (!title || entry.disposed) return;
+    if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
+      logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
+      return;
     }
+    sessionService.updateMeta({ sessionId: entry.sessionId, title, manuallyNamed: false });
   };
 
   const tryCliUserTitleFromWrite = (entry: PtyEntry, data: string): void => {
@@ -2810,22 +2844,32 @@ export function createPtyService({
               transcript.slice(-18_000)
             ].join("\n");
 
-            const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
+            const summarySetting = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
               ? si.summaries.modelId.trim()
               : undefined;
+            const summaryModelIds = uniqueCliModelIds(summarySetting, resolveSessionLaunchModelId(session));
             const summaryReasoningEffort = typeof si?.summaries?.reasoningEffort === "string" && si.summaries.reasoningEffort.trim().length
               ? si.summaries.reasoningEffort.trim()
               : undefined;
 
-            const aiSummary = await aiIntegrationService!.summarizeTerminal({
-              cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
-              prompt,
-              ...(summaryModelId ? { model: summaryModelId } : {}),
-              ...(summaryReasoningEffort ? { reasoningEffort: summaryReasoningEffort } : {}),
+            const aiSummary = await tryCliAiModels(summaryModelIds, async (modelId) => {
+              const result = await aiIntegrationService!.summarizeTerminal({
+                cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+                prompt,
+                model: modelId,
+                ...(summaryReasoningEffort ? { reasoningEffort: summaryReasoningEffort } : {}),
+              });
+              const text = result.text.trim();
+              return text.length ? text : null;
+            }, (modelId, err) => {
+              logger.warn("pty.ai_summary_failed", {
+                sessionId,
+                modelId,
+                error: err instanceof Error ? err.message : String(err),
+              });
             });
-            const text = aiSummary.text.trim();
-            if (text.length) {
-              sessionService.setSummary(sessionId, text);
+            if (aiSummary) {
+              sessionService.setSummary(sessionId, aiSummary);
             }
           } catch (err) {
             logger.warn("pty.ai_summary_failed", {
@@ -2843,38 +2887,45 @@ export function createPtyService({
               if (isSessionManuallyNamed(sessionService, sessionId)) {
                 logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
               } else {
-              const titlePrompt = [
-                "Generate a concise final title for this completed terminal session.",
-                "Return only plain text, max 80 characters, no punctuation at the end.",
-                "",
-                `Session type: ${session.toolType ?? "terminal"}`,
-                `Initial title: ${session.title}`,
-                session.goal ? `Current goal: ${session.goal}` : null,
-                `Exit code: ${session.exitCode ?? "unknown"}`,
-                "",
-                "Terminal transcript tail:",
-                transcript.slice(-2000),
-              ].filter(Boolean).join("\n");
+                const titlePrompt = [
+                  "Generate a concise final title for this completed terminal session.",
+                  "Return only plain text, max 80 characters, no punctuation at the end.",
+                  "",
+                  `Session type: ${session.toolType ?? "terminal"}`,
+                  `Initial title: ${session.title}`,
+                  session.goal ? `Current goal: ${session.goal}` : null,
+                  `Exit code: ${session.exitCode ?? "unknown"}`,
+                  "",
+                  "Terminal transcript tail:",
+                  transcript.slice(-2000),
+                ].filter(Boolean).join("\n");
 
-              const titleModelId = resolveTitleModelId();
-              const titleReasoningEffort = resolveTitleReasoningEffort();
-              const titleResult = await aiIntegrationService!.summarizeTerminal({
-                cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
-                prompt: titlePrompt,
-                taskType: "session_title",
-                timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
-                ...(titleModelId ? { model: titleModelId } : {}),
-                ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
-              });
-              const finalTitle = sanitizeGeneratedCliTitle(titleResult.text);
-              if (finalTitle) {
-                // Re-check in case user renamed during AI call
-                if (isSessionManuallyNamed(sessionService, sessionId)) {
-                  logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
-                } else {
-                  sessionService.updateMeta({ sessionId, title: finalTitle, manuallyNamed: false });
+                const titleModelIds = uniqueCliModelIds(resolveTitleModelId(), resolveSessionLaunchModelId(session));
+                const titleReasoningEffort = resolveTitleReasoningEffort();
+                const finalTitle = await tryCliAiModels(titleModelIds, async (modelId) => {
+                  const titleResult = await aiIntegrationService!.summarizeTerminal({
+                    cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
+                    prompt: titlePrompt,
+                    taskType: "session_title",
+                    timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
+                    model: modelId,
+                    ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
+                  });
+                  return sanitizeGeneratedCliTitle(titleResult.text);
+                }, (modelId, err) => {
+                  logger.warn("pty.session_title_refresh_failed", {
+                    sessionId,
+                    modelId,
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                });
+                if (finalTitle) {
+                  if (isSessionManuallyNamed(sessionService, sessionId)) {
+                    logger.info("pty.session_title_refresh_skipped_user_renamed", { sessionId });
+                  } else {
+                    sessionService.updateMeta({ sessionId, title: finalTitle, manuallyNamed: false });
+                  }
                 }
-              }
               }
             } catch (err) {
               logger.warn("pty.session_title_refresh_failed", {
@@ -5580,6 +5631,21 @@ export function createPtyService({
           toolType: toolTypeHint,
           startupCommand: requestedStartupCommand,
         });
+      const runtimeLaunchModel = typeof runtimeCliLaunch?.model === "string" && runtimeCliLaunch.model.trim().length
+        ? runtimeCliLaunch.model.trim()
+        : "";
+      if (runtimeLaunchModel && initialResumeMetadata && !String(initialResumeMetadata.launch?.model ?? "").trim()) {
+        initialResumeMetadata = {
+          ...initialResumeMetadata,
+          launch: {
+            ...initialResumeMetadata.launch,
+            model: runtimeLaunchModel,
+          },
+        };
+        if (existingSession) {
+          sessionService.updateMeta({ sessionId, resumeMetadata: initialResumeMetadata });
+        }
+      }
       let initialResumeCommand = existingSession?.resumeCommand
         ?? (requestedResumeMetadata ? buildTrackedCliResumeCommand(requestedResumeMetadata) : defaultResumeCommandForTool(toolTypeHint));
       const transcriptPath = tracked
@@ -6742,34 +6808,33 @@ export function createPtyService({
             strippedOutput.slice(0, 800)
           ].join("\n");
 
-          const titleModelId = resolveTitleModelId();
+          const titleModelIds = uniqueCliModelIds(resolveTitleModelId(), resolveSessionLaunchModelId(session));
           const titleReasoningEffort = resolveTitleReasoningEffort();
-          capturedAi
-            .summarizeTerminal({
+          if (!titleModelIds.length) return;
+          void tryCliAiModels(titleModelIds, async (modelId) => {
+            const result = await capturedAi.summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
               prompt,
               taskType: "session_title",
               timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
-              ...(titleModelId ? { model: titleModelId } : {}),
+              model: modelId,
               ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
-            })
-            .then((result) => {
-              const title = sanitizeGeneratedCliTitle(result.text);
-              if (title) {
-                // Re-check in case user renamed during AI call
-                if (isSessionManuallyNamed(sessionService, sessionId)) {
-                  logger.info("pty.session_title_skipped_user_renamed", { sessionId });
-                } else {
-                  sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
-                }
-              }
-            })
-            .catch((err) => {
-              logger.warn("pty.session_title_generation_failed", {
-                sessionId,
-                error: err instanceof Error ? err.message : String(err)
-              });
             });
+            return sanitizeGeneratedCliTitle(result.text);
+          }, (modelId, err) => {
+            logger.warn("pty.session_title_generation_failed", {
+              sessionId,
+              modelId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }).then((title) => {
+            if (!title) return;
+            if (isSessionManuallyNamed(sessionService, sessionId)) {
+              logger.info("pty.session_title_skipped_user_renamed", { sessionId });
+              return;
+            }
+            sessionService.updateMeta({ sessionId, title, manuallyNamed: false });
+          });
         }, PTY_AI_TITLE_DEBOUNCE_MS);
       }
 

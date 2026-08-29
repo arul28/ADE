@@ -1,18 +1,24 @@
 /**
  * Session naming: the prompts, failure classification, and model-candidate
- * chain shared by automatic lane identity and chat auto-titling.
+ * chain shared by automatic lane identity, chat auto-titling, and explicit
+ * session-metadata regeneration.
  *
- * All three callers — lane identity, chat auto-title, and the legacy lane-name
- * suggestion — used to carry their own hand-copied chain and retry loop, which
+ * Those callers used to carry their own hand-copied chain and retry loop, which
  * had already drifted apart. They live here so "the same chain" is a fact
- * rather than a comment.
+ * rather than a comment: the user's title setting, then this session's model,
+ * then a deterministic name. No hardcoded Haiku/mini namer.
  */
 import {
-  getModelById,
+  deriveDeterministicLaneTitleFromPrompt,
+  GENERIC_LANE_FALLBACK_TITLE,
+} from "../../../shared/laneNameFallback";
+import {
+  resolveModelDescriptor,
   resolveProviderGroupForModel,
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
+import { parseStructuredOutput } from "../ai/utils";
 
 /**
  * The word count every naming surface aims for. It is a guideline handed to the
@@ -105,24 +111,59 @@ export type SessionMetadataPromptRunner = (args: {
   jsonSchema: typeof SESSION_METADATA_JSON_SCHEMA;
 }) => Promise<{ text: string; structuredOutput?: unknown }>;
 
+function asJsonRecord(raw: unknown): Record<string, unknown> | null {
+  const value = typeof raw === "string" ? parseStructuredOutput(raw) : raw;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function readOptionalString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * Pull the three naming fields out of a model response. Extra keys, missing
+ * fields, fenced JSON, and surrounding prose are ignored: Cursor Grok (and
+ * other non-schema models) routinely wrap or annotate the object, and a
+ * partial real name beats a slug.
+ */
 export function parseGeneratedSessionMetadata(args: {
   raw: unknown;
   normalizeTitle: (value: string) => string | null;
   normalizeStatusLine: (value: string) => string | null;
 }): GeneratedSessionMetadata | null {
-  if (!args.raw || typeof args.raw !== "object" || Array.isArray(args.raw)) return null;
-  const record = args.raw as Record<string, unknown>;
-  if (Object.keys(record).some((key) => key !== "chatTitle" && key !== "laneName" && key !== "statusLine")) {
-    return null;
-  }
-  if (typeof record.chatTitle !== "string" || typeof record.laneName !== "string" || typeof record.statusLine !== "string") {
-    return null;
-  }
-  const chatTitle = args.normalizeTitle(record.chatTitle);
-  const laneName = args.normalizeTitle(record.laneName);
-  const statusLine = args.normalizeStatusLine(record.statusLine);
+  const record = asJsonRecord(args.raw);
+  if (!record) return null;
+  const chatTitleRaw = readOptionalString(record, "chatTitle");
+  const laneNameRaw = readOptionalString(record, "laneName");
+  const statusLineRaw = readOptionalString(record, "statusLine");
+  const chatTitle = chatTitleRaw ? args.normalizeTitle(chatTitleRaw) : null;
+  const laneName = laneNameRaw ? args.normalizeTitle(laneNameRaw) : null;
+  const statusLine = statusLineRaw ? args.normalizeStatusLine(statusLineRaw) : null;
   if (!chatTitle && !laneName && !statusLine) return null;
   return { chatTitle, laneName, statusLine };
+}
+
+/**
+ * Last-resort names when every model returns unusable JSON. Prefer the
+ * conversation summary over the original kickoff prompt so "Generate all
+ * three" does not restamp the launch-instruction slug.
+ */
+export function deriveDeterministicSessionMetadata(args: {
+  seeds: Array<string | null | undefined>;
+  normalizeTitle: (value: string) => string | null;
+  normalizeStatusLine: (value: string) => string | null;
+}): GeneratedSessionMetadata | null {
+  const seed = args.seeds
+    .map((value) => (typeof value === "string" ? value.trim() : ""))
+    .find((value) => value.length > 0) ?? "";
+  if (!seed) return null;
+  const title = args.normalizeTitle(deriveDeterministicLaneTitleFromPrompt(seed));
+  const chatTitle = title && title !== GENERIC_LANE_FALLBACK_TITLE ? title : null;
+  const statusLine = args.normalizeStatusLine(seed);
+  if (!chatTitle && !statusLine) return null;
+  return { chatTitle, laneName: chatTitle, statusLine };
 }
 
 export function buildSessionMetadataPrompt(args: {
@@ -155,8 +196,6 @@ export function buildSessionMetadataPrompt(args: {
 
 export async function runSessionMetadataGeneration(args: {
   candidateModelIds: string[];
-  /** Session provider whose context is allowed to reach the model runner. */
-  provider: string;
   cwd: string;
   prompt: string;
   runPrompt: SessionMetadataPromptRunner;
@@ -165,11 +204,10 @@ export async function runSessionMetadataGeneration(args: {
   shouldStop?: () => boolean;
   onFailure: (failure: NamingAttemptFailure) => void;
 }): Promise<{ result: GeneratedSessionMetadata | null; attemptCount: number; selectedModelId: string | null }> {
-  const candidateModelIds = args.candidateModelIds.filter((modelId) => {
-    const descriptor = getModelById(modelId);
-    return descriptor && resolveProviderGroupForModel(descriptor) === args.provider;
-  });
-  return runNamingAcrossProviders<GeneratedSessionMetadata>(candidateModelIds, {
+  // Walk the caller's setting-then-session candidates only. Cursor Grok (and
+  // other non-schema models) often return unusable JSON; the next candidate
+  // still gets a turn. ADE already holds the transcript excerpt.
+  return runNamingAcrossProviders<GeneratedSessionMetadata>(args.candidateModelIds, {
     shouldStop: args.shouldStop,
     run: async (descriptor) => {
       const result = await args.runPrompt({
@@ -183,13 +221,8 @@ export async function runSessionMetadataGeneration(args: {
         normalizeTitle: args.normalizeTitle,
         normalizeStatusLine: args.normalizeStatusLine,
       };
-      const structured = parseGeneratedSessionMetadata({ raw: result.structuredOutput, ...parserArgs });
-      if (structured) return structured;
-      try {
-        return parseGeneratedSessionMetadata({ raw: JSON.parse(result.text.trim()), ...parserArgs });
-      } catch {
-        return null;
-      }
+      return parseGeneratedSessionMetadata({ raw: result.structuredOutput, ...parserArgs })
+        ?? parseGeneratedSessionMetadata({ raw: result.text, ...parserArgs });
     },
     onFailure: args.onFailure,
   });
@@ -216,65 +249,61 @@ export function isProviderLevelNamingFailure(error: unknown): boolean {
 }
 
 /**
- * Build the ordered model chain naming walks: the caller's preferred models
- * first, then a model from a provider none of them belong to, then a sibling on
- * the leading provider.
- *
- * The cross-provider candidate is spliced in ahead of the third preference so
- * it always falls inside the attempt budget. Otherwise three same-provider
- * preferences failing transiently — a timeout, a hang-up, none of them
- * provider-level — would spend the whole budget before naming ever tried
- * another provider, which is the outage this chain exists to survive.
+ * Keep a session's own model in the naming pool even when it is missing from
+ * the current auth snapshot (OpenCode/Cursor chats can outlive inventory).
  */
+export function withSessionModelDescriptors(
+  availableModels: ModelDescriptor[],
+  modelRefs: Array<string | null | undefined>,
+): ModelDescriptor[] {
+  const seen = new Set(availableModels.map((entry) => entry.id));
+  const extra: ModelDescriptor[] = [];
+  for (const ref of modelRefs) {
+    const modelId = typeof ref === "string" ? ref.trim() : "";
+    if (!modelId || seen.has(modelId)) continue;
+    const descriptor = resolveModelDescriptor(modelId);
+    if (!descriptor || seen.has(descriptor.id)) continue;
+    seen.add(descriptor.id);
+    extra.push(descriptor);
+  }
+  return extra.length ? [...availableModels, ...extra] : availableModels;
+}
+
 const MAX_NAMING_ATTEMPTS = 3;
 
 export function buildNamingModelCandidates(args: {
   availableModels: ModelDescriptor[];
   /** Ordered preference list; unavailable and duplicate ids are dropped. */
   preferred: Array<string | null | undefined>;
-  /** Optional runtime provider scope for calls carrying provider-owned context. */
-  provider?: string | null;
 }): string[] {
-  const scopedModels = args.provider
-    ? args.availableModels.filter((entry) => resolveProviderGroupForModel(entry) === args.provider)
-    : args.availableModels;
-  const availableIds = new Set(scopedModels.map((entry) => entry.id));
-  const availableInOrder = (candidates: Array<string | null | undefined>): string[] =>
-    candidates.reduce<string[]>((acc, candidate) => {
-      const modelId = typeof candidate === "string" ? candidate.trim() : "";
-      if (!modelId || acc.includes(modelId) || !availableIds.has(modelId)) return acc;
-      return [...acc, modelId];
-    }, []);
+  const availableIds = new Set(args.availableModels.map((entry) => entry.id));
+  return args.preferred.reduce<string[]>((acc, candidate) => {
+    const modelId = typeof candidate === "string" ? candidate.trim() : "";
+    if (!modelId) return acc;
+    // Aliases like Claude's stored `sonnet` must match the canonical registry
+    // id that withSessionModelDescriptors already added to the pool.
+    const canonicalId = resolveModelDescriptor(modelId)?.id ?? modelId;
+    if (acc.includes(canonicalId) || !availableIds.has(canonicalId)) return acc;
+    return [...acc, canonicalId];
+  }, []);
+}
 
-  const preferred = availableInOrder(args.preferred);
-  const [primary] = preferred;
-  if (!primary) return [];
-
-  const providerOf = (modelId: string): ModelProviderGroup | null => {
-    const descriptor = getModelById(modelId);
-    return descriptor ? resolveProviderGroupForModel(descriptor) : null;
-  };
-  const leadingProviders = new Set(
-    preferred.map(providerOf).filter((group): group is ModelProviderGroup => group !== null),
-  );
-  const primaryProvider = providerOf(primary);
-  const crossProviderFallback = scopedModels.find(
-    (entry) => !leadingProviders.has(resolveProviderGroupForModel(entry)),
-  )?.id;
-  const sameProviderFallback = scopedModels.find(
-    (entry) => !preferred.includes(entry.id)
-      && primaryProvider !== null
-      && resolveProviderGroupForModel(entry) === primaryProvider,
-  )?.id;
-
-  const crossProviderSlot = Math.min(preferred.length, MAX_NAMING_ATTEMPTS - 1);
-  return availableInOrder([
-    ...preferred.slice(0, crossProviderSlot),
-    crossProviderFallback,
-    ...preferred.slice(crossProviderSlot),
-    sameProviderFallback,
-    scopedModels.find((entry) => !preferred.includes(entry.id))?.id,
-  ]);
+/**
+ * Session intelligence picks a model in this order only: the user's setting,
+ * then this session's model. There is no hardcoded Haiku/mini/"first available"
+ * namer. Callers fall through to a deterministic title/summary when both miss.
+ */
+export function buildSessionIntelligenceModelCandidates(args: {
+  availableModels: ModelDescriptor[];
+  settingModelId?: string | null;
+  sessionModelId?: string | null;
+  sessionModel?: string | null;
+}): string[] {
+  const preferred = [args.settingModelId, args.sessionModelId, args.sessionModel];
+  return buildNamingModelCandidates({
+    availableModels: withSessionModelDescriptors(args.availableModels, preferred),
+    preferred,
+  });
 }
 
 export type NamingAttemptFailure = {
@@ -307,7 +336,7 @@ export async function runNamingAcrossProviders<T>(
   for (const candidateModelId of candidateModelIds) {
     if (attemptCount >= MAX_NAMING_ATTEMPTS) break;
     if (options.shouldStop?.()) break;
-    const descriptor = getModelById(candidateModelId);
+    const descriptor = resolveModelDescriptor(candidateModelId);
     if (!descriptor) continue;
     const provider = resolveProviderGroupForModel(descriptor);
     if (exhaustedProviders.has(provider)) continue;

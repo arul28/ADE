@@ -42,7 +42,7 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { missingFeatureModelMessage, readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
 import { isRecord, safeJsonParse } from "../shared/utils";
 
 type LaneInfo = {
@@ -270,18 +270,6 @@ export function createGitOperationsService({
     return promise;
   }
 
-  function extractEffectiveAiConfig(): Record<string, unknown> {
-    const snapshot = projectConfigService.get();
-    return isRecord(snapshot.effective.ai) ? snapshot.effective.ai : {};
-  }
-
-  function getConfiguredCommitMessageModel(): string | null {
-    const aiConfig = extractEffectiveAiConfig();
-    const overrides = isRecord(aiConfig.featureModelOverrides) ? aiConfig.featureModelOverrides : {};
-    const modelId = typeof overrides.commit_messages === "string" ? overrides.commit_messages.trim() : "";
-    return modelId.length ? modelId : null;
-  }
-
   function normalizeCommitMessage(rawText: string): string {
     const firstLine = rawText
       .split(/\r?\n/)
@@ -355,9 +343,9 @@ export function createGitOperationsService({
       throw new Error("AI commit messages are off. Enable Commit Messages in Settings or type a commit message manually.");
     }
 
-    const model = getConfiguredCommitMessageModel();
+    const model = readConfiguredFeatureModel(projectConfigService.get().effective.ai, "commit_messages");
     if (!model) {
-      throw new Error("Choose a Commit Messages model in Settings or type a commit message manually.");
+      throw new Error(missingFeatureModelMessage("commit_messages"));
     }
 
     const aiStatus = await aiIntegrationService.getStatus().catch(() => null);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { openKvDb } from "../state/kvDb";
 import { createConflictService } from "./conflictService";
+import { missingFeatureModelMessage } from "../ai/aiIntegrationService";
 
 function git(cwd: string, args: string[]): string {
   const res = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -256,7 +257,12 @@ describe("conflictService conflict context integrity", () => {
         getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" })
       } as any,
       projectConfigService: {
-        get: () => ({ effective: { providerMode: "subscription" } })
+        get: () => ({
+          effective: {
+            providerMode: "subscription",
+            ai: { featureModelOverrides: { conflict_proposals: "anthropic/claude-sonnet-5" } },
+          },
+        })
       } as any,
       aiIntegrationService: {
         getMode: () => "subscription",
@@ -289,8 +295,68 @@ describe("conflictService conflict context integrity", () => {
 
     expect(proposal.diffPatch).toContain("diff --git");
     expect(capturedRequest).toBeTruthy();
+    expect(capturedRequest.model).toBe("anthropic/claude-sonnet-5");
     expect(typeof capturedRequest.prompt).toBe("string");
     expect(capturedRequest.prompt).toContain("relevantFilesForConflict");
+  });
+
+  it("refuses subscription conflict proposals when no Conflict Proposals model is configured", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-no-model-"));
+    const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
+    const dbPath = path.join(repoRoot, "kv.sqlite");
+    const db = await openKvDb(dbPath, createLogger());
+    const projectId = "proj-no-model";
+    await seedProjectAndLane(db, projectId, repoRoot);
+
+    db.run(
+      `
+        insert into conflict_predictions(
+          id, project_id, lane_a_id, lane_b_id, status, conflicting_files_json, overlap_files_json,
+          lane_a_sha, lane_b_sha, predicted_at, expires_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      [
+        randomUUID(),
+        projectId,
+        "lane-1",
+        null,
+        "conflict",
+        JSON.stringify([]),
+        JSON.stringify(["src/a.ts"]),
+        laneHeadSha,
+        null,
+        "2026-02-15T18:50:00.000Z",
+        "2026-02-15T20:00:00.000Z"
+      ]
+    );
+
+    const laneSummary = createLaneSummary(repoRoot);
+    const requestConflictProposal = vi.fn();
+    const service = createConflictService({
+      db,
+      logger: createLogger(),
+      projectId,
+      projectRoot: repoRoot,
+      laneService: {
+        list: async () => [laneSummary],
+        getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" })
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { providerMode: "subscription" } })
+      } as any,
+      aiIntegrationService: {
+        getMode: () => "subscription",
+        requestConflictProposal,
+      } as any
+    });
+
+    const preview = await service.prepareProposal({ laneId: "lane-1" });
+    await expect(
+      service.requestProposal({ laneId: "lane-1", contextDigest: preview.contextDigest }),
+    ).rejects.toThrow(missingFeatureModelMessage("conflict_proposals"));
+    expect(requestConflictProposal).not.toHaveBeenCalled();
+    db.close();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
   it("returns insufficient-context proposal without calling subscription provider", async () => {

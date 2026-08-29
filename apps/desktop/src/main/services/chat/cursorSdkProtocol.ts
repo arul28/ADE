@@ -98,10 +98,17 @@ export type CursorSdkWorkerInit = {
   mcpServers?: Record<string, unknown>;
 };
 
-export type CursorSdkUserImage = {
-  data: string;
-  mimeType: string;
-};
+/**
+ * Worker-IPC image reference. Prefer `path` or `url` — never put multi-megabyte
+ * screenshot bytes on this object. The worker materializes `{ data, mimeType }`
+ * for `@cursor/sdk` locally. `data` remains for tests and tiny inline cases.
+ * Path images include `rootPath` so the worker re-opens through the same
+ * attachment sandbox the main process used to use.
+ */
+export type CursorSdkUserImage =
+  | { path: string; mimeType: string; rootPath: string }
+  | { data: string; mimeType: string }
+  | { url: string };
 
 export type CursorSdkSendPrompt = {
   promptText: string;
@@ -129,6 +136,7 @@ export type CursorSdkCloudRepoOverride = {
 export type CursorSdkCloudSendStreamPayload = {
   apiKey?: string | null;
   promptText: string;
+  images?: CursorSdkUserImage[];
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
   idempotencyKey?: string | null;
@@ -153,6 +161,7 @@ export type CursorSdkCloudFollowupPayload = {
   apiKey?: string | null;
   agentId: string;
   promptText: string;
+  images?: CursorSdkUserImage[];
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
   idempotencyKey?: string | null;

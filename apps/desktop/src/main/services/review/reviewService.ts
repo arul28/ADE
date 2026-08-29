@@ -188,27 +188,6 @@ type ReviewCandidateFindingRow = {
   created_at: string;
 };
 
-const REVIEW_MODEL_FALLBACK_ID = "openai/gpt-5.4";
-
-function resolveBuiltinReviewModelId(): string {
-  const candidates = [
-    getDefaultModelDescriptor("codex")?.id ?? null,
-    getDefaultModelDescriptor("opencode")?.id ?? null,
-    REVIEW_MODEL_FALLBACK_ID,
-    getDefaultModelDescriptor("claude")?.id ?? null,
-    getDefaultModelDescriptor("cursor")?.id ?? null,
-  ].filter((modelId): modelId is string => Boolean(modelId?.trim()));
-
-  for (const modelId of candidates) {
-    const descriptor = getModelById(modelId);
-    if (descriptor) return descriptor.id;
-  }
-
-  return REVIEW_MODEL_FALLBACK_ID;
-}
-
-const DEFAULT_REVIEW_MODEL_ID = resolveBuiltinReviewModelId();
-
 const MANIFEST_PROMPT_FILE_LIMIT = 100;
 
 const REVIEW_PASS_ORDER: ReviewPassKey[] = [
@@ -1460,7 +1439,7 @@ function mapRunRow(row: ReviewRunRow): ReviewRun {
     compareAgainst: { kind: "default_branch" },
     selectionMode: "full_diff",
     dirtyOnly: false,
-    modelId: DEFAULT_REVIEW_MODEL_ID,
+    modelId: "",
     reasoningEffort: null,
     publishBehavior: "local_only",
   });
@@ -1654,18 +1633,10 @@ export function createReviewService({
   const cancelledRuns = new Set<string>();
   const activeReviewerSessions = new Map<string, Set<string>>();
   let disposed = false;
-  const configuredDefaultModelId =
+  const recommendedModelId =
     getDefaultModelDescriptor("codex")?.id
     ?? getDefaultModelDescriptor("opencode")?.id
-    ?? REVIEW_MODEL_FALLBACK_ID;
-  const defaultReviewModelId = getModelById(configuredDefaultModelId)?.id ?? DEFAULT_REVIEW_MODEL_ID;
-
-  if (defaultReviewModelId !== configuredDefaultModelId) {
-    logger.warn("review.default_model_fallback_selected", {
-      requestedModelId: configuredDefaultModelId,
-      resolvedModelId: defaultReviewModelId,
-    });
-  }
+    ?? null;
 
   function assertNotDisposed(): void {
     if (disposed) {
@@ -2097,7 +2068,7 @@ export function createReviewService({
       defaultBranchName: projectDefaultBranch ?? laneSummaries.find((lane) => lane.laneType === "primary")?.branchRef ?? null,
       lanes: laneSummaries,
       recentCommitsByLane,
-      recommendedModelId: defaultReviewModelId,
+      recommendedModelId,
     };
   }
 
@@ -2111,7 +2082,7 @@ export function createReviewService({
             ? "dirty_only"
             : "full_diff"),
       dirtyOnly: partial?.dirtyOnly ?? target.mode === "working_tree",
-      modelId: partial?.modelId?.trim() || defaultReviewModelId,
+      modelId: partial?.modelId?.trim() || "",
       reasoningEffort: partial?.reasoningEffort?.trim() || null,
       fastMode: (partial?.fastMode ?? partial?.codexFastMode) === true,
       publishBehavior: target.mode === "pr" && partial?.publishBehavior === "auto_publish"
@@ -3027,6 +2998,9 @@ export function createReviewService({
       throw new Error("PR-backed review runs are not available in this workspace.");
     }
     const config = resolveConfig(args.target, args.config);
+    if (!config.modelId) {
+      throw new Error("Choose a review model before starting a review.");
+    }
     const startedAt = nowIso();
     const run: ReviewRun = {
       id: randomUUID(),

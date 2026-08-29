@@ -557,7 +557,11 @@ export async function readAgentAccessibleFileBytes(args: {
   return readFileWithinRootSecure(root, absPath);
 }
 
-export function readFileWithinRootSecure(root: string, candidate: string): Buffer {
+export function readFileWithinRootSecure(
+  root: string,
+  candidate: string,
+  options?: { maxBytes?: number },
+): Buffer {
   let expectedPath: string;
   try {
     expectedPath = resolvePathWithinRoot(root, candidate, { allowMissing: false });
@@ -574,6 +578,9 @@ export function readFileWithinRootSecure(root: string, candidate: string): Buffe
     const openStat = fs.fstatSync(fd);
     if (!openStat.isFile()) {
       throw new Error("Path is not a regular file");
+    }
+    if (options?.maxBytes != null && openStat.size > options.maxBytes) {
+      throw new Error(`File is too large (${openStat.size} bytes)`);
     }
     const currentPath = resolvePathWithinRoot(root, expectedPath, { allowMissing: false });
     const currentStat = fs.statSync(currentPath);

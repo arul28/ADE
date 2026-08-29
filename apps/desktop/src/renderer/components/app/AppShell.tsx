@@ -16,7 +16,7 @@ import { CommandPalette } from "./CommandPalette";
 import { IntegrationBannerHost } from "./IntegrationBannerHost";
 import { TabNav } from "./TabNav";
 import { isProjectSurfacePathname } from "./projectRouteStorage";
-import { isWebClientMode } from "../../lib/webClientMode";
+import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import { ProjectTransitionErrorAlert } from "./ProjectTransitionErrorAlert";
 import {
@@ -1194,10 +1194,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div
       className={cn(
         "text-fg overflow-hidden flex flex-col bg-bg",
-        // In the browser web client the App is nested under the shell's top
-        // strip, so fill that container (h-full) instead of the whole viewport
-        // (h-screen), which would overflow beneath the strip.
-        isWebClientMode() ? "h-full w-full" : "h-screen w-screen",
+        // Hosted web and the Vite mock zoom <body> and inverse-size it.
+        // `h-screen` is 100vh in unzoomed viewport pixels, so CSS zoom would
+        // paint the shell larger than the window and clip the launch shelf
+        // and chat column. Electron keeps h-screen: webFrame shrinks 100vh.
+        isCssZoomedBrowserSurface() ? "h-full w-full" : "h-screen w-screen",
       )}
     >
       <div className="shrink-0 relative z-20">

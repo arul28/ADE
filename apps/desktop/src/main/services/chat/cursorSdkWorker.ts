@@ -17,6 +17,8 @@ import type {
   CursorSdkHookRequest,
   CursorSdkModelParameterValue,
   CursorSdkPermissionPolicy,
+  CursorSdkSendPrompt,
+  CursorSdkUserImage,
   CursorSdkWorkerInit,
   CursorSdkWorkerRequest,
   CursorSdkWorkerResponse,
@@ -25,6 +27,7 @@ import {
   isCursorSdkBackoffErrorText,
   isCursorSdkTransportErrorText,
 } from "./cursorSdkProtocol";
+import { materializeWorkerImages } from "./workerAttachmentImages";
 import {
   cursorSdkResultWithStreamFailure,
   isCursorSdkSandboxUnsupportedError,
@@ -301,6 +304,8 @@ function cursorRunRequestId(run: unknown): string | undefined {
 
 function removeSocketIfNeeded(socketPath: string): void {
   if (process.platform === "win32") return;
+  // Instance-specific path: unlinking here cannot delete a replacement worker's
+  // hook socket, which lives under a different instance directory.
   try {
     fs.rmSync(socketPath, { force: true });
   } catch {
@@ -521,15 +526,15 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   return { agentId: agent.agentId, modelSdkId: init.modelSdkId };
 }
 
-async function sendPrompt(payload: {
-  promptText: string;
-  images?: Array<{ data: string; mimeType: string }>;
-  modelSdkId?: string | null;
-  modelParams?: CursorSdkModelParameterValue[];
-  forceExpireActiveRun?: boolean;
-  idempotencyKey?: string | null;
-  mode?: CursorSdkAgentMode;
-}): Promise<unknown> {
+async function cursorSdkSendMessage(
+  promptText: string,
+  images: CursorSdkUserImage[] | undefined,
+) {
+  const materialized = await materializeWorkerImages(images, { label: "Cursor SDK" });
+  return materialized.length ? { text: promptText, images: materialized } : promptText;
+}
+
+async function sendPrompt(payload: CursorSdkSendPrompt): Promise<unknown> {
   if (!agent || !initState) throw new Error("Cursor SDK worker is not initialized.");
   try {
     await applyLocalAgentOptions();
@@ -542,9 +547,7 @@ async function sendPrompt(payload: {
     });
   }
   if (!agent) throw new Error("Cursor SDK worker is not initialized.");
-  const message = payload.images?.length
-    ? { text: payload.promptText, images: payload.images }
-    : payload.promptText;
+  const message = await cursorSdkSendMessage(payload.promptText, payload.images);
   const mode = payload.mode ?? cursorSdkLocalAgentMode(initState.policy);
   const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
   const sendOptions: SendOptionsWithAdeMode = {
@@ -975,7 +978,10 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
     await validateCloudModelSelection(req.payload.apiKey?.trim() || undefined, modelSelection);
     const cloudAgent = await Agent.create(buildCloudCreateOptions(req.payload));
     const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey, req.payload.mode);
-    const run = await cloudAgent.send(req.payload.promptText, sendOpts);
+    const run = await cloudAgent.send(
+      await cursorSdkSendMessage(req.payload.promptText, req.payload.images),
+      sendOpts,
+    );
     const result = await streamCloudRun({
       requestId: req.requestId,
       agentId: cloudAgent.agentId,
@@ -998,7 +1004,10 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
     const modelSelection = buildCursorModelSelection(req.payload.modelSdkId, req.payload.modelParams);
     await validateCloudModelSelection(req.payload.apiKey?.trim() || undefined, modelSelection);
     const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey, req.payload.mode);
-    const run = await cloudAgent.send(req.payload.promptText, sendOpts);
+    const run = await cloudAgent.send(
+      await cursorSdkSendMessage(req.payload.promptText, req.payload.images),
+      sendOpts,
+    );
     const result = await streamCloudRun({
       requestId: req.requestId,
       agentId: cloudAgent.agentId,

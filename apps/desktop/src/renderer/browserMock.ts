@@ -76,6 +76,8 @@ import {
 } from "../shared/types/keepAwake";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
+import { applyHostedWebZoom } from "./lib/webZoom";
+import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "./lib/zoom";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -2528,6 +2530,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     );
   }
   w.__adeBrowserMock = true;
+  let mockZoomLevel = 0;
+  const vitestRuntime = typeof process !== "undefined" && Boolean(process.env.VITEST);
+  if (!vitestRuntime) {
+    applyHostedWebZoom(zoomFactorForDisplay(getStoredZoomLevel()));
+  }
   const BROWSER_MOCK_LOCAL_DEVICE: any = {
     deviceId: "browser-mock-device",
     siteId: "browser-mock-site",
@@ -6543,9 +6550,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       assetDataUrl: resolvedArg({ dataUrl: "data:text/html;base64,PGgxPkRhc2hib2FyZCBXaXJlZnJhbWU8L2gxPg==", mimeType: "text/html", text: "<h1>Dashboard Wireframe</h1><p>Mock wireframe preview</p>" }),
     },
     zoom: {
-      getLevel: () => 0,
-      setLevel: (_level: number) => {},
-      getFactor: () => 1,
+      getLevel: () => mockZoomLevel,
+      setLevel: (level: number) => {
+        mockZoomLevel = level;
+        if (!vitestRuntime) applyHostedWebZoom(zoomFactorForLevel(level));
+      },
+      getFactor: () => zoomFactorForLevel(mockZoomLevel),
       setTitleBarOverlay: async () => ({ applied: false }),
       onCommand: () => () => {},
     },

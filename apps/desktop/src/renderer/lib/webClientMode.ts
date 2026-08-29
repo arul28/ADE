@@ -11,12 +11,24 @@
 declare global {
   interface Window {
     __adeWebClient?: boolean;
+    __adeBrowserMock?: boolean;
   }
 }
 
 /** True when the renderer is running as the hosted browser web client. */
 export function isWebClientMode(): boolean {
   return typeof window !== "undefined" && window.__adeWebClient === true;
+}
+
+/**
+ * True when the window is a browser surface that applies CSS zoom on <body>
+ * (hosted web client, or the Vite `browserMock` preview). Electron uses
+ * `h-screen` because `webFrame` shrinks the CSS viewport; these surfaces must
+ * fill the inverse-sized body with `h-full` so 100vh cannot outgrow the zoom.
+ */
+export function isCssZoomedBrowserSurface(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.__adeWebClient === true || window.__adeBrowserMock === true;
 }
 
 /**

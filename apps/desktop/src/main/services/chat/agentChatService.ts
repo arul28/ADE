@@ -201,7 +201,7 @@ import {
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
-import { withTimeout } from "../ai/utils";
+import { parseStructuredOutput, withTimeout } from "../ai/utils";
 import {
   fileSizeOrZero,
   hasNullByte,
@@ -703,7 +703,7 @@ import {
 import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
   AUTO_TITLE_SYSTEM_PROMPT,
-  buildNamingModelCandidates,
+  buildSessionIntelligenceModelCandidates,
   LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
   LEGACY_LANE_NAME_SYSTEM_PROMPT,
   MAX_NAMING_WORDS,
@@ -755,6 +755,7 @@ import {
   type CursorSdkHookRequest,
   type CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
+import { workerPathImagesFromAttachments, type WorkerIpcImage } from "./workerAttachmentImages";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
@@ -3455,7 +3456,7 @@ const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
  */
 export const CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS = 90_000;
 /** Upper bound on the best-effort cancel issued while recycling a wedged thread. */
-const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
+export const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
 const CURSOR_SDK_SILENT_RUN_MESSAGE =
   "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.";
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
@@ -3473,7 +3474,6 @@ const DEFAULT_OPENCODE_MODEL_ID = DEFAULT_OPENCODE_DESCRIPTOR?.id ?? "anthropic/
 const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto";
 const DEFAULT_DROID_MODEL = DEFAULT_DROID_DESCRIPTOR?.providerModelId ?? "claude-sonnet-4-5-20250929";
 const DEFAULT_REASONING_EFFORT = "medium";
-const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5";
 
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CLAUDE_TOOL_OUTPUT_TRIM_THRESHOLD_BYTES = 200 * 1024;
@@ -5119,26 +5119,22 @@ function normalizeSuggestedLaneTitle(raw: string): string | null {
   return words.length > MAX_NAMING_WORDS ? words.slice(0, MAX_NAMING_WORDS).join(" ") : title;
 }
 
-function parseAutoLaneIdentity(raw: string): { laneTitle: string | null; branchFragment: string | null } | null {
-  try {
-    const parsed = JSON.parse(raw.trim()) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    const record = parsed as Record<string, unknown>;
-    if (Object.keys(record).some((key) => key !== "laneTitle" && key !== "branchFragment")) return null;
-    const branchRaw = typeof record.branchFragment === "string" ? record.branchFragment.trim() : "";
-    const branchWords = branchRaw.split("-").filter(Boolean);
-    // Same guideline-not-gate rule as the title: an over-long fragment is
-    // clamped to the first words rather than thrown away.
-    const branchFragment = branchWords.length >= 2 && /^[a-z0-9]+(?:-[a-z0-9]+)+$/u.test(branchRaw)
-      ? normalizeSuggestedLaneName(branchWords.slice(0, MAX_NAMING_WORDS).join("-"))
-      : null;
-    return {
-      laneTitle: typeof record.laneTitle === "string" ? normalizeSuggestedLaneTitle(record.laneTitle) : null,
-      branchFragment,
-    };
-  } catch {
-    return null;
-  }
+function parseAutoLaneIdentity(raw: unknown): { laneTitle: string | null; branchFragment: string | null } | null {
+  const value = typeof raw === "string" ? parseStructuredOutput(raw) : raw;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const branchRaw = typeof record.branchFragment === "string" ? record.branchFragment.trim() : "";
+  const branchWords = branchRaw.split("-").filter(Boolean);
+  // Same guideline-not-gate rule as the title: an over-long fragment is
+  // clamped to the first words rather than thrown away. Extra JSON keys are
+  // ignored: Grok and other non-schema models often annotate the object.
+  const branchFragment = branchWords.length >= 2 && /^[a-z0-9]+(?:-[a-z0-9]+)+$/u.test(branchRaw)
+    ? normalizeSuggestedLaneName(branchWords.slice(0, MAX_NAMING_WORDS).join("-"))
+    : null;
+  return {
+    laneTitle: typeof record.laneTitle === "string" ? normalizeSuggestedLaneTitle(record.laneTitle) : null,
+    branchFragment,
+  };
 }
 
 function defaultChatSessionTitle(provider: AgentChatProvider): string {
@@ -11301,24 +11297,13 @@ export function createAgentChatService(args: {
 
     const auth = await detectAuth().catch(() => []);
     const availableModels = await getAvailableRegistryModels(auth);
-    if (!availableModels.length) return;
-
-    const preferredModelId =
-      [
-        resolveChatConfig().summaryModelId,
-        DEFAULT_AUTO_TITLE_MODEL_ID,
-        "anthropic/claude-haiku-4-5",
-        "openai/gpt-5.4-mini",
-        "openai/gpt-5.2",
-        availableModels[0]?.id,
-      ].find((candidate) => {
-        const modelId = typeof candidate === "string" ? candidate.trim() : "";
-        return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
-      }) ?? null;
-
-    if (!preferredModelId) return;
-    const descriptor = getModelById(preferredModelId);
-    if (!descriptor) return;
+    const candidateModelIds = buildSessionIntelligenceModelCandidates({
+      availableModels,
+      settingModelId: resolveChatConfig().summaryModelId,
+      sessionModelId: managed.session.modelId,
+      sessionModel: managed.session.model,
+    });
+    if (!candidateModelIds.length) return;
 
     const prompt = [
       "You are ADE's continuity compaction assistant.",
@@ -11333,26 +11318,32 @@ export function createAgentChatService(args: {
 
     managed.continuitySummaryInFlight = true;
     try {
-      const result = await runSessionIntelligencePrompt({
-        cwd: managed.laneWorktreePath,
-        modelId: descriptor.id,
-        prompt,
-        taskType: "continuity_summary",
+      const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+        run: async (descriptor) => {
+          const response = await runSessionIntelligencePrompt({
+            cwd: managed.laneWorktreePath,
+            modelId: descriptor.id,
+            prompt,
+            taskType: "continuity_summary",
+          });
+          const text = response.text.trim();
+          return text.length ? text : null;
+        },
+        onFailure: (failure) => {
+          logger.warn("agent_chat.identity_continuity_summary_failed", {
+            sessionId: managed.session.id,
+            reason,
+            modelId: failure.descriptor.id,
+            error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+          });
+        },
       });
-      const text = result.text.trim();
-      if (text.length) {
-        managed.continuitySummary = text;
+      if (result) {
+        managed.continuitySummary = result;
         managed.continuitySummaryUpdatedAt = nowIso();
         persistChatState(managed);
-        writeCtoThreadStateFromSummary(managed, text, reason);
+        writeCtoThreadStateFromSummary(managed, result, reason);
       }
-    } catch (error) {
-      logger.warn("agent_chat.identity_continuity_summary_failed", {
-        sessionId: managed.session.id,
-        reason,
-        modelId: descriptor.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
     } finally {
       managed.continuitySummaryInFlight = false;
     }
@@ -11711,25 +11702,12 @@ export function createAgentChatService(args: {
     const deterministicBrief = buildDeterministicHandoffBrief(args);
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
-    const preferredModelId = [
-      resolveChatConfig().summaryModelId,
-      "openai/gpt-5.4-mini",
-      "openai/gpt-5.2",
-      DEFAULT_AUTO_TITLE_MODEL_ID,
-      availableModels[0]?.id,
-    ].find((candidate) => {
-      const modelId = typeof candidate === "string" ? candidate.trim() : "";
-      return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
-    }) ?? null;
-
-    if (!preferredModelId) {
-      return { brief: deterministicBrief, usedFallbackSummary: true };
-    }
-
-    const descriptor = getModelById(preferredModelId);
-    if (!descriptor) {
-      return { brief: deterministicBrief, usedFallbackSummary: true };
-    }
+    const candidateModelIds = buildSessionIntelligenceModelCandidates({
+      availableModels,
+      settingModelId: resolveChatConfig().summaryModelId,
+      sessionModelId: args.managed.session.modelId,
+      sessionModel: args.managed.session.model,
+    });
 
     const transcriptText = args.transcript.entries.map((entry) => {
       const speaker = entry.role === "user" ? "User" : "Assistant";
@@ -11761,26 +11739,33 @@ export function createAgentChatService(args: {
       deterministicBrief,
     ].filter(Boolean).join("\n");
 
-    try {
-      const result = await runSessionIntelligencePrompt({
-        cwd: args.managed.laneWorktreePath,
-        modelId: descriptor.id,
-        prompt,
-        taskType: "handoff_summary",
-      });
-      const brief = result.text.trim();
-      if (!brief.length) {
-        return { brief: deterministicBrief, usedFallbackSummary: true };
-      }
-      return { brief, usedFallbackSummary: false };
-    } catch (error) {
-      logger.warn("agent_chat.handoff_summary_failed", {
-        sessionId: args.managed.session.id,
-        modelId: descriptor.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
+    if (!candidateModelIds.length) {
       return { brief: deterministicBrief, usedFallbackSummary: true };
     }
+
+    const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+      run: async (descriptor) => {
+        const response = await runSessionIntelligencePrompt({
+          cwd: args.managed.laneWorktreePath,
+          modelId: descriptor.id,
+          prompt,
+          taskType: "handoff_summary",
+        });
+        const brief = response.text.trim();
+        return brief.length ? brief : null;
+      },
+      onFailure: (failure) => {
+        logger.warn("agent_chat.handoff_summary_failed", {
+          sessionId: args.managed.session.id,
+          modelId: failure.descriptor.id,
+          error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+        });
+      },
+    });
+    if (!result) {
+      return { brief: deterministicBrief, usedFallbackSummary: true };
+    }
+    return { brief: result, usedFallbackSummary: false };
   };
 
   const buildHandoffPrompt = (brief: string, handoffNote: string | null = null): string => {
@@ -11954,23 +11939,12 @@ export function createAgentChatService(args: {
 
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
-    if (!availableModels.length) return;
-
-    // Same chain as automatic lane naming: preferred title models -> the model
-    // this chat was launched with -> a different provider -> deterministic. One
-    // provider being down (auth, missing binary, account-rejected model) must
-    // not leave the chat sitting on its provider default title.
-    const candidateModelIds = buildNamingModelCandidates({
+    const candidateModelIds = buildSessionIntelligenceModelCandidates({
       availableModels,
-      preferred: [
-        config.titleModelId,
-        DEFAULT_AUTO_TITLE_MODEL_ID,
-        managed.session.modelId,
-        managed.session.model,
-        availableModels[0]?.id,
-      ],
+      settingModelId: config.titleModelId,
+      sessionModelId: managed.session.modelId,
+      sessionModel: managed.session.model,
     });
-    if (!candidateModelIds.length) return;
 
     const laneName = sessionService.get(managed.session.id)?.laneName ?? "Current lane";
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
@@ -11992,39 +11966,40 @@ export function createAgentChatService(args: {
     try {
       // A model that answers unusably (a rejected or empty title) returns null
       // so the next candidate still gets a turn — a working model beats a slug.
+      // An empty candidate list is a no-op walk and falls through to deterministic.
       const { result: adopted, attemptCount } = await runNamingAcrossProviders<string>(candidateModelIds, {
-        shouldStop: () => sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted,
-        run: async (descriptor) => {
-          const result = await runSessionIntelligencePrompt({
-            cwd: managed.laneWorktreePath,
-            modelId: descriptor.id,
-            systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
-            prompt: [
-              args.stage === "final"
-                ? "Write a final concise title for this completed coding chat."
-                : "Write a concise title for this new coding chat.",
-              titleContext.join("\n"),
-            ].join("\n\n"),
-            taskType: "session_title",
-          });
-          // Guard BEFORE the write: setManagedSessionTitle has side effects
-          // (session meta, runtime push), so a manual rename that landed while
-          // this request was in flight must stop it here, not after.
-          if (sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return null;
-          return setManagedSessionTitle(managed, result.text);
-        },
-        onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount, error }) => {
-          logger.warn("agent_chat.auto_title_failed", {
-            sessionId: managed.session.id,
-            stage: args.stage,
-            modelId: descriptor.id,
-            provider,
-            providerLevelFailure,
-            attemptCount,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-      });
+          shouldStop: () => sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted,
+          run: async (descriptor) => {
+            const result = await runSessionIntelligencePrompt({
+              cwd: managed.laneWorktreePath,
+              modelId: descriptor.id,
+              systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
+              prompt: [
+                args.stage === "final"
+                  ? "Write a final concise title for this completed coding chat."
+                  : "Write a concise title for this new coding chat.",
+                titleContext.join("\n"),
+              ].join("\n\n"),
+              taskType: "session_title",
+            });
+            // Guard BEFORE the write: setManagedSessionTitle has side effects
+            // (session meta, runtime push), so a manual rename that landed while
+            // this request was in flight must stop it here, not after.
+            if (sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return null;
+            return setManagedSessionTitle(managed, result.text);
+          },
+          onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount: currentAttempt, error }) => {
+            logger.warn("agent_chat.auto_title_failed", {
+              sessionId: managed.session.id,
+              stage: args.stage,
+              modelId: descriptor.id,
+              provider,
+              providerLevelFailure,
+              attemptCount: currentAttempt,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          },
+        });
       if (adopted) {
         managed.autoTitleStage = args.stage;
         return;
@@ -12773,20 +12748,11 @@ export function createAgentChatService(args: {
         if (config.titleGenerationEnabled !== false) {
           const auth = await detectAuth();
           const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
-          // Same chain as chat auto-title: configured naming model -> default
-          // title model (haiku) -> launched chat model -> requested model ->
-          // first available -> deterministic. Haiku stays ahead of the chat
-          // model so a JSON miss on the configured namer does not send lane
-          // identity to grok while chat titles still use haiku.
-          const candidateModelIds = buildNamingModelCandidates({
+          const candidateModelIds = buildSessionIntelligenceModelCandidates({
             availableModels,
-            preferred: [
-              config.titleModelId,
-              DEFAULT_AUTO_TITLE_MODEL_ID,
-              chatModelId,
-              requestedModelId,
-              availableModels[0]?.id,
-            ],
+            settingModelId: config.titleModelId,
+            sessionModelId: chatModelId,
+            sessionModel: requestedModelId,
           });
 
           // Naming runs in the background, but it still must not walk the whole
@@ -12803,7 +12769,7 @@ export function createAgentChatService(args: {
                 jsonSchema: AUTO_LANE_IDENTITY_JSON_SCHEMA,
                 taskType: "session_title",
               });
-              const parsed = parseAutoLaneIdentity(result.text);
+              const parsed = parseAutoLaneIdentity(result.structuredOutput ?? result.text);
               if (!parsed || (!parsed.laneTitle && !parsed.branchFragment)) return null;
               return resolveCoherentAutoLaneIdentity(parsed, fallback);
             },
@@ -12879,14 +12845,10 @@ export function createAgentChatService(args: {
       if (config.titleGenerationEnabled === false) return fallback();
       const auth = await detectAuth();
       const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
-      const candidateModelIds = buildNamingModelCandidates({
+      const candidateModelIds = buildSessionIntelligenceModelCandidates({
         availableModels,
-        preferred: [
-          config.titleModelId,
-          requestedModelId,
-          DEFAULT_AUTO_TITLE_MODEL_ID,
-          availableModels[0]?.id,
-        ],
+        settingModelId: config.titleModelId,
+        sessionModelId: requestedModelId,
       });
       const { result: suggested } = await runNamingAcrossProviders<string>(candidateModelIds, {
         run: async (descriptor) => {
@@ -18036,24 +17998,13 @@ export function createAgentChatService(args: {
     // Fire-and-forget AI summary enhancement
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
-    if (!availableModels.length) return;
-
-    const preferredModelId =
-      [
-        config.summaryModelId,
-        DEFAULT_AUTO_TITLE_MODEL_ID,
-        "anthropic/claude-haiku-4-5",
-        "openai/gpt-5.4-mini",
-        "openai/gpt-5.2",
-        availableModels[0]?.id,
-      ].find((candidate) => {
-        const modelId = typeof candidate === "string" ? candidate.trim() : "";
-        return modelId.length > 0 && availableModels.some((d) => d.id === modelId);
-      }) ?? null;
-
-    if (!preferredModelId) return;
-    const descriptor = getModelById(preferredModelId);
-    if (!descriptor) return;
+    const candidateModelIds = buildSessionIntelligenceModelCandidates({
+      availableModels,
+      settingModelId: config.summaryModelId,
+      sessionModelId: managed.session.modelId,
+      sessionModel: managed.session.model,
+    });
+    if (!candidateModelIds.length) return;
 
     const baseSummary = session.summary ?? deterministicText ?? "";
     const userRequest = managed.autoTitleSeed?.trim() ?? "";
@@ -18071,22 +18022,28 @@ export function createAgentChatService(args: {
 
     managed.summaryInFlight = true;
     try {
-      const result = await runSessionIntelligencePrompt({
-        cwd: managed.laneWorktreePath,
-        modelId: descriptor.id,
-        prompt,
-        taskType: "session_summary",
+      const { result } = await runNamingAcrossProviders<string>(candidateModelIds, {
+        run: async (descriptor) => {
+          const response = await runSessionIntelligencePrompt({
+            cwd: managed.laneWorktreePath,
+            modelId: descriptor.id,
+            prompt,
+            taskType: "session_summary",
+          });
+          const text = response.text.trim();
+          return text.length ? text : null;
+        },
+        onFailure: (failure) => {
+          logger.warn("agent_chat.session_summary_failed", {
+            sessionId: managed.session.id,
+            modelId: failure.descriptor.id,
+            error: failure.error instanceof Error ? failure.error.message : String(failure.error),
+          });
+        },
       });
-      const text = result.text.trim();
-      if (text.length) {
-        sessionService.setSummary(managed.session.id, text);
+      if (result) {
+        sessionService.setSummary(managed.session.id, result);
       }
-    } catch (error) {
-      logger.warn("agent_chat.session_summary_failed", {
-        sessionId: managed.session.id,
-        modelId: descriptor.id,
-        error: error instanceof Error ? error.message : String(error),
-      });
     } finally {
       managed.summaryInFlight = false;
     }
@@ -23738,14 +23695,10 @@ export function createAgentChatService(args: {
         const guidance = buildAdeGuidanceForLane(managed.laneWorktreePath, managed.session);
         if (guidance.trim()) prompt = `${guidance}\n\n${prompt}`;
       }
-      const promptBlocks = await buildAgentPromptBlocks(prompt, args.resolvedAttachments ?? []);
-      const promptText = promptBlocks
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n\n");
-      const images = promptBlocks
-        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-        .map(({ data, mimeType }) => ({ data, mimeType }));
+      const { promptText, images } = await buildPiWorkerPrompt(
+        prompt,
+        args.resolvedAttachments ?? [],
+      );
       args.onDispatched?.();
       const accepted = runtime.sdk.sendPrompt({
         prompt: promptText,
@@ -36789,6 +36742,71 @@ export function createAgentChatService(args: {
     return blocks;
   };
 
+  const promptTextWithoutInlineImages = async (
+    promptText: string,
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Promise<string> => {
+    const promptBlocks = await buildAgentPromptBlocks(
+      promptText,
+      resolvedAttachments.filter((attachment) => attachment.type !== "image" && attachment.type !== "image-url"),
+    );
+    return promptBlocks
+      .filter((block): block is { type: "text"; text: string } => block.type === "text")
+      .map((block) => block.text)
+      .join("\n\n");
+  };
+
+  const pathImagesFromResolved = (
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Array<{ path: string; mimeType: string; rootPath: string }> => (
+    workerPathImagesFromAttachments(
+      resolvedAttachments.flatMap((attachment) => {
+        if (attachment.type !== "image") return [];
+        const rootPath = attachment._rootPath.trim();
+        if (!rootPath) return [];
+        return [{
+          path: attachment.path,
+          resolvedPath: attachment._resolvedPath,
+          rootPath,
+        }];
+      }),
+    )
+  );
+
+  const buildCursorWorkerPrompt = async (
+    promptText: string,
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Promise<{ promptText: string; images: WorkerIpcImage[] }> => ({
+    promptText: await promptTextWithoutInlineImages(promptText, resolvedAttachments),
+    images: [
+      ...pathImagesFromResolved(resolvedAttachments),
+      ...resolvedAttachments.flatMap((attachment) => {
+        if (attachment.type !== "image-url") return [];
+        const url = attachment.url?.trim();
+        if (!url) return [];
+        return [{ url }];
+      }),
+    ],
+  });
+
+  const buildPathOnlyWorkerPrompt = async (
+    promptText: string,
+    resolvedAttachments: ResolvedAgentChatFileRef[],
+  ): Promise<{ promptText: string; images: Array<{ path: string; mimeType: string; rootPath: string }> }> => {
+    const text = await promptTextWithoutInlineImages(promptText, resolvedAttachments);
+    const urlHints = resolvedAttachments.flatMap((attachment) => {
+      if (attachment.type !== "image-url") return [];
+      const url = attachment.url?.trim();
+      return url ? [`Image URL: ${url}`] : [];
+    });
+    return {
+      promptText: [...(text ? [text] : []), ...urlHints].join("\n\n"),
+      images: pathImagesFromResolved(resolvedAttachments),
+    };
+  };
+  const buildPiWorkerPrompt = buildPathOnlyWorkerPrompt;
+  const buildDroidWorkerPrompt = buildPathOnlyWorkerPrompt;
+
   const mapChatDecisionToDroidPermission = (
     decision: AgentChatApprovalDecision | undefined,
     request: DroidSdkPermissionRequest,
@@ -37629,14 +37647,7 @@ export function createAgentChatService(args: {
         }
       }
 
-      const promptBlocks = await buildAgentPromptBlocks(composed, args.resolvedAttachments);
-      const promptText = promptBlocks
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n\n");
-      const images = promptBlocks
-        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-        .map((block) => ({ data: block.data, mimeType: block.mimeType }));
+      const { promptText, images } = await buildCursorWorkerPrompt(composed, args.resolvedAttachments);
 
       const modelParams = resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId);
       persistChatState(managed);
@@ -37650,6 +37661,7 @@ export function createAgentChatService(args: {
         approvalPolicy: approvalPolicyLabel(policy.approvalPolicy),
         fullAuto: policy.fullAuto,
         transport: "sdk",
+        imageCount: images.length,
       });
 
       if (args.onDispatched) {
@@ -37697,7 +37709,7 @@ export function createAgentChatService(args: {
       const { watch: silenceWatch, guard: silenceGuard } = armCursorSdkSilenceWatch(runtime, turnId);
       const sendPromise = runtime.sdk.sendPrompt({
         promptText,
-        images,
+        ...(images.length ? { images } : {}),
         modelSdkId: runtime.modelSdkId,
         ...(modelParams?.length ? { modelParams } : {}),
         // Set only when ADE deliberately abandoned the previous run (recovery
@@ -38392,11 +38404,7 @@ export function createAgentChatService(args: {
         cloudComposed = `${injected}\n\n${cloudComposed}`;
       }
     }
-    const promptBlocks = await buildAgentPromptBlocks(cloudComposed, args.resolvedAttachments);
-    const promptText = promptBlocks
-      .filter((block): block is { type: "text"; text: string } => block.type === "text")
-      .map((block) => block.text)
-      .join("\n\n");
+    const { promptText, images } = await buildCursorWorkerPrompt(cloudComposed, args.resolvedAttachments);
 
     const cloudLogModelParams = runtime.modelSdkId
       ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
@@ -38409,6 +38417,7 @@ export function createAgentChatService(args: {
       hasAgentId: Boolean(managed.session.cursorCloudAgentId),
       ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
       ...(cloudLogModelParams?.length ? { modelParams: cursorModelParamsForLog(cloudLogModelParams) } : {}),
+      imageCount: images.length,
     });
 
     if (args.onDispatched) {
@@ -38433,6 +38442,7 @@ export function createAgentChatService(args: {
           apiKey,
           agentId: managed.session.cursorCloudAgentId,
           promptText,
+          ...(images.length ? { images } : {}),
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "followup"),
           mode: sdkMode,
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
@@ -38478,6 +38488,7 @@ export function createAgentChatService(args: {
         const payload: CursorSdkCloudSendStreamPayload = {
           apiKey,
           promptText,
+          ...(images.length ? { images } : {}),
           repoUrl,
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "create"),
           mode: sdkMode,
@@ -40576,14 +40587,10 @@ export function createAgentChatService(args: {
         "## User Request",
         composed,
       ].join("\n");
-      const promptBlocks = await buildAgentPromptBlocks(sdkInput, args.resolvedAttachments);
-      const sdkPromptText = promptBlocks
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n\n");
-      const images = promptBlocks
-        .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-        .map((block) => ({ data: block.data, mimeType: block.mimeType }));
+      const { promptText: sdkPromptText, images } = await buildDroidWorkerPrompt(
+        sdkInput,
+        args.resolvedAttachments,
+      );
       const result = await runtime.sdk.sendPrompt({
         promptText: sdkPromptText,
         ...(images.length ? { images } : {}),
@@ -41578,14 +41585,10 @@ export function createAgentChatService(args: {
           allowActiveSession: true,
         });
         if (!preparedSteer) return { steerId, queued: false };
-        const promptBlocks = await buildAgentPromptBlocks(preparedSteer.submittedText, preparedSteer.resolvedAttachments);
-        const promptText = promptBlocks
-          .filter((block): block is { type: "text"; text: string } => block.type === "text")
-          .map((block) => block.text)
-          .join("\n\n");
-        const images = promptBlocks
-          .filter((block): block is { type: "image"; data: string; mimeType: string } => block.type === "image")
-          .map(({ data, mimeType }) => ({ data, mimeType }));
+        const { promptText, images } = await buildPiWorkerPrompt(
+          preparedSteer.submittedText,
+          preparedSteer.resolvedAttachments,
+        );
         await runtime.sdk.steer(promptText, images);
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();

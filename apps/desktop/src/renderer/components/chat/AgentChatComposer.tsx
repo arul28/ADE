@@ -106,6 +106,7 @@ import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle }
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import {
   deriveSmartLinkPreview,
   findSmartLinks,
@@ -320,24 +321,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     parts.push(String.fromCharCode(...chunk));
   }
   return btoa(parts.join(""));
-}
-
-function getIssueContextMenuStyle(trigger: HTMLButtonElement): React.CSSProperties {
-  const rect = trigger.getBoundingClientRect();
-  const maxLeft = Math.max(
-    ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
-    window.innerWidth - ISSUE_CONTEXT_MENU_WIDTH - ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
-  );
-  const left = Math.min(
-    Math.max(ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER, rect.right - ISSUE_CONTEXT_MENU_WIDTH),
-    maxLeft,
-  );
-
-  return {
-    left,
-    bottom: Math.max(ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER, window.innerHeight - rect.top + ISSUE_CONTEXT_MENU_GAP),
-    width: ISSUE_CONTEXT_MENU_WIDTH,
-  };
 }
 
 type ExecutionModeOption = {
@@ -1286,13 +1269,10 @@ function useComposerSplitMenu(menuSelector: string) {
 }
 
 function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperties {
-  const rect = anchor.getBoundingClientRect();
-  const width = COMPOSER_COMPACT_MENU_WIDTH;
-  return {
-    left: Math.min(Math.max(8, rect.right - width), Math.max(8, window.innerWidth - width - 8)),
-    bottom: Math.max(8, window.innerHeight - rect.top + 8),
-    width,
-  };
+  return fixedMenuAboveAnchorStyle(anchor.getBoundingClientRect(), {
+    width: COMPOSER_COMPACT_MENU_WIDTH,
+    align: "end",
+  });
 }
 
 function ActiveTurnSendButton({
@@ -4998,7 +4978,12 @@ export function AgentChatComposer({
       data-issue-context-menu="true"
       role="menu"
       aria-label="Attach issue context"
-      style={getIssueContextMenuStyle(issueContextButtonRef.current)}
+      style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
+        width: ISSUE_CONTEXT_MENU_WIDTH,
+        gap: ISSUE_CONTEXT_MENU_GAP,
+        gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+        align: "end",
+      })}
     >
       <div className="border-b border-white/[0.04] px-3 py-2">
         <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
