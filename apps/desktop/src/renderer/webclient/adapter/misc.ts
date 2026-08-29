@@ -12,6 +12,7 @@ import {
 } from "../../../shared/types";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
+import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import type { AdapterInfra, AdeNamespace } from "./types";
@@ -640,30 +641,14 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
 function createZoomNamespace(infra: AdapterInfra): Record<string, unknown> {
   const { localState } = infra;
-  function setCssZoom(factor: number): void {
-    if (typeof document === "undefined") return;
-    try {
-      document.documentElement?.style?.setProperty("--ade-web-zoom-factor", String(factor));
-      // Zoom the <body>, not the root element: percentages resolve across the
-      // zoom boundary, so body/#root still measure exactly one viewport at every
-      // level (verified in Chrome 150 and Chromium 146 — no page scrollbar in or
-      // out), while the root element is the one place engines have historically
-      // reserved for browser/pinch zoom.
-      const bodyStyle = document.body?.style as (CSSStyleDeclaration & { zoom?: string }) | undefined;
-      if (bodyStyle) bodyStyle.zoom = String(factor);
-    } catch {
-      // A display preference must never take the adapter down — this also runs
-      // during install, where the document may be a partial stub.
-    }
-  }
   // AppShell re-applies the stored level on mount; doing it at install too means
   // a reload paints at the user's zoom instead of flashing 100% first.
-  setCssZoom(zoomFactorForDisplay(getStoredZoomLevel()));
+  applyHostedWebZoom(zoomFactorForDisplay(getStoredZoomLevel()));
   return {
     getLevel: () => localState.get("zoomLevel", 0),
     setLevel: (level: number) => {
       localState.set("zoomLevel", level);
-      setCssZoom(zoomFactorForLevel(level));
+      applyHostedWebZoom(zoomFactorForLevel(level));
     },
     getFactor: () => zoomFactorForLevel(localState.get("zoomLevel", 0)),
     onCommand: () => () => {},

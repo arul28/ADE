@@ -26,7 +26,7 @@ vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
 }));
 vi.mock("../LaneCombobox", () => ({
   LaneCombobox: () => <div data-testid="lane-combobox" />,
-  computeLanePopoverPlacement: () => ({ width: 220, left: 0, top: 0, maxHeight: 320 }),
+  computeLanePopoverPlacement: () => ({ width: 220, left: 0, top: 0, maxHeight: 320, openAbove: false }),
 }));
 
 function summary(overrides: Partial<ExternalSessionSummary> = {}): ExternalSessionSummary {

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import {
   CaretDown,
   Check,
@@ -240,9 +241,9 @@ export function PermissionModePicker<Value extends string>({
       </button>
       {open && ref.current ? createPortal(
         (() => {
-          const rect = ref.current.getBoundingClientRect();
-          const width = PERMISSION_MODE_MENU_WIDTH;
-          const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+          const anchor = ref.current;
+          if (!anchor) return null;
+          const rect = anchor.getBoundingClientRect();
           return (
             <div
               role="listbox"
@@ -252,11 +253,7 @@ export function PermissionModePicker<Value extends string>({
                 "fixed overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md",
                 menuLayerClassName,
               )}
-              style={{
-                left,
-                bottom: Math.max(8, window.innerHeight - rect.top + 8),
-                width,
-              }}
+              style={fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH })}
             >
               <ul className="py-0.5">
                 {options.map((option) => {
