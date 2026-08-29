@@ -53,6 +53,17 @@ describe("applyHostedWebZoom", () => {
     expect(parseFloat(document.body.style.width) * 1.4).toBeCloseTo(2100, 5);
   });
 
+  it("does not throw when window is a stub without EventTarget (adapter tests)", () => {
+    const originalAdd = window.addEventListener;
+    Object.defineProperty(window, "addEventListener", { configurable: true, value: undefined });
+    try {
+      expect(() => applyHostedWebZoom(1.4)).not.toThrow();
+      expect(document.documentElement.style.getPropertyValue("--ade-web-zoom-factor")).toBe("1.4");
+    } finally {
+      Object.defineProperty(window, "addEventListener", { configurable: true, value: originalAdd });
+    }
+  });
+
   it("pins html and #root to a percentage box so h-full can fill the inverse size", () => {
     const root = document.createElement("div");
     root.id = "root";

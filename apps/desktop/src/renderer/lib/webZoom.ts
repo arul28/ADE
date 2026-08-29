@@ -68,10 +68,15 @@ function paintHostedWebZoom(): void {
 
 function ensureResizeListener(): void {
   if (resizeInstalled || typeof window === "undefined") return;
-  resizeInstalled = true;
-  onResize = () => paintHostedWebZoom();
-  window.addEventListener("resize", onResize);
-  window.visualViewport?.addEventListener("resize", onResize);
+  if (typeof window.addEventListener !== "function") return;
+  try {
+    onResize = () => paintHostedWebZoom();
+    window.addEventListener("resize", onResize);
+    window.visualViewport?.addEventListener("resize", onResize);
+    resizeInstalled = true;
+  } catch {
+    onResize = null;
+  }
 }
 
 /**
@@ -88,9 +93,17 @@ export function applyHostedWebZoom(factor: number): void {
 
 /** Test seam. */
 export function __resetHostedWebZoomForTests(): void {
-  if (typeof window !== "undefined" && onResize) {
-    window.removeEventListener("resize", onResize);
-    window.visualViewport?.removeEventListener("resize", onResize);
+  if (
+    typeof window !== "undefined"
+    && onResize
+    && typeof window.removeEventListener === "function"
+  ) {
+    try {
+      window.removeEventListener("resize", onResize);
+      window.visualViewport?.removeEventListener("resize", onResize);
+    } catch {
+      // Adapter tests stub `window` without the EventTarget methods.
+    }
   }
   onResize = null;
   resizeInstalled = false;
