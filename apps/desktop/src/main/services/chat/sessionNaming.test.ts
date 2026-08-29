@@ -108,6 +108,22 @@ describe("buildSessionIntelligenceModelCandidates", () => {
       sessionModelId,
     })).toEqual([sessionModelId]);
   });
+
+  it("resolves a session-model alias onto its canonical id", () => {
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      sessionModel: "sonnet",
+    })).toEqual(["anthropic/claude-sonnet-5"]);
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: [],
+      sessionModel: "sonnet",
+    })).toEqual(["anthropic/claude-sonnet-5"]);
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      settingModelId: "anthropic/claude-sonnet-5",
+      sessionModel: "sonnet",
+    })).toEqual(["anthropic/claude-sonnet-5"]);
+  });
 });
 
 describe("runNamingAcrossProviders", () => {

@@ -279,8 +279,12 @@ export function buildNamingModelCandidates(args: {
   const availableIds = new Set(args.availableModels.map((entry) => entry.id));
   return args.preferred.reduce<string[]>((acc, candidate) => {
     const modelId = typeof candidate === "string" ? candidate.trim() : "";
-    if (!modelId || acc.includes(modelId) || !availableIds.has(modelId)) return acc;
-    return [...acc, modelId];
+    if (!modelId) return acc;
+    // Aliases like Claude's stored `sonnet` must match the canonical registry
+    // id that withSessionModelDescriptors already added to the pool.
+    const canonicalId = resolveModelDescriptor(modelId)?.id ?? modelId;
+    if (acc.includes(canonicalId) || !availableIds.has(canonicalId)) return acc;
+    return [...acc, canonicalId];
   }, []);
 }
 
