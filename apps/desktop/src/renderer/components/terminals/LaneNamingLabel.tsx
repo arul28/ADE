@@ -1,15 +1,19 @@
-export function LaneNamingLabel({
-  laneName,
+import { cn } from "../ui/cn";
+
+export function NamingPendingLabel({
+  text,
   naming,
+  pendingLabel,
 }: {
-  laneName: string;
+  text: string;
   naming: boolean;
+  pendingLabel: string;
 }) {
-  if (!naming) return <>{laneName}</>;
+  if (!naming) return <>{text}</>;
 
   return (
-    <span className="inline-flex min-w-0 items-baseline" aria-label="Naming lane…">
-      <span className="truncate">Naming lane</span>
+    <span className="inline-flex min-w-0 items-baseline" aria-label={`${pendingLabel}…`}>
+      <span className={cn("truncate ade-naming-pending")}>{pendingLabel}</span>
       <span className="ade-lane-naming-dots shrink-0" aria-hidden>
         <span>.</span>
         <span>.</span>
@@ -17,4 +21,14 @@ export function LaneNamingLabel({
       </span>
     </span>
   );
+}
+
+export function LaneNamingLabel({
+  laneName,
+  naming,
+}: {
+  laneName: string;
+  naming: boolean;
+}) {
+  return <NamingPendingLabel text={laneName} naming={naming} pendingLabel="Naming lane" />;
 }

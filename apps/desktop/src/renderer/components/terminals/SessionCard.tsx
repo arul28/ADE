@@ -41,7 +41,7 @@ import {
 import { relativeTimeCompact } from "../../lib/format";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { useAppStore } from "../../state/appStore";
-import { useLaneNaming } from "../../state/laneNamingStore";
+import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
@@ -67,7 +67,7 @@ import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/
 import { SessionStatusSlot } from "./SessionStatusSlot";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { formatFutureDuration } from "../../../shared/sessionStatusPresentation";
-import { LaneNamingLabel } from "./LaneNamingLabel";
+import { LaneNamingLabel, NamingPendingLabel } from "./LaneNamingLabel";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The Work-sidebar session card.
@@ -416,7 +416,9 @@ export const SessionCard = React.memo(function SessionCard({
     return () => window.clearTimeout(timer);
   }, [canonicalPhase]);
 
-  const isAutoNaming = useLaneNaming(lane?.id ?? null);
+  const namingLane = useLaneNamePending(lane?.id ?? session.laneId);
+  const namingTitle = useSessionFieldGenerating(session.id, "title");
+  const namingStatus = useSessionFieldGenerating(session.id, "statusLine");
   // Brief warm highlight when the displayed title actually changes (e.g. the
   // deterministic/seed name is replaced by the AI name). Skipped on first mount.
   const [titleJustChanged, setTitleJustChanged] = React.useState(false);
@@ -588,7 +590,7 @@ export const SessionCard = React.memo(function SessionCard({
           <LaneIcon size={12} weight="regular" />
         </span>
         <span className={cn("min-w-0 truncate", laneAccent ? "" : "text-fg/85")}>
-          <LaneNamingLabel laneName={lane.name} naming={isAutoNaming} />
+          <LaneNamingLabel laneName={lane.name} naming={namingLane} />
         </span>
       </span>,
     );
@@ -707,7 +709,7 @@ export const SessionCard = React.memo(function SessionCard({
       <span style={laneAccent ? { color: laneAccent } : undefined}>
         <LaneNamingLabel
           laneName={lane?.name ?? session.laneName}
-          naming={isAutoNaming}
+          naming={namingLane}
         />
       </span>
     ),
@@ -950,7 +952,11 @@ export const SessionCard = React.memo(function SessionCard({
           : "none",
       }}
     >
-      {primaryText}
+      {namingTitle ? (
+        <NamingPendingLabel text={primaryText} naming pendingLabel="Naming chat" />
+      ) : (
+        primaryText
+      )}
     </span>
   );
 
@@ -1045,7 +1051,14 @@ export const SessionCard = React.memo(function SessionCard({
 
           {/* Line 3 — what it is doing, then the quiet meta. */}
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-muted-fg/65">
-            {previewLine ? (
+            {namingStatus ? (
+              <span
+                className="min-w-0 flex-1 truncate italic"
+                data-session-preview-source="generating"
+              >
+                <NamingPendingLabel text={previewLine?.text ?? ""} naming pendingLabel="Writing status" />
+              </span>
+            ) : previewLine ? (
               <span
                 key={`${previewLine.source}:${previewLine.text}`}
                 /* Italic, deliberately: the title above is the thing you scan

@@ -10,6 +10,7 @@ import {
   resetSessionHoverCardGroupForTests,
 } from "./SessionHoverCard";
 import { setLaneNaming } from "../../state/laneNamingStore";
+import { setSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 
 const { navigateMock, sessionDeltaMock } = vi.hoisted(() => ({
@@ -38,6 +39,7 @@ afterEach(() => {
   // to be cleared or one test's card makes the next one open instantly.
   resetSessionHoverCardGroupForTests();
   setLaneNaming("lane-1", false);
+  setSessionMetadataGenerating("session-1", null);
   vi.useRealTimers();
   navigateMock.mockReset();
   sessionDeltaMock.mockReset();
@@ -386,6 +388,61 @@ describe("SessionCard auto-naming status", () => {
     expect(screen.queryByLabelText("Naming lane…")).toBeNull();
     expect(screen.getByText("Lane 1")).toBeTruthy();
     expect(screen.getByText(/running the build/i)).toBeTruthy();
+  });
+});
+
+describe("SessionCard metadata regeneration", () => {
+  it("masks the title, lane name, and status line while those fields regenerate", () => {
+    setSessionMetadataGenerating("session-1", {
+      fields: ["title", "laneName", "statusLine"],
+      laneId: "lane-1",
+    });
+    render(
+      <SessionCard
+        session={makeSession({
+          title: "Stop Haiku default",
+          manuallyNamed: true,
+          statusNote: "Tests are running",
+        })}
+        lane={lane}
+        showLaneIdentity
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Naming chat…")).toBeTruthy();
+    expect(screen.getByLabelText("Naming lane…")).toBeTruthy();
+    expect(screen.getByLabelText("Writing status…")).toBeTruthy();
+    expect(screen.queryByText("Stop Haiku default")).toBeNull();
+    expect(screen.queryByText("Tests are running")).toBeNull();
+  });
+
+  it("only masks the requested field", () => {
+    setSessionMetadataGenerating("session-1", {
+      fields: ["title"],
+      laneId: "lane-1",
+    });
+    render(
+      <SessionCard
+        session={makeSession({
+          title: "Stop Haiku default",
+          manuallyNamed: true,
+          statusNote: "Tests are running",
+        })}
+        lane={lane}
+        showLaneIdentity
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Naming chat…")).toBeTruthy();
+    expect(screen.queryByLabelText("Naming lane…")).toBeNull();
+    expect(screen.getByText("Lane 1")).toBeTruthy();
+    expect(screen.getByText(/Tests are running/i)).toBeTruthy();
   });
 });
 
