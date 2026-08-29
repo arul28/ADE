@@ -4,6 +4,7 @@ import type { AgentChatSession } from "../../../shared/types/chat";
 import { getAvailableModels } from "../../../shared/modelRegistry";
 import type { Logger } from "../logging/logger";
 import { createSessionMetadataRegenerator, type SessionMetadataManagedSession } from "./sessionMetadataService";
+import type { SessionMetadataPromptRunner } from "./sessionNaming";
 
 const ANTHROPIC_MODELS = getAvailableModels([
   { type: "cli-subscription", cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
@@ -19,7 +20,7 @@ const normalizeStatusLine = (value: string): string | null => {
 };
 
 function createHarness(args?: {
-  runPrompt?: ReturnType<typeof vi.fn>;
+  runPrompt?: SessionMetadataPromptRunner;
   summary?: string | null;
   autoTitleSeed?: string | null;
   preview?: string | null;
@@ -54,13 +55,15 @@ function createHarness(args?: {
     return true;
   });
   const renameLane = vi.fn();
-  const runPrompt = args?.runPrompt ?? vi.fn(async () => ({
-    text: JSON.stringify({
-      chatTitle: "Wire Rag Search",
-      laneName: "Search Answer Path",
-      statusLine: "Sources show before generate",
-    }),
-  }));
+  const runPrompt = vi.fn<Parameters<SessionMetadataPromptRunner>, ReturnType<SessionMetadataPromptRunner>>(
+    args?.runPrompt ?? (async () => ({
+      text: JSON.stringify({
+        chatTitle: "Wire Rag Search",
+        laneName: "Search Answer Path",
+        statusLine: "Sources show before generate",
+      }),
+    })),
+  );
   const logger = { info: vi.fn(), warn: vi.fn() } as unknown as Logger;
   const regenerate = createSessionMetadataRegenerator<typeof managed>({
     ensureManagedSession: () => managed,
