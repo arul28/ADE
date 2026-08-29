@@ -105,7 +105,7 @@ const STALE_INIT_RETRY_LIMIT = 2;
  */
 const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
 /** Cap how long a replacement waits for the previous worker of the same pool key. */
-const CURSOR_SDK_REPLACE_WAIT_MS = CURSOR_SDK_DISPOSE_GRACE_MS + 500;
+export const CURSOR_SDK_REPLACE_WAIT_MS = CURSOR_SDK_DISPOSE_GRACE_MS + 500;
 const CURSOR_SDK_WORKER_ENV_DENYLIST = [
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
@@ -976,13 +976,18 @@ function trackDepartingCursorSdkWorker(poolKey: string, wait: Promise<void>): vo
 async function waitForDepartingCursorSdkWorker(poolKey: string): Promise<void> {
   const prior = departingWorkers.get(poolKey);
   if (!prior) return;
-  await Promise.race([
-    prior,
-    new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, CURSOR_SDK_REPLACE_WAIT_MS);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const outcome = await Promise.race([
+    prior.then(() => "exited" as const),
+    new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), CURSOR_SDK_REPLACE_WAIT_MS);
       timer.unref();
     }),
   ]);
+  if (timer) clearTimeout(timer);
+  if (outcome === "timeout") {
+    throw new Error("Cursor SDK worker did not exit before replacement.");
+  }
 }
 
 /**

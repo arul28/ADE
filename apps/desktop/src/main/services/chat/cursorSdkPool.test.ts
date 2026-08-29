@@ -8,6 +8,7 @@ import {
   buildCursorSdkPaths,
   buildCursorSdkWorkerEnv,
   cleanupCursorSdkRuntimePaths,
+  CURSOR_SDK_REPLACE_WAIT_MS,
   isCursorSdkPooledAlive,
   poisonCursorSdkConnection,
   releaseCursorSdkConnection,
@@ -104,6 +105,14 @@ class DelayedExitChild extends FakeSdkChild {
     if (message.type === "dispose") {
       this.disposeCount += 1;
     }
+    return true;
+  }
+}
+
+/** Dispose/kill never reaps the pid — the replace wait must not fork over it. */
+class StuckExitChild extends DelayedExitChild {
+  override kill(): boolean {
+    this.killed = true;
     return true;
   }
 }
@@ -348,8 +357,7 @@ describe("Cursor SDK pool paths", () => {
     })).toThrow(/instance id is required/);
   });
 
-  it("does not delete a sibling worker's hook socket directory during cleanup", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("does not delete a sibling worker's hook socket directory during cleanup", () => {
     const cacheRoot = makeTempDir("ade-cursor-cleanup-socket-");
     const stateRoot = path.join(cacheRoot, "state");
     fs.mkdirSync(stateRoot, { recursive: true });
@@ -617,6 +625,43 @@ describe("Cursor SDK pool paths", () => {
     expect(second.pooled).not.toBe(first.pooled);
     expect(forkMock).toHaveBeenCalledTimes(2);
     expect(forkedSocketPath(1)).not.toBe(forkedSocketPath(0));
+
+    releaseCursorSdkConnection(poolKey, second.generation);
+  });
+
+  it("fails acquire if the poisoned worker outlives the replace wait", async () => {
+    const firstChild = new StuckExitChild();
+    const nextChild = new FakeSdkChild();
+    forkMock.mockReturnValueOnce(firstChild);
+    const poolKey = `test-replace-timeout:${Date.now()}:${Math.random()}`;
+    const args = {
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: { ...TEST_POLICY },
+    };
+
+    const first = await acquireCursorSdkConnection(args);
+    vi.useFakeTimers();
+    try {
+      expect(poisonCursorSdkConnection(poolKey, first.generation)).toBe(true);
+      forkMock.mockReturnValue(nextChild);
+      const pending = expect(acquireCursorSdkConnection(args)).rejects.toThrow(
+        /did not exit before replacement/,
+      );
+      await vi.advanceTimersByTimeAsync(CURSOR_SDK_REPLACE_WAIT_MS);
+      await pending;
+      expect(forkMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    firstChild.finishExit(0, null);
+    const second = await acquireCursorSdkConnection(args);
+    expect(second.pooled).not.toBe(first.pooled);
+    expect(forkMock).toHaveBeenCalledTimes(2);
 
     releaseCursorSdkConnection(poolKey, second.generation);
   });
