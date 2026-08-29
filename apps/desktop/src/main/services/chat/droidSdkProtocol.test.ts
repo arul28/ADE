@@ -3,7 +3,6 @@ import {
   droidDisabledToolIdsForCategories,
   droidInteractionModeValue,
   droidMcpToolsToDisable,
-  isDroidSdkUserImage,
 } from "./droidSdkProtocol";
 import { ORCHESTRATION_LEAD_DENIED_DROID_TOOL_CATEGORIES } from "../../../shared/orchestrationRuntimePolicy";
 
@@ -82,33 +81,6 @@ describe("droidMcpToolsToDisable", () => {
     ], [])).toEqual([
       { serverName: "filesystem", toolName: "unknown_state" },
     ]);
-  });
-});
-
-describe("isDroidSdkUserImage", () => {
-  it("accepts path images without inlined screenshot bytes", () => {
-    expect(isDroidSdkUserImage({
-      path: "/repo/.ade/attachments/shot.png",
-      mimeType: "image/png",
-      rootPath: "/repo",
-    })).toBe(true);
-    expect(isDroidSdkUserImage({ data: "abc", mimeType: "image/jpeg" })).toBe(true);
-  });
-
-  it("rejects remote URLs and path images missing a sandbox root", () => {
-    expect(isDroidSdkUserImage({
-      url: "https://example.com/ui.png",
-      mimeType: "image/png",
-    })).toBe(false);
-    expect(isDroidSdkUserImage({
-      path: "/shot.png",
-      data: "abc",
-      mimeType: "image/png",
-    })).toBe(false);
-    expect(isDroidSdkUserImage({
-      path: "/repo/.ade/attachments/shot.png",
-      mimeType: "image/png",
-    })).toBe(false);
   });
 });
 

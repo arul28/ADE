@@ -132,19 +132,6 @@ export type DroidSdkUserImage =
   | { path: string; mimeType: string; rootPath: string }
   | { data: string; mimeType: string };
 
-export function isDroidSdkUserImage(image: unknown): image is DroidSdkUserImage {
-  if (!image || typeof image !== "object") return false;
-  const rec = image as Record<string, unknown>;
-  if (typeof rec.url === "string" && rec.url.trim()) return false;
-  const data = typeof rec.data === "string" ? rec.data.trim() : "";
-  const filePath = typeof rec.path === "string" ? rec.path.trim() : "";
-  const mimeType = typeof rec.mimeType === "string" ? rec.mimeType.trim() : "";
-  const rootPath = typeof rec.rootPath === "string" ? rec.rootPath.trim() : "";
-  if (data) return !filePath && mimeType.length > 0;
-  if (filePath) return mimeType.length > 0 && rootPath.length > 0;
-  return false;
-}
-
 export type DroidSdkSendPrompt = {
   promptText: string;
   images?: DroidSdkUserImage[];
