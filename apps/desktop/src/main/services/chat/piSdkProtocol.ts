@@ -78,10 +78,17 @@ export type PiSdkWorkerInit = PiSdkPackageLocation & {
   approvalTools?: string[];
 };
 
-export type PiSdkImage = {
-  data: string;
-  mimeType: string;
-};
+/**
+ * Worker-IPC image reference. Prefer `path` — never put multi-megabyte
+ * screenshot bytes on this object. The worker materializes `{ data, mimeType }`
+ * for Pi locally. `data` remains for tests and tiny inline cases. Pi's prompt
+ * API has no remote-URL image form, so `url` is rejected at the protocol gate.
+ * Path images include `rootPath` so the worker re-opens through the attachment
+ * sandbox.
+ */
+export type PiSdkImage =
+  | { path: string; mimeType: string; rootPath: string }
+  | { data: string; mimeType: string };
 
 export type PiSdkPromptPayload = {
   prompt: string;
@@ -341,6 +348,18 @@ function isSessionTarget(value: unknown): boolean {
     && (value.resume.sessionId == null || typeof value.resume.sessionId === "string"));
 }
 
+function isPiSdkImage(image: unknown): boolean {
+  if (!isRecord(image)) return false;
+  if (typeof image.url === "string" && image.url.trim()) return false;
+  const data = typeof image.data === "string" ? image.data.trim() : "";
+  const filePath = typeof image.path === "string" ? image.path.trim() : "";
+  const mimeType = typeof image.mimeType === "string" ? image.mimeType.trim() : "";
+  const rootPath = typeof image.rootPath === "string" ? image.rootPath.trim() : "";
+  if (data) return !filePath && mimeType.length > 0;
+  if (filePath) return mimeType.length > 0 && rootPath.length > 0;
+  return false;
+}
+
 /** Returns a human-readable validation failure without throwing. */
 export function validatePiSdkWorkerRequest(raw: unknown): string | null {
   if (!isRecord(raw)) return "Pi SDK worker message must be an object.";
@@ -389,8 +408,8 @@ export function validatePiSdkWorkerRequest(raw: unknown): string | null {
   if (["send", "steer", "follow_up"].includes(type)) {
     if (!isRecord(payload) || !nonEmptyString(payload.prompt)) return `Pi SDK ${type} requires a non-empty prompt.`;
     if (payload.images != null && (!Array.isArray(payload.images)
-      || payload.images.some((image) => !isRecord(image) || typeof image.data !== "string" || typeof image.mimeType !== "string"))) {
-      return "Pi SDK send images must contain data and mimeType strings.";
+      || payload.images.some((image) => !isPiSdkImage(image)))) {
+      return "Pi SDK send images must each contain a path or data with mimeType.";
     }
     if (type === "send" && payload.streamingBehavior != null
       && payload.streamingBehavior !== "steer" && payload.streamingBehavior !== "followUp") {

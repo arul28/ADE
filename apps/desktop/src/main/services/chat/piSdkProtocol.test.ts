@@ -20,6 +20,54 @@ describe("Pi SDK protocol", () => {
     })).toContain("non-empty prompt");
   });
 
+  it("accepts path images on send without inlined screenshot bytes", () => {
+    expect(validatePiSdkWorkerRequest({
+      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+      type: "send",
+      requestId: "send-images",
+      payload: {
+        prompt: "look",
+        images: [{ path: "/repo/.ade/attachments/shot.png", mimeType: "image/png", rootPath: "/repo" }],
+      },
+    })).toBeNull();
+    expect(validatePiSdkWorkerRequest({
+      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+      type: "steer",
+      requestId: "steer-images",
+      payload: {
+        prompt: "look",
+        images: [{ data: "abc", mimeType: "image/jpeg" }],
+      },
+    })).toBeNull();
+    expect(validatePiSdkWorkerRequest({
+      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+      type: "send",
+      requestId: "send-url",
+      payload: {
+        prompt: "look",
+        images: [{ url: "https://example.com/ui.png", mimeType: "image/png" }],
+      },
+    })).toMatch(/path or data/u);
+    expect(validatePiSdkWorkerRequest({
+      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+      type: "follow_up",
+      requestId: "follow-both",
+      payload: {
+        prompt: "look",
+        images: [{ path: "/shot.png", data: "abc", mimeType: "image/png" }],
+      },
+    })).toMatch(/path or data/u);
+    expect(validatePiSdkWorkerRequest({
+      protocolVersion: PI_SDK_PROTOCOL_VERSION,
+      type: "send",
+      requestId: "send-no-root",
+      payload: {
+        prompt: "look",
+        images: [{ path: "/repo/.ade/attachments/shot.png", mimeType: "image/png" }],
+      },
+    })).toMatch(/path or data/u);
+  });
+
   it("accepts an init message without requiring Pi types", () => {
     expect(validatePiSdkWorkerRequest({
       protocolVersion: PI_SDK_PROTOCOL_VERSION,
