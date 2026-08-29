@@ -259,7 +259,10 @@ final class PluginPaneStore: ObservableObject {
     context: [String: RemoteJSONValue] = [:],
     sync: PluginPaneSyncing,
     fetchesMissingRows: Bool = false,
-    fallbackCache: PluginPanelFallbackCache = .shared,
+    // Resolved in the body, not as a default expression: a default argument is
+    // evaluated in a NONISOLATED context, and `shared` is main-actor state, so
+    // spelling it here warns today and is an error in the Swift 6 language mode.
+    fallbackCache: PluginPanelFallbackCache? = nil,
     openExternalURL: @escaping (URL) -> Void = { UIApplication.shared.open($0) }
   ) {
     self.pluginId = pluginId
@@ -268,7 +271,7 @@ final class PluginPaneStore: ObservableObject {
     self.context = context
     self.sync = sync
     self.fetchesMissingRows = fetchesMissingRows
-    self.fallbackCache = fallbackCache
+    self.fallbackCache = fallbackCache ?? .shared
     self.openExternalURL = openExternalURL
   }
 
