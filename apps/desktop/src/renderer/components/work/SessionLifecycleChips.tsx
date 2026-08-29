@@ -1,9 +1,9 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Moon } from "@phosphor-icons/react";
 
-import type { TerminalSessionSummary } from "../../../shared/types";
-import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
-import { isSessionSnoozed, snoozeWakeLabel } from "../../lib/sessionSnooze";
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import { selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
+import { isSessionSnoozed, nextSnoozeDeadlineMs, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { wakeSessionNow } from "../terminals/sessionLifecycleActions";
 import { cn } from "../ui/cn";
 
@@ -17,10 +17,12 @@ import { cn } from "../ui/cn";
 
 const CHIP_CLASS =
   "inline-flex h-5 shrink-0 items-center gap-1 rounded-md border border-white/[0.10] bg-white/[0.04] px-1.5 font-sans text-[10px] font-medium text-muted-fg/75 transition-colors hover:border-white/[0.18] hover:text-fg/85";
+const LIFECYCLE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 
 /**
- * Read a chat's terminal-session row out of the per-project cache the Work tab
- * already mirrors into the store. No extra IPC, and it stays as fresh as the
+ * Read a chat's terminal-session row out of the local per-project cache the Work
+ * tab already mirrors into the store, falling back to the root cross-machine
+ * snapshot for a foreign chat. No extra IPC, and it stays as fresh as the
  * sidebar it is mirroring.
  */
 export function useSessionLifecycleSnapshot(
@@ -30,11 +32,35 @@ export function useSessionLifecycleSnapshot(
   const cached = useAppStore((state) =>
     (projectStateKey ? state.sessionsCacheByProject[projectStateKey] : undefined),
   );
-  return useMemo(() => {
+  const crossMachineLanesByMachineId = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const snapshot = useMemo(() => {
     const id = sessionId?.trim();
-    if (!id || !cached) return null;
-    return cached.find((session) => session.id === id) ?? null;
-  }, [cached, sessionId]);
+    if (!id) return null;
+    const local = cached?.find((session) => session.id === id);
+    if (local) return local;
+    for (const machine of Object.values(crossMachineLanesByMachineId)) {
+      const foreign = machine.sessions.find((session) => session.id === id);
+      if (foreign) return foreign;
+    }
+    return null;
+  }, [cached, crossMachineLanesByMachineId, sessionId]);
+
+  // A snooze is represented by a persisted deadline, not a scheduler event.
+  // Arm one deadline timer here so an open chat header/composer re-renders when
+  // the row becomes live even if the session cache object never changes.
+  const [lifecycleEpoch, setLifecycleEpoch] = useState(0);
+  useEffect(() => {
+    const deadlineMs = nextSnoozeDeadlineMs(snapshot ? [snapshot] : []);
+    if (deadlineMs == null) return undefined;
+    const delay = Math.min(
+      Math.max(deadlineMs - Date.now(), 250),
+      LIFECYCLE_TICK_MAX_DELAY_MS,
+    );
+    const timer = window.setTimeout(() => setLifecycleEpoch((value) => value + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [lifecycleEpoch, snapshot]);
+
+  return snapshot;
 }
 
 function ChipMenu({
@@ -76,9 +102,11 @@ function ChipMenu({
 export function SessionSnoozeChip({
   sessionId,
   className,
+  runtimePin = null,
 }: {
   sessionId: string | null | undefined;
   className?: string;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const session = useSessionLifecycleSnapshot(sessionId);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -110,7 +138,7 @@ export function SessionSnoozeChip({
           label="Snoozed session"
           onClose={() => setMenuOpen(false)}
           items={[
-            { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session); } },
+            { key: "wake", label: "Wake now", onSelect: () => { void wakeSessionNow(session, runtimePin); } },
           ]}
         />
       ) : null}

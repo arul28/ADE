@@ -1,5 +1,6 @@
 import { CheckCircle, Moon } from "@phosphor-icons/react";
 
+import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { canonicalInputFromSummary, sessionCanonicalUiState } from "../../lib/terminalAttention";
 import { isSessionSnoozed, snoozeWakeDescription } from "../../lib/sessionSnooze";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
@@ -33,7 +34,7 @@ const VARIANT_CHROME: Record<LifecycleVariant, {
     title: "text-emerald-50/90",
     detail: "text-emerald-50/55",
     // focus-visible mirrors hover exactly: keyboard users never see hover, and
-    // this button is the only way out of the state the banner describes.
+    // the action offers an explicit way out alongside sending a new turn.
     button:
       "text-emerald-100/70 hover:bg-emerald-300/[0.10] hover:text-emerald-50 focus-visible:bg-emerald-300/[0.10] focus-visible:text-emerald-50",
     icon: CheckCircle,
@@ -67,19 +68,26 @@ function snoozeDetail(snoozedUntil: string | null | undefined, nowMs?: number): 
   return `Hidden until ${until}`;
 }
 
+/** Keep the pane's notice-slot decision in lockstep with the banner itself. */
+export function shouldRenderChatLifecycleBanner(session: TerminalSessionSummary | null): boolean {
+  if (!session) return false;
+  return isSessionSnoozed(session)
+    || sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "settled";
+}
+
 export function ChatLifecycleBanner({
   sessionId,
   className,
+  runtimePin = null,
 }: {
   sessionId: string | null | undefined;
   className?: string;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const session = useSessionLifecycleSnapshot(sessionId);
-  if (!session) return null;
+  if (!session || !shouldRenderChatLifecycleBanner(session)) return null;
 
   const snoozed = isSessionSnoozed(session);
-  const settled = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase === "settled";
-  if (!snoozed && !settled) return null;
 
   // Snooze outranks the phase, matching the overlay precedence in
   // `sessionStatusPresentation`. (That module's `needs_you` carve-out is
@@ -117,7 +125,7 @@ export function ChatLifecycleBanner({
           // Both route through the shared Work-tab lifecycle actions rather than
           // calling `window.ade.sessions` directly, so this pill, the snooze
           // header chip, and the sidebar menu use the same write and failure path.
-          void (snoozed ? wakeSessionNow(session) : unsettleSession(session));
+          void (snoozed ? wakeSessionNow(session, runtimePin) : unsettleSession(session, runtimePin));
         }}
       >
         {actionLabel}

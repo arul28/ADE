@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { showToast } from "../app/toast/toastStore";
 import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
 
 vi.mock("../app/toast/toastStore", () => ({
@@ -175,6 +176,21 @@ describe("ChatLifecycleBanner", () => {
     // chip use.
     expect(sessionsApi.unsettleMany).not.toHaveBeenCalled();
     expect(sessionsApi.setSettleOverride).not.toHaveBeenCalled();
+  });
+
+  it("reports an unsettle failure instead of swallowing it", async () => {
+    const error = new Error("runtime unavailable");
+    sessionsApi.unsettle.mockRejectedValue(error);
+    seedSessions([makeSession(settledOverrides())]);
+    render(<ChatLifecycleBanner sessionId="session-1" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Un-settle" }));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Unsettle failed",
+      message: "runtime unavailable",
+      tone: "error",
+    })));
   });
 
   it("wakes a snoozed chat with the manual reason", async () => {

@@ -303,7 +303,7 @@ export function WorkSurfaceHeader({
             />
           ) : null}
           {laneId ? <LaneBranchDriftChip laneId={laneId} /> : null}
-          {snoozeSessionId ? <SessionSnoozeChip sessionId={snoozeSessionId} /> : null}
+          {snoozeSessionId ? <SessionSnoozeChip sessionId={snoozeSessionId} runtimePin={runtimePin} /> : null}
           {showCacheBadge ? (
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}

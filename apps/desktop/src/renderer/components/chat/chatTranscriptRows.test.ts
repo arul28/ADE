@@ -1450,6 +1450,24 @@ describe("chatTranscriptRows edge cases", () => {
         timestamp: "2026-03-17T10:00:02.000Z",
         event: { type: "tokens", turnId: "turn-1", inputTokens: 406_700, outputTokens: 1_200 },
       },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: {
+          type: "codex_token_usage",
+          turnId: "turn-1",
+          usage: { last: { inputTokens: 406_700 }, modelContextWindow: 1_000_000 },
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:04.000Z",
+        event: {
+          type: "codex_moderation_metadata",
+          turnId: "turn-1",
+          metadata: { turnId: "turn-1", metadata: { is_blocked: false } },
+        },
+      },
     ]);
     expect(rows).toHaveLength(0);
   });

@@ -45,7 +45,11 @@ import {
   WORK_SEARCH_FILTER_KEYS,
   type WorkSearchFilterKey,
 } from "../../../shared/workSearch";
-import { sessionFilingBucket } from "../../lib/terminalAttention";
+import {
+  effectiveSessionFilingBuckets,
+  type SessionFilingBucket,
+} from "../../lib/terminalAttention";
+import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import {
   ENTITY_SECTION_PREVIEW,
   SearchResultRow,
@@ -273,6 +277,7 @@ function saveLastBrowsePath(locationKey: string, path: string): void {
 // Resolved project icons are stable for a given root path within a session, so
 // cache them module-wide to avoid rescanning the disk on every re-highlight.
 const PROJECT_ICON_CACHE_MAX = 64;
+const PALETTE_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const PROJECT_ICON_CACHE = new Map<string, ProjectIcon>();
 
 function rememberProjectIcon(rootPath: string, icon: ProjectIcon): void {
@@ -925,10 +930,38 @@ export function CommandPalette({
     foreignMachines,
     activeMachine,
   );
+  const threadSessionsForFiling = useMemo(
+    () => threadIndex.map((entry) => entry.session),
+    [threadIndex],
+  );
+  const [filingEpoch, setFilingEpoch] = useState(0);
+  const filingNowMs = useMemo(() => {
+    // The epoch is a deadline tick; reading it makes this clock refresh when a
+    // snooze expires even if the indexed session objects retain their identity.
+    void filingEpoch;
+    return Date.now();
+  }, [filingEpoch]);
+  useEffect(() => {
+    if (!open || mode !== "default") return undefined;
+    const deadlineMs = nextSnoozeDeadlineMs(threadSessionsForFiling);
+    if (deadlineMs == null) return undefined;
+    const delay = Math.min(
+      Math.max(deadlineMs - Date.now(), 250),
+      PALETTE_SNOOZE_TICK_MAX_DELAY_MS,
+    );
+    const timer = window.setTimeout(() => setFilingEpoch((value) => value + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [filingEpoch, mode, open, threadSessionsForFiling]);
+  const effectiveFilingBuckets = useMemo<ReadonlyMap<string, SessionFilingBucket>>(
+    () => effectiveSessionFilingBuckets(threadSessionsForFiling, filingNowMs),
+    [filingNowMs, threadSessionsForFiling],
+  );
   const threadMatches = useMemo(
     () =>
-      open && mode === "default" ? rankThreads(threadIndex, trimmedQuery) : [],
-    [mode, open, threadIndex, trimmedQuery],
+      open && mode === "default"
+        ? rankThreads(threadIndex, trimmedQuery, effectiveFilingBuckets)
+        : [],
+    [effectiveFilingBuckets, mode, open, threadIndex, trimmedQuery],
   );
 
   const workFacetOptions = useMemo<
@@ -944,7 +977,8 @@ export function CommandPalette({
     for (const entry of threadIndex) {
       if (entry.laneName) values.lane.add(entry.laneName);
       if (entry.provider) values.provider.add(entry.provider);
-      values.status.add(sessionFilingBucket(entry.session));
+      const filingBucket = effectiveFilingBuckets.get(entry.session.id);
+      if (filingBucket) values.status.add(filingBucket);
       values.type.add(
         isChatToolType(entry.session.toolType) ? "chat" : "terminal",
       );
@@ -961,7 +995,7 @@ export function CommandPalette({
       options[key] = [...values[key]].sort((a, b) => a.localeCompare(b));
     }
     return options;
-  }, [threadIndex]);
+  }, [effectiveFilingBuckets, threadIndex]);
 
   const {
     loading: searchLoading,
@@ -979,8 +1013,9 @@ export function CommandPalette({
         sessionResults,
         threadIndex,
         threadMatches,
+        effectiveFilingBuckets,
       }),
-    [parsedWorkQuery, sessionResults, threadIndex, threadMatches],
+    [effectiveFilingBuckets, parsedWorkQuery, sessionResults, threadIndex, threadMatches],
   );
 
   const visibleWorkResults = useMemo(

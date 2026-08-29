@@ -140,6 +140,8 @@ export type WorkSessionFilterContext = {
   nowMs: number;
   laneHasPr: (laneId: string) => boolean;
   laneIsDirty: (laneId: string) => boolean;
+  /** Optional full-roster filing map so attached children follow settled parents. */
+  effectiveFilingBuckets?: ReadonlyMap<string, SessionFilingBucket>;
 };
 
 export function matchesWorkSessionFilters(
@@ -152,7 +154,9 @@ export function matchesWorkSessionFilters(
   // "Your move" section always agree about which rows they mean.
   if (
     filters.status.length > 0
-    && !filters.status.includes(sessionFilingBucket(session, ctx.nowMs))
+    && !filters.status.includes(
+      ctx.effectiveFilingBuckets?.get(session.id) ?? sessionFilingBucket(session, ctx.nowMs),
+    )
   ) return false;
 
   if (

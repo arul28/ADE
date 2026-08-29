@@ -118,7 +118,7 @@ import {
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
-import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatLifecycleBanner, shouldRenderChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
@@ -136,6 +136,7 @@ import {
 } from "./AgentChatMessageList";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
 import { useForeignSessionLaneId } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
@@ -4023,6 +4024,11 @@ export function AgentChatPane({
     () => chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId),
     [chatMachineRouter, foreignRenderedLaneId, laneId, renderedSession?.laneId],
   );
+  // Lifecycle actions must follow the session currently rendered in the pane.
+  // Resolve this after the machine pin so foreign chats never send a wake or
+  // unsettle request to the tab-bound runtime.
+  const composerLifecycleSession = useSessionLifecycleSnapshot(composerSessionId);
+  const hasComposerLifecycleBanner = shouldRenderChatLifecycleBanner(composerLifecycleSession);
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -12472,7 +12478,7 @@ export function AgentChatPane({
               ? "text-slate-300/70 hover:text-slate-100/90"
               : "text-violet-200/75 hover:text-violet-100",
           )}
-          title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "View parent thread"}
+          title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "Go to parent thread"}
         >
           <ArrowBendUpRight size={12} weight="regular" aria-hidden className="shrink-0" />
           <span className="min-w-0 truncate">Go to parent thread</span>
@@ -12871,16 +12877,8 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
-  const lifecyclePill = composerSessionId ? (
-    <ChatLifecycleBanner sessionId={composerSessionId} />
-  ) : null;
-  const lifecycleOverlay = lifecyclePill ? (
-    <div
-      data-testid="chat-lifecycle-overlay"
-      className="flex justify-center"
-    >
-      {lifecyclePill}
-    </div>
+  const lifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
+    <ChatLifecycleBanner sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
@@ -13400,19 +13398,20 @@ export function AgentChatPane({
       onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
     />
   ) : null;
-  const appPanelLifecyclePill = composerSessionId ? (
+  const appPanelLifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
     <ChatLifecycleBanner
       sessionId={composerSessionId}
+      runtimePin={renderedChatRuntimePin}
       className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
     />
   ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecycleOverlay ? (
+  const composerNoticeOverlay = awayDigestCard || lifecyclePill ? (
     <div
       data-testid="chat-composer-notice-overlay"
       className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {awayDigestCard}
-      {lifecycleOverlay}
+      {lifecyclePill}
     </div>
   ) : null;
 

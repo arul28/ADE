@@ -89,6 +89,8 @@ type HiddenTranscriptEvent =
   | Extract<AgentChatEvent, { type: "web_search" }>
   | Extract<AgentChatEvent, { type: "reasoning" }>
   | Extract<AgentChatEvent, { type: "pending_input_resolved" }>
+  | Extract<AgentChatEvent, { type: "tokens" }>
+  | Extract<AgentChatEvent, { type: "codex_moderation_metadata" }>
   // Token usage drives the chat-column-bottom token footer; inline transcript
   // rows would be duplicate noise.
   | Extract<AgentChatEvent, { type: "codex_token_usage" }>;

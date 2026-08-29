@@ -321,6 +321,7 @@ export function effectiveSessionFilingBuckets(
       !parent
       || parent.laneId !== session.laneId
       || !isChatToolType(parent.toolType)
+      || buckets.get(session.id) === "snoozed"
       || buckets.get(parent.id) !== "settled"
       || sessionNeedsYou(canonicalInputFromSummary(session))
     ) continue;

@@ -898,6 +898,44 @@ describe("CommandPalette", () => {
       expect(screen.getByRole("button", { name: /Remove provider filter codex/i })).toBeTruthy();
     });
 
+    it("files an attached shell under its settled chat for Work status search", async () => {
+      const parent = makeSession({
+        id: "session-settled-parent",
+        title: "Settled parent chat",
+        toolType: "codex-chat",
+        status: "completed",
+        runtimeState: "idle",
+        endedAt: new Date().toISOString(),
+        exitCode: 0,
+        settledAt: new Date().toISOString(),
+      });
+      const child = makeSession({
+        id: "session-attached-shell",
+        title: "Attached shell",
+        toolType: "shell",
+        status: "running",
+        runtimeState: "running",
+        chatSessionId: parent.id,
+        settledAt: null,
+      });
+      seedThreads([parent, child]);
+
+      render(
+        <MemoryRouter>
+          <CommandPalette open onOpenChange={vi.fn()} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.change(
+        screen.getByPlaceholderText("Search commands, projects, and threads…"),
+        { target: { value: "status:settled attached" } },
+      );
+
+      expect(await screen.findByTestId("thread-status-session-attached-shell")).toBeTruthy();
+      expect(screen.queryByText("Settled parent chat")).toBeNull();
+      expect(document.querySelector('[data-thread-id="session-attached-shell"]')).toBeTruthy();
+    });
+
     it("shows lifecycle actions on the highlighted Work result and targets that session", async () => {
       const settle = vi.fn(async () => {});
       globalThis.window.ade.sessions = { settle } as any;

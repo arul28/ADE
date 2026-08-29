@@ -13,6 +13,7 @@ import {
   type ThreadMatch,
   type ThreadRowAction,
 } from "./commandPaletteThreads";
+import type { SessionFilingBucket } from "../../lib/terminalAttention";
 import {
   projectStateKeyForBinding,
   type WorkProjectViewState,
@@ -21,6 +22,7 @@ import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { isSessionSnoozed } from "../../lib/sessionSnooze";
 import {
   canonicalInputFromSummary,
+  effectiveSessionFilingBuckets,
   sessionCanonicalUiState,
 } from "../../lib/terminalAttention";
 import {
@@ -263,11 +265,13 @@ export function buildWorkResults({
   sessionResults,
   threadIndex,
   threadMatches,
+  effectiveFilingBuckets,
 }: {
   parsedWorkQuery: ParsedWorkSearch;
   sessionResults: readonly SearchResultItem[];
   threadIndex: readonly ThreadIndexEntry[];
   threadMatches: readonly ThreadMatch[];
+  effectiveFilingBuckets?: ReadonlyMap<string, SessionFilingBucket>;
 }): PaletteWorkResult[] {
   const contentBySessionId = new Map<string, SearchResultItem>();
   for (const item of sessionResults) {
@@ -279,6 +283,8 @@ export function buildWorkResults({
   const localEntriesById = new Map(
     threadIndex.map((entry) => [entry.session.id, entry] as const),
   );
+  const filingBuckets = effectiveFilingBuckets
+    ?? effectiveSessionFilingBuckets(threadIndex.map((entry) => entry.session));
   const matchedSessionIds = new Set<string>();
   const merged: PaletteWorkResult[] = threadMatches.map((match) => {
     const sessionId = match.entry.session.id;
@@ -300,7 +306,7 @@ export function buildWorkResults({
     if (item.sessionId) {
       const localEntry = localEntriesById.get(item.sessionId);
       if (localEntry) {
-        if (!matchesThreadWorkFacets(localEntry, parsedWorkQuery)) continue;
+        if (!matchesThreadWorkFacets(localEntry, parsedWorkQuery, filingBuckets)) continue;
         matchedSessionIds.add(item.sessionId);
         merged.push({
           type: "thread",

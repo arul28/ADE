@@ -156,6 +156,7 @@ import { forgetWorkPtyLaunchPin, workPtyLaunchPinFor } from "./cliLaunch";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
+import { isChatToolType } from "../../lib/sessions";
 
 // ---------------------------------------------------------------------------
 // window.ade stubs
@@ -1844,6 +1845,36 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
   });
 
+  it("recomputes snooze filing when Work re-enters after the deadline elapsed off-route", async () => {
+    const nowMs = Date.parse("2026-08-29T12:00:00.000Z");
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(nowMs);
+    const snoozed = makeSession("session-off-route-snooze", "lane-a", {
+      snoozedUntil: new Date(nowMs + 1_000).toISOString(),
+      snoozedAt: new Date(nowMs - 1_000).toISOString(),
+    });
+    listSessionsCachedMock.mockResolvedValue([snoozed]);
+
+    const { rerender, result } = renderHook(
+      ({ active }: { active: boolean }) => useWorkSessions({ active }),
+      { initialProps: { active: true } },
+    );
+    await waitFor(() => {
+      expect(result.current.snoozedFiltered.map((session) => session.id))
+        .toEqual(["session-off-route-snooze"]);
+    });
+
+    // Work remains mounted while another ADE tab is active, so its deadline
+    // timer is cleaned up. Advance the clock past expiry, then re-enter.
+    rerender({ active: false });
+    nowSpy.mockReturnValue(nowMs + 2_000);
+    rerender({ active: true });
+
+    expect(result.current.snoozedFiltered).toEqual([]);
+    expect(result.current.runningFiltered.map((session) => session.id))
+      .toEqual(["session-off-route-snooze"]);
+    nowSpy.mockRestore();
+  });
+
   it("preserves saved Work filters when a URL targets a specific session", async () => {
     const session = {
       id: "session-1",
@@ -3165,6 +3196,44 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
     expect(model.groups[2]!.sessionIds).toEqual(["session-settled"]);
   });
 
+  it("files a running shell attached to a settled chat in the Settled status group", () => {
+    const isChatToolTypeMock = vi.mocked(isChatToolType);
+    isChatToolTypeMock.mockImplementation((toolType) => Boolean(toolType?.toLowerCase().endsWith("-chat")));
+    const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
+    try {
+      const parent = makeSession("settled-chat", "lane-a", {
+        status: "completed" as const,
+        runtimeState: "exited" as const,
+        endedAt: "2026-04-01T11:55:00.000Z",
+        settledAt: "2026-04-01T11:56:00.000Z",
+      });
+      const child = makeSession("attached-shell", "lane-a", {
+        toolType: "shell" as const,
+        title: "Attached shell",
+        startedAt: "2026-04-01T11:58:00.000Z",
+        chatSessionId: parent.id,
+      });
+      const model = buildWorkTabGroupModel({
+        sessions: [parent, child],
+        lanes: [{
+          id: "lane-a",
+          name: "Lane A",
+          laneType: "worktree" as const,
+          createdAt: "2026-04-01T10:00:00.000Z",
+          color: null as string | null,
+        }],
+        organization: "all-lanes-by-status",
+        collapsedGroupIds: [],
+        nowMs,
+      });
+
+      expect(model.groups.map((group) => group.id)).toEqual(["status:settled"]);
+      expect(model.groups[0]!.sessionIds).toEqual(["attached-shell", "settled-chat"]);
+    } finally {
+      isChatToolTypeMock.mockImplementation(() => false);
+    }
+  });
+
   // Regression: "Until I'm asked" snooze hid an explicitly raised hand.
   it("does NOT file a snoozed needs-you row into the Snoozed group", () => {
     const nowMs = Date.parse("2026-04-01T12:00:00.000Z");
@@ -3294,6 +3363,19 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
 
     expect(result.current.snoozedFiltered).toEqual([]);
     expect(result.current.filtered.some((s) => s.id === "session-snoozed")).toBe(true);
+    expect(setTimeoutSpy).toHaveBeenCalled();
+    setTimeoutSpy.mockRestore();
+  });
+
+  it("keeps a snoozed row's wake timer armed when search hides it", async () => {
+    // Search/lane filters remove rows from `filtered`; the expiry timer must
+    // still watch the full roster so the filing map is fresh when they return.
+    seedViewState({ search: "running" });
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const { result } = await renderWithSessions([runningSession, snoozedSession]);
+
+    expect(result.current.filtered.map((session) => session.id)).toEqual(["session-running"]);
+    expect(result.current.snoozedFiltered).toEqual([]);
     expect(setTimeoutSpy).toHaveBeenCalled();
     setTimeoutSpy.mockRestore();
   });

@@ -22,6 +22,7 @@ import {
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
   canonicalInputFromSummary,
+  effectiveSessionFilingBuckets,
   sessionCanonicalUiState,
   sessionFilingBucket,
 } from "../../lib/terminalAttention";
@@ -194,6 +195,8 @@ export function buildWorkTabGroupModel(args: {
   collapsedGroupIds: string[];
   laneSessionOrder?: Record<string, string[]>;
   pinnedSessionIds?: string[];
+  /** Full-roster filing buckets, when the caller has sessions outside this tab slice. */
+  effectiveFilingBuckets?: ReadonlyMap<string, ReturnType<typeof sessionFilingBucket>>;
   /** Injectable clock so snooze expiry stays testable (expiry is derived, never scheduled). */
   nowMs?: number;
 }): WorkTabGroupModel {
@@ -201,6 +204,9 @@ export function buildWorkTabGroupModel(args: {
   const collapseSet = new Set(args.collapsedGroupIds);
   const pinnedSet = new Set(args.pinnedSessionIds ?? []);
   const laneOrderMap = args.laneSessionOrder ?? {};
+  const nowMs = args.nowMs ?? Date.now();
+  const effectiveFilingBuckets = args.effectiveFilingBuckets
+    ?? effectiveSessionFilingBuckets(args.sessions, nowMs);
 
   if (args.organization === "by-lane") {
     const laneOrder = new Map(sortLanesForTabs(args.lanes).map((lane, index) => [lane.id, index] as const));
@@ -306,16 +312,17 @@ export function buildWorkTabGroupModel(args: {
     return { groups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
   }
 
-  const nowMs = args.nowMs ?? Date.now();
   const statusBuckets = new Map<WorkStatusGroupBucket, TerminalSessionSummary[]>();
   for (const session of orderedSessions) {
     // Snooze is a visibility overlay: it pulls the row out of its normal bucket
     // entirely — the same partitioning the flat sidebar list uses — EXCEPT when
     // the row's canonical phase is needs_you. The overlay yields to a raised
-    // hand (`sessionFilingBucket`), which is the only thing that makes
+    // hand (`effectiveSessionFilingBuckets`, falling back to
+    // `sessionFilingBucket`), which is the only thing that makes
     // "Until I'm asked" true for tracked CLI rows: their needs-input state is
     // derived, so no early-wake event ever fires for them.
-    const bucket: WorkStatusGroupBucket = sessionFilingBucket(session, nowMs);
+    const bucket: WorkStatusGroupBucket = effectiveFilingBuckets.get(session.id)
+      ?? sessionFilingBucket(session, nowMs);
     const list = statusBuckets.get(bucket) ?? [];
     list.push(session);
     statusBuckets.set(bucket, list);
@@ -605,6 +612,27 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     return map;
   }, [crossMachineSessionsById, localSessionsById]);
+  // Resolve filing against the complete Work roster, including foreign rows
+  // kept open in this tab. An attached shell must follow its settled chat even
+  // when either row belongs to a different machine.
+  const allKnownSessions = useMemo(
+    () => [...sessionsById.values()],
+    [sessionsById],
+  );
+  const filingNowMs = useMemo(() => {
+    // The epoch is a deadline tick; reading it makes this clock refresh when a
+    // snooze expires even if the roster array retains its identity. Reading the
+    // route also refreshes it when Work is re-entered after a deadline elapsed
+    // while the page was parked on another tab (the timer is intentionally
+    // disabled off-route).
+    void snoozeEpoch;
+    void isWorkRoute;
+    return Date.now();
+  }, [isWorkRoute, snoozeEpoch]);
+  const effectiveFilingBuckets = useMemo(
+    () => effectiveSessionFilingBuckets(allKnownSessions, filingNowMs),
+    [allKnownSessions, filingNowMs],
+  );
   const sessionsByIdRef = useRef(sessionsById);
   useLayoutEffect(() => {
     sessionsByIdRef.current = sessionsById;
@@ -652,10 +680,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       collapsedGroupIds: workCollapsedTabGroupIds,
       laneSessionOrder,
       pinnedSessionIds,
+      effectiveFilingBuckets,
     }),
-    // `snoozeEpoch` re-derives the by-status snoozed group when a deadline lapses.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds, laneSessionOrder, pinnedSessionIds, snoozeEpoch],
+    [effectiveFilingBuckets, lanes, openSessions, sessionListOrganization, workCollapsedTabGroupIds, laneSessionOrder, pinnedSessionIds],
   );
 
   const visibleSessions = openSessions;
@@ -1542,14 +1569,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       return matchesWorkSearchFilters(parsedQuery.filters, {
         lane: [session.laneName],
         provider: [session.toolType ?? ""],
-        status: [sessionFilingBucket(session, nowMs)],
+        status: [effectiveFilingBuckets.get(session.id) ?? sessionFilingBucket(session, nowMs)],
         type: [
           session.toolType ?? "",
           isChatToolType(session.toolType) ? "chat" : "terminal",
         ],
       });
     });
-  }, [sessions, filterLaneId, q]);
+  }, [effectiveFilingBuckets, sessions, filterLaneId, q]);
 
   const prsByLaneId = useLanePrsByLaneId();
   const laneStatusById = useMemo(() => {
@@ -1577,12 +1604,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // use the machine-scoped lookups instead — see `lanePrsForMachine`.
       laneHasPr: (laneId: string) => laneHasAnyPr(prsByLaneId, laneId),
       laneIsDirty: (laneId: string) => laneStatusById.get(laneId)?.status.dirty === true,
+      effectiveFilingBuckets,
     };
     return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, ctx));
-    // `snoozeEpoch` matters here too: a lapsing snooze changes a row's filing
-    // bucket, which is what the status chips match on.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, workSessionFilters, prsByLaneId, laneStatusById, snoozeEpoch]);
+  }, [effectiveFilingBuckets, filtered, workSessionFilters, prsByLaneId, laneStatusById]);
 
   const {
     runningFiltered,
@@ -1604,7 +1629,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // hand. A needs_you row is filed normally even while snoozed, which
       // keeps "Until I'm asked" honest.
       const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
-      const filingBucket = sessionFilingBucket(session, nowMs);
+      const filingBucket = effectiveFilingBuckets.get(session.id)
+        ?? sessionFilingBucket(session, nowMs);
       if (filingBucket === "snoozed") {
         snoozed.push(session);
         continue;
@@ -1626,25 +1652,23 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
       snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
     };
-    // `snoozeEpoch` re-partitions when the soonest snooze deadline lapses; there
-    // is no snooze scheduler anywhere, expiry is always derived from now.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chipFiltered, snoozeEpoch]);
+  }, [chipFiltered, effectiveFilingBuckets]);
 
   // Exactly one timer, armed only while something is actually snoozed, firing at
   // the soonest deadline (clamped so a 100-year "until I'm asked" snooze can't
   // overflow setTimeout). No polling and no document-level listener.
   //
-  // Reads `filtered`, NOT `chipFiltered`, on purpose: a snoozed row hidden by a
-  // status chip must still schedule its own wake, or it would never return.
+  // Reads the complete Work roster, NOT a filtered view, on purpose: a snoozed
+  // row hidden by search, lane, status chips, or a foreign-machine slice must
+  // still schedule its own wake so its filing bucket is fresh when visible.
   useEffect(() => {
     if (!isWorkRoute) return undefined;
-    const deadlineMs = nextSnoozeDeadlineMs(filtered);
+    const deadlineMs = nextSnoozeDeadlineMs(allKnownSessions);
     if (deadlineMs == null) return undefined;
     const delay = Math.min(Math.max(deadlineMs - Date.now(), 250), SNOOZE_TICK_MAX_DELAY_MS);
     const timer = window.setTimeout(() => setSnoozeEpoch((value) => value + 1), delay);
     return () => window.clearTimeout(timer);
-  }, [filtered, isWorkRoute, snoozeEpoch]);
+  }, [allKnownSessions, isWorkRoute, snoozeEpoch]);
 
   const sessionsGroupedByLane = useMemo(() => {
     if (sessionListOrganization !== "by-lane") return null;
@@ -2107,6 +2131,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     endedFiltered,
     settledFiltered,
     snoozedFiltered,
+    effectiveFilingBuckets,
     runningSessions,
     visibleSessions,
     gridLayoutId,
