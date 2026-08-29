@@ -983,7 +983,14 @@ The right-click menu uses one grouped, liquid-glass menu vocabulary:
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
 - Chat metadata generation makes one structured request for all three visible
-  fields and applies only the selected fields. It may intentionally replace a
+  fields and applies only the selected fields. A status-only refresh sends the
+  lane name, chat title, worktree folder, and last assistant paragraphs — not
+  the full transcript, sibling threads, or git dump. Title refresh still carries
+  this thread's full transcript; lane-name refresh still carries every other
+  thread in the lane plus the git work that differs from the remote/base. While
+  those fields generate, the session card and work-surface header mask them in
+  place with the same shimmering "Naming …" animation auto-created lanes use.
+  It may intentionally replace a
   manual title because the menu action is explicit user intent; edits made while
   the request is running win per field. Generate lane name is disabled for the
   primary lane, and a busy session disables duplicate generation.

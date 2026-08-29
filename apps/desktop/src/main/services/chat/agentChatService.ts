@@ -661,10 +661,12 @@ import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
   AUTO_TITLE_SYSTEM_PROMPT,
   buildSessionIntelligenceModelCandidates,
+  formatConversationTranscript,
   LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
   LEGACY_LANE_NAME_SYSTEM_PROMPT,
   MAX_NAMING_WORDS,
   runNamingAcrossProviders,
+  type SessionMetadataConversationEntry,
 } from "./sessionNaming";
 import { createSessionMetadataRegenerator } from "./sessionMetadataService";
 import {
@@ -9462,25 +9464,6 @@ export function createAgentChatService(args: {
     `${label} timed out after ${timeoutMs}ms`,
   );
 
-  const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
-    try {
-      return readTranscriptEnvelopes(managed)
-        .flatMap((entry) => {
-          if (entry.event.type === "user_message") {
-            const text = entry.event.text.trim();
-            return text.length ? [`User: ${text}`] : [];
-          }
-          if (entry.event.type === "text") {
-            const text = entry.event.text.trim();
-            return text.length ? [`Assistant: ${text}`] : [];
-          }
-          return [];
-        });
-    } catch {
-      return [];
-    }
-  };
-
   const readTranscriptEntries = async (
     managed: ManagedChatSession,
     signal?: AbortSignal,
@@ -11103,17 +11086,40 @@ export function createAgentChatService(args: {
     });
   };
 
-  const buildRecentConversationContext = (managed: ManagedChatSession, limit = 20): string => {
-    const liveEntries = managed.recentConversationEntries.map((entry) =>
-      `${entry.role === "user" ? "User" : "Assistant"}: ${entry.text}`,
-    );
-    const combined: string[] = [];
-    for (const entry of [...readTranscriptConversationEntries(managed), ...liveEntries]) {
-      if (!entry.trim().length) continue;
-      if (combined[combined.length - 1] === entry) continue;
+  const collectConversationEntries = (
+    managed: ManagedChatSession,
+  ): SessionMetadataConversationEntry[] => {
+    const fromTranscript: SessionMetadataConversationEntry[] = [];
+    try {
+      for (const entry of readTranscriptEnvelopes(managed)) {
+        if (entry.event.type === "user_message") {
+          const text = entry.event.text.trim();
+          if (text) fromTranscript.push({ role: "user", text });
+        } else if (entry.event.type === "text") {
+          const text = entry.event.text.trim();
+          if (text) fromTranscript.push({ role: "assistant", text });
+        }
+      }
+    } catch {
+      // Live ring still helps when the transcript file is unreadable.
+    }
+    const live = managed.recentConversationEntries
+      .map((entry) => ({
+        role: entry.role,
+        text: entry.text.trim(),
+      }))
+      .filter((entry) => entry.text.length > 0);
+    const combined: SessionMetadataConversationEntry[] = [];
+    for (const entry of [...fromTranscript, ...live]) {
+      const prev = combined[combined.length - 1];
+      if (prev && prev.role === entry.role && prev.text === entry.text) continue;
       combined.push(entry);
     }
-    return combined.slice(-limit).join("\n");
+    return combined;
+  };
+
+  const buildRecentConversationContext = (managed: ManagedChatSession, limit = 20): string => {
+    return formatConversationTranscript(collectConversationEntries(managed).slice(-limit));
   };
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
@@ -12050,8 +12056,33 @@ export function createAgentChatService(args: {
           sessionModel: managed.session.model,
         });
       },
-      buildRecentConversationContext: (managed, limit) =>
-        buildRecentConversationContext(managed, limit),
+      collectConversationEntries: (managed) => collectConversationEntries(managed),
+      listLaneThreads: (managed) => {
+        const rows = sessionService.list({ laneId: managed.session.laneId, limit: 40 });
+        return rows
+          .filter((row) => isChatToolType(row.toolType))
+          .map((row) => ({
+            title: row.title,
+            statusNote: row.statusNote,
+            summary: row.summary,
+            isCurrent: row.id === managed.session.id,
+          }));
+      },
+      gatherLaneWorkVersusRemote: async ({ worktreePath, baseRef }) => {
+        const cwd = worktreePath.trim();
+        if (!cwd) return null;
+        const [changedFiles, commits, uncommitted] = await Promise.all([
+          runGit(["diff", "--name-status", `${baseRef}...HEAD`], { cwd, timeoutMs: 8_000 }).catch(() => null),
+          runGit(["log", "-n20", "--oneline", `${baseRef}..HEAD`], { cwd, timeoutMs: 8_000 }).catch(() => null),
+          runGit(["status", "--short"], { cwd, timeoutMs: 8_000 }).catch(() => null),
+        ]);
+        return {
+          baseRef,
+          changedFiles: changedFiles?.exitCode === 0 ? changedFiles.stdout : null,
+          commits: commits?.exitCode === 0 ? commits.stdout : null,
+          uncommitted: uncommitted?.exitCode === 0 ? uncommitted.stdout : null,
+        };
+      },
       runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
         cwd,
         modelId,

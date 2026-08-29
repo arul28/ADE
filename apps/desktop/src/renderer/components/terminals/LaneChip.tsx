@@ -1,6 +1,7 @@
 import type { ButtonHTMLAttributes, HTMLAttributes, MouseEvent } from "react";
 import { cn } from "../ui/cn";
 import { LaneIcon, BranchIcon } from "../ui/vcsIcons";
+import { LaneNamingLabel } from "./LaneNamingLabel";
 
 const DEFAULT_LANE_COLOR = "#ffffff";
 
@@ -24,6 +25,7 @@ export type LaneChipProps = {
   laneColor?: string | null;
   maxWidth?: number;
   compact?: boolean;
+  naming?: boolean;
   className?: string;
   onClick?: () => void;
 } & Omit<HTMLAttributes<HTMLElement>, "onClick" | "children">;
@@ -33,6 +35,7 @@ export function LaneChip({
   laneColor,
   maxWidth = 140,
   compact = false,
+  naming = false,
   className,
   onClick,
   style,
@@ -50,11 +53,12 @@ export function LaneChip({
     color,
     ...style,
   };
+  const displayedName = naming ? "Naming lane…" : laneName;
   const label = (
     <>
       <LaneLogoMark color={color} size={compact ? 9 : 10} />
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">
-        {laneName}
+        <LaneNamingLabel laneName={laneName} naming={naming} />
       </span>
     </>
   );
@@ -67,7 +71,7 @@ export function LaneChip({
         onClick={onClick}
         className={chipClassName}
         style={chipStyle}
-        title={laneName}
+        title={displayedName}
       >
         {label}
       </button>
@@ -79,7 +83,7 @@ export function LaneChip({
       {...rest}
       className={chipClassName}
       style={chipStyle}
-      title={laneName}
+      title={displayedName}
     >
       {label}
     </span>

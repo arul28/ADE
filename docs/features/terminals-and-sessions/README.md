@@ -962,10 +962,15 @@ Renderer surfaces:
   `useLaneNaming(laneId)` is the label-side subscription. Bridges the
   draft-launch flow (which owns the naming lifecycle) to singleton cards,
   hover details, and grouped lane headers in a separate component tree.
+- `apps/desktop/src/renderer/state/sessionMetadataGeneratingStore.ts` —
+  ephemeral renderer-only store for explicit Generate title / lane / status
+  runs. Session cards, lane headers, and the work-surface title mask only
+  the requested fields with the same in-place "Naming …" animation
+  auto-create uses. `useLaneNamePending` ORs auto-create with lane-name regen.
 - `apps/desktop/src/renderer/components/terminals/LaneNamingLabel.tsx` —
-  shared reduced-motion-aware `Naming lane…` label with three animated dots;
-  callers supply the resolved naming state so visible and accessible labels
-  stay consistent.
+  shared reduced-motion-aware pending label (`NamingPendingLabel`) with three
+  animated dots; chat title, lane name, and status line pass their own
+  pending copy so visible and accessible labels stay consistent.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from

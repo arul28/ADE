@@ -1,8 +1,9 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { WorkSurfaceHeader } from "./WorkSurfaceHeader";
+import { setSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 
 vi.mock("../chat/ChatGitToolbar", () => ({
   ChatGitToolbar: ({ laneId }: { laneId: string }) => (
@@ -27,6 +28,7 @@ vi.mock("../shared/ClaudeCacheTtlBadge", () => ({
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  setSessionMetadataGenerating("sess-header", null);
 });
 
 describe("WorkSurfaceHeader", () => {
@@ -138,6 +140,72 @@ describe("WorkSurfaceHeader", () => {
     rerender(<WorkSurfaceHeader title="Fix the logout redirect" />);
     const el = screen.getByText("Fix the logout redirect");
     expect(el.getAttribute("data-title-landed")).toBeNull();
+  });
+
+  it("masks the title with the naming shimmer while metadata regenerates", () => {
+    setSessionMetadataGenerating("sess-header", {
+      fields: ["title"],
+      laneId: "lane-1",
+    });
+    render(
+      <WorkSurfaceHeader
+        title="Stop Haiku default"
+        lifecycleSessionId="sess-header"
+      />,
+    );
+    expect(screen.getByLabelText("Naming chat…")).toBeTruthy();
+    expect(screen.getByText("Naming chat").closest("[data-title-generating]")?.getAttribute("data-title-generating")).toBe("true");
+    expect(screen.queryByText("Stop Haiku default")).toBeNull();
+  });
+
+  it("shimmers the title when regeneration lands a new name", () => {
+    setSessionMetadataGenerating("sess-header", {
+      fields: ["title"],
+      laneId: "lane-1",
+    });
+    const { rerender } = render(
+      <WorkSurfaceHeader
+        title="Stop Haiku default"
+        lifecycleSessionId="sess-header"
+      />,
+    );
+    act(() => {
+      setSessionMetadataGenerating("sess-header", null);
+      rerender(
+        <WorkSurfaceHeader
+          title="Skip first available model"
+          lifecycleSessionId="sess-header"
+        />,
+      );
+    });
+    const landed = screen.getByText("Skip first available model");
+    expect(landed.getAttribute("data-title-landed")).toBe("true");
+    expect(landed.className).toContain("ade-title-landed");
+  });
+
+  it("does not shimmer the title when regeneration finishes without changing it", () => {
+    setSessionMetadataGenerating("sess-header", {
+      fields: ["title"],
+      laneId: "lane-1",
+    });
+    const { rerender } = render(
+      <WorkSurfaceHeader
+        title="Stop Haiku default"
+        lifecycleSessionId="sess-header"
+      />,
+    );
+    act(() => {
+      setSessionMetadataGenerating("sess-header", null);
+      rerender(
+        <WorkSurfaceHeader
+          title="Stop Haiku default"
+          lifecycleSessionId="sess-header"
+        />,
+      );
+    });
+    const title = screen.getByText("Stop Haiku default");
+    expect(title.getAttribute("data-title-landed")).toBeNull();
+    expect(title.className).not.toContain("ade-title-landed");
   });
 
   it("renders an optional title accessory after the title", () => {

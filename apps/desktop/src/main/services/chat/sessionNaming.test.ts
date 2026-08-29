@@ -4,11 +4,16 @@ import { getAvailableModels, type ModelDescriptor } from "../../../shared/modelR
 import {
   buildNamingModelCandidates,
   buildSessionIntelligenceModelCandidates,
+  buildSessionMetadataPrompt,
+  buildSessionMetadataSystemPrompt,
+  clipFromEnd,
   deriveDeterministicSessionMetadata,
+  extractLatestAssistantParagraphs,
   isProviderLevelNamingFailure,
   parseGeneratedSessionMetadata,
   runNamingAcrossProviders,
   runSessionMetadataGeneration,
+  SESSION_METADATA_SYSTEM_PROMPT,
   withSessionModelDescriptors,
 } from "./sessionNaming";
 
@@ -323,5 +328,113 @@ describe("runSessionMetadataGeneration", () => {
       laneName: "Search Answer Path",
       statusLine: "Sources show before generate",
     });
+  });
+});
+
+describe("session metadata context helpers", () => {
+  it("clips from the end so the latest work survives the prompt cap", () => {
+    expect(clipFromEnd("abcdefghij", 4)).toBe("…(earlier omitted)\nghij");
+    expect(clipFromEnd("short", 40)).toBe("short");
+  });
+
+  it("takes the last two or three assistant paragraphs for the status line", () => {
+    expect(extractLatestAssistantParagraphs([
+      { role: "user", text: "fix login" },
+      { role: "assistant", text: "First look.\n\nOpened the auth store.\n\nWired the fallback and the tests are running." },
+    ])).toBe("First look.\n\nOpened the auth store.\n\nWired the fallback and the tests are running.");
+    expect(extractLatestAssistantParagraphs([
+      { role: "assistant", text: "Intro.\n\nHunk one.\n\nHunk two.\n\nCurrently rebasing onto main." },
+    ], 3)).toBe("Hunk one.\n\nHunk two.\n\nCurrently rebasing onto main.");
+  });
+
+  it("labels lane threads and git work as the sources for each field", () => {
+    const prompt = buildSessionMetadataPrompt({
+      provider: "cursor",
+      chatModel: "grok-4.6",
+      currentLaneName: "Old lane",
+      currentChatTitle: "Old title",
+      requestedFields: ["title", "laneName", "statusLine"],
+      threadTranscript: "User: fix login\nAssistant: Wired the fallback.",
+      latestAssistantParagraphs: "Wired the fallback.",
+      laneThreads: "- Fix login (this thread)\n- Review auth tests",
+      laneWorkVersusRemote: "Compared to origin/main:\nChanged files:\nM apps/desktop/src/auth.ts",
+    });
+    expect(prompt).toContain("source for chatTitle");
+    expect(prompt).toContain("User: fix login");
+    expect(prompt).toContain("source for statusLine");
+    expect(prompt).toContain("Wired the fallback.");
+    expect(prompt).toContain("source for laneName, together with git work");
+    expect(prompt).toContain("Review auth tests");
+    expect(prompt).toContain("Work on this lane that differs from remote");
+    expect(prompt).toContain("apps/desktop/src/auth.ts");
+  });
+
+  it("sends a lean status-only prompt even when a full transcript and git dump are passed", () => {
+    const prompt = buildSessionMetadataPrompt({
+      provider: "cursor",
+      chatModel: "grok-4.6",
+      currentLaneName: "Auth fallback",
+      currentChatTitle: "Desktop auth fallback",
+      currentStatusLine: "Opened the auth store",
+      worktreeName: "start-ctonext-skill-session-lane",
+      requestedFields: ["statusLine"],
+      goal: "should not appear",
+      summary: "should not appear either",
+      originalRequest: "start skill using aws other",
+      threadTranscript: "User: rewrite every naming prompt\nAssistant: Looked at executeTask first.",
+      latestAssistantParagraphs: "Wired the fallback and the tests are running.",
+      laneThreads: "- Fix login (this thread)\n- Review auth tests",
+      laneWorkVersusRemote: "Compared to origin/main:\nChanged files:\nM apps/desktop/src/auth.ts",
+    });
+    expect(prompt).toContain("long-running coding thread");
+    expect(prompt).toContain("Users manage many threads");
+    expect(prompt).toContain("Lane name: Auth fallback");
+    expect(prompt).toContain("Worktree: start-ctonext-skill-session-lane");
+    expect(prompt).toContain("Chat title: Desktop auth fallback");
+    expect(prompt).toContain("Wired the fallback and the tests are running.");
+    expect(prompt).toContain("Repeat the current chatTitle and laneName unchanged");
+    expect(prompt).not.toContain("rewrite every naming prompt");
+    expect(prompt).not.toContain("Review auth tests");
+    expect(prompt).not.toContain("apps/desktop/src/auth.ts");
+    expect(prompt).not.toContain("start skill using aws other");
+    expect(prompt).not.toContain("source for chatTitle");
+  });
+
+  it("sends this thread's transcript for a title-only refresh and omits git work", () => {
+    const prompt = buildSessionMetadataPrompt({
+      provider: "cursor",
+      chatModel: "grok-4.6",
+      currentLaneName: "Auth fallback",
+      currentChatTitle: "Old title",
+      requestedFields: ["title"],
+      threadTranscript: "User: fix login\nAssistant: Wired the fallback.",
+      latestAssistantParagraphs: "Wired the fallback.",
+      laneThreads: "- Review auth tests",
+      laneWorkVersusRemote: "Compared to origin/main:\nChanged files:\nM apps/desktop/src/auth.ts",
+    });
+    expect(prompt).toContain("source for chatTitle");
+    expect(prompt).toContain("User: fix login");
+    expect(prompt).toContain("Repeat these current values unchanged: laneName, statusLine.");
+    expect(prompt).not.toContain("source for statusLine");
+    expect(prompt).not.toContain("Review auth tests");
+    expect(prompt).not.toContain("differs from remote");
+  });
+});
+
+describe("buildSessionMetadataSystemPrompt", () => {
+  it("keeps the all-three namer instructions when every field is requested", () => {
+    expect(buildSessionMetadataSystemPrompt(["title", "laneName", "statusLine"]))
+      .toBe(SESSION_METADATA_SYSTEM_PROMPT);
+    expect(buildSessionMetadataSystemPrompt()).toBe(SESSION_METADATA_SYSTEM_PROMPT);
+  });
+
+  it("tells a status-only namer to copy the current title and lane name", () => {
+    const systemPrompt = buildSessionMetadataSystemPrompt(["statusLine"]);
+    expect(systemPrompt).toContain("Users scan many threads at once");
+    expect(systemPrompt).toContain("Write new values for: statusLine.");
+    expect(systemPrompt).toContain("Copy these current values unchanged: chatTitle, laneName.");
+    expect(systemPrompt).toContain("Derive this only from the latest assistant output");
+    expect(systemPrompt).not.toContain("every thread in this lane");
+    expect(systemPrompt).not.toContain("full conversation transcript");
   });
 });

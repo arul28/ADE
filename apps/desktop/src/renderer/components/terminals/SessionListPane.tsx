@@ -15,7 +15,7 @@ import {
   sessionStatusBucket,
 } from "../../lib/terminalAttention";
 import { useAppStore } from "../../state/appStore";
-import { useLaneNaming } from "../../state/laneNamingStore";
+import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
   useCrossMachineLaneUnion,
   type CrossMachineLaneMarker,
@@ -552,7 +552,7 @@ function StickyGroupHeader({
   // a transformed ancestor sticks to the transformed box, so the header visibly
   // detaches from the top of the list mid-slide.
   const [sliding, setSliding] = useState(false);
-  const laneNaming = useLaneNaming(namingLaneId);
+  const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
   const isLane = variant === "lane";
   const isQuietShelf = variant === "quiet-shelf";
@@ -565,7 +565,7 @@ function StickyGroupHeader({
   // flexible text nodes in one row competing for width, which is what pushed the
   // PR badge off the edge. Non-lane group headers keep their sub-label.
   const showBranchCluster = !isLane && branchText.length > 0;
-  const resolvedLabel = laneNaming ? "Naming lane…" : label;
+  const resolvedLabel = namingLane ? "Naming lane…" : label;
   const laneHeaderTitle = branchText ? `${resolvedLabel} · ${branchText}` : resolvedLabel;
   // `laneSurfaceTint` is now consulted for its TEXT channel only. The background,
   // border, and left-accent it also returns are deliberately unused here: surface
@@ -724,7 +724,7 @@ function StickyGroupHeader({
                 style={laneLabelColor ? { color: laneLabelColor } : undefined}
                 title={laneHeaderTitle}
               >
-                <LaneNamingLabel laneName={label} naming={laneNaming} />
+                <LaneNamingLabel laneName={label} naming={namingLane} />
                 {showInlineCount ? ` (${count})` : null}
               </span>
               {/* Branch sits immediately right of the label and expands to fill
