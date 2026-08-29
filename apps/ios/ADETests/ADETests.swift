@@ -27584,3 +27584,114 @@ final class SettingsMachineRowErrorMessageTests: XCTestCase {
     )
   }
 }
+
+
+/**
+ * The plugin identity a host-raised card carries to the phone.
+ *
+ * Every plugin gate — install, remove, turn off, turn on — is raised by the
+ * desktop host under `source: "ade"`, so without `origin` the phone drew ADE's
+ * own mark and the word "ADE" above a decision about somebody else's code.
+ */
+final class WorkPendingInputOriginTests: XCTestCase {
+  private func installDetail(origin: String) -> String {
+    """
+    {
+      "request": {
+        "itemId": "plugin-install-1",
+        "kind": "approval",
+        "source": "ade",
+        "title": "Install Focus 1.0.0?",
+        "questions": [
+          {
+            "id": "plugin_install",
+            "question": "Install Focus 1.0.0?",
+            "options": [
+              { "label": "Install", "value": "install" },
+              { "label": "Don't install", "value": "deny" }
+            ]
+          }
+        ]\(origin)
+      }
+    }
+    """
+  }
+
+  func testDecodesThePluginTheHostNamed() {
+    let detail = installDetail(origin: """
+    ,
+        "origin": {
+          "kind": "plugin",
+          "pluginId": "ade-focus",
+          "displayName": "Focus",
+          "icon": "timer",
+          "accent": "#7C6FF0"
+        }
+    """)
+    guard let model = pendingWorkQuestionFromApproval(
+      description: "Install Focus 1.0.0?",
+      detail: detail,
+      itemId: "plugin-install-1"
+    ) else {
+      return XCTFail("Expected a pending question model for the install card.")
+    }
+    XCTAssertEqual(model.source, "ade")
+    XCTAssertEqual(model.origin?.pluginId, "ade-focus")
+    XCTAssertEqual(model.origin?.displayName, "Focus")
+    XCTAssertEqual(model.origin?.icon, "timer")
+    XCTAssertEqual(model.origin?.accent, "#7C6FF0")
+    // The header the reader sees: the plugin's name, and the same kind word
+    // desktop prints.
+    XCTAssertEqual(model.providerHeaderVerb(fallbackProvider: "claude"), "Focus · Approval")
+  }
+
+  func testCardWithNoOriginKeepsTheProviderVerb() {
+    guard let model = pendingWorkQuestionFromApproval(
+      description: "Install Focus 1.0.0?",
+      detail: installDetail(origin: ""),
+      itemId: "plugin-install-1"
+    ) else {
+      return XCTFail("Expected a pending question model for the install card.")
+    }
+    XCTAssertNil(model.origin)
+    XCTAssertEqual(model.providerHeaderVerb(fallbackProvider: "claude"), "ADE asks")
+  }
+
+  func testHalfAnIdentityIsDroppedRatherThanDrawnNameless() {
+    let halves = [
+      """
+      ,
+          "origin": { "kind": "plugin", "pluginId": "ade-focus" }
+      """,
+      """
+      ,
+          "origin": { "kind": "plugin", "displayName": "Focus" }
+      """,
+      """
+      ,
+          "origin": { "kind": "runtime", "pluginId": "ade-focus", "displayName": "Focus" }
+      """,
+      """
+      ,
+          "origin": "ade-focus"
+      """,
+    ]
+    for half in halves {
+      let model = pendingWorkQuestionFromApproval(
+        description: "Install Focus 1.0.0?",
+        detail: installDetail(origin: half),
+        itemId: "plugin-install-1"
+      )
+      XCTAssertNil(model?.origin, "origin should be dropped for: \(half)")
+    }
+  }
+
+  /// The other half of the fix: a card with no plugin draws ADE's real logo
+  /// rather than the generic "unknown provider" symbol.
+  func testAdeCardDrawsTheAppsOwnMark() {
+    XCTAssertEqual(providerAssetName("ade"), "BrandMark")
+    // Same bundle check the brand-token parity test makes: a name that maps to
+    // an imageset nobody added draws an empty box beside the label.
+    XCTAssertTrue(PluginSymbol.assetExists("BrandMark"))
+  }
+}

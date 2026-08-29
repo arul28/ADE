@@ -28,6 +28,7 @@ import type {
 } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { relativeTimeCompact } from "../../lib/format";
+import { parseWorkSearchQuery } from "../../../shared/workSearch";
 import { cn } from "../ui/cn";
 
 // Debounce before hitting the universal search backend as the user types.
@@ -88,24 +89,41 @@ function KindIcon({ kind }: { kind: SearchDocKind }) {
   }
 }
 
-// Bold the first case-insensitive substring hit of the query inside a title.
+// Bold every bare word/phrase hit in a title. A full multi-word query is not a
+// contiguous substring when the user types the words in a different order.
 export function highlightTitle(
   title: string,
   query: string,
 ): React.ReactNode {
-  const needle = query.trim();
-  if (!needle) return title;
-  const idx = title.toLowerCase().indexOf(needle.toLowerCase());
-  if (idx < 0) return title;
-  return (
-    <>
-      {title.slice(0, idx)}
-      <span className="font-semibold text-[var(--color-fg)]">
-        {title.slice(idx, idx + needle.length)}
-      </span>
-      {title.slice(idx + needle.length)}
-    </>
-  );
+  const terms = parseWorkSearchQuery(query).terms;
+  if (terms.length === 0) return title;
+  const lowerTitle = title.toLowerCase();
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const term of terms) {
+    const index = lowerTitle.indexOf(term);
+    if (index < 0) continue;
+    ranges.push({ start: index, end: index + term.length });
+  }
+  if (ranges.length === 0) return title;
+  ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach((range, index) => {
+    const start = Math.max(cursor, range.start);
+    if (range.end <= cursor) return;
+    if (start > cursor) nodes.push(title.slice(cursor, start));
+    nodes.push(
+      <span
+        key={`${range.start}:${index}`}
+        className="font-semibold text-[var(--color-fg)]"
+      >
+        {title.slice(start, range.end)}
+      </span>,
+    );
+    cursor = range.end;
+  });
+  if (cursor < title.length) nodes.push(title.slice(cursor));
+  return nodes;
 }
 
 // Accent the backend-provided match offsets inside a snippet (no heavy box).
@@ -265,6 +283,8 @@ export function ShowMoreRow({
 
 export type UseUniversalSearchResult = {
   loading: boolean;
+  /** Chat/terminal content hits are promoted into the Work-first result group. */
+  sessionResults: SearchResultItem[];
   sections: EntitySection[];
   flatEntities: FlatEntity[];
   expandedKinds: Set<SearchDocKind>;
@@ -272,15 +292,6 @@ export type UseUniversalSearchResult = {
 };
 
 export type UseUniversalSearchOptions = {
-  /**
-   * Session ids already rendered by the palette's local "Recent threads" group.
-   * A thread that matches on its title almost always matches on its content
-   * too, so without this the same chat appears twice — once instantly from the
-   * local index, once again a beat later under "Chats". Excluding them here
-   * (rather than at the render site) keeps `flatEntities` the single source of
-   * truth for the keyboard index.
-   */
-  excludeSessionIds?: ReadonlySet<string>;
   /**
    * Result kinds whose only destination is a surface this machine does not
    * have — Linear issues and artifacts, when their plugin is not installed.
@@ -303,7 +314,6 @@ export function useUniversalSearch(
   enabled: boolean,
   options: UseUniversalSearchOptions = {},
 ): UseUniversalSearchResult {
-  const excludeSessionIds = options.excludeSessionIds;
   const hiddenKinds = options.hiddenKinds;
   const [results, setResults] = useState<SearchResultItem[] | null>(null);
   const [totalByKind, setTotalByKind] = useState<
@@ -336,15 +346,40 @@ export function useUniversalSearch(
     }
     const queryApi = window.ade.search?.query;
     if (!queryApi) return;
+    const parsedQuery = parseWorkSearchQuery(query);
+    const backendQueries = parsedQuery.backendQueries.length > 0
+      ? parsedQuery.backendQueries
+      : [parsedQuery.backendQuery];
     const requestId = ++requestRef.current;
     setLoading(true);
     const timeout = globalThis.setTimeout(() => {
       void Promise.resolve()
-        .then(() => queryApi({ query, limit: SEARCH_QUERY_LIMIT }))
-        .then((result) => {
+        .then(() => Promise.all(
+          backendQueries.map((backendQuery) => queryApi({
+            query: backendQuery,
+            limit: SEARCH_QUERY_LIMIT,
+          })),
+        ))
+        .then((queryResults) => {
           if (requestRef.current !== requestId) return;
-          setResults(result.results);
-          setTotalByKind(result.totalByKind);
+          const seen = new Set<string>();
+          const mergedResults: SearchResultItem[] = [];
+          const mergedTotals: Partial<Record<SearchDocKind, number>> = {};
+          for (const result of queryResults) {
+            for (const item of result.results) {
+              const key = `${item.kind}:${item.id}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              mergedResults.push(item);
+            }
+            for (const [kind, total] of Object.entries(result.totalByKind)) {
+              if (typeof total !== "number") continue;
+              const searchKind = kind as SearchDocKind;
+              mergedTotals[searchKind] = (mergedTotals[searchKind] ?? 0) + total;
+            }
+          }
+          setResults(mergedResults);
+          setTotalByKind(mergedTotals);
           setLoading(false);
         })
         .catch(() => {
@@ -363,21 +398,14 @@ export function useUniversalSearch(
   const sections = useMemo<EntitySection[]>(() => {
     if (!results || results.length === 0) return [];
     const byKind = new Map<SearchDocKind, SearchResultItem[]>();
-    // Count what the exclusion removed per kind so each section's "show N more"
-    // total stays honest against the rows actually rendered.
-    const excludedByKind = new Map<SearchDocKind, number>();
     for (const item of results) {
+      // Work owns chat/terminal result presentation. Keeping these rows in the
+      // generic entity sections made content hits appear below commands and
+      // created a second copy of a cached Work row.
+      if (item.kind === "chat" || item.kind === "terminal") continue;
       // Not counted as an exclusion: the whole kind is gone, so there is no
       // section left for a "show N more" total to be honest about.
       if (hiddenKinds?.has(item.kind)) continue;
-      if (
-        excludeSessionIds &&
-        item.sessionId &&
-        excludeSessionIds.has(item.sessionId)
-      ) {
-        excludedByKind.set(item.kind, (excludedByKind.get(item.kind) ?? 0) + 1);
-        continue;
-      }
       const bucket = byKind.get(item.kind);
       if (bucket) bucket.push(item);
       else byKind.set(item.kind, [item]);
@@ -391,11 +419,11 @@ export function useUniversalSearch(
         kind,
         label: ENTITY_KIND_LABEL[kind],
         rows,
-        total: Math.max(rows.length, reportedTotal - (excludedByKind.get(kind) ?? 0)),
+        total: Math.max(rows.length, reportedTotal),
       });
     }
     return next;
-  }, [excludeSessionIds, hiddenKinds, results, totalByKind]);
+  }, [hiddenKinds, results, totalByKind]);
 
   // Flattened, keyboard-navigable sequence of entity rows + show-more rows,
   // continuing after the command items in the shared flat index.
@@ -432,5 +460,17 @@ export function useUniversalSearch(
     });
   }, []);
 
-  return { loading, sections, flatEntities, expandedKinds, toggleExpandKind };
+  const sessionResults = useMemo(
+    () => (results ?? []).filter((item) => item.kind === "chat" || item.kind === "terminal"),
+    [results],
+  );
+
+  return {
+    loading,
+    sessionResults,
+    sections,
+    flatEntities,
+    expandedKinds,
+    toggleExpandKind,
+  };
 }

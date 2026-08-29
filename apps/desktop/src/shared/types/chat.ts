@@ -446,8 +446,8 @@ export function inferAttachmentType(
   filePath: string,
   mimeType?: string | null,
 ): AgentChatLocalFileRef["type"] {
-  if (mimeType?.startsWith("image/")) return "image";
-  return /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i.test(filePath) ? "image" : "file";
+  if (mimeType?.toLowerCase().startsWith("image/")) return "image";
+  return isImageAttachmentPath(filePath) ? "image" : "file";
 }
 
 /** Merge two attachment lists, deduplicating by path (last-write wins). */
@@ -1745,6 +1745,37 @@ export type PendingInputQuestion = {
   impact?: string | null;
 };
 
+/**
+ * Who is really asking, when the `source` alone cannot say.
+ *
+ * `PendingInputSource` is a closed union of runtimes plus `"ade"`, so every card
+ * the host raises on its own authority — a plugin install, a removal, an
+ * enable — arrives as `"ade"` and draws ADE's own mark above the word "ADE".
+ * For a plugin gate that is wrong in the one place it matters most: the reader
+ * is being asked to run somebody's code, and the card names the host rather
+ * than the thing being installed. Three rounds of user reports said so.
+ *
+ * So the asker's identity travels beside the source rather than inside it. The
+ * union stays closed (nothing here can invent a new runtime), the fallback stays
+ * exactly what it was for every caller that sets nothing, and a card that DOES
+ * carry an origin draws that plugin's own icon and name.
+ *
+ * The fields are the ones {@link https://../../renderer/components/plugins/pluginIcons.tsx pluginIdentity}
+ * takes, so the card resolves the same picture the Marketplace does — a Phosphor
+ * token, a `brand:*` vendor mark, or the derived glyph-and-colour a plugin that
+ * named no icon gets. Nothing here is agent-supplied: the host fills it from the
+ * manifest it parsed for the disclosure.
+ */
+export type PendingInputOrigin = {
+  kind: "plugin";
+  pluginId: string;
+  displayName: string;
+  /** Manifest icon token — a Phosphor name or a `brand:*` vendor mark. */
+  icon?: string | null;
+  /** Manifest accent hex, when it declared one. */
+  accent?: string | null;
+};
+
 export type PendingInputRequest = {
   requestId: string;
   itemId?: string;
@@ -1760,6 +1791,12 @@ export type PendingInputRequest = {
   providerMetadata?: Record<string, unknown>;
   autoResolutionMs?: number | null;
   turnId?: string | null;
+  /**
+   * The plugin this card is really about, when the host raised it for one.
+   * Optional and additive: absent means the card identifies itself by `source`,
+   * which is what every runtime gate does. See {@link PendingInputOrigin}.
+   */
+  origin?: PendingInputOrigin;
 };
 
 export type AgentChatSession = {
@@ -3277,6 +3314,19 @@ export function normalizeAgentChatSessionMetadataFields(
     (fields ?? AGENT_CHAT_SESSION_METADATA_FIELDS).filter(isAgentChatSessionMetadataField),
   ));
 }
+
+export type AgentChatRegenerateSessionMetadataArgs = {
+  sessionId: string;
+  /** Defaults to all three fields when omitted. Duplicate fields are ignored. */
+  fields?: AgentChatSessionMetadataField[];
+};
+
+export type AgentChatRegenerateSessionMetadataResult = {
+  sessionId: string;
+  applied: AgentChatSessionMetadataField[];
+  skipped: AgentChatSessionMetadataField[];
+  modelId: string | null;
+};
 
 /**
  * One command in the composer's slash menu.

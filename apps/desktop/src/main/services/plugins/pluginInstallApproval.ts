@@ -48,7 +48,7 @@
  * restarted ADE asks again.
  */
 
-import type { AgentChatApprovalDecision } from "../../../shared/types/chat";
+import type { AgentChatApprovalDecision, PendingInputOrigin } from "../../../shared/types/chat";
 import type { PluginManifest } from "../../../shared/plugins/manifest";
 import {
   buildPluginInstallApprovalBody,
@@ -164,6 +164,13 @@ export type PluginInstallApprovalChat = {
     description?: string;
     source?: "ade";
     kind?: "approval";
+    /**
+     * Who the card is really about. The host raises every plugin gate under its
+     * own `source: "ade"`, so without this the reader gets ADE's mark and the
+     * word "ADE" above a decision about somebody else's code. See
+     * {@link PendingInputOrigin}.
+     */
+    origin?: PendingInputOrigin;
     allowsFreeform?: boolean;
     operatorOnly?: boolean;
     onItemId?: (itemId: string) => void;
@@ -223,6 +230,37 @@ export type PluginInstallApprovalResult =
       message: string;
       data: Record<string, unknown>;
     };
+
+/**
+ * The card's identity, built from the manifest the host already parsed.
+ *
+ * Null for a source with no readable manifest — a git URL nothing has cloned
+ * yet. That card genuinely does not know which plugin it is about, and drawing
+ * a name for it would be the card inventing the one fact the reader is there to
+ * check. It falls back to ADE's own mark, which is honest: ADE is asking.
+ *
+ * Nothing here comes from the agent's arguments. `displayName` and `icon` are
+ * the manifest's, `pluginId` is the id the host resolved, and every one of them
+ * is already on the card's prose — this only lets the header draw them.
+ */
+export function pluginApprovalOrigin(args: {
+  pluginId: string | null;
+  displayName: string;
+  manifest: PluginManifest | null;
+}): PendingInputOrigin | null {
+  const pluginId = args.pluginId?.trim();
+  if (!pluginId) return null;
+  const displayName = args.displayName.trim() || pluginId;
+  const icon = args.manifest?.icon?.trim();
+  const accent = args.manifest?.accent?.trim();
+  return {
+    kind: "plugin",
+    pluginId,
+    displayName,
+    ...(icon ? { icon } : {}),
+    ...(accent ? { accent } : {}),
+  };
+}
 
 const APPROVE_VALUE = "install";
 const DENY_VALUE = "deny";
@@ -302,6 +340,14 @@ export async function requestPluginInstallApproval(args: {
     description: body,
     source: "ade",
     kind: "approval",
+    ...(() => {
+      const origin = pluginApprovalOrigin({
+        pluginId: disclosure.pluginId,
+        displayName: disclosure.displayName,
+        manifest,
+      });
+      return origin ? { origin } : {};
+    })(),
     allowsFreeform: false,
     operatorOnly: true,
     onItemId: (id) => {
@@ -500,6 +546,14 @@ export async function requestPluginRemovalApproval(args: {
     description: body,
     source: "ade",
     kind: "approval",
+    ...(() => {
+      const origin = pluginApprovalOrigin({
+        pluginId: disclosure.pluginId,
+        displayName: disclosure.displayName,
+        manifest: args.manifest,
+      });
+      return origin ? { origin } : {};
+    })(),
     allowsFreeform: false,
     operatorOnly: true,
     onItemId: (id) => {

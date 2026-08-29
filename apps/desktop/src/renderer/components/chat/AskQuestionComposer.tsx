@@ -12,8 +12,7 @@ import {
   ownQuestionValue,
   sendLabel,
 } from "../../../shared/pendingInputAnswers";
-import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
-import { ProviderLogo } from "../shared/ProviderLogos";
+import { PendingInputAskerMark, pendingInputAskerLabel } from "./pendingInputAsker";
 import { cn } from "../ui/cn";
 import { QuestionOptionPreview } from "./questionOptionPreview";
 
@@ -370,9 +369,13 @@ export function AskQuestionComposer({
           onClick={() => setFolded(false)}
           className="grid w-full grid-cols-[17px_minmax(0,1fr)_auto_auto] items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-white/[0.03]"
         >
-          <span className="inline-flex h-[17px] w-[17px] items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)]">
-            <ProviderLogo family={request.source} size={10} />
-          </span>
+          {request.origin?.kind === "plugin" ? (
+            <PendingInputAskerMark request={request} size={17} />
+          ) : (
+            <span className="inline-flex h-[17px] w-[17px] items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)]">
+              <PendingInputAskerMark request={request} size={10} />
+            </span>
+          )}
           <span className="min-w-0 truncate text-[length:calc(var(--chat-font-size)*12.5/14)] text-fg/62">
             <b className="font-medium text-fg/90">{label}</b> — {text}
           </span>
@@ -395,7 +398,7 @@ export function AskQuestionComposer({
     <div
       ref={setRootNode}
       role="group"
-      aria-label={pendingInputHeaderLabel(request.source, request.kind)}
+      aria-label={pendingInputAskerLabel(request)}
       data-testid="ask-question-composer"
       onKeyDown={onKeyDown}
       /* The one structural use of accent: a hairline top edge saying "you are
@@ -403,11 +406,20 @@ export function AskQuestionComposer({
       className="border-t-[1.5px] border-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)]"
     >
       <div className="flex items-center gap-2.5 px-3.5 pt-3">
-        <span className="inline-flex h-[17px] w-[17px] flex-none items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)]">
-          <ProviderLogo family={request.source} size={10} />
-        </span>
-        <span className={cn("font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.15em]", ACCENT_TEXT)}>
-          {pendingInputHeaderLabel(request.source, request.kind)}
+        {/* A plugin tile carries its own border and tint; wrapping it in the
+            accent chip would draw a box inside a box. */}
+        {request.origin?.kind === "plugin" ? (
+          <PendingInputAskerMark request={request} size={17} className="flex-none" />
+        ) : (
+          <span className="inline-flex h-[17px] w-[17px] flex-none items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--chat-accent)_16%,transparent)]">
+            <PendingInputAskerMark request={request} size={10} />
+          </span>
+        )}
+        <span
+          data-testid="ask-question-header-label"
+          className={cn("font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.15em]", ACCENT_TEXT)}
+        >
+          {pendingInputAskerLabel(request)}
         </span>
         <span className="flex-1" />
         {questions.length > 1 ? (

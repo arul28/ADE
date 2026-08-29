@@ -91,6 +91,7 @@ export function MarketplacePage() {
 
 function MarketplaceGallery() {
   const navigate = useNavigate();
+  const location = useLocation();
   const catalogue = useMarketplaceCatalogue();
   const installed = useRootAppStore((state) => state.installedPlugins);
   const presence = usePluginPresence(true);
@@ -104,6 +105,29 @@ function MarketplaceGallery() {
   const [rowBusy, setRowBusy] = React.useState<string | null>(null);
   const [rowError, setRowError] = React.useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = React.useState<MarketplaceListing | null>(null);
+
+  /**
+   * `?install=<source>` — a candidate handed over from somewhere else.
+   *
+   * The in-chat approval card's "View in Marketplace" sends the reader here
+   * when the plugin has no catalogue page yet: a folder on this machine is in
+   * neither the bundled index nor the registry, so there is nothing to link to
+   * and the install dialog IS the disclosure page for it.
+   *
+   * The parameter is consumed on arrival — read once, then replaced out of the
+   * URL. Leaving it would reopen the dialog every time the gallery re-rendered
+   * under it, and a back-navigation would reopen it against a source the reader
+   * has already answered for.
+   */
+  React.useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const handed = params.get("install")?.trim();
+    if (!handed) return;
+    setInstallTarget({ kind: "url", source: handed });
+    params.delete("install");
+    const query = params.toString();
+    navigate(`${location.pathname}${query ? `?${query}` : ""}`, { replace: true });
+  }, [location.pathname, location.search, navigate]);
 
   /* A host with no install action is not a broken Marketplace — it is a window
      with no project attached, which is most of what "this button does nothing"

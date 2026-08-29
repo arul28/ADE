@@ -374,8 +374,11 @@ import type {
   ClaudeActiveGoal,
   PendingInputQuestion,
   PendingInputKind,
+  PendingInputOrigin,
   PendingInputRequest,
   PendingInputSource,
+  AgentChatRegenerateSessionMetadataArgs,
+  AgentChatRegenerateSessionMetadataResult,
   AgentChatUpdateSessionArgs,
   ComputerUseBackendStatus,
   TerminalSessionStatus,
@@ -465,6 +468,7 @@ import type {
 } from "../../../shared/types/chatMentions";
 import type { RuntimeProcessSummary } from "../../../shared/types/sessions";
 import { formatWorkingDuration } from "../../../shared/sessionStatusPresentation";
+import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
 import {
   createChatRuntimeBudget,
   type ChatRuntimeBudget,
@@ -605,6 +609,7 @@ import {
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { isManualCompactCommand } from "../../../shared/contextCompaction";
 import {
   deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
@@ -709,6 +714,7 @@ import {
   MAX_NAMING_WORDS,
   runNamingAcrossProviders,
 } from "./sessionNaming";
+import { createSessionMetadataRegenerator } from "./sessionMetadataService";
 import {
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
@@ -3169,6 +3175,10 @@ type ManagedChatSession = {
   autoTitleSeed: string | null;
   autoTitleStage: "none" | "initial" | "final";
   autoTitleInFlight: boolean;
+  /** Monotonic guard for explicit metadata requests and later user edits. */
+  sessionMetadataGenerationVersion: number;
+  /** Revision of any persisted title write, including same-text user edits. */
+  sessionMetadataTitleRevision: number;
   runtimeTitleAdopted: boolean;
   manuallyNamed: boolean;
   summaryInFlight: boolean;
@@ -3259,6 +3269,15 @@ type ManagedChatSession = {
       responseText?: string | null;
     }) => void;
   }>;
+  /**
+   * While a settlement runs, every item id it has already resolved. Settlement
+   * drains several card stores and then emits a receipt for each card it
+   * remembered up front, so without this the same card gets two
+   * `pending_input_resolved` events — both durable, both synced.
+   */
+  pendingInputSettlementResolvedIds?: Set<string>;
+  /** The settle in flight for this session, so a second one joins it. */
+  pendingInputSettlement?: Promise<void>;
   /** Live HTTP MCP leases, at most one per tool set. */
   httpMcpServers: Partial<Record<"orchestration" | "cto" | "plugins", HttpMcpLease>>;
   activeBashControllers: Set<AbortController>;
@@ -7928,6 +7947,11 @@ export function createAgentChatService(args: {
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
   /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
   onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
+  /** Content-free hook fired after an explicit session-metadata generation request. */
+  onSessionMetadataRegenerated?: (event: {
+    sessionId: string;
+    outcome: "completed" | "partial" | "failed";
+  }) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -7984,6 +8008,7 @@ export function createAgentChatService(args: {
     onEvent,
     onTurnSettled,
     onChatMentionsExpanded,
+    onSessionMetadataRegenerated,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -11812,6 +11837,78 @@ export function createAgentChatService(args: {
     return sanitizeAutoTitle(sessionService.get(managed.session.id)?.title ?? "");
   };
 
+  const persistSessionTitleMetadata = (
+    managed: ManagedChatSession,
+    rawTitle: string,
+    manuallyNamed: boolean,
+  ): string | null => {
+    const title = rawTitle.trim();
+    if (!title) return null;
+
+    sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed });
+    managed.sessionMetadataTitleRevision += 1;
+    managed.manuallyNamed = manuallyNamed;
+    managed.runtimeTitleAdopted = false;
+    emitTransientChatEnvelope(managed.session.id, {
+      type: "session_meta_updated",
+      title,
+      manuallyNamed,
+    });
+
+    return title;
+  };
+
+  const syncCodexSessionTitle = (managed: ManagedChatSession, title: string): void => {
+    // Sync ADE-generated titles to Codex so the app-server and ADE agree.
+    if (managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
+      managed.runtime.request("thread/name/set", {
+        threadId: managed.session.threadId,
+        name: title,
+      }).catch(() => { /* thread/name/set not supported — ignore */ });
+    }
+  };
+
+  const claudeTitleSyncTails = new Map<string, Promise<void>>();
+  const syncClaudeSessionTitle = async (
+    managed: ManagedChatSession,
+    title: string,
+    options: { expectedTitleRevision?: number } = {},
+  ): Promise<void> => {
+    const expectedTitleRevision = options.expectedTitleRevision ?? managed.sessionMetadataTitleRevision;
+    const previous = claudeTitleSyncTails.get(managed.session.id) ?? Promise.resolve();
+    const operation = previous.catch(() => undefined).then(async () => {
+      const runtime = managed.runtime;
+      if (managed.session.provider !== "claude" || runtime?.kind !== "claude" || !runtime.sdkSessionId) return;
+      if (
+        managed.deleted
+        || managed.sessionMetadataTitleRevision !== expectedTitleRevision
+        || sessionService.get(managed.session.id)?.title?.trim() !== title.trim()
+      ) return;
+      const sdkSessionId = runtime.sdkSessionId;
+      await renameClaudeSession(sdkSessionId, title, { dir: managed.laneWorktreePath }).catch((error) => {
+        logger.warn("agent_chat.claude_rename_session_failed", {
+          sessionId: managed.session.id,
+          sdkSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      if (
+        managed.deleted
+        || managed.sessionMetadataTitleRevision !== expectedTitleRevision
+        || sessionService.get(managed.session.id)?.title?.trim() !== title.trim()
+      ) return;
+      mirrorClaudeSessionPointer(managed, sdkSessionId, { title });
+    });
+    claudeTitleSyncTails.set(managed.session.id, operation);
+    try {
+      await operation;
+    } finally {
+      if (claudeTitleSyncTails.get(managed.session.id) === operation) {
+        claudeTitleSyncTails.delete(managed.session.id);
+      }
+    }
+  };
+
   const setManagedSessionTitle = (
     managed: ManagedChatSession,
     rawTitle: string,
@@ -11819,27 +11916,34 @@ export function createAgentChatService(args: {
   ): string | null => {
     const title = sanitizeAutoTitle(rawTitle);
     if (!title) return null;
-
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     if (currentTitle?.trim() === title) return title;
-
-    sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
-    managed.manuallyNamed = false;
-    emitTransientChatEnvelope(managed.session.id, {
-      type: "session_meta_updated",
-      title,
-      manuallyNamed: false,
-    });
-
-    // Sync ADE-generated titles to Codex so the app-server and ADE agree.
-    if (options.syncToRuntime !== false && managed.session.provider === "codex" && managed.session.threadId && managed.runtime?.kind === "codex") {
-      managed.runtime.request("thread/name/set", {
-        threadId: managed.session.threadId,
-        name: title,
-      }).catch(() => { /* thread/name/set not supported — ignore */ });
+    const appliedTitle = persistSessionTitleMetadata(managed, title, false);
+    if (appliedTitle && options.syncToRuntime !== false) {
+      syncCodexSessionTitle(managed, appliedTitle);
     }
+    return appliedTitle;
+  };
 
-    return title;
+  /**
+   * Apply a title selected by the user, even when it came from the generator.
+   * It intentionally records `manuallyNamed: true`: a context-menu choice is
+   * user-owned metadata, so the quiet automatic title job must not replace it
+   * on the next turn. A later explicit generation request still wins because
+   * it advances the generation version and calls this helper again.
+   */
+  const setUserChosenGeneratedSessionTitle = async (
+    managed: ManagedChatSession,
+    rawTitle: string,
+  ): Promise<string | null> => {
+    const title = sanitizeAutoTitle(rawTitle, 72);
+    if (!title) return null;
+    const appliedTitle = persistSessionTitleMetadata(managed, title, true);
+    if (!appliedTitle) return null;
+    const titleRevision = managed.sessionMetadataTitleRevision;
+    syncCodexSessionTitle(managed, appliedTitle);
+    await syncClaudeSessionTitle(managed, appliedTitle, { expectedTitleRevision: titleRevision });
+    return appliedTitle;
   };
 
   const adoptRuntimeSessionTitle = (
@@ -11855,18 +11959,11 @@ export function createAgentChatService(args: {
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
     const titleChanged = currentTitle?.trim() !== title;
     if (titleChanged) {
-      sessionService.updateMeta({ sessionId: managed.session.id, title, manuallyNamed: false });
+      persistSessionTitleMetadata(managed, title, false);
     }
     managed.manuallyNamed = false;
     managed.runtimeTitleAdopted = true;
     managed.autoTitleStage = "initial";
-    if (titleChanged) {
-      emitTransientChatEnvelope(managed.session.id, {
-        type: "session_meta_updated",
-        title,
-        manuallyNamed: false,
-      });
-    }
     logger.info("agent_chat.runtime_title_adopted", {
       sessionId: managed.session.id,
       provider: managed.session.provider,
@@ -12030,6 +12127,59 @@ export function createAgentChatService(args: {
     } finally {
       managed.autoTitleInFlight = false;
     }
+  };
+
+  let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
+  const regenerateSessionMetadata = (
+    args: AgentChatRegenerateSessionMetadataArgs,
+  ): Promise<AgentChatRegenerateSessionMetadataResult> => {
+    sessionMetadataRegenerator ??= createSessionMetadataRegenerator<ManagedChatSession>({
+      ensureManagedSession,
+      getSession: (sessionId) => {
+        const row = sessionService.get(sessionId);
+        return row ? {
+          title: row.title,
+          laneName: row.laneName,
+          statusNote: row.statusNote ?? null,
+          lastOutputPreview: row.lastOutputPreview ?? null,
+          summary: row.summary ?? null,
+        } : null;
+      },
+      getLaneSummary: (laneId, options) => laneService.getSummary(laneId, options),
+      resolveModelCandidates: async (managed: ManagedChatSession) => {
+        const auth = await detectAuth();
+        const availableModels = await getAvailableRegistryModels(auth);
+        const config = resolveChatConfig();
+        return buildSessionIntelligenceModelCandidates({
+          availableModels,
+          settingModelId: config.titleModelId,
+          sessionModelId: managed.session.modelId,
+          sessionModel: managed.session.model,
+        });
+      },
+      buildRecentConversationContext: (managed, limit) =>
+        buildRecentConversationContext(managed, limit),
+      runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
+        cwd,
+        modelId,
+        prompt,
+        systemPrompt,
+        jsonSchema,
+        taskType: "session_title",
+      }),
+      normalizeTitle: normalizeSuggestedLaneTitle,
+      normalizeStatusLine: normalizeSessionStatusNote,
+      applyTitle: (managed, title) =>
+        setUserChosenGeneratedSessionTitle(managed, title),
+      setStatusNote: (sessionId, note) => sessionService.setStatusNote(sessionId, note),
+      renameLane: (renameArgs) => laneService.rename(renameArgs),
+      persistChatState: (managed) => {
+        persistChatState(managed);
+      },
+      onRegenerated: onSessionMetadataRegenerated,
+      logger,
+    });
+    return sessionMetadataRegenerator(args);
   };
 
   // OpenCode handles API-key and local-model chats.
@@ -17030,6 +17180,7 @@ export function createAgentChatService(args: {
       ...(recordedAnswers ? { answers: recordedAnswers } : {}),
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
+    managed.pendingInputSettlementResolvedIds?.add(args.itemId);
     persistChatState(managed);
   };
 
@@ -17678,20 +17829,25 @@ export function createAgentChatService(args: {
   /**
    * Cancel one provider's input cards that are still waiting on the user.
    *
-   * Both providers park their cards in `managed.localPendingInputs`, and both
-   * leave them stranded when a turn ends early. For Pi, the worker drains its own
+   * Every provider parks its cards in `managed.localPendingInputs`, and each
+   * leaves them stranded when a turn ends early. For Pi, the worker drains its own
    * side on abort but the desktop entry outlives it. For OpenCode, the interrupt
-   * path drained `pendingApprovals` only, never the question cards. Either way
-   * the chat keeps rendering a card nobody can answer, `hasPendingInput` keeps
-   * reporting the session as blocked so the next send is refused, and a late
-   * answer would reply into a session that is already gone.
+   * path drained `pendingApprovals` only, never the question cards. For Codex,
+   * the interrupt drained nothing at all. Either way the chat keeps rendering a
+   * card nobody can answer, `hasPendingInput` keeps reporting the session as
+   * blocked so the next send is refused, and a late answer would reply into a
+   * session that is already gone.
+   *
+   * Pass every source the ending turn owns. A turn owns both its provider's
+   * own cards and the `ade` cards raised by ADE's own tools during it, so
+   * cancelling one source alone still leaves the session blocked.
    */
   const cancelPendingInputsFrom = (
     managed: ManagedChatSession,
-    source: "pi" | "opencode",
+    ...sources: [PendingInputSource, ...PendingInputSource[]]
   ): void => {
     for (const [itemId, pending] of [...managed.localPendingInputs]) {
-      if (pending.request.source !== source) continue;
+      if (!sources.includes(pending.request.source)) continue;
       managed.localPendingInputs.delete(itemId);
       pending.resolve({ decision: "cancel" });
       emitPendingInputResolved(managed, {
@@ -17701,6 +17857,115 @@ export function createAgentChatService(args: {
         questions: pending.request.questions,
       });
     }
+  };
+
+  /**
+   * Settle every Claude approval still waiting on the user.
+   *
+   * A Claude approval is a `canUseTool` callback promise: it can only be
+   * answered on the query that raised it, so once that query is finished the
+   * waiter would otherwise hang forever and hold the session's gates shut.
+   */
+  const settleClaudePendingApprovals = (runtime: ClaudeRuntime): void => {
+    for (const pending of runtime.approvals.values()) {
+      pending.resolve({ decision: "cancel" });
+    }
+    runtime.approvals.clear();
+  };
+
+  /**
+   * Settle every Codex card still waiting on the user, so a turn that ends
+   * early cannot leave one behind.
+   *
+   * A Codex approval is an open JSON-RPC server request: the app-server holds
+   * it until ADE answers, and `runtime.approvals` is the only record of that
+   * waiter. Each path that ends a turn early therefore has to answer the
+   * request, drop the entry, and emit one `pending_input_resolved` receipt.
+   * Clearing the map alone leaves the chat rendering a card nobody can answer,
+   * keeps `hasLivePendingInput` reporting the session as blocked so the next
+   * send is refused, and strands the app-server on a reply that never comes.
+   * `pendingPlanFollowups` hold an already-clicked plan response staged to
+   * drain on the next idle; an early end has to cancel those for the same
+   * reason.
+   *
+   * The map is cleared as each entry is settled, so a second call — the
+   * app-server's own `turn/aborted` landing after a local interrupt already
+   * settled — finds nothing and cannot resolve the same card twice.
+   *
+   * `preserveRecoverablePlanApprovals` is for the paths where the runtime died
+   * rather than the user ending the turn. A plan approval outlives its runtime
+   * by design: `respondToInput` rebuilds it from the transcript and stages the
+   * follow-up, so a crash or an idle teardown has to leave that card clickable.
+   * Every other kind dies with the process and still needs its receipt.
+   */
+  const settleCodexPendingInputs = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    options: { preserveRecoverablePlanApprovals?: boolean } = {},
+  ): void => {
+    const resolvedItemIds = new Set<string>();
+    const resolveOnce = (itemId: string, turnId: string | null): void => {
+      if (resolvedItemIds.has(itemId)) return;
+      resolvedItemIds.add(itemId);
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId,
+        questions: [],
+      });
+    };
+    // Answering a plan approval stages the follow-up and deliberately leaves
+    // the approval entry in place until the drain, so one item can sit in both
+    // stores at once. Take the staged responses first: an item with one was
+    // already answered, so it is neither a card to preserve nor a second
+    // receipt to write.
+    const stagedFollowups = runtime.pendingPlanFollowups.splice(0);
+    const stagedItemIds = new Set(stagedFollowups.map((followup) => followup.itemId));
+
+    for (const [itemId, pending] of [...runtime.approvals]) {
+      runtime.approvals.delete(itemId);
+      // The entry goes either way — the runtime holding it is finished. What
+      // the flag preserves is the *card*, by withholding its receipt, which is
+      // what `respondToInput` needs to rebuild it from the transcript.
+      if (
+        options.preserveRecoverablePlanApprovals
+        && pending.kind === "plan_approval"
+        && !stagedItemIds.has(itemId)
+      ) continue;
+      // A plan approval is synthesized locally from the plan item, so there is
+      // no server request behind it to answer.
+      if (runtime.process.stdin?.writable && pending.kind !== "plan_approval") {
+        try {
+          if (pending.kind === "mcp_elicitation") {
+            runtime.sendResponse(pending.requestId, {
+              action: "cancel",
+              content: null,
+              _meta: null,
+            });
+          } else if (pending.kind === "permissions") {
+            runtime.sendResponse(pending.requestId, {
+              permissions: {},
+              scope: "turn",
+            });
+          } else if (pending.kind === "structured_question") {
+            runtime.sendResponse(pending.requestId, { answers: {} });
+          } else {
+            runtime.sendResponse(pending.requestId, {
+              decision: mapApprovalDecisionForCodex("decline"),
+            });
+          }
+        } catch {
+          // The turn interrupt may already have closed the server request.
+        }
+      }
+      resolveOnce(itemId, pending.request?.turnId ?? null);
+    }
+    for (const followup of stagedFollowups) {
+      resolveOnce(followup.itemId, followup.turnId);
+    }
+    // A Codex turn owns the `ade` cards raised by ADE's own tools during it as
+    // well as its own, and both block the next send.
+    cancelPendingInputsFrom(managed, "codex", "ade");
   };
 
   const CURSOR_PERMISSION_WAITER_CLOSED_REASON =
@@ -17762,15 +18027,7 @@ export function createAgentChatService(args: {
         runtime.pending,
         `Codex app-server runtime was torn down (${openCodeReason}).`,
       );
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        emitPendingInputResolved(managed, {
-          itemId: followup.itemId,
-          decision: "cancel",
-          turnId: followup.turnId,
-          questions: [],
-        });
-      }
-      runtime.approvals.clear();
+      settleCodexPendingInputs(managed, runtime, { preserveRecoverablePlanApprovals: true });
       runtime.codexAgentIndexByTurn.clear();
       if (shouldMarkInterrupted) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
@@ -17863,10 +18120,7 @@ export function createAgentChatService(args: {
       runtime.taskToolInputByToolUseId.clear();
       runtime.workflowAgentsByTask.clear();
       runtime.dispatchingSteerIds.clear();
-      for (const pending of runtime.approvals.values()) {
-        pending.resolve({ decision: "cancel" });
-      }
-      runtime.approvals.clear();
+      settleClaudePendingApprovals(runtime);
       managed.runtime = null;
     }
     if (managed.runtime?.kind === "opencode") {
@@ -17906,7 +18160,7 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       rt.interrupted = true;
       cancelQueuedSteers(managed, rt, "interrupted");
-      cancelPendingInputsFrom(managed, "pi");
+      cancelPendingInputsFrom(managed, "pi", "ade");
       if (preserveProviderResumeState) persistChatState(managed);
       if (isPiSdkPooledAlive(rt.sdk)) {
         void rt.sdk.abort().catch(() => {});
@@ -18253,6 +18507,8 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: hasCustomChatSessionTitle(row.title, provider) ? "initial" : "none",
       autoTitleInFlight: false,
+      sessionMetadataGenerationVersion: 0,
+      sessionMetadataTitleRevision: 0,
       runtimeTitleAdopted: persisted?.runtimeTitleAdopted === true,
       manuallyNamed: persisted?.manuallyNamed === true || row.manuallyNamed === true,
       summaryInFlight: false,
@@ -24857,7 +25113,7 @@ export function createAgentChatService(args: {
         // TUI or CLI on the same server aborts, `session.error` sets
         // `interrupted`, and the loop settles here instead of throwing. Without
         // this call that second route stranded the card.
-        cancelPendingInputsFrom(managed, "opencode");
+        cancelPendingInputsFrom(managed, "opencode", "ade");
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
@@ -24915,7 +25171,7 @@ export function createAgentChatService(args: {
       setOpenCodeRuntimeBusy(runtime, false);
       runtime.activeTurnId = null;
       runtime.eventAbortController = null;
-      cancelPendingInputsFrom(managed, "opencode");
+      cancelPendingInputsFrom(managed, "opencode", "ade");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
@@ -25803,15 +26059,7 @@ export function createAgentChatService(args: {
     runtime.agentMessageTextByTurn.clear();
     runtime.recentNotificationKeys.clear();
     runtime.reconciledItemSignaturesByTurn.clear();
-    for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-      emitPendingInputResolved(managed, {
-        itemId: followup.itemId,
-        decision: "cancel",
-        turnId: followup.turnId,
-        questions: [],
-      });
-    }
-    runtime.approvals.clear();
+    settleCodexPendingInputs(managed, runtime);
     markSessionIdleWithFreshCache(managed);
     stopActiveCodexSubagents(managed, runtime, interruptedTurnId, summary);
     emitChatEvent(managed, {
@@ -28704,7 +28952,8 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       runtime.startedTurnId = null;
       runtime.pendingTurnPlanningApprovalGuarded = null;
-      runtime.approvals.clear();
+      // The thread is gone, so nothing here can be recovered or answered later.
+      settleCodexPendingInputs(managed, runtime);
       await interruptActiveCodexSubagentTurns(managed, runtime);
       markSessionIdleWithFreshCache(managed);
       if (managed.session.threadId === deletedThreadId) {
@@ -29184,15 +29433,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
       runtime.reconciledItemSignaturesByTurn.clear();
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        emitPendingInputResolved(managed, {
-          itemId: followup.itemId,
-          decision: "cancel",
-          turnId: followup.turnId,
-          questions: [],
-        });
-      }
-      runtime.approvals.clear();
+      settleCodexPendingInputs(managed, runtime);
       markSessionIdleWithFreshCache(managed);
       emitChatEvent(managed, {
         type: "status",
@@ -29704,6 +29945,15 @@ export function createAgentChatService(args: {
       });
     });
 
+    // A replaced runtime's process can exit long after its successor started.
+    // The approvals settled here are this runtime's, but the local cards belong
+    // to the session, so settling from a stale handler would cancel a card the
+    // live turn is waiting on.
+    const settleThisRuntimesCardsIfStillCurrent = (): void => {
+      if (managed.runtime && managed.runtime !== runtime) return;
+      settleCodexPendingInputs(managed, runtime, { preserveRecoverablePlanApprovals: true });
+    };
+
     proc.on("error", (error) => {
       const message = `Codex app-server failed to start: ${error instanceof Error ? error.message : String(error)}`;
       logger.warn("agent_chat.codex_spawn_failed", {
@@ -29715,15 +29965,7 @@ export function createAgentChatService(args: {
       });
 
       rejectPendingCodexRequests(pending, message);
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        emitPendingInputResolved(managed, {
-          itemId: followup.itemId,
-          decision: "cancel",
-          turnId: followup.turnId,
-          questions: [],
-        });
-      }
-      runtime.approvals.clear();
+      settleThisRuntimesCardsIfStillCurrent();
       runtime.suppressExitError = true;
 
       if (managed.closed || managed.session.status === "ended") return;
@@ -29745,15 +29987,7 @@ export function createAgentChatService(args: {
 
       rejectPendingCodexRequests(pending, message);
 
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        emitPendingInputResolved(managed, {
-          itemId: followup.itemId,
-          decision: "cancel",
-          turnId: followup.turnId,
-          questions: [],
-        });
-      }
-      runtime.approvals.clear();
+      settleThisRuntimesCardsIfStillCurrent();
 
       if (runtime.suppressExitError) return;
       if (cleanExit) return;
@@ -31627,6 +31861,8 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      sessionMetadataGenerationVersion: 0,
+      sessionMetadataTitleRevision: 0,
       runtimeTitleAdopted: false,
       manuallyNamed: false,
       summaryInFlight: false,
@@ -32547,6 +32783,8 @@ export function createAgentChatService(args: {
       autoTitleSeed: null,
       autoTitleStage: "none",
       autoTitleInFlight: false,
+      sessionMetadataGenerationVersion: 0,
+      sessionMetadataTitleRevision: 0,
       runtimeTitleAdopted: false,
       manuallyNamed: normalizedTitle.length > 0,
       summaryInFlight: false,
@@ -32668,12 +32906,8 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId: interruptedTurnId });
         emitChatEvent(managed, { type: "done", turnId: interruptedTurnId, status: "interrupted" });
       }
-      // Approvals registered through canUseTool can only be answered on their
-      // now-dead query; settle them like teardown so the gate below passes.
-      for (const pending of runtime.approvals.values()) {
-        pending.resolve({ decision: "cancel" });
-      }
-      runtime.approvals.clear();
+      // Settle the canUseTool approvals so the gate below passes.
+      settleClaudePendingApprovals(runtime);
       await clearClaudeSubagentStartIdsAfterSettlement(
         runtime,
         stopActiveClaudeSubagents(
@@ -41277,6 +41511,9 @@ export function createAgentChatService(args: {
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
+      if (isManualCompactCommand(args.text)) {
+        throw new Error("A turn is already active. Use steer or interrupt.");
+      }
       const rerouted = {
         sessionId: args.sessionId,
         text: args.text,
@@ -42801,7 +43038,7 @@ export function createAgentChatService(args: {
         rejectOpenCodePendingApproval(managed.runtime.handle, pending).catch(() => {});
       }
       managed.runtime.pendingApprovals.clear();
-      cancelPendingInputsFrom(managed, "opencode");
+      cancelPendingInputsFrom(managed, "opencode", "ade");
       return result;
     }
 
@@ -42855,7 +43092,7 @@ export function createAgentChatService(args: {
         // ignore
       }
       if (mode === "stop_and_clear") cancelQueuedSteers(managed, rt, "interrupted");
-      cancelPendingInputsFrom(managed, "pi");
+      cancelPendingInputsFrom(managed, "pi", "ade");
       persistChatState(managed);
       return result;
     }
@@ -42907,10 +43144,33 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
-      if (!managed.session.threadId) return result;
+      // Stop has to settle the user-facing cards even when there is no turn
+      // left to interrupt. A Codex plan approval is raised *after* the turn
+      // completes and `activeTurnId` is already null, so the early return
+      // below is the common case for the one card that blocks every later
+      // send until it is answered.
+      //
+      // `stop_only` stops the work without discarding what the user still owns,
+      // exactly as it spares queued follow-ups above. An unanswered card is the
+      // user's to answer, so a settle teardown leaves it alone; the user-facing
+      // dismissal runs through `dismissPendingInputForSettlement` instead. That
+      // only spares the arms below, where no turn is running — a card attached
+      // to a turn that IS running still goes when the app-server aborts it,
+      // because the request behind the card dies with the turn either way.
+      const settleCardsIfClearing = (): void => {
+        if (mode !== "stop_and_clear") return;
+        settleCodexPendingInputs(managed, runtime);
+      };
+      if (!managed.session.threadId) {
+        settleCardsIfClearing();
+        persistChatState(managed);
+        return result;
+      }
       if (!runtime.activeTurnId) {
+        settleCardsIfClearing();
         await interruptActiveCodexSubagentTurns(managed, runtime);
         failOpenCodexCompactions(managed, runtime, "interrupted");
+        persistChatState(managed);
         void startCodexQueuedFollowUp(managed, runtime);
         return result;
       }
@@ -42968,8 +43228,13 @@ export function createAgentChatService(args: {
           return result;
         }
       }
+      // This is the settle that runs when the app-server acknowledges the
+      // interrupt without ever sending `turn/aborted`; when the abort does
+      // land first, it has already emptied the map.
+      settleCardsIfClearing();
       await interruptActiveCodexSubagentTurns(managed, runtime);
       failOpenCodexCompactions(managed, runtime, "interrupted");
+      persistChatState(managed);
       void startCodexQueuedFollowUp(managed, runtime);
       return result;
     }
@@ -43114,11 +43379,7 @@ export function createAgentChatService(args: {
         result.recoveryExpiresAt = recovery.expiresAt;
       }
     }
-    // Drain pending approvals so their promises settle instead of hanging forever
-    for (const pending of runtime.approvals.values()) {
-      pending.resolve({ decision: "cancel" });
-    }
-    runtime.approvals.clear();
+    settleClaudePendingApprovals(runtime);
 
     persistChatState(managed);
     logger.info("agent_chat.turn_interrupt_completed", {
@@ -45150,10 +45411,10 @@ export function createAgentChatService(args: {
    * follow-ups, and persist the cleared awaitingInput marker even when the
    * original provider waiter disappeared during restart/recovery.
    */
-  const dismissPendingInputForSettlement = async (
-    { sessionId }: { sessionId: string },
+  const runPendingInputSettlement = async (
+    managed: ManagedChatSession,
   ): Promise<void> => {
-    const managed = ensureManagedSession(sessionId);
+    const sessionId = managed.session.id;
     const persisted = readPersistedState(sessionId);
     const pendingItems = new Map<string, string | null>();
     const rememberPendingItem = (itemId: string | null | undefined, turnId?: string | null): void => {
@@ -45165,120 +45426,110 @@ export function createAgentChatService(args: {
       );
     };
 
-    for (const [itemId, pending] of managed.localPendingInputs) {
-      rememberPendingItem(itemId, pending.request.turnId);
-    }
-    const runtime = managed.runtime;
-    if (runtime?.kind === "codex") {
-      for (const [itemId, pending] of runtime.approvals) {
-        rememberPendingItem(itemId, pending.request?.turnId);
+    // Remembering a card here is how a restored session still gets a receipt
+    // for a waiter its runtime no longer holds. The drains below also emit for
+    // the cards they find, so collect what they resolved and skip those at the
+    // end rather than sending a second event for the same card. The sink is
+    // armed under try/finally: leaving it set after a throw would silence the
+    // receipts of every later settle on this session.
+    const alreadyResolved = new Set<string>();
+    managed.pendingInputSettlementResolvedIds = alreadyResolved;
+    try {
+      for (const [itemId, pending] of managed.localPendingInputs) {
+        rememberPendingItem(itemId, pending.request.turnId);
       }
-      // A previously-clicked plan response must never drain after settlement.
-      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
-        rememberPendingItem(followup.itemId, followup.turnId);
-      }
-    } else if (runtime?.kind === "claude") {
-      for (const [itemId, pending] of runtime.approvals) {
-        rememberPendingItem(itemId, pending.request?.turnId);
-      }
-    } else if (runtime?.kind === "opencode") {
-      for (const [itemId, pending] of runtime.pendingApprovals) {
-        rememberPendingItem(itemId, pending.request?.turnId);
-      }
-    } else if (runtime?.kind === "cursor" || runtime?.kind === "droid") {
-      for (const itemId of runtime.permissionWaiters.keys()) {
-        rememberPendingItem(itemId, runtime.activeTurnId);
-      }
-    }
-    if (persisted?.awaitingInput === true) {
-      rememberPendingItem(await latestPendingInputItemIdForSession(sessionId, managed));
-    }
-
-    if (runtime) {
-      try {
-        await interrupt({ sessionId });
-      } catch (error) {
-        // Provider interruption is best-effort. The local lifecycle contract
-        // still has to clear a restored/stale request and settle the card.
-        logger.warn("agent_chat.pending_input_settle_interrupt_failed", {
-          sessionId,
-          provider: managed.session.provider,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    for (const pending of managed.localPendingInputs.values()) {
-      pending.resolve({ decision: "cancel" });
-    }
-    managed.localPendingInputs.clear();
-
-    if (runtime?.kind === "codex") {
-      for (const pending of runtime.approvals.values()) {
-        if (!runtime.process.stdin.writable || pending.kind === "plan_approval") continue;
-        try {
-          if (pending.kind === "mcp_elicitation") {
-            runtime.sendResponse(pending.requestId, {
-              action: "cancel",
-              content: null,
-              _meta: null,
-            });
-          } else if (pending.kind === "permissions") {
-            runtime.sendResponse(pending.requestId, {
-              permissions: {},
-              scope: "turn",
-            });
-          } else if (pending.kind === "structured_question") {
-            runtime.sendResponse(pending.requestId, { answers: {} });
-          } else {
-            runtime.sendResponse(pending.requestId, {
-              decision: mapApprovalDecisionForCodex("decline"),
-            });
-          }
-        } catch {
-          // The turn interrupt may already have closed the server request.
+      const runtime = managed.runtime;
+      if (runtime?.kind === "codex") {
+        for (const [itemId, pending] of runtime.approvals) {
+          rememberPendingItem(itemId, pending.request?.turnId);
+        }
+        // A previously-clicked plan response must never drain after settlement.
+        // Take the staged follow-ups now, before the first await: a
+        // `turn/completed` landing during the interrupt would otherwise drain
+        // one and start a fresh turn on the session the user just settled.
+        for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+          rememberPendingItem(followup.itemId, followup.turnId);
+        }
+      } else if (runtime?.kind === "claude") {
+        for (const [itemId, pending] of runtime.approvals) {
+          rememberPendingItem(itemId, pending.request?.turnId);
+        }
+      } else if (runtime?.kind === "opencode") {
+        for (const [itemId, pending] of runtime.pendingApprovals) {
+          rememberPendingItem(itemId, pending.request?.turnId);
+        }
+      } else if (runtime?.kind === "cursor" || runtime?.kind === "droid") {
+        for (const itemId of runtime.permissionWaiters.keys()) {
+          rememberPendingItem(itemId, runtime.activeTurnId);
         }
       }
-      runtime.approvals.clear();
-      runtime.pendingPlanFollowups.splice(0);
-    } else if (runtime?.kind === "claude") {
-      for (const pending of runtime.approvals.values()) {
+      if (persisted?.awaitingInput === true) {
+        rememberPendingItem(await latestPendingInputItemIdForSession(sessionId, managed));
+      }
+
+      if (runtime) {
+        try {
+          await interrupt({ sessionId });
+        } catch (error) {
+          // Provider interruption is best-effort. The local lifecycle contract
+          // still has to clear a restored/stale request and settle the card.
+          logger.warn("agent_chat.pending_input_settle_interrupt_failed", {
+            sessionId,
+            provider: managed.session.provider,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      for (const pending of managed.localPendingInputs.values()) {
         pending.resolve({ decision: "cancel" });
       }
-      runtime.approvals.clear();
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-    } else if (runtime?.kind === "opencode") {
-      runtime.pendingApprovals.clear();
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-    } else if (runtime?.kind === "cursor") {
-      for (const waiter of runtime.permissionWaiters.values()) {
-        cancelCursorPermissionWaiter(waiter, "Cursor input was dismissed because the session was settled.");
+      managed.localPendingInputs.clear();
+
+      if (runtime?.kind === "codex") {
+        // The interrupt above settles these too. This is the net for the cases
+        // where it could not run or bailed early: no runtime, no thread id, or a
+        // provider interrupt that threw and was only logged.
+        settleCodexPendingInputs(managed, runtime);
+      } else if (runtime?.kind === "claude") {
+        settleClaudePendingApprovals(runtime);
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+      } else if (runtime?.kind === "opencode") {
+        runtime.pendingApprovals.clear();
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+      } else if (runtime?.kind === "cursor") {
+        for (const waiter of runtime.permissionWaiters.values()) {
+          cancelCursorPermissionWaiter(waiter, "Cursor input was dismissed because the session was settled.");
+        }
+        runtime.permissionWaiters.clear();
+        clearCursorSdkSilenceWatch(runtime);
+        // The interrupt above is best-effort and its failure is only logged, so
+        // clearing `busy` here can leave a run still registered as active on the
+        // Cursor agent. Always arm the one-shot expiry: interrupt may already
+        // have dropped ADE's busy flag while the agent-side run is still live,
+        // and the next send must expire that run rather than bounce as busy.
+        // Settlement is a deliberate abandonment, unlike a normal send, which
+        // must never kill a turn that is genuinely still working.
+        managed.cursorSdkForceExpireNextSend = true;
+        runtime.busy = false;
+        runtime.activeTurnId = null;
+        runtime.activeCloudRunId = null;
+      } else if (runtime?.kind === "droid") {
+        for (const waiter of runtime.permissionWaiters.values()) {
+          cancelDroidPermissionWaiter(waiter, "Droid input was dismissed because the session was settled.");
+        }
+        runtime.permissionWaiters.clear();
+        runtime.busy = false;
+        runtime.activeTurnId = null;
       }
-      runtime.permissionWaiters.clear();
-      clearCursorSdkSilenceWatch(runtime);
-      // The interrupt above is best-effort and its failure is only logged, so
-      // clearing `busy` here can leave a run still registered as active on the
-      // Cursor agent. Always arm the one-shot expiry: interrupt may already
-      // have dropped ADE's busy flag while the agent-side run is still live,
-      // and the next send must expire that run rather than bounce as busy.
-      // Settlement is a deliberate abandonment, unlike a normal send, which
-      // must never kill a turn that is genuinely still working.
-      managed.cursorSdkForceExpireNextSend = true;
-      runtime.busy = false;
-      runtime.activeTurnId = null;
-      runtime.activeCloudRunId = null;
-    } else if (runtime?.kind === "droid") {
-      for (const waiter of runtime.permissionWaiters.values()) {
-        cancelDroidPermissionWaiter(waiter, "Droid input was dismissed because the session was settled.");
-      }
-      runtime.permissionWaiters.clear();
-      runtime.busy = false;
-      runtime.activeTurnId = null;
+    } finally {
+      managed.pendingInputSettlementResolvedIds = undefined;
     }
 
     for (const [itemId, turnId] of pendingItems) {
+      if (alreadyResolved.has(itemId)) continue;
       emitPendingInputResolved(managed, {
         itemId,
         decision: "cancel",
@@ -45301,6 +45552,27 @@ export function createAgentChatService(args: {
    */
   const pendingInputRequiresOperator = (sessionId: string, itemId: string): boolean =>
     managedSessions.get(sessionId)?.localPendingInputs.get(itemId)?.operatorOnly === true;
+  const dismissPendingInputForSettlement = async (
+    { sessionId }: { sessionId: string },
+  ): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    // Two settles racing on one session — a double-click, or the desktop and
+    // the phone dismissing at once — would each overwrite the other's resolved
+    // ids and reintroduce the duplicate receipts they exist to prevent.
+    // Settling twice at once means nothing, so the second caller joins the
+    // first rather than starting a second pass. Every await inside the pass is
+    // bounded by a request timeout; a future unbounded one would strand every
+    // later settle on this session behind a promise that never resolves.
+    const inFlight = managed.pendingInputSettlement;
+    if (inFlight) return inFlight;
+    const settlement = runPendingInputSettlement(managed);
+    managed.pendingInputSettlement = settlement;
+    try {
+      await settlement;
+    } finally {
+      managed.pendingInputSettlement = undefined;
+    }
+  };
 
   const respondToInput = async ({
     sessionId,
@@ -47264,33 +47536,13 @@ export function createAgentChatService(args: {
       const normalizedTitle = String(title ?? "").trim();
       const hasExplicitTitle = normalizedTitle.length > 0;
       const effectiveTitle = hasExplicitTitle ? normalizedTitle : defaultChatSessionTitle(managed.session.provider);
-      sessionService.updateMeta({
-        sessionId,
-        manuallyNamed: manuallyNamed ?? false,
-        title: effectiveTitle,
-      });
-      if (manuallyNamed !== undefined) {
-        managed.manuallyNamed = manuallyNamed && hasExplicitTitle;
-      } else if (hasExplicitTitle) {
-        managed.manuallyNamed = true;
-      } else {
-        managed.manuallyNamed = false;
-      }
-      managed.runtimeTitleAdopted = false;
-      emitTransientChatEnvelope(sessionId, {
-        type: "session_meta_updated",
-        title: effectiveTitle,
-        manuallyNamed: managed.manuallyNamed,
-      });
-      if (managed.session.provider === "claude" && managed.runtime?.kind === "claude" && managed.runtime.sdkSessionId && hasExplicitTitle) {
-        await renameClaudeSession(managed.runtime.sdkSessionId, normalizedTitle, { dir: managed.laneWorktreePath }).catch((error) => {
-          logger.warn("agent_chat.claude_rename_session_failed", {
-            sessionId: managed.session.id,
-            sdkSessionId: managed.runtime?.kind === "claude" ? managed.runtime.sdkSessionId : null,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-        mirrorClaudeSessionPointer(managed, managed.runtime.sdkSessionId, { title: normalizedTitle });
+      const userNamed = manuallyNamed !== undefined ? manuallyNamed && hasExplicitTitle : hasExplicitTitle;
+      // Preserve updateSession's existing provider-sync behavior; explicit
+      // generated titles opt into the shared provider-sync path separately.
+      persistSessionTitleMetadata(managed, effectiveTitle, userNamed);
+      if (hasExplicitTitle) {
+        const titleRevision = managed.sessionMetadataTitleRevision;
+        await syncClaudeSessionTitle(managed, normalizedTitle, { expectedTitleRevision: titleRevision });
       }
     }
     if (tag !== undefined) {
@@ -49203,6 +49455,16 @@ export function createAgentChatService(args: {
     description?: string;
     source?: PendingInputSource;
     kind?: PendingInputKind;
+    /**
+     * Who the card is really about, when the host raised it for somebody else.
+     *
+     * Every plugin gate — install, remove, turn off, turn on — is raised by
+     * this process under `source: "ade"`, because the source union names
+     * runtimes and there is no member for a plugin. Without this the card drew
+     * ADE's own mark and the word "ADE" above a decision about third-party
+     * code. Nothing else sets it, and a caller that does not is unaffected.
+     */
+    origin?: PendingInputOrigin;
     allowsFreeform?: boolean;
     providerMetadata?: Record<string, unknown>;
     eventDescription?: string;
@@ -49361,6 +49623,7 @@ export function createAgentChatService(args: {
       blocking: true,
       canProceedWithoutAnswer: false,
       ...(args.providerMetadata ? { providerMetadata: args.providerMetadata } : {}),
+      ...(args.origin ? { origin: args.origin } : {}),
       turnId: managed.runtime?.activeTurnId ?? null,
     };
 
@@ -50088,6 +50351,7 @@ export function createAgentChatService(args: {
     disposeAll,
     forceDisposeAll,
     updateSession,
+    regenerateSessionMetadata,
     setSpawnKind,
     dismissSubagentTakeoverPrompt,
     reconcileThreadPointerFromRedundantSources,

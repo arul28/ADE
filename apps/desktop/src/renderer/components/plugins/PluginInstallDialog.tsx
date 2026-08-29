@@ -50,7 +50,14 @@ import {
 
 export type InstallDialogTarget =
   | { kind: "listing"; listing: MarketplaceListing }
-  | { kind: "url" };
+  /**
+   * The source-first form. `source` pre-fills the field and reads the manifest
+   * immediately, which is how the in-chat approval card's "View in Marketplace"
+   * hands a candidate over: the reader gets the full disclosure page for the
+   * exact source they were asked about, without the card having to grow a
+   * second copy of it.
+   */
+  | { kind: "url"; source?: string };
 
 type Phase =
   | { status: "idle" }
@@ -96,6 +103,7 @@ export function PluginInstallDialog({
   const folderPicker = React.useMemo(nativeFolderPicker, []);
 
   const open = target !== null;
+  const handedSource = target?.kind === "url" ? target.source?.trim() ?? "" : "";
   React.useEffect(() => {
     if (open) return;
     // Reset on close, not on open: resetting on open would clobber a URL the
@@ -106,6 +114,24 @@ export function PluginInstallDialog({
     setPhase({ status: "idle" });
     setPicking(false);
   }, [open]);
+
+  /**
+   * Take the handed-in source once per open.
+   *
+   * Keyed on the source rather than on `open` so re-renders do not re-inspect,
+   * and a `sourceInput` the reader has since edited is left alone: the effect
+   * runs when the HANDOFF changes, not when the field does. Reading the manifest
+   * here is the point of the handoff — the disclosure is what the reader came
+   * for, and making them press a button to see it would waste the trip.
+   */
+  const inspectRef = React.useRef<(override?: string) => Promise<void>>();
+  React.useEffect(() => {
+    if (!open || !handedSource) return;
+    setSourceInput(handedSource);
+    setResolved(null);
+    setPhase({ status: "idle" });
+    if (capabilities.inspect) void inspectRef.current?.(handedSource);
+  }, [capabilities.inspect, handedSource, open]);
 
   const listing = target?.kind === "listing" ? target.listing : resolved;
   const source = target?.kind === "listing" ? target.listing.source : sourceInput.trim();
@@ -150,6 +176,8 @@ export function PluginInstallDialog({
       });
     }
   };
+
+  inspectRef.current = inspect;
 
   const chooseFolder = async () => {
     if (!folderPicker) return;

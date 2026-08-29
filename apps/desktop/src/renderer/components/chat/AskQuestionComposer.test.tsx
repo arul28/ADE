@@ -544,3 +544,40 @@ describe("AskQuestionComposer decline", () => {
     expect(onDecline).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * The header names the asker.
+ *
+ * A question card raised by the host for a plugin has `source: "ade"` and can
+ * only say whose question it is from `origin`.
+ */
+describe("AskQuestionComposer asker identity", () => {
+  it("draws the plugin's own icon and name when the host named one", () => {
+    renderComposer(buildRequest([planQuestion()], {
+      origin: { kind: "plugin", pluginId: "ade-focus", displayName: "Focus", icon: "timer" },
+    }));
+
+    expect(screen.getByTestId("ask-question-header-label").textContent).toBe("Focus asks");
+    expect(screen.getByTestId("pending-input-plugin-mark")).toBeTruthy();
+    expect(screen.getByRole("group", { name: /focus asks/i })).toBeTruthy();
+  });
+
+  it("keeps the plugin's identity on the folded one-liner", () => {
+    renderComposer(buildRequest([planQuestion()], {
+      origin: { kind: "plugin", pluginId: "ade-focus", displayName: "Focus", icon: "timer" },
+    }));
+    fireEvent.click(screen.getByTestId("ask-question-minimize"));
+    expect(screen.getByTestId("ask-question-composer-folded")).toBeTruthy();
+    expect(screen.getByTestId("pending-input-plugin-mark")).toBeTruthy();
+  });
+
+  it("draws ADE's real mark, not a lettered placeholder, for a host card", () => {
+    const { container } = render(
+      <AskQuestionComposer request={buildRequest([planQuestion()])} onSubmit={vi.fn()} onDecline={vi.fn()} />,
+    );
+    expect(screen.getByTestId("ask-question-header-label").textContent).toBe("ADE asks");
+    const mark = container.querySelector("img");
+    expect(mark?.getAttribute("src")).toContain("ade-icon.webp");
+    expect(mark?.getAttribute("alt")).toBe("ADE");
+  });
+});

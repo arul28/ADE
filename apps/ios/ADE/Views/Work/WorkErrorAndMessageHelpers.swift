@@ -1530,6 +1530,27 @@ func workPendingQuestionWrapsAskUserTool(detail: String?) -> Bool {
   return isQuestionInputToolName(sourceId)
 }
 
+/// The plugin a host-raised card is about, read off `detail.request.origin`.
+///
+/// Dropped whole when either required field is missing: a half identity would
+/// draw a nameless tile beside "· Approval", which is worse than the ADE mark it
+/// replaces. Nothing here is agent-supplied — the host fills it from the
+/// manifest it parsed for the disclosure.
+func workPendingInputOrigin(from value: Any?) -> WorkPendingInputOrigin? {
+  guard let object = value as? [String: Any] else { return nil }
+  guard optionalString(object["kind"])?.lowercased() == "plugin" else { return nil }
+  guard let pluginId = optionalString(object["pluginId"]),
+        let displayName = optionalString(object["displayName"]) else {
+    return nil
+  }
+  return WorkPendingInputOrigin(
+    pluginId: pluginId,
+    displayName: displayName,
+    icon: optionalString(object["icon"]),
+    accent: optionalString(object["accent"])
+  )
+}
+
 /// Asking provider for a pending gate, when the payload carries one. Only the
 /// question and plan-approval kinds do; approval/permission/model-selection fall
 /// back to the session provider at the call site.
@@ -1732,7 +1753,9 @@ func pendingWorkQuestionFromApproval(
       questions: questions,
       title: optionalString(request["title"]),
       body: optionalString(request["body"]) ?? optionalString(request["description"]),
-      source: optionalString(request["source"]) ?? optionalString(detailObject["source"])
+      source: optionalString(request["source"]) ?? optionalString(detailObject["source"]),
+      origin: workPendingInputOrigin(from: request["origin"]),
+      requestKind: kind.isEmpty ? nil : kind
     )
   }
 

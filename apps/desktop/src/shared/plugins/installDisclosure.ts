@@ -102,6 +102,55 @@ export function joinSurfaceNames(names: readonly string[]): string {
 }
 
 /**
+ * Are these two surfaces the same feature declared twice?
+ *
+ * A plugin that wants a rich desktop tab AND the cross-device panel behind it
+ * declares both: a `webview` for the HTML, and a `tab` for the vocabulary panel
+ * every other client renders in its place. That is the recommended shape — see
+ * `PluginSurfaceKind` — and the disclosure printed it as two separate gifts,
+ * "Focus tab" and "Focus tab — desktop only, custom UI", which reads as a plugin
+ * taking two tabs in the rail. It takes one.
+ *
+ * Two signals, either of which is enough. A shared `panelId` is the strong one:
+ * the webview's panel IS what the other clients draw, so a tab rendering the
+ * same panel is that same surface. A shared title is the weak one, kept because
+ * an author may point the two at different panel ids and the reader still sees
+ * one name on the rail either way.
+ */
+function surfacesAreTwoHalvesOfOne(
+  tab: PluginManifest["surfaces"][number],
+  webview: PluginManifest["surfaces"][number],
+): boolean {
+  if (tab.panelId && tab.panelId === webview.panelId) return true;
+  const left = tab.title.trim().toLowerCase();
+  const right = webview.title.trim().toLowerCase();
+  return left.length > 0 && left === right;
+}
+
+/**
+ * Tab surface id → the webview surface id that is its other half.
+ *
+ * Greedy first-match, and derived in ONE place so the "Adds:" and "Removes:"
+ * lists cannot pair differently and print different surface counts for one
+ * manifest. A pair is claimed once: two tabs sharing a title with a single
+ * webview leave the second tab unpaired rather than both claiming it.
+ */
+function pairedSurfaceHalves(manifest: PluginManifest): Map<string, string> {
+  const pairs = new Map<string, string>();
+  const webviews = manifest.surfaces.filter((surface) => surface.kind === "webview");
+  if (webviews.length === 0) return pairs;
+  const claimed = new Set<string>();
+  for (const tab of manifest.surfaces.filter((surface) => surface.kind === "tab")) {
+    const twin = webviews.find((webview) =>
+      !claimed.has(webview.id) && surfacesAreTwoHalvesOfOne(tab, webview));
+    if (!twin) continue;
+    claimed.add(twin.id);
+    pairs.set(tab.id, twin.id);
+  }
+  return pairs;
+}
+
+/**
  * The "Adds:" lines for a manifest — what the plugin itself declared.
  *
  * Counts declarations rather than repeating a summary, so the list cannot
@@ -113,13 +162,24 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
   const tabs = manifest.surfaces.filter((surface) => surface.kind === "tab");
   const panes = manifest.surfaces.filter((surface) => surface.kind === "pane");
   const webviews = manifest.surfaces.filter((surface) => surface.kind === "webview");
-  for (const tab of tabs) lines.push(`${tab.title} tab`);
+  const pairs = pairedSurfaceHalves(manifest);
+  const pairedWebviewIds = new Set(pairs.values());
+  for (const tab of tabs) {
+    lines.push(pairs.has(tab.id)
+      // One rail item, two renderers. Said in one line because two lines read as
+      // two tabs, which is what the reader was counting.
+      ? `${tab.title} tab (custom UI on desktop; panel on other devices)`
+      : `${tab.title} tab`);
+  }
   for (const pane of panes) lines.push(`${pane.title} pane`);
   // Said on the line itself rather than as a chip somewhere else on the page:
   // this is the reader's one preview of what installing changes, and "this tab
   // only works on my computer" is exactly the kind of thing they should not
   // have to go looking for.
-  for (const webview of webviews) lines.push(`${webview.title} tab — desktop only, custom UI`);
+  for (const webview of webviews) {
+    if (pairedWebviewIds.has(webview.id)) continue;
+    lines.push(`${webview.title} tab — desktop only, custom UI`);
+  }
 
   const bySurface = new Map<PluginSurfaceId, number>();
   for (const socket of manifest.sockets) {
@@ -362,8 +422,19 @@ export type PluginRemovalDisclosure = {
  */
 export function describeManifestRemoves(manifest: PluginManifest): string[] {
   const lines: string[] = [];
+  // Paired BEFORE the walk, not during it: a manifest may declare the webview
+  // half first, and a decision made in declaration order would print the tab
+  // twice — the very duplication this pairing exists to remove. The removal card
+  // is read beside the install card it undoes, so it counts surfaces the same
+  // way or the two cannot be compared.
+  const pairedWebviewIds = new Set(pairedSurfaceHalves(manifest).values());
   for (const surface of manifest.surfaces) {
-    lines.push(surface.kind === "pane" ? `${surface.title} pane` : `${surface.title} tab`);
+    if (surface.kind === "pane") {
+      lines.push(`${surface.title} pane`);
+      continue;
+    }
+    if (surface.kind === "webview" && pairedWebviewIds.has(surface.id)) continue;
+    lines.push(`${surface.title} tab`);
   }
 
   const bySurface = new Map<PluginSurfaceId, number>();

@@ -66,8 +66,20 @@ export function providerDisplayLabel(
 export function pendingInputHeaderLabel(
   source: string | null | undefined,
   kind: string | null | undefined,
+  options?: {
+    /**
+     * The name to say instead of the provider's.
+     *
+     * For a card the host raised on somebody else's behalf — a plugin install,
+     * removal or enable, all of which travel as `source: "ade"`. The KIND word
+     * is untouched: "Focus · Approval" is still an approval, and a reader
+     * scanning for the word finds it in the same place.
+     */
+    displayName?: string | null;
+  },
 ): string {
-  const name = providerDisplayName(source);
+  const named = options?.displayName?.trim();
+  const name = named && named.length ? named : providerDisplayName(source);
   switch (kind) {
     case "plan_approval":
       return `${name} · Plan ready`;

@@ -232,3 +232,41 @@ describe("the quick-action menu on a plugin row", () => {
     expect(screen.queryByRole("button", { name: "More actions" })).toBeNull();
   });
 });
+
+/**
+ * `?install=<source>` — the in-chat approval card's "View in Marketplace".
+ *
+ * A folder on this machine has no catalogue page, so the link hands the source
+ * over instead and the install dialog renders the disclosure for it.
+ */
+describe("a candidate handed over in the URL", () => {
+  const HANDED = "/Users/arul/repos/ade/plugins/focus";
+
+  const renderWithHandoff = () => render(
+    <MemoryRouter initialEntries={[`/marketplace?install=${encodeURIComponent(HANDED)}`]}>
+      <MarketplacePage />
+    </MemoryRouter>,
+  );
+
+  it("opens the install dialog on that exact source", async () => {
+    renderWithHandoff();
+    await waitFor(() => {
+      expect(document.querySelector<HTMLInputElement>("#plugin-install-source")?.value).toBe(HANDED);
+    });
+  });
+
+  it("consumes the parameter, so the dialog does not come back on its own", async () => {
+    renderWithHandoff();
+    await waitFor(() => {
+      expect(document.querySelector<HTMLInputElement>("#plugin-install-source")?.value).toBe(HANDED);
+    });
+    // Closed by the reader, and nothing reopens it: the URL no longer carries
+    // the handoff.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    });
+    await waitFor(() => {
+      expect(document.querySelector("#plugin-install-source")).toBeNull();
+    });
+  });
+});

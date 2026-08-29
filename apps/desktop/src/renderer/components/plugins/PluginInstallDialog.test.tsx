@@ -182,3 +182,49 @@ describe("installing from a folder on this machine", () => {
     expect(screen.getByText("Check")).toBeTruthy();
   });
 });
+
+/**
+ * The handoff from the in-chat approval card.
+ *
+ * A plugin an agent just wrote lives in a folder, so it is in neither the
+ * bundled index nor the registry and has no detail page to link to. "View in
+ * Marketplace" therefore hands this dialog the source, and the reader gets the
+ * full disclosure for the exact thing they were asked to approve.
+ */
+describe("a source handed in from elsewhere", () => {
+  it("fills the field and reads the manifest without a second press", async () => {
+    bridge.inspection = { manifest: HN_MANIFEST };
+    await act(async () => {
+      render(
+        <PluginInstallDialog
+          target={{ kind: "url", source: HN_FOLDER }}
+          onOpenChange={() => {}}
+        />,
+      );
+    });
+    expect(sourceValue()).toBe(HN_FOLDER);
+    expect(bridge.inspected).toEqual([HN_FOLDER]);
+    expect(screen.getByText("Hacker News")).toBeTruthy();
+  });
+
+  it("reads it once, not on every render", async () => {
+    bridge.inspection = { manifest: HN_MANIFEST };
+    const view = await act(async () => render(
+      <PluginInstallDialog target={{ kind: "url", source: HN_FOLDER }} onOpenChange={() => {}} />,
+    ));
+    await act(async () => {
+      view.rerender(
+        <PluginInstallDialog target={{ kind: "url", source: HN_FOLDER }} onOpenChange={() => {}} />,
+      );
+    });
+    expect(bridge.inspected).toEqual([HN_FOLDER]);
+  });
+
+  it("leaves the plain install-a-plugin dialog empty", async () => {
+    await act(async () => {
+      render(<PluginInstallDialog target={{ kind: "url" }} onOpenChange={() => {}} />);
+    });
+    expect(sourceValue()).toBe("");
+    expect(bridge.inspected).toEqual([]);
+  });
+});

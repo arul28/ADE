@@ -1119,3 +1119,58 @@ describe("derivePendingInputRequests", () => {
     expect(result[0]!.request.providerMetadata).toBeUndefined();
   });
 });
+
+/**
+ * The asker's identity survives the round trip through the transcript.
+ *
+ * A plugin gate is raised by the host under `source: "ade"`, and the card can
+ * only name the plugin if this parser keeps `origin` — the same row is what the
+ * phone and a reloaded desktop read the card back out of.
+ */
+describe("readPendingInputRequest origin", () => {
+  const base = {
+    requestId: "req-1",
+    itemId: "item-1",
+    source: "ade",
+    kind: "approval",
+    title: "Install Focus 1.0.0?",
+    questions: [{ id: "plugin_install", question: "Install Focus 1.0.0?" }],
+  };
+
+  it("keeps the plugin the host named", () => {
+    const parsed = readPendingInputRequest({
+      ...base,
+      origin: {
+        kind: "plugin",
+        pluginId: "ade-focus",
+        displayName: "Focus",
+        icon: "timer",
+        accent: "#7C6FF0",
+      },
+    });
+    expect(parsed?.origin).toEqual({
+      kind: "plugin",
+      pluginId: "ade-focus",
+      displayName: "Focus",
+      icon: "timer",
+      accent: "#7C6FF0",
+    });
+  });
+
+  it("drops a half identity rather than drawing a nameless tile", () => {
+    for (const origin of [
+      { kind: "plugin", pluginId: "ade-focus" },
+      { kind: "plugin", displayName: "Focus" },
+      { kind: "runtime", pluginId: "ade-focus", displayName: "Focus" },
+      { pluginId: "ade-focus", displayName: "Focus" },
+      "ade-focus",
+    ]) {
+      expect(readPendingInputRequest({ ...base, origin })?.origin, JSON.stringify(origin))
+        .toBeUndefined();
+    }
+  });
+
+  it("leaves every other request exactly as it was", () => {
+    expect(readPendingInputRequest(base)?.origin).toBeUndefined();
+  });
+});

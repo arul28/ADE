@@ -3,9 +3,29 @@ import { describe, expect, it } from "vitest";
 import {
   PLUGIN_SOCKET_KIND_LABELS,
   PLUGIN_SURFACE_LABELS,
+  describeManifestAdds,
+  describeManifestRemoves,
   describePluginContributionPlacement,
 } from "./installDisclosure";
+import { parsePluginManifest, type PluginManifest } from "./manifest";
 import { PLUGIN_SOCKET_KINDS, PLUGIN_SURFACE_IDS } from "./sockets";
+
+/** A manifest with only the surfaces a case needs. */
+function manifestWithSurfaces(surfaces: Array<Record<string, unknown>>): PluginManifest {
+  const parsed = parsePluginManifest({
+    name: "ade-focus",
+    version: "1.0.0",
+    displayName: "Focus",
+    description: "A pomodoro timer.",
+    vocabVersion: 1,
+    // No `entry`: a UI-only plugin, so the "Adds:" list is exactly the surface
+    // lines this suite is about.
+    surfaces,
+    panels: [{ id: "focus" }, { id: "other" }],
+  });
+  expect(parsed.errors).toEqual([]);
+  return parsed.manifest!;
+}
 
 /**
  * The reader-facing names for the taxonomy.
@@ -60,5 +80,87 @@ describe("socket kind labels", () => {
       expect(describePluginContributionPlacement("toolbar-action", surface))
         .toBe(`Toolbar button in ${PLUGIN_SURFACE_LABELS[surface]}`);
     }
+  });
+});
+
+/**
+ * One feature declared as two surfaces must be disclosed as one line.
+ *
+ * The pomodoro plugin from the live round declared a `webview` for its rich
+ * desktop tab and a `tab` for the panel every other client renders in its
+ * place — the shape the docs recommend — and the card listed "Focus tab" AND
+ * "Focus tab — desktop only, custom UI", which reads as a plugin claiming two
+ * tabs in the rail. It claims one.
+ */
+describe("surface disclosure", () => {
+  it("says a tab and its webview twin once, naming what each client gets", () => {
+    const manifest = manifestWithSurfaces([
+      { kind: "tab", id: "focus-tab", title: "Focus", panelId: "focus" },
+      { kind: "webview", id: "focus-web", title: "Focus", panelId: "focus", entryHtml: "ui/index.html" },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual([
+      "Focus tab (custom UI on desktop; panel on other devices)",
+    ]);
+  });
+
+  it("pairs on the shared panel id even when the two titles differ", () => {
+    // The strong signal: the webview's `panelId` IS what the phone draws, so a
+    // tab rendering the same panel is that same surface however it is titled.
+    const manifest = manifestWithSurfaces([
+      { kind: "tab", id: "focus-tab", title: "Focus", panelId: "focus" },
+      { kind: "webview", id: "focus-web", title: "Focus Timer", panelId: "focus", entryHtml: "ui/index.html" },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual([
+      "Focus tab (custom UI on desktop; panel on other devices)",
+    ]);
+  });
+
+  it("keeps the desktop-only line for a webview with no tab half", () => {
+    const manifest = manifestWithSurfaces([
+      { kind: "webview", id: "focus-web", title: "Focus", panelId: "focus", entryHtml: "ui/index.html" },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual(["Focus tab — desktop only, custom UI"]);
+  });
+
+  it("leaves an unrelated tab and webview as two lines", () => {
+    const manifest = manifestWithSurfaces([
+      { kind: "tab", id: "focus-tab", title: "Focus", panelId: "focus" },
+      { kind: "webview", id: "stats-web", title: "Stats", panelId: "other", entryHtml: "ui/index.html" },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual([
+      "Focus tab",
+      "Stats tab — desktop only, custom UI",
+    ]);
+  });
+
+  it("counts the pair once on the removal card too, in either declaration order", () => {
+    // The removal card is read beside the install card it undoes. If one said
+    // one tab and the other said two, the comparison the reader is making —
+    // "is this the thing I agreed to?" — would fail on a plugin that changed
+    // nothing.
+    const webviewFirst = manifestWithSurfaces([
+      { kind: "webview", id: "focus-web", title: "Focus", panelId: "focus", entryHtml: "ui/index.html" },
+      { kind: "tab", id: "focus-tab", title: "Focus", panelId: "focus" },
+    ]);
+    expect(describeManifestRemoves(webviewFirst).filter((line) => line.startsWith("Focus")))
+      .toEqual(["Focus tab"]);
+    const tabFirst = manifestWithSurfaces([
+      { kind: "tab", id: "focus-tab", title: "Focus", panelId: "focus" },
+      { kind: "webview", id: "focus-web", title: "Focus", panelId: "focus", entryHtml: "ui/index.html" },
+    ]);
+    expect(describeManifestRemoves(tabFirst).filter((line) => line.startsWith("Focus")))
+      .toEqual(["Focus tab"]);
+  });
+
+  it("does not let two same-named tabs both claim one webview", () => {
+    const manifest = manifestWithSurfaces([
+      { kind: "tab", id: "focus-a", title: "Focus", panelId: "focus" },
+      { kind: "tab", id: "focus-b", title: "Focus", panelId: "other" },
+      { kind: "webview", id: "focus-web", title: "Focus", panelId: "focus", entryHtml: "ui/index.html" },
+    ]);
+    expect(describeManifestAdds(manifest)).toEqual([
+      "Focus tab (custom UI on desktop; panel on other devices)",
+      "Focus tab",
+    ]);
   });
 });

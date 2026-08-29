@@ -756,3 +756,105 @@ describe("plugin removal, disable and enable approval", () => {
     }
   });
 });
+
+/**
+ * Who the card says is asking.
+ *
+ * Every one of these gates travels as `source: "ade"` — the host is the one
+ * raising it — so without an origin the reader gets ADE's mark and the word
+ * "ADE" above a decision about somebody else's code. Reported three rounds
+ * running before this existed.
+ */
+describe("plugin approval card identity", () => {
+  beforeEach(() => {
+    resetPluginInstallApprovalsForTests();
+  });
+
+  afterEach(() => {
+    while (scratchDirs.length) fs.rmSync(scratchDirs.pop()!, { recursive: true, force: true });
+  });
+
+  function manifestOf(overrides: Record<string, unknown> = {}): PluginManifest {
+    const parsed = parsePluginManifestJson(JSON.stringify(tipsyManifest(overrides)));
+    if (!parsed.manifest) throw new Error(`fixture manifest did not parse: ${parsed.errors.join(", ")}`);
+    return parsed.manifest;
+  }
+
+  it("names the plugin, not the host, on the install card", async () => {
+    const source = pluginDir(tipsyManifest({ icon: "timer", accent: "#7C6FF0" }));
+    const { chat, calls } = chatMock({});
+
+    await requestPluginInstallApproval({
+      chat,
+      chatSessionId: "chat-1",
+      projectId: "project-1",
+      source,
+      builtinPluginsRoot: null,
+    });
+
+    expect(calls[0]?.source).toBe("ade");
+    expect(calls[0]?.origin).toEqual({
+      kind: "plugin",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+      icon: "timer",
+      accent: "#7C6FF0",
+    });
+  });
+
+  it("carries the identity on the remove, turn-off and turn-on cards too", async () => {
+    for (const kind of ["uninstall", "disable", "enable"] as const) {
+      const { chat, calls } = chatMock({ answers: { plugin_lifecycle: ["proceed"] } });
+      await requestPluginRemovalApproval({
+        chat,
+        chatSessionId: "session-1",
+        kind,
+        pluginId: "ade-tipsy",
+        displayName: "Tipsy",
+        version: "0.3.0",
+        manifest: manifestOf({ icon: "timer" }),
+      });
+      expect(calls[0]?.origin, kind).toEqual({
+        kind: "plugin",
+        pluginId: "ade-tipsy",
+        displayName: "Tipsy",
+        icon: "timer",
+      });
+    }
+  });
+
+  it("omits the icon a manifest never declared rather than inventing one", async () => {
+    // Absent means "derive it from the id", which is what the Marketplace does
+    // for the same plugin. A default written in here would be a second answer.
+    const source = pluginDir(tipsyManifest());
+    const { chat, calls } = chatMock({});
+    await requestPluginInstallApproval({
+      chat,
+      chatSessionId: "chat-1",
+      projectId: null,
+      source,
+      builtinPluginsRoot: null,
+    });
+    expect(calls[0]?.origin).toEqual({
+      kind: "plugin",
+      pluginId: "ade-tipsy",
+      displayName: "Tipsy",
+    });
+  });
+
+  it("names nobody for a git source, because nothing has read its manifest", async () => {
+    // The honest branch: this card genuinely does not know which plugin it is
+    // about, so it falls back to ADE's own mark instead of drawing a name the
+    // host cannot vouch for.
+    const { chat, calls } = chatMock({});
+    await requestPluginInstallApproval({
+      chat,
+      chatSessionId: "chat-1",
+      projectId: "project-1",
+      source: "https://github.com/someone/some-plugin",
+      builtinPluginsRoot: null,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.origin).toBeUndefined();
+  });
+});

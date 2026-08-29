@@ -37,6 +37,15 @@ import type { SearchDocKind, SearchResultItem } from "../../../shared/types/sear
 import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { isChatToolType } from "../../lib/sessions";
+import {
+  appendWorkSearchFilter,
+  parseWorkSearchQuery,
+  removeWorkSearchFilterToken,
+  WORK_SEARCH_FILTER_KEYS,
+  type WorkSearchFilterKey,
+} from "../../../shared/workSearch";
+import { sessionFilingBucket } from "../../lib/terminalAttention";
 import {
   ENTITY_SECTION_PREVIEW,
   SearchResultRow,
@@ -52,6 +61,12 @@ import {
   useThreadIndex,
   type ThreadIndexEntry,
 } from "./commandPaletteThreads";
+import {
+  buildWorkResults,
+  WorkFilterBar,
+  useWorkSessionActions,
+  type WorkFilterMenuKey,
+} from "./commandPaletteWork";
 import { fadeScale } from "../../lib/motion";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
@@ -231,7 +246,9 @@ function readLastBrowsePathMap(): Record<string, string> {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object") return {};
     const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    for (const [key, value] of Object.entries(
+      parsed as Record<string, unknown>,
+    )) {
       if (typeof value === "string") out[key] = value;
     }
     return out;
@@ -300,6 +317,7 @@ export function CommandPalette({
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const selectLane = useAppStore((s) => s.selectLane);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   // Root store: the registry changes on install, and the palette must not be
@@ -365,18 +383,21 @@ export function CommandPalette({
   // also *starts* the cross-machine sync and fires a `project.listRecent` on
   // mount, and the palette is mounted for the whole session. Whatever the Work
   // tab's sync has populated is what we search.
-  const foreignMachines = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  const foreignMachines = useRootAppStore(
+    (s) => s.crossMachineLanesByMachineId,
+  );
   /**
    * Which machine owns the tab's own sessions and lanes. Remote-bound tabs make
    * that another Mac, and without saying so those threads look local: unmarked
    * in the results, and unfindable by their machine's name.
    *
-   * Memoized on the two primitives rather than on `projectBinding`, which is a
-   * fresh object across store writes and would rebuild the whole lowercased
-   * thread index on every one.
+   * The binding is carried into active rows as well: remote row actions must
+   * address the owning machine, not the renderer's local default.
    */
-  const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
-  const boundRuntimeName = projectBinding?.kind === "remote" ? projectBinding.runtimeName : null;
+  const boundTargetId =
+    projectBinding?.kind === "remote" ? projectBinding.targetId : null;
+  const boundRuntimeName =
+    projectBinding?.kind === "remote" ? projectBinding.runtimeName : null;
 
   const [mode, setMode] = useState<CommandPaletteMode>("default");
   const [actionOutcome, setActionOutcome] =
@@ -387,6 +408,9 @@ export function CommandPalette({
   // query — firing providers against it would spend the latency budget asking
   // plugins about half-typed filenames.
   const pluginSearchRows = usePluginSearchResults(q, open && mode === "default");
+  const [filterMenuKey, setFilterMenuKey] = useState<WorkFilterMenuKey | null>(
+    null,
+  );
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [browseInput, setBrowseInput] = useState(
     defaultBrowseInput(project?.rootPath),
@@ -416,22 +440,20 @@ export function CommandPalette({
     },
     [],
   );
-  const activeMachine = useMemo(
-    () => {
-      if (!boundTargetId || !boundRuntimeName) return null;
-      const connection = remoteSnapshot?.connections.find(
-        (candidate) => candidate.target.id === boundTargetId,
-      );
-      return {
-        machineId: boundTargetId,
-        machineName: boundRuntimeName,
-        // A remote-bound tab has no local fallback: before its Work slice
-        // arrives, the target connection is the only honest liveness source.
-        online: connection?.state === "connected",
-      };
-    },
-    [boundRuntimeName, boundTargetId, remoteSnapshot],
-  );
+  const activeMachine = useMemo(() => {
+    if (!boundTargetId || !boundRuntimeName) return null;
+    const connection = remoteSnapshot?.connections.find(
+      (candidate) => candidate.target.id === boundTargetId,
+    );
+    return {
+      machineId: boundTargetId,
+      machineName: boundRuntimeName,
+      // A remote-bound tab has no local fallback: before its Work slice
+      // arrives, the target connection is the only honest liveness source.
+      online: connection?.state === "connected",
+      binding: projectBinding?.kind === "remote" ? projectBinding : null,
+    };
+  }, [boundRuntimeName, boundTargetId, projectBinding, remoteSnapshot]);
   const listRef = useRef<HTMLUListElement>(null);
   const browseRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
@@ -583,6 +605,7 @@ export function CommandPalette({
     if (!open) {
       setMode("default");
       setQ("");
+      setFilterMenuKey(null);
       setSelectedIdx(0);
       setBrowseError(null);
       setBrowseLoading(false);
@@ -620,6 +643,7 @@ export function CommandPalette({
 
     setMode("default");
     setQ("");
+    setFilterMenuKey(null);
     setSelectedIdx(0);
     setBrowseError(null);
   }, [
@@ -736,13 +760,15 @@ export function CommandPalette({
       // disagreeing with the nav.
       ...(isWebClientMode()
         ? []
-        : [{
-          id: "go-automations",
-          title: "Go to Automations",
-          hint: "Automation rules and agent workflows",
-          group: "Navigation",
-          run: () => navigate("/automations"),
-        }]),
+        : [
+            {
+              id: "go-automations",
+              title: "Go to Automations",
+              hint: "Automation rules and agent workflows",
+              group: "Navigation",
+              run: () => navigate("/automations"),
+            },
+          ]),
       {
         id: "go-settings",
         title: "Go to Settings",
@@ -947,16 +973,21 @@ export function CommandPalette({
     startProjectRemote,
   ]);
 
+  const parsedWorkQuery = useMemo(() => parseWorkSearchQuery(q), [q]);
+
   const filtered = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    if (!needle) return commands;
-    return commands.filter(
-      (command) =>
-        command.title.toLowerCase().includes(needle) ||
-        (command.hint ?? "").toLowerCase().includes(needle) ||
-        (command.keywords ?? []).some((keyword) => keyword.toLowerCase().includes(needle)),
-    );
-  }, [commands, q]);
+    if (parsedWorkQuery.terms.length === 0) return commands;
+    return commands.filter((command) => {
+      const searchable = [
+        command.title,
+        command.hint ?? "",
+        ...(command.keywords ?? []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return parsedWorkQuery.terms.every((term) => searchable.includes(term));
+    });
+  }, [commands, parsedWorkQuery.terms]);
 
   const grouped = useMemo(() => {
     const groups: { label: string; items: Command[] }[] = [];
@@ -974,44 +1005,93 @@ export function CommandPalette({
   }, [filtered]);
 
   const trimmedQuery = q.trim();
+  const entityQuery = parsedWorkQuery.backendQuery.trim();
   const canEntitySearch =
-    open && mode === "default" && hasActiveProject && trimmedQuery.length > 0;
+    open &&
+    mode === "default" &&
+    hasActiveProject &&
+    parsedWorkQuery.backendQueries.some((candidate) => candidate.length > 0);
 
   // Built once per session/lane list, not per keystroke — the palette can be
   // opened against hundreds of sessions and the lowercasing is the expensive
   // half of the match.
-  const threadIndex = useThreadIndex(threadSessions, lanes, foreignMachines, activeMachine);
+  const threadIndex = useThreadIndex(
+    threadSessions,
+    lanes,
+    foreignMachines,
+    activeMachine,
+  );
   const threadMatches = useMemo(
     () =>
       open && mode === "default" ? rankThreads(threadIndex, trimmedQuery) : [],
     [mode, open, threadIndex, trimmedQuery],
   );
-  const visibleThreads = useMemo(
-    () => threadMatches.slice(0, THREAD_RESULT_LIMIT),
-    [threadMatches],
-  );
-  const visibleThreadIds = useMemo(
-    () => new Set(visibleThreads.map((match) => match.entry.session.id)),
-    [visibleThreads],
-  );
+
+  const workFacetOptions = useMemo<
+    Record<WorkSearchFilterKey, string[]>
+  >(() => {
+    const values: Record<WorkSearchFilterKey, Set<string>> = {
+      lane: new Set(),
+      provider: new Set(),
+      status: new Set(),
+      type: new Set(),
+      machine: new Set(),
+    };
+    for (const entry of threadIndex) {
+      if (entry.laneName) values.lane.add(entry.laneName);
+      if (entry.provider) values.provider.add(entry.provider);
+      values.status.add(sessionFilingBucket(entry.session));
+      values.type.add(
+        isChatToolType(entry.session.toolType) ? "chat" : "terminal",
+      );
+      if (entry.machineName) values.machine.add(entry.machineName);
+    }
+    const options: Record<WorkSearchFilterKey, string[]> = {
+      lane: [],
+      provider: [],
+      status: [],
+      type: [],
+      machine: [],
+    };
+    for (const key of WORK_SEARCH_FILTER_KEYS) {
+      options[key] = [...values[key]].sort((a, b) => a.localeCompare(b));
+    }
+    return options;
+  }, [threadIndex]);
 
   const {
     loading: searchLoading,
+    sessionResults,
     sections: entitySections,
     flatEntities,
     expandedKinds,
     toggleExpandKind,
-  } = useUniversalSearch(trimmedQuery, canEntitySearch, {
-    excludeSessionIds: visibleThreadIds,
+  } = useUniversalSearch(q, canEntitySearch, {
     hiddenKinds: hiddenSearchKinds,
   });
+
+  const workResults = useMemo(
+    () =>
+      buildWorkResults({
+        parsedWorkQuery,
+        sessionResults,
+        threadIndex,
+        threadMatches,
+      }),
+    [parsedWorkQuery, sessionResults, threadIndex, threadMatches],
+  );
+
+  const visibleWorkResults = useMemo(
+    () => workResults.slice(0, THREAD_RESULT_LIMIT),
+    [workResults],
+  );
 
   // Flat keyboard index layout: threads, then commands, then entity results.
   // Threads lead because the palette is the Work sidebar's search now — with an
   // empty query the thing you most likely came here for is a chat you were just
   // in, not a command. When a query matches no thread the section disappears
   // and commands lead on their own, so the first row is always a live target.
-  const threadCount = visibleThreads.length;
+  const threadCount = visibleWorkResults.length;
   const commandCount = filtered.length;
   const totalFlat = threadCount + commandCount + flatEntities.length;
 
@@ -1316,6 +1396,49 @@ export function CommandPalette({
     [onOpenChange],
   );
 
+  const handleThreadAction = useWorkSessionActions({
+    navigate,
+    onOpenChange,
+    projectRoot: project?.rootPath ?? null,
+    projectBinding,
+    setWorkViewState,
+    switchProjectToPath,
+    switchRemoteProject,
+  });
+
+  const removeWorkFilter = useCallback(
+    (
+      token: ReturnType<typeof parseWorkSearchQuery>["filterTokens"][number],
+    ) => {
+      setQ((current) => removeWorkSearchFilterToken(current, token));
+      setSelectedIdx(0);
+    },
+    [],
+  );
+
+  const addWorkFilter = useCallback(
+    (key: WorkSearchFilterKey, value: string) => {
+      setQ((current) => appendWorkSearchFilter(current, key, value));
+      setFilterMenuKey(null);
+      setSelectedIdx(0);
+    },
+    [],
+  );
+
+  const clearWorkFilters = useCallback(() => {
+    setQ((current) => {
+      let next = current;
+      while (true) {
+        const token = parseWorkSearchQuery(next).filterTokens[0];
+        if (!token) return next;
+        const updated = removeWorkSearchFilterToken(next, token);
+        if (updated === next) return next;
+        next = updated;
+      }
+    });
+    setSelectedIdx(0);
+  }, []);
+
   /**
    * Open a thread. Same two-step as the `chat`/`terminal` search results below:
    * the Work tab is keep-alive mounted, so the event focuses the session and
@@ -1410,7 +1533,10 @@ export function CommandPalette({
         }
         case "commit": {
           const parsed = item.deepLink ? parseDeeplink(item.deepLink) : null;
-          const target = parsed?.ok && parsed.target.kind === "commit" ? parsed.target : null;
+          const target =
+            parsed?.ok && parsed.target.kind === "commit"
+              ? parsed.target
+              : null;
           const laneId = target?.laneId ?? item.laneId ?? null;
           if (laneId && target?.sha) {
             navigate(
@@ -1442,7 +1568,8 @@ export function CommandPalette({
           // root. Content hits carry a line anchor the editor reveals on open.
           const relative = relativeFilePathForResult(item);
           const laneWorktree = item.laneId
-            ? lanes.find((lane) => lane.id === item.laneId)?.worktreePath ?? null
+            ? (lanes.find((lane) => lane.id === item.laneId)?.worktreePath ??
+              null)
             : null;
           const root = laneWorktree ?? project?.rootPath ?? null;
           if (relative && root) {
@@ -1450,7 +1577,10 @@ export function CommandPalette({
             const absolute = `${root}${
               root.endsWith(separator) ? "" : separator
             }${relative.path}`;
-            const line = relative.line && relative.line > 0 ? `&line=${relative.line}` : "";
+            const line =
+              relative.line && relative.line > 0
+                ? `&line=${relative.line}`
+                : "";
             navigate(
               `/files?externalPath=${encodeURIComponent(
                 absolute,
@@ -1490,8 +1620,10 @@ export function CommandPalette({
   const activateFlat = useCallback(
     (index: number) => {
       if (index < threadCount) {
-        const match = visibleThreads[index];
-        if (match) activateThread(match.entry);
+        const result = visibleWorkResults[index];
+        if (!result) return;
+        if (result.type === "thread") activateThread(result.match.entry);
+        else activateResult(result.item);
         return;
       }
       if (index < threadCount + commandCount) {
@@ -1513,7 +1645,7 @@ export function CommandPalette({
       runCommand,
       threadCount,
       toggleExpandKind,
-      visibleThreads,
+      visibleWorkResults,
     ],
   );
 
@@ -1782,7 +1914,9 @@ export function CommandPalette({
         navigate("/work");
         onOpenChange(false);
       } catch (error) {
-        throw new Error(extractError(error) || "Failed to open the new project");
+        throw new Error(
+          extractError(error) || "Failed to open the new project",
+        );
       }
     },
     [navigate, onOpenChange, switchProjectToPath, switchRemoteProject],
@@ -2043,6 +2177,20 @@ export function CommandPalette({
                     </span>
                   </div>
                 )}
+
+                {!isAddFlow && !isBrowsing ? (
+                  <WorkFilterBar
+                    query={q}
+                    parsed={parsedWorkQuery}
+                    options={workFacetOptions}
+                    filterMenuKey={filterMenuKey}
+                    matchCount={workResults.length}
+                    onMenuKeyChange={setFilterMenuKey}
+                    onAdd={addWorkFilter}
+                    onRemove={removeWorkFilter}
+                    onClear={clearWorkFilters}
+                  />
+                ) : null}
 
                 {isAddFlow ? (
                   <div className="flex-1 overflow-auto p-6">
@@ -2447,8 +2595,8 @@ export function CommandPalette({
                           </div>
                         ) : trimmedQuery.length > 0 ? (
                           <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
-                            No matches — try kind:chat, lane:&lt;name&gt;, since:7d,
-                            or &quot;exact phrase&quot;
+                            No matches — try kind:chat, lane:&lt;name&gt;,
+                            since:7d, or &quot;exact phrase&quot;
                           </div>
                         ) : (
                           <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
@@ -2460,37 +2608,61 @@ export function CommandPalette({
                           {(() => {
                             let flatIndex = 0;
                             const threadNodes =
-                              visibleThreads.length > 0
+                              visibleWorkResults.length > 0
                                 ? [
                                     <li key="threads">
                                       <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                        Recent threads
+                                        {trimmedQuery
+                                          ? "Work results"
+                                          : "Recent threads"}
                                       </div>
                                       <ul>
-                                        {visibleThreads.map((match) => {
+                                        {visibleWorkResults.map((result) => {
                                           const index = flatIndex++;
+                                          if (result.type === "content") {
+                                            return (
+                                              <SearchResultRow
+                                                key={result.item.id}
+                                                item={result.item}
+                                                query={entityQuery}
+                                                index={index}
+                                                isSelected={
+                                                  index === selectedIdx
+                                                }
+                                                onHover={setSelectedIdx}
+                                                onActivate={activateResult}
+                                              />
+                                            );
+                                          }
                                           return (
                                             <ThreadResultRow
-                                              key={match.entry.session.id}
-                                              entry={match.entry}
+                                              key={
+                                                result.match.entry.session.id
+                                              }
+                                              entry={result.match.entry}
                                               query={trimmedQuery}
+                                              contentHit={result.contentHit}
                                               index={index}
                                               isSelected={index === selectedIdx}
                                               isCurrent={
-                                                match.entry.session.id ===
-                                                activeSessionId
+                                                result.match.entry.session
+                                                  .id === activeSessionId
                                               }
                                               projectName={
                                                 project?.displayName ?? null
                                               }
+                                              matchFields={
+                                                result.match.matchFields
+                                              }
                                               onHover={setSelectedIdx}
                                               onActivate={activateThread}
+                                              onAction={handleThreadAction}
                                             />
                                           );
                                         })}
                                         <ThreadOverflowNote
-                                          shown={visibleThreads.length}
-                                          total={threadMatches.length}
+                                          shown={visibleWorkResults.length}
+                                          total={workResults.length}
                                         />
                                       </ul>
                                     </li>,
@@ -2551,56 +2723,65 @@ export function CommandPalette({
                               </li>
                             ));
 
-                            const entityNodes = entitySections.map((section) => {
-                              const expanded = expandedKinds.has(section.kind);
-                              const visible = expanded
-                                ? section.rows
-                                : section.rows.slice(0, ENTITY_SECTION_PREVIEW);
-                              const showMore =
-                                !expanded &&
-                                section.rows.length > ENTITY_SECTION_PREVIEW;
-                              const hiddenCount =
-                                section.total - ENTITY_SECTION_PREVIEW;
-                              return (
-                                <li key={`entity:${section.kind}`}>
-                                  <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
-                                    {section.label}
-                                  </div>
-                                  <ul>
-                                    {visible.map((item) => {
-                                      const index = flatIndex++;
-                                      return (
-                                        <SearchResultRow
-                                          key={item.id}
-                                          item={item}
-                                          query={trimmedQuery}
-                                          index={index}
-                                          isSelected={index === selectedIdx}
-                                          onHover={setSelectedIdx}
-                                          onActivate={activateResult}
-                                        />
-                                      );
-                                    })}
-                                    {showMore
-                                      ? (() => {
-                                          const index = flatIndex++;
-                                          return (
-                                            <ShowMoreRow
-                                              key={`more:${section.kind}`}
-                                              kind={section.kind}
-                                              hiddenCount={hiddenCount}
-                                              index={index}
-                                              isSelected={index === selectedIdx}
-                                              onHover={setSelectedIdx}
-                                              onToggle={toggleExpandKind}
-                                            />
-                                          );
-                                        })()
-                                      : null}
-                                  </ul>
-                                </li>
-                              );
-                            });
+                            const entityNodes = entitySections.map(
+                              (section) => {
+                                const expanded = expandedKinds.has(
+                                  section.kind,
+                                );
+                                const visible = expanded
+                                  ? section.rows
+                                  : section.rows.slice(
+                                      0,
+                                      ENTITY_SECTION_PREVIEW,
+                                    );
+                                const showMore =
+                                  !expanded &&
+                                  section.rows.length > ENTITY_SECTION_PREVIEW;
+                                const hiddenCount =
+                                  section.total - ENTITY_SECTION_PREVIEW;
+                                return (
+                                  <li key={`entity:${section.kind}`}>
+                                    <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                      {section.label}
+                                    </div>
+                                    <ul>
+                                      {visible.map((item) => {
+                                        const index = flatIndex++;
+                                        return (
+                                          <SearchResultRow
+                                            key={item.id}
+                                            item={item}
+                                            query={entityQuery}
+                                            index={index}
+                                            isSelected={index === selectedIdx}
+                                            onHover={setSelectedIdx}
+                                            onActivate={activateResult}
+                                          />
+                                        );
+                                      })}
+                                      {showMore
+                                        ? (() => {
+                                            const index = flatIndex++;
+                                            return (
+                                              <ShowMoreRow
+                                                key={`more:${section.kind}`}
+                                                kind={section.kind}
+                                                hiddenCount={hiddenCount}
+                                                index={index}
+                                                isSelected={
+                                                  index === selectedIdx
+                                                }
+                                                onHover={setSelectedIdx}
+                                                onToggle={toggleExpandKind}
+                                              />
+                                            );
+                                          })()
+                                        : null}
+                                    </ul>
+                                  </li>
+                                );
+                              },
+                            );
 
                             return [
                               ...threadNodes,
@@ -2874,7 +3055,10 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
     <>
       <div className="flex flex-wrap items-center gap-2">
         {detail.worktreeOf && (
-          <StatusChip icon={<TreeStructure size={11} weight="bold" />} tone="accent">
+          <StatusChip
+            icon={<TreeStructure size={11} weight="bold" />}
+            tone="accent"
+          >
             worktree of {detail.worktreeOf.displayName}
           </StatusChip>
         )}

@@ -146,6 +146,12 @@ export function ApprovalPrompt({
   const isQuestion = approval.mode === "question";
   const kind = approval.request?.kind;
   const source = approval.request?.source;
+  // A gate the host raised for a plugin — install, remove, turn off, turn on —
+  // travels as `source: "ade"`, so only `origin` can say whose decision this is.
+  // The TUI has no icons, so the name is the whole of the identity here.
+  const pluginOrigin = approval.request?.origin?.kind === "plugin"
+    ? approval.request.origin
+    : null;
   const providerAccent = pendingInputAccent(source);
   const planApprovalContent = kind === "plan_approval"
     ? stringValue(approval.request?.providerMetadata?.planContent)
@@ -176,6 +182,12 @@ export function ApprovalPrompt({
     title = pendingInputHeaderLabel(source, kind ?? "");
     glyph = "?";
     accent = providerAccent;
+  } else if (pluginOrigin) {
+    title = pendingInputHeaderLabel(source, kind ?? "approval", {
+      displayName: pluginOrigin.displayName,
+    }).toUpperCase();
+    glyph = "▲";
+    accent = highStakes ? theme.color.error : theme.color.attention;
   } else if (highStakes) {
     title = "HIGH-STAKES PERMISSION";
     glyph = "▲";

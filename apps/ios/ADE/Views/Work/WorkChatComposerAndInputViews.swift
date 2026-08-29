@@ -1138,7 +1138,7 @@ struct WorkStructuredQuestionCard: View {
       persistDrafts()
     }
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("\(workChatSurfaceProviderName(resolvedProvider)) asks. \(activeQuestion.question)")
+    .accessibilityLabel("\(question.providerHeaderVerb(fallbackProvider: fallbackProvider)). \(activeQuestion.question)")
   }
 
   /// Change fingerprint for the autosave debounce. Hash-based rather than a
@@ -1247,21 +1247,40 @@ struct WorkStructuredQuestionCard: View {
   /// Provider-identified header: logo + "{Provider} asks" verb. Replaces the
   /// old clock-icon "Input needed · Claude" treatment from the desktop redesign.
   /// Kept out of the scroll region so the card always identifies itself.
+  ///
+  /// A card the host raised for a plugin identifies itself as that plugin —
+  /// its own icon and its own name — rather than as ADE. See
+  /// ``WorkPendingInputOrigin``: the install/remove/enable gates all travel
+  /// with `source: "ade"`, and naming the host is what made the phone's card
+  /// say "ADE asks" above a decision about somebody else's code.
   @ViewBuilder
   private var providerRow: some View {
     HStack(spacing: 8) {
-      WorkProviderBareLogo(
-        provider: resolvedProvider,
-        fallbackSymbol: providerIcon(resolvedProvider ?? ""),
-        tint: providerAccent,
-        size: 18
-      )
+      if let origin = question.origin {
+        PluginSymbol.glyph(origin.icon, fallback: "puzzlepiece.extension", pointSize: 18)
+          .foregroundStyle(pluginOriginTint(origin))
+          .frame(width: 18, height: 18)
+      } else {
+        WorkProviderBareLogo(
+          provider: resolvedProvider,
+          fallbackSymbol: providerIcon(resolvedProvider ?? ""),
+          tint: providerAccent,
+          size: 18
+        )
+      }
       Text(question.providerHeaderVerb(fallbackProvider: fallbackProvider))
         .font(.caption.weight(.semibold))
         .foregroundStyle(providerAccent)
       Spacer(minLength: 0)
     }
     .accessibilityHidden(true)
+  }
+
+  /// The plugin's declared accent when it has one this build can read, else the
+  /// card's own accent. A `brand:` token draws its vendor asset in the vendor's
+  /// colours and ignores this, exactly as every other plugin surface does.
+  private func pluginOriginTint(_ origin: WorkPendingInputOrigin) -> Color {
+    LaneColorPalette.color(forHex: origin.accent) ?? providerAccent
   }
 
   @ViewBuilder

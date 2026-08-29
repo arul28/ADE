@@ -59,3 +59,26 @@ describe("pendingInputHeaderLabel", () => {
     expect(label.toLowerCase().split("claude").length - 1).toBe(1);
   });
 });
+
+/**
+ * A card the host raised for somebody else says whose it is.
+ *
+ * Plugin gates travel as `source: "ade"` — the host is the one asking — so the
+ * name has to come from beside the source, not out of it.
+ */
+describe("pendingInputHeaderLabel with a display name", () => {
+  it("says the plugin's name and keeps the kind word", () => {
+    expect(pendingInputHeaderLabel("ade", "approval", { displayName: "Focus" }))
+      .toBe("Focus · Approval");
+    expect(pendingInputHeaderLabel("ade", "question", { displayName: "Focus" }))
+      .toBe("Focus asks");
+  });
+
+  it("falls back to the provider for a blank or absent name", () => {
+    expect(pendingInputHeaderLabel("ade", "approval", { displayName: "   " }))
+      .toBe("ADE · Approval");
+    expect(pendingInputHeaderLabel("ade", "approval", { displayName: null }))
+      .toBe("ADE · Approval");
+    expect(pendingInputHeaderLabel("ade", "approval")).toBe("ADE · Approval");
+  });
+});

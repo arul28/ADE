@@ -202,6 +202,29 @@ struct WorkPendingQuestion: Identifiable, Equatable {
   var id: String { questionId }
 }
 
+/// Who a pending-input card is really about, when the host raised it for
+/// somebody else.
+///
+/// Mirrors desktop's `PendingInputOrigin` (apps/desktop/src/shared/types/chat.ts).
+/// Every plugin gate — install, remove, turn off, turn on — travels with
+/// `source: "ade"`, because the host is the one asking and the source union has
+/// no member for a plugin. Without this the phone drew ADE's own mark and the
+/// word "ADE" above a decision about somebody else's code, exactly as desktop
+/// did.
+///
+/// Optional everywhere and decoded leniently: a card from an older host carries
+/// no origin and must keep rendering exactly as it did.
+struct WorkPendingInputOrigin: Equatable {
+  let pluginId: String
+  let displayName: String
+  /// Manifest icon token — a Phosphor-equivalent name or a `brand:*` mark.
+  /// Resolved through `PluginSymbol`, the same map every other plugin surface
+  /// on the phone uses, so one manifest never draws two pictures.
+  var icon: String? = nil
+  /// Manifest accent hex, when it declared one.
+  var accent: String? = nil
+}
+
 struct WorkPendingQuestionModel: Identifiable, Equatable {
   let id: String
   let questions: [WorkPendingQuestion]
@@ -212,6 +235,13 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   /// render "{Provider} asks" and tint per-provider. Optional because some
   /// legacy `structured_question` envelopes don't carry it.
   var source: String? = nil
+  /// The plugin this card is about, when the host named one. See
+  /// ``WorkPendingInputOrigin``.
+  var origin: WorkPendingInputOrigin? = nil
+  /// The request's own `kind`, kept only so an origin-carrying card can say
+  /// "Approval" instead of "asks". Every other header keeps reading `source`
+  /// and the call site's own kind, so no existing card changes wording.
+  var requestKind: String? = nil
 
   var primary: WorkPendingQuestion { questions.first ?? WorkPendingQuestion(questionId: "response", question: "", options: [], allowsFreeform: true) }
   var questionId: String { primary.questionId }
@@ -260,10 +290,28 @@ func workChatPendingInputHeaderVerb(source: String?, fallbackProvider: String?, 
 
 extension WorkPendingQuestionModel {
   /// Header verb shown beside the provider logo: "{Provider} asks".
-  var providerHeaderVerb: String { "\(workChatSurfaceProviderName(source)) asks" }
+  var providerHeaderVerb: String { headerVerb(fallbackProvider: nil) }
 
   func providerHeaderVerb(fallbackProvider: String?) -> String {
-    workChatPendingInputHeaderVerb(source: source, fallbackProvider: fallbackProvider, kind: "question")
+    headerVerb(fallbackProvider: fallbackProvider)
+  }
+
+  /// The plugin's own name and the approval word when the host named a plugin;
+  /// the provider verb otherwise.
+  ///
+  /// The kind word is the same one desktop prints — "Focus · Approval" reads
+  /// identically on both, which is the point of naming the asker at all.
+  private func headerVerb(fallbackProvider: String?) -> String {
+    if let origin {
+      return requestKind == "approval"
+        ? "\(origin.displayName) · Approval"
+        : "\(origin.displayName) asks"
+    }
+    return workChatPendingInputHeaderVerb(
+      source: source,
+      fallbackProvider: fallbackProvider,
+      kind: "question"
+    )
   }
 }
 

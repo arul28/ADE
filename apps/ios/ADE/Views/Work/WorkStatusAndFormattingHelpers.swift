@@ -356,6 +356,13 @@ func providerAssetName(_ provider: String?) -> String? {
     return "ProviderOpenCode"
   case "droid", "factory":
     return "ProviderDroid"
+  // ADE asking on its own behalf — a host-raised approval with no plugin
+  // identity to draw. It used to fall through to `providerIcon`, which answers
+  // "brain.head.profile" for anything it does not know, so every host card wore
+  // a brain. `BrandMark` is the app's own logo, already drawn by the hub, the
+  // sign-in screen and the new-chat header.
+  case "ade":
+    return "BrandMark"
   default:
     return nil
   }

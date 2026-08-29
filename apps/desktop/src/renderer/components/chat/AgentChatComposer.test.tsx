@@ -2402,6 +2402,77 @@ describe("AgentChatComposer", () => {
     expect(props.onApproval).toHaveBeenNthCalledWith(2, "decline", null, { plugin_install: "deny" });
   });
 
+  it("names the plugin, not ADE, and offers a way to read the whole listing", () => {
+    // The reported defect: this card asks a person to run third-party code and
+    // identified itself with ADE's generic avatar and the word "ADE".
+    const props = renderComposer({
+      pendingInput: {
+        requestId: "plugin-install-2",
+        itemId: "plugin-install-2",
+        source: "ade",
+        kind: "approval",
+        title: "Install Focus 1.0.0?",
+        description: "Adds:\n- Focus tab (custom UI on desktop; panel on other devices)",
+        questions: [{
+          id: "plugin_install",
+          header: "Plugin install",
+          question: "Install Focus 1.0.0?",
+          allowsFreeform: false,
+          options: [
+            { label: "Install", value: "install", decision: "accept" },
+            { label: "Don't install", value: "deny", decision: "decline" },
+          ],
+        }],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        origin: { kind: "plugin", pluginId: "ade-focus", displayName: "Focus", icon: "timer" },
+        providerMetadata: {
+          pluginInstall: true,
+          pluginId: "ade-focus",
+          source: "/tmp/focus",
+          sourceKind: "path",
+          trust: "community",
+        },
+        turnId: "turn-1",
+      },
+    });
+
+    expect(screen.getByTestId("pending-input-header-label").textContent).toBe("Focus · Approval");
+    expect(screen.getByTestId("pending-input-plugin-mark").getAttribute("data-plugin-id"))
+      .toBe("ade-focus");
+
+    // The link is a link. Reading the listing must not answer the gate the
+    // agent is blocked on.
+    const link = screen.getByTestId("pending-input-marketplace-link");
+    expect(link.getAttribute("data-route"))
+      .toBe(`/marketplace?install=${encodeURIComponent("/tmp/focus")}`);
+    fireEvent.click(link);
+    expect(props.onApproval).not.toHaveBeenCalled();
+  });
+
+  it("keeps ADE's own mark on a host card that names no plugin", () => {
+    const { container } = renderComposer({
+      pendingInput: {
+        requestId: "approval-host",
+        itemId: "approval-host",
+        source: "ade",
+        kind: "approval",
+        description: "Run the migration?",
+        questions: [],
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: "turn-1",
+      },
+    });
+    expect(screen.getByTestId("pending-input-header-label").textContent).toBe("ADE · Approval");
+    expect(screen.queryByTestId("pending-input-plugin-mark")).toBeNull();
+    expect(screen.queryByTestId("pending-input-marketplace-link")).toBeNull();
+    const mark = container.querySelector("img[alt='ADE']");
+    expect(mark?.getAttribute("src")).toContain("ade-icon.webp");
+  });
+
   it("keeps the generic approval buttons when the options carry no decision", () => {
     // A structured question that happens to arrive as an approval still has no
     // mapping from an option to a decision, so the card must not guess one.

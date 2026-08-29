@@ -9,6 +9,11 @@ import {
   type BuiltinSurfaceInstallRecord,
 } from "../../../desktop/src/shared/plugins/builtinSurfaces";
 import type { PluginBuiltinSurfaceId } from "../../../desktop/src/shared/plugins/manifest";
+import {
+  matchesWorkSearchTerms,
+  parseWorkSearchQuery,
+  scoreWorkSearchTerms,
+} from "../../../desktop/src/shared/workSearch";
 
 /**
  * Providers whose backend accepts this atomic active-turn dispatch mode, read
@@ -399,17 +404,25 @@ export function paletteCommands(
     byName.set(key, command);
   }
   const merged = [...byName.values()];
-  const filtered = !queryToken
-    ? merged
-    : merged.filter((command) => `${command.name} ${command.description}`.toLowerCase().includes(queryToken));
-  // Rank: name-prefix matches first, then name-substring, then description matches, then alphabetical.
+  const queryTerms = parseWorkSearchQuery(queryToken).terms;
+  const filtered = queryTerms.length === 0
+      ? merged
+      : merged.filter((command) => {
+          return matchesWorkSearchTerms(queryTerms, [command.name, command.description]);
+        });
+  // Rank: for one word retain the familiar name-prefix order; for multiple
+  // words sum each word's position so reversed queries rank just as naturally.
   filtered.sort((a, b) => {
-    if (queryToken) {
+    if (queryTerms.length === 1) {
       const aName = a.name.toLowerCase();
       const bName = b.name.toLowerCase();
       const aPrefix = aName.startsWith(`/${queryToken}`) ? 0 : aName.includes(queryToken) ? 1 : 2;
       const bPrefix = bName.startsWith(`/${queryToken}`) ? 0 : bName.includes(queryToken) ? 1 : 2;
       if (aPrefix !== bPrefix) return aPrefix - bPrefix;
+    } else if (queryTerms.length > 1) {
+      const aScore = scoreWorkSearchTerms(queryTerms, [a.name, a.description]) ?? Number.MAX_SAFE_INTEGER;
+      const bScore = scoreWorkSearchTerms(queryTerms, [b.name, b.description]) ?? Number.MAX_SAFE_INTEGER;
+      if (aScore !== bScore) return aScore - bScore;
     }
     return a.name.localeCompare(b.name);
   });

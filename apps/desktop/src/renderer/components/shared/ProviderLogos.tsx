@@ -57,6 +57,55 @@ function FallbackInitialLogo({ family, size = 16, className }: { family: string;
   );
 }
 
+/**
+ * ADE's own mark, for a card ADE itself raised.
+ *
+ * `family="ade"` used to fall through to {@link FallbackInitialLogo} — a grey
+ * circle with a white "A", the same treatment an unknown provider gets. Every
+ * host-raised card wore it, including the plugin install gate, so the one card
+ * in the product that asks a person to run third-party code identified itself
+ * with a placeholder. Reported three rounds running.
+ *
+ * The artwork is the app's real icon, already in the renderer's public folder
+ * and already drawn by the welcome gate and the sync-devices sheet — not a new
+ * drawing, and not the wide `logo.png` wordmark, which is a 2:1 lockup that
+ * cannot fill a square slot beside `Claude.Avatar` and its 1:1 neighbours.
+ *
+ * Sized and shaped like those neighbours: a square of `size`, the same rounding
+ * the Lobe avatars carry, so a header row of provider marks stays one row.
+ */
+function AdeMark({ size, className }: { size: number; className?: string }) {
+  return (
+    <img
+      src={adeMarkSrc()}
+      alt="ADE"
+      width={size}
+      height={size}
+      draggable={false}
+      className={cn("shrink-0 select-none rounded-[22%] object-contain", className)}
+      style={{ width: size, height: size }}
+    />
+  );
+}
+
+/**
+ * Where that icon lives, for both hosts the renderer runs on.
+ *
+ * Electron loads the bundle off `file://`, where a leading slash escapes to the
+ * filesystem root; the hosted web client serves it from an origin, where a
+ * relative path breaks on every route deeper than one segment. Same split
+ * `publicAssetUrl` makes in the onboarding gate — repeated here rather than
+ * imported because that module pulls the whole welcome-video graph in behind it,
+ * and this component is in the always-loaded shell chunk.
+ */
+function adeMarkSrc(): string {
+  const path = "welcome/ade-icon.webp";
+  if (typeof window !== "undefined" && /^https?:$/.test(window.location.protocol)) {
+    return `/${path}`;
+  }
+  return `./${path}`;
+}
+
 function LobeStaticMark({ src, size, className }: { src: string; size: number; className?: string }) {
   return (
     <img
@@ -175,6 +224,10 @@ export function ProviderLogo({
       return <PiLogo size={size} className={className} />;
     case "opencode":
       return <OpenCode.Avatar size={size} className={c} />;
+    // ADE asking on its own behalf — a host-raised approval, a plugin gate with
+    // no plugin identity to draw. See {@link AdeMark}.
+    case "ade":
+      return <AdeMark size={size} className={className} />;
     case "xai":
       return <XAI.Avatar size={size} className={c} />;
     case "grok":

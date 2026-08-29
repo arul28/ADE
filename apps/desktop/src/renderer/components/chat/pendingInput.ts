@@ -1,6 +1,7 @@
 import type {
   AgentChatEventEnvelope,
   PendingInputOption,
+  PendingInputOrigin,
   PendingInputQuestion,
   PendingInputRequest,
 } from "../../../shared/types";
@@ -80,6 +81,33 @@ function readPendingInputQuestion(value: unknown): PendingInputQuestion | null {
   };
 }
 
+/**
+ * The plugin identity a host-raised card carries, or null.
+ *
+ * Parsed rather than trusted: this arrives from a transcript row that also
+ * travels to the phone and back, and the card renders whatever it says as the
+ * asker's name. A record missing either required field is dropped whole — a
+ * half-identity would draw a nameless tile beside "· Approval".
+ */
+function readPendingInputOrigin(value: unknown): PendingInputOrigin | null {
+  const record = readRecord(value);
+  if (!record || record.kind !== "plugin") return null;
+  const pluginId = typeof record.pluginId === "string" ? record.pluginId.trim() : "";
+  const displayName = typeof record.displayName === "string" ? record.displayName.trim() : "";
+  if (!pluginId.length || !displayName.length) return null;
+  return {
+    kind: "plugin",
+    pluginId,
+    displayName,
+    ...(typeof record.icon === "string" && record.icon.trim().length
+      ? { icon: record.icon.trim() }
+      : {}),
+    ...(typeof record.accent === "string" && record.accent.trim().length
+      ? { accent: record.accent.trim() }
+      : {}),
+  };
+}
+
 export function readPendingInputRequest(value: unknown): PendingInputRequest | null {
   const record = readRecord(value);
   if (!record) return null;
@@ -108,6 +136,7 @@ export function readPendingInputRequest(value: unknown): PendingInputRequest | n
       : {}),
     ...(readRecord(record.providerMetadata) ? { providerMetadata: readRecord(record.providerMetadata)! } : {}),
     ...(typeof record.turnId === "string" ? { turnId: record.turnId } : {}),
+    ...(readPendingInputOrigin(record.origin) ? { origin: readPendingInputOrigin(record.origin)! } : {}),
   };
 }
 
