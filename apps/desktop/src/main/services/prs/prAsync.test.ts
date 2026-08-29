@@ -1958,6 +1958,7 @@ describe("createPrSummaryService", () => {
       };
 
       const aiIntegrationService = {
+        getConfiguredFeatureModel: vi.fn(() => "openai/gpt-5.5"),
         draftPrDescription: vi.fn(async () => ({
           text: '{"summary":"ok","riskAreas":["a"],"reviewerHotspots":["b"],"unresolvedConcerns":["c"]}',
           durationMs: 10,
@@ -1987,6 +1988,9 @@ describe("createPrSummaryService", () => {
       expect(result.riskAreas).toEqual(["a"]);
       expect(result.headSha).toBe("headA");
       expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledTimes(1);
+      expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "openai/gpt-5.5" }),
+      );
 
       const cached = await svc.getSummary("pr-1");
       expect(cached?.summary).toBe("ok");

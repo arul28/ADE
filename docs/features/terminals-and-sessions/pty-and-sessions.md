@@ -207,7 +207,10 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
    disposal.
 6. Build initial `resumeMetadata` via `buildInitialResumeMetadata` —
    extracts a pre-assigned `--session-id <uuid>` from the Claude
-   startup command when present.
+   startup command when present. When the runtime launch carries a
+   model and the stored `resumeMetadata.launch.model` is empty (including
+   resume of an existing session), ADE writes that launch model onto the
+   metadata so later CLI title/summary walks have a session model to try.
 7. Insert a new `terminal_sessions` row (or skip when resuming an
    existing one) and call `sessionService.create`. Set runtime state to
    `running`.
@@ -670,7 +673,14 @@ command argument whenever structured resume metadata is available.
 
 Three paths, all gated by `sessionIntelligence.titles.enabled` and the
 presence of an AI integration service in non-guest mode (except the
-Claude runtime-title capture, which is free):
+Claude runtime-title capture, which is free).
+
+CLI AI titles and terminal summaries try models in this order: the
+Settings title/summary model, then `resumeMetadata.launch.model`.
+`tryCliAiModels` walks that list and continues on failure. If both
+are missing, ADE skips the AI call and keeps the deterministic
+title/summary already on the row — it does not throw, pick Haiku, or
+use the first available provider.
 
 - **Output snippet title** (shell, cursor, aider, continue):
   `aiTitleTimer` fires after 6 s, sends up to 800 chars of
@@ -711,8 +721,9 @@ Claude runtime-title capture, which is free):
 
 At session close, when `refreshOnComplete` is enabled, the transcript
 tail (last 2000 chars) is re-summarized into a final title through the
-same service. Failure logs a warn and moves on — the title contract
-never fails the session.
+same setting-then-launch-model walk. Failure logs a warn and moves on —
+the title contract never fails the session. End-of-session summaries
+use the same walk against `sessionIntelligence.summaries.modelId`.
 
 ### Continuation metadata backfill
 

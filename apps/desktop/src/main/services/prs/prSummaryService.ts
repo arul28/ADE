@@ -215,7 +215,8 @@ export function createPrSummaryService(deps: PrSummaryServiceDeps) {
       unresolvedThreadCount: inputs.unresolvedThreadCount,
     });
 
-    if (!deps.aiIntegrationService) {
+    const model = deps.aiIntegrationService?.getConfiguredFeatureModel("pr_descriptions") ?? null;
+    if (!deps.aiIntegrationService || !model) {
       const fallback: PrAiSummary = {
         prId,
         summary: `This PR modifies ${inputs.files.length} file(s).`,
@@ -237,6 +238,7 @@ export function createPrSummaryService(deps: PrSummaryServiceDeps) {
         laneId: "", // aiIntegrationService accepts empty laneId for one-shot tasks; uses projectRoot cwd.
         cwd: deps.projectRoot,
         prompt,
+        model,
       });
       const parsed = parsePrSummaryJson(result.text);
       const summary: PrAiSummary = {

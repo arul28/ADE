@@ -3,8 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { getAvailableModels, type ModelDescriptor } from "../../../shared/modelRegistry";
 import {
   buildNamingModelCandidates,
+  buildSessionIntelligenceModelCandidates,
+  deriveDeterministicSessionMetadata,
   isProviderLevelNamingFailure,
+  parseGeneratedSessionMetadata,
   runNamingAcrossProviders,
+  runSessionMetadataGeneration,
+  withSessionModelDescriptors,
 } from "./sessionNaming";
 
 // The registry is the source of truth for provider grouping, so the fixtures are
@@ -51,49 +56,23 @@ describe("isProviderLevelNamingFailure", () => {
 });
 
 describe("buildNamingModelCandidates", () => {
-  it("always reaches a different provider so a single-provider outage cannot end naming", () => {
+  it("returns only the preferred models that are available, in order", () => {
     const candidates = buildNamingModelCandidates({
       availableModels: ALL_MODELS,
       preferred: [OPENAI_MODELS[0]?.id, OPENAI_MODELS[1]?.id],
     });
 
-    expect(candidates.slice(0, 2)).toEqual([OPENAI_MODELS[0]?.id, OPENAI_MODELS[1]?.id]);
-    expect(candidates.some((id) => id.startsWith("anthropic/"))).toBe(true);
-    expect(new Set(candidates).size).toBe(candidates.length);
+    expect(candidates).toEqual([OPENAI_MODELS[0]?.id, OPENAI_MODELS[1]?.id]);
+    expect(candidates.some((id) => id.startsWith("anthropic/"))).toBe(false);
   });
 
-  it("keeps the cross-provider candidate inside the attempt budget", async () => {
-    // Three same-provider preferences failing transiently must not spend the
-    // whole budget before naming ever tries another provider.
-    const preferred = OPENAI_MODELS.slice(0, 3).map((descriptor) => descriptor.id);
-    expect(preferred).toHaveLength(3);
-    const candidates = buildNamingModelCandidates({ availableModels: ALL_MODELS, preferred });
-
-    expect(candidates.indexOf(candidates.find((id) => id.startsWith("anthropic/"))!)).toBeLessThan(3);
-
-    const attempted: string[] = [];
-    const { result } = await runNamingAcrossProviders<string>(candidates, {
-      run: async (descriptor) => {
-        attempted.push(descriptor.id);
-        if (descriptor.id.startsWith("openai/")) throw new Error("socket hang up");
-        return "Cross Provider Wins";
-      },
-      onFailure: vi.fn(),
-    });
-
-    expect(result).toBe("Cross Provider Wins");
-    expect(attempted.some((id) => id.startsWith("anthropic/"))).toBe(true);
-  });
-
-  it("can scope candidates to the selected runtime provider", () => {
+  it("does not splice a hardcoded namer from another provider", () => {
     const candidates = buildNamingModelCandidates({
       availableModels: ALL_MODELS,
-      preferred: [OPENAI_MODELS[0]?.id, ANTHROPIC_MODELS[0]?.id],
-      provider: "codex",
+      preferred: [OPENAI_MODELS[0]?.id],
     });
 
-    expect(candidates.length).toBeGreaterThan(0);
-    expect(candidates.every((id) => id.startsWith("openai/"))).toBe(true);
+    expect(candidates).toEqual([OPENAI_MODELS[0]?.id]);
   });
 
   it("drops unavailable and duplicate preferences instead of attempting them", () => {
@@ -108,6 +87,42 @@ describe("buildNamingModelCandidates", () => {
 
   it("returns nothing when no preferred model is available", () => {
     expect(buildNamingModelCandidates({ availableModels: [], preferred: ["openai/gpt-5.4-mini"] })).toEqual([]);
+  });
+});
+
+describe("buildSessionIntelligenceModelCandidates", () => {
+  it("uses the setting first and the session model second", () => {
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      settingModelId: ANTHROPIC_MODELS[0]?.id,
+      sessionModelId: OPENAI_MODELS[0]?.id,
+    })).toEqual([ANTHROPIC_MODELS[0]?.id, OPENAI_MODELS[0]?.id]);
+  });
+
+  it("keeps the session model even when the auth snapshot is empty", () => {
+    const sessionModelId = OPENAI_MODELS[0]?.id;
+    expect(sessionModelId).toBeTruthy();
+    expect(withSessionModelDescriptors([], [sessionModelId]).map((descriptor) => descriptor.id)).toEqual([sessionModelId]);
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: [],
+      sessionModelId,
+    })).toEqual([sessionModelId]);
+  });
+
+  it("resolves a session-model alias onto its canonical id", () => {
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      sessionModel: "sonnet",
+    })).toEqual(["anthropic/claude-sonnet-5"]);
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: [],
+      sessionModel: "sonnet",
+    })).toEqual(["anthropic/claude-sonnet-5"]);
+    expect(buildSessionIntelligenceModelCandidates({
+      availableModels: ALL_MODELS,
+      settingModelId: "anthropic/claude-sonnet-5",
+      sessionModel: "sonnet",
+    })).toEqual(["anthropic/claude-sonnet-5"]);
   });
 });
 
@@ -131,11 +146,11 @@ describe("runNamingAcrossProviders", () => {
       onFailure,
     });
 
-    expect(result).toBe("Rename Naming Fallback");
+    expect(result).toBeNull();
     expect(attempted.filter((id) => id.startsWith("openai/"))).toHaveLength(1);
-    expect(attempted.at(-1)?.startsWith("anthropic/")).toBe(true);
-    expect(attemptCount).toBe(2);
-    expect(selectedModelId).toBe(attempted.at(-1));
+    expect(attempted.some((id) => id.startsWith("anthropic/"))).toBe(false);
+    expect(attemptCount).toBe(1);
+    expect(selectedModelId).toBe(attempted[0]);
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(onFailure.mock.calls[0]![0]).toMatchObject({ providerLevelFailure: true });
   });
@@ -143,7 +158,10 @@ describe("runNamingAcrossProviders", () => {
   it("advances to the next candidate when a model answers unusably", async () => {
     const attempted: string[] = [];
     const { result } = await runNamingAcrossProviders<string>(
-      buildNamingModelCandidates({ availableModels: ALL_MODELS, preferred: [OPENAI_MODELS[0]?.id] }),
+      buildNamingModelCandidates({
+        availableModels: ALL_MODELS,
+        preferred: [OPENAI_MODELS[0]?.id, ANTHROPIC_MODELS[0]?.id],
+      }),
       {
         run: async (descriptor) => {
           attempted.push(descriptor.id);
@@ -153,7 +171,7 @@ describe("runNamingAcrossProviders", () => {
       },
     );
 
-    expect(attempted.length).toBeGreaterThan(1);
+    expect(attempted.length).toBe(2);
     expect(result).toBe("Second Model Wins");
   });
 
@@ -194,5 +212,116 @@ describe("runNamingAcrossProviders", () => {
     expect(result).toBeNull();
     expect(attemptCount).toBe(3);
     expect(attempted).toHaveLength(3);
+  });
+});
+
+const normalizeTitle = (value: string): string | null => {
+  const words = value.trim().split(/\s+/u).filter(Boolean);
+  return words.length >= 2 ? words.slice(0, 6).join(" ") : null;
+};
+const normalizeStatusLine = (value: string): string | null => {
+  const summary = value.trim().replace(/\s+/g, " ");
+  return summary.length ? summary.slice(0, 72) : null;
+};
+
+describe("parseGeneratedSessionMetadata", () => {
+  it("keeps the three naming fields when the model adds extra keys", () => {
+    expect(parseGeneratedSessionMetadata({
+      raw: {
+        chatTitle: "Wire Rag Search",
+        laneName: "Search Answer Path",
+        statusLine: "Sources show before generate",
+        notes: "Grok likes to annotate",
+      },
+      normalizeTitle,
+      normalizeStatusLine,
+    })).toEqual({
+      chatTitle: "Wire Rag Search",
+      laneName: "Search Answer Path",
+      statusLine: "Sources show before generate",
+    });
+  });
+
+  it("accepts a partial object and fenced JSON with surrounding prose", () => {
+    expect(parseGeneratedSessionMetadata({
+      raw: { chatTitle: "Wire Rag Search" },
+      normalizeTitle,
+      normalizeStatusLine,
+    })).toEqual({
+      chatTitle: "Wire Rag Search",
+      laneName: null,
+      statusLine: null,
+    });
+
+    expect(parseGeneratedSessionMetadata({
+      raw: [
+        "Sure, here is the metadata:",
+        "```json",
+        JSON.stringify({
+          chatTitle: "Wire Rag Search",
+          laneName: "Search Answer Path",
+          statusLine: "Sources show before generate",
+        }),
+        "```",
+      ].join("\n"),
+      normalizeTitle,
+      normalizeStatusLine,
+    })).toEqual({
+      chatTitle: "Wire Rag Search",
+      laneName: "Search Answer Path",
+      statusLine: "Sources show before generate",
+    });
+  });
+});
+
+describe("deriveDeterministicSessionMetadata", () => {
+  it("prefers the conversation summary over the original kickoff prompt", () => {
+    expect(deriveDeterministicSessionMetadata({
+      seeds: [
+        "Wired project aiSummary into RAG excerpts so Cmd+K answers from the overview",
+        "start skill using aws other",
+      ],
+      normalizeTitle,
+      normalizeStatusLine,
+    })).toMatchObject({
+      chatTitle: expect.stringMatching(/wired/i),
+      laneName: expect.stringMatching(/wired/i),
+      statusLine: expect.stringMatching(/aiSummary|RAG|Cmd/i),
+    });
+  });
+});
+
+describe("runSessionMetadataGeneration", () => {
+  it("still reaches a JSON-capable namer when the chat model answers unusably", async () => {
+    const attempted: string[] = [];
+    const { result } = await runSessionMetadataGeneration({
+      candidateModelIds: [OPENAI_MODELS[0]!.id, ANTHROPIC_MODELS[0]!.id],
+      cwd: "/tmp",
+      prompt: "Refresh this chat",
+      runPrompt: async ({ modelId }) => {
+        attempted.push(modelId);
+        if (modelId.startsWith("openai/")) {
+          return { text: "I named it. Hope that helps!" };
+        }
+        return {
+          text: JSON.stringify({
+            chatTitle: "Wire Rag Search",
+            laneName: "Search Answer Path",
+            statusLine: "Sources show before generate",
+          }),
+        };
+      },
+      normalizeTitle,
+      normalizeStatusLine,
+      onFailure: vi.fn(),
+    });
+
+    expect(attempted[0]?.startsWith("openai/")).toBe(true);
+    expect(attempted.some((id) => id.startsWith("anthropic/"))).toBe(true);
+    expect(result).toEqual({
+      chatTitle: "Wire Rag Search",
+      laneName: "Search Answer Path",
+      statusLine: "Sources show before generate",
+    });
   });
 });

@@ -50,6 +50,7 @@ function installAdeMocks() {
           { feature: "terminal_summaries", enabled: true, dailyUsage: 0 },
           { feature: "pr_descriptions", enabled: true, dailyUsage: 0 },
           { feature: "commit_messages", enabled: true, dailyUsage: 0 },
+          { feature: "conflict_proposals", enabled: true, dailyUsage: 0 },
         ],
         detectedAuth: [{ type: "cli-subscription", cli: "codex", authenticated: true }],
         availableModelIds: ["openai/gpt-5.4"],
@@ -64,6 +65,7 @@ function installAdeMocks() {
               terminal_summaries: "openai/gpt-5.4",
               pr_descriptions: "openai/gpt-5.4",
               commit_messages: "openai/gpt-5.4",
+              conflict_proposals: "openai/gpt-5.4",
             },
             sessionIntelligence: {
               titles: {
@@ -106,6 +108,7 @@ describe("AiFeaturesSection", () => {
       "ai-feature-terminal_summaries",
       "ai-feature-pr_descriptions",
       "ai-feature-commit_messages",
+      "ai-feature-conflict_proposals",
       "ai-feature-chat-auto-title",
     ];
     await waitFor(() => {

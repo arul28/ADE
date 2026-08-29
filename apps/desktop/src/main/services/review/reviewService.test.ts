@@ -692,6 +692,13 @@ describe("reviewService", () => {
     vi.clearAllMocks();
   });
 
+  it("refuses to start a review run when no model is selected", async () => {
+    const harness = createHarness({ outputs: [] });
+    await expect(harness.start({ modelId: "" })).rejects.toThrow(
+      "Choose a review model before starting a review.",
+    );
+  });
+
   it("merges overlapping multi-pass findings and persists the pass-level artifact trail", async () => {
     const harness = createHarness({
       outputs: [

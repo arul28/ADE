@@ -71,7 +71,7 @@ import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
-import type { createAiIntegrationService } from "../ai/aiIntegrationService";
+import { missingFeatureModelMessage, readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import {
@@ -2887,10 +2887,19 @@ export function createConflictService({
       JSON.stringify(prepared.conflictContext, null, 2)
     ].join("\n");
 
+    const model = readConfiguredFeatureModel(
+      projectConfigService.get().effective.ai,
+      "conflict_proposals",
+    );
+    if (!model) {
+      throw new Error(missingFeatureModelMessage("conflict_proposals"));
+    }
+
     const aiResult = await aiIntegrationService.requestConflictProposal({
       laneId,
       cwd: laneGit.worktreePath,
       prompt,
+      model,
       jsonSchema: outputSchema
     });
     const structured =

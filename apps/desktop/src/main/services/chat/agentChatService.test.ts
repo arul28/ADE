@@ -1659,7 +1659,7 @@ function createService(overrides: Record<string, unknown> = {}) {
   const projectConfigService = createMockProjectConfigService();
   const aiIntegrationService = {
     summarizeTerminal: vi.fn(async () => ({
-      text: "Generated session intelligence",
+      text: "",
       structuredOutput: null,
       provider: "claude",
       model: "anthropic/claude-haiku-4-5",
@@ -5043,7 +5043,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("codex");
       expect(result.session.threadId).toBe("forked-thread-1");
       expect(mockState.sessions.get(result.session.id)?.goal ?? null).toBeNull();
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
       const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
       expect(handoffPayloads).toEqual(expect.arrayContaining([
         expect.objectContaining({
@@ -5211,7 +5213,9 @@ describe("createAgentChatService", () => {
       expect(mockState.openCodeForkCalls.length).toBeGreaterThanOrEqual(1);
       expect(persisted.providerSessionId).toEqual(expect.stringMatching(/-fork$/));
       expect(promptCountAfterFork).toBe(promptCountBeforeFork);
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Droid chat and resumes the forked session id", async () => {
@@ -5242,7 +5246,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("droid");
       expect(sourcePooled.request).toHaveBeenCalledWith("fork_session");
       expect(persisted.droidSdkSessionId).toEqual(expect.stringMatching(/^droid-forked-/));
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Cursor chat onto a fresh agent replaying the full source transcript", async () => {
@@ -5286,7 +5292,9 @@ describe("createAgentChatService", () => {
       expect(persisted.pendingTranscriptReplay).toContain("Investigate the flaky migration test.");
       expect(result.replayFork).toBeUndefined();
       // No brief was generated — fork carries the conversation, not a summary.
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Cursor chat onto another provider by replaying the full transcript", async () => {
@@ -5317,7 +5325,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("codex");
       expect(persisted.pendingTranscriptReplay).toContain("Keep the banner aligned with the composer.");
       expect(persisted.pendingTranscriptReplay).toContain("verbatim replay");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("forks a Claude chat onto a Codex model with a full transcript replay", async () => {
@@ -5347,7 +5357,9 @@ describe("createAgentChatService", () => {
       expect(result.replayFork).toBeUndefined();
       expect(persisted.pendingTranscriptReplay).toContain("Replay this turn across providers.");
       expect(persisted.pendingTranscriptReplay).not.toMatch(/This is a brief/i);
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
     });
 
     it("gives a forked Cursor chat's first send the source conversation as context", async () => {
@@ -5938,7 +5950,9 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("claude");
       expect(result.session.interactionMode).toBe("plan");
       expect(result.session.permissionMode).toBe("plan");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
       await vi.waitFor(() => {
         expect(claudeSdkResumeSessionCompat).toHaveBeenCalledWith(
           sourceSdkSessionId,
@@ -14179,6 +14193,22 @@ describe("createAgentChatService", () => {
 
       const { service, sessionService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        projectConfigService: {
+          get: vi.fn(() => ({
+            effective: {
+              ai: {
+                permissions: {
+                  cli: { mode: "edit" },
+                  inProcess: { mode: "edit" },
+                },
+                chat: {},
+                sessionIntelligence: { titles: { enabled: false } },
+              },
+            },
+          })),
+          getAll: vi.fn(() => ({})),
+          set: vi.fn(),
+        } as any,
       });
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       if (args.manuallyName) {
@@ -15511,7 +15541,9 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: session.id, text: "Use runtime title." }, { awaitDispatch: true });
 
       await waitForSessionTitle(sessionService, session.id, "OpenCode Native Title");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
+        expect.objectContaining({ taskType: "handoff_summary" }),
+      );
       expect(vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0]).toEqual(
         expect.objectContaining({ title: null }),
       );
@@ -19057,7 +19089,25 @@ describe("createAgentChatService", () => {
         sdkSessionId: "sdk-legacy-owner-unavailable",
         responseText: "Done.",
       });
-      const { service, sessionService, logger } = createService({ db: scheduledWork.db });
+      const { service, sessionService, logger } = createService({
+        db: scheduledWork.db,
+        projectConfigService: {
+          get: vi.fn(() => ({
+            effective: {
+              ai: {
+                permissions: {
+                  cli: { mode: "edit" },
+                  inProcess: { mode: "edit" },
+                },
+                chat: {},
+                sessionIntelligence: { titles: { enabled: false } },
+              },
+            },
+          })),
+          getAll: vi.fn(() => ({})),
+          set: vi.fn(),
+        } as any,
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -19069,10 +19119,15 @@ describe("createAgentChatService", () => {
       });
       await service.dispose({ sessionId: session.id });
       const sessionRow = sessionService.get(session.id);
-      sessionService.get
-        .mockImplementationOnce(() => sessionRow)
-        .mockImplementationOnce(() => null)
-        .mockImplementation((sessionId: string) => sessionId === session.id ? sessionRow : null);
+      // Probe once for the still-present chat, then fail later lookups so the
+      // wake cannot proceed. Call-count once() mocks are consumed by unrelated
+      // session-intelligence reads after a turn.
+      let cancelLookups = 0;
+      sessionService.get.mockImplementation((id: string) => {
+        if (id !== session.id) return null;
+        cancelLookups += 1;
+        return cancelLookups === 1 ? sessionRow : null;
+      });
 
       await expect(service.cancelScheduledWork({
         sessionId: session.id,
@@ -43379,7 +43434,7 @@ describe("suggestLaneNameFromPrompt", () => {
 
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix null model clearing for background jobs",
-      modelId: "",
+      modelId: "anthropic/claude-sonnet-5",
       laneId: "lane-1",
     });
 
@@ -43387,8 +43442,11 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(expect.objectContaining({
       model: "openai/gpt-5.4-mini",
     }));
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(expect.objectContaining({
       model: "anthropic/claude-haiku-4-5",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "anthropic/claude-sonnet-5",
     }));
   });
 
@@ -43590,6 +43648,7 @@ describe("suggestLaneNameFromPrompt", () => {
 
   it("retries the next model when structured fields are unusable, then falls back deterministically", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
     const { service, aiIntegrationService } = createSuggestService();
@@ -43609,9 +43668,44 @@ describe("suggestLaneNameFromPrompt", () => {
       branchFragment: "claude-auth-login-button-hangs",
       source: "deterministic",
     });
-    // An unusable answer no longer ends the chain: the remaining candidates
-    // still get a turn before naming settles for the deterministic slug.
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(3);
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "openai/gpt-5.4",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the launched chat model when the title setting answers unusably", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService({ titleModelId: "openai/gpt-5.4-mini" });
+    vi.mocked(aiIntegrationService.summarizeTerminal)
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ laneTitle: "Fix", branchFragment: "refs/heads/NOPE" }),
+      } as any)
+      .mockResolvedValueOnce({
+        text: JSON.stringify({ laneTitle: "Claude OAuth Login", branchFragment: "claude-oauth-login" }),
+      } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "The Claude auth login button hangs after OAuth redirects.",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(result).toMatchObject({
+      laneTitle: "Claude OAuth Login",
+      branchFragment: "claude-oauth-login",
+      source: "ai",
+    });
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "openai/gpt-5.4-mini",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      model: "openai/gpt-5.4",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(2);
   });
 
   it("uses the configured naming model before the launched model", async () => {
@@ -43635,7 +43729,7 @@ describe("suggestLaneNameFromPrompt", () => {
     }));
   });
 
-  it("uses the default title model before the launched chat model", async () => {
+  it("uses the launched chat model when no title model is configured", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
@@ -43654,7 +43748,7 @@ describe("suggestLaneNameFromPrompt", () => {
     });
 
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "anthropic/claude-haiku-4-5",
+      model: "openai/gpt-5.4",
     }));
   });
 

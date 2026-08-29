@@ -95,8 +95,10 @@ entries.
 2. Short-circuit if `insufficientContext`: record a `failed`
    proposal with explicit data-gap messaging, do not dispatch.
 3. Route through `aiIntegrationService.requestConflictProposal`
-   which calls `AgentExecutor.execute()` with the Claude CLI by
-   default (`sonnet`, read-only permissions, 60 s timeout).
+   using the Conflict Proposals model from Settings
+   (`featureModelOverrides.conflict_proposals`). If that picker is
+   empty, the call throws `Choose a Conflict Proposals model in Settings`
+   — it does not default to Sonnet or the first available provider.
 4. Persist the result as a `conflict_proposals` row with:
    - `source: 'subscription'` or `'local'`
    - `confidence: number | null` (0.0–1.0)

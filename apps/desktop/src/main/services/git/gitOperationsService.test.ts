@@ -19,6 +19,7 @@ vi.mock("./git", () => ({
 }));
 
 import { createGitOperationsService } from "./gitOperationsService";
+import { missingFeatureModelMessage } from "../ai/aiIntegrationService";
 
 const STASH_LIST_FORMAT = "--format=%H%x1f%gd%x1f%cI%x1f%gs";
 
@@ -1109,6 +1110,38 @@ describe("gitOperationsService.generateCommitMessage", () => {
     );
 
     expect(mockGit.runGit).toHaveBeenCalledTimes(1);
+    expect(generateCommitMessage).not.toHaveBeenCalled();
+  });
+
+  it("refuses to call AI when no Commit Messages model is configured", async () => {
+    const generateCommitMessage = vi.fn();
+    const service = createGitOperationsService({
+      laneService: {
+        getLaneBaseAndBranch: () => ({
+          baseRef: "main",
+          branchRef: "feature/commit-messages",
+          worktreePath: "/tmp/ade-lane",
+          laneType: "worktree",
+        }),
+      } as any,
+      operationService: {
+        start: vi.fn(),
+        finish: vi.fn(),
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { ai: {} } }),
+      } as any,
+      aiIntegrationService: {
+        getFeatureFlag: () => true,
+        getStatus: vi.fn(async () => ({ availableModelIds: ["openai/gpt-5.4"] })),
+        generateCommitMessage,
+      } as any,
+      logger: makeStubLogger(),
+    });
+
+    await expect(service.generateCommitMessage({ laneId: "lane-1" })).rejects.toThrow(
+      missingFeatureModelMessage("commit_messages"),
+    );
     expect(generateCommitMessage).not.toHaveBeenCalled();
   });
 
