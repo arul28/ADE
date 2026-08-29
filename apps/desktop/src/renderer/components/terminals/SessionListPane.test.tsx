@@ -1752,6 +1752,32 @@ describe("SessionListPane", () => {
         expect(foreignGroup(container)).toBeTruthy();
       });
 
+      it("keeps the fallback expiry timer for a partial filing map", () => {
+        vi.useFakeTimers();
+        const nowMs = Date.parse("2026-08-29T12:00:00.000Z");
+        vi.setSystemTime(nowMs);
+        seedForeignMachine({
+          sessions: [foreignSnoozed({
+            snoozedUntil: new Date(nowMs + 1_000).toISOString(),
+          })],
+        });
+        const { container } = renderPane({
+          // A caller may know the local roster but not yet have a complete
+          // cross-machine map. The uncovered foreign row still needs its
+          // render-only deadline timer so it can leave the shelf on time.
+          effectiveFilingBuckets: new Map([["session-mobile", "running"]]),
+          workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+        });
+
+        expect(shelfContains(container, "snoozed")).toBe(true);
+        act(() => {
+          vi.advanceTimersByTime(1_250);
+        });
+
+        expect(shelfContains(container, "snoozed")).toBe(false);
+        expect(foreignGroup(container)).toBeTruthy();
+      });
+
       it("files a mixed-quiet foreign lane by its dominant kind, ties to Snoozed", () => {
         seedForeignMachine({
           sessions: [

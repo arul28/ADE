@@ -1115,7 +1115,10 @@ export const SessionListPane = React.memo(function SessionListPane({
   useEffect(() => {
     // The normal Work hook already arms the complete-roster timer and supplies
     // its refreshed map. This local timer is only the standalone-pane fallback.
-    if (effectiveFilingBucketsProp) return undefined;
+    if (
+      effectiveFilingBucketsProp
+      && foreignSessionsForFiling.every((session) => effectiveFilingBucketsProp.has(session.id))
+    ) return undefined;
     const deadlineMs = nextSnoozeDeadlineMs(foreignSessionsForFiling);
     if (deadlineMs == null) return undefined;
     const delay = Math.min(
