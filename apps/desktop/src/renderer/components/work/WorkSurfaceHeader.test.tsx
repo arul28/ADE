@@ -183,6 +183,31 @@ describe("WorkSurfaceHeader", () => {
     expect(landed.className).toContain("ade-title-landed");
   });
 
+  it("does not shimmer the title when regeneration finishes without changing it", () => {
+    setSessionMetadataGenerating("sess-header", {
+      fields: ["title"],
+      laneId: "lane-1",
+    });
+    const { rerender } = render(
+      <WorkSurfaceHeader
+        title="Stop Haiku default"
+        lifecycleSessionId="sess-header"
+      />,
+    );
+    act(() => {
+      setSessionMetadataGenerating("sess-header", null);
+      rerender(
+        <WorkSurfaceHeader
+          title="Stop Haiku default"
+          lifecycleSessionId="sess-header"
+        />,
+      );
+    });
+    const title = screen.getByText("Stop Haiku default");
+    expect(title.getAttribute("data-title-landed")).toBeNull();
+    expect(title.className).not.toContain("ade-title-landed");
+  });
+
   it("renders an optional title accessory after the title", () => {
     render(
       <WorkSurfaceHeader

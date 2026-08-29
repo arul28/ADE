@@ -231,20 +231,13 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
         : deriveDeterministicSessionMetadata({
           seeds: needs.statusLine && !needs.title && !needs.laneName
             ? [latestAssistantParagraphs, latestOutputPreview]
-            : needs.title && !needs.laneName
-              ? [
-                initialRow.summary,
-                threadTranscript,
-                latestAssistantParagraphs,
-                latestOutputPreview,
-                managed.autoTitleSeed,
-              ]
-              : [
-                initialRow.summary,
-                latestOutputPreview,
-                managed.autoTitleSeed,
-                threadTranscript,
-              ],
+            : [
+              initialRow.summary,
+              threadTranscript,
+              latestAssistantParagraphs,
+              latestOutputPreview,
+              managed.autoTitleSeed,
+            ],
           normalizeTitle: dependencies.normalizeTitle,
           normalizeStatusLine: dependencies.normalizeStatusLine,
         }));

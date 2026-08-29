@@ -292,6 +292,24 @@ describe("createSessionMetadataRegenerator", () => {
     expect(String(applyTitle.mock.calls[0]?.[1])).toMatch(/stop one shot/i);
   });
 
+  it("prefers this thread over the kickoff slug when generating all three without models", async () => {
+    const { regenerate, applyTitle, renameLane } = createHarness({
+      resolveModelCandidates: async () => [],
+      conversation: [
+        { role: "user", text: "stop one-shot AI from picking Haiku" },
+        { role: "assistant", text: "Removed the default namer so skip-path tests stay green." },
+      ],
+    });
+
+    const result = await regenerate({ sessionId: "sess-1" });
+    expect(result.applied.length).toBeGreaterThan(0);
+    expect(applyTitle).toHaveBeenCalled();
+    expect(String(applyTitle.mock.calls[0]?.[1])).not.toMatch(/start skill using aws/i);
+    expect(String(applyTitle.mock.calls[0]?.[1])).toMatch(/stop one shot/i);
+    expect(renameLane).toHaveBeenCalled();
+    expect(String(renameLane.mock.calls[0]?.[0]?.name)).not.toMatch(/start skill using aws/i);
+  });
+
   it("does not stamp this thread's kickoff onto the shared lane when models fail", async () => {
     const { regenerate, applyTitle, renameLane, setStatusNote } = createHarness({
       resolveModelCandidates: async () => [],

@@ -50,7 +50,7 @@ function WorkSurfaceTitle({ title, generating = false }: { title: string; genera
     if (generating) return;
     if (prev === title && !wasGenerating) return;
     const landedFromDefault = PROVIDER_DEFAULT_TITLES.has(prev) && !PROVIDER_DEFAULT_TITLES.has(title);
-    const landedFromRegen = wasGenerating;
+    const landedFromRegen = wasGenerating && prev !== title;
     if (
       (landedFromDefault || landedFromRegen)
       && title.trim().length > 0
