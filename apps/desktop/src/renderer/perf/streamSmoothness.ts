@@ -10,8 +10,12 @@ import { isPerfActive } from "./markers";
  *
  * Measurement notes / limitations (read before trusting the numbers):
  *
- * - We read `data-stream-text-len`, which is written from the store text during
- *   React's render. Sampling it therefore observes the *commit*, not the paint.
+ * - We read `data-stream-text-len`, which is written during React's render from
+ *   the REVEALED text length — what that commit actually puts on screen, which
+ *   on a paced row (see components/chat/textReveal.ts) is a prefix of the store
+ *   text and on every other row is the whole of it. Measuring the store length
+ *   instead would score the paced reveal as identical to the lumpy paint it
+ *   replaced. Sampling still observes the *commit*, not the paint.
  *   The rAF callback runs after commit and before the frame is painted, so a
  *   change observed in frame N is painted at the end of frame N — an
  *   approximation that is off by at most one frame, and only when the browser

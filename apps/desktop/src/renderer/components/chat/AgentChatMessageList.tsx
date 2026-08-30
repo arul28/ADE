@@ -66,6 +66,8 @@ import { normalizePath } from "../../lib/pathUtils";
 import { isPerfActive } from "../../perf/markers";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { chatMarkdownUrlTransform } from "./chatMarkdown";
+import { advanceSplitScan, splitRevealed, type SplitScanState } from "./textReveal";
+import { useRevealedLength } from "./useRevealedText";
 import {
   CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
   splitChatOutputContextSegments,
@@ -1549,13 +1551,53 @@ function WorkspacePathLink({
 
 /* ── Markdown renderer ── */
 
+type MarkdownComponents = React.ComponentProps<typeof ReactMarkdown>["components"];
+
+/** Module-level so the plugin array never changes identity between renders. */
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
+
+/**
+ * A single markdown parse+render, memoized on `(markdown, components)`.
+ *
+ * Split out of `MarkdownBlock` for the paced reveal: while a message streams,
+ * the settled prefix and the growing tail render as two bodies inside ONE
+ * prose container. The settled body's props are unchanged frame to frame, so
+ * this memo bails out and only the short tail is re-parsed at 60 Hz — the
+ * whole-message re-parse per paint is what made pacing unaffordable.
+ */
+const MarkdownBody = React.memo(function MarkdownBody({
+  markdown,
+  components,
+}: {
+  markdown: string;
+  components: MarkdownComponents;
+}) {
+  if (markdown.length === 0) return null;
+  return (
+    <ReactMarkdown
+      remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+      urlTransform={chatMarkdownUrlTransform}
+      components={components}
+    >
+      {markdown}
+    </ReactMarkdown>
+  );
+});
+
 const MarkdownBlock = React.memo(function MarkdownBlock({
   markdown,
+  tailMarkdown,
   onOpenWorkspacePath,
   mosaic,
   mosaicScopeKey,
 }: {
   markdown: string;
+  /**
+   * Growing tail of a paced reveal, rendered as a second body in the same
+   * prose flow. Absent on every settled row — which then renders exactly one
+   * body, identical to the pre-pacing output.
+   */
+  tailMarkdown?: string;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
   mosaic?: MosaicRenderContext;
   /** Stable transcript-row key scoping mosaic answered state per message. */
@@ -1567,22 +1609,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
     onOpenWorkspacePath?.(path);
   }, [onOpenWorkspacePath]);
 
-  return (
-    <div
-      className={cn(
-        "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
-        neu
-          ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
-          : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
-        "prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight",
-        "prose-p:my-3 prose-p:break-words prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:break-words prose-li:pl-1",
-        "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
-      )}
-    >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={chatMarkdownUrlTransform}
-        components={{
+  const components: MarkdownComponents = useMemo(() => ({
           h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
           h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
           h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
@@ -1689,11 +1716,104 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
                 {children}
               </a>
             );
-          }
-        }}
-      >
-        {markdown}
-      </ReactMarkdown>
+          },
+  }), [mosaic, mosaicScopeKey, neu, openWorkspacePath]);
+
+  return (
+    <div
+      className={cn(
+        "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
+        neu
+          ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
+          : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
+        "prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight",
+        "prose-p:my-3 prose-p:break-words prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:break-words prose-li:pl-1",
+        "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
+      )}
+    >
+      <MarkdownBody markdown={markdown} components={components} />
+      {tailMarkdown ? <MarkdownBody markdown={tailMarkdown} components={components} /> : null}
+    </div>
+  );
+});
+
+/* ── Assistant prose (paced reveal) ── */
+
+/**
+ * The assistant text row's markdown, and the only component that re-renders at
+ * 60 Hz while a turn streams.
+ *
+ * Everything above it — the transcript derivations, the row list, sibling rows
+ * — is untouched by the reveal: this leaf owns the revealed length, so a frame
+ * costs one small subtree render plus a parse of the growing tail.
+ *
+ * `paced` is true for exactly one row at a time (the trailing streaming
+ * assistant text row of a visible main transcript). Every other row renders
+ * the full store text on its first paint, exactly as before pacing existed.
+ */
+const AssistantTextBody = React.memo(function AssistantTextBody({
+  text,
+  paced,
+  onOpenWorkspacePath,
+  mosaic,
+  mosaicScopeKey,
+}: {
+  text: string;
+  paced: boolean;
+  onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
+  mosaic?: MosaicRenderContext;
+  mosaicScopeKey?: string;
+}) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const revealedLength = useRevealedLength(text, paced, hostRef);
+  const partial = revealedLength < text.length;
+
+  // Incremental block scan. The revealed prefix only grows, so each frame
+  // rescans just the characters that arrived since the last one, and the
+  // settled string keeps its identity while the cut point does not move (which
+  // is what lets `MarkdownBody`'s memo bail out).
+  const splitCacheRef = useRef<{ scan: SplitScanState; settled: string } | null>(null);
+  let settled = text;
+  let tail = "";
+  if (partial) {
+    const previous = splitCacheRef.current;
+    const resumable = previous && previous.scan.scannedTo <= revealedLength
+      && previous.settled.length === previous.scan.settledEnd
+      ? previous.scan
+      : null;
+    const scan = advanceSplitScan(resumable, text, revealedLength);
+    const parts = splitRevealed(text, revealedLength, scan);
+    settled = previous && previous.settled.length === scan.settledEnd ? previous.settled : parts.settled;
+    tail = parts.tail;
+    splitCacheRef.current = { scan, settled };
+  } else {
+    splitCacheRef.current = null;
+  }
+
+  return (
+    /*
+      `data-stream-text-len` exists only while a perf run is active (see
+      renderer/perf/streamSmoothness.ts). It reports the REVEALED length — what
+      this commit actually puts on screen — so the smoothness sampler measures
+      paint rather than store state; on every unpaced row that is the full
+      text. The sampler reads it from a rAF callback (post-commit, pre-paint),
+      so it approximates the paint by at most one frame. In production
+      `isPerfActive()` is false, React drops the `undefined` prop, and no
+      attribute is written.
+    */
+    <div
+      ref={hostRef}
+      className="min-w-0"
+      data-assistant-output="true"
+      data-stream-text-len={isPerfActive() ? revealedLength : undefined}
+    >
+      <MarkdownBlock
+        markdown={settled}
+        tailMarkdown={tail.length > 0 ? tail : undefined}
+        onOpenWorkspacePath={onOpenWorkspacePath}
+        mosaic={mosaic}
+        mosaicScopeKey={mosaicScopeKey}
+      />
     </div>
   );
 });
@@ -2634,6 +2754,11 @@ function renderEvent(
     onCancelQueuedMessage?: (uuid: string) => void;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     settledQueueRecoveryIds?: Set<string>;
+    /**
+     * True for the single trailing streaming assistant text row of a visible
+     * main transcript — the only row whose growth is paced.
+     */
+    pacedTextReveal?: boolean;
   }
 ) {
   const event = envelope.event;
@@ -2854,21 +2979,13 @@ function renderEvent(
               />
             ) : null}
           </div>
-          {/*
-            `data-stream-text-len` exists only while a perf run is active (see
-            renderer/perf/streamSmoothness.ts). It reflects the *store* text at
-            commit time, not what the compositor painted; the sampler reads it
-            from a rAF callback (post-commit, pre-paint) so it approximates the
-            paint by at most one frame. In production `isPerfActive()` is false,
-            React drops the `undefined` prop, and no attribute is written.
-          */}
-          <div
-            className="min-w-0"
-            data-assistant-output="true"
-            data-stream-text-len={isPerfActive() ? event.text.length : undefined}
-          >
-            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
-          </div>
+          <AssistantTextBody
+            text={event.text}
+            paced={options?.pacedTextReveal === true}
+            onOpenWorkspacePath={options?.onOpenWorkspacePath}
+            mosaic={options?.mosaic}
+            mosaicScopeKey={envelope.key}
+          />
         </div>
       </motion.div>
     );
@@ -4781,6 +4898,8 @@ type EventRowProps = {
   inlineProof?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   onOpenProofDrawer?: () => void;
+  /** This row is the trailing streaming assistant text row (paced reveal). */
+  pacedTextReveal?: boolean;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -4833,6 +4952,7 @@ const EventRow = React.memo(function EventRow({
   inlineProof,
   resolveProofThumbnailSrc,
   onOpenProofDrawer,
+  pacedTextReveal,
 }: EventRowProps) {
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   return (
@@ -4905,6 +5025,7 @@ const EventRow = React.memo(function EventRow({
             onCancelQueuedMessage,
             onRestoreCancelledQueue,
             settledQueueRecoveryIds,
+            pacedTextReveal,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -5364,9 +5485,13 @@ function writeTranscriptCollapseCache(
   }
 }
 
+/** How far back from the tail we look for the streaming text row. */
+const PACED_TEXT_ROW_SCAN_DEPTH = 8;
+
 function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
+  textPacingEnabled = true,
     className,
   onApproval,
   onCodexRecovery,
@@ -5411,6 +5536,12 @@ function AgentChatMessageListMain({
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
+  /**
+   * Pace the trailing streaming assistant text row (default). Surfaces that
+   * are not the user's main prose view — subagent transcripts above all — pass
+   * false and keep the cheap paint-on-arrival render.
+   */
+  textPacingEnabled?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
@@ -5815,6 +5946,25 @@ function AgentChatMessageListMain({
   // is the same turn-active signal that drives the WorkingIndicator, so the rAF
   // loop lives exactly as long as a turn is streaming — never while idle.
   useStreamSmoothnessSampler(showStreamingIndicator && !sessionEnded, sessionId ?? null);
+
+  /*
+    The one row whose growth is paced: the trailing assistant text row of a
+    streaming turn on a main transcript. Subagent transcript views opt out
+    entirely (`textPacingEnabled={false}`) — they get the cheap
+    paint-on-arrival path, as do ended sessions and idle turns.
+
+    The scan is bounded to the last few rows so it stays O(1) per delta: a text
+    row buried behind a dozen tool rows is no longer the row that grows.
+  */
+  const pacedTextRowKey = useMemo(() => {
+    if (!textPacingEnabled || !showStreamingIndicator || sessionEnded) return null;
+    const floor = Math.max(0, groupedRows.length - PACED_TEXT_ROW_SCAN_DEPTH);
+    for (let index = groupedRows.length - 1; index >= floor; index -= 1) {
+      const row = groupedRows[index];
+      if (row?.event.type === "text") return row.key;
+    }
+    return null;
+  }, [groupedRows, sessionEnded, showStreamingIndicator, textPacingEnabled]);
 
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
@@ -6868,6 +7018,7 @@ function AgentChatMessageListMain({
           onCancelQueuedMessage={onCancelQueuedMessage}
           onRestoreCancelledQueue={onRestoreCancelledQueue}
           settledQueueRecoveryIds={settledQueueRecoveryIds}
+          pacedTextReveal={envelope.key === pacedTextRowKey}
         />
       );
     }
@@ -6924,9 +7075,10 @@ function AgentChatMessageListMain({
         onCancelQueuedMessage={onCancelQueuedMessage}
         onRestoreCancelledQueue={onRestoreCancelledQueue}
         settledQueueRecoveryIds={settledQueueRecoveryIds}
+        pacedTextReveal={envelope.key === pacedTextRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

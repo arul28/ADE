@@ -14085,6 +14085,10 @@ export function AgentChatPane({
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
+                        // Subagent transcripts are a secondary, plain surface:
+                        // they keep the cheap paint-on-arrival render so only
+                        // the user's own prose pays for the paced reveal.
+                        textPacingEnabled={!subagentView}
                         sessionEnded={selectedSession?.status === "ended"}
                         sessionProvider={selectedSession?.provider ?? sessionProvider}
                         runtimePin={chatRuntimePin}

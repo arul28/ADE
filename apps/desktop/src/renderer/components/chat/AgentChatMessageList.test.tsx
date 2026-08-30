@@ -11,6 +11,10 @@ import type {
   ComputerUseArtifactView,
 } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
+import {
+  resetTextRevealHorizonCacheForTests,
+  TEXT_REVEAL_HORIZON_STORAGE_KEY,
+} from "./textReveal";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
 import fs from "node:fs";
 import path from "node:path";
@@ -5181,5 +5185,150 @@ describe("streaming-delta identity stabilization", () => {
 
       expect(observerConstructions).toBeGreaterThan(constructionsAfterMount);
     });
+  });
+});
+
+/**
+ * Paced text reveal (see textReveal.ts). These tests cover the contract the
+ * pacing must never break — the store text is always complete, and anything
+ * that is not a live, growing tail paints in full immediately. The pacing math
+ * itself is covered without rAF in textReveal.test.ts.
+ */
+describe("AgentChatMessageList — paced assistant text", () => {
+  const streamingText = (text: string): AgentChatEventEnvelope[] => ([
+    {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: { type: "text", text, itemId: "text-stream", turnId: "turn-1" },
+    },
+  ]);
+
+  it("paints a message that is already complete when it first mounts", () => {
+    // Mounting mid-turn (history, virtualization remount, backfill) must not
+    // type the message out from zero.
+    renderMessageList(streamingText("The whole answer was already here."), {
+      showStreamingIndicator: true,
+    });
+    expect(screen.getByText("The whole answer was already here.")).toBeTruthy();
+  });
+
+  it("holds back growth that arrives after mount while keeping the store text whole", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={streamingText("Alpha. Beta gamma delta.")}
+            showStreamingIndicator
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // Painted: only what has been revealed so far.
+    expect(screen.getByText("Alpha.")).toBeTruthy();
+    expect(screen.queryByText(/Beta gamma delta/)).toBeNull();
+    // Stored: the whole thing — copy must never hand back a paced prefix.
+    fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Alpha. Beta gamma delta."));
+  });
+
+  it("snaps to the full text the moment the row stops streaming", () => {
+    const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={streamingText("Alpha. Beta gamma delta.")}
+            showStreamingIndicator
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(screen.queryByText(/Beta gamma delta/)).toBeNull();
+
+    // The turn ends (`done` / settle / a newer row takes the tail): the row is
+    // no longer paced and everything must be on screen in that same commit.
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={streamingText("Alpha. Beta gamma delta.")}
+            showStreamingIndicator={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(screen.getByText("Alpha. Beta gamma delta.")).toBeTruthy();
+  });
+
+  it("never paces a row that is not the trailing streaming row", () => {
+    const view = renderMessageList(
+      [
+        ...streamingText("Earlier block."),
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: { type: "text", text: "Later block.", itemId: "text-2", turnId: "turn-1" },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+    // Growing the EARLIER row (a late edit/backfill) paints immediately: only
+    // the trailing row is paced.
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={[
+              ...streamingText("Earlier block, extended by a backfill."),
+              {
+                sessionId: "session-1",
+                timestamp: "2026-03-17T10:00:01.000Z",
+                event: { type: "text", text: "Later block.", itemId: "text-2", turnId: "turn-1" },
+              },
+            ]}
+            showStreamingIndicator
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(screen.getByText("Earlier block, extended by a backfill.")).toBeTruthy();
+  });
+
+  it("paints on arrival when the horizon override turns pacing off", () => {
+    // The A/B kill switch: `ade.textRevealHorizonMs = 0` must restore the
+    // exact pre-pacing behavior, growth included.
+    localStorage.setItem(TEXT_REVEAL_HORIZON_STORAGE_KEY, "0");
+    resetTextRevealHorizonCacheForTests();
+    try {
+      const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+      act(() => {
+        view.rerender(
+          <MemoryRouter>
+            <AgentChatMessageList
+              events={streamingText("Alpha. Beta gamma delta.")}
+              showStreamingIndicator
+            />
+          </MemoryRouter>,
+        );
+      });
+      expect(screen.getByText("Alpha. Beta gamma delta.")).toBeTruthy();
+    } finally {
+      localStorage.removeItem(TEXT_REVEAL_HORIZON_STORAGE_KEY);
+      resetTextRevealHorizonCacheForTests();
+    }
+  });
+
+  it("reports the revealed length, not the store length, to the perf sampler", () => {
+    // The attribute only exists during a perf run; without one it must stay
+    // absent so production writes nothing.
+    renderMessageList(streamingText("Measured."), { showStreamingIndicator: true });
+    const node = document.querySelector("[data-assistant-output]");
+    expect(node).toBeTruthy();
+    expect(node!.getAttribute("data-stream-text-len")).toBeNull();
   });
 });
