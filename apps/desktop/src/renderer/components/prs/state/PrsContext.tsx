@@ -31,7 +31,7 @@ import type {
 import type { PrTimelineFilters } from "../shared/PrTimeline";
 import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } from "../../../../shared/modelRegistry";
-import { hasExplicitPrsRouteState, parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
+import { hasExplicitPrsRouteState, parsePrsRouteState, prRouteCoordinatesKey, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
@@ -94,6 +94,12 @@ type InlineTerminalState = {
   minimized: boolean;
 } | null;
 
+/** A locally-confirmed terminal transition, awaiting the next GitHub read. */
+export type OptimisticTerminalState = {
+  state: "merged" | "closed";
+  at: string;
+};
+
 type PrsState = {
   activeTab: PrTab;
   prs: PrWithConflicts[];
@@ -135,6 +141,17 @@ type PrsState = {
   timelineFiltersByPrId: Record<string, PrTimelineFilters>;
   viewerLogin: string | null;
   writeViewerLogin?: string | null;
+
+  /**
+   * PRs the user just merged or closed, keyed by GitHub coordinates.
+   *
+   * A merge or a close is confirmed by GitHub before it lands here, but the
+   * list is painted from the GitHub snapshot and the local rows, and neither
+   * updates for several seconds. Without this the PR sits in Open until a
+   * refetch, which reads as "nothing happened". The snapshot overwrites it as
+   * soon as it agrees.
+   */
+  optimisticTerminalStates: Record<string, OptimisticTerminalState>;
 };
 
 type PrsContextValue = PrsState & {
@@ -155,6 +172,20 @@ type PrsContextValue = PrsState & {
   regeneratePrAiSummary: (prId: string) => Promise<void>;
   setViewerLogin: (login: string | null) => void;
   setWriteViewerLogin: (login: string | null) => void;
+  /** Record a merge/close the moment GitHub confirms it, before any refetch. */
+  markPrTerminalLocally: (
+    coords: { repoOwner: string; repoName: string; githubPrNumber: number },
+    state: "merged" | "closed",
+  ) => void;
+  /**
+   * Drop a recorded merge/close. Reopening is the one action that undoes a
+   * close, and without this the override would keep painting the PR as closed
+   * until it expires — including in the detail pane, which reads the same
+   * reconciled rows.
+   */
+  clearPrTerminalLocally: (
+    coords: { repoOwner: string; repoName: string; githubPrNumber: number },
+  ) => void;
 } & GithubPollGovernor;
 
 const PrsContext = createContext<PrsContextValue | null>(null);
@@ -446,6 +477,42 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const [writeViewerLogin, setWriteViewerLogin] = useState<string | null | undefined>(
     () => warmCache?.writeViewerLogin,
   );
+  const [optimisticTerminalStates, setOptimisticTerminalStates] = useState<
+    Record<string, OptimisticTerminalState>
+  >({});
+  const markPrTerminalLocally = useCallback(
+    (
+      coords: { repoOwner: string; repoName: string; githubPrNumber: number },
+      state: "merged" | "closed",
+    ) => {
+      const key = prRouteCoordinatesKey({
+        repoOwner: coords.repoOwner,
+        repoName: coords.repoName,
+        prNumber: Number(coords.githubPrNumber),
+      });
+      setOptimisticTerminalStates((prev) => (
+        prev[key]?.state === state ? prev : { ...prev, [key]: { state, at: new Date().toISOString() } }
+      ));
+    },
+    [],
+  );
+  const clearPrTerminalLocally = useCallback(
+    (coords: { repoOwner: string; repoName: string; githubPrNumber: number }) => {
+      const key = prRouteCoordinatesKey({
+        repoOwner: coords.repoOwner,
+        repoName: coords.repoName,
+        prNumber: Number(coords.githubPrNumber),
+      });
+      setOptimisticTerminalStates((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    },
+    [],
+  );
+
   const detailCacheHasDataRef = React.useRef(false);
   const detailSnapshotLoadedAtByPrIdRef = React.useRef<Record<string, number>>({});
   const detailSnapshotStatePrIdRef = React.useRef<string | null>(null);
@@ -1497,6 +1564,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       timelineFiltersByPrId,
       viewerLogin,
       writeViewerLogin,
+      optimisticTerminalStates,
+      markPrTerminalLocally,
+      clearPrTerminalLocally,
       setActiveTab,
       setSelectedPrId,
       setSelectedRebaseItemId,
@@ -1528,6 +1598,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       activeTab,
       prs,
       lanes,
+      markPrTerminalLocally,
+      clearPrTerminalLocally,
+      optimisticTerminalStates,
       mergeContextByPrId,
       selectedPrId,
       selectedRebaseItemId,

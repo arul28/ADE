@@ -39,32 +39,6 @@ struct PrThreadSectionHeader: View {
 }
 
 
-/// Locked comment composer shown when the PR is unmapped (desktop parity).
-struct PrLockedComposerBar: View {
-  var body: some View {
-    HStack(spacing: 10) {
-      Image(systemName: "lock.fill")
-        .font(.system(size: 13))
-        .foregroundStyle(ADEColor.textMuted)
-      Text("Map this PR to a lane to comment")
-        .font(.system(size: 12))
-        .foregroundStyle(ADEColor.textSecondary)
-      Spacer(minLength: 0)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .fill(PrGlassPalette.threadCard)
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.5)
-    )
-  }
-}
-
 // MARK: - Inline merge rail (unified thread bottom)
 
 /// Drives the inline merge rail at the bottom of the unified Overview thread.

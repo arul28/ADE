@@ -4600,6 +4600,239 @@ describe("prService.getCheckLog", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  /**
+   * The reported defect, at its source. A job that passed has no failing step,
+   * and the parser — given no name and no `##[error]` — used to fall back to the
+   * *last* log section, which on a green job is the `Post Run …` cleanup group.
+   * So the drawer paid for a redirect plus a multi-megabyte blob download and
+   * then showed `git version 2.43.0` under the words "failing step".
+   *
+   * Most jobs pass, so this is the common case: it must now cost zero log
+   * requests, and answer from the step data the run already carried.
+   */
+  it("does not download a log for a job that passed, and answers with its steps", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const requestRawWithCredentialFallback = vi.fn();
+    const githubService = makeGithubService({
+      requestRawWithCredentialFallback,
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return {
+            data: {
+              workflow_runs: [{
+                id: 7,
+                name: "CI",
+                status: "completed",
+                conclusion: "success",
+                head_sha: "head-sha",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                created_at: "2026-07-27T11:55:00.000Z",
+                updated_at: "2026-07-27T11:59:00.000Z",
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs/7/jobs") {
+          return {
+            data: {
+              jobs: [{
+                id: 111,
+                name: "build",
+                status: "completed",
+                conclusion: "success",
+                started_at: "2026-07-27T11:55:00.000Z",
+                completed_at: "2026-07-27T11:59:00.000Z",
+                steps: [
+                  {
+                    number: 1, name: "Set up job", status: "completed", conclusion: "success",
+                    started_at: "2026-07-27T11:55:00.000Z", completed_at: "2026-07-27T11:55:10.000Z",
+                  },
+                  {
+                    number: 2, name: "Post Run actions/checkout@v4", status: "completed", conclusion: "success",
+                    started_at: "2026-07-27T11:58:00.000Z", completed_at: "2026-07-27T11:59:00.000Z",
+                  },
+                ],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { service } = buildService({ db, githubService });
+
+      const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 111 });
+
+      // Not one byte of log traffic: neither the API redirect nor the blob.
+      expect(requestRawWithCredentialFallback).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      expect(excerpt).toMatchObject({
+        jobId: 111,
+        jobName: "build",
+        jobState: "passed",
+        jobConclusion: "success",
+        // "we deliberately did not ask", never "we asked and got nothing".
+        logStatus: "not-fetched",
+        logUnavailableReason: null,
+        failingStepName: null,
+        failingStepNumber: null,
+        stepTotal: 2,
+        headline: null,
+        lines: [],
+      });
+      expect(excerpt.steps?.map((step) => step.name))
+        .toEqual(["Set up job", "Post Run actions/checkout@v4"]);
+      expect(excerpt.htmlUrl)
+        .toBe("https://github.com/test-owner/test-repo/actions/runs/7/job/111");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("downloads a passed job's log only when the caller explicitly asks", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const redirectResponse = new Response(null, {
+      status: 302,
+      headers: { location: "https://pipelines.actions.githubusercontent.com/log.txt" },
+    });
+    const requestRawWithCredentialFallback = vi.fn(async () => redirectResponse);
+    const githubService = makeGithubService({
+      requestRawWithCredentialFallback,
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return {
+            data: {
+              workflow_runs: [{
+                id: 7, name: "CI", status: "completed", conclusion: "success", head_sha: "head-sha",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                created_at: "2026-07-27T11:55:00.000Z", updated_at: "2026-07-27T11:59:00.000Z",
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs/7/jobs") {
+          return {
+            data: {
+              jobs: [{
+                id: 111, name: "build", status: "completed", conclusion: "success",
+                steps: [{ number: 1, name: "Run npm test", status: "completed", conclusion: "success" }],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const fetchMock = vi.fn(async () => new Response(
+      [
+        "2026-07-27T11:01:00.0000000Z ##[group]Run npm test",
+        "2026-07-27T11:01:40.0000000Z  Tests  413 passed (413)",
+        "2026-07-27T11:01:41.0000000Z ##[endgroup]",
+        "2026-07-27T11:02:00.0000000Z ##[group]Post Run actions/checkout@v4",
+        "2026-07-27T11:02:00.0000002Z git version 2.43.0",
+        "",
+      ].join("\n"),
+      { status: 200 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { service } = buildService({ db, githubService });
+
+      const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 111, includeLog: true });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(excerpt.logStatus).toBe("excerpt");
+      // No failing step exists, so this is honestly labelled a whole-log tail
+      // rather than presented as the cleanup group's output.
+      expect(excerpt.logScope).toBe("whole-log");
+      expect(excerpt.lines.join("\n")).toContain("Tests  413 passed (413)");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("distinguishes a log it could not read from a log it did not ask for", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const githubService = makeGithubService({
+      requestRawWithCredentialFallback: vi.fn(async () => { throw new Error("GitHub is down"); }),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return {
+            data: {
+              workflow_runs: [{
+                id: 7, name: "CI", status: "completed", conclusion: "failure", head_sha: "head-sha",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                created_at: "2026-07-27T11:55:00.000Z", updated_at: "2026-07-27T11:59:00.000Z",
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs/7/jobs") {
+          return {
+            data: {
+              jobs: [{
+                id: 111, name: "build", status: "completed", conclusion: "failure",
+                steps: [{ number: 1, name: "Run npm test", status: "completed", conclusion: "failure" }],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    vi.stubGlobal("fetch", vi.fn());
+    try {
+      const { service } = buildService({ db, githubService });
+
+      const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 111 });
+
+      expect(excerpt.logStatus).toBe("unavailable");
+      expect(excerpt.logUnavailableReason).toContain("couldn't download");
+      // The job facts survive the log failure, so the drawer still has content.
+      expect(excerpt.jobName).toBe("build");
+      expect(excerpt.failingStepName).toBe("Run npm test");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("prService.rerunChecks", () => {
@@ -8246,5 +8479,145 @@ describe("reconcile sweep delta pagination", () => {
     expect(firstSweep.map((query) => query.page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
       .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+});
+
+/**
+ * The destructive paths a PR with no local row can now reach.
+ *
+ * Removing the lane-mapping gate meant `land` and `cleanupBranch` started
+ * accepting a synthetic `gh:owner/repo#n` id. That id can name ANY repository
+ * and any head, while the local half of a cleanup still runs `git` inside this
+ * project and against its `origin` — keyed only on a branch NAME. These pin the
+ * two guards that stand between that and deleting the wrong branch, plus the
+ * opt-in that was silently dropped for exactly these PRs.
+ */
+describe("prService destructive paths on a PR with no local row", () => {
+  const SYNTHETIC = `gh:${REPO.owner}/${REPO.name}#404`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function githubWithPull(pull: Record<string, unknown>, extra?: Record<string, unknown>) {
+    return makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path.endsWith("/pulls/404")) return { data: pull };
+        if (args.method === "DELETE") return { data: {} };
+        if (args.method === "PUT") return { data: { merged: true, sha: "merge-sha" } };
+        return { data: {} };
+      }),
+      ...extra,
+    });
+  }
+
+  it("refuses to clean up a fork PR's branch out of this repository", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const githubService = githubWithPull(makeGitHubPull({
+      number: 404,
+      state: "closed",
+      merged_at: "2026-01-02T00:00:00Z",
+      // Same branch NAME as something that may well exist here; different repo.
+      head: { ref: "main-ish", repo: { owner: { login: "a-stranger" }, name: REPO.name } },
+    }));
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.cleanupBranch({ prId: SYNTHETIC, deleteRemoteBranch: true }))
+      .rejects.toThrow(/fork/i);
+
+    const gitCommands = mockGit.runGit.mock.calls.map((call) => (call[0] as unknown[])[0]);
+    expect(gitCommands).not.toContain("branch");
+    expect(gitCommands).not.toContain("push");
+  });
+
+  it("refuses to clean up a branch belonging to a different repository", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const githubService = githubWithPull(makeGitHubPull({ number: 404, state: "closed" }));
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.cleanupBranch({
+      prId: "gh:someone-else/other-repo#404",
+      deleteRemoteBranch: true,
+    })).rejects.toThrow(/this project's repository/i);
+
+    const gitCommands = mockGit.runGit.mock.calls.map((call) => (call[0] as unknown[])[0]);
+    expect(gitCommands).not.toContain("branch");
+    expect(gitCommands).not.toContain("push");
+    // It must not even read GitHub for a PR it is going to refuse.
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("honours deleteRemoteBranch when merging a PR it holds no row for", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const pull = makeGitHubPull({
+      number: 404,
+      mergeable: true,
+      mergeable_state: "clean",
+      head: { ref: "feature/unmapped", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+    });
+    const githubService = githubWithPull(pull);
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({
+      prId: SYNTHETIC,
+      method: "squash",
+      deleteRemoteBranch: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.branchDeleted).toBe(true);
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: "DELETE",
+      path: `/repos/${REPO.owner}/${REPO.name}/git/refs/heads/feature/unmapped`,
+    }));
+  });
+
+  it("keeps the branch, and says so, when the merge did not ask for a delete", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const githubService = githubWithPull(makeGitHubPull({
+      number: 404,
+      mergeable: true,
+      mergeable_state: "clean",
+      head: { ref: "feature/unmapped", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+    }));
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({ prId: SYNTHETIC, method: "squash" });
+
+    expect(result.success).toBe(true);
+    expect(result.branchDeleted).toBe(false);
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
+  it("does not delete a fork PR's branch even when the merge asked for it", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db);
+    const githubService = githubWithPull(makeGitHubPull({
+      number: 404,
+      mergeable: true,
+      mergeable_state: "clean",
+      head: { ref: "patch-1", repo: { owner: { login: "a-stranger" }, name: REPO.name } },
+    }));
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({
+      prId: SYNTHETIC,
+      method: "squash",
+      deleteRemoteBranch: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.branchDeleted).toBe(false);
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "DELETE" }),
+    );
   });
 });

@@ -92,7 +92,7 @@ describe("rightPaneFormatters", () => {
     expect(body).not.toContain("not_run");
   });
 
-  it("renders a detached PR's lane as history, not as a live mapping", () => {
+  it("prints no lane row for a PR whose lane is gone", () => {
     const body = formatPrSummary({
       id: "pr-9",
       number: 9,
@@ -102,8 +102,11 @@ describe("rightPaneFormatters", () => {
       detached: { at: "2026-07-30T00:00:00Z", laneName: "prs-tab", laneColor: null },
     });
 
-    expect(body).toContain("was prs-tab");
+    // The worktree is gone, so there is nothing to point at — and the dangling
+    // id must not be printed as if it were a live one.
+    expect(body).not.toMatch(/^lane /m);
     expect(body).not.toContain("lane-deleted-uuid");
+    expect(body).not.toContain("prs-tab");
   });
 
   it("formats PR create links from the new action envelope", () => {

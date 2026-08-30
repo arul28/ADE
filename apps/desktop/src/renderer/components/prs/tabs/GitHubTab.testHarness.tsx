@@ -33,59 +33,27 @@ export function MockSeparator(props: React.HTMLAttributes<HTMLDivElement>) {
 }
 
 type MockUnmappedAffordance = {
-  linkableLanes: Array<{ id: string; name: string }>;
-  selectedLaneId: string;
-  onSelectLane: (laneId: string) => void;
-  onLink: () => void;
-  linkBusy: boolean;
   canCreateLane: boolean;
   onCreateLane: () => void;
-  scope: "repo" | "external";
 };
 
 export function MockPrDetailPane({
   pr,
-  onUnmap,
   unmapped,
   unmappedAffordance,
 }: {
   pr: { id: string };
-  onUnmap?: () => void;
   unmapped?: boolean;
   unmappedAffordance?: MockUnmappedAffordance | null;
 }) {
   return (
     <div data-testid="pr-detail-pane" data-unmapped={unmapped ? "true" : "false"}>
       {pr.id}
-      {onUnmap ? <button type="button" onClick={onUnmap}>Unmap from lane</button> : null}
-      {unmappedAffordance ? (
+      {unmappedAffordance?.canCreateLane ? (
         <div data-testid="pr-unmapped-affordance">
-          {unmappedAffordance.canCreateLane ? (
-            <button type="button" onClick={unmappedAffordance.onCreateLane}>
-              Create lane from PR branch
-            </button>
-          ) : null}
-          {unmappedAffordance.linkableLanes.length > 0 ? (
-            <>
-              <select
-                aria-label="Select lane to map"
-                value={unmappedAffordance.selectedLaneId}
-                onChange={(event) => unmappedAffordance.onSelectLane(event.target.value)}
-              >
-                <option value="">Map to lane…</option>
-                {unmappedAffordance.linkableLanes.map((lane) => (
-                  <option key={lane.id} value={lane.id}>{lane.name}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={!unmappedAffordance.selectedLaneId || unmappedAffordance.linkBusy}
-                onClick={unmappedAffordance.onLink}
-              >
-                Map
-              </button>
-            </>
-          ) : null}
+          <button type="button" onClick={unmappedAffordance.onCreateLane}>
+            Open as lane
+          </button>
         </div>
       ) : null}
     </div>

@@ -1,7 +1,13 @@
 import type { PrPipelineState } from "./types/prs";
 
 export type PrPipelineStateInput = {
-  status: "queued" | "in_progress" | "completed";
+  /**
+   * `waiting` is a workflow run parked on a deployment approval. It is included
+   * here because Actions runs carry it and checks do not — without it a caller
+   * holding a run has to hand-roll its own ladder, which is how the CI
+   * sparkline came to disagree with every other surface.
+   */
+  status: "queued" | "in_progress" | "completed" | "waiting";
   conclusion: string | null;
 };
 
@@ -13,7 +19,7 @@ export type PrPipelineStateInput = {
  * but do not make the pipeline red.
  */
 export function pipelineStateOf(item: PrPipelineStateInput): PrPipelineState {
-  if (item.status === "queued") return "queued";
+  if (item.status === "queued" || item.status === "waiting") return "queued";
   if (item.status === "in_progress") return "running";
   switch (item.conclusion) {
     case "success":
@@ -31,7 +37,12 @@ export function pipelineStateOf(item: PrPipelineStateInput): PrPipelineState {
   }
 }
 
-const STATE_RANK: Record<PrPipelineState, number> = {
+/**
+ * Worst-first ordering, exported because three separate surfaces sort by it:
+ * the graph rollup, the live matrix rollup, and the list sections. Three
+ * hand-written copies is three chances to disagree about where `unknown` sits.
+ */
+export const STATE_RANK: Record<PrPipelineState, number> = {
   failed: 0,
   unknown: 1,
   running: 2,

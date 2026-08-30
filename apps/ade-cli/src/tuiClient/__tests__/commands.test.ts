@@ -94,6 +94,14 @@ describe("commands", () => {
     // Must not shadow the sibling /pr land command.
     expect(parseCommand("/pr land confirm squash bypass")?.name).toBe("/pr land");
 
+    // /pr close must not be swallowed by the /pr comment(s) prefix, and its
+    // confirm token has to survive as an argument rather than becoming the name.
+    const close = parseCommand("/pr close confirm");
+    expect(close?.name).toBe("/pr close");
+    expect(close?.args).toBe("confirm");
+    expect(parseCommand("/pr comments")?.name).toBe("/pr comments");
+    expect(parseCommand("/pr reopen")?.name).toBe("/pr reopen");
+
     expect(paletteCommands("/pr update")).toContainEqual(expect.objectContaining({
       name: "/pr update-branch",
       source: "ade",

@@ -1,21 +1,42 @@
 /**
- * CI / Checks — live pipeline visualizer.
+ * CI / Checks — the pipeline surface.
  *
- * Replaces the old flat stack of `cardStyle()` rows (1px border, radius 16, and
- * a `backdropFilter: blur(20px)` per row, ~34 deep). State now lives in a 2px
- * left spine and one status icon; there are no per-row cards and no backdrop
- * filters anywhere in this tree.
+ * ## The three things this file is responsible for
+ *
+ * 1. **Never showing a layout it is about to replace.** The dependency graph
+ *    arrives from an async service call. Rendering the flat, `checks`-derived
+ *    fallback while that call is in flight meant the user watched two to three
+ *    seconds of the wrong layout and then a jarring snap into a DAG. Now the
+ *    resolution has three explicit outcomes — charted / resolving / no graph —
+ *    and only the *final* one of those is ever a flat list. While it resolves we
+ *    render a skeleton in the graph's own footprint, and a cached graph renders
+ *    instantly with no fetch at all.
+ *
+ * 2. **Staying inside the GitHub quota.** The graph endpoint is expensive: on
+ *    the service side it re-reads the Actions runs page, the per-run jobs, the
+ *    combined status and the check-runs page — the same reads the detail pane's
+ *    own loop already made. So this tab adds **no** poll loop of its own; it
+ *    fetches the graph's *shape* at most once per PR head SHA (plus one bounded
+ *    retry if CI had not started yet), caches it across mounts, and re-derives
+ *    live state from the `checks`/`actionRuns` props the pane already polls. The
+ *    fetch is gated on the shared poll governor, and a rejection is never cached
+ *    — an unreadable answer must not be stored wearing the costume of an empty
+ *    one. See docs/features/pull-requests/README.md, "Keeping automatic GitHub
+ *    reads inside the quota".
+ *
+ * 3. **Keeping React Flow out of the first-load bundle.** The canvas is behind
+ *    `React.lazy`; nothing in this file may import `@xyflow/react`.
  */
 
 import React from "react";
 import {
-  ArrowSquareOut,
+  ArrowClockwise,
   ArrowsClockwise,
-  CheckCircle,
-  CircleNotch,
-  MinusCircle,
-  XCircle,
+  ListBullets,
+  Path,
+  WarningCircle,
 } from "@phosphor-icons/react";
+import type { Icon } from "@phosphor-icons/react";
 
 import type {
   PrActionRun,
@@ -27,10 +48,10 @@ import type {
   PrWorkflowGraph,
   PrWorkflowGraphNode,
 } from "../../../../shared/types";
-import { COLORS, MONO_FONT, RADII, SANS_FONT, SPACING, floatingPane } from "../../lanes/laneDesignTokens";
-import { formatDurationMs } from "../../../lib/format";
+import { COLORS, MONO_FONT, RADII, SANS_FONT, SPACING } from "../../lanes/laneDesignTokens";
 import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import { PrCommandPalettes, type PaletteCheck } from "../shared/PrCommandPalettes";
+import { PrSection, prFlatButton } from "../shared/prSection";
 import {
   PrCheckLogDrawer,
   type PrCheckLogDrawerState,
@@ -39,59 +60,55 @@ import {
   buildUnifiedChecks,
   checkElapsedMs,
   pipelineStateOf,
+  type UnifiedCheckItem,
 } from "../shared/prUnifiedChecks";
-import { fetchCheckLog, fetchWorkflowGraph, hasCheckLogApi } from "./prChecksApi";
+import { fetchCheckLogForState, fetchWorkflowGraph } from "./prChecksApi";
 import {
-  buildGraphColumns,
   buildLogExcerptMarkdown,
   deriveFallbackGraph,
   failingNodes,
   graphBuckets,
   graphUnavailableCopy,
-  groupByWorkflow,
   hydrateWorkflowGraph,
-  isEdgeLive,
-  matrixLegCaption,
   nodeElapsedMs,
   pipelineElapsedMs,
   readStoredChecksView,
   resolveLogJobId,
-  stepProgress,
   writeStoredChecksView,
   type ChecksView,
-  type GraphColumn,
 } from "./prChecksModel";
+import {
+  checksGraphCacheKey,
+  fetchChecksGraphOnce,
+  invalidateChecksGraphCache,
+  isChartedGraph,
+  readChecksGraphCache,
+  shouldRefetchOnFirstActionRun,
+  writeChecksGraphCache,
+} from "./prChecksGraphCache";
+import { groupChecksForList, rowLabel } from "./prChecksListModel";
+import { PrChecksGraphSkeleton } from "./PrChecksGraphSkeleton";
+import { OpenOnGitHubButton, STATE_COLOR, STATE_LABEL, StateIcon, fmtMs, tint } from "./prChecksVisuals";
+
+/**
+ * React Flow is ~100 KB of JavaScript plus a stylesheet, and the PR detail pane
+ * is reachable from the web client's first-loaded bundle (it is not its own
+ * route). `scripts/check-webclient-entry.mjs` caps the entry graph at 1000 KB
+ * raw and rejects any eagerly linked chunk whose name matches /graph/, so this
+ * boundary is enforced by the build, not by convention.
+ */
+const PrChecksGraphCanvas = React.lazy(() => import("./PrChecksGraphCanvas"));
 
 const LIVE_TICK_MS = 1_000;
 
-/** Every state color resolves through the semantic palette — no hex literals. */
-const STATE_COLOR: Record<PrPipelineState, string> = {
-  passed: COLORS.checkPass,
-  failed: COLORS.danger,
-  running: COLORS.warning,
-  queued: COLORS.textDim,
-  skipped: COLORS.textDim,
-  unknown: COLORS.textMuted,
-};
-
-const STATE_LABEL: Record<PrPipelineState, string> = {
-  passed: "passed",
-  failed: "failed",
-  running: "running",
-  queued: "queued",
-  skipped: "skipped",
-  unknown: "unknown",
-};
-
-function tint(color: string, pct: number): string {
-  return `color-mix(in srgb, ${color} ${pct}%, transparent)`;
-}
-
-function fmtMs(ms: number | null | undefined): string | null {
-  if (ms == null) return null;
-  const label = formatDurationMs(ms);
-  return label === "--" ? "0s" : label;
-}
+/**
+ * Automatic graph reads allowed per head SHA before the tab stops asking.
+ *
+ * Two, so a single transient failure still recovers on its own, and a PR whose
+ * Actions read never succeeds costs at most two reads instead of one every time
+ * the poll governor changes state.
+ */
+const MAX_AUTO_GRAPH_ATTEMPTS = 2;
 
 // ---------------------------------------------------------------------------
 // Live clock — only ticks while something is actually moving.
@@ -112,32 +129,22 @@ function useLiveNow(active: boolean): number {
 // Atoms
 // ---------------------------------------------------------------------------
 
-function StateIcon({ state, size = 13 }: { state: PrPipelineState; size?: number }) {
-  const color = STATE_COLOR[state];
-  if (state === "passed") return <CheckCircle size={size} weight="fill" style={{ color, flexShrink: 0 }} />;
-  if (state === "failed") return <XCircle size={size} weight="fill" style={{ color, flexShrink: 0 }} />;
-  if (state === "running") {
-    return <CircleNotch size={size} className="motion-safe:animate-spin" style={{ color, flexShrink: 0 }} />;
-  }
-  if (state === "skipped") return <MinusCircle size={size} weight="fill" style={{ color, flexShrink: 0 }} />;
-  return (
-    <span
-      className="shrink-0 rounded-full"
-      style={{ width: size - 2, height: size - 2, border: `1.5px dashed ${tint(COLORS.textDim, 80)}` }}
-    />
-  );
-}
-
 function SegButton({
-  active, onClick, children, testId,
-}: { active: boolean; onClick: () => void; children: React.ReactNode; testId?: string }) {
+  active, onClick, children, testId, icon: Glyph,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  testId?: string;
+  icon?: Icon;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       data-testid={testId}
       aria-pressed={active}
-      className="h-[22px] rounded px-2.5 text-[11px] font-medium"
+      className="inline-flex h-[22px] items-center gap-1 rounded px-2.5 text-[11px] font-medium"
       style={{
         border: "none",
         cursor: "pointer",
@@ -147,6 +154,7 @@ function SegButton({
         color: active ? COLORS.textPrimary : COLORS.textMuted,
       }}
     >
+      {Glyph ? <Glyph size={11} /> : null}
       {children}
     </button>
   );
@@ -162,7 +170,7 @@ function SmallButton({
   testId?: string;
   title?: string;
 }) {
-  const color = tone === "warn" ? COLORS.warning : COLORS.textSecondary;
+  const toneColor = tone === "warn" ? COLORS.warning : undefined;
   return (
     <button
       type="button"
@@ -170,13 +178,11 @@ function SmallButton({
       disabled={disabled}
       title={title}
       data-testid={testId}
-      className="inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2.5 text-[11px] font-medium"
+      className="shrink-0"
       style={{
-        borderRadius: RADII.sm,
-        fontFamily: SANS_FONT,
-        color,
-        background: COLORS.cardBg,
-        border: `1px solid ${tone === "warn" ? tint(COLORS.warning, 38) : COLORS.outlineBorder}`,
+        ...prFlatButton(toneColor ? { tone: toneColor } : undefined),
+        height: 26,
+        color: toneColor ?? COLORS.textSecondary,
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.55 : 1,
       }}
@@ -192,7 +198,7 @@ function SmallButton({
 
 function StripSegment({ label, value, color }: { label: string; value: React.ReactNode; color?: string }) {
   return (
-    <div className="flex flex-col gap-[3px] px-[15px] py-[11px]" style={{ borderLeft: `1px solid ${COLORS.borderMuted}` }}>
+    <div className="flex flex-col gap-[2px] pr-[18px]">
       <span
         className="text-[9.5px] uppercase"
         style={{ letterSpacing: "0.09em", color: COLORS.textDim, fontFamily: SANS_FONT }}
@@ -200,7 +206,7 @@ function StripSegment({ label, value, color }: { label: string; value: React.Rea
         {label}
       </span>
       <span
-        className="text-[15px] font-semibold tabular-nums"
+        className="text-[14px] font-semibold tabular-nums"
         style={{ color: color ?? COLORS.textPrimary, fontFamily: SANS_FONT }}
       >
         {value}
@@ -223,16 +229,11 @@ function RunHistorySparkline({ runs }: { runs: PrActionRun[] }) {
       title={`${ordered.length} runs on this PR`}
     >
       {ordered.map((run) => {
-        const state: PrPipelineState = run.status !== "completed"
-          ? "running"
-          : run.conclusion === "success"
-            ? "passed"
-            : run.conclusion === "failure"
-                || run.conclusion === "timed_out"
-                || run.conclusion === "cancelled"
-                || run.conclusion === "action_required"
-              ? "failed"
-              : "skipped";
+        // The canonical ladder, not a local one: the hand-rolled copy this
+        // replaces called a queued run "running" and an unknown conclusion
+        // "skipped", so the sparkline disagreed with every other surface.
+        const state: PrPipelineState = pipelineStateOf(run);
+        // Height is a second, non-colour channel: a failure is a tall bar.
         const height = state === "passed" ? 6 : state === "failed" ? 14 : 10;
         return (
           <i
@@ -247,209 +248,103 @@ function RunHistorySparkline({ runs }: { runs: PrActionRun[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// Graph node
+// Flat row — one check, one line
 // ---------------------------------------------------------------------------
 
-function GraphNodeCell({
-  node, now, selected, onCritical, onSelect,
+const CheckRow = React.memo(function CheckRow({
+  name, label, state, elapsedMs, detailsUrl, selected, onSelect, badge, divided,
 }: {
-  node: PrWorkflowGraphNode;
-  now: number;
-  selected: boolean;
-  onCritical: boolean;
-  onSelect: (node: PrWorkflowGraphNode) => void;
-}) {
-  const elapsed = fmtMs(nodeElapsedMs(node, now));
-  const caption = matrixLegCaption(node);
-  const progress = node.state === "running" ? stepProgress(node) : null;
-  const spine = onCritical ? COLORS.accent : STATE_COLOR[node.state];
-
-  return (
-    <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onSelect(node)}
-      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(node); } }}
-      data-testid="pr-checks-graph-node"
-      data-job-id={node.jobId}
-      data-state={node.state}
-      data-critical={onCritical ? "true" : undefined}
-      className="relative cursor-pointer overflow-hidden py-[7px] pl-[9px] pr-[9px]"
-      style={{
-        borderRadius: RADII.md,
-        background: selected ? tint(COLORS.accent, 10) : node.state === "failed" ? tint(COLORS.danger, 6) : "transparent",
-      }}
-    >
-      {/* 2px state spine — accent-tinted on the critical path. */}
-      <span
-        aria-hidden
-        className="absolute bottom-0 left-0 top-0 w-[2px]"
-        style={{ background: spine, opacity: onCritical ? 0.9 : 1 }}
-      />
-      <div className="flex items-center gap-1.5">
-        <StateIcon state={node.state} />
-        <span
-          className="min-w-0 truncate text-[11.5px] font-medium"
-          style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
-          title={node.displayName}
-        >
-          {node.displayName}
-        </span>
-        <span
-          className="ml-auto shrink-0 text-[10px] font-medium tabular-nums"
-          style={{
-            color: node.state === "running" ? COLORS.warning : COLORS.textDim,
-            fontFamily: MONO_FONT,
-          }}
-          data-testid="pr-checks-node-duration"
-        >
-          {elapsed ?? STATE_LABEL[node.state]}
-        </span>
-      </div>
-
-      {node.legs.length > 0 ? (
-        <>
-          <div className="mt-[5px] flex gap-[3px] pl-[19px]" data-testid="pr-checks-node-legs">
-            {node.legs.map((leg, idx) => (
-              <i
-                key={`${leg.name}-${idx}`}
-                data-testid="pr-checks-node-leg"
-                data-leg-state={leg.state}
-                title={`${leg.name} · ${STATE_LABEL[leg.state]}`}
-                className="block h-[3px] flex-1 rounded-[2px]"
-                style={{ background: STATE_COLOR[leg.state] }}
-              />
-            ))}
-          </div>
-          {caption ? (
-            <div
-              className="mt-1 pl-[19px] text-[10px]"
-              style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
-              data-testid="pr-checks-node-leg-caption"
-            >
-              {caption}
-            </div>
-          ) : null}
-        </>
-      ) : null}
-
-      {progress ? (
-        <div className="mt-1.5 pl-[19px]" data-testid="pr-checks-node-steps">
-          {node.steps.slice(0, 6).map((step) => {
-            const state = pipelineStateOf(step);
-            const stepMs = checkElapsedMs(step, now);
-            return (
-              <div key={`${step.number}-${step.name}`} className="flex items-center gap-1.5 py-px text-[10.5px]" style={{ color: COLORS.textMuted }}>
-                <span
-                  className="h-[9px] w-[9px] shrink-0 rounded-full"
-                  style={
-                    state === "running"
-                      ? { border: `1.5px solid ${COLORS.warning}`, borderTopColor: "transparent" }
-                      : state === "passed"
-                        ? { background: COLORS.checkPass }
-                        : state === "failed"
-                          ? { background: COLORS.danger }
-                          : { border: `1px dashed ${tint(COLORS.textDim, 70)}` }
-                  }
-                />
-                <span className="min-w-0 truncate" style={{ fontFamily: SANS_FONT }}>{step.name}</span>
-                <span className="ml-auto text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-                  {stepMs != null ? fmtMs(stepMs) : "—"}
-                </span>
-              </div>
-            );
-          })}
-          <div
-            className="mt-[5px] h-[2px] overflow-hidden rounded-[2px]"
-            style={{ background: tint(COLORS.textDim, 25) }}
-          >
-            <i className="block h-full" style={{ width: `${progress.pct}%`, background: COLORS.warning }} />
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Flat row (list / failures / swimlane fallback / external lane)
-// ---------------------------------------------------------------------------
-
-function FlatRow({
-  name, state, elapsedMs, detailsUrl, selected, onSelect, subtitle,
-}: {
+  /** Full, unabbreviated name — the stable identity for tests and tooling. */
   name: string;
+  /** What the user reads; the section header already carries the workflow. */
+  label: string;
   state: PrPipelineState;
   elapsedMs: number | null;
   detailsUrl: string | null;
   selected?: boolean;
   onSelect?: () => void;
-  subtitle?: string | null;
+  badge?: string | null;
+  divided?: boolean;
 }) {
   const interactive = Boolean(onSelect);
   return (
     <div
       role={interactive ? "button" : undefined}
       tabIndex={interactive ? 0 : undefined}
+      aria-pressed={interactive ? Boolean(selected) : undefined}
       onClick={onSelect}
-      onKeyDown={interactive ? (e) => { if (e.key === "Enter") { e.preventDefault(); onSelect?.(); } } : undefined}
+      onKeyDown={interactive ? (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect?.();
+        }
+      } : undefined}
       data-testid="pr-checks-row"
       data-check-name={name}
       data-state={state}
-      className="group relative flex items-center gap-[7px] py-1.5 pl-[9px] pr-2 text-[11.5px]"
+      className="group flex items-center gap-2 py-[6px] pl-1 pr-1.5 text-[11.5px]"
       style={{
-        borderRadius: RADII.sm,
-        background: selected ? tint(COLORS.accent, 10) : "transparent",
+        borderTop: divided ? `1px solid ${COLORS.borderMuted}` : undefined,
+        background: selected ? tint(COLORS.accent, 9) : "transparent",
         cursor: interactive ? "pointer" : "default",
       }}
     >
-      <span aria-hidden className="absolute bottom-0 left-0 top-0 w-[2px]" style={{ background: STATE_COLOR[state] }} />
       <StateIcon state={state} />
-      <span className="min-w-0 truncate" style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }} title={name}>
-        {name}
+      <span
+        className="min-w-0 flex-1 truncate"
+        style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}
+        title={name}
+      >
+        {label}
       </span>
-      {subtitle ? (
-        <span className="shrink-0 text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-          {subtitle}
+      {badge ? (
+        <span
+          className="shrink-0 text-[9.5px] uppercase"
+          style={{ letterSpacing: "0.06em", color: COLORS.textDim, fontFamily: MONO_FONT }}
+        >
+          {badge}
         </span>
       ) : null}
-      <span className="ml-auto shrink-0 text-[10px] tabular-nums" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
-        {fmtMs(elapsedMs) ?? STATE_LABEL[state]}
-      </span>
-      {detailsUrl ? (
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); void window.ade.app.openExternal(detailsUrl); }}
-          className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100"
-          style={{ background: "none", border: "none", cursor: "pointer", color: COLORS.textMuted, padding: 2 }}
-          aria-label={`Open ${name} on GitHub`}
-        >
-          <ArrowSquareOut size={11} />
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function LaneHeader({ tag, children }: { tag: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-[7px] px-0.5 py-1.5 text-[10.5px]" style={{ color: COLORS.textMuted }}>
+      {detailsUrl ? <OpenOnGitHubButton url={detailsUrl} name={name} /> : null}
       <span
-        className="uppercase"
+        className="w-[58px] shrink-0 text-right text-[10px] tabular-nums"
         style={{
+          color: state === "running" ? COLORS.warning : COLORS.textDim,
           fontFamily: MONO_FONT,
-          fontSize: 9,
-          letterSpacing: "0.07em",
-          padding: "1px 6px",
-          borderRadius: 999,
-          background: COLORS.recessedBg,
-          border: `1px solid ${COLORS.borderMuted}`,
-          color: COLORS.textDim,
         }}
       >
-        {tag}
+        {fmtMs(elapsedMs) ?? STATE_LABEL[state]}
       </span>
-      {children}
+    </div>
+  );
+});
+
+/**
+ * One honest sentence about why there is no dependency graph, with the retry a
+ * user can press when the reason was "GitHub did not answer".
+ */
+function GraphUnavailableNote({
+  copy, onRetry,
+}: { copy: string; onRetry?: () => void }) {
+  return (
+    <div
+      className="mb-2 flex items-start gap-2 text-[11px]"
+      style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
+      data-testid="pr-checks-graph-unavailable-note"
+    >
+      <WarningCircle size={13} style={{ color: COLORS.textDim, flexShrink: 0, marginTop: 1 }} />
+      <span className="min-w-0">{copy}</span>
+      {onRetry ? (
+        <button
+          type="button"
+          onClick={onRetry}
+          data-testid="pr-checks-graph-retry"
+          className="ml-auto shrink-0"
+          style={{ ...prFlatButton(), height: 22, fontSize: 10.5 }}
+        >
+          <ArrowClockwise size={11} /> Retry
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -457,6 +352,45 @@ function LaneHeader({ tag, children }: { tag: string; children: React.ReactNode 
 // ---------------------------------------------------------------------------
 // Tab
 // ---------------------------------------------------------------------------
+
+/**
+ * The subset of the shared PR poll governor this tab needs.
+ *
+ * Optional so the component is renderable in isolation, but in the app
+ * `PrDetailPane` always supplies it: every automatic GitHub read on this
+ * surface stands down together, and a graph fetch that ignored the brake would
+ * be exactly the un-governed foreground reader the 2026-08-17 quota incident was
+ * about.
+ */
+export type PrChecksPollGovernor = {
+  isGithubPollStoodDown: () => boolean;
+  noteGithubReadFailure: () => void;
+  noteGithubReadSuccess: () => void;
+  /** Changes only when a stand-down arms or clears — the retry signal. */
+  githubPollGeneration: number;
+};
+
+const UNGOVERNED: PrChecksPollGovernor = {
+  isGithubPollStoodDown: () => false,
+  noteGithubReadFailure: () => {},
+  noteGithubReadSuccess: () => {},
+  githubPollGeneration: 0,
+};
+
+/**
+ * How the graph's *shape* resolved for one PR head SHA.
+ *
+ * `unreachable` is deliberately distinct from a resolved graph that happens to
+ * have no edges: one means "GitHub would not tell us", the other means "there is
+ * genuinely nothing to chart". Collapsing them is what let a failed read look
+ * like a settled empty answer.
+ */
+type ChecksGraphState = {
+  key: string;
+  status: "resolving" | "resolved" | "unreachable";
+  /** `null` = the runtime answered and there is no graph. */
+  serviceGraph: PrWorkflowGraph | null;
+};
 
 export type PrChecksTabProps = {
   pr: {
@@ -476,12 +410,6 @@ export type PrChecksTabProps = {
    * "Passed 3/3" in green — contradicting the header pill on the same screen.
    */
   checksStatus?: PrChecksStatus | null;
-  /**
-   * True for GitHub-tab PRs with no `pull_requests` row. The workflow-graph and
-   * log-excerpt endpoints are row-based and reject for these, so we never call
-   * them — the tab degrades to the swimlane fallback built from `checks`.
-   */
-  unmapped?: boolean;
   onRerunChecks?: (target?: PrRerunChecksTarget) => void;
   focusedCheckId?: string | null;
   onFocusedCheckConsumed?: () => void;
@@ -489,6 +417,8 @@ export type PrChecksTabProps = {
   paletteRequest?: number;
   /** Opens the lane's most recent Work chat with the failing log prefilled. */
   onFixInChat?: (excerpt: PrCheckLogExcerpt) => void;
+  /** Shared brake for every automatic GitHub read on the PRs surface. */
+  pollGovernor?: PrChecksPollGovernor;
 };
 
 export function PrChecksTab({
@@ -497,16 +427,24 @@ export function PrChecksTab({
   actionRuns,
   actionBusy,
   checksStatus,
-  unmapped = false,
   onRerunChecks,
   focusedCheckId,
   onFocusedCheckConsumed,
   paletteRequest = 0,
   onFixInChat,
+  pollGovernor = UNGOVERNED,
 }: PrChecksTabProps) {
+  const { isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, githubPollGeneration } =
+    pollGovernor;
+
   const [view, setView] = React.useState<ChecksView>(() => readStoredChecksView(pr.projectId) ?? "graph");
-  const [serviceGraph, setServiceGraph] = React.useState<PrWorkflowGraph | null>(null);
   const [drawer, setDrawer] = React.useState<PrCheckLogDrawerState | null>(null);
+  /**
+   * The user asked for this job's log explicitly. A passed job does not fetch
+   * one on open — most jobs pass, so that alone keeps the common case off the
+   * GitHub budget entirely.
+   */
+  const [forceLog, setForceLog] = React.useState(false);
   const [excerpt, setExcerpt] = React.useState<PrCheckLogExcerpt | null>(null);
   const [logLoading, setLogLoading] = React.useState(false);
   const [logError, setLogError] = React.useState<string | null>(null);
@@ -551,44 +489,189 @@ export function PrChecksTab({
     [checks, attemptRuns],
   );
 
-  // ---- graph ------------------------------------------------------------
+  // ---- graph shape resolution -------------------------------------------
+  // One fetch per (PR, head SHA), cached across mounts, plus at most one bounded
+  // retry when CI reports its first run. No timer, ever.
+  const graphKey = checksGraphCacheKey(pr.id, pr.headSha);
+  const [graphState, setGraphState] = React.useState<ChecksGraphState>(() => {
+    const cached = readChecksGraphCache(graphKey);
+    return cached
+      ? { key: graphKey, status: "resolved", serviceGraph: cached.graph }
+      : { key: graphKey, status: "resolving", serviceGraph: null };
+  });
+  const requestTokenRef = React.useRef(0);
+  const actionRunRetryRef = React.useRef<string | null>(null);
+  // Automatic attempts already spent on this head SHA. The graph read is the
+  // most expensive read on this surface (~14 REST requests), and a PR whose
+  // Actions read always fails — Actions disabled, a token that can't read
+  // Actions, a deleted head SHA — fails every single time. Without this cap the
+  // governor's own recovery signal re-arms the fetch effect, so the failure
+  // path would issue a fresh full read roughly every 30s for as long as the tab
+  // stays open. Pressing Retry is exempt and resets the count.
+  const autoAttemptsRef = React.useRef<{ key: string; failures: number }>({ key: graphKey, failures: 0 });
+
+  const loadGraph = React.useCallback((
+    key: string,
+    options: { bypassCache?: boolean; userInitiated?: boolean } = {},
+  ) => {
+    if (options.bypassCache) invalidateChecksGraphCache(key);
+    const cached = options.bypassCache ? null : readChecksGraphCache(key);
+    if (cached) {
+      // The whole point of the cache: re-opening the tab is free, both in
+      // GitHub requests and in perceived latency.
+      requestTokenRef.current += 1;
+      setGraphState({ key, status: "resolved", serviceGraph: cached.graph });
+      return;
+    }
+    // Automatic reads consult the shared brake and their own attempt budget. A
+    // Retry the user pressed is exempt from both on purpose — the reserve
+    // exists for the work the user came to do.
+    const attempts = autoAttemptsRef.current;
+    const outOfAttempts = attempts.key === key && attempts.failures >= MAX_AUTO_GRAPH_ATTEMPTS;
+    if (!options.userInitiated && (outOfAttempts || isGithubPollStoodDown())) {
+      setGraphState((prev) => ({
+        key,
+        status: "unreachable",
+        serviceGraph: prev.key === key ? prev.serviceGraph : null,
+      }));
+      return;
+    }
+    if (options.userInitiated) autoAttemptsRef.current = { key, failures: 0 };
+
+    const token = (requestTokenRef.current += 1);
+    setGraphState((prev) => ({
+      key,
+      status: "resolving",
+      // Hold the graph we already have for this same key: a refresh must never
+      // blank or relayout a graph that is still correct.
+      serviceGraph: prev.key === key ? prev.serviceGraph : null,
+    }));
+
+    void fetchChecksGraphOnce(key, () => fetchWorkflowGraph({ prId: pr.id }))
+      .then((value) => {
+        if (requestTokenRef.current !== token) return;
+        writeChecksGraphCache(key, value);
+        noteGithubReadSuccess();
+        setGraphState({ key, status: "resolved", serviceGraph: value });
+      })
+      .catch(() => {
+        if (requestTokenRef.current !== token) return;
+        // Deliberately NOT cached. Storing a rejection as "no graph here" is the
+        // failed-read-that-looks-empty bug that let a 5s loop run for an hour.
+        noteGithubReadFailure();
+        const spent = autoAttemptsRef.current;
+        autoAttemptsRef.current = spent.key === key
+          ? { key, failures: spent.failures + 1 }
+          : { key, failures: 1 };
+        setGraphState((prev) => ({
+          key,
+          status: "unreachable",
+          serviceGraph: prev.key === key ? prev.serviceGraph : null,
+        }));
+      });
+  }, [isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, pr.id]);
+
   React.useEffect(() => {
-    let cancelled = false;
-    setServiceGraph(null);
-    // The graph endpoint is row-based and rejects for unmapped GitHub-tab PRs,
-    // so don't ask — go straight to the fallback built from `checks`.
-    if (unmapped) return undefined;
-    void fetchWorkflowGraph({ prId: pr.id })
-      .then((value) => { if (!cancelled) setServiceGraph(value); })
-      .catch(() => { if (!cancelled) setServiceGraph(null); });
-    return () => { cancelled = true; };
-  }, [pr.id, pr.headSha, unmapped, hasActionRuns]);
+    actionRunRetryRef.current = null;
+    autoAttemptsRef.current = { key: graphKey, failures: 0 };
+  }, [graphKey]);
+
+  // Runs on mount, on head-SHA change, and when the governor's stand-down
+  // changes state (so a recovered GitHub is picked up without a timer).
+  React.useEffect(() => {
+    loadGraph(graphKey);
+  }, [graphKey, loadGraph, githubPollGeneration]);
+
+  // CI had not started when we first asked, and now it has. Exactly one extra
+  // attempt per head SHA — the ref is what stops an uncharted answer from
+  // re-arming this effect into a loop.
+  React.useEffect(() => {
+    // Only a *resolved* uncharted answer is evidence that we charted nothing
+    // because CI had not started. A read that failed is evidence of nothing, and
+    // retrying it here would spend a request the governor just braked.
+    if (graphState.key !== graphKey || graphState.status !== "resolved") return;
+    if (!shouldRefetchOnFirstActionRun({ graph: graphState.serviceGraph, hasActionRuns })) return;
+    if (actionRunRetryRef.current === graphKey) return;
+    actionRunRetryRef.current = graphKey;
+    loadGraph(graphKey, { bypassCache: true });
+  }, [graphKey, graphState, hasActionRuns, loadGraph]);
+
+  const retryGraph = React.useCallback(() => {
+    loadGraph(graphKey, { bypassCache: true, userInitiated: true });
+  }, [graphKey, loadGraph]);
+
+  /**
+   * The graph state for the key being rendered *right now*. A PR switch changes
+   * `graphKey` a render before the effect runs, so reading the cache here is
+   * what keeps a cached graph from flashing through "resolving" on the way in.
+   */
+  const activeGraph = React.useMemo<ChecksGraphState>(() => {
+    if (graphState.key === graphKey) return graphState;
+    const cached = readChecksGraphCache(graphKey);
+    return cached
+      ? { key: graphKey, status: "resolved", serviceGraph: cached.graph }
+      : { key: graphKey, status: "resolving", serviceGraph: null };
+  }, [graphState, graphKey]);
+
+  /**
+   * Older attempts are not charted by the service (it parses only the head run),
+   * so scrubbing back is always the flat view — and is a final answer, not a
+   * transition.
+   */
+  const chartedGraph = viewingLatestAttempt && isChartedGraph(activeGraph.serviceGraph)
+    ? activeGraph.serviceGraph
+    : null;
+
+  const graphPhase: "charted" | "resolving" | "flat" = chartedGraph
+    ? "charted"
+    : !viewingLatestAttempt
+      ? "flat"
+      : activeGraph.status === "resolving"
+        ? "resolving"
+        : "flat";
 
   const graph = React.useMemo<PrWorkflowGraph>(() => {
-    // Older attempts are not charted by the service (it only parses the head
-    // run), so scrubbing back always falls through to the flat swimlanes.
-    const usable = viewingLatestAttempt
-      && serviceGraph
-      && (serviceGraph.nodes.length > 0 || serviceGraph.externalChecks.length > 0);
-    if (usable) return hydrateWorkflowGraph(serviceGraph, unified);
+    if (chartedGraph) return hydrateWorkflowGraph(chartedGraph, unified);
     return deriveFallbackGraph(unified, {
-      headSha: pr.headSha ?? serviceGraph?.headSha ?? null,
-      reason: viewingLatestAttempt ? serviceGraph?.unavailableReason ?? null : null,
+      headSha: pr.headSha ?? activeGraph.serviceGraph?.headSha ?? null,
+      reason: viewingLatestAttempt ? activeGraph.serviceGraph?.unavailableReason ?? null : null,
     });
-  }, [serviceGraph, unified, pr.headSha, viewingLatestAttempt]);
+  }, [chartedGraph, activeGraph.serviceGraph, unified, pr.headSha, viewingLatestAttempt]);
 
   const buckets = React.useMemo(() => graphBuckets(graph), [graph]);
   const anythingRunning = buckets.running > 0 || buckets.queued > 0;
   const now = useLiveNow(anythingRunning);
-
-  const columns = React.useMemo<GraphColumn[]>(() => buildGraphColumns(graph.nodes), [graph.nodes]);
-  const criticalPath = React.useMemo(() => new Set(graph.criticalPath), [graph.criticalPath]);
   const failures = React.useMemo(() => failingNodes(graph), [graph]);
 
   // ---- log drawer -------------------------------------------------------
+  // `forceLog` is cleared in the same commit as every drawer change, not in a
+  // follow-up effect. An effect declared after the fetch effect runs after it,
+  // so switching jobs while a log was forced would fire one full log download
+  // for the new job before the reset could land.
   const openDrawerFor = React.useCallback((node: PrWorkflowGraphNode) => {
+    setForceLog(false);
     setDrawer({ node, jobId: resolveLogJobId(node) });
     resetCopied();
+  }, [resetCopied]);
+
+  const closeDrawer = React.useCallback(() => {
+    setForceLog(false);
+    setDrawer(null);
+  }, []);
+
+  /**
+   * User activation of a node. A second activation of the *same* node closes the
+   * drawer — a click that can only ever open is a dead end, because the drawer
+   * has no other relationship to the node the user just clicked.
+   */
+  const toggleDrawerFor = React.useCallback((node: PrWorkflowGraphNode) => {
+    resetCopied();
+    setForceLog(false);
+    setDrawer((current) => (
+      current && current.node.jobId === node.jobId
+        ? null
+        : { node, jobId: resolveLogJobId(node) }
+    ));
   }, [resetCopied]);
 
   React.useEffect(() => {
@@ -598,33 +681,34 @@ export function PrChecksTab({
       setLogLoading(false);
       return undefined;
     }
-    if (unmapped) {
-      setExcerpt(null);
-      setLogLoading(false);
-      setLogError("Map this PR to a lane to pull its CI logs into ADE — until then, open the full log on GitHub.");
-      return undefined;
-    }
     if (drawer.jobId == null) {
       setExcerpt(null);
       setLogLoading(false);
       setLogError("ADE couldn't resolve a GitHub job id for this check, so there's no log to fetch.");
       return undefined;
     }
-    if (!hasCheckLogApi()) {
-      setExcerpt(null);
-      setLogLoading(false);
-      setLogError("This ADE runtime can't fetch CI logs yet — open the full log on GitHub instead.");
-      return undefined;
-    }
     let cancelled = false;
     setExcerpt(null);
     setLogLoading(true);
     setLogError(null);
-    void fetchCheckLog({ prId: pr.id, jobId: drawer.jobId })
-      .then((value) => {
+    void fetchCheckLogForState({
+      prId: pr.id,
+      jobId: drawer.jobId,
+      state: drawer.node.state,
+      force: forceLog,
+    })
+      .then((result) => {
         if (cancelled) return;
-        setExcerpt(value);
-        if (!value) setLogError("No log excerpt came back for this job.");
+        // "skipped" is not a failure: this job's state does not warrant pulling
+        // a multi-megabyte log, and the drawer renders its step breakdown from
+        // data the checks poll already holds.
+        if (result.resolution === "skipped") return;
+        if (result.resolution === "no-api") {
+          setLogError("This ADE runtime can't fetch CI logs yet — open the full log on GitHub instead.");
+          return;
+        }
+        setExcerpt(result.excerpt);
+        if (!result.excerpt) setLogError("No log excerpt came back for this job.");
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -633,10 +717,11 @@ export function PrChecksTab({
       })
       .finally(() => { if (!cancelled) setLogLoading(false); });
     return () => { cancelled = true; };
-  }, [drawer, pr.id, unmapped]);
+  }, [drawer, forceLog, pr.id]);
 
   React.useEffect(() => {
     autoOpenedForPrRef.current = null;
+    setForceLog(false);
     setDrawer(null);
     setSelectedAttempt(null);
   }, [pr.id]);
@@ -712,13 +797,15 @@ export function PrChecksTab({
         const node = failures[focusedFailureIdx] ?? failures[0];
         if (node) {
           event.preventDefault();
-          openDrawerFor(node);
+          // Keyboard activation toggles too, so the same key both opens and
+          // dismisses the job it is sitting on.
+          toggleDrawerFor(node);
         }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [failures, focusedFailureIdx, openDrawerFor]);
+  }, [failures, focusedFailureIdx, toggleDrawerFor]);
 
   const paletteChecks = React.useMemo<PaletteCheck[]>(
     () => graph.nodes.map((node) => ({
@@ -755,40 +842,110 @@ export function PrChecksTab({
     ?? attemptRuns[0]?.name
     ?? "Checks";
 
-  const listItems = view === "failures"
-    ? unified.filter((item) => {
-        const state = pipelineStateOf(item);
-        return state === "failed" || state === "unknown";
-      })
-    : unified;
-  const selectableNodeByCheck = React.useMemo(() => {
+  // ---- list views -------------------------------------------------------
+  const listItems = React.useMemo(() => (
+    view === "failures"
+      ? unified.filter((item) => {
+          const state = pipelineStateOf(item);
+          return state === "failed" || state === "unknown";
+        })
+      : unified
+  ), [unified, view]);
+  const listSections = React.useMemo(() => groupChecksForList(listItems), [listItems]);
+
+  /**
+   * The graph node a list row stands for, so clicking the row opens the same
+   * log the graph would.
+   *
+   * Four join keys, because two graph builders disagree about a node's identity:
+   * the fallback graph keys nodes by the unified item's own id and strips the
+   * workflow prefix from `displayName`, while the YAML-backed graph keys them by
+   * the workflow's job id. Matching on `displayName` alone silently left every
+   * row in the fallback view unclickable.
+   */
+  const nodeForItem = React.useMemo(() => {
+    const byJobId = new Map<string, PrWorkflowGraphNode>();
     const byCheckRunId = new Map<number, PrWorkflowGraphNode>();
-    const byDisplayName = new Map<string, PrWorkflowGraphNode>();
+    const byName = new Map<string, PrWorkflowGraphNode>();
+    const remember = (key: string, node: PrWorkflowGraphNode) => {
+      if (key && !byName.has(key)) byName.set(key, node);
+    };
     for (const node of graph.nodes) {
+      if (!byJobId.has(node.jobId)) byJobId.set(node.jobId, node);
       if (node.checkRunId != null && !byCheckRunId.has(node.checkRunId)) {
         byCheckRunId.set(node.checkRunId, node);
       }
-      if (!byDisplayName.has(node.displayName)) byDisplayName.set(node.displayName, node);
+      remember(node.displayName, node);
+      if (node.workflowName) remember(`${node.workflowName} / ${node.displayName}`, node);
     }
-    return (item: (typeof unified)[number]): PrWorkflowGraphNode | undefined => (
-      (item.checkRunId != null ? byCheckRunId.get(item.checkRunId) : undefined)
-      ?? byDisplayName.get(item.displayName)
+    return (item: UnifiedCheckItem): PrWorkflowGraphNode | undefined => (
+      byJobId.get(item.id)
+      ?? (item.checkRunId != null ? byCheckRunId.get(item.checkRunId) : undefined)
+      ?? byName.get(item.displayName)
+      ?? byName.get(item.name)
     );
-  }, [graph.nodes, unified]);
+  }, [graph.nodes]);
+
+  const selectedJobId = drawer?.node.jobId ?? null;
+
+  const renderSections = (emptyCopy: string) => (
+    listSections.length === 0 ? (
+      <div className="px-1 py-3 text-[11.5px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>
+        {emptyCopy}
+      </div>
+    ) : (
+      listSections.map((section, index) => (
+        <PrSection
+          key={section.workflowName}
+          title={section.workflowName}
+          divided={index > 0}
+          data-testid="pr-checks-list-section"
+          meta={
+            <span className="inline-flex items-center gap-1.5">
+              <StateIcon state={section.state} size={11} />
+              {section.failedCount > 0
+                ? `${section.failedCount} of ${section.items.length} failed`
+                : `${section.items.length} ${section.items.length === 1 ? "check" : "checks"}`}
+            </span>
+          }
+        >
+          <div className="flex flex-col">
+            {section.items.map((item, itemIndex) => {
+              const node = nodeForItem(item);
+              return (
+                <CheckRow
+                  key={item.id}
+                  name={item.displayName}
+                  label={rowLabel(item, section.workflowName)}
+                  state={pipelineStateOf(item)}
+                  elapsedMs={checkElapsedMs(item, now)}
+                  detailsUrl={item.detailsUrl}
+                  badge={item.source === "check" ? "external" : null}
+                  divided={itemIndex > 0}
+                  selected={node != null && node.jobId === selectedJobId}
+                  onSelect={node ? () => toggleDrawerFor(node) : undefined}
+                />
+              );
+            })}
+          </div>
+        </PrSection>
+      ))
+    )
+  );
 
   return (
     <div className="flex flex-col" style={{ padding: SPACING.md, background: COLORS.prSurface }} data-testid="pr-checks-tab">
-      {/* ===== header strip ===== */}
+      {/* ===== header strip — flat: a hairline and rhythm, no floating card ===== */}
       <div
-        className="flex items-stretch overflow-hidden"
-        style={{ ...floatingPane({ padding: 0 }), borderRadius: RADII.lg }}
+        className="flex flex-wrap items-end gap-y-2 pb-3"
+        style={{ borderBottom: `1px solid ${COLORS.borderMuted}` }}
         data-testid="pr-checks-header"
       >
-        <div className="flex flex-col gap-[3px] px-[15px] py-[11px]">
+        <div className="flex min-w-0 flex-col gap-[2px] pr-[18px]">
           <span className="text-[9.5px] uppercase" style={{ letterSpacing: "0.09em", color: COLORS.textDim, fontFamily: SANS_FONT }}>
             Run
           </span>
-          <span className="truncate text-[15px] font-semibold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+          <span className="truncate text-[14px] font-semibold" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
             {workflowLabel}
             <small className="ml-1 text-[11px] font-medium" style={{ color: COLORS.textMuted }}>
               · attempt {selectedAttempt ?? graph.attempt ?? latestAttempt}
@@ -809,7 +966,7 @@ export function PrChecksTab({
         <StripSegment label="Running" value={buckets.running} color={buckets.running > 0 ? COLORS.warning : COLORS.textMuted} />
         <StripSegment label="Queued" value={buckets.queued} color={COLORS.textMuted} />
 
-        <div className="flex flex-1 flex-wrap items-center justify-end gap-2 px-3.5">
+        <div className="flex flex-1 flex-wrap items-center justify-end gap-2">
           <RunHistorySparkline runs={actionRuns} />
           {graph.stale ? (
             <span
@@ -850,8 +1007,8 @@ export function PrChecksTab({
             style={{ background: COLORS.recessedBg, borderRadius: RADII.md }}
             data-testid="pr-checks-view-switch"
           >
-            <SegButton active={view === "graph"} onClick={() => selectView("graph")} testId="pr-checks-view-graph">Graph</SegButton>
-            <SegButton active={view === "list"} onClick={() => selectView("list")} testId="pr-checks-view-list">List</SegButton>
+            <SegButton active={view === "graph"} onClick={() => selectView("graph")} testId="pr-checks-view-graph" icon={Path}>Graph</SegButton>
+            <SegButton active={view === "list"} onClick={() => selectView("list")} testId="pr-checks-view-list" icon={ListBullets}>List</SegButton>
             <SegButton active={view === "failures"} onClick={() => selectView("failures")} testId="pr-checks-view-failures">Failures</SegButton>
           </div>
           {rerunFailedVisible ? (
@@ -871,7 +1028,7 @@ export function PrChecksTab({
       {buckets.total > 0 ? (
         <div
           className="flex overflow-hidden"
-          style={{ height: 3, borderRadius: `0 0 ${RADII.lg}px ${RADII.lg}px`, marginTop: -1, marginBottom: SPACING.md }}
+          style={{ height: 3, marginBottom: SPACING.md }}
           data-testid="pr-checks-progress-bar"
         >
           {([
@@ -899,44 +1056,42 @@ export function PrChecksTab({
           No checks have reported for this pull request yet.
         </div>
       ) : view === "graph" ? (
-        <GraphView
-          graph={graph}
-          columns={columns}
-          criticalPath={criticalPath}
-          now={now}
-          selectedJobId={drawer?.node.jobId ?? null}
-          focusedJobId={failures[focusedFailureIdx]?.jobId ?? null}
-          workflowLabel={workflowLabel}
-          onSelect={openDrawerFor}
-        />
+        graphPhase === "charted" ? (
+          <React.Suspense fallback={<PrChecksGraphSkeleton jobCount={graph.nodes.length} label="Loading the pipeline view…" />}>
+            <PrChecksGraphCanvas
+              graph={graph}
+              now={now}
+              selectedJobId={selectedJobId}
+              focusedJobId={failures[focusedFailureIdx]?.jobId ?? null}
+              onToggleNode={toggleDrawerFor}
+            />
+          </React.Suspense>
+        ) : graphPhase === "resolving" ? (
+          // The flat list is a legitimate FINAL answer but never a loading
+          // state: showing it here is what produced the 2–3 second list that
+          // snapped into a graph.
+          <PrChecksGraphSkeleton jobCount={Math.max(unified.length, graph.nodes.length)} />
+        ) : (
+          <div data-testid="pr-checks-swimlanes">
+            <GraphUnavailableNote
+              copy={
+                activeGraph.status === "unreachable"
+                  ? "ADE couldn't reach GitHub to chart these checks, so it can't draw the pipeline. Everything it already knows is below."
+                  : !viewingLatestAttempt
+                    ? "ADE charts only the latest attempt, so this older attempt is shown grouped by workflow."
+                    : graphUnavailableCopy(graph.unavailableReason)
+              }
+              onRetry={activeGraph.status === "unreachable" ? retryGraph : undefined}
+            />
+            {renderSections("No checks to show for this attempt.")}
+          </div>
+        )
       ) : (
         <div className="flex flex-col" data-testid="pr-checks-flat-view">
-          <LaneHeader tag={view === "failures" ? "failures" : "all checks"}>
-            <span style={{ color: COLORS.textDim }}>
-              {listItems.length} of {unified.length} checks
-            </span>
-          </LaneHeader>
-          {listItems.length === 0 ? (
-            <div className="px-1 py-3 text-[11.5px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}>
-              No failed or indeterminate checks.
-            </div>
-          ) : (
-            <div className="grid gap-[5px]" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))" }}>
-              {listItems.map((item) => {
-                const node = selectableNodeByCheck(item);
-                return (
-                  <FlatRow
-                    key={item.id}
-                    name={item.displayName}
-                    state={pipelineStateOf(item)}
-                    elapsedMs={checkElapsedMs(item, now)}
-                    detailsUrl={item.detailsUrl}
-                    subtitle={item.source === "check" ? "external" : null}
-                    onSelect={node ? () => openDrawerFor(node) : undefined}
-                  />
-                );
-              })}
-            </div>
+          {renderSections(
+            view === "failures"
+              ? "No failed or indeterminate checks."
+              : "No checks to show.",
           )}
         </div>
       )}
@@ -952,27 +1107,32 @@ export function PrChecksTab({
           copied={copied}
           onRerunJob={drawerRerun}
           onFixInChat={onFixInChat && excerpt ? () => onFixInChat(excerpt) : undefined}
-          onClose={() => setDrawer(null)}
+          onLoadLogExcerpt={forceLog ? undefined : () => setForceLog(true)}
+          onClose={closeDrawer}
         />
       ) : null}
 
-      {/* External / non-graphable checks always get their own lane. */}
-      {view === "graph" && graph.externalChecks.length > 0 ? (
-        <div className="mt-2" data-testid="pr-checks-external-lane">
-          <LaneHeader tag="external">
-            <span style={{ color: COLORS.textDim }}>status checks · no workflow file · not graphable</span>
-          </LaneHeader>
-          <div className="grid gap-[5px]" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))" }}>
-            {graph.externalChecks.map((check) => (
-              <FlatRow
-                key={check.name}
-                name={check.name}
-                state={pipelineStateOf(check)}
-                elapsedMs={checkElapsedMs(check, now)}
-                detailsUrl={check.detailsUrl}
-              />
-            ))}
-          </div>
+      {/* External / non-graphable checks get their own section beside the DAG. */}
+      {view === "graph" && graphPhase === "charted" && graph.externalChecks.length > 0 ? (
+        <div className="mt-3" data-testid="pr-checks-external-lane">
+          <PrSection
+            title="Other checks"
+            meta="not part of a workflow, so not graphable"
+          >
+            <div className="flex flex-col">
+              {graph.externalChecks.map((check, index) => (
+                <CheckRow
+                  key={check.name}
+                  name={check.name}
+                  label={check.name}
+                  state={pipelineStateOf(check)}
+                  elapsedMs={checkElapsedMs(check, now)}
+                  detailsUrl={check.detailsUrl}
+                  divided={index > 0}
+                />
+              ))}
+            </div>
+          </PrSection>
         </div>
       ) : null}
 
@@ -989,128 +1149,6 @@ export function PrChecksTab({
         onPickCheck={(id) => {
           const node = graph.nodes.find((n) => n.jobId === id);
           if (node) openDrawerFor(node);
-        }}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Graph view (DAG, or the honest swimlane fallback)
-// ---------------------------------------------------------------------------
-
-function GraphView({
-  graph, columns, criticalPath, now, selectedJobId, focusedJobId, workflowLabel, onSelect,
-}: {
-  graph: PrWorkflowGraph;
-  columns: GraphColumn[];
-  criticalPath: Set<string>;
-  now: number;
-  selectedJobId: string | null;
-  focusedJobId: string | null;
-  workflowLabel: string;
-  onSelect: (node: PrWorkflowGraphNode) => void;
-}) {
-  if (graph.nodes.length === 0) {
-    return (
-      <div className="px-1 py-3 text-[11.5px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }} data-testid="pr-checks-graph-empty">
-        No GitHub Actions jobs on this run.
-      </div>
-    );
-  }
-
-  // No dependency data → flat swimlanes grouped by workflow, plus one honest
-  // line explaining why there is no graph. We never guess an edge.
-  if (graph.source === "none" || graph.edges.length === 0) {
-    const lanes = groupByWorkflow(graph.nodes);
-    return (
-      <div data-testid="pr-checks-swimlanes">
-        <p
-          className="mb-1.5 px-0.5 text-[11px]"
-          style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
-          data-testid="pr-checks-graph-unavailable-note"
-        >
-          {graphUnavailableCopy(graph.unavailableReason)}
-        </p>
-        {lanes.map((lane) => (
-          <div key={lane.workflowName} className="mb-1" data-testid="pr-checks-swimlane" data-workflow={lane.workflowName}>
-            <LaneHeader tag="workflow">
-              <b style={{ color: COLORS.textSecondary }}>{lane.workflowName}</b>
-              <span style={{ color: COLORS.textDim }}>· {lane.nodes.length} jobs</span>
-            </LaneHeader>
-            <div className="grid gap-[5px]" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(232px, 1fr))" }}>
-              {lane.nodes.map((node) => (
-                <FlatRow
-                  key={node.jobId}
-                  name={node.displayName}
-                  state={node.state}
-                  elapsedMs={nodeElapsedMs(node, now)}
-                  detailsUrl={node.detailsUrl}
-                  selected={selectedJobId === node.jobId}
-                  onSelect={() => onSelect(node)}
-                />
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  return (
-    <div data-testid="pr-checks-graph">
-      <LaneHeader tag="workflow">
-        <b style={{ color: COLORS.textSecondary }}>{workflowLabel}</b>
-        <span style={{ color: COLORS.textDim }}>
-          · {graph.nodes.length} jobs · graph from {graph.source === "worktree" ? "the workflow file in your lane" : "the workflow file on GitHub"}
-          {graph.headSha ? ` @ ${graph.headSha.slice(0, 7)}` : ""}
-        </span>
-      </LaneHeader>
-      <div className="flex items-stretch overflow-x-auto pb-2.5 pt-1">
-        {columns.map((column, index) => (
-          <React.Fragment key={column.tier}>
-            <div className="flex min-w-[210px] flex-col justify-center gap-1.5">
-              <div
-                className="mb-0.5 pl-0.5 text-[9.5px] uppercase"
-                style={{ letterSpacing: "0.09em", color: COLORS.textDim, fontFamily: SANS_FONT }}
-              >
-                {column.label}
-              </div>
-              {column.nodes.map((node) => (
-                <GraphNodeCell
-                  key={node.jobId}
-                  node={node}
-                  now={now}
-                  selected={selectedJobId === node.jobId || focusedJobId === node.jobId}
-                  onCritical={criticalPath.has(node.jobId)}
-                  onSelect={onSelect}
-                />
-              ))}
-            </div>
-            {index < columns.length - 1 ? (
-              <GraphEdge live={isEdgeLive(graph, columns, index)} />
-            ) : null}
-          </React.Fragment>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function GraphEdge({ live }: { live: boolean }) {
-  return (
-    <div
-      className="relative w-[26px] shrink-0"
-      data-testid="pr-checks-graph-edge"
-      data-live={live ? "true" : "false"}
-      aria-hidden
-    >
-      <span
-        className={live ? "absolute left-0 right-0 top-1/2 h-px motion-safe:animate-pulse" : "absolute left-0 right-0 top-1/2 h-px"}
-        style={{
-          background: live
-            ? `linear-gradient(90deg, transparent, ${COLORS.warning} 50%, transparent)`
-            : `linear-gradient(90deg, transparent, ${tint(COLORS.border, 90)} 30%, ${tint(COLORS.border, 90)} 70%, transparent)`,
         }}
       />
     </div>

@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
   ArrowSquareOut,
@@ -10,7 +10,8 @@ import {
 } from "@phosphor-icons/react";
 
 import type { PrActionRun, PrCheck, PrChecksStatus, PrRerunChecksTarget } from "../../../../shared/types/prs";
-import { COLORS, SANS_FONT, floatingPane } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { PrSection, prSectionAction } from "./prSection";
 import {
   buildUnifiedChecks,
   formatCheckDuration,
@@ -19,6 +20,11 @@ import {
   summarizePipelineStates,
   type UnifiedCheckItem,
 } from "./prUnifiedChecks";
+
+/** Measured height of one check row, used to work out how many fit. */
+const CHECKS_ROW_HEIGHT_PX = 26;
+/** Never collapse below this, however short the pane gets. */
+const CHECKS_MIN_VISIBLE_ROWS = 4;
 
 export type PrChecksCardProps = {
   checks: PrCheck[];
@@ -35,6 +41,20 @@ export type PrChecksCardProps = {
    * done by `buildUnifiedChecks`).
    */
   fill?: boolean;
+  /**
+   * Cap on how many rows (ghosts + checks, in that priority order) the list
+   * renders. The remainder folds behind a "+N more" link to the CI tab, so a PR
+   * with 37 jobs cannot turn a summary section into a second checks tab.
+   * Omit for the uncapped list.
+   */
+  previewLimit?: number;
+  /**
+   * Grow the preview to fill the height the card is given, instead of holding a
+   * fixed row count. The rail pins the merge box to the bottom and the checks
+   * list is what absorbs the slack between them, so a fixed cap left a column of
+   * dead air on a tall window while still claiming "+32 more".
+   */
+  autoFillPreview?: boolean;
   /**
    * ADE-135: required contexts that never reported on this commit, in the order
    * GitHub declared them. Rendered as dimmed placeholder rows in the same list
@@ -106,11 +126,13 @@ export const PrChecksCard = memo(function PrChecksCard({
   onRerunChecks,
   actionBusy = false,
   fill = false,
+  previewLimit,
+  autoFillPreview = false,
   missingRequired,
   checksStatus,
 }: PrChecksCardProps) {
   // Order is meaningful (GitHub's declaration order), so this is never sorted.
-  const ghosts = missingRequired ?? [];
+  const ghosts = useMemo(() => missingRequired ?? [], [missingRequired]);
   const items = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
 
   const { passing, failing, pending, total } = useMemo(() => {
@@ -127,6 +149,43 @@ export const PrChecksCard = memo(function PrChecksCard({
     () => (fill ? items : items.filter((item) => isAttentionState(pipelineStateOf(item)))),
     [items, fill],
   );
+
+  // How many rows the body can actually show. Measured rather than guessed: the
+  // rail's height depends on the window, the pane split, and how much the
+  // sections above it are using.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [fittingRows, setFittingRows] = useState<number | null>(null);
+  useEffect(() => {
+    if (!autoFillPreview) { setFittingRows(null); return undefined; }
+    const node = listRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const height = entries[0]?.contentRect.height ?? 0;
+      const rows = Math.max(CHECKS_MIN_VISIBLE_ROWS, Math.floor(height / CHECKS_ROW_HEIGHT_PX));
+      setFittingRows((prev) => (prev === rows ? prev : rows));
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [autoFillPreview]);
+
+  const effectiveLimit = autoFillPreview
+    ? (fittingRows ?? previewLimit ?? null)
+    : (previewLimit ?? null);
+
+  // Ghosts spend the budget first: a required slot that never reported outranks
+  // any result that did arrive, so it can never be the row that gets truncated
+  // away.
+  const { visibleGhosts, visibleItems, hiddenCount } = useMemo(() => {
+    const limit = effectiveLimit != null && effectiveLimit > 0 ? effectiveLimit : null;
+    if (limit == null) return { visibleGhosts: ghosts, visibleItems: attention, hiddenCount: 0 };
+    const shownGhosts = ghosts.slice(0, limit);
+    const shownItems = attention.slice(0, Math.max(0, limit - shownGhosts.length));
+    return {
+      visibleGhosts: shownGhosts,
+      visibleItems: shownItems,
+      hiddenCount: ghosts.length - shownGhosts.length + (attention.length - shownItems.length),
+    };
+  }, [ghosts, attention, effectiveLimit]);
 
   // `not_run` outranks the row tally: rows can all be green and still have
   // verified nothing.
@@ -151,41 +210,47 @@ export const PrChecksCard = memo(function PrChecksCard({
     total === 0 || notRun ? "skip" : failing > 0 ? "fail" : pending > 0 ? "pending" : "pass";
 
   return (
-    <section
-      style={floatingPane({ padding: 0, overflow: "hidden" })}
-      className={fill ? "flex min-h-0 flex-1 flex-col overflow-hidden" : undefined}
-      data-testid="pr-checks-card"
-    >
-      <div className={`group flex items-center gap-2 px-3 py-2.5${fill ? " shrink-0" : ""}`}>
-        <StatusGlyph bucket={headerBucket} />
-        <span className="text-[12px] font-medium" style={{ color: summaryColor, fontFamily: SANS_FONT }}>
-          {summaryText}
+    <PrSection
+      icon={CheckCircle}
+      title="Checks"
+      // The rollup is a fact about the section, so it rides in `meta`. The glyph
+      // repeats the verdict in shape, which keeps colour from being the only
+      // signal for a failing or pending run.
+      meta={
+        <span className="inline-flex items-center gap-1.5">
+          <StatusGlyph bucket={headerBucket} />
+          <span style={{ color: summaryColor }}>{summaryText}</span>
         </span>
-        {total > 0 && onOpenChecksTab ? (
+      }
+      action={
+        (total > 0 || ghosts.length > 0) && onOpenChecksTab ? (
           <button
             type="button"
             onClick={onOpenChecksTab}
-            className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] opacity-0 transition-opacity group-hover:opacity-100"
-            style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, background: COLORS.hoverBg }}
+            className="inline-flex items-center gap-1"
+            style={prSectionAction()}
           >
-            View
+            View all
             <ArrowSquareOut size={11} />
           </button>
-        ) : null}
-      </div>
-
-      {attention.length > 0 || ghosts.length > 0 ? (
-        <div
-          className={fill ? "min-h-0 flex-1 overflow-y-auto" : undefined}
-          style={{ borderTop: `1px solid ${COLORS.border}` }}
-          data-testid="pr-checks-card-list"
-        >
+        ) : null
+      }
+      // Fill mode is the right rail, where this section follows the people group
+      // — so it carries the hairline that separates the two.
+      divided={fill}
+      scroll={fill}
+      className={fill ? "flex-1 overflow-hidden" : undefined}
+      bodyRef={listRef}
+      data-testid="pr-checks-card"
+    >
+      {visibleItems.length > 0 || visibleGhosts.length > 0 ? (
+        <div data-testid="pr-checks-card-list">
           {/* Ghosts lead the list: a slot that was never filled outranks the
               results that did arrive. */}
-          {ghosts.map((context) => (
+          {visibleGhosts.map((context) => (
             <div
               key={`missing:${context}`}
-              className="flex items-center gap-2 px-3 py-1.5"
+              className="flex items-center gap-2 py-1.5"
               data-testid="pr-checks-card-ghost-row"
             >
               <CircleDashed size={14} weight="bold" style={{ color: COLORS.textDim, flexShrink: 0 }} />
@@ -204,7 +269,7 @@ export const PrChecksCard = memo(function PrChecksCard({
               </span>
             </div>
           ))}
-          {attention.map((item) => {
+          {visibleItems.map((item) => {
             const bucket = bucketOf(item);
             const rerunTarget: PrRerunChecksTarget | null = item.source === "actions_job" && item.jobId != null
               ? { actionJobIds: [item.jobId] }
@@ -214,7 +279,7 @@ export const PrChecksCard = memo(function PrChecksCard({
             return (
               <div
                 key={item.id}
-                className="group/row flex items-center gap-2 px-3 py-1.5"
+                className="group/row flex items-center gap-2 py-1.5"
                 data-testid="pr-checks-card-row"
               >
                 <StatusGlyph bucket={bucket} />
@@ -263,9 +328,30 @@ export const PrChecksCard = memo(function PrChecksCard({
               </div>
             );
           })}
+          {hiddenCount > 0 ? (
+            onOpenChecksTab ? (
+              <button
+                type="button"
+                onClick={onOpenChecksTab}
+                className="mt-1 text-left text-[11px]"
+                style={prSectionAction()}
+                data-testid="pr-checks-card-more"
+              >
+                +{hiddenCount} more
+              </button>
+            ) : (
+              <span
+                className="mt-1 block text-[11px]"
+                style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}
+                data-testid="pr-checks-card-more"
+              >
+                +{hiddenCount} more
+              </span>
+            )
+          ) : null}
         </div>
       ) : null}
-    </section>
+    </PrSection>
   );
 });
 

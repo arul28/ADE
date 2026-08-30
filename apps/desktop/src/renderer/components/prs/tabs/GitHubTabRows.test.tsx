@@ -50,7 +50,7 @@ import {
   itemMatchesSelectionTarget,
 } from "./githubTabModel";
 
-describe("GitHubTab rows and mapping", () => {
+describe("GitHubTab rows", () => {
   beforeEach(() => {
     setupGitHubTabTest();
   });
@@ -182,7 +182,9 @@ describe("GitHubTab rows and mapping", () => {
     });
   });
 
-  it("marks unlinked PRs as unmapped", async () => {
+  it("shows no lane badge on a PR that has no lane", async () => {
+    // A PR without a lane is not in a state the user has to resolve, so the row
+    // says nothing about it. Absence of the lane chip is the whole message.
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,
       repoPullRequests: [
@@ -205,7 +207,7 @@ describe("GitHubTab rows and mapping", () => {
     await waitFor(() => {
       expect(screen.getByText("Unlinked PR")).not.toBeNull();
     });
-    expect(screen.getAllByText("unmapped").length).toBeGreaterThan(0);
+    expect(screen.queryByText("unmapped")).toBeNull();
   });
 
   it("does not mark unlinked PRs as unmapped in the merged bucket", async () => {
@@ -234,8 +236,8 @@ describe("GitHubTab rows and mapping", () => {
     await waitFor(() => {
       expect(screen.getByText("Merged after lane deleted")).not.toBeNull();
     });
-    // Mapping is a live-work concept: on a merged PR the lane is gone and mapping one
-    // would do nothing, so the badge must not appear.
+    // A local lane is a live-work concept: on a merged PR the lane is gone and
+    // checking the branch out again would do nothing, so no badge appears.
     expect(screen.queryByText("unmapped")).toBeNull();
   });
 
@@ -274,7 +276,7 @@ describe("GitHubTab rows and mapping", () => {
       expect(screen.getByText("Shipped from a deleted lane")).not.toBeNull();
     });
     expect(screen.getByText("was: auto-naming")).not.toBeNull();
-    expect(screen.getByText("· 3 chats · 2 proof")).not.toBeNull();
+    expect(screen.getByText("3 chats · 2 proof")).not.toBeNull();
     expect(screen.queryByText("unmapped")).toBeNull();
   });
 
@@ -408,29 +410,7 @@ describe("GitHubTab rows and mapping", () => {
     });
   });
 
-  it("requires confirmation before unmapping a GitHub PR from its lane", async () => {
-    const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    try {
-      renderTab();
-
-      await waitFor(() => {
-        expect(screen.getByText("Open PR")).toBeTruthy();
-      });
-      await user.click(screen.getByRole("button", { name: /#101 Open PR/i }));
-      await waitFor(() => {
-        expect(screen.getByTestId("pr-detail-pane").textContent).toContain("pr-open");
-      });
-      await user.click(screen.getByRole("button", { name: /unmap from lane/i }));
-
-      expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Unmap PR #101"));
-      expect(window.ade.prs.delete).not.toHaveBeenCalled();
-    } finally {
-      confirmSpy.mockRestore();
-    }
-  });
-
-  it("renders the full PR detail pane (with create/map affordance) for a selected unmapped PR", async () => {
+  it("renders the full PR detail pane (with the open-as-lane offer) for a selected unmapped PR", async () => {
     const user = userEvent.setup();
     const snapshotWithUnlinked: GitHubPrSnapshot = {
       ...snapshot,
@@ -451,7 +431,7 @@ describe("GitHubTab rows and mapping", () => {
       ],
     };
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
-    // No lane owns the PR head branch → the "Create lane from PR branch" action
+    // No lane owns the PR head branch → the "Open as lane" action
     // is offered (and there is no matching lane to map to).
     renderTab({ lanes: [] });
 
@@ -465,47 +445,7 @@ describe("GitHubTab rows and mapping", () => {
 
     // The create/map affordance is present (no read-only gate).
     const affordance = within(pane).getByTestId("pr-unmapped-affordance");
-    expect(within(affordance).getByRole("button", { name: /create lane from pr branch/i })).toBeTruthy();
-  });
-
-  it("maps an unmapped PR to a lane via the in-pane affordance", async () => {
-    const user = userEvent.setup();
-    const snapshotWithUnlinked: GitHubPrSnapshot = {
-      ...snapshot,
-      repoPullRequests: [
-        makeGitHubPr({
-          id: "repo-unlinked",
-          githubPrNumber: 200,
-          githubUrl: "https://github.com/ade-dev/ade/pull/200",
-          title: "Unlinked PR",
-          headBranch: "feature/lane-match",
-          linkedPrId: null,
-          linkedLaneId: null,
-          linkedLaneName: null,
-          adeKind: null,
-          createdAt: "2026-03-13T12:00:00.000Z",
-          updatedAt: "2026-03-13T12:05:00.000Z",
-        }),
-      ],
-    };
-    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
-    renderTab({
-      lanes: [makeLaneSummary({ id: "lane-match", name: "Matching lane", branchRef: "refs/heads/feature/lane-match" })],
-    });
-
-    await user.click(await screen.findByText("Unlinked PR"));
-    const pane = await screen.findByTestId("pr-detail-pane");
-    const affordance = within(pane).getByTestId("pr-unmapped-affordance");
-
-    await user.selectOptions(within(affordance).getByLabelText("Select lane to map"), "lane-match");
-    await user.click(within(affordance).getByRole("button", { name: /^map$/i }));
-
-    await waitFor(() => {
-      expect(window.ade.prs.linkToLane).toHaveBeenCalledWith({
-        laneId: "lane-match",
-        prUrlOrNumber: "https://github.com/ade-dev/ade/pull/200",
-      });
-    });
+    expect(within(affordance).getByRole("button", { name: /open as lane/i })).toBeTruthy();
   });
 
   it("opens a preflight dialog for an unmapped PR branch", async () => {
@@ -530,7 +470,7 @@ describe("GitHubTab rows and mapping", () => {
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
     renderTab();
 
-    const trigger = await screen.findByRole("button", { name: /create lane from pr branch/i });
+    const trigger = await screen.findByRole("button", { name: /open as lane/i });
     await user.click(trigger);
 
     expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
@@ -576,7 +516,7 @@ describe("GitHubTab rows and mapping", () => {
       .mockReturnValueOnce(createResult.promise);
     renderTab();
 
-    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    await user.click(await screen.findByRole("button", { name: /open as lane/i }));
     const dialog = await screen.findByRole("dialog", { name: /create lane from pr branch/i });
     await user.click(within(dialog).getByRole("button", { name: /^create lane$/i }));
 
@@ -638,7 +578,7 @@ describe("GitHubTab rows and mapping", () => {
         args.githubPrNumber === 200 ? firstPreflight.promise : secondPreflight.promise);
     renderTab();
 
-    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    await user.click(await screen.findByRole("button", { name: /open as lane/i }));
     expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
       repoOwner: "ade-dev",
       repoName: "ade",
@@ -646,7 +586,7 @@ describe("GitHubTab rows and mapping", () => {
     });
     await user.click(screen.getByRole("button", { name: /cancel/i }));
     await user.click(await screen.findByText("Second PR"));
-    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    await user.click(await screen.findByRole("button", { name: /open as lane/i }));
     expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
       repoOwner: "ade-dev",
       repoName: "ade",
@@ -729,7 +669,7 @@ describe("GitHubTab rows and mapping", () => {
     });
     renderTab();
 
-    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    await user.click(await screen.findByRole("button", { name: /open as lane/i }));
 
     expect(await screen.findByText(/already owned by lane 'Existing lane'/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^create lane$/i })).toHaveProperty("disabled", true);
@@ -794,10 +734,10 @@ describe("GitHubTab rows and mapping", () => {
       ],
     });
 
-    expect(await screen.findByRole("button", { name: /create lane from pr branch/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /open as lane/i })).toBeTruthy();
     expect(screen.queryByRole("option", { name: "Archived lane" })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /create lane from pr branch/i }));
+    await user.click(screen.getByRole("button", { name: /open as lane/i }));
 
     expect(await screen.findByText(/already owned by archived lane 'Archived lane'/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^create lane$/i })).toHaveProperty("disabled", true);
@@ -831,7 +771,7 @@ describe("GitHubTab rows and mapping", () => {
       .mockReturnValueOnce(forcedSnapshot.promise);
     renderTab({ onSelectPr, onRefreshAll });
 
-    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    await user.click(await screen.findByRole("button", { name: /open as lane/i }));
     await user.click(await screen.findByRole("button", { name: /^create lane$/i }));
 
     await waitFor(() => {

@@ -1,8 +1,15 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
+  ArrowRight,
+  Clock,
+  File as FileIcon,
+  GitCommit,
   GitMerge,
+  Path,
+  Timer,
   Trash,
   XCircle,
+  type Icon,
 } from "@phosphor-icons/react";
 
 import type {
@@ -14,56 +21,192 @@ import type {
   PrWithConflicts,
   UpdateBranchStrategy,
 } from "../../../../shared/types/prs";
-import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { LaneDialogShell } from "../../lanes/LaneDialogShell";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { formatTimestampShort } from "./prFormatters";
 import { canAttemptMerge } from "./prMergeRailUtils";
 import { PrMergeChecklist } from "./PrMergeChecklist";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
+import { PrUserAvatar } from "./PrUserAvatar";
+import { prFlatButton, prSectionAction, prSolidButton } from "./prSection";
+
+/**
+ * The rail's frame.
+ *
+ * Merging is the one irreversible act on this surface, so the rail gets the only
+ * accent outline in the three-column detail view — an ADE-accent hairline and a
+ * radius, nothing else. Deliberately NOT `floatingPane`: a fill plus a drop
+ * shadow is what made this pane read as a blob, and a filled accent container
+ * would also start competing with the merge button for "this is the action".
+ * A hairline frames; only the solid button acts.
+ */
+/**
+ * The accent frame around the merge rail.
+ *
+ * `marginTop` only — a symmetric margin inset the frame from the pane's own
+ * edges, so the border traced a box narrower than the space available and read
+ * as a floating card rather than as the bottom of the rail. The top margin is
+ * the separation from the section above; the sides and bottom belong to the
+ * pane's padding, not to this box.
+ */
+const RAIL_FRAME: CSSProperties = {
+  width: "100%",
+  // Content-sized on purpose. Filling the pane's leftover height wrapped a short
+  // merged banner in a tall empty box — the border should trace the content, not
+  // the space. Width still spans the rail, so it grows with the separator.
+  flexShrink: 0,
+  marginTop: 10,
+  borderRadius: 10,
+  border: `1px solid color-mix(in srgb, ${COLORS.accent} 38%, transparent)`,
+  background: "transparent",
+};
+
+/** Hairline between the rail's state block and its action row. */
+const RAIL_DIVIDER = `1px solid ${COLORS.borderMuted}`;
+
+/**
+ * A branch name in the merged banner. Same chip vocabulary the timeline and the
+ * detail header use, so the pair reads as branches rather than as raw text.
+ *
+ * The head chip shrinks and ellipsises; the base chip never does. In a ~390px
+ * rail that keeps a long lane branch on one line instead of pushing "main" onto
+ * a second row, and the full name stays available on hover.
+ */
+function BranchChip({ label, accent = false }: { label: string; accent?: boolean }) {
+  const color = accent ? COLORS.accent : COLORS.textSecondary;
+  return (
+    <span
+      title={label}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        minWidth: 0,
+        // Only the head branch gives up room; "main" stays whole.
+        flexShrink: accent ? 1 : 0,
+        overflow: "hidden",
+        padding: "2px 6px",
+        borderRadius: 5,
+        fontSize: 10,
+        fontFamily: MONO_FONT,
+        color,
+        background: accent ? `color-mix(in srgb, ${COLORS.accent} 12%, transparent)` : COLORS.recessedBg,
+        border: `1px solid ${accent ? COLORS.accentBorder : COLORS.border}`,
+      }}
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+    </span>
+  );
+}
+
+/** One shipped figure: a glyph, the number, then the noun it counts. */
+function ShippedStat({ icon: Glyph, value, label }: { icon: Icon; value: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5" style={{ color: COLORS.textMuted }}>
+      <Glyph size={11} style={{ color: COLORS.textDim, flexShrink: 0 }} />
+      <span>
+        <span style={{ color: COLORS.textSecondary, fontWeight: 600 }}>{value}</span> {label}
+      </span>
+    </span>
+  );
+}
 
 /**
  * The record of how a PR shipped, shown under the merged banner.
  *
- * Every line is optional and independently omitted: PRs merged before ADE recorded
- * merge metadata show less rather than showing blanks or invented values. The lane line
- * is the part GitHub cannot give you — it survives the lane's deletion because the
- * counts are frozen at detach time.
+ * Three groups, in descending importance: who merged it and when (attribution),
+ * how big it was (figures), and which ADE lane produced it (provenance). Every
+ * group is independently omitted — PRs merged before ADE recorded merge metadata
+ * show less rather than showing blanks or invented values.
+ *
+ * The lane group is the part GitHub cannot give you; it survives the lane's
+ * deletion because the counts are frozen at detach time. It is marked as ADE's
+ * own — accent label, lane colour, the word "ADE lane" — so it is never mistaken
+ * for another line of GitHub metadata.
  */
 function PrShippedSummary({ pr }: { pr: PrWithConflicts }) {
-  const lines: string[] = [];
-
-  const attribution = [pr.mergedBy?.login, pr.mergeMethod].filter(Boolean) as string[];
+  const mergedBy = pr.mergedBy ?? null;
   const mergedOn = pr.mergedAt ? formatTimestampShort(pr.mergedAt) : null;
-  if (attribution.length > 0 || mergedOn) {
-    lines.push([attribution.length > 0 ? `by ${attribution.join(" · ")}` : null, mergedOn].filter(Boolean).join(" · "));
-  }
+  const hasAttribution = Boolean(mergedBy?.login || mergedOn);
 
   const openFor = formatOpenDuration(pr.createdAt, pr.mergedAt);
-  const size = [
-    pr.commitCount != null ? `${pr.commitCount} commit${pr.commitCount === 1 ? "" : "s"}` : null,
-    pr.changedFiles != null ? `${pr.changedFiles} file${pr.changedFiles === 1 ? "" : "s"}` : null,
-    openFor ? `open ${openFor}` : null,
-  ].filter(Boolean) as string[];
-  if (size.length > 0) lines.push(size.join(" · "));
+  const stats: { key: string; icon: Icon; value: string; label: string }[] = [];
+  if (pr.commitCount != null) {
+    stats.push({ key: "commits", icon: GitCommit, value: String(pr.commitCount), label: pr.commitCount === 1 ? "commit" : "commits" });
+  }
+  if (pr.changedFiles != null) {
+    stats.push({ key: "files", icon: FileIcon, value: String(pr.changedFiles), label: pr.changedFiles === 1 ? "file" : "files" });
+  }
+  if (openFor) stats.push({ key: "open", icon: Timer, value: openFor, label: "open" });
 
   const detached = pr.detached;
-  if (detached?.laneName) {
-    const counts = [
+  const laneName = detached?.laneName ?? null;
+  const laneCounts = detached
+    ? ([
       detached.chats > 0 ? `${detached.chats} chat${detached.chats === 1 ? "" : "s"}` : null,
       detached.artifacts > 0 ? `${detached.artifacts} proof` : null,
-    ].filter(Boolean) as string[];
-    lines.push([`was: ${detached.laneName}`, ...counts].join(" · "));
-  }
+    ].filter(Boolean) as string[])
+    : [];
 
-  if (lines.length === 0) return null;
+  if (!hasAttribution && stats.length === 0 && !laneName) return null;
+
   return (
     <div
       data-testid="pr-shipped-summary"
-      className="mt-1.5 space-y-0.5 text-[10px] leading-snug"
-      style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
+      className="mt-2 text-[10px] leading-snug"
+      style={{ fontFamily: SANS_FONT }}
     >
-      {lines.map((line) => (
-        <div key={line}>{line}</div>
-      ))}
+      {hasAttribution ? (
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1" style={{ color: COLORS.textMuted }}>
+          {mergedBy?.login ? (
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <PrUserAvatar user={{ login: mergedBy.login, avatarUrl: mergedBy.avatarUrl }} size={13} />
+              <span className="min-w-0 truncate" style={{ color: COLORS.textSecondary }} title={mergedBy.login}>
+                {mergedBy.login}
+              </span>
+            </span>
+          ) : null}
+          {mergedOn ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Clock size={11} style={{ color: COLORS.textDim, flexShrink: 0 }} />
+              {mergedOn}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
+      {stats.length > 0 ? (
+        <div className={`flex flex-wrap items-center gap-x-3 gap-y-1${hasAttribution ? " mt-1.5" : ""}`}>
+          {stats.map((stat) => (
+            <ShippedStat key={stat.key} icon={stat.icon} value={stat.value} label={stat.label} />
+          ))}
+        </div>
+      ) : null}
+
+      {laneName ? (
+        <div
+          data-testid="pr-shipped-lane"
+          className="mt-2 min-w-0"
+          style={{
+            paddingLeft: 7,
+            borderLeft: `2px solid color-mix(in srgb, ${detached?.laneColor || COLORS.accent} 55%, transparent)`,
+          }}
+        >
+          <div className="flex items-center gap-1.5" style={{ color: COLORS.accent }}>
+            <Path size={10} weight="bold" style={{ flexShrink: 0 }} />
+            <span style={{ fontWeight: 600 }}>ADE lane</span>
+          </div>
+          <div className="mt-0.5 flex min-w-0 items-baseline gap-1.5">
+            <span className="min-w-0 truncate" style={{ color: COLORS.textSecondary }} title={laneName}>
+              {laneName}
+            </span>
+            {laneCounts.length > 0 ? (
+              <span className="shrink-0" style={{ color: COLORS.textMuted }}>
+                · {laneCounts.join(" · ")}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -149,9 +292,8 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   const [dialogOpen, setDialogOpen] = useState(false);
   const [defaultMethod, setDefaultMethod] = useState<MergeMethod>(() => readLastMergeMethod(mergeMethod));
   const [deleteBranchArmed, setDeleteBranchArmed] = useState(false);
-  const [closePrArmed, setClosePrArmed] = useState(false);
+  const [closeDialogOpen, setCloseDialogOpen] = useState(false);
   const deleteBranchArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const closePrArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleDeleteBranchClick = useCallback(() => {
     if (!onDeleteBranch) return;
@@ -166,30 +308,33 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
     deleteBranchArmTimer.current = setTimeout(() => setDeleteBranchArmed(false), 4000);
   }, [deleteBranchArmed, onDeleteBranch]);
 
-  const handleClosePrClick = useCallback(() => {
+  const handleConfirmClosePr = useCallback(() => {
     if (!onClose) return;
-    if (closePrArmed) {
-      if (closePrArmTimer.current) clearTimeout(closePrArmTimer.current);
-      setClosePrArmed(false);
-      onClose();
-      return;
-    }
-    setClosePrArmed(true);
-    if (closePrArmTimer.current) clearTimeout(closePrArmTimer.current);
-    closePrArmTimer.current = setTimeout(() => setClosePrArmed(false), 4000);
-  }, [closePrArmed, onClose]);
+    onClose();
+    setCloseDialogOpen(false);
+  }, [onClose]);
 
   useEffect(() => () => {
     if (deleteBranchArmTimer.current) clearTimeout(deleteBranchArmTimer.current);
-    if (closePrArmTimer.current) clearTimeout(closePrArmTimer.current);
   }, []);
 
+  // Switching PRs disarms everything. A four-second arm that survives the switch
+  // would leave "Click again to confirm" showing on a *different* PR's branch,
+  // one click from deleting it.
   useEffect(() => {
-    setClosePrArmed(false);
+    setCloseDialogOpen(false);
+    setDeleteBranchArmed(false);
+    if (deleteBranchArmTimer.current) clearTimeout(deleteBranchArmTimer.current);
   }, [pr.id]);
 
-  const mergeEnabled = canAttemptMerge({ pr, status, bypassRules: false })
-    || (Boolean(status?.canBypass) && status?.mergeStateStatus === "blocked");
+  // A merge that only becomes possible through an admin bypass is a different
+  // act from a clean merge, so the button is toned differently — but the
+  // enablement rule below is exactly the union it always was.
+  const mergeAllowed = canAttemptMerge({ pr, status, bypassRules: false });
+  const bypassOnly = !mergeAllowed && Boolean(status?.canBypass) && status?.mergeStateStatus === "blocked";
+  const mergeEnabled = mergeAllowed || bypassOnly;
+  const mergeTone = bypassOnly ? COLORS.danger : COLORS.success;
+  const showCloseAction = Boolean(onClose) && pr.state === "open";
   const isMerged = pr.state === "merged";
   const isClosed = pr.state === "closed";
   const isTerminal = isMerged || isClosed;
@@ -219,40 +364,52 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
     [onMerge],
   );
 
+  const showManageLane = Boolean(onOpenManageLane && pr.laneId);
+  const showDeleteBranch = isMerged && Boolean(onDeleteBranch);
+
   if (isTerminal) {
     return (
       <div
         data-testid="pr-detail-merge-rail"
-        className="w-full"
-        style={{ background: "transparent" }}
+        className="overflow-hidden"
+        style={RAIL_FRAME}
       >
         <div className="shrink-0">
           {isMerged ? (
+            // Still flat inside the frame: no tinted card, no shadow. The merge
+            // glyph and the branch pair carry the state, and a hairline separates
+            // the record from the actions below.
             <div
               className="px-3 py-2.5"
-              style={{
-                background: `color-mix(in srgb, ${COLORS.accent} 14%, var(--color-card))`,
-                borderBottom: `1px solid color-mix(in srgb, ${COLORS.accent} 26%, transparent)`,
-              }}
+              style={showManageLane || showDeleteBranch ? { borderBottom: RAIL_DIVIDER } : undefined}
               data-testid="pr-merge-merged-banner"
             >
-              <div className="flex items-start gap-2">
-                <GitMerge size={15} weight="fill" style={{ color: COLORS.accent, marginTop: 1, flexShrink: 0 }} />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-semibold leading-snug" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                    Merged and closed
-                  </div>
-                  <div className="mt-1 text-[10px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-                    <span className="font-mono">{pr.headBranch}</span> into <span className="font-mono">{pr.baseBranch}</span>
-                  </div>
-                  <PrShippedSummary pr={pr} />
-                </div>
+              {/* Outcome: the strongest line, with how it merged kept quiet on the right. */}
+              <div className="flex items-center gap-2">
+                <GitMerge size={15} weight="fill" style={{ color: COLORS.accent, flexShrink: 0 }} />
+                <span className="text-[11px] font-semibold leading-snug" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                  Merged and closed
+                </span>
+                {pr.mergeMethod ? (
+                  <span className="ml-auto shrink-0 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+                    {pr.mergeMethod === "merge" ? "merge commit" : `${pr.mergeMethod} merge`}
+                  </span>
+                ) : null}
               </div>
+
+              {/* Structure: which branch went where. */}
+              <div className="mt-2 flex items-center gap-1.5">
+                <BranchChip label={pr.headBranch} accent />
+                <ArrowRight size={11} weight="bold" style={{ color: COLORS.textDim, flexShrink: 0 }} />
+                <BranchChip label={pr.baseBranch} />
+              </div>
+
+              <PrShippedSummary pr={pr} />
             </div>
           ) : (
             <div
               className="px-3 py-2.5"
-              style={{ borderBottom: `1px solid ${COLORS.border}` }}
+              style={showManageLane ? { borderBottom: RAIL_DIVIDER } : undefined}
             >
               <div
                 className="flex items-center gap-2 text-[11px]"
@@ -266,14 +423,12 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
                   type="button"
                   disabled={actionBusy}
                   onClick={onReopen}
-                  className="mt-2 inline-flex h-7 w-full items-center justify-center gap-1.5 rounded-md text-[11px] font-medium"
-                  style={{
-                    color: COLORS.success,
-                    background: "color-mix(in srgb, var(--color-success) 10%, transparent)",
-                    border: "1px solid color-mix(in srgb, var(--color-success) 35%, transparent)",
+                  className="mt-2"
+                  style={prFlatButton({
+                    tone: COLORS.success,
+                    width: "100%",
                     opacity: actionBusy ? 0.6 : 1,
-                    fontFamily: SANS_FONT,
-                  }}
+                  })}
                 >
                   Reopen pull request
                 </button>
@@ -281,48 +436,43 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
             </div>
           )}
 
-          <div className="flex items-center justify-between gap-2 px-3 py-2">
-            {onOpenManageLane && pr.laneId ? (
-              <button
-                type="button"
-                onClick={handleRailClick}
-                className="inline-flex h-7 items-center rounded-md px-2 text-[11px] font-medium"
-                style={{
-                  color: COLORS.accent,
-                  background: "transparent",
-                  border: "none",
-                  fontFamily: SANS_FONT,
-                  cursor: "pointer",
-                }}
-              >
-                Manage lane
-              </button>
-            ) : (
-              <span />
-            )}
-            {isMerged && onDeleteBranch ? (
-              <button
-                type="button"
-                disabled={deleteBranchBusy}
-                onClick={handleDeleteBranchClick}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-medium"
-                style={{
-                  color: deleteBranchArmed ? COLORS.danger : COLORS.textPrimary,
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${deleteBranchArmed ? COLORS.danger : COLORS.border}`,
-                  opacity: deleteBranchBusy ? 0.6 : 1,
-                  fontFamily: SANS_FONT,
-                }}
-              >
-                <Trash size={12} />
-                {deleteBranchBusy
-                  ? "Deleting…"
-                  : deleteBranchArmed
-                    ? "Click again to confirm"
-                    : "Delete branch"}
-              </button>
-            ) : null}
-          </div>
+          {/* Omitted entirely when neither action applies, so the frame never
+              closes on an empty strip. */}
+          {showManageLane || showDeleteBranch ? (
+            <div className="flex items-center justify-between gap-2 px-3 py-2">
+              {showManageLane ? (
+                <button
+                  type="button"
+                  onClick={handleRailClick}
+                  style={prSectionAction({ fontWeight: 500 })}
+                >
+                  Manage lane
+                </button>
+              ) : (
+                <span />
+              )}
+              {showDeleteBranch ? (
+                <button
+                  type="button"
+                  disabled={deleteBranchBusy}
+                  onClick={handleDeleteBranchClick}
+                  style={prFlatButton({
+                    // Armed state switches the whole control to the danger tone;
+                    // the label ("Click again to confirm") says it too.
+                    tone: deleteBranchArmed ? COLORS.danger : undefined,
+                    opacity: deleteBranchBusy ? 0.6 : 1,
+                  })}
+                >
+                  <Trash size={12} />
+                  {deleteBranchBusy
+                    ? "Deleting…"
+                    : deleteBranchArmed
+                      ? "Click again to confirm"
+                      : "Delete branch"}
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
     );
@@ -331,8 +481,8 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   return (
     <div
       data-testid="pr-detail-merge-rail"
-      className="flex w-full flex-col overflow-hidden"
-      style={{ background: "transparent" }}
+      className="flex flex-col overflow-hidden"
+      style={RAIL_FRAME}
     >
       <div className="overflow-y-auto">
         <PrMergeChecklist
@@ -345,43 +495,51 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
           updateBranchNotice={updateBranchNotice}
         />
 
-        <div className="px-3 pb-3">
+        {/* Merge takes the row; close is the narrow 30% escape hatch beside it. */}
+        <div className="flex items-stretch gap-2 px-3 pb-3">
+          {/* The only filled control on the pane. Green for a clean merge, red
+              when the only way through is an admin bypass; disabled falls back
+              to a recessed outline that still reads as a button. */}
           <button
             type="button"
             disabled={!mergeEnabled || actionBusy}
             onClick={() => setDialogOpen(true)}
-            className="inline-flex min-h-8 w-full items-center justify-center gap-1.5 rounded-md px-3 text-[11px] font-semibold"
-            style={{
-              color: mergeEnabled ? "#fff" : COLORS.textMuted,
-              background: mergeEnabled
-                ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)`
-                : COLORS.recessedBg,
-              border: `1px solid ${mergeEnabled ? COLORS.success : COLORS.border}`,
+            style={prSolidButton({
+              tone: mergeTone,
+              flex: 7,
               opacity: actionBusy ? 0.6 : 1,
-              fontFamily: SANS_FONT,
-            }}
+              ...(mergeEnabled
+                ? {}
+                : {
+                  color: COLORS.textMuted,
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.border}`,
+                  cursor: "default",
+                }),
+            })}
             data-testid="pr-merge-open-dialog-button"
           >
             <GitMerge size={12} weight="bold" />
             {actionBusy ? "Merging…" : "Merge…"}
           </button>
 
-          {onClose && pr.state === "open" ? (
+          {showCloseAction ? (
             <button
               type="button"
               disabled={actionBusy}
-              onClick={handleClosePrClick}
-              className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md text-[11px] font-medium"
-              style={{
-                color: COLORS.danger,
-                background: "color-mix(in srgb, var(--color-error) 8%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+              onClick={() => setCloseDialogOpen(true)}
+              title="Close pull request"
+              style={prFlatButton({
+                tone: COLORS.danger,
+                flex: 3,
+                height: 30,
+                padding: "0 8px",
                 opacity: actionBusy ? 0.6 : 1,
-                fontFamily: SANS_FONT,
-              }}
+              })}
+              data-testid="pr-close-open-dialog-button"
             >
               <XCircle size={12} />
-              {closePrArmed ? "Click again to close PR" : "Close pull request"}
+              Close
             </button>
           ) : null}
         </div>
@@ -398,6 +556,53 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
         onMerge={handleDialogMerge}
         onMethodChange={handleMethodChange}
       />
+
+      <LaneDialogShell
+        open={closeDialogOpen}
+        onOpenChange={setCloseDialogOpen}
+        title={`Close pull request #${pr.githubPrNumber}`}
+        icon={XCircle}
+        busy={actionBusy}
+        widthClassName="w-[min(460px,calc(100vw-2rem))]"
+      >
+        <div
+          className="text-[12px] leading-relaxed"
+          style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}
+        >
+          Closes <span style={{ color: COLORS.textPrimary }}>{pr.title}</span> on GitHub. The branch{" "}
+          <span className="font-mono">{pr.headBranch}</span> is kept, and you can reopen the pull request later.
+        </div>
+
+        <div className="mt-4 flex items-center justify-end gap-2 border-t pt-4" style={{ borderColor: COLORS.border }}>
+          <button
+            type="button"
+            onClick={() => setCloseDialogOpen(false)}
+            disabled={actionBusy}
+            style={prFlatButton({
+              color: COLORS.textSecondary,
+              height: 30,
+              opacity: actionBusy ? 0.6 : 1,
+            })}
+          >
+            Cancel
+          </button>
+          {/* The dialog is its own surface with its own single decisive action,
+              so the solid fill belongs to this button while it is open. */}
+          <button
+            type="button"
+            onClick={handleConfirmClosePr}
+            disabled={actionBusy}
+            data-testid="pr-close-confirm-button"
+            style={prSolidButton({
+              tone: COLORS.danger,
+              opacity: actionBusy ? 0.6 : 1,
+            })}
+          >
+            <XCircle size={12} weight="bold" />
+            Close pull request
+          </button>
+        </div>
+      </LaneDialogShell>
     </div>
   );
 });

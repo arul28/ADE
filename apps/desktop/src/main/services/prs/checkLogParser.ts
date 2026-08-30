@@ -76,33 +76,57 @@ export function splitLogIntoSections(rawLog: string): LogStepSection[] {
   return sections;
 }
 
+/** How {@link selectStepSection} arrived at the section it returned. */
+export type LogSectionScope = "named-step" | "errored-step" | "whole-log";
+
+export type SelectedLogSection = {
+  section: LogStepSection | null;
+  scope: LogSectionScope;
+};
+
 /**
- * Find the section belonging to a step.
+ * Pick the section of the log worth showing, and say how it was picked.
  *
  * GitHub titles the group either with the step's `name:` or with the synthesized
  * `Run <command>`, so we accept an exact match, a `Run <name>` match, and a
  * containment match in that order — never a fuzzy substring in the other
  * direction, which would happily match the wrong step.
+ *
+ * When neither a name nor an `##[error]` marker identifies a section, this
+ * returns `null` with scope `whole-log`. It used to return the *last* section
+ * instead, which on a job that passed is the cleanup group — so a green job's
+ * "failing step output" was reliably the tail of `Post Run actions/checkout`,
+ * i.e. `git version 2.43.0`. An arbitrary section is worse than no section:
+ * the caller can be honest about a whole-log tail, but it cannot know that a
+ * confidently-returned section is meaningless.
  */
+export function selectStepSection(
+  sections: readonly LogStepSection[],
+  stepName: string | null,
+): SelectedLogSection {
+  if (sections.length === 0) return { section: null, scope: "whole-log" };
+  const wanted = (stepName ?? "").trim().toLowerCase();
+  if (wanted) {
+    const exact = sections.find((section) => section.title.trim().toLowerCase() === wanted);
+    if (exact) return { section: exact, scope: "named-step" };
+    const run = sections.find((section) => section.title.trim().toLowerCase() === `run ${wanted}`);
+    if (run) return { section: run, scope: "named-step" };
+    const contains = sections.find((section) => section.title.trim().toLowerCase().includes(wanted));
+    if (contains) return { section: contains, scope: "named-step" };
+  }
+  // No name match: the last section that actually errored is the best guess.
+  for (let i = sections.length - 1; i >= 0; i -= 1) {
+    if (sections[i]!.hasError) return { section: sections[i]!, scope: "errored-step" };
+  }
+  return { section: null, scope: "whole-log" };
+}
+
+/** {@link selectStepSection} without the scope, for callers that only want the body. */
 export function findStepSection(
   sections: readonly LogStepSection[],
   stepName: string | null,
 ): LogStepSection | null {
-  if (sections.length === 0) return null;
-  const wanted = (stepName ?? "").trim().toLowerCase();
-  if (wanted) {
-    const exact = sections.find((section) => section.title.trim().toLowerCase() === wanted);
-    if (exact) return exact;
-    const run = sections.find((section) => section.title.trim().toLowerCase() === `run ${wanted}`);
-    if (run) return run;
-    const contains = sections.find((section) => section.title.trim().toLowerCase().includes(wanted));
-    if (contains) return contains;
-  }
-  // No name match: the last section that actually errored is the best guess.
-  for (let i = sections.length - 1; i >= 0; i -= 1) {
-    if (sections[i]!.hasError) return sections[i]!;
-  }
-  return sections[sections.length - 1] ?? null;
+  return selectStepSection(sections, stepName).section;
 }
 
 /**
@@ -136,10 +160,16 @@ export type ParsedCheckLog = {
   headline: string | null;
   /** The section title we actually used, for diagnostics. */
   sectionTitle: string | null;
+  /** Whether `lines` is a named step, the erroring step, or the whole log. */
+  scope: LogSectionScope;
 };
 
 /**
- * Full parse: raw log text → the tail of the failing step, plus a headline.
+ * Full parse: raw log text → the tail of the step that matters, plus a headline.
+ *
+ * `scope` is part of the contract, not a diagnostic: the caller has to be able
+ * to tell the tail of an identified step from the tail of the whole job, because
+ * only the first one can honestly be labelled with a step name.
  */
 export function parseCheckLog(args: {
   rawLog: string;
@@ -147,7 +177,7 @@ export function parseCheckLog(args: {
   maxLines: number;
 }): ParsedCheckLog {
   const sections = splitLogIntoSections(args.rawLog);
-  const section = findStepSection(sections, args.failingStepName);
+  const { section, scope } = selectStepSection(sections, args.failingStepName);
   const body = section ? section.lines : args.rawLog.split("\n").map(stripTimestamp);
 
   // Trim trailing blank lines so the drawer does not open on empty space.
@@ -160,5 +190,6 @@ export function parseCheckLog(args: {
     lines: trimmed.slice(Math.max(0, trimmed.length - limit)),
     headline: extractHeadline(trimmed),
     sectionTitle: section?.title ?? null,
+    scope,
   };
 }

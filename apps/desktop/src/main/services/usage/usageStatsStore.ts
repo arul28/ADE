@@ -138,6 +138,12 @@ const MEANINGFUL_ACTIONS = new Set([
   "prs.addComment",
   "prs.submitReview",
   "prs.rerunChecks",
+  // Deleting a merged PR's branch. It sat outside this set while it was
+  // reachable only from a lane-mapped PR; the branch that removed that gate
+  // made it an offer on every merged row, and a destructive mutation the user
+  // asks for is exactly what this ledger is for. One row per click on a
+  // terminal PR — as low-frequency as an action gets.
+  "prs.cleanupBranch",
   "automations.triggerManually",
 ]);
 

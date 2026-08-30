@@ -541,6 +541,11 @@ ade prs github-snapshot --include-external-closed --history-page-limit 4
 ade prs github-snapshot --include-state-counts --no-revalidate
 ade prs checks pr-id --text                                 # header carries the canonical rollup (checksStatus/checksCounts); "not run" means nothing verified the commit, whatever the rows say
 ade prs comments pr-id --text
+ade prs land pr-id --method squash                          # merges and KEEPS the head branch on the remote
+ade prs land pr-id --method squash --delete-remote-branch   # opt in to deleting the head branch after the merge
+ade prs close pr-id                                         # close on GitHub; the branch is kept and `ade prs reopen pr-id` undoes it
+ade prs cleanup-branch pr-id --delete-remote-branch         # delete a merged/closed PR's branch (local too, unless --keep-local)
+ade prs land 'gh:owner/repo#42' --method squash             # every prs subcommand takes this id form for a PR ADE has no row for; quote it, '#' starts a shell comment
 ade shell start --lane lane-id -- npm test
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text

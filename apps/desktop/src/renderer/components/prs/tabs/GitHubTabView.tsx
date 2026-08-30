@@ -18,6 +18,11 @@ import {
   primaryButton,
 } from "../../lanes/laneDesignTokens";
 import { PrDetailPane } from "../detail/PrDetailPane";
+import {
+  PR_OVERVIEW_CENTER_MIN_PX,
+  PR_OVERVIEW_RIGHT_RAIL_MIN_PX,
+  PR_OVERVIEW_SEPARATOR_PX,
+} from "../detail/PrDetailTimelineRails";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
 import { GitHubStackInspector } from "../shared/GitHubStackInspector";
@@ -44,6 +49,19 @@ const GITHUB_PR_LIST_WIDTH_KEY = "ade.prs.githubListWidth";
 const GITHUB_PR_LIST_MIN_PX = 260;
 const GITHUB_PR_LIST_MAX_PX = 560;
 const GITHUB_PR_LIST_DEFAULT_PX = 380;
+/**
+ * The detail pane's floor, in pixels — NOT a percentage.
+ *
+ * Summed from the detail pane's OWN minimums rather than written out, so moving
+ * either rail constant can't silently invalidate this floor. A percentage floor
+ * did not know about them at all: on a 1327px window a list dragged to its 560px
+ * max left the detail pane 708px and squeezed BOTH inner panels under their
+ * minimums — the right rail collapsed to 360 and started truncating reviewers,
+ * checks, files and the merge box. The list may not take space the detail pane
+ * needs to stay whole.
+ */
+const GITHUB_PR_DETAIL_MIN_PX =
+  PR_OVERVIEW_CENTER_MIN_PX + PR_OVERVIEW_SEPARATOR_PX + PR_OVERVIEW_RIGHT_RAIL_MIN_PX;
 
 function readPersistedGithubPrListPx(): number {
   try {
@@ -326,11 +344,15 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
               </div>
             </div>
           </Panel>
-          <ResizeGutter orientation="vertical" thin narrow />
+          {/* `thin` only, never `narrow`: narrow renders a 4px strip with no
+              handle, which is the width of a hairline and effectively unaimable.
+              This was the one splitter in the renderer using it, and the one
+              users reported as not working. */}
+          <ResizeGutter orientation="vertical" thin />
           <Panel
             id="github-pr-detail"
             data-tour="prs.detailDrawer"
-            minSize="30%"
+            minSize={GITHUB_PR_DETAIL_MIN_PX}
             className="min-h-0 min-w-0"
             style={{ overflow: "hidden" }}
           >

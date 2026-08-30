@@ -44,6 +44,10 @@ struct PRsTabView: View {
   @State private var autoMapPreflight: PrAutoMapPreflight?
   @State private var autoMapPreflightLoading = false
   @State private var autoMapBlockingMessage: String?
+  /// The PR a swipe-to-close is waiting on confirmation for. Closing is a
+  /// GitHub state change on someone's work, so it asks first here exactly as it
+  /// does on desktop — a swipe plus one tap is not a decision.
+  @State private var closeConfirmationTarget: PullRequestListItem?
   @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
   @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
   /// Primary headline selector for the GitHub surface (desktop parity): three
@@ -533,6 +537,25 @@ struct PRsTabView: View {
           onCancel: { autoMapRequest = nil }
         )
       }
+      .confirmationDialog(
+        prCloseConfirmationTitle(prNumber: closeConfirmationTarget?.githubPrNumber),
+        isPresented: Binding(
+          get: { closeConfirmationTarget != nil },
+          set: { if !$0 { closeConfirmationTarget = nil } }
+        ),
+        titleVisibility: .visible,
+        presenting: closeConfirmationTarget
+      ) { target in
+        Button("Close pull request", role: .destructive) {
+          closeConfirmationTarget = nil
+          runPrRootAction("Closing pull request") {
+            try await syncService.closePullRequest(prId: target.id)
+          }
+        }
+        Button("Cancel", role: .cancel) { closeConfirmationTarget = nil }
+      } message: { target in
+        Text(prCloseConfirmationMessage(headBranch: target.headBranch))
+      }
     }
   }
 
@@ -850,22 +873,8 @@ struct PRsTabView: View {
         }
       }
       if !externalItems.isEmpty {
-        // Only count rows that could still be mapped. A merged external PR has no lane
-        // to map to, so counting it here would recreate the noise we just removed.
-        let unmappedCount = externalItems.filter {
-          $0.adeKind == nil
-            && $0.linkedPrId == nil
-            && $0.linkedLaneId == nil
-            && $0.state != "merged"
-            && $0.state != "closed"
-        }.count
         HStack(spacing: 6) {
-          PrsEyebrowLabel(
-            text: unmappedCount > 0
-              ? "External · \(unmappedCount) unmapped"
-              : "External",
-            tint: PrsGlass.externalTop
-          )
+          PrsEyebrowLabel(text: "External", tint: PrsGlass.externalTop)
           Spacer(minLength: 0)
         }
         .padding(.top, 6)
@@ -964,7 +973,7 @@ struct PRsTabView: View {
           .tint(ADEColor.success)
         }
         if canLinkGitHubPullRequests {
-          Button("Map") {
+          Button("Link lane") {
             laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
           }
           .tint(ADEColor.tintPRs)
@@ -1104,9 +1113,7 @@ struct PRsTabView: View {
 
     if caps?.canClose ?? (pr.state == "open") {
       Button("Close", role: .destructive) {
-        runPrRootAction("Closing pull request") {
-          try await syncService.closePullRequest(prId: pr.id)
-        }
+        closeConfirmationTarget = pr
       }
     } else if caps?.canReopen ?? (pr.state == "closed") {
       Button("Reopen") {

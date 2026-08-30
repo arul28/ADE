@@ -367,12 +367,12 @@ private struct PrDetailOverviewPreviewScreen: View {
   }
 }
 
-private struct PrUnmappedBannerPreviewScreen: View {
+private struct PrLocalLaneOfferBannerPreviewScreen: View {
   @State private var expanded = true
 
   var body: some View {
     VStack(spacing: 20) {
-      PrUnmappedThreadBanner(
+      PrLocalLaneOfferBanner(
         canAutoMap: true,
         canMap: true,
         isExpanded: $expanded,
@@ -470,8 +470,8 @@ private struct PrDetailNotRunPreviewScreen: View {
     .preferredColorScheme(.light)
 }
 
-#Preview("PR detail · Unmapped banner") {
-  PrUnmappedBannerPreviewScreen()
+#Preview("PR detail · Local lane offer") {
+  PrLocalLaneOfferBannerPreviewScreen()
     .preferredColorScheme(.dark)
 }
 

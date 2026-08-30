@@ -173,6 +173,83 @@ describe("PrChecksCard summary + bucketing", () => {
     expect(rowNames()).toEqual(["e2e"]);
   });
 
+  // The rail is a preview, not the CI tab: a 37-job PR must not be able to walk
+  // the merge rail off the bottom of the column.
+  it("caps the preview at previewLimit rows and sends the rest to the checks tab", () => {
+    const onOpenChecksTab = vi.fn();
+    render(
+      <PrChecksCard
+        fill
+        previewLimit={3}
+        onOpenChecksTab={onOpenChecksTab}
+        checks={[
+          check({ name: "e2e", conclusion: "failure" }),
+          check({ name: "a" }),
+          check({ name: "b" }),
+          check({ name: "c" }),
+          check({ name: "d" }),
+        ]}
+        actionRuns={[]}
+      />,
+    );
+
+    const names = rowNames();
+    expect(names).toHaveLength(3);
+    // Truncation never costs you the failure: the list is already ordered.
+    expect(names[0]).toBe("e2e");
+
+    const more = screen.getByTestId("pr-checks-card-more");
+    expect(more.textContent).toBe("+2 more");
+    fireEvent.click(more);
+    expect(onOpenChecksTab).toHaveBeenCalledTimes(1);
+  });
+
+  it("spends the preview budget on missing required contexts before results", () => {
+    render(
+      <PrChecksCard
+        fill
+        previewLimit={2}
+        onOpenChecksTab={() => {}}
+        missingRequired={["CI / build", "CI / lint"]}
+        checks={[check({ name: "e2e", conclusion: "failure" })]}
+        actionRuns={[]}
+      />,
+    );
+
+    expect(screen.getAllByTestId("pr-checks-card-ghost-row")).toHaveLength(2);
+    expect(rowNames()).toHaveLength(0);
+    expect(screen.getByTestId("pr-checks-card-more").textContent).toBe("+1 more");
+  });
+
+  it("keeps the list uncapped when no previewLimit is given", () => {
+    render(
+      <PrChecksCard
+        fill
+        checks={[check({ name: "a" }), check({ name: "b" }), check({ name: "c" })]}
+        actionRuns={[]}
+      />,
+    );
+    expect(rowNames()).toHaveLength(3);
+    expect(screen.queryByTestId("pr-checks-card-more")).toBeNull();
+  });
+
+  // Layer-3 PRs have a zero row total, so a total-only guard hid the one link
+  // that could explain the ghost rows.
+  it("still offers View all when only missing required contexts exist", () => {
+    const onOpenChecksTab = vi.fn();
+    render(
+      <PrChecksCard
+        checks={[]}
+        actionRuns={[]}
+        missingRequired={["CI / build"]}
+        checksStatus="not_run"
+        onOpenChecksTab={onOpenChecksTab}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /view all/i }));
+    expect(onOpenChecksTab).toHaveBeenCalledTimes(1);
+  });
+
   it("renders ghost rows, and no green header, when nothing at all reported", () => {
     // The pure layer-3 case: branch protection names a required context and
     // nothing ran. The list must still render, and the header must not claim a
