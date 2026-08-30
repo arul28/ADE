@@ -37,6 +37,9 @@ const PERF_EVENT_KINDS: ReadonlySet<string> = new Set<PerfEventKind>([
   "ipcInvoke",
   "processMetrics",
   "rendererMemory",
+  "mainLoopDelay",
+  "chatTextFlush",
+  "streamSmoothness",
   "note",
 ]);
 

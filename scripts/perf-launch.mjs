@@ -15,6 +15,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { canConnectToSocket, resolveDevSocketPath, shutdownRuntime } from "./dev-shared.mjs";
 
 const argv = process.argv.slice(2);
 const args = {
@@ -77,6 +78,28 @@ const env = {
   ELECTRON_ENABLE_LOGGING: "1",
 };
 delete env.ADE_PERF_SCENARIO;
+
+/**
+ * The chat sessions we are measuring are hosted by the runtime daemon, not by
+ * Electron main, and a daemon only ever sees `ADE_PERF_RUN_ID` if it inherits
+ * it at spawn time (scripts/dev-shared.mjs `detachedDevRuntimeEnv` passes the
+ * whole parent env). `ensureRuntime` reuses an already-listening, non-stale
+ * daemon untouched — which is exactly how a perf run ends up with zero
+ * `chatTextFlush` events. Stop it here so `dev:desktop` has to spawn a fresh
+ * one under this run's environment.
+ */
+const socketPath = resolveDevSocketPath();
+if (await canConnectToSocket(socketPath)) {
+  console.log(`[perf-launch] stopping existing dev runtime at ${socketPath} so it restarts with runId=${runId}`);
+  try {
+    await shutdownRuntime(socketPath);
+  } catch (error) {
+    console.warn(
+      `[perf-launch] could not stop the dev runtime (${error instanceof Error ? error.message : String(error)}).`,
+    );
+    console.warn(`[perf-launch] chatTextFlush events will be missing; stop it manually with: npm run dev:runtime:stop`);
+  }
+}
 
 const child = spawn(
   "npm",

@@ -75,6 +75,9 @@ import {
   resolveAnchoredChatRowIndex,
   resolveOlderHistoryPrefetchTriggerPx,
   resolveWorkingIndicatorLabel,
+  sameKeyList,
+  sameMapContents,
+  sameSetContents,
   shouldAbsorbProgrammaticScrollEvent,
   stabilizeTranscriptToolActivity,
   shouldStickToBottomAfterScroll,
@@ -5044,5 +5047,139 @@ describe("transcript tool-activity identity stability", () => {
     const first = deriveTranscriptToolActivity(buildRows("a") as never);
     const second = deriveTranscriptToolActivity(buildRows("a") as never);
     expect(stabilizeTranscriptToolActivity(first, second)).toBe(first);
+  });
+});
+
+describe("streaming-delta identity stabilization", () => {
+  afterEach(() => cleanup());
+
+  it("reuses the previous Map when a delta leaves the resolved-input contents alone", () => {
+    // `resolvedInputStates` / `resolvedInputAnswers` are rebuilt on every delta
+    // (they memoize on `events`, whose identity changes per flush) but their
+    // contents only move when a question is answered.
+    const resolution = { state: "answered" } as const;
+    const previous = new Map<string, { readonly state: string }>([["item-1", resolution]]);
+    const rebuilt = new Map([["item-1", resolution]]);
+    expect(sameMapContents(previous, rebuilt)).toBe(true);
+    expect(sameMapContents(previous, new Map([["item-1", { state: "cancelled" } as const]]))).toBe(false);
+    expect(sameMapContents(previous, new Map())).toBe(false);
+    expect(sameMapContents(previous, new Map([["item-2", resolution]]))).toBe(false);
+  });
+
+  it("reuses the previous Set when a delta leaves the receipt/queue ids alone", () => {
+    const previous = new Set(["a", "b"]);
+    expect(sameSetContents(previous, new Set(["a", "b"]))).toBe(true);
+    expect(sameSetContents(previous, new Set(["b", "a"]))).toBe(true);
+    expect(sameSetContents(previous, new Set(["a"]))).toBe(false);
+    expect(sameSetContents(previous, new Set(["a", "c"]))).toBe(false);
+  });
+
+  it("treats the row-key list as changed as soon as any key moves", () => {
+    // Order matters: `rowHeight` indexes by position, so a reorder MUST be
+    // reported as a change or the virtualizer would measure the wrong row.
+    expect(sameKeyList(["a", "b"], ["a", "b"])).toBe(true);
+    expect(sameKeyList(["a", "b"], ["b", "a"])).toBe(false);
+    expect(sameKeyList(["a", "b"], ["a", "b", "c"])).toBe(false);
+  });
+
+  describe("virtualized rows", () => {
+    let observerConstructions = 0;
+    let observerDisconnects = 0;
+    let previousResizeObserver: unknown;
+
+    beforeEach(() => {
+      observerConstructions = 0;
+      observerDisconnects = 0;
+      previousResizeObserver = (globalThis as Record<string, unknown>).ResizeObserver;
+      (globalThis as Record<string, unknown>).ResizeObserver = class {
+        constructor() {
+          observerConstructions += 1;
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {
+          observerDisconnects += 1;
+        }
+      };
+    });
+
+    afterEach(() => {
+      if (previousResizeObserver === undefined) {
+        delete (globalThis as Record<string, unknown>).ResizeObserver;
+      } else {
+        (globalThis as Record<string, unknown>).ResizeObserver = previousResizeObserver;
+      }
+    });
+
+    // 40 turns → 80 grouped rows, comfortably past the virtualization threshold
+    // so every rendered row goes through MeasuredEventRow's ResizeObserver.
+    const TURNS = 40;
+    function buildTranscript(): AgentChatEventEnvelope[] {
+      const built: AgentChatEventEnvelope[] = [];
+      for (let turn = 0; turn < TURNS; turn += 1) {
+        const stamp = String(turn).padStart(2, "0");
+        built.push({
+          sessionId: "s1",
+          timestamp: `2026-03-17T10:${stamp}:00.000Z`,
+          event: { type: "user_message", text: `ask ${turn}` },
+        } as AgentChatEventEnvelope);
+        built.push({
+          sessionId: "s1",
+          timestamp: `2026-03-17T10:${stamp}:01.000Z`,
+          event: { type: "text", text: `reply ${turn}`, itemId: `text-${turn}`, turnId: `turn-${turn}` },
+        } as AgentChatEventEnvelope);
+      }
+      return built;
+    }
+
+    const listOf = (events: AgentChatEventEnvelope[]) => (
+      <MemoryRouter>
+        <AgentChatMessageList events={events} sessionId="s1" assistantLabel="Assistant" showStreamingIndicator />
+      </MemoryRouter>
+    );
+
+    it("does not tear down per-row ResizeObservers when a streaming delta extends the last row", () => {
+      const base = buildTranscript();
+      const view = render(listOf(base));
+      expect(observerConstructions).toBeGreaterThan(0);
+      const constructionsAfterMount = observerConstructions;
+      const disconnectsAfterMount = observerDisconnects;
+
+      // A streaming delta: same envelopes for every settled row, one longer
+      // text on the tail — exactly what a token flush produces.
+      const tail = base[base.length - 1]!;
+      const delta = [
+        ...base.slice(0, -1),
+        { ...tail, event: { ...tail.event, text: `${(tail.event as { text: string }).text} more` } } as AgentChatEventEnvelope,
+      ];
+      act(() => {
+        view.rerender(listOf(delta));
+      });
+
+      // `handleMeasure` (and the `rowHeight` it closes over) keep their identity
+      // across the delta, so MeasuredEventRow's layout effect does not re-run.
+      expect(observerDisconnects).toBe(disconnectsAfterMount);
+      expect(observerConstructions).toBe(constructionsAfterMount);
+    });
+
+    it("still observes rows that genuinely appear (the counter is live)", () => {
+      const base = buildTranscript();
+      const view = render(listOf(base));
+      const constructionsAfterMount = observerConstructions;
+
+      const appended: AgentChatEventEnvelope[] = [
+        ...base,
+        {
+          sessionId: "s1",
+          timestamp: "2026-03-17T11:00:00.000Z",
+          event: { type: "user_message", text: "one more ask" },
+        } as AgentChatEventEnvelope,
+      ];
+      act(() => {
+        view.rerender(listOf(appended));
+      });
+
+      expect(observerConstructions).toBeGreaterThan(constructionsAfterMount);
+    });
   });
 });

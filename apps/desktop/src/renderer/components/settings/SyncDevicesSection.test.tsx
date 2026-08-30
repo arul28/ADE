@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
@@ -10,6 +10,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
+import { resetLocalSyncStatusReaderForTests } from "../../lib/localSyncStatusReader";
 import { parsePairingQrUrl } from "../../../shared/pairingQr";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type {
@@ -643,7 +644,15 @@ function peer(overrides: Partial<SyncPeerConnectionState> = {}): SyncPeerConnect
 describe("useSyncConnections local scoping", () => {
   const originalAde = (globalThis.window as any)?.ade;
 
+  beforeEach(() => {
+    // The local-status reader is a module singleton (coalescing + backoff);
+    // each test needs it cold or a prior failure's backoff window suppresses
+    // the next test's read.
+    resetLocalSyncStatusReaderForTests();
+  });
+
   afterEach(() => {
+    resetLocalSyncStatusReaderForTests();
     cleanup();
     vi.restoreAllMocks();
     if (originalAde === undefined) delete (globalThis.window as any).ade;
@@ -747,17 +756,20 @@ describe("useSyncConnections local scoping", () => {
       localDevice: { ...makeStatus().localDevice, deviceId: "studio", name: "Mac Studio" },
       runtimeName: "Mac Studio",
     });
-    let resolveOldLocal!: (status: SyncRoleSnapshot) => void;
-    const oldLocalResult = new Promise<SyncRoleSnapshot>((resolve) => {
-      resolveOldLocal = resolve;
+    // The first refresh hangs on its ROUTED read; its local read has already
+    // resolved. A second refresh then fails locally. When the first refresh
+    // finally completes, its older local answer must not resurrect the card.
+    let resolveOldRouted!: (status: SyncRoleSnapshot) => void;
+    const oldRoutedResult = new Promise<SyncRoleSnapshot>((resolve) => {
+      resolveOldRouted = resolve;
     });
     let statusCalls = 0;
     let localCalls = 0;
     installSyncMock({
-      getStatus: async () => (++statusCalls === 1 ? oldLocal : remote),
+      getStatus: async () => (++statusCalls === 1 ? await oldRoutedResult : remote),
       getLocalStatus: async () => {
         localCalls += 1;
-        if (localCalls === 1) return await oldLocalResult;
+        if (localCalls === 1) return oldLocal;
         throw new Error("local status unavailable");
       },
       listDevices: async () => [device({ deviceId: "remote-phone", name: "Remote iPhone" })],
@@ -769,8 +781,8 @@ describe("useSyncConnections local scoping", () => {
     await waitFor(() => expect(result.current.error).toBe("local status unavailable"));
 
     await act(async () => {
-      resolveOldLocal(oldLocal);
-      await oldLocalResult;
+      resolveOldRouted(oldLocal);
+      await oldRoutedResult;
     });
 
     expect(result.current.status).toBeNull();

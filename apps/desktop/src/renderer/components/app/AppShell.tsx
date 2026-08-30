@@ -68,6 +68,7 @@ import {
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { holdLayoutSettle } from "../../lib/layoutSettle";
+import { readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
@@ -484,13 +485,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // Always read the LOCAL snapshot: relay control belongs to the physical
     // machine this window runs on, not to whichever runtime a remote-bound
     // project routes to.
+    // The shared reader coalesces this with Connections' read of the same
+    // broadcast and backs off while the runtime is unhealthy; an unhealthy
+    // read used to take seconds and the broadcast kept stacking new ones.
     const readLocal =
       typeof syncApi.getLocalStatus === "function"
-        ? syncApi.getLocalStatus
-        : syncApi.getStatus;
+        ? () => readLocalSyncStatus()
+        : typeof syncApi.getStatus === "function"
+          ? () => syncApi.getStatus()
+          : null;
     const refresh = () => {
-      if (typeof readLocal !== "function") return;
-      void readLocal.call(syncApi).then(apply).catch(() => {});
+      if (!readLocal) return;
+      void readLocal().then(apply).catch(() => {});
     };
     refresh();
     // The event is an INVALIDATION, not the payload. On a remote-bound project

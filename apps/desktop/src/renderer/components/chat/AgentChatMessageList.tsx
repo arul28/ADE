@@ -63,6 +63,8 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { normalizePath } from "../../lib/pathUtils";
+import { isPerfActive } from "../../perf/markers";
+import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { chatMarkdownUrlTransform } from "./chatMarkdown";
 import {
   CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
@@ -2852,7 +2854,19 @@ function renderEvent(
               />
             ) : null}
           </div>
-          <div className="min-w-0" data-assistant-output="true">
+          {/*
+            `data-stream-text-len` exists only while a perf run is active (see
+            renderer/perf/streamSmoothness.ts). It reflects the *store* text at
+            commit time, not what the compositor painted; the sampler reads it
+            from a rAF callback (post-commit, pre-paint) so it approximates the
+            paint by at most one frame. In production `isPerfActive()` is false,
+            React drops the `undefined` prop, and no attribute is written.
+          */}
+          <div
+            className="min-w-0"
+            data-assistant-output="true"
+            data-stream-text-len={isPerfActive() ? event.text.length : undefined}
+          >
             <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
           </div>
         </div>
@@ -4527,6 +4541,60 @@ export function stabilizeTranscriptToolActivity(
   return { byDoneRowKey, activeEntries, fileEntriesByDoneRowKey, activeFileEntries };
 }
 
+/**
+ * Element-wise identity reuse for the small derived collections the transcript
+ * memoizes on `events`.
+ *
+ * Same rationale as `stabilizeTranscriptToolActivity` above, one level down:
+ * `events` gets a fresh array identity on every streaming delta, so every
+ * `useMemo([events])` rebuilds its Map/Set even though the contents almost
+ * never move mid-turn. Those collections are props on EVERY row, so a new
+ * identity per delta defeats `React.memo` on the whole thread — and, in
+ * virtualized mode, an identity change on the derived `rowHeight`/`onMeasure`
+ * callbacks also tears down and recreates each row's ResizeObserver. Reuse the
+ * previous object whenever a shallow comparison says nothing changed. Values
+ * are read straight off the (stable) event envelopes, so `===` on members is
+ * enough to tell "unchanged" from "changed".
+ */
+export function sameMapContents<K, V>(previous: ReadonlyMap<K, V>, next: ReadonlyMap<K, V>): boolean {
+  if (previous === next) return true;
+  if (previous.size !== next.size) return false;
+  for (const [key, value] of next) {
+    if (!previous.has(key) || previous.get(key) !== value) return false;
+  }
+  return true;
+}
+
+export function sameSetContents<T>(previous: ReadonlySet<T>, next: ReadonlySet<T>): boolean {
+  if (previous === next) return true;
+  if (previous.size !== next.size) return false;
+  for (const value of next) {
+    if (!previous.has(value)) return false;
+  }
+  return true;
+}
+
+export function sameKeyList(previous: readonly string[], next: readonly string[]): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < previous.length; index += 1) {
+    if (previous[index] !== next[index]) return false;
+  }
+  return true;
+}
+
+/**
+ * Keep the previous value whenever `isSame` says the freshly derived one is
+ * equivalent. `isSame` must be a stable module-level predicate.
+ */
+function useStableIdentity<T>(next: T, isSame: (previous: T, next: T) => boolean): T {
+  const ref = useRef(next);
+  if (ref.current !== next && !isSame(ref.current, next)) {
+    ref.current = next;
+  }
+  return ref.current;
+}
+
 export function deriveTranscriptToolActivity(rows: TranscriptGroupedEnvelope[]): TranscriptToolActivity {
   const entriesByTurnId = new Map<string, ChatWorkLogEntry[]>();
   const byDoneRowKey = new Map<string, ChatWorkLogEntry[]>();
@@ -5514,7 +5582,7 @@ function AgentChatMessageListMain({
     if (pinned) scrollToBottomSoonRef.current?.(2);
   }, [resolvedScrollMemoryKey]);
   const onApprovalRef = useRef(onApproval);
-  const resolvedInputStates = useMemo(() => {
+  const resolvedInputStates = useStableIdentity(useMemo(() => {
     const resolved = new Map<string, PendingInputResolution>();
     for (const envelope of events) {
       if (envelope.event.type !== "pending_input_resolved") continue;
@@ -5523,11 +5591,11 @@ function AgentChatMessageListMain({
       }
     }
     return resolved;
-  }, [events]);
+  }, [events]), sameMapContents);
   // What was actually sent, so the answered receipt reads back the choice
   // rather than a bare "answered". Absent on older transcripts and on any
   // question that was secret — the receipt degrades to "answer hidden".
-  const resolvedInputAnswers = useMemo(() => {
+  const resolvedInputAnswers = useStableIdentity(useMemo(() => {
     const answers = new Map<string, Record<string, string | string[]>>();
     for (const envelope of events) {
       if (envelope.event.type !== "pending_input_resolved") continue;
@@ -5537,7 +5605,7 @@ function AgentChatMessageListMain({
       }
     }
     return answers;
-  }, [events]);
+  }, [events]), sameMapContents);
 
   // Virtualization scroll tracking
   const [scrollTop, setScrollTop] = useState(0);
@@ -5714,7 +5782,17 @@ function AgentChatMessageListMain({
     ),
     [allGroupedRows],
   );
-  const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
+  // `groupedRows` gets a fresh array on every streaming delta (the streaming row
+  // is rebuilt), but the ROW KEYS only move when rows are added, removed or
+  // regrouped. Reusing the previous key array on a pure content delta keeps
+  // `rowHeight` — and therefore `handleMeasure`, and therefore every row's
+  // ResizeObserver — from being recreated on each token flush. When the keys do
+  // change, the fresh array is returned and every downstream memo/effect
+  // recomputes exactly as before.
+  const groupedRowKeys = useStableIdentity(
+    useMemo(() => groupedRows.map((row) => row.key), [groupedRows]),
+    sameKeyList,
+  );
   // Mirrored for the render-free paths (scroll handler, unmount snapshot) that
   // must not re-subscribe every time the transcript grows.
   const groupedRowKeysRef = useRef<readonly string[]>(groupedRowKeys);
@@ -5733,6 +5811,11 @@ function AgentChatMessageListMain({
     }
     prevGroupedRowKeysRef.current = groupedRowKeys;
   }
+  // Streaming-text paint smoothness (perf runs only). `showStreamingIndicator`
+  // is the same turn-active signal that drives the WorkingIndicator, so the rAF
+  // loop lives exactly as long as a turn is streaming — never while idle.
+  useStreamSmoothnessSampler(showStreamingIndicator && !sessionEnded, sessionId ?? null);
+
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
   const activeApiRetry = useMemo(
@@ -5742,7 +5825,7 @@ function AgentChatMessageListMain({
   // A stop receipt auto-collapses once its queued messages have run — best-effort:
   // once a *later* turn (different turnId, i.e. the next turn) completes. The
   // interrupted turn's own `done` does not count.
-  const staleInterruptReceipts = useMemo(() => {
+  const staleInterruptReceipts = useStableIdentity(useMemo(() => {
     const stale = new Set<string>();
     const pending: { identity: string; turnId: string | undefined; donesAfter: number }[] = [];
     for (const envelope of events) {
@@ -5765,13 +5848,13 @@ function AgentChatMessageListMain({
       }
     }
     return stale;
-  }, [events]);
-  const settledQueueRecoveryIds = useMemo(() => new Set(
+  }, [events]), sameSetContents);
+  const settledQueueRecoveryIds = useStableIdentity(useMemo(() => new Set(
     events.flatMap(({ event }) =>
       event.type === "queue_recovery" && event.state !== "available"
         ? [event.recoveryId]
         : []),
-  ), [events]);
+  ), [events]), sameSetContents);
   const activeTurnStartedAt = useMemo(
     () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
     [events, showStreamingIndicator, activeTurnId],

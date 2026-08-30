@@ -634,6 +634,14 @@ export type SyncRoleSnapshot = {
   transferReadiness: SyncTransferReadiness;
   /** Absent on older runtimes; false means phone/CRDT sync must not be offered. */
   crdtSyncAvailable?: boolean;
+  /**
+   * Set only on a fallback snapshot the main process synthesized because the
+   * local runtime could not answer (see buildMachineOnlySyncSnapshot). Carries
+   * the reason. Absent on every real snapshot, so renderers can back off on a
+   * degraded read without guessing from route health — which is legitimately
+   * all-down on healthy machines that host nothing.
+   */
+  degradedReason?: string;
   survivableStateText: string;
   blockingStateText: string;
 };

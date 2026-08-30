@@ -13,6 +13,9 @@ export type PerfEventKind =
   | "ipcInvoke"
   | "processMetrics"
   | "rendererMemory"
+  | "mainLoopDelay"
+  | "chatTextFlush"
+  | "streamSmoothness"
   | "note";
 
 export type PerfEvent = {
@@ -99,6 +102,14 @@ export function finishPerfRun(runId: string): void {
   }
 }
 
+/**
+ * More than one process can be writing this file at once — Electron main and
+ * the `ade` runtime daemon both host chat sessions and both append here. Keep
+ * this a SINGLE `appendFileSync` of one already newline-terminated string: that
+ * is one O_APPEND write per event, which the kernel will not interleave with
+ * another writer's line. Never split the payload and the newline into two
+ * writes, and never build a line across multiple calls.
+ */
 export function appendEvent(event: PerfEvent): void {
   if (!active) return;
   try {

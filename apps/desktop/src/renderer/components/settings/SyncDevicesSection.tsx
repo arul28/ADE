@@ -199,7 +199,9 @@ export function ThisMacCard({
   const appInfo = useAppInfoLine();
   // Restarting the brain is the fix when it cannot read the stored account
   // session; re-read the snapshot once it settles so the banner clears.
-  const repair = useBrainRepair(sync.refresh);
+  // Forced: a repair is a user action, so it must not wait out the degraded
+  // read's backoff window.
+  const repair = useBrainRepair(() => { void sync.refresh({ force: true }); });
 
   const { saveRuntimeName } = sync;
   // The runtime name is what this card renders, so it is written first and the
