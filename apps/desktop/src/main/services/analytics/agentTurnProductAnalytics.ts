@@ -1,4 +1,5 @@
 import type { AgentChatTurnSettledEvent } from "../chat/agentChatService";
+import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
@@ -47,6 +48,28 @@ export function captureChatMentionsExpandedAnalytics(args: {
       outcome: "completed",
       source: "runtime",
     },
+  });
+}
+
+/**
+ * One coarse fact per auto-resume transition, so the product question — does
+ * auto-resume actually rescue a chat a usage limit stopped? — can be answered
+ * from `armed` versus `resumed` versus `paused`.
+ *
+ * No project or session id, deliberately: unlike the turn-settled events this
+ * file's other producers emit, nothing here is scoped to a chat or a repo, and
+ * the arm cap already bounds the volume without a per-session dedupe key. The
+ * coordinator hands over the whole closed property set, so this function cannot
+ * widen it.
+ */
+export function captureChatAutoResumeAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  properties: ChatAutoResumeAnalyticsProperties;
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    properties: { feature: "work", ...args.properties },
   });
 }
 

@@ -1,9 +1,17 @@
 import path from "node:path";
 import { getImageAttachmentMediaType } from "../../../shared/types/chat";
+import { MAX_PROVIDER_INLINE_IMAGE_BYTES } from "../../../shared/chatAttachmentLimits";
 import { readFileWithinRootSecure } from "../shared/utils";
 
-/** Match the composer temp-attachment cap so IPC and disk agree. */
-export const WORKER_MAX_IMAGE_FILE_BYTES = 10 * 1024 * 1024;
+/**
+ * Ceiling for an image the worker materializes into base64 for its provider.
+ *
+ * Deliberately the provider inline limit and NOT the composer attachment cap —
+ * those diverged when attachments were raised to 50 MB. A worker image is
+ * inlined into the model request, so it keeps the smaller number; the composer
+ * cap governs what may sit on disk, which is a different question.
+ */
+const WORKER_MAX_IMAGE_FILE_BYTES = MAX_PROVIDER_INLINE_IMAGE_BYTES;
 
 export type WorkerPathImageSource = {
   path: string;

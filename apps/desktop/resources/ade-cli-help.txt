@@ -40,6 +40,7 @@ _    ____  _____
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -181,6 +182,7 @@ _    ____  _____
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -259,6 +261,48 @@ _    ____  _____
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
 
   Start with: ade doctor --text
+
+## ade triage --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  ADE Triage
+
+  Hand a broken ADE install to your own coding agent. Runs the same checks as
+  "ade doctor" and collects the same redacted diagnostics as "ade report-issue",
+  writes them plus a maintained repair playbook into a fresh temp directory, and
+  then starts whichever agent CLI is installed so you can work the fix with it.
+
+  The playbook is fetched from GitHub when the network allows (3s timeout) and
+  falls back to the copy shipped with this build; the output says which won.
+
+    $ ade triage                          Launch the first installed agent CLI
+    $ ade triage --provider codex         Launch a specific one
+    $ ade triage --agent --json           Print the handoff for an agent already running
+    $ ade triage --agent --text           The same, human-readable
+
+  Flags:
+    --agent                Launch nothing; print contextPath, playbookPath,
+                           playbookSource, suggestedPrompt and the detected
+                           agent CLIs. Use this from inside an agent session.
+    --provider <name>      claude | codex | cursor-agent | opencode | droid.
+    --text                 Human-readable output.
+    --json                 Structured JSON output (default).
+
+  Notes:
+    Detection order is claude, codex, cursor-agent, opencode, droid. With no
+    agent CLI installed, triage prints the --agent output and exits 0 — the
+    files are the deliverable, the launch is a convenience.
+    When an agent is launched the terminal belongs to it: the file paths are
+    printed on stderr before it starts, stdout stays empty, and triage exits
+    with the agent's own exit code.
+    The context file is redacted with the same rules as "ade report-issue"; it
+    never contains credentials, and it is written to a temp directory, not into
+    your project.
+    Set ADE_TRIAGE_NO_FETCH=1 to skip the playbook fetch entirely.
 
 ## ade code --help
 _    ____  _____
@@ -368,11 +412,16 @@ _    ____  _____
     $ ade lanes import --branch <branch>            Create a lane for an existing branch, checked out in a new managed
                                                     worktree (fails if the branch is already checked out somewhere —
                                                     that worktree is already a lane)
-    $ ade lanes archive <lane>                      Archive a lane in ADE
+    $ ade lanes archive <lane>                      Archive a lane in ADE; also brings down the Docker services
+                                                    its env init started (best-effort — a failed teardown still archives)
     $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
     $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
                                                     Archive the lane, then remove its ADE-managed local files
-    $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed
+    $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed.
+                                                    Docker comes back up too: a recreated worktree re-runs the whole
+                                                    env init before returning, a plain unarchive returns immediately
+                                                    and restarts Docker in the background (watch lane env init events).
+                                                    Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
@@ -524,6 +573,10 @@ _    ____  _____
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs comment-edit <pr> --comment <id> --body "..."
+                                                    Edit an issue or review comment
+    $ ade prs comment-react <pr> --comment <id> --content +1
+                                                    React to a PR comment (GraphQL node id or REST database id)
     $ ade prs github-snapshot --include-external-closed --history-page-limit 4
                                                     Include bounded closed PR history in the GitHub snapshot
     $ ade prs github-snapshot --include-state-counts --no-revalidate
@@ -630,6 +683,13 @@ _    ____  _____
     $ ade chat message <session> --kind auto --text "status"
                                                     Deliver via auto | queue | wake | interrupt-replace
     $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
+    $ ade chat steer <session> --text "context" --dispatch interrupt
+                                                    Deliver into the running turn: inline | interrupt.
+                                                    Omit --dispatch to stage for the next turn.
+                                                    Claude takes inline and interrupt; Cursor takes
+                                                    interrupt (cancel + resend on the same thread).
+                                                    Other providers reject the flag outright and nothing
+                                                    is sent; omit --dispatch to stage the message.
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
@@ -715,8 +775,9 @@ _    ____  _____
     fork stays on the source provider and in the source lane; brief summarizes
     the chat, can switch provider, and accepts --target-lane.
     Claude, Codex, OpenCode, and Droid fork through the provider's own fork.
-    Cursor has no fork surface, so ADE forks it by seeding a fresh Cursor agent
-    with this conversation's context instead of copying a provider thread.
+    Cursor has no fork surface, so ADE forks it by replaying this conversation
+    into a fresh Cursor agent instead of copying a provider thread; the oldest
+    turns drop if the transcript exceeds the target model's context window.
 
   Personal chats attach to the machine-owned ADE brain and never register a
   project. They work with a desktopless brain and through the same
@@ -794,6 +855,7 @@ _    ____  _____
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -998,6 +1060,7 @@ _    ____  _____
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -1432,6 +1495,7 @@ _    ____  _____
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status

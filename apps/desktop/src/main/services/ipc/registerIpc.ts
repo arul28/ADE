@@ -5,6 +5,15 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  legacyAttachmentCapMessage,
+} from "../../../shared/chatAttachmentLimits";
+import {
+  projectAttachmentsDir,
+  stageAttachmentBytes,
+  stageAttachmentCopy,
+} from "../../../shared/chatAttachmentStagingFs";
 import { INERT_KEEP_AWAKE_SNAPSHOT } from "../../../shared/types/keepAwake";
 import type {
   KeepAwakeFixResult,
@@ -481,6 +490,7 @@ import type {
   AgentChatContextUsageArgs,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
+  AgentChatCopyTempAttachmentArgs,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -3685,8 +3695,10 @@ export function registerIpc({
     return null;
   };
 
-  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-  const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+  // Both of these are the base64/in-memory ceiling, single-sourced from
+  // `chatAttachmentLimits` so the constant and the message can never drift.
+  const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
+  const MAX_TEMP_ATTACHMENT_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 
   /**
    * Read an allow-listed image file from disk after a stat-based size check,
@@ -3700,7 +3712,7 @@ export function registerIpc({
       throw new Error("Path is not a file.");
     }
     if (stat.size > MAX_IMAGE_BYTES) {
-      throw new Error("Image must be 10 MB or smaller.");
+      throw new Error(legacyAttachmentCapMessage("Image"));
     }
     const data = await fs.promises.readFile(filePath);
     const mimeType = sniffImageMimeType(data);
@@ -3710,25 +3722,51 @@ export function registerIpc({
     return { data, mimeType };
   };
 
+  /**
+   * The directory a staged chat attachment lands in. Inside the project's
+   * `.ade` so CLI subprocesses (and the Files viewer) can reach it; system temp
+   * when no project is open.
+   */
+  const agentChatTempAttachmentDir = (): string => {
+    const ctx = getCtx();
+    return ctx.project?.rootPath
+      ? projectAttachmentsDir(ctx.project.rootPath)
+      : path.join(app.getPath("temp"), "ade-attachments");
+  };
+
   const saveAgentChatTempAttachmentBuffer = async (
     content: Buffer,
     filename: string,
   ): Promise<{ path: string }> => {
     if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error("Temporary attachments must be 10 MB or smaller.");
+      throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
     }
-    const ctx = getCtx();
-    // Save within the project's .ade directory so CLI subprocesses have
-    // filesystem access. Fall back to system temp if no project is open.
-    const baseDir = ctx.project?.rootPath
-      ? path.join(ctx.project.rootPath, ".ade", "attachments")
-      : path.join(app.getPath("temp"), "ade-attachments");
-    await fs.promises.mkdir(baseDir, { recursive: true });
-    const ext = path.extname(filename) || ".png";
-    const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
-    await fs.promises.writeFile(destPath, content);
-    return { path: destPath };
+    return await stageAttachmentBytes({
+      content,
+      filename,
+      attachmentsDir: agentChatTempAttachmentDir(),
+    });
   };
+
+  /**
+   * Stage a file that already exists on this machine's disk by copying it,
+   * never by round-tripping its bytes through base64 and IPC. Drag-drop and the
+   * file picker both hand the renderer a real path via `webUtils`, so the only
+   * thing that has to cross the boundary is the path itself — which is why this
+   * path carries the 50 MB product cap while the base64 handler keeps 10 MB.
+   *
+   * The rule itself lives in `shared/chatAttachmentStagingFs` so this handler,
+   * the ADE action registry's `chat.copyTempAttachment`, and the sync host's
+   * upload route all name the destination the same way.
+   */
+  const copyAgentChatTempAttachmentFile = async (
+    sourcePath: string,
+    filename: string,
+  ): Promise<{ path: string }> => await stageAttachmentCopy({
+    sourcePath,
+    filename,
+    attachmentsDir: agentChatTempAttachmentDir(),
+  });
 
   ipcMain.handle(IPC.appRevealPath, async (_event, arg: { path: string }): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
@@ -3802,7 +3840,7 @@ export function registerIpc({
     const png = image.toPNG();
     if (!png.byteLength) return null;
     if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error("Clipboard image must be 10 MB or smaller.");
+      throw new Error(legacyAttachmentCapMessage("Clipboard image"));
     }
     return {
       data: png.toString("base64"),
@@ -3826,11 +3864,11 @@ export function registerIpc({
         : "photo.heic";
       const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
       if (arg.data.length > maxEncodedLength) {
-        throw new Error("Temporary attachments must be 10 MB or smaller.");
+        throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
       }
       const content = Buffer.from(arg.data, "base64");
       if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-        throw new Error("Temporary attachments must be 10 MB or smaller.");
+        throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
       }
       try {
         const converted = await convertHeicBufferToJpeg(
@@ -3860,7 +3898,7 @@ export function registerIpc({
     const png = image.toPNG();
     if (!png.byteLength) return null;
     if (png.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-      throw new Error("Clipboard image must be 10 MB or smaller.");
+      throw new Error(legacyAttachmentCapMessage("Clipboard image"));
     }
     const saved = await saveAgentChatTempAttachmentBuffer(png, "clipboard.png");
     const previewImage = image.resize({ width: 96, height: 96, quality: "best" });
@@ -8232,11 +8270,17 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatSaveTempAttachment, async (_event, arg: { data: string; filename: string }): Promise<{ path: string }> => {
     const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
     if (typeof arg.data === "string" && arg.data.length > maxEncodedLength) {
-      throw new Error("Temporary attachments must be 10 MB or smaller.");
+      throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
     }
     const content = Buffer.from(arg.data, "base64");
     return saveAgentChatTempAttachmentBuffer(content, arg.filename);
   });
+
+  ipcMain.handle(
+    IPC.agentChatCopyTempAttachment,
+    async (_event, arg: AgentChatCopyTempAttachmentArgs): Promise<{ path: string }> =>
+      copyAgentChatTempAttachmentFile(arg?.sourcePath ?? "", arg?.filename ?? ""),
+  );
 
   ipcMain.handle(IPC.agentChatGetTurnFileDiff, async (_event, arg: AgentChatGetTurnFileDiffArgs) => {
     const ctx = getCtx();

@@ -29,6 +29,10 @@ import {
   inspectSyncListenerPort,
   type SyncListenerPortDiagnosis,
 } from "./syncListenerPortInspect";
+import {
+  createAttachmentUploadRegistry,
+  type AttachmentUploadRegistry,
+} from "./attachmentUploadService";
 
 // Re-exported so existing importers (and `ade doctor`) keep their entry point.
 export {
@@ -187,6 +191,13 @@ export type SharedSyncListener = {
   getExpectedLoopbackNonce(): string;
   /** Private in-process credential attached only by the trusted relay tunnel client. */
   getRelayBridgeProof(): string;
+  /**
+   * Ticket registry backing the streamed attachment-upload route mounted on
+   * this listener's http server. The sync host mints tickets against this exact
+   * instance, so the WS session that authorized an upload and the HTTP request
+   * that performs it share one registry.
+   */
+  getAttachmentUploadRegistry(): AttachmentUploadRegistry;
   getLoopbackValidationStatus(): SyncLoopbackValidationStatus;
   /** Force-check that loopback still reaches this exact listener instance. */
   revalidateLoopback(): Promise<void>;
@@ -334,6 +345,9 @@ export function createSharedSyncListener(options: {
   // only to the in-process tunnel client and rotates with the listener process.
   const relayBridgeProofBytes = randomBytes(32);
   const relayBridgeProof = relayBridgeProofBytes.toString("base64url");
+  // One registry per listener instance, shared by every candidate bind: a
+  // ticket minted before a port migration is still honoured after it.
+  const attachmentUploads = createAttachmentUploadRegistry({ logger });
 
   let server: WebSocketServer | null = null;
   // The http.Server fronting `server`. `ws` does not own/close an
@@ -549,6 +563,9 @@ export function createSharedSyncListener(options: {
       }
       previousAttemptedPort = attemptedPort;
       const candidateHttpServer = http.createServer((request, response) => {
+        // WS upgrades never reach here (they are handled on `upgrade`), so the
+        // only non-upload request shape left is the loopback 426 probe.
+        if (attachmentUploads.handleRequest(request, response)) return;
         writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
       });
       const candidateServer = new WebSocketServer({
@@ -795,6 +812,10 @@ export function createSharedSyncListener(options: {
       return relayBridgeProof;
     },
 
+    getAttachmentUploadRegistry(): AttachmentUploadRegistry {
+      return attachmentUploads;
+    },
+
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
       return { ...loopbackValidationStatus };
     },
@@ -865,6 +886,7 @@ export function createSharedSyncListener(options: {
       closed = true;
       handler = null;
       fallbackHandler = null;
+      attachmentUploads.dispose();
       loopbackValidatedHandlers.clear();
       if (listeningPromise) {
         await listeningPromise.catch(() => {});

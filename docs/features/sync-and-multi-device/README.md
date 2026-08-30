@@ -1264,7 +1264,31 @@ Cross-machine Work chat handoff:
   `remoteConnectionService.ts`, and `apps/desktop/src/main/services/ipc/runtimeBridge.ts`
   — destination machine capability checks, storage preflight dispatch, route
   pinning, paired/SSH runtime JSON-RPC routing, request-local timeout policy,
-  and non-replayable action reconciliation when confirmation is lost.
+  and non-replayable action reconciliation when confirmation is lost. The
+  pool also retains each paired target's live `SyncRuntimeTransport` (not
+  just the port-forward client derived from it), because
+  `connection.hello.features` is the host's capability advertisement and
+  `connection.endpoint` is the only place its address and port exist on this
+  side — both are needed by `getAttachmentUploadRoute`.
+- `apps/desktop/src/main/services/remoteRuntime/attachmentUploadRoute.ts`
+  and `attachmentUploadClient.ts` — the desktop client half of streamed
+  attachment upload. `resolveRemoteAttachmentUploadRoute` composes the route
+  from three independent facts, each of whose absence is an ordinary
+  fall-back to base64 rather than an error: the host advertised
+  `features.attachmentUploadV1`; `hello_ok.connectionTransport` is
+  `direct`, because a relay-routed connection terminates at the relay, which
+  brokers WebSocket frames and nothing else; and the endpoint is a
+  `ws:`/`wss:` URL that maps to `http:`/`https:` (the sync HTTP server and
+  the WebSocket share one port, so the origin is the endpoint's with the
+  scheme swapped and the path replaced). SSH targets are not paired
+  transports at all and return null. `uploadRemoteAttachment` then pipes the
+  file from disk — never buffered, which is the entire point of the leg —
+  with the ticket as its only credential, bounds the response read so a
+  misbehaving host cannot stream into this process's memory, and stops at a
+  5-minute budget. The ticket names the route path and the capability names
+  the origin; they are composed rather than either being trusted alone, so a
+  host that moves the route in a later version is followed with no client
+  change.
 - `apps/desktop/src/preload/preload.ts` — source project-runtime routing plus
   the renderer bridge for machine-level project setup and destination actions,
   including the bound `agentChat.regenerateSessionMetadata` call.
@@ -1615,6 +1639,32 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   grace after a project host detaches so reconnecting phones still park for
   adoption by the next project host. A self-owned server path remains for
   tests/standalone hosts.
+  The listener's `http.Server` also serves the streamed attachment-upload
+  route: every plain HTTP request is offered to
+  `getAttachmentUploadRegistry().handleRequest` first and falls through to
+  the loopback 426 probe otherwise. There is **one registry per listener
+  instance**, shared by every candidate bind and by every project host that
+  adopts the listener, because a ticket is only redeemable by the request
+  handler holding its map — a host-local registry would mint tickets no
+  route recognises, and a ticket minted before a port migration is still
+  honoured after it.
+- `attachmentUploadService.ts` — that registry. The sync stack has no HTTP
+  authentication of its own (before this route the listener answered exactly
+  one request shape, an unconditional 426), so authorization is **delegated
+  to the already-authenticated WebSocket session**: a peer that finished
+  `hello` mints a short-lived ticket over the command channel and presents
+  it as an HTTP bearer on `POST /ade-attachments/upload`. A ticket names one
+  project root and one validated extension, expires in two minutes, and is
+  consumed *before the first body byte is read*, so a replay cannot resume a
+  partial upload. `issue` and `handleRequest` both prune expired tickets
+  rather than running a timer, which would have to be unref'd to keep a
+  short-lived CLI process from hanging on exit. The body streams to a
+  `.part` file and is renamed only after the full body lands, so a torn
+  upload never leaves a half file at the final path for a chat to pick up;
+  the running byte counter is the real ceiling, because a chunked upload
+  declares no `Content-Length`. The destination name comes from the shared
+  `stagedAttachmentDestPath`, so this route and the local copy path cannot
+  disagree about where a file just landed.
 - `syncListenerPortInspect.ts` — platform port-holder diagnosis used by
   zombie reap and `ade doctor` (`inspectSyncListenerPort`). Extracted from
   `sharedSyncListener` so the probe path can stay small and the listener
@@ -1754,6 +1804,17 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `work.runQuickCommand`,
   `work.startCliSession`, `work.listExternalSessions`,
   `work.importExternalSession`, `chat.recoverCodexTurn`, `chat.regenerateSessionMetadata`, `modelPicker.*`, …).
+  `chat.createAttachmentUpload` mints one ticket for the streamed HTTP
+  upload route from the host's single `AttachmentUploadRegistry`. It is how
+  a mobile or browser sync client stages a file-shaped attachment; a paired
+  *desktop* arrives instead through the runtime RPC channel, on the action
+  registry's `chat.createAttachmentUpload`, which reaches the same registry
+  through `syncHostService.issueAttachmentUploadTicket`. There is
+  deliberately no remote "copy this path" command on this channel:
+  `chat.copyTempAttachment` takes an unconstrained absolute source path, and
+  the mobile command allowlist is the one place ADE draws that line, so the
+  exclusion narrows what a phone can do rather than what a paired desktop
+  can.
   The cross-machine handoff family (`chat.prepareCrossMachineHandoff`,
   `chat.validateCrossMachineSource`, `chat.preflightCrossMachineDestination`,
   `chat.fastForwardCrossMachineHandoffLane`,
@@ -3005,6 +3066,49 @@ on Node, hosted web, and iOS; disconnect/reset clears it immediately. iOS also
 keeps its WebSocket `maximumMessageSize` at 32 MiB. This protects large chat /
 terminal snapshots, `file_response`, and `command_result` payloads without
 letting abandoned chunk sets retain memory indefinitely.
+
+#### Chat attachments ride HTTP, not the envelope stream
+
+A chat attachment large enough to matter should not travel as base64 inside a
+command payload: it inflates by a third, is buffered in memory on both ends, and
+lands under the same 25 MiB decoded-envelope cap and 720 KiB framing as every
+other message. So a host that can accept a file *as a file* says so, and a
+client that can send one that way does.
+
+The advertisement is `hello_ok.features.attachmentUploadV1`, an additive
+capability carrying `{ enabled: true, path, maxBytes }`. The host emits it only
+when its remote command service actually registered
+`chat.createAttachmentUpload` — the route is useless without the mint — so an
+injected or custom command service that omits the command also omits the
+advertisement rather than promising an endpoint nothing serves.
+
+Using it is two legs, in this order and only this order:
+
+1. **Mint over the authenticated socket.** `chat.createAttachmentUpload` (sync
+   command channel, for phones and browsers) or the action registry's
+   `chat.createAttachmentUpload` (runtime RPC channel, for a paired desktop)
+   returns `{ ticket, path, maxBytes, expiresAtMs }`. Both reach the host's one
+   ticket registry.
+2. **POST the body.** `POST <origin><path>` with
+   `Authorization: Bearer <ticket>` and the raw bytes as
+   `application/octet-stream`. The origin is the sync endpoint with `ws:`/`wss:`
+   swapped for `http:`/`https:` — the sync HTTP server and the WebSocket share
+   one port. The response is `{ path }`, the staged absolute path on the host.
+
+The HTTP leg carries no standing authority: it never sees the pairing secret,
+the ticket is consumed before a single body byte is read, and an unspent ticket
+expires on its own after two minutes. The ticket names the route path and the
+capability names the origin; a client composes them rather than trusting either
+alone.
+
+Three cases fall back to `chat.saveTempAttachment` with the legacy
+image-only 10 MB contract, and all three are ordinary outcomes rather than
+errors: a host predating the capability, a **relay-routed** connection (the
+relay brokers WebSocket frames and cannot forward an HTTP POST to the host's own
+listener — `hello_ok.connectionTransport` is the host's own statement of which
+it is), and an SSH target, which is not a paired sync transport at all. **iOS
+stays on the legacy path** and is not offered the route; `workChatInputAttachmentMaxBytes`
+in `WorkChatAttachmentTray.swift` mirrors the legacy constant for that reason.
 
 ### Transport readiness and path truth
 

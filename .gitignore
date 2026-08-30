@@ -104,3 +104,9 @@ apps/web/public/images/updatedImages/
 # Windows CI runner — the checkout, not a test. Ignore them so a broad
 # `git add -A` cannot sweep them in when a test throws before its cleanup.
 *\\*
+
+# Agent work artifacts: research notes an agent writes at the repo root while
+# investigating. They are scratch for one task, never product, and a broad
+# `git add -A` would otherwise sweep them into a PR (AGENTS.md work-artifacts
+# rule). Anything worth keeping goes under docs/.
+T3CODE_RESEARCH_*.md

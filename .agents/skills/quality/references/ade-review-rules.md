@@ -156,6 +156,33 @@ these foundation-specific checks apply on top of the default review:
   reboot/restart, installed updates, and GUI artifacts as external proof. Code
   or mocked tests cannot close those gates.
 
+## 11. Surface coverage sweep
+
+**Class:** A change that works on the one path the author tested and is missing
+everywhere else — the single most common defect shape in multi-client, 
+multi-provider repos. This is the review-side enforcement of the AGENTS.md
+"Hit every ADE surface" checklist.
+
+**Check:** For each behavior the diff adds or changes, walk the checklist and
+demand an answer per entry — present, deliberately excluded (where is that
+recorded?), or missed:
+
+- **Entry points:** desktop UI, `ade` CLI, `ade code` TUI, deeplinks, command
+  palette, keybindings. A behavior wired into one entry point but reachable
+  from others is a finding.
+- **Clients:** desktop, hosted web, iOS, TUI. Logic duplicated into one client
+  instead of the shared service/type layer is a finding.
+- **Providers:** Claude / Codex / Cursor / OpenCode / Droid. A provider-shaped
+  feature needs a per-adapter decision; silence for an adapter is a finding,
+  an explicit capability gate is not.
+- **Reverse states:** every new way in needs the way out and the way to see it
+  (snooze/unsnooze, settle/unsettle, link/unlink). A one-way door is a finding.
+- **Connection modes:** local runtime, remote runtime, relay, offline,
+  phone-newer-than-host. A feature that assumes local-only must say so.
+
+Raise one finding per missed surface, severity by reachability: a reachable
+crash or dead control is High; a missing deliberate-exclusion record is Low.
+
 ---
 
 ## Output

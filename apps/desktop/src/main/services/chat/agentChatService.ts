@@ -208,6 +208,11 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
+  exceedsProviderInlineLimit,
+  inlineAttachmentHintPart,
+} from "./attachmentInlineGuard";
+import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
+import {
   resolveCliSpawnInvocation,
   terminateProcessTree,
 } from "../shared/processExecution";
@@ -524,6 +529,9 @@ import {
   snapshotFromClaudeSessionQuotaText,
   type ClaudeSessionQuotaSnapshot,
 } from "../../../shared/claudeSessionQuota";
+import { isAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
+import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
+import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import {
@@ -5948,6 +5956,14 @@ async function buildStreamingUserContent(
       const data = await args.readAttachmentBytes(attachment);
       const mediaType = inferAttachmentMediaType(attachment);
 
+      // Every branch below this point inlines `data` into the request body.
+      // The attachment cap is larger than what a provider accepts inline, so
+      // an oversized file degrades to a path hint rather than a rejected turn.
+      if (exceedsProviderInlineLimit(data.byteLength)) {
+        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
+        continue;
+      }
+
       if (attachment.type === "image") {
         if (args.runtimeKind === "claude" || args.modelDescriptor?.capabilities.vision) {
           parts.push({
@@ -7863,6 +7879,12 @@ export function createAgentChatService(args: {
     sessionId: string;
     outcome: "completed" | "partial" | "failed";
   }) => void;
+  /**
+   * Content-free hook fired once per auto-resume transition (armed, resumed,
+   * paused). Carries no session id by construction — see
+   * `ChatAutoResumeAnalyticsProperties`.
+   */
+  onAutoResumeOutcome?: (properties: ChatAutoResumeAnalyticsProperties) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -7920,6 +7942,7 @@ export function createAgentChatService(args: {
     onTurnSettled,
     onChatMentionsExpanded,
     onSessionMetadataRegenerated,
+    onAutoResumeOutcome,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -8365,11 +8388,34 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  // Declared here rather than next to its only caller further down the file:
+  // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
+  // and a `const` declared thousands of lines later is in its temporal dead zone
+  // for any call that lands before that line executes. Every dependency below is
+  // read through a closure at call time, so nothing else has to move with it.
+  const autoResume = createChatAutoResumeCoordinator({
+    getScheduler: () => scheduledWorkScheduler,
+    whenSchedulerReady: () => scheduledWorkReady,
+    isSessionSchedulable: (sessionId) => {
+      const row = sessionService.get(sessionId);
+      return Boolean(row && !row.archivedAt && isSchedulableAgentSession(row));
+    },
+    emitNotice: (sessionId, notice) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return;
+      emitChatEvent(managed, notice);
+    },
+    ...(onAutoResumeOutcome ? { captureAnalytics: onAutoResumeOutcome } : {}),
+    logger,
+  });
   // Listeners for "this chat is over" (deleted or archived). Services that hold
   // a per-chat lock — the iOS simulator session, for one — release it here
   // instead of staying bound to a chat that no longer exists.
   const chatSessionEndedListeners = new Set<(sessionId: string) => void>();
   const notifyChatSessionEnded = (sessionId: string): void => {
+    // Covers archive and delete both. Auto-resume state outlives nothing here:
+    // the chat is over, so a streak counter for it is pure retention.
+    autoResume.forgetSession(sessionId);
     for (const listener of chatSessionEndedListeners) {
       try {
         listener(sessionId);
@@ -14486,6 +14532,26 @@ export function createAgentChatService(args: {
     };
   };
 
+  // ── Auto-resume after a provider usage limit resets ──
+
+  /**
+   * Reset instant the provider published for the current usage limit, in ms.
+   * Only providers that actually report one are consulted — Claude's plan
+   * quota snapshot and Codex's `account/rateLimits` view. Every other provider
+   * returns null, which keeps today's manual-recovery-only behaviour.
+   */
+  const usageLimitResetAtMs = (managed: ManagedChatSession): number | null => {
+    const claudeReset = managed.claudeSessionQuotaSnapshot?.resetsAtMs;
+    if (typeof claudeReset === "number" && Number.isFinite(claudeReset)) return claudeReset;
+    const runtime = managed.runtime;
+    if (runtime?.kind === "codex") {
+      const resetAt = runtime.rateLimits?.resetAt;
+      const parsed = typeof resetAt === "string" ? Date.parse(resetAt) : Number.NaN;
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
   type CommitChatEventOptions = {
     liveEvent?: AgentChatEvent;
   };
@@ -14496,6 +14562,14 @@ export function createAgentChatService(args: {
     options: CommitChatEventOptions = {},
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    if (decoratedEvent.type === "error") {
+      autoResume.maybeArmAfterUsageLimit({
+        sessionId: managed.session.id,
+        provider: managed.session.provider,
+        resetAtMs: usageLimitResetAtMs(managed),
+        error: decoratedEvent,
+      });
+    }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
     managed.session.lastActivityAt = nowIso();
@@ -14864,27 +14938,31 @@ export function createAgentChatService(args: {
     if (
       normalizedEvent.type === "user_message"
       && normalizedEvent.deliveryState !== "queued"
-      && normalizedEvent.turnId
       && normalizedEvent.metadata?.scheduledWake?.scheduleId
-      && scheduledWorkScheduler
     ) {
-      runScheduledWorkMutation(
-        "record_turn_started",
-        scheduledWorkScheduler.recordTurnStarted(
-          normalizedEvent.metadata.scheduledWake.scheduleId,
-          normalizedEvent.turnId,
-        ),
-      );
+      const scheduleId = normalizedEvent.metadata.scheduledWake.scheduleId;
+      if (normalizedEvent.turnId && scheduledWorkScheduler) {
+        runScheduledWorkMutation(
+          "record_turn_started",
+          scheduledWorkScheduler.recordTurnStarted(scheduleId, normalizedEvent.turnId),
+        );
+      }
+      if (isAutoResumeScheduledWork({ id: scheduleId })) {
+        autoResume.noteResumeTurnStarted(managed.session.id);
+      }
     }
 
-    if (normalizedEvent.type === "done" && normalizedEvent.turnId && scheduledWorkScheduler) {
-      runScheduledWorkMutation(
-        "record_turn_finished",
-        scheduledWorkScheduler.recordTurnFinished(
-          normalizedEvent.turnId,
-          managed.preview?.trim() || undefined,
-        ),
-      );
+    if (normalizedEvent.type === "done") {
+      autoResume.noteTurnFinished(managed.session.id);
+      if (normalizedEvent.turnId && scheduledWorkScheduler) {
+        runScheduledWorkMutation(
+          "record_turn_finished",
+          scheduledWorkScheduler.recordTurnFinished(
+            normalizedEvent.turnId,
+            managed.preview?.trim() || undefined,
+          ),
+        );
+      }
     }
 
     const compactionEvent = mapLegacyCompactionEvent(
@@ -31192,6 +31270,12 @@ export function createAgentChatService(args: {
       });
       return false;
     }
+    // Past the drop, so a steer the queue refused is not mistaken for activity
+    // and leaves any pending auto-resume armed. The queued message itself is
+    // real user input, and it will run.
+    if (!metadata?.scheduledWake) {
+      autoResume.cancelForSession(sessionId, "user_message");
+    }
     const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
     const uuid = randomUUID();
     runtime.pendingSteers.push({
@@ -36636,6 +36720,13 @@ export function createAgentChatService(args: {
       try {
         let buf: Buffer;
         if (attachment.type === "image") {
+          // An image has no path-shaped fallback here — it is inlined or it is
+          // a text hint — so the size check happens before the read, not after.
+          const imageSize = resolvedAttachmentDiskSize(attachment);
+          if (imageSize != null && exceedsProviderInlineLimit(imageSize)) {
+            blocks.push(inlineAttachmentHintPart(attachment.path, imageSize));
+            continue;
+          }
           buf = await readResolvedAttachmentBytes(attachment);
         } else {
           const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
@@ -39746,6 +39837,16 @@ export function createAgentChatService(args: {
       optimisticCodexTurnStart,
     } = prepared;
 
+    // Both dispatch commit points cancel the pending auto-resume: this one and
+    // the accepted branch of `enqueueSteerOrDrop`. Together they cover every
+    // route a message can take — send, steer, wake queue, continuity capsule
+    // and the headless `runSessionTurn`, which reaches the provider through
+    // here and so can no longer walk past the sweep. A message that was refused
+    // upstream never gets here, so it leaves the resume armed. Scheduled wakes
+    // are excluded: a fired resume must not cancel itself.
+    if (!metadata?.scheduledWake) {
+      autoResume.cancelForSession(sessionId, "user_message");
+    }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
 
@@ -43417,6 +43518,7 @@ export function createAgentChatService(args: {
     cancellable: true,
     ...(schedule.lateFlag ? { late: true } : {}),
     ...(schedule.outcomeSummary ? { outcomeSummary: schedule.outcomeSummary } : {}),
+    ...(schedule.source ? { source: schedule.source } : {}),
   });
 
   const createScheduledWork = async (
@@ -43681,6 +43783,9 @@ export function createAgentChatService(args: {
       .find((schedule) => schedule.id === normalizedScheduleId);
     if (!existing) {
       throw new Error(`Scheduled work '${normalizedScheduleId}' was not found in chat '${normalizedSessionId}'.`);
+    }
+    if (isAutoResumeScheduledWork(existing)) {
+      autoResume.noteScheduleDismissed(normalizedSessionId);
     }
     if (existing.provider === "claude") {
       const cancellation = await requestClaudeScheduledWorkCancellation(
@@ -45590,6 +45695,7 @@ export function createAgentChatService(args: {
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
+    autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
     for (const sessionId of [...managedSessions.keys()]) {
@@ -45615,6 +45721,7 @@ export function createAgentChatService(args: {
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
+    autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
@@ -49020,7 +49127,7 @@ export function createAgentChatService(args: {
           }
         };
 
-        cleanupDir(path.join(projectRoot, ".ade", "attachments"));
+        cleanupDir(projectAttachmentsDir(projectRoot));
         cleanupDir(path.join(resolveAdeLayout(projectRoot).tmpDir, "agent-chat-attachments"));
       } catch { /* ignore */ }
     },

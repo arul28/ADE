@@ -150,6 +150,8 @@ ade lanes list --json   # stable JSON for scripts and agents
     ade actions list --text                 # full service-backed action catalog
     ade actions run git.stageFile --arg laneId=<lane-id> --arg path=src/index.ts
     ade doctor                              # local runtime, git, provider readiness
+    ade triage                              # hand a broken install to your own coding agent
+    ade triage --agent --text               # print the context + playbook paths instead of launching one
     ade skill list --text                   # bundled agent skills
     ```
   </Accordion>

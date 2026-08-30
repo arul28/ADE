@@ -113,6 +113,15 @@ import type {
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  legacyAttachmentCapMessage,
+} from "../../../shared/chatAttachmentLimits";
+import {
+  projectAttachmentsDir,
+  stageAttachmentBytes,
+  stageAttachmentCopy,
+} from "../../../shared/chatAttachmentStagingFs";
+import {
   buildLaneEnvTeardown,
   ensureActiveLanePortLease,
   releaseLaneRuntimeResources,
@@ -633,6 +642,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "reloadClaudePlugins",
     "rewindFiles",
     "saveTempAttachment",
+    "copyTempAttachment",
+    // The paired desktop's ticket mint for the streamed HTTP upload route.
+    // `remoteConnectionService.uploadChatAttachment` calls it by string over
+    // `run_ade_action`, so leaving it off this list left remote-paired attach
+    // failing on every machine.
+    "createAttachmentUpload",
     "sendMessage",
     "readTranscript",
     "readTranscriptPage",
@@ -1353,7 +1368,9 @@ function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | n
   }) as unknown as OpaqueService;
 }
 
-const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+// The base64/in-memory ceiling, single-sourced so the constant and the
+// rejection message can never drift apart.
+const MAX_TEMP_ATTACHMENT_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 const FILE_SEARCH_SESSION_LANE_CACHE_MAX = 200;
 // Only non-identity sessions are cached: a regular chat session's lane binding
 // is immutable (updateSession exposes no laneId; handoffs create new sessions),
@@ -1488,19 +1505,17 @@ async function saveAgentChatTempAttachment(projectRoot: string, arg: { data?: st
     throw new Error("Temporary attachment data is required.");
   }
   if (arg.data.length > maxEncodedLength) {
-    throw new Error("Temporary attachments must be 10 MB or smaller.");
+    throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
   }
   const content = Buffer.from(arg.data, "base64");
   if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
-    throw new Error("Temporary attachments must be 10 MB or smaller.");
+    throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
   }
-  const baseDir = path.join(projectRoot, ".ade", "attachments");
-  await fs.promises.mkdir(baseDir, { recursive: true });
-  const filename = typeof arg.filename === "string" ? arg.filename : "";
-  const ext = path.extname(filename) || ".png";
-  const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
-  await fs.promises.writeFile(destPath, content);
-  return { path: destPath };
+  return await stageAttachmentBytes({
+    content,
+    filename: typeof arg.filename === "string" ? arg.filename : null,
+    attachmentsDir: projectAttachmentsDir(projectRoot),
+  });
 }
 
 function resolveAgentChatImagePath(projectRoot: string, rawPath: unknown): string {
@@ -1561,7 +1576,7 @@ async function getAgentChatImageDataUrl(projectRoot: string, arg: { path?: strin
     throw new Error("Path is not a file.");
   }
   if (stat.size > MAX_TEMP_ATTACHMENT_BYTES) {
-    throw new Error("Image must be 10 MB or smaller.");
+    throw new Error(legacyAttachmentCapMessage("Image"));
   }
   const data = await fs.promises.readFile(imagePath);
   const mimeType = sniffImageMimeType(data);
@@ -1819,6 +1834,51 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     saveTempAttachment: (args?: { data?: string; filename?: string }) =>
       saveAgentChatTempAttachment(runtime.projectRoot, args ?? {}),
+    // The composer's same-machine attachment staging. The renderer only reaches
+    // it after `getAttachmentStagingMode` answered `copy`, which it only does
+    // when the chat's machine binding IS this machine — so in the product the
+    // unconstrained source path is always one this user just dragged in.
+    //
+    // That is a statement about the UI, not a boundary, and there is no gate
+    // here: this IS reachable over sync RPC from a paired peer. The handler
+    // serving that channel is the same zero-argument factory the local unix
+    // socket gets (`setSyncRuntimeRpcHandlerFactory` in cli.ts), and
+    // `SessionState` carries no transport origin, so nothing downstream can
+    // tell the two callers apart. A paired peer can therefore read any file on
+    // this disk through here.
+    //
+    // Not an escalation, for two reasons. Opening that channel at all requires
+    // a runtime-host pairing grant (syncPairedChannelService refuses `rpc_open`
+    // without one), and a peer holding it already reaches `chat.launchCli` —
+    // arbitrary processes on this machine — through the same door. Pairing,
+    // not this allowlist, is where that trust is decided.
+    copyTempAttachment: (args?: { sourcePath?: string; filename?: string }) =>
+      stageAttachmentCopy({
+        sourcePath: typeof args?.sourcePath === "string" ? args.sourcePath : "",
+        filename: typeof args?.filename === "string" ? args.filename : null,
+        attachmentsDir: projectAttachmentsDir(runtime.projectRoot),
+      }),
+    /**
+     * Mint a ticket for the streamed HTTP upload route so a paired desktop can
+     * stage a file it holds WITHOUT base64-inflating it through two heaps.
+     *
+     * This is the registry half of the same feature `chat.createAttachmentUpload`
+     * serves on the sync command channel (mobile and other sync clients). Both
+     * mint from the host's one `AttachmentUploadRegistry` instance — a ticket is
+     * only redeemable by the request handler that shares that map, so a
+     * second registry here would issue tickets no route recognises.
+     */
+    createAttachmentUpload: (args?: { filename?: string }) => {
+      const syncHost = runtime.syncHostService;
+      if (!syncHost) {
+        throw new Error("This machine is not sharing this project, so it cannot accept attachment uploads.");
+      }
+      const filename = typeof args?.filename === "string" ? args.filename.trim() : "";
+      return syncHost.issueAttachmentUploadTicket({
+        projectRoot: runtime.projectRoot,
+        filename: filename || "attachment",
+      });
+    },
     getImageDataUrl: (args?: { path?: string }) =>
       getAgentChatImageDataUrl(runtime.projectRoot, args ?? {}),
   };

@@ -873,7 +873,14 @@ ade.agentChat.*              # agent chat sessions, model inventory, parallel la
                              # optional KV-backed scheduledWork management snapshot. The
                              # namespace also exposes explicit `regenerateSessionMetadata`,
                              # one structured title/lane/status request whose remote form is
-                             # optional for older mobile clients.
+                             # optional for older mobile clients. Attachment staging is two
+                             # channels, not one: saveTempAttachment is the base64 leg (10 MB;
+                             # the image MIME sniff applies on the sync leg only) and
+                             # copyTempAttachment stages a file that already
+                             # exists on this machine's disk by copying it (50 MB, any type,
+                             # bytes never enter the renderer). The preload picks between them
+                             # — and the remote upload route — from getAttachmentStagingMode.
+                             # See features/chat/composer-and-ui.md.
 ade.personalChats.*          # preload namespace over machine RPC: allowlisted personal-chat
                              # call + cursor event stream. Local/no-project windows target the
                              # local brain; a remote-bound project window targets that remote brain.
@@ -930,7 +937,16 @@ ade.keepAwake.*              # get / setLevel / fixSystemSleep for the opt-in
 ade.remoteRuntime.*          # remote target registry, connect/projects/project-open,
                              # action/sync/event dispatch, port forwards, and
                              # ade.remoteRuntime.updateAndRestart — the desktop half
-                             # of the host's `machine.updateAndRestart` (§2.1)
+                             # of the host's `machine.updateAndRestart` (§2.1).
+                             # attachmentUploadCapability answers whether a paired target
+                             # accepts a streamed HTTP attachment upload (and at what
+                             # ceiling); uploadChatAttachment mints a ticket over the
+                             # authenticated sync socket and POSTs the file body to the
+                             # host's sync port. The upload channel is one of the few with
+                             # a bespoke budget in ipcTimeouts.ts (6 min, above the upload
+                             # client's own 5 min) so a slow 50 MB transfer surfaces the
+                             # real reason instead of a transport timeout.
+                             # See features/sync-and-multi-device/README.md
 ```
 
 ### 5.3 Main-process handlers

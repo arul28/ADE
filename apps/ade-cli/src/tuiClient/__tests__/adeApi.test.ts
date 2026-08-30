@@ -482,6 +482,35 @@ describe("latestTokenStats", () => {
     });
   });
 
+  it("keeps the parsed rate-limit window when a prose rate_limit notice follows it", () => {
+    // The plan-usage warning is emitted at most once per session, and the
+    // auto-resume lines reuse `noticeKind: "rate_limit"` with prose detail.
+    // If those overwrote the snapshot, the statusline's rate-limit window
+    // would blank out exactly when a limit trips and never come back.
+    const events = [
+      envelope(1, {
+        type: "system_notice",
+        noticeKind: "rate_limit",
+        severity: "info",
+        message: "Approaching Claude plan limit",
+        detail: "87% utilized | resets 2026-08-29T18:00:00.000Z",
+      } as AgentChatEventEnvelope["event"]),
+      envelope(2, {
+        type: "system_notice",
+        noticeKind: "rate_limit",
+        severity: "info",
+        message: "Auto-resume scheduled for Aug 29, 7:31 PM",
+        detail:
+          "ADE will ask this chat to continue the interrupted task once the usage limit resets. Sending a message or retrying the turn cancels it.",
+      } as AgentChatEventEnvelope["event"]),
+    ];
+
+    expect(latestTokenStats(events).rateLimit).toEqual({
+      usedPercentage: 87,
+      resetsAt: Math.round(Date.parse("2026-08-29T18:00:00.000Z") / 1000),
+    });
+  });
+
   it("falls back to the active model contextWindow when the event omits one", () => {
     const events = [
       envelope(1, { type: "status", turnStatus: "started" }),

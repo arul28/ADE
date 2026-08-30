@@ -5,7 +5,15 @@ import { projectBindingKey } from "../shared/projectIdentity";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
-import type { ConvertImageToJpegResult } from "../shared/types/chat";
+import type {
+  AgentChatCopyTempAttachmentArgs,
+  ChatAttachmentStagingMode,
+  ConvertImageToJpegResult,
+} from "../shared/types/chat";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_ATTACHMENT_BYTES,
+} from "../shared/chatAttachmentLimits";
 import {
   type AttentionAcknowledgmentOutcome,
   type AttentionItem,
@@ -1451,6 +1459,7 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "warmupModel",
   "rewindFiles",
   "saveTempAttachment",
+  "copyTempAttachment",
   "setCodexGoal",
   "setCodexGoalStatus",
   "clearCodexGoal",
@@ -7157,6 +7166,58 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "saveTempAttachment", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
       ),
+    /**
+     * How a staged attachment reaches the machine that owns this chat, and how
+     * large it may be. The composer asks once per batch and routes on the
+     * answer instead of hardcoding a cap, so the ceiling always matches the
+     * path the bytes will actually take.
+     */
+    getAttachmentStagingMode: async (
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatAttachmentStagingMode> => {
+      if (pin?.kind !== "remote") {
+        // Same machine as the main process: the bytes never move, only the
+        // path. `copy` is the one mode the main process cannot answer with,
+        // because it is a property of the caller, not of the target — so it is
+        // decided here and every other mode comes back ready to use.
+        return { mode: "copy", maxBytes: MAX_CHAT_ATTACHMENT_BYTES };
+      }
+      const capability = (await ipcRenderer.invoke(
+        IPC.remoteRuntimeAttachmentUploadCapability,
+        { id: pin.targetId },
+      )) as ChatAttachmentStagingMode | null;
+      if (capability?.mode === "upload" || capability?.mode === "base64") {
+        return capability;
+      }
+      return { mode: "base64", maxBytes: LEGACY_MAX_CHAT_ATTACHMENT_BYTES };
+    },
+    /**
+     * Stage a file that exists on this machine's disk without reading it into
+     * the renderer. `copy` hands the path to the local brain, which copies it;
+     * `upload` streams it to the paired host over HTTP. Callers reach this only
+     * after `getAttachmentStagingMode` said so — `base64` has no path here and
+     * keeps using `saveTempAttachment`.
+     */
+    stageFileAttachment: async (
+      args: AgentChatCopyTempAttachmentArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ path: string }> => {
+      if (pin?.kind === "remote") {
+        return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
+          id: pin.targetId,
+          projectId: pin.projectId,
+          sourcePath: args.sourcePath,
+          filename: args.filename,
+        })) as { path: string };
+      }
+      return await callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "chat",
+        "copyTempAttachment",
+        { args },
+        () => ipcRenderer.invoke(IPC.agentChatCopyTempAttachment, args),
+      );
+    },
     getImageDataUrl: async (
       path: string,
       pin?: OpenProjectBinding | null,

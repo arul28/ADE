@@ -10,6 +10,10 @@ import type {
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  formatAttachmentSize,
+} from "../../../shared/chatAttachmentLimits";
+import {
   AgentChatComposer,
   HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
 } from "./AgentChatComposer";
@@ -1225,14 +1229,19 @@ describe("AgentChatComposer", () => {
     expect(uploadInput).toBeTruthy();
 
     const oversized = new File(["too large"], "oversized.txt", { type: "text/plain" });
-    Object.defineProperty(oversized, "size", { value: 11 * 1024 * 1024 });
+    Object.defineProperty(oversized, "size", {
+      value: LEGACY_MAX_CHAT_ATTACHMENT_BYTES + 1024 * 1024,
+    });
     fireEvent.change(uploadInput!, { target: { files: [oversized] } });
 
-    expect(await screen.findByText(/Maximum allowed size is 10 MB/)).toBeTruthy();
+    const capMessage = new RegExp(
+      `Maximum allowed size is ${formatAttachmentSize(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)}`,
+    );
+    expect(await screen.findByText(capMessage)).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Dismiss error"));
 
     await waitFor(() => {
-      expect(screen.queryByText(/Maximum allowed size is 10 MB/)).toBeNull();
+      expect(screen.queryByText(capMessage)).toBeNull();
     });
   });
 

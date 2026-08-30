@@ -48,6 +48,8 @@ import type {
   RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
+import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { matchRemoteProjectByRootPath } from "../attention/remoteProjectIdentity";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
@@ -1109,6 +1111,47 @@ export function registerRuntimeBridge({
         actionRequest,
       );
       return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeAttachmentUploadCapability,
+    async (
+      _event,
+      arg: { id: string },
+    ): Promise<ChatAttachmentStagingMode> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      // No target named: nothing can be probed, so answer with the mode every
+      // host supports rather than inventing a second "unknown" vocabulary.
+      if (!id) return { mode: "base64", maxBytes: LEGACY_MAX_CHAT_ATTACHMENT_BYTES };
+      return await remoteConnectionService.getAttachmentUploadCapability(id);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeUploadChatAttachment,
+    async (
+      _event,
+      arg: {
+        id: string;
+        projectId: string;
+        sourcePath: string;
+        filename: string;
+      },
+    ): Promise<{ path: string }> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId = typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const sourcePath = typeof arg?.sourcePath === "string" ? arg.sourcePath.trim() : "";
+      const filename = typeof arg?.filename === "string" ? arg.filename.trim() : "";
+      if (!id) throw new Error("Remote target id is required.");
+      if (!projectId) throw new Error("Remote project is required.");
+      if (!sourcePath) throw new Error("Attachment source path is required.");
+      return await remoteConnectionService.uploadChatAttachment({
+        targetId: id,
+        projectId,
+        sourcePath,
+        filename,
+      });
     },
   );
 

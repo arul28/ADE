@@ -1,4 +1,5 @@
 import { nextCronFireAt as nextChatScheduledCronFireAt } from "../../../shared/chatScheduledWork";
+import { AUTO_RESUME_SCHEDULED_WORK_SOURCE } from "../../../shared/chatAutoResume";
 
 export { nextChatScheduledCronFireAt };
 
@@ -11,6 +12,12 @@ export { nextChatScheduledCronFireAt };
  */
 
 export type ChatScheduledWorkKind = "wakeup" | "cron" | "loop";
+
+/**
+ * Provenance tag for rows ADE created on the user's behalf. Untagged rows are
+ * user- or agent-created and must never be swept by ADE's own housekeeping.
+ */
+export type ChatScheduledWorkSource = typeof AUTO_RESUME_SCHEDULED_WORK_SOURCE;
 
 export type ChatScheduledWorkStatus =
   | "scheduled"
@@ -40,6 +47,8 @@ export type ChatScheduledWorkRecord = {
   provider?: "claude";
   providerSessionId?: string;
   providerScheduleId?: string;
+  /** Set only on rows ADE created itself (see `ChatScheduledWorkSource`). */
+  source?: ChatScheduledWorkSource;
 };
 
 export type ChatScheduledWorkState = {
@@ -176,6 +185,9 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
       : {}),
     ...(typeof record.providerScheduleId === "string"
       ? { providerScheduleId: record.providerScheduleId }
+      : {}),
+    ...(record.source === AUTO_RESUME_SCHEDULED_WORK_SOURCE
+      ? { source: AUTO_RESUME_SCHEDULED_WORK_SOURCE }
       : {}),
   };
 }

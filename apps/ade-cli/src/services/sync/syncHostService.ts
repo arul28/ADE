@@ -268,6 +268,13 @@ import {
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
+import {
+  ATTACHMENT_UPLOAD_PATH,
+  createAttachmentUploadRegistry,
+  type AttachmentUploadRegistry,
+  type AttachmentUploadTicket,
+} from "./attachmentUploadService";
+import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 export { selectChangesetBatchChunk } from "./changesetPump";
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
@@ -1497,6 +1504,11 @@ export function buildSyncHostHelloOkPayload(args: {
   /** Advertise only when this concrete handler accepts terminal_input. */
   terminalInputAckEnabled?: boolean;
   /**
+   * Advertise the streamed HTTP attachment-upload route. Purely additive:
+   * older clients and iOS ignore it and stay on `chat.saveTempAttachment`.
+   */
+  attachmentUploadEnabled?: boolean;
+  /**
    * Whether this peer is authorized to use the paired runtime RPC channel and
    * loopback port-forwarding (paired AND a desktop runtime-host). Defaults to
    * false so non-desktop paired devices (phones/browsers) never see the
@@ -1550,6 +1562,15 @@ export function buildSyncHostHelloOkPayload(args: {
       chatHistoryPaging: {
         enabled: true,
       },
+      ...(args.attachmentUploadEnabled
+        ? {
+            attachmentUploadV1: {
+              enabled: true as const,
+              path: ATTACHMENT_UPLOAD_PATH,
+              maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+            },
+          }
+        : {}),
       ...(isInvalidationOnlyBrowserPeer(args.peer)
         ? {
             invalidationOnlyV1: {
@@ -2070,7 +2091,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ?? createMachineIdentitySigningStore({ logger: args.logger });
   const adoptNow = args.adoptNow ?? Date.now;
   const dpopNonceCache = createSyncDpopNonceCache();
+  // The upload route is served by whichever http server this host is behind.
+  // With a shared listener that server outlives project switches, so the
+  // registry must be the listener's own — a host-local one would mint tickets
+  // no request handler knows about. Only the self-owned-listener path creates
+  // (and therefore disposes) its own.
+  const ownsAttachmentUploadRegistry = !args.sharedListener;
+  const attachmentUploads: AttachmentUploadRegistry =
+    args.sharedListener?.getAttachmentUploadRegistry()
+    ?? createAttachmentUploadRegistry({ logger: args.logger });
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
+    attachmentUploads,
     db: args.db,
     productAnalyticsService: args.productAnalyticsService,
     projectRoot: args.projectRoot,
@@ -2130,6 +2161,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     isCloudRelayEnabled: () => Boolean(args.getCloudRelayWssUrl?.()),
     logger: args.logger,
   });
+  // Advertise the upload route only when a client can actually mint a ticket
+  // for it. An injected `remoteCommandService` (tests, custom embeddings) may
+  // not register the command, and the route is useless without it.
+  const attachmentUploadEnabled = remoteCommandService
+    .getSupportedActions()
+    .includes("chat.createAttachmentUpload");
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
   const backpressureTimeoutMs = Math.max(heartbeatIntervalMs * 3, 10_000);
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
@@ -2782,6 +2819,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const httpServer = sharedListener
     ? null
     : http.createServer((request, response) => {
+        if (attachmentUploads.handleRequest(request, response)) return;
         writeAdeLoopbackUpgradeResponse(request, response, expectedLoopbackNonce);
       });
   const server = sharedListener
@@ -7469,6 +7507,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
         connectionTransport: syncConnectionTransportForOrigin(peer.transportOrigin),
         terminalInputAckEnabled: true,
+        attachmentUploadEnabled,
         // Runtime RPC channel + port-forward are desktop-runtime-host only,
         // even after successful pairing (phones/browsers stay on the mobile
         // command allowlist).
@@ -8474,6 +8513,28 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return bootstrapToken;
     },
 
+    /**
+     * Mint an upload ticket for a caller that reached this host over the
+     * runtime RPC channel rather than the sync command channel — a paired
+     * desktop going through `chat.createAttachmentUpload` on the ADE action
+     * registry. Same registry instance either way, because only the request
+     * handler holding that map can redeem what it issues.
+     *
+     * Deliberately NOT gated on `attachmentUploadEnabled`. That flag answers a
+     * narrower question — whether this host's `remoteCommandService` registered
+     * the sync COMMAND, which an injected or embedded service may not — while
+     * the HTTP route itself is served unconditionally by whichever listener
+     * this host is behind. Gating here would refuse tickets the route would
+     * happily redeem, with a reason that is not the real one.
+     */
+    issueAttachmentUploadTicket(args: {
+      projectRoot: string;
+      filename: string;
+      deviceId?: string | null;
+    }): AttachmentUploadTicket {
+      return attachmentUploads.issue(args);
+    },
+
     setLocalActiveLanePresence(laneIds: string[]): void {
       setLocalActiveLanePresence(laneIds);
     },
@@ -8685,6 +8746,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      // Never dispose a shared listener's registry: it outlives this host and
+      // still serves the next project's uploads.
+      if (ownsAttachmentUploadRegistry) attachmentUploads.dispose();
       localActiveLaneIds = new Set<string>();
       lanePresenceByLaneId.clear();
       dropInFlightCommandRecordsForProject();

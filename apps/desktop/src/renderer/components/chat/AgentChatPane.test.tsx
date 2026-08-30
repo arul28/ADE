@@ -79,6 +79,7 @@ import {
   writeChatCompanionUiState,
 } from "./chatCompanionUiState";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
+import { formatAutoResumeTime } from "../../../shared/chatAutoResume";
 import {
   isChatSessionRetained,
   releaseAllRetainedChatSessions,
@@ -3977,6 +3978,298 @@ describe("AgentChatPane submit recovery", () => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
         text: "Continue in a new turn.",
+      }), null);
+    });
+  });
+
+  it("shows the pending auto-resume on the usage-limit card and cancels it on request", async () => {
+    const nextRunAt = "2026-07-10T20:30:00.000Z";
+    const session = buildSession("session-1", {
+      status: "idle",
+      awaitingInput: false,
+      scheduledWork: [{
+        id: "auto-resume:session-1",
+        sessionId: "session-1",
+        kind: "wakeup",
+        status: "scheduled",
+        title: "Auto-resume after usage limit reset",
+        prompt: "The provider usage limit has reset. Continue the interrupted task from where it stopped.",
+        nextRunAt,
+        createdAt: "2026-07-10T18:19:00.000Z",
+        durable: true,
+        cancellable: true,
+        source: "auto_resume_limit",
+      }],
+    });
+    const { cancelScheduledWork } = installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:52.000Z",
+            sequence: 1,
+            event: { type: "user_message", text: "Keep shipping the fix." },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.000Z",
+            sequence: 2,
+            event: {
+              type: "error" as const,
+              message: "Rate limited by Codex.",
+              turnId: "turn-limit",
+              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 3,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.4" },
+          },
+        ],
+        truncated: false,
+        sessionFound: true,
+      },
+    });
+
+    renderPane(session);
+
+    const banner = await screen.findByTestId("auto-resume-scheduled");
+    expect(banner.textContent).toContain("Auto-resume scheduled for");
+    expect(banner.textContent).toContain(formatAutoResumeTime(Date.parse(nextRunAt)));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel auto-resume" }));
+    await waitFor(() => {
+      expect(cancelScheduledWork).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        scheduleId: "auto-resume:session-1",
+      }, null);
+    });
+    await waitFor(() => expect(screen.queryByTestId("auto-resume-scheduled")).toBeNull());
+  });
+
+  function autoResumeSession(sessionId: string) {
+    return buildSession(sessionId, {
+      status: "idle",
+      awaitingInput: false,
+      scheduledWork: [{
+        id: `auto-resume:${sessionId}`,
+        sessionId,
+        kind: "wakeup",
+        status: "scheduled",
+        title: "Auto-resume after usage limit reset",
+        prompt: "The provider usage limit has reset. Continue the interrupted task from where it stopped.",
+        nextRunAt: "2026-07-10T20:30:00.000Z",
+        createdAt: "2026-07-10T18:19:00.000Z",
+        durable: true,
+        cancellable: true,
+        source: "auto_resume_limit",
+      }],
+    });
+  }
+
+  it("renders the usage-limit card for Codex's raw `usageLimitReached` errorInfo", async () => {
+    // The exact shape Codex forwards: no structured `errorInfo.category`, just
+    // the opaque provider string, and it spells the limit "usageLimitReached"
+    // — not "usageLimitExceeded". The host arms auto-resume off
+    // `isUsageLimitChatError`, which matches it; a renderer classifier that
+    // only knew "usagelimitexceeded"/"ratelimit" left this chat with a live
+    // schedule and no card, no anchor, and no way to cancel.
+    const session = autoResumeSession("session-1");
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.000Z",
+            sequence: 1,
+            event: {
+              type: "error" as const,
+              message: "You've hit your usage limit.",
+              turnId: "turn-limit",
+              errorInfo: "usageLimitReached",
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 2,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-limit", model: "gpt-5.4" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Usage limit")).toBeTruthy();
+    const banner = await screen.findByTestId("auto-resume-scheduled");
+    expect(banner.textContent).toContain("Auto-resume scheduled for");
+    expect(screen.getByRole("button", { name: "Cancel auto-resume" })).toBeTruthy();
+  });
+
+  it("offers the pending auto-resume only on the newest usage-limit card", async () => {
+    const session = autoResumeSession("session-1");
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-08T09:00:00.000Z",
+            sequence: 1,
+            event: {
+              type: "error" as const,
+              message: "Usage limit reached on Monday.",
+              turnId: "turn-monday",
+              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-08T09:00:00.100Z",
+            sequence: 2,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-monday", model: "gpt-5.4" },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.000Z",
+            sequence: 3,
+            event: {
+              type: "error" as const,
+              message: "Usage limit reached on Friday.",
+              turnId: "turn-friday",
+              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.066Z",
+            sequence: 4,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-friday", model: "gpt-5.4" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    // getByTestId throws on a second match, so this alone rules out the older
+    // card also advertising the one armed schedule.
+    const banner = await screen.findByTestId("auto-resume-scheduled");
+    const newestFailure = screen.getByText("Usage limit reached on Friday.");
+    expect(
+      newestFailure.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps the auto-resume off older cards that repeat the newest failure verbatim", async () => {
+    // The provider writes the same sentence every time the limit is hit, and
+    // `turnId` is optional on this path — the degenerate case where a weaker
+    // card identity would let a stale card alias the newest one.
+    const session = autoResumeSession("session-1");
+    const repeated = "Usage limit exceeded.";
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-08T09:00:00.000Z",
+            sequence: 1,
+            event: { type: "error" as const, message: repeated },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T18:18:53.000Z",
+            sequence: 2,
+            event: { type: "error" as const, message: repeated },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    const banner = await screen.findByTestId("auto-resume-scheduled");
+    const failures = screen.getAllByText(repeated);
+    expect(failures).toHaveLength(2);
+    expect(
+      failures[1]!.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("drops the scheduled-wake marker when the user retries an auto-resumed turn", async () => {
+    // Otherwise the replayed marker makes the host treat a user-initiated retry
+    // as the schedule's own turn and skip the cancel it promises.
+    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
+    const { send } = installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        truncated: false,
+        sessionFound: true,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:00.000Z",
+            sequence: 1,
+            event: {
+              type: "user_message" as const,
+              text: "The provider usage limit has reset. Continue the interrupted task.",
+              turnId: "turn-resumed",
+              metadata: {
+                scheduledWake: {
+                  scheduleId: "auto-resume:session-1",
+                  kind: "wakeup" as const,
+                  firedAt: "2026-07-10T20:30:00.000Z",
+                },
+                hostContinuation: { reason: "provider_schedule_cleanup" as const },
+              },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:04.000Z",
+            sequence: 2,
+            event: {
+              type: "error" as const,
+              message: "Usage limit exceeded again.",
+              turnId: "turn-resumed",
+              errorInfo: { category: "rate_limit" as const, provider: "Codex" },
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-07-10T20:30:04.066Z",
+            sequence: 3,
+            event: { type: "done" as const, status: "failed" as const, turnId: "turn-resumed", model: "gpt-5.4" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retry turn" }));
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.sessionId,
+        text: "The provider usage limit has reset. Continue the interrupted task.",
+        metadata: { hostContinuation: { reason: "provider_schedule_cleanup" } },
       }), null);
     });
   });

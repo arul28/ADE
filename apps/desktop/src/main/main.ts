@@ -77,6 +77,7 @@ import {
 import { detectInstallSource } from "./services/analytics/installSource";
 import {
   captureAgentTurnSettledAnalytics,
+  captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
@@ -3882,6 +3883,10 @@ app.whenReady().then(async () => {
         analytics: productAnalyticsService,
         projectId,
         event,
+      }),
+      onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
+        analytics: productAnalyticsService,
+        properties,
       }),
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {

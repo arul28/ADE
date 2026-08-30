@@ -228,6 +228,43 @@ per session** — a bulk settle on the peer arrives as a single apply covering N
 sessions, and reporting each would turn one remote action into an N-event
 burst.
 
+Chat auto-resume after a provider usage limit records one coarse workflow
+outcome per transition, on the same `ade_feature_used` event with
+`feature: "work"` and `action: "auto_resume"`, at the coordinator that owns the
+loop (`chatAutoResumeCoordinator`, through an injected emitter — it never
+reaches the analytics service or a session id itself). `outcome` is a closed set
+of exactly three values: `armed` (a resume was scheduled), `resumed` (an
+auto-resume-originated turn started), and `paused` (the consecutive-arm cap
+stopped re-arming). `provider` rides along, the same coarse slug through the
+same sanitizer as the settle-teardown event, because a limit whose published
+reset instant is the wrong one is a provider-specific failure and is the whole
+reason the cap exists. The product question is only whether auto-resume rescues
+a chat a limit stopped, so nothing finer crosses the boundary: no session id, no
+reset timestamp, no provider error text, no prompt or notice copy, and no
+schedule id.
+
+A cancelled resume is deliberately **not** recorded. Cancellation fires on
+ordinary user activity — any message or retry in the chat clears the pending
+row — so counting it would report typing rather than the workflow, and the
+number that matters is already derivable as `armed` minus `resumed`. No new
+deduplication key was added because the volume is bounded by construction
+instead: arms are capped at two per streak (and collapse to one event per
+distinct reset instant, so the duplicate error events a single failure commits
+do not double-count), `paused` is emitted once per capped streak rather than
+once per failure, and `resumed` is emitted once per fired resume on the
+not-pending-to-pending edge. Worst case is therefore five events per chat per
+streak — two `armed`, two `resumed`, one `paused` — and a streak requires a
+usage limit plus a reset window to elapse, so realistic volume is single digits
+per installation per day, far inside the existing `ade_feature_used`
+140-per-day / 30-per-minute limits and the shared 200-event ceiling. No ceiling
+was raised. The dashboard spec is deliberately untouched: there is no product
+question attached to these events yet, so they stay out of
+`scripts/posthog/dashboard-spec.mjs` until there is one. The loop's local
+operational lines (`agent_chat.auto_resume_scheduled`,
+`agent_chat.auto_resume_cancelled`, `agent_chat.auto_resume_schedule_failed`),
+which do carry session ids, schedule ids, and fire times, are not PostHog
+events.
+
 Applying an update is one transaction — app swap, background service reinstalled,
 service restarted, service answering — and the brain half failing (the app
 updated but the background service never came back) is its own product-level

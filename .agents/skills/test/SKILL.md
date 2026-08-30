@@ -265,6 +265,7 @@ Rules:
 - Mock only at process boundaries: file system, network, child processes, Electron APIs, IPC.
 - Tests must FAIL LOUDLY — assert preconditions explicitly.
 - Use `node` environment unless DOM is genuinely required.
+- Wait on events, receipts, resolved promises, or fake timers — never on wall-clock sleeps. A test that needs a real `sleep` or a raised timeout to pass is testing a race, not a contract; fix the seam (expose the completion signal) instead of padding the wait.
 
 ### 3d. Run as you write
 

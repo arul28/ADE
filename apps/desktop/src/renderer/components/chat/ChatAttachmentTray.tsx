@@ -1,12 +1,54 @@
-import { forwardRef, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
-import { createPortal } from "react-dom";
-import { Copy, File, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
+import { Suspense, forwardRef, lazy, useEffect, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { Copy, GithubLogo, Globe, Image, X } from "@phosphor-icons/react";
 import type { AgentChatContextAttachment, AgentChatFileRef, ChatSurfaceMode } from "../../../shared/types";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments";
+import { formatAttachmentSize } from "../../../shared/chatAttachmentLimits";
 import { githubIssueIdentifier } from "../../../shared/laneGitHubIssue";
 import { cn } from "../ui/cn";
+import { getFileIcon } from "../files/filePresentation";
 import { GITHUB_BRAND } from "../lanes/githubBrand";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
+/**
+ * The preview popup pulls in the whole Files viewer platform — Monaco, the PDF
+ * and document renderers, the CSV grid. That is a large amount of code for a
+ * surface most chats never open, and the composer is on the app's hottest
+ * render path, so it loads on first open rather than with the tray.
+ */
+const ChatAttachmentPreviewModal = lazy(() => import("./ChatAttachmentPreviewModal")
+  .then((module) => ({ default: module.ChatAttachmentPreviewModal })));
+
+/**
+ * The open-on-demand preview popup every attachment chip shares, so one popup
+ * renders the whole set rather than each chip growing its own.
+ *
+ * `fallbackImageDataUrl` is the only thing the two callers differ on: an image
+ * thumbnail has already loaded bytes, and those are the only way to render an
+ * attachment that lives outside every workspace, where the Files viewers
+ * cannot reach it. A file chip has no such bytes and passes nothing.
+ */
+function useAttachmentPreview(args: {
+  path: string;
+  title: string;
+  pin: OpenProjectBinding | null;
+  fallbackImageDataUrl?: string | null;
+}): { open: () => void; element: ReactNode } {
+  const [expanded, setExpanded] = useState(false);
+  return {
+    open: () => setExpanded(true),
+    element: expanded ? (
+      <Suspense fallback={null}>
+        <ChatAttachmentPreviewModal
+          attachmentPath={args.path}
+          title={args.title}
+          pin={args.pin}
+          fallbackImageDataUrl={args.fallbackImageDataUrl}
+          onClose={() => setExpanded(false)}
+        />
+      </Suspense>
+    ) : null,
+  };
+}
 
 function attachmentName(path: string): string {
   // Split on both POSIX and Windows separators so a Windows path
@@ -14,6 +56,19 @@ function attachmentName(path: string): string {
   // full path.
   const segments = path.split(/[/\\]/);
   return segments.pop() || path;
+}
+
+/**
+ * Keep the head and the extension, elide the middle. A file chip's two useful
+ * ends are what the user named it and what type it is; truncating from the
+ * right throws the second one away, which is exactly the part that tells them
+ * whether they attached the PDF or the spreadsheet.
+ */
+function middleTruncateFilename(name: string, maxLength = 32): string {
+  if (name.length <= maxLength) return name;
+  const head = Math.ceil((maxLength - 1) / 2);
+  const tail = Math.floor((maxLength - 1) / 2);
+  return `${name.slice(0, head)}…${name.slice(name.length - tail)}`;
 }
 
 export type ChatAttachmentPendingImage = {
@@ -272,20 +327,27 @@ function ImageAttachmentPreview({
   attachment,
   toneClassName,
   initialPreviewUrl,
+  machinePin,
   onRemove,
   onFocusPrompt,
 }: {
   attachment: AgentChatFileRef;
   toneClassName: string;
   initialPreviewUrl?: string | null;
+  machinePin: OpenProjectBinding | null;
   onRemove?: (path: string) => void;
   onFocusPrompt?: () => void;
 }) {
   const [dataUrl, setDataUrl] = useState<string | null>(initialPreviewUrl ?? null);
   const [previewFailed, setPreviewFailed] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const name = attachmentName(attachment.path);
+  const preview = useAttachmentPreview({
+    path: attachment.path,
+    title: name,
+    pin: machinePin,
+    fallbackImageDataUrl: dataUrl,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -372,9 +434,7 @@ function ImageAttachmentPreview({
             onRemove: onRemove ? () => onRemove(attachment.path) : undefined,
             onFocusPrompt,
           })}
-          onClick={() => {
-            if (dataUrl) setExpanded(true);
-          }}
+          onClick={preview.open}
         >
           {dataUrl ? (
             <img src={dataUrl} alt={name} className="h-full w-full object-cover" draggable={false} />
@@ -415,13 +475,7 @@ function ImageAttachmentPreview({
           ) : null}
         </span>
       </div>
-      {expanded && dataUrl ? (
-        <ImageLightbox
-          name={name}
-          dataUrl={dataUrl}
-          onClose={() => setExpanded(false)}
-        />
-      ) : null}
+      {preview.element}
     </>
   );
 }
@@ -480,6 +534,93 @@ function PendingImageAttachmentPreview({
         </button>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Every non-image attachment, as one chip: type icon, middle-truncated name,
+ * human size when known, remove ×.
+ *
+ * Size is shown only when the caller knows it. The composer does — it staged
+ * the file and has the `File.size` — but a chip re-rendered from transcript
+ * history has only a path, and statting every attachment of every past message
+ * would be a per-chip round trip (two, on a remote machine) to render one
+ * label. The chip degrades to name-only rather than paying that, or worse,
+ * flashing a number in late.
+ */
+function FileAttachmentChip({
+  attachment,
+  toneClassName,
+  sizeBytes,
+  machinePin,
+  onRemove,
+  onFocusPrompt,
+}: {
+  attachment: AgentChatFileRef;
+  toneClassName: string;
+  sizeBytes?: number;
+  machinePin: OpenProjectBinding | null;
+  onRemove?: (path: string) => void;
+  onFocusPrompt?: () => void;
+}) {
+  const name = attachmentName(attachment.path);
+  const preview = useAttachmentPreview({ path: attachment.path, title: name, pin: machinePin });
+  const onOpen = preview.open;
+  const { icon: Icon, color } = getFileIcon(name);
+  const sizeLabel = typeof sizeBytes === "number" && Number.isFinite(sizeBytes)
+    ? formatAttachmentSize(sizeBytes)
+    : null;
+  return (
+    <>
+    <span
+      className={cn(
+        "ade-liquid-glass-pill group inline-flex max-w-full cursor-pointer items-center gap-2 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 transition-colors focus:outline-none focus:ring-1 focus:ring-white/25",
+        toneClassName,
+      )}
+      title={sizeLabel ? `${name} — ${sizeLabel}` : name}
+      role="button"
+      aria-label={`Open ${name}`}
+      tabIndex={0}
+      data-testid="chat-file-attachment-chip"
+      data-chat-image-attachment-focus-target="true"
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpen();
+          return;
+        }
+        handleImageAttachmentKeyDown(event, {
+          onRemove: onRemove ? () => onRemove(attachment.path) : undefined,
+          onFocusPrompt,
+        });
+      }}
+    >
+      <Icon size={13} weight="bold" style={{ color }} className="shrink-0" />
+      <span className="min-w-0 max-w-[240px] truncate text-[11px] font-medium text-fg/85">
+        {middleTruncateFilename(name)}
+      </span>
+      {sizeLabel ? (
+        <span className="shrink-0 text-[10px] tabular-nums text-current/45">{sizeLabel}</span>
+      ) : null}
+      {onRemove ? (
+        <button
+          type="button"
+          className="shrink-0 rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
+          title={`Remove ${name}`}
+          aria-label={`Remove ${name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(attachment.path);
+          }}
+        >
+          <X size={10} weight="bold" />
+        </button>
+      ) : null}
+    </span>
+    {preview.element}
+    </>
   );
 }
 
@@ -543,110 +684,23 @@ function ImageUrlAttachmentChip({
   );
 }
 
-function ImageLightbox({
-  name,
-  dataUrl,
-  onClose,
-}: {
-  name: string;
-  dataUrl: string;
-  onClose: () => void;
-}) {
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  // Save the element that opened us so focus can return there on close,
-  // pull focus into the dialog on mount, and lock body scroll while open so
-  // the wheel doesn't move the page behind the overlay.
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeButtonRef.current?.focus();
-    const previousBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = previousBodyOverflow;
-      if (previouslyFocused && typeof previouslyFocused.focus === "function") {
-        previouslyFocused.focus();
-      }
-    };
-  }, []);
-
-  // Close on Escape and trap Tab / Shift-Tab inside the dialog. The dialog
-  // contains exactly the close button as a focusable element, so the trap
-  // pins focus there in either direction.
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const root = containerRef.current;
-    if (!root) return;
-    const focusables = Array.from(
-      root.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      ),
-    ).filter((element) => element.tabIndex >= 0);
-    if (focusables.length === 0) {
-      event.preventDefault();
-      closeButtonRef.current?.focus();
-      return;
-    }
-    const first = focusables[0]!;
-    const last = focusables[focusables.length - 1]!;
-    const active = document.activeElement as HTMLElement | null;
-    if (event.shiftKey) {
-      if (active === first || !active || !root.contains(active)) {
-        event.preventDefault();
-        last.focus();
-      }
-    } else {
-      if (active === last || !active || !root.contains(active)) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-  };
-
-  return createPortal(
-    <div
-      ref={containerRef}
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/75 p-8"
-      role="dialog"
-      aria-modal="true"
-      aria-label={name}
-      onClick={onClose}
-      onKeyDown={handleKeyDown}
-    >
-      <div className="relative max-h-full max-w-full">
-        <button
-          ref={closeButtonRef}
-          type="button"
-          className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded border border-white/10 bg-black/70 text-white/80 transition-colors hover:bg-black hover:text-white"
-          title="Close"
-          aria-label="Close"
-          onClick={onClose}
-        >
-          <X size={14} weight="bold" />
-        </button>
-        <img
-          src={dataUrl}
-          alt={name}
-          className="max-h-[calc(100vh-4rem)] max-w-[calc(100vw-4rem)] rounded-md object-contain"
-          onClick={(event) => event.stopPropagation()}
-        />
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
 type ChatAttachmentTrayProps = {
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   pendingImageAttachments?: ChatAttachmentPendingImage[];
   imagePreviewUrls?: Record<string, string | undefined>;
+  /**
+   * Staged sizes by path. The composer knows them from the `File` it staged;
+   * a tray rendered from transcript history does not, and chips render
+   * name-only there rather than statting every past attachment.
+   */
+  attachmentSizes?: Record<string, number | undefined>;
+  /**
+   * Machine that owns these attachments. The preview popup reads the file
+   * through the Files API with this pin, so an attachment staged on a paired
+   * host opens from that host instead of resolving a same-named path here.
+   */
+  machinePin?: OpenProjectBinding | null;
   mode: ChatSurfaceMode;
   onRemove?: (path: string) => void;
   onRemoveContext?: (key: string) => void;
@@ -661,6 +715,8 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
   contextAttachments = [],
   pendingImageAttachments = [],
   imagePreviewUrls = {},
+  attachmentSizes = {},
+  machinePin = null,
   mode,
   onRemove,
   onRemoveContext,
@@ -733,33 +789,22 @@ export const ChatAttachmentTray = forwardRef<HTMLDivElement, ChatAttachmentTrayP
               attachment={attachment}
               toneClassName={chipTone}
               initialPreviewUrl={imagePreviewUrls[attachment.path]}
+              machinePin={machinePin}
               onRemove={onRemove}
               onFocusPrompt={onFocusPrompt}
             />
           );
         }
         return (
-          <span
+          <FileAttachmentChip
             key={attachment.path}
-            className={cn(
-              "ade-liquid-glass-pill group inline-flex max-w-full items-center gap-2 rounded-[var(--chat-radius-pill)] px-2.5 py-1.5 font-mono text-[10px] transition-colors",
-              chipTone,
-            )}
-          >
-            <File size={12} weight="bold" />
-            <span className="max-w-[260px] truncate">{attachmentName(attachment.path)}</span>
-            {onRemove ? (
-              <button
-                type="button"
-                className="rounded-full text-current/45 transition-colors hover:bg-white/[0.06] hover:text-current"
-                title={`Remove ${attachmentName(attachment.path)}`}
-                aria-label={`Remove ${attachmentName(attachment.path)}`}
-                onClick={() => onRemove(attachment.path)}
-              >
-                <X size={10} weight="bold" />
-              </button>
-            ) : null}
-          </span>
+            attachment={attachment}
+            toneClassName={chipTone}
+            sizeBytes={attachmentSizes[attachment.path]}
+            machinePin={machinePin}
+            onRemove={onRemove}
+            onFocusPrompt={onFocusPrompt}
+          />
         );
       })}
     </div>
