@@ -850,9 +850,11 @@ async function readDurableGitHubRepoAccess(env: RelayEnv, cacheKey: string): Pro
  *
  * A denial must still retire any durable allow the same pair had earned, or the
  * stale-on-rate-limit path would keep serving access the token just lost once
- * the short isolate-level denial expired. `existingDurable` is the row this
- * request already read, so an anonymous caller who has never been allowed
- * causes no D1 write at all.
+ * the short isolate-level denial expired. That delete is unconditional rather
+ * than gated on the snapshot this request read: a concurrent request can land a
+ * verified allow after the snapshot and before this denial, and the gated form
+ * would skip the delete and leave that row authorizing the token. Deleting
+ * nothing writes nothing, so an anonymous caller still cannot grow D1.
  */
 async function recordGitHubRepoAccessVerdict(
   env: RelayEnv,
@@ -861,13 +863,12 @@ async function recordGitHubRepoAccessVerdict(
   repo: { owner: string; name: string },
   level: GitHubRepoAccessLevel,
   verdict: GitHubRepoAccessVerdict,
-  existingDurable: DurableGitHubRepoAccess | null,
 ): Promise<void> {
   if (!cacheKey || !tokenHash) return;
   if (verdict.verdict !== "allow") {
     // Retire the durable allow first: the purge also clears isolate entries for
     // this token and repository, and the denial below must outlive it.
-    if (existingDurable) await deleteDurableGitHubRepoAccess(env, tokenHash, repo);
+    await deleteDurableGitHubRepoAccess(env, tokenHash, repo);
     cacheGitHubRepoAccess(cacheKey, verdict);
     return;
   }
@@ -1139,10 +1140,7 @@ async function assertGitHubRepoAuthorized(
     if (tokenHash) await purgeGitHubRepoAccessForToken(env, tokenHash);
     return {
       authorized: false,
-      response: json(
-        { ok: false, error: readString(repoResponse.payload, "message") || "Bad credentials" },
-        { status: 403 },
-      ),
+      response: revokedCredentialResponse(readString(repoResponse.payload, "message")),
     };
   }
   if (repoResponse.ok) {
@@ -1156,14 +1154,14 @@ async function assertGitHubRepoAuthorized(
         await recordGitHubRepoAccessVerdict(env, cacheKey, tokenHash, repo, level, {
           verdict: "allow",
           repositoryId,
-        }, durable);
+        });
         return { authorized: true, repositoryId };
       }
       await recordGitHubRepoAccessVerdict(env, cacheKey, tokenHash, repo, level, {
         verdict: "deny",
         denyStatus: 403,
         denyMessage: null,
-      }, durable);
+      });
       return {
         authorized: false,
         response: insufficientRepoPermissionResponse(level),
@@ -1175,12 +1173,18 @@ async function assertGitHubRepoAuthorized(
       await recordGitHubRepoAccessVerdict(env, cacheKey, tokenHash, repo, level, {
         verdict: "allow",
         repositoryId,
-      }, durable);
+      });
       return { authorized: true, repositoryId };
     }
     if (fallback.outcome === "rate_limited") {
       const cooldown = await rememberGitHubRateLimit(env, tokenHash, fallback.rateLimitResetAt);
       return await serveStaleOrDenyUnderRateLimit(durable, repo, cooldown);
+    }
+    if (fallback.outcome === "revoked") {
+      // Same escalation as the primary path: a 401 condemns the credential, not
+      // just its access to this repository, and is never negative-cached.
+      if (tokenHash) await purgeGitHubRepoAccessForToken(env, tokenHash);
+      return { authorized: false, response: revokedCredentialResponse("") };
     }
     if (fallback.outcome === "unavailable") {
       // GitHub never answered the access question, so nothing is cached and the
@@ -1191,7 +1195,7 @@ async function assertGitHubRepoAuthorized(
       verdict: "deny",
       denyStatus: 403,
       denyMessage: null,
-    }, durable);
+    });
     return {
       authorized: false,
       response: insufficientRepoPermissionResponse(level),
@@ -1208,7 +1212,7 @@ async function assertGitHubRepoAuthorized(
       verdict: "deny",
       denyStatus: status,
       denyMessage: message,
-    }, durable);
+    });
   }
   return {
     authorized: false,
@@ -1253,6 +1257,10 @@ function collaboratorPermissionAllowsAccess(permission: string, level: GitHubRep
   return normalized === "admin" || normalized === "write" || normalized === "maintain";
 }
 
+function revokedCredentialResponse(message: string): Response {
+  return json({ ok: false, error: message || "Bad credentials" }, { status: 403 });
+}
+
 function unverifiedRepoAccessResponse(): Response {
   return json(
     { ok: false, error: "GitHub could not confirm repository access right now. Try again shortly." },
@@ -1269,18 +1277,21 @@ function insufficientRepoPermissionResponse(level: GitHubRepoAccessLevel): Respo
 
 type AuthenticatedUserRepoPermission = {
   /** `unavailable` means GitHub gave no usable answer; it must not be cached. */
-  outcome: "authorized" | "denied" | "unavailable" | "rate_limited";
+  outcome: "authorized" | "denied" | "revoked" | "unavailable" | "rate_limited";
   rateLimitResetAt: number | null;
 };
 
 /**
- * Only GitHub's own 401/403/404 are definitive answers about access. Anything
- * else — a 5xx, an unexpected status, or a 200 whose body is missing the field
- * we need — is a failure to determine access, and caching it as a denial would
- * lock a legitimate caller out for the negative-cache window.
+ * Only GitHub's own 403/404 are definitive answers about access to this
+ * repository. A 401 is a statement about the credential itself, not the
+ * repository, so it escalates to the same token-wide purge the primary path
+ * performs. Anything else — a 5xx, an unexpected status, or a 200 whose body is
+ * missing the field we need — is a failure to determine access, and caching it
+ * as a denial would lock a legitimate caller out for the negative-cache window.
  */
-function fallbackOutcomeForFailedCall(status: number): "denied" | "unavailable" {
-  return status === 401 || status === 403 || status === 404 ? "denied" : "unavailable";
+function fallbackOutcomeForFailedCall(status: number): "denied" | "revoked" | "unavailable" {
+  if (status === 401) return "revoked";
+  return status === 403 || status === 404 ? "denied" : "unavailable";
 }
 
 async function fetchAuthenticatedUserRepoPermission(

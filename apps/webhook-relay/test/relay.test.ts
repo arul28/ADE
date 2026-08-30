@@ -688,6 +688,31 @@ describe("webhook relay", () => {
       clearGitHubRepoAuthCacheForTests();
     }
 
+    /** Mirrors the relay's durable cache key so tests can seed rows directly. */
+    async function durableCacheKey(token: string, repositoryKey = "owner/repo"): Promise<string> {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+      const tokenHash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `${tokenHash}:${repositoryKey}:write`;
+    }
+
+    async function seedDurableAllow(
+      env: ReturnType<typeof makeEnv>,
+      token: string,
+      repositoryKey = "owner/repo",
+    ): Promise<void> {
+      const cacheKey = await durableCacheKey(token, repositoryKey);
+      env.DB.repoAuthVerdicts.set(cacheKey, {
+        cache_key: cacheKey,
+        token_hash: cacheKey.split(":")[0]!,
+        repository_key: repositoryKey,
+        access_level: "write",
+        repository_id: 4242,
+        verified_at: new Date(Date.now()).toISOString(),
+        fresh_until: new Date(Date.now() + 60 * 60_000).toISOString(),
+        stale_until: new Date(Date.now() + 24 * 60 * 60_000).toISOString(),
+      });
+    }
+
     function stubRepoAccessRateLimited(options: {
       token?: string;
       status?: 403 | 429;
@@ -772,6 +797,79 @@ describe("webhook relay", () => {
       const response = await handleRequest(repoEventsRequest(), env);
       expect(response.status).toBe(403);
       expect(await response.json()).toEqual(expect.objectContaining({ ok: false }));
+    });
+
+    it("removes a durable allow that landed after this request read its snapshot", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      // This request starts with no durable row, so its snapshot is empty. A
+      // concurrent request verifies the same token and writes its allow while
+      // this one is still waiting on GitHub — the interleaving that makes a
+      // snapshot-gated delete skip the row and leave it authorizing the token.
+      const denyAfterConcurrentAllow = vi.fn(async () => {
+        await seedDurableAllow(env, "ghp_repo_token");
+        return new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      vi.stubGlobal("fetch", denyAfterConcurrentAllow);
+
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      expect(denyAfterConcurrentAllow).toHaveBeenCalledTimes(1);
+      // The racing allow must not survive the denial.
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+
+      // And it must not come back through the stale-on-rate-limit path once the
+      // short isolate-level denial has expired.
+      vi.setSystemTime(new Date("2026-07-16T12:10:00.000Z"));
+      recycleIsolate();
+      vi.stubGlobal("fetch", stubRepoAccessRateLimited({ remaining: "0" }));
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+    });
+
+    it("purges every repository verdict when the fallback /user call reports revoked credentials", async () => {
+      const env = makeEnv();
+      // Two repositories already verified for this token, one of which is not
+      // the repository being requested.
+      await seedDurableAllow(env, "ghp_repo_token", "owner/repo");
+      await seedDurableAllow(env, "ghp_repo_token", "other/repo");
+      env.DB.repoAuthVerdicts.forEach((row) => {
+        row.fresh_until = "2020-01-01T00:00:00.000Z";
+      });
+      expect(env.DB.repoAuthVerdicts.size).toBe(2);
+
+      // No `permissions` block forces the collaborator fallback, and GitHub then
+      // reports the credential itself is no longer valid.
+      const revokedOnFallback = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://api.github.com/repos/owner/repo") {
+          return new Response(JSON.stringify({ id: 4242, full_name: "owner/repo" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ message: "Bad credentials" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      vi.stubGlobal("fetch", revokedOnFallback);
+
+      const response = await handleRequest(repoEventsRequest(), env);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ ok: false, error: "Bad credentials" });
+      // Token-wide, not scoped to the requested repository.
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+
+      // A revoked credential is never negative-cached, so the next attempt is
+      // re-verified against GitHub rather than answered from the isolate.
+      expect(revokedOnFallback).toHaveBeenCalledTimes(2);
+      await handleRequest(repoEventsRequest(), env);
+      expect(revokedOnFallback).toHaveBeenCalledTimes(4);
     });
 
     it("does not cache a fallback-path server error as a denial", async () => {
