@@ -107,6 +107,18 @@ const LIVE_TICK_MS = 1_000;
  * Two, so a single transient failure still recovers on its own, and a PR whose
  * Actions read never succeeds costs at most two reads instead of one every time
  * the poll governor changes state.
+ *
+ * The cap survives a stand-down cycle deliberately — the governor clearing its
+ * ladder is the signal that would otherwise re-arm the fetch effect, which is
+ * the loop this exists to prevent. It therefore also survives a *credential*
+ * change, which is the one case where re-asking would be right: the service's
+ * `githubReadBackoff` and `mergeStateGraphqlBrake` both clear on the auth
+ * generation bump, but no auth-generation signal reaches this renderer surface
+ * to key on. The consequence is bounded and visible: after reconnecting GitHub,
+ * the check list and merge box heal on the next tick and the pipeline graph
+ * needs one press of Retry, which is always on screen while the graph is
+ * unreachable. Plumbing the auth generation through the poll governor would
+ * close it properly.
  */
 const MAX_AUTO_GRAPH_ATTEMPTS = 2;
 
@@ -547,18 +559,25 @@ export function PrChecksTab({
       serviceGraph: prev.key === key ? prev.serviceGraph : null,
     }));
 
+    // The governor records AUTOMATIC reads only. A Retry the user pressed is
+    // ungated on purpose, and letting its result move the ladder is the exact
+    // bug the reserve/ladder split was made to prevent: one lucky user retry
+    // during an outage would reset every automatic loop to its 5s cadence, and
+    // one unlucky one would stand down loops that made no request at all.
+    const recordsGovernorEvidence = !options.userInitiated;
+
     void fetchChecksGraphOnce(key, () => fetchWorkflowGraph({ prId: pr.id }))
       .then((value) => {
         if (requestTokenRef.current !== token) return;
         writeChecksGraphCache(key, value);
-        noteGithubReadSuccess();
+        if (recordsGovernorEvidence) noteGithubReadSuccess();
         setGraphState({ key, status: "resolved", serviceGraph: value });
       })
       .catch(() => {
         if (requestTokenRef.current !== token) return;
         // Deliberately NOT cached. Storing a rejection as "no graph here" is the
         // failed-read-that-looks-empty bug that let a 5s loop run for an hour.
-        noteGithubReadFailure();
+        if (recordsGovernorEvidence) noteGithubReadFailure();
         const spent = autoAttemptsRef.current;
         autoAttemptsRef.current = spent.key === key
           ? { key, failures: spent.failures + 1 }
@@ -1051,7 +1070,26 @@ export function PrChecksTab({
         </div>
       ) : <div style={{ marginBottom: SPACING.md }} />}
 
-      {buckets.total === 0 ? (
+      {/* An unreadable answer outranks an empty one. A rate-limited PR loads no
+          checks AND no graph, and reporting that as "nothing has reported yet"
+          is the failed-read-that-looks-empty bug this whole surface exists to
+          delete — worse here, because the Retry button lives in the branch it
+          skipped, so there is no way back. */}
+      {activeGraph.status === "unreachable" ? (
+        <div data-testid="pr-checks-swimlanes">
+          <GraphUnavailableNote
+            copy="ADE couldn't reach GitHub to chart these checks, so it can't draw the pipeline. Everything it already knows is below."
+            onRetry={retryGraph}
+          />
+          {buckets.total === 0
+            ? (
+              <div className="px-1 py-4 text-[12px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }} data-testid="pr-checks-empty">
+                ADE has no check results for this pull request either.
+              </div>
+            )
+            : renderSections("No checks to show for this attempt.")}
+        </div>
+      ) : buckets.total === 0 ? (
         <div className="px-1 py-4 text-[12px]" style={{ color: COLORS.textDim, fontFamily: SANS_FONT }} data-testid="pr-checks-empty">
           No checks have reported for this pull request yet.
         </div>
@@ -1073,15 +1111,13 @@ export function PrChecksTab({
           <PrChecksGraphSkeleton jobCount={Math.max(unified.length, graph.nodes.length)} />
         ) : (
           <div data-testid="pr-checks-swimlanes">
+            {/* `unreachable` is handled above, before the empty check. */}
             <GraphUnavailableNote
               copy={
-                activeGraph.status === "unreachable"
-                  ? "ADE couldn't reach GitHub to chart these checks, so it can't draw the pipeline. Everything it already knows is below."
-                  : !viewingLatestAttempt
-                    ? "ADE charts only the latest attempt, so this older attempt is shown grouped by workflow."
-                    : graphUnavailableCopy(graph.unavailableReason)
+                !viewingLatestAttempt
+                  ? "ADE charts only the latest attempt, so this older attempt is shown grouped by workflow."
+                  : graphUnavailableCopy(graph.unavailableReason)
               }
-              onRetry={activeGraph.status === "unreachable" ? retryGraph : undefined}
             />
             {renderSections("No checks to show for this attempt.")}
           </div>

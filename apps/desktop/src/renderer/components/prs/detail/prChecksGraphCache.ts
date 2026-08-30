@@ -99,12 +99,24 @@ export function writeChecksGraphCache(
   return entry;
 }
 
-export function invalidateChecksGraphCache(key?: string): void {
-  if (key == null) cache.clear();
-  else cache.delete(key);
-}
-
 const inFlight = new Map<string, Promise<PrWorkflowGraph | null>>();
+
+/**
+ * Forget a cached answer AND any read still in flight for it.
+ *
+ * Dropping only the cached copy would leave a caller that asked for a fresh
+ * read joined to the in-flight one instead — it would get the answer it was
+ * explicitly trying to go around.
+ */
+export function invalidateChecksGraphCache(key?: string): void {
+  if (key == null) {
+    cache.clear();
+    inFlight.clear();
+    return;
+  }
+  cache.delete(key);
+  inFlight.delete(key);
+}
 
 /**
  * Run `fetcher` at most once per key at a time.

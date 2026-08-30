@@ -305,6 +305,51 @@ describe("PrChecksTab — GitHub request budget", () => {
   });
 
 
+  it("still offers Retry when the read failed and no checks loaded either", async () => {
+    // A rate-limited PR loads no checks AND no graph. The empty-state branch used
+    // to preempt the unreachable branch, so the tab said "no checks have reported
+    // yet" — an unreadable answer wearing the costume of an empty one — and the
+    // Retry button lived in the branch it skipped, leaving no way back at all.
+    const getWorkflowGraph = vi.fn().mockRejectedValue(new Error("403 rate limited"));
+    installAde({ getWorkflowGraph });
+    await renderTab({ checks: [], actionRuns: [], pollGovernor: governorStub() });
+
+    expect(screen.getByTestId("pr-checks-graph-retry")).toBeTruthy();
+    expect(screen.getByTestId("pr-checks-graph-unavailable-note").textContent)
+      .toContain("couldn't reach GitHub");
+    expect(screen.queryByTestId("pr-checks-empty")?.textContent ?? "")
+      .not.toContain("No checks have reported");
+  });
+
+  it("does not let a user-pressed Retry move the automatic-read governor", async () => {
+    // The reserve and the ladder were split precisely because a user action is
+    // ungated: letting its result count as automatic evidence means one lucky
+    // retry during an outage resets every poll loop to its 5s cadence, and one
+    // unlucky retry stands down loops that made no request.
+    const getWorkflowGraph = vi.fn()
+      .mockRejectedValueOnce(new Error("502 Bad Gateway"))
+      .mockResolvedValue(chartedGraph());
+    installAde({ getWorkflowGraph });
+    const governor = governorStub();
+    await renderTab({
+      actionRuns: [run({ jobs: [job({ id: 1, name: "build" })] })],
+      pollGovernor: governor,
+    });
+    expect(governor.noteGithubReadFailure).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      screen.getByTestId("pr-checks-graph-retry").click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getWorkflowGraph).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("pr-checks-graph")).toBeTruthy();
+    // The retry succeeded, but it was the user's request, not an automatic read.
+    expect(governor.noteGithubReadSuccess).not.toHaveBeenCalled();
+    expect(governor.noteGithubReadFailure).toHaveBeenCalledTimes(1);
+  });
+
   it("stops asking after two failed automatic reads, however often the governor changes", async () => {
     // The fetch effect depends on `githubPollGeneration` so a recovered GitHub
     // is picked up without a timer. That makes the governor's own recovery
