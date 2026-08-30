@@ -191,13 +191,47 @@ Two notes on the keybinding result, so it is not over-read:
   that the *entry* dropped rather than the plugin. This is the pattern the two
   unenforced ceilings should copy.
 
-### Not tested, and why
+### Uninstall — behaves exactly as documented on the owning machine
 
-- **Uninstall deleting synced copies on other devices.** Destructive — it would
-  delete the user's real decision log. Worth running deliberately with a
-  throwaway plugin, and especially interesting given the replication P0 above:
-  if data never replicates *to* a phone, it is worth knowing whether deletion
-  does.
+Run for real against the installed plugin (not a throwaway), so it exercised
+live synced data, a published contribution and a copy already on a phone.
+
+| | Before | After uninstall | After reinstall |
+|---|---|---|---|
+| Registry row | enabled | gone | restored |
+| Install directory | present | deleted | recreated |
+| Contributions | 1 lane badge | `[]` | 0 |
+| Panels | 3 published | `null` | 3 |
+| Collection rows | 2 decisions | — | **0** |
+
+The reinstall returning **0 decisions** is what proves the store was destroyed
+rather than merely unpublished: a fresh install of byte-identical code found an
+empty collection. The approval card fired on the removal *and* on the reinstall,
+each blocking until answered — consistent with "never remembered", and the
+second data point retiring my earlier false claim that installs are not carded.
+
+**Still open:** whether the deletion reaches the phone. Given plugin data never
+replicates *to* iOS (the P0 above), the sharp question is whether a phone can be
+left holding a frozen copy of a plugin's data after the plugin is gone from the
+machine that owned it. Not answered here.
+
+### P2 — a degraded doctor rung reports the wrong reason
+
+After the uninstall, `ade plugin doctor decision-log` prints:
+
+```
+– Last run   this copy of ADE does not keep track of plugin action runs
+```
+
+That sentence is documented for a **host too old to track runs**. This host
+tracks them fine — it printed real `Last run` detail minutes earlier. The rung
+conflates "the plugin is not installed" with "this ADE cannot do that", which
+sends an author to check their app version instead of their install. Every
+other rung on that same output degrades correctly (`✗ Installed here — not on
+this computer — run: ade plugin install <source>`), which is what makes this one
+stand out.
+
+### Not tested, and why
 - **`{prompt}` one-hop, `{composer}` verbs, `{resetState}`, `{navigate}`.**
   All enforced client-side, so a headless `plugin.invoke` returns whatever the
   action returned and proves nothing. Read rather than run: the one-hop rule is
