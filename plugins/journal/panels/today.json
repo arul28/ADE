@@ -1,0 +1,58 @@
+{
+  "v": 1,
+  "title": "Today",
+  "fallback": {
+    "title": "Today's journal",
+    "text": "Open ADE on a machine that has Work Journal installed to read today's notes.",
+    "deeplink": "ade://plugin/journal/today"
+  },
+  "body": [
+    {
+      "component": "stack",
+      "direction": "vertical",
+      "gap": "md",
+      "children": [
+        { "component": "text", "text": "Today", "variant": "title" },
+        {
+          "component": "list",
+          "bind": {
+            "collection": "notes",
+            "limit": 60,
+            "allowActions": ["deleteNote"],
+            "where": [{ "field": "today", "equals": "today" }]
+          },
+          "emptyText": "Nothing logged yet today. Press \"Log it\" above a chat, or type /note."
+        },
+        {
+          "component": "stack",
+          "direction": "horizontal",
+          "gap": "sm",
+          "wrap": true,
+          "children": [
+            {
+              "component": "button",
+              "label": "Write my standup",
+              "kind": "primary",
+              "icon": "sparkle",
+              "onPress": { "action": "writeStandup" }
+            },
+            {
+              "component": "button",
+              "label": "Add a note",
+              "kind": "default",
+              "icon": "note",
+              "onPress": { "action": "addNoteToLane" }
+            },
+            {
+              "component": "button",
+              "label": "Full journal",
+              "kind": "quiet",
+              "icon": "clock-counter-clockwise",
+              "onPress": { "action": "openJournal" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

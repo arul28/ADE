@@ -1,0 +1,73 @@
+{
+  "v": 1,
+  "title": "Work Journal",
+  "fallback": {
+    "title": "Work Journal",
+    "text": "Open ADE on a machine that has Work Journal installed to change these settings.",
+    "deeplink": "ade://plugin/journal/journal"
+  },
+  "body": [
+    {
+      "component": "stack",
+      "direction": "vertical",
+      "gap": "md",
+      "children": [
+        { "component": "text", "text": "Standup", "variant": "title" },
+        {
+          "component": "text",
+          "text": "Set the time and the Slack webhook below, then press Apply. ADE holds the schedule; the webhook URL is stored in this plugin's encrypted secret store and never leaves this machine except to post.",
+          "variant": "caption"
+        },
+        {
+          "component": "form",
+          "fields": [
+            {
+              "kind": "text",
+              "id": "standupTime",
+              "label": "Standup time",
+              "placeholder": "09:30",
+              "help": "24-hour local time, as HH:MM."
+            },
+            {
+              "kind": "secret",
+              "id": "slackWebhookUrl",
+              "label": "Slack webhook URL",
+              "placeholder": "https://hooks.slack.com/services/…",
+              "help": "An incoming-webhook URL. Leave blank to keep the one already stored."
+            },
+            {
+              "kind": "toggle",
+              "id": "autoPost",
+              "label": "Post my standup to Slack at that time"
+            }
+          ],
+          "submit": { "label": "Apply", "onPress": { "action": "applySettings" } }
+        },
+        { "component": "divider", "label": "Status" },
+        { "component": "keyValue", "bind": { "collection": "state", "keyPrefix": "settings:" }, "emptyText": "Press Apply to set the schedule up." },
+        {
+          "component": "stack",
+          "direction": "horizontal",
+          "gap": "sm",
+          "wrap": true,
+          "children": [
+            {
+              "component": "button",
+              "label": "Post my standup now",
+              "kind": "default",
+              "icon": "rocket",
+              "onPress": { "action": "postStandup", "confirm": "Post today's standup to Slack now?" }
+            },
+            {
+              "component": "button",
+              "label": "Open the journal",
+              "kind": "quiet",
+              "icon": "note",
+              "onPress": { "action": "openJournal" }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

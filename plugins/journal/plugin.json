@@ -1,0 +1,213 @@
+{
+  "name": "journal",
+  "version": "1.0.0",
+  "displayName": "Work Journal",
+  "description": "One-line notes from any chat, tagged with the lane you were on, and a standup written from them.",
+  "icon": "note",
+  "accent": "#2F8F6F",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "network": { "hosts": ["hooks.slack.com"] },
+  "surfaces": [
+    {
+      "kind": "tab",
+      "id": "journal",
+      "title": "Journal",
+      "panelId": "journal",
+      "icon": "note",
+      "mobile": true
+    },
+    {
+      "kind": "pane",
+      "id": "today",
+      "title": "Journal",
+      "panelId": "today",
+      "icon": "note",
+      "mobile": true
+    }
+  ],
+  "panels": [
+    {
+      "id": "journal",
+      "schemaFile": "panels/journal.json",
+      "title": "Journal",
+      "icon": "note",
+      "refreshAction": "refreshJournal"
+    },
+    {
+      "id": "today",
+      "schemaFile": "panels/today.json",
+      "title": "Today",
+      "icon": "note",
+      "refreshAction": "refreshToday"
+    },
+    {
+      "id": "standup",
+      "schemaFile": "panels/standup.json",
+      "title": "Standup",
+      "icon": "list-checks"
+    },
+    {
+      "id": "settings",
+      "schemaFile": "panels/settings.json",
+      "title": "Work Journal",
+      "icon": "gear"
+    },
+    {
+      "id": "compose",
+      "schemaFile": "panels/compose.json",
+      "title": "Add a note",
+      "icon": "note"
+    }
+  ],
+  "sockets": [
+    {
+      "socket": "chat-header-action",
+      "surface": "work",
+      "id": "log",
+      "label": "Log it",
+      "icon": "note",
+      "actionId": "logIt",
+      "color": "#2F8F6F",
+      "menu": [
+        { "label": "Blocked", "actionId": "logBlocked", "icon": "flag" },
+        { "label": "Done", "actionId": "logDone", "icon": "list-checks" },
+        { "label": "Write my standup", "actionId": "writeStandup", "icon": "sparkle" },
+        { "label": "Open the journal", "actionId": "openJournal", "icon": "clock-counter-clockwise" }
+      ]
+    },
+    {
+      "socket": "slash-command",
+      "surface": "work",
+      "id": "note",
+      "command": "/note",
+      "description": "Save a one-line note against this chat's lane",
+      "argumentHint": "reads the note from your prompt",
+      "icon": "note",
+      "actionId": "noteCommand"
+    },
+    {
+      "socket": "row-badge",
+      "surface": "lanes",
+      "id": "lane-notes",
+      "label": "0",
+      "icon": "note"
+    },
+    {
+      "socket": "row-menu-item",
+      "surface": "lanes",
+      "id": "add-note",
+      "label": "Add a note",
+      "icon": "note",
+      "actionId": "addNoteToLane"
+    },
+    {
+      "socket": "work-rail-pane",
+      "surface": "work",
+      "id": "today",
+      "label": "Journal",
+      "panelId": "today",
+      "icon": "note"
+    },
+    {
+      "socket": "chat-card",
+      "surface": "work",
+      "id": "standup",
+      "panelId": "standup",
+      "title": "Standup",
+      "icon": "list-checks"
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "standup",
+      "label": "Write my standup",
+      "icon": "sparkle",
+      "actionId": "writeStandup"
+    },
+    {
+      "socket": "settings-section",
+      "surface": "settings",
+      "id": "settings",
+      "panelId": "settings",
+      "title": "Work Journal"
+    }
+  ],
+  "collections": {
+    "notes": { "sync": true },
+    "state": { "sync": false }
+  },
+  "settings": [
+    {
+      "key": "standupTime",
+      "kind": "text",
+      "label": "Standup time",
+      "description": "24-hour local time, as HH:MM. Used when auto-post is on.",
+      "default": "09:30"
+    },
+    {
+      "key": "slackWebhookUrl",
+      "kind": "secret",
+      "label": "Slack webhook URL",
+      "description": "An incoming-webhook URL on hooks.slack.com. Stored in ADE's encrypted per-plugin store."
+    },
+    {
+      "key": "autoPost",
+      "kind": "toggle",
+      "label": "Post my standup to Slack automatically",
+      "description": "Posts at the standup time above and notifies you when it lands.",
+      "default": false
+    }
+  ],
+  "cli": ["today", "add", "standup", "week"],
+  "skills": ["skills"],
+  "tools": [
+    {
+      "name": "add_note",
+      "description": "Add a one-line note to the user's work journal. Call this when you finish a piece of work, get blocked, or want the user's standup to mention something you did.",
+      "action": "toolAddNote",
+      "input": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The note, as one short line. e.g. 'fixed the login redirect'"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["note", "blocked", "done"],
+            "description": "'done' for finished work, 'blocked' for something stuck, 'note' otherwise. Defaults to 'note'."
+          },
+          "laneId": {
+            "type": "string",
+            "description": "Optional lane id to tag the note with. Omit to leave it untagged."
+          }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "list_notes",
+      "description": "Read the user's work-journal notes, newest first. Use it to answer what they have been working on or to draft a summary.",
+      "action": "toolListNotes",
+      "input": {
+        "type": "object",
+        "properties": {
+          "range": {
+            "type": "string",
+            "enum": ["today", "week", "all"],
+            "description": "Which window to read. Defaults to 'today'."
+          }
+        },
+        "required": []
+      }
+    }
+  ],
+  "searchProviders": [
+    { "id": "notes", "label": "Journal", "action": "searchNotes" }
+  ],
+  "keybindings": [
+    { "binding": "Mod+Shift+U", "label": "Write my standup", "action": "writeStandup" }
+  ],
+  "official": false
+}

@@ -1,0 +1,31 @@
+{
+  "v": 1,
+  "title": "Standup",
+  "fallback": {
+    "title": "Standup",
+    "text": "Open ADE on a machine that has Work Journal installed to read your standup.",
+    "deeplink": "ade://plugin/journal/standup"
+  },
+  "body": [
+    {
+      "component": "stack",
+      "direction": "vertical",
+      "gap": "sm",
+      "children": [
+        { "component": "text", "text": "Standup", "variant": "title" },
+        {
+          "component": "text",
+          "text": "No standup written yet. Press \"Write my standup\" and it lands here.",
+          "variant": "body"
+        },
+        {
+          "component": "button",
+          "label": "Write my standup",
+          "kind": "primary",
+          "icon": "sparkle",
+          "onPress": { "action": "writeStandup" }
+        }
+      ]
+    }
+  ]
+}
