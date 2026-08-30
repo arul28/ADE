@@ -1,0 +1,144 @@
+// ---------------------------------------------------------------------------
+// The `{prompt}` action-result verb, for the TUI.
+//
+// A plugin action may answer with one question instead of a finished result —
+// "What are you working on?" — and the client re-invokes THE SAME action with
+// the same arguments plus the reader's answer under `args.prompt`. Everything
+// about the contract (what a well-formed request looks like, what the answer
+// frame is, how long an answer may be) lives in `shared/plugins/sdk.ts` and is
+// read from there, never restated here: four clients ask this question and a
+// handler must not be able to tell which one asked.
+//
+// What IS this module's is the small amount of policy a terminal has to answer
+// for itself, kept pure so it can be tested without a React tree:
+//
+//   - ONE HOP. A re-invocation's own `{prompt}` is ignored, so a plugin cannot
+//     trap the reader in a question it keeps re-opening. Detected from the
+//     arguments the invocation carried, not from a counter this module keeps,
+//     because the arguments are the same fact every client already has.
+//   - The words drawn around the field when the plugin left them out.
+//   - The refusal, rather than a truncation, of an over-ceiling answer.
+// ---------------------------------------------------------------------------
+
+import {
+  buildPluginActionPromptAnswer,
+  hasPluginActionPromptRequest,
+  readPluginActionPrompt,
+  type PluginActionPrompt,
+} from "../../../desktop/src/shared/plugins/sdk";
+
+/** What the client needs to ask the question and then re-invoke. */
+export type PluginPromptRequest = {
+  pluginId: string;
+  /** The plugin's display name, for attribution in notices. */
+  displayName: string;
+  /** The action to call again — the SAME one that asked. */
+  actionId: string;
+  /** The arguments the first invocation carried, re-sent verbatim. */
+  args: Record<string, unknown>;
+  /** The control's own label, the fallback when the prompt named no title. */
+  label: string;
+  prompt: PluginActionPrompt;
+};
+
+/**
+ * What an action's result means for the prompt verb.
+ *
+ * `ignored` and `none` differ for the reader, not for the caller: both let the
+ * ordinary follow-ups (navigate, openUrl, composer) run, but `ignored` is the
+ * one-hop stop and is worth a line in the log so a plugin author sees why their
+ * second question never appeared.
+ */
+export type PluginPromptOutcome =
+  | { kind: "none" }
+  | { kind: "ask"; request: PluginPromptRequest }
+  | { kind: "ignored" }
+  | { kind: "unreadable" };
+
+/** The word on the confirm affordance when the plugin named none. */
+export const PLUGIN_PROMPT_DEFAULT_SUBMIT_LABEL = "Submit";
+
+/**
+ * Whether these arguments are already an answer to a question.
+ *
+ * The one-hop test. `args.prompt` is only ever written by a client re-invoking
+ * an action, so its presence is exactly "this invocation is the second half of
+ * a prompt round trip" — and a plugin that hand-writes one into a manifest
+ * `args` block gets the same treatment, which is the conservative direction.
+ */
+export function pluginInvocationCarriesPromptAnswer(args: Record<string, unknown>): boolean {
+  const answer = args.prompt;
+  return typeof answer === "object" && answer !== null;
+}
+
+/**
+ * Read the question an action asked, if it is allowed to ask one.
+ *
+ * `args` are the arguments THIS invocation was made with, which is what decides
+ * the hop.
+ */
+export function pluginPromptOutcome(input: {
+  result: unknown;
+  pluginId: string;
+  displayName: string;
+  actionId: string;
+  args: Record<string, unknown>;
+  label: string;
+}): PluginPromptOutcome {
+  if (!hasPluginActionPromptRequest(input.result)) return { kind: "none" };
+  if (pluginInvocationCarriesPromptAnswer(input.args)) return { kind: "ignored" };
+  const prompt = readPluginActionPrompt(input.result);
+  if (!prompt) return { kind: "unreadable" };
+  return {
+    kind: "ask",
+    request: {
+      pluginId: input.pluginId,
+      displayName: input.displayName,
+      actionId: input.actionId,
+      args: input.args,
+      label: input.label,
+      prompt,
+    },
+  };
+}
+
+/** The question as a label: the plugin's title, else the control's own words. */
+export function pluginPromptTitle(request: PluginPromptRequest): string {
+  return request.prompt.title ?? request.label;
+}
+
+/** Grey text for the empty field. Empty string means "draw no hint". */
+export function pluginPromptPlaceholder(request: PluginPromptRequest): string {
+  return request.prompt.placeholder ?? "";
+}
+
+export function pluginPromptSubmitLabel(request: PluginPromptRequest): string {
+  return request.prompt.submitLabel ?? PLUGIN_PROMPT_DEFAULT_SUBMIT_LABEL;
+}
+
+/** The hint line under the field: how to send it and how to back out. */
+export function pluginPromptHint(request: PluginPromptRequest): string {
+  return `↵ ${pluginPromptSubmitLabel(request)} · esc cancel`;
+}
+
+/**
+ * The arguments the re-invocation carries, or `null` when the answer is too
+ * long.
+ *
+ * Null is a refusal, never a truncation: a note cut in half and then saved is
+ * worse than one the reader was asked to shorten. The caller says so and does
+ * not invoke.
+ */
+export function pluginPromptAnswerArgs(
+  request: PluginPromptRequest,
+  text: string,
+): Record<string, unknown> | null {
+  const answer = buildPluginActionPromptAnswer(request.prompt, text);
+  if (!answer) return null;
+  return { ...request.args, prompt: answer };
+}
+
+/** What the reader is told when their answer is over the ceiling. */
+export function pluginPromptTooLongNotice(request: PluginPromptRequest): string {
+  return `${pluginPromptTitle(request)}: that answer is too long to send. Shorten it and press enter again.`;
+}

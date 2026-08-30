@@ -15,7 +15,7 @@
         { "component": "text", "text": "Standup", "variant": "title" },
         {
           "component": "text",
-          "text": "No standup written yet. Press \"Write my standup\" and it lands here.",
+          "text": "No standup written yet. Press \"Write my standup\" — it is built from the notes you logged today, and it also lands as a card in the chat you were in.",
           "variant": "body"
         },
         {

@@ -1,9 +1,9 @@
 {
   "v": 1,
-  "title": "Today",
+  "title": "Recent",
   "fallback": {
-    "title": "Today's journal",
-    "text": "Open ADE on a machine that has Work Journal installed to read today's notes.",
+    "title": "Recent journal notes",
+    "text": "Open ADE on a machine that has Work Journal installed to read your recent notes.",
     "deeplink": "ade://plugin/journal/today"
   },
   "body": [
@@ -12,16 +12,34 @@
       "direction": "vertical",
       "gap": "md",
       "children": [
-        { "component": "text", "text": "Today", "variant": "title" },
+        {
+          "component": "text",
+          "text": "Last 24 hours",
+          "variant": "title"
+        },
+        {
+          "component": "text",
+          "text": "Work Journal keeps one-line notes about what you are doing, tagged with the lane you were on. Press \"Log a note\" above any chat — it asks what to write — or type /note followed by the line. Your standup is written from the notes you logged today.",
+          "variant": "caption"
+        },
         {
           "component": "list",
           "bind": {
             "collection": "notes",
             "limit": 60,
-            "allowActions": ["deleteNote"],
-            "where": [{ "field": "today", "equals": "today" }]
+            "allowActions": [
+              "deleteNote"
+            ],
+            "where": [
+              {
+                "field": "at",
+                "since": {
+                  "$rel": "-24h"
+                }
+              }
+            ]
           },
-          "emptyText": "Nothing logged yet today. Press \"Log it\" above a chat, or type /note."
+          "emptyText": "Nothing logged in the last day. Press \"Log a note\" above any chat — it asks what to write."
         },
         {
           "component": "stack",
@@ -34,21 +52,27 @@
               "label": "Write my standup",
               "kind": "primary",
               "icon": "sparkle",
-              "onPress": { "action": "writeStandup" }
+              "onPress": {
+                "action": "writeStandup"
+              }
             },
             {
               "component": "button",
               "label": "Add a note",
               "kind": "default",
               "icon": "note",
-              "onPress": { "action": "addNoteToLane" }
+              "onPress": {
+                "action": "addNoteToLane"
+              }
             },
             {
               "component": "button",
               "label": "Full journal",
               "kind": "quiet",
               "icon": "clock-counter-clockwise",
-              "onPress": { "action": "openJournal" }
+              "onPress": {
+                "action": "openJournal"
+              }
             }
           ]
         }

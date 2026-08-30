@@ -486,14 +486,16 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         }
         if (payload.toDbVersion < pendingOutboundChangeset.payload.toDbVersion) break;
         const recoveryLevel = outboundChangesetRecoveryLevel;
-        const acknowledgedRemoteVersion = Math.max(
-          latestRemoteDbVersion,
-          pendingOutboundChangeset.payload.toDbVersion,
-          Math.floor(payload.toDbVersion ?? 0),
-        );
-        latestRemoteDbVersion = acknowledgedRemoteVersion;
+        // This ack belongs to a batch THIS peer sent, so both its
+        // `toDbVersion` and the host's echo of it are versions from the LOCAL
+        // database. `latestRemoteDbVersion` tracks the HOST's version space —
+        // it is the cursor sent back in `hello` — and folding a local number
+        // into it makes this peer claim to have host rows it never received,
+        // after which the host exports nothing (the same version-space mixing
+        // that starved a phone in bug A3). An outbound ack advances only the
+        // outbound cursor, below.
         if (connectionDraft) {
-          connectionDraft.lastRemoteDbVersion = acknowledgedRemoteVersion;
+          connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
         }
         outboundLocalDbVersion = Math.max(outboundLocalDbVersion, pendingOutboundChangeset.payload.toDbVersion);
         pendingOutboundChangeset = null;

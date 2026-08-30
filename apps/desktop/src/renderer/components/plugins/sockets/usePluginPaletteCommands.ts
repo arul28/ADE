@@ -2,6 +2,8 @@ import React from "react";
 
 import type { PluginSurfaceOnlyContext } from "../../../../shared/plugins/context";
 import { contributionKey } from "./contributionModel";
+import { pluginActionSubject } from "./surfaceContexts";
+import { rootAppStoreApi, selectActiveProjectStateKey } from "../../../state/appStore";
 import { runPluginSocketAction } from "./pluginActionDispatch";
 import { formatPluginChordForDisplay, usePluginKeybindings } from "./usePluginKeybindings";
 import { usePluginSurfaceContributions, useSurfaceContributions } from "./useSurfaceContributions";
@@ -104,15 +106,51 @@ export function usePluginPaletteCommands(active: boolean): PluginPaletteCommand[
           // palette then has one thing to check instead of two.
           ...(shortcut ? { shortcut } : {}),
           run: () => {
+            // The subject rides BESIDE the context, never instead of it: the
+            // context is what selects which contributions the palette shows,
+            // and pointing it at a chat would quietly change the list. Read at
+            // press time off the live store, because the rows were built when
+            // the palette opened and the reader may have moved since.
+            const subject = pluginActionSubject(readPaletteSubjectInput());
             void runPluginSocketAction(
               contribution.pluginId,
               contribution.payload.actionId,
               PALETTE_CONTEXT,
-              { socket: "command-palette-action" },
+              {
+                socket: "command-palette-action",
+                args: { subject },
+                label: contribution.payload.label,
+              },
             );
           },
         };
       }),
     [contributions, identities, shortcuts],
   );
+}
+
+/**
+ * The chat and lane the palette was opened over, off the live store.
+ *
+ * Read the way the palette's own thread rows are read — the Work tab's
+ * per-project session cache and that project's active item — rather than from
+ * the root `focusedSessionId`, so the subject is the conversation the reader
+ * can actually see rather than the last one any window focused.
+ *
+ * Every miss is a null and never a throw: a projectless window, a cache the
+ * Work tab has not filled yet, an active item that is a terminal rather than a
+ * chat. The subject is then the lane, or `{kind: "none"}`.
+ */
+function readPaletteSubjectInput(): Parameters<typeof pluginActionSubject>[0] {
+  const state = rootAppStoreApi.getState();
+  const key = selectActiveProjectStateKey(state);
+  const sessions = key ? state.sessionsCacheByProject[key] ?? [] : [];
+  const activeItemId = key ? state.workViewByProject[key]?.activeItemId ?? null : null;
+  const session = activeItemId
+    ? sessions.find((entry) => entry.id === activeItemId) ?? null
+    : null;
+  const lane = state.selectedLaneId
+    ? state.lanes.find((entry) => entry.id === state.selectedLaneId) ?? null
+    : null;
+  return { session, lane };
 }

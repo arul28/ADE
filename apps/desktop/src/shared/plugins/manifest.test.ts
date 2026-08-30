@@ -504,14 +504,60 @@ describe("webview surfaces", () => {
 });
 
 /**
+ * `pane` surfaces — the kind that parsed, disclosed, and drew nothing.
+ *
+ * A live dogfood run installed a plugin whose manifest declared
+ * `{"kind": "pane"}`, saw the install card promise "Adds: … pane", saw
+ * `doctor` stay green, and never found the pane on any client. No client had
+ * ever drawn one: the desktop rail reads `work-rail-pane` sockets, the phone
+ * keys its plugin menu off panel count, and the preload's rail mapper keeps
+ * only `tab` and `webview`. The kind survives for exactly one shape — an
+ * official plugin gating a COMPILED pane — and the refusal below names the
+ * socket that replaces it.
+ */
+describe("pane surfaces", () => {
+  it("refuses a plain pane and names work-rail-pane as the replacement", () => {
+    const parsed = parsePluginManifest(validManifest({
+      surfaces: [{ kind: "pane", id: "today", title: "Today", panelId: "main" }],
+    }));
+    expect(parsed.manifest!.surfaces).toEqual([]);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.warnings.join(" ")).toContain("work-rail-pane");
+    expect(parsed.warnings.join(" ")).toContain("not drawn by any client");
+  });
+
+  it("keeps a pane that gates a compiled built-in, which ADE itself draws", () => {
+    const parsed = parsePluginManifest(validManifest({
+      name: "ade-linear",
+      official: true,
+      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear" }],
+    }));
+    expect(parsed.manifest!.surfaces).toHaveLength(1);
+    expect(parsed.manifest!.surfaces[0]).toMatchObject({ kind: "pane", builtin: "linear" });
+  });
+
+  it("refuses a pane whose builtin was not honoured, rather than keeping it inert", () => {
+    // Not official, so `builtin` is ignored — and what is left is a pane with
+    // nothing to gate, which is the inert shape.
+    const parsed = parsePluginManifest(validManifest({
+      surfaces: [{ kind: "pane", id: "linear", title: "Linear", panelId: "main", builtin: "linear" }],
+    }));
+    expect(parsed.manifest!.surfaces).toEqual([]);
+    expect(parsed.warnings.join(" ")).toContain("work-rail-pane");
+  });
+});
+
+/**
  * `surfaces[].mobile` — the author's per-surface answer to "does this belong on
  * the phone". Everything here is about the default and the clamps: the flag can
  * only ever narrow what the surface kind already supports, and a manifest that
  * does not mention it must behave exactly as it did before the key existed.
  */
 describe("surface mobile flag", () => {
+  // A `tab` rather than a `pane`: the flag behaves identically on both, and a
+  // plain `pane` is now refused outright — see "pane surfaces" below.
   const surface = (overrides: Record<string, unknown> = {}) => parsePluginManifest(validManifest({
-    surfaces: [{ kind: "pane", id: "notes", title: "Notes", panelId: "main", ...overrides }],
+    surfaces: [{ kind: "tab", id: "notes", title: "Notes", panelId: "main", ...overrides }],
   })).manifest!.surfaces[0]!;
 
   it("defaults a panel surface to mobile", () => {
@@ -521,7 +567,7 @@ describe("surface mobile flag", () => {
 
   it("honours an author who turns a surface off", () => {
     const parsed = parsePluginManifest(validManifest({
-      surfaces: [{ kind: "pane", id: "notes", title: "Notes", panelId: "main", mobile: false }],
+      surfaces: [{ kind: "tab", id: "notes", title: "Notes", panelId: "main", mobile: false }],
     }));
     expect(parsed.warnings).toEqual([]);
     expect(parsed.manifest!.surfaces[0]?.mobile).toBe(false);

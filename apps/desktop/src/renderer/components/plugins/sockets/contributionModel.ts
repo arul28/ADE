@@ -127,8 +127,9 @@ export function payloadFromManifestSocket(socket: PluginManifestSocket): unknown
       };
     case "row-badge":
       // A manifest badge has no value of its own — it is the declaration a
-      // dynamic row later fills in. Rendering it as a neutral label keeps a
-      // plugin that never publishes rows honest rather than invisible.
+      // dynamic row later fills in, and {@link selectContributions} never draws
+      // it. The payload is still built, because the declaration is what a
+      // published row is matched against for override and ordering.
       return { text: socket.label, tone: "neutral", icon: socket.icon };
     case "row-menu-item":
       return { label: socket.label, icon: socket.icon, actionId: socket.actionId };
@@ -461,7 +462,20 @@ export function selectContributions<K extends PluginSocketKind>(
     if (entry.id === entry.socket) overriddenPlugins.add(entry.pluginId);
     else overriddenIds.add(`${entry.pluginId} ${entry.id}`);
   }
-  const statics = set.staticContributions.filter(
+  // A DECLARED badge draws nothing. Every other kind is a control the plugin
+  // owns — a button, a section, a chip — and drawing it from the manifest is
+  // how a plugin that publishes nothing still appears. A badge is not that: it
+  // is a per-entity VALUE, and a manifest declaration has no entity, so drawing
+  // it put the same chip on every row of the surface forever. The journal
+  // plugin's `"0"` on all six lanes is what that looks like to a user.
+  //
+  // The declaration still counts. It is what the install sheet describes, and
+  // what a published row is matched against for override and ordering — it just
+  // reserves the slot rather than filling it.
+  //
+  // Dropped BEFORE the per-plugin cap rather than filtered after: a placeholder
+  // counted against the cap would take a slot a real published badge needed.
+  const statics = socket === "row-badge" ? [] : set.staticContributions.filter(
     (entry) => entry.socket === socket
       && !overriddenPlugins.has(entry.pluginId)
       && !overriddenIds.has(`${entry.pluginId} ${entry.id}`),

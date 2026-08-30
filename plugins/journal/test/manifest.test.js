@@ -212,7 +212,13 @@ test("the journal's filters stay inside the state ceilings, and every where clau
   const named = new Set();
   const readState = (clause) => {
     if (!clause || typeof clause !== "object") return;
-    if (clause.equals?.$state) named.add(clause.equals.$state);
+    // Five operators name a state key, not one. `since` and `before` read their
+    // operand as a TIME, and a reader that only knew `equals` would have called
+    // the range filter unwired and passed while it was.
+    for (const operator of ["equals", "notEquals", "in", "notIn", "since", "before"]) {
+      const operand = clause[operator];
+      if (operand && typeof operand === "object" && operand.$state) named.add(operand.$state);
+    }
     for (const child of clause.or ?? clause.and ?? []) readState(child);
     if (clause.not) readState(clause.not);
   };
@@ -229,6 +235,71 @@ test("the journal's filters stay inside the state ceilings, and every where clau
   // without it rather than with a lone "All lanes" that would draw an error
   // marker on first render.
   assert.ok(!keys.has("lane"), "the static schema must not ship a one-option lane filter");
+});
+
+test("C4: every note binding filters on time, and no panel reads a stored day flag", () => {
+  // The flags this replaced were a function of NOW written onto a row, so they
+  // were wrong from the next midnight until something rewrote them. A `since`
+  // clause is resolved on the reader's clock at every re-render instead.
+  const clauses = [];
+  for (const panel of manifest.panels) {
+    const schema = JSON.parse(fs.readFileSync(path.join(ROOT, panel.schemaFile), "utf8"));
+    const raw = JSON.stringify(schema);
+    assert.ok(!raw.includes('"field":"today"'), `${panel.id} still filters on a stored day flag`);
+    assert.ok(!raw.includes('"field":"week"'), `${panel.id} still filters on a stored week flag`);
+    const walk = (node) => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object") return;
+      if (node.bind?.collection === "notes") clauses.push(...(node.bind.where ?? []));
+      walk(node.children ?? []);
+    };
+    walk(schema.body);
+  }
+  const times = clauses.filter((clause) => clause.since || clause.before);
+  assert.ok(times.length >= 2, "both note panels answer a time question");
+  for (const clause of times) {
+    assert.equal(clause.field, "at", "the row's own timestamp is the only time field it stores");
+    const operand = clause.since ?? clause.before;
+    // `$rel` needs a sign and a lower-case unit; anything else drops with a
+    // warning and the binding then shows EVERY row.
+    if (operand.$rel !== undefined) assert.match(operand.$rel, /^[+-]\d{1,6}[mhd]$/);
+    else assert.ok(operand.$state, "a time operand is a $rel offset or a $state selection");
+  }
+});
+
+test("C2: a first press is not a guess — the button names its verb and the panels explain themselves", () => {
+  const header = manifest.sockets.find((socket) => socket.socket === "chat-header-action");
+  // The user's words were "i have no clue what it does it has four options and
+  // im not sure what clicking them even does".
+  assert.match(header.label, /note/i, "the button says what pressing it writes");
+  assert.ok(header.label.length <= 40, "a header label over 40 chars is truncated");
+  for (const item of header.menu) {
+    assert.ok(item.label.length <= 40, `${item.label} is over the menu's ceiling`);
+    assert.ok(item.label.split(" ").length > 1, `"${item.label}" is a bare verb with no object`);
+  }
+  // The two that WRITE come before the two that NAVIGATE, so the group reads as
+  // one thing rather than five unrelated verbs.
+  const writes = header.menu.map((item) => item.actionId.startsWith("log"));
+  assert.deepEqual(writes, [true, true, false, false]);
+  // A `chat-header-action` payload carries no tooltip or description field — so
+  // the explanation lives where a payload can actually hold it.
+  assert.equal(header.tooltip, undefined, "no client renders one; promising it would be a lie");
+  for (const panelId of ["journal", "today"]) {
+    const panel = manifest.panels.find((entry) => entry.id === panelId);
+    const raw = JSON.stringify(JSON.parse(fs.readFileSync(path.join(ROOT, panel.schemaFile), "utf8")));
+    assert.ok(raw.includes(header.label), `${panelId} never names the button the reader has to press`);
+    assert.ok(raw.includes("/note"), `${panelId} never mentions the command`);
+  }
+});
+
+test("B4: the declared badge's label describes the slot, not an empty state", () => {
+  const badge = manifest.sockets.find((socket) => socket.socket === "row-badge");
+  // A declared badge draws NOTHING now — it reserves the slot — but the label
+  // still describes it in the install disclosure. The old label was "0", chosen
+  // to read acceptably as the chip it used to paint on every lane row.
+  assert.notEqual(badge.label, "0");
+  assert.ok(/[A-Za-z]/.test(badge.label), "a label with no words explains nothing at install time");
+  assert.ok(badge.label.length <= 32, "a badge's text is bounded at 32");
 });
 
 test("every binding that carries a row action allows it, or the row is not pressable", () => {

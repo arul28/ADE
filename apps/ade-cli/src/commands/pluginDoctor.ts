@@ -83,6 +83,12 @@ export type PluginDoctorSnapshot = {
   manifest: PluginManifest | null;
   /** Fatal manifest problems from the local parse, if any. */
   manifestErrors: string[];
+  /**
+   * Non-fatal ones: entries the parse DROPPED, so the manifest above is missing
+   * something the file asks for. Optional, because a caller that predates the
+   * field passes nothing and gets the old silence rather than a false green.
+   */
+  manifestWarnings?: string[];
   live: PluginDoctorLive | null;
   /**
    * Whether a `local` record's source folder is still on disk.
@@ -322,6 +328,22 @@ function placesLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   const label = "Places";
   const sockets = snapshot.manifest?.sockets ?? [];
   const rails = railSurfaces(snapshot.manifest);
+  // A declaration ADE threw away while reading plugin.json. Named here, before
+  // anything else, because the parse already removed it: an author who wrote a
+  // `{"kind": "pane"}` surface no client draws sees the entry vanish from the
+  // manifest, and every rung below would then describe a plugin that declared
+  // one fewer place than the file does — ✓ or – over something the author is
+  // still waiting to see. The warning carries the replacement to use.
+  const dropped = snapshot.manifestWarnings ?? [];
+  if (snapshot.record && dropped.length > 0) {
+    return {
+      key: "places",
+      label,
+      state: "no",
+      detail: `ADE dropped ${plural(dropped.length, "part")} of plugin.json while reading it`
+        + `: ${dropped[0]}`,
+    };
+  }
   if (sockets.length === 0 && rails.length === 0) {
     return {
       key: "places",
@@ -334,6 +356,21 @@ function placesLayer(snapshot: PluginDoctorSnapshot): PluginDoctorLayer {
   }
 
   const declared = describeDeclaredPlaces(snapshot.manifest!).join(", ");
+  // A switched-off plugin places NOTHING. The rung used to describe the
+  // manifest alone, so it read ✓ beside "Installed here ✗" and "Running ✗" —
+  // a green line about placements that cannot exist, which is the same
+  // "green while broken" pattern the rest of this ladder was built to end.
+  // The declarations are still named, because the reader is here asking what
+  // this plugin WOULD place once they turn it back on.
+  if (snapshot.record && !snapshot.record.enabled) {
+    return {
+      key: "places",
+      label,
+      state: "no",
+      detail: `${declared} — none of it is placed: this plugin is switched off`
+        + ` (run: ade plugin enable ${snapshot.pluginId})`,
+    };
+  }
   const switchedOff = (snapshot.record?.disabledContributions ?? []).filter((id) =>
     sockets.some((socket) => socket.id === id),
   ).length;

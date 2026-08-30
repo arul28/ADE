@@ -315,6 +315,210 @@ describe("evaluateVocabWhere", () => {
   });
 });
 
+/* ── Time ───────────────────────────────────────────────────────────────── */
+
+/**
+ * The clock is a PARAMETER, never a `Date.now()` buried in the loop, so every
+ * case below pins the instant instead of sleeping. `NOW` is noon UTC on a
+ * Friday; the rows sit at readable distances from it.
+ */
+const NOW = Date.parse("2026-08-28T12:00:00.000Z");
+
+const NOTES = [
+  { id: "now", ts: "2026-08-28T12:00:00.000Z" },
+  { id: "hour", ts: "2026-08-28T11:00:00.000Z" },
+  { id: "epoch", ts: Date.parse("2026-08-28T10:00:00.000Z") },
+  { id: "yesterday", ts: "2026-08-27T09:00:00.000Z" },
+  { id: "week", ts: "2026-08-23T09:00:00.000Z" },
+  { id: "unreadable", ts: "yesterday" },
+  { id: "absent" },
+];
+
+/** The ids a time filter keeps, evaluated against a clock the test owns. */
+function keptAt(raw: unknown, now: number, state: VocabPanelState = {}): string[] {
+  const { where } = parseWhere(raw);
+  return filterVocabRows(where, NOTES, state, now).map((row) => (row as { id: string }).id);
+}
+
+describe("since and before", () => {
+  it("reads an ISO-8601 operand, epoch milliseconds and a `$rel` offset", () => {
+    const { where, warnings } = parseWhere([
+      { field: "ts", since: "2026-08-28T00:00:00.000Z" },
+      { field: "ts", before: 1_756_000_000_000 },
+      { field: "ts", since: { $rel: "-24h" } },
+      { field: "ts", before: { $rel: "+1h" } },
+      { field: "ts", since: "2026-08-28" },
+    ]);
+    expect(warnings).toEqual([]);
+    // Only `maxWhereClauses` top-level clauses are read; the fifth is the cap,
+    // not a rejection, so it raises no warning.
+    expect(where).toHaveLength(VOCAB_STATE_LIMITS.maxWhereClauses);
+    expect(where?.[0]).toEqual({
+      kind: "time",
+      op: "since",
+      field: "ts",
+      at: Date.parse("2026-08-28T00:00:00.000Z"),
+    });
+    expect(where?.[1]).toEqual({ kind: "time", op: "before", field: "ts", at: 1_756_000_000_000 });
+    // A `$rel` is stored as an OFFSET, resolved at evaluation against the clock.
+    expect(where?.[2]).toEqual({ kind: "time", op: "since", field: "ts", relMs: -86_400_000 });
+    // A positive offset is legal: "before +1h" is a real "due soon" filter.
+    expect(where?.[3]).toEqual({ kind: "time", op: "before", field: "ts", relMs: 3_600_000 });
+
+    // A bare date reads as UTC midnight on every client, which is the whole
+    // reason the reader is narrower than `Date.parse`.
+    const dateOnly = parseWhere([{ field: "ts", since: "2026-08-28" }]).where?.[0];
+    expect(dateOnly).toEqual({
+      kind: "time",
+      op: "since",
+      field: "ts",
+      at: Date.parse("2026-08-28T00:00:00.000Z"),
+    });
+  });
+
+  it("resolves a `$rel` operand against the clock it is handed", () => {
+    expect(keptAt([{ field: "ts", since: { $rel: "-24h" } }], NOW))
+      .toEqual(["now", "hour", "epoch"]);
+    expect(keptAt([{ field: "ts", since: { $rel: "-30m" } }], NOW)).toEqual(["now"]);
+    expect(keptAt([{ field: "ts", since: { $rel: "-7d" } }], NOW))
+      .toEqual(["now", "hour", "epoch", "yesterday", "week"]);
+
+    // The same clause a day later. Nothing about the rows changed; the answer
+    // did — which is exactly what the plugin could not express before, and why
+    // a panel left open across midnight must be re-rendered to catch up.
+    const tomorrow = [{ field: "ts", since: { $rel: "-24h" } }];
+    // Inclusive at the boundary, so the newest note survives its own edge...
+    expect(keptAt(tomorrow, NOW + 86_400_000)).toEqual(["now"]);
+    // ...and one millisecond later the whole day has aged out.
+    expect(keptAt(tomorrow, NOW + 86_400_001)).toEqual([]);
+  });
+
+  it("samples the wall clock once when no clock is given", () => {
+    const rows = [{ id: "fresh", ts: new Date().toISOString() }, { id: "stale", ts: "2001-01-01" }];
+    const { where } = parseWhere([{ field: "ts", since: { $rel: "-1h" } }]);
+    expect(filterVocabRows(where, rows, {}).map((row) => (row as { id: string }).id))
+      .toEqual(["fresh"]);
+  });
+
+  it("drops a malformed `$rel` with a warning and keeps the rest of the binding", () => {
+    const { where, warnings } = parseWhere([
+      // No sign: "24h" is as likely to mean the last day as the next one, and
+      // guessing would point the filter at the wrong half of the timeline.
+      { field: "ts", since: { $rel: "24h" } },
+      { field: "ts", since: { $rel: "-1w" } },
+      { field: "ts", since: { $rel: "-24H" } },
+      { field: "ts", since: "28/08/2026" },
+    ]);
+    expect(where).toBeUndefined();
+    expect(warnings).toHaveLength(4);
+    expect(warnings[0]).toContain("$rel");
+    expect(warnings[3]).toContain("since");
+
+    // A broken clause is node-local: the binding keeps the clauses that parsed,
+    // because a reader can see a filter that did nothing and cannot see rows a
+    // broken filter silently removed.
+    const mixed = parseWhere([
+      { field: "ts", since: { $rel: "nonsense" } },
+      { field: "id", equals: "week" },
+    ]);
+    expect(mixed.where).toHaveLength(1);
+    expect(mixed.warnings).toHaveLength(1);
+  });
+
+  it("drops a row whose field is missing or unreadable as a time", () => {
+    // The one asymmetry worth naming: an unset `$state` is INACTIVE, but a row
+    // that cannot answer the comparison is FALSE — the same thing a row with no
+    // `statusGroup` has always done against an `equals`.
+    expect(keptAt([{ field: "ts", since: "2000-01-01" }], NOW))
+      .toEqual(["now", "hour", "epoch", "yesterday", "week"]);
+    expect(keptAt([{ field: "ts", before: "2099-01-01" }], NOW))
+      .toEqual(["now", "hour", "epoch", "yesterday", "week"]);
+    // A zoneless date-time is unreadable on purpose: local-vs-UTC is exactly the
+    // disagreement between clients this grammar exists to prevent.
+    expect(parseWhere([{ field: "ts", since: "2026-08-28T12:00:00" }]).where).toBeUndefined();
+  });
+
+  it("reads `since` as at-or-after and `before` as strictly earlier", () => {
+    // The two partition the timeline at the same instant: every row is in
+    // exactly one of them, so a pair of controls cannot double-count or lose a row.
+    const boundary = "2026-08-28T11:00:00.000Z";
+    expect(keptAt([{ field: "ts", since: boundary }], NOW)).toEqual(["now", "hour"]);
+    expect(keptAt([{ field: "ts", before: boundary }], NOW))
+      .toEqual(["epoch", "yesterday", "week"]);
+  });
+
+  it("nests inside and, or and not like any other clause", () => {
+    expect(keptAt([
+      {
+        or: [
+          { field: "ts", before: "2026-08-25" },
+          { and: [{ field: "ts", since: { $rel: "-24h" } }, { field: "id", notEquals: "epoch" }] },
+        ],
+      },
+    ], NOW)).toEqual(["now", "hour", "week"]);
+
+    // `not` inverts an active time clause and stays inactive over an inactive one.
+    expect(keptAt([{ not: { field: "ts", since: { $rel: "-24h" } } }], NOW))
+      .toEqual(["yesterday", "week", "unreadable", "absent"]);
+    expect(keptAt([{ not: { field: "ts", since: { $state: "range" } } }], NOW, { range: "" }))
+      .toHaveLength(NOTES.length);
+
+    // Depth is unchanged: a clause four levels down is refused like any other.
+    const deep = parseWhere([{ and: [{ or: [{ and: [{ field: "ts", since: "2000-01-01" }] }] }] }]);
+    expect(deep.where).toBeUndefined();
+    expect(deep.warnings[0]).toContain("nest at most");
+  });
+
+  it("follows a segmented control that offers relative ranges", () => {
+    // The point of the whole clause: "All / Today / This week" as three option
+    // values, with no field the plugin has to rewrite at midnight.
+    const clause = [{ field: "ts", since: { $state: "range" } }];
+    expect(keptAt(clause, NOW, { range: "-24h" })).toEqual(["now", "hour", "epoch"]);
+    expect(keptAt(clause, NOW, { range: "-7d" }))
+      .toEqual(["now", "hour", "epoch", "yesterday", "week"]);
+    // An absolute instant is equally legal as an option value.
+    expect(keptAt(clause, NOW, { range: "2026-08-28" })).toEqual(["now", "hour", "epoch"]);
+    // "All", an undeclared key, and a value that reads as no time at all are
+    // inactive rather than false — the house rule, unchanged.
+    expect(keptAt(clause, NOW, { range: "" })).toHaveLength(NOTES.length);
+    expect(keptAt(clause, NOW, {})).toHaveLength(NOTES.length);
+    expect(keptAt(clause, NOW, { range: "sometime" })).toHaveLength(NOTES.length);
+  });
+
+  it("spends the same budget as any other comparison", () => {
+    const many = (clause: Record<string, unknown>) =>
+      parseWhere([{ and: Array.from({ length: VOCAB_STATE_LIMITS.maxWhereNodes }, () => clause) }]);
+    const timed = many({ field: "ts", since: { $rel: "-1h" } });
+    const text = many({ field: "id", equals: "now" });
+    const clauseCount = (parsed: ReturnType<typeof parseWhere>) => {
+      const first = parsed.where?.[0];
+      return first?.kind === "and" ? first.clauses.length : -1;
+    };
+    // The composer is node 1, so the last child is the one over the ceiling.
+    expect(clauseCount(timed)).toBe(VOCAB_STATE_LIMITS.maxWhereNodes - 1);
+    expect(clauseCount(timed)).toBe(clauseCount(text));
+    expect(timed.warnings[0]).toContain("at most");
+
+    // Two operators on one clause is still refused, and `since` is now one of them.
+    const both = parseWhere([{ field: "ts", since: "2026-08-28", equals: "x" }]);
+    expect(both.where).toBeUndefined();
+    expect(both.warnings[0]).toContain("only one operator");
+  });
+
+  it("declares no state key unless the operand names one", () => {
+    const literal = parseWhere([
+      { field: "ts", since: { $rel: "-24h" } },
+      { field: "ts", before: "2026-08-28" },
+    ]).where;
+    expect(vocabWhereStateKeys(literal)).toEqual([]);
+
+    const stateful = parseWhere([
+      { and: [{ field: "ts", since: { $state: "range" } }, { field: "id", equals: { $state: "who" } }] },
+    ]).where;
+    expect(vocabWhereStateKeys(stateful).sort()).toEqual(["range", "who"]);
+  });
+});
+
 /* ── Filter, then cap ───────────────────────────────────────────────────── */
 
 describe("filterVocabRows and boundRowValues", () => {

@@ -81,6 +81,16 @@ export type PluginWebviewBridgeDeps = {
     key: string;
     value: unknown;
   }) => void | Promise<void>;
+  /**
+   * The settings writer. Separate from the domain for the same reason
+   * `putCollection` is: `plugin.setConfig` restarts the plugin, which is right
+   * for ADE's own form and fatal for a page that is part of the plugin.
+   */
+  setConfig: (args: {
+    guest: PluginWebviewGuest;
+    values: Record<string, unknown>;
+  }) => Record<string, string | number | boolean | null>
+    | Promise<Record<string, string | number | boolean | null>>;
   /** Dispatch an `ade://` deeplink into the app. */
   openDeeplink: (args: { guest: PluginWebviewGuest; url: string }) => void | Promise<void>;
   /** Send an `https:`/`http:` URL to the user's real browser. */
@@ -208,6 +218,15 @@ export function createPluginWebviewBridgeServer(
         const detail = await domain.get({ pluginId });
         if (!detail) throw new PluginSdkError("plugin_not_found", `Plugin "${pluginId}" is not installed.`);
         return detail.config ?? {};
+      }
+
+      case "config.set": {
+        // Not routed and not the domain — see the module header and
+        // `PluginWebviewBridgeDeps.setConfig`. The host validates against the
+        // manifest and refuses a `secret` setting, so this layer adds no rule
+        // of its own and a page cannot be held to a different one than a child.
+        const values = isRecord(params.values) ? params.values : {};
+        return await deps.setConfig({ guest, values });
       }
 
       case "openDeeplink": {

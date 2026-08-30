@@ -46,6 +46,7 @@ import {
 } from "../../lib/keybindings";
 import { runPluginSocketAction } from "../plugins/sockets/pluginActionDispatch";
 import { PluginWebviewOverlayHost } from "../plugins/sockets/PluginWebviewOverlayHost";
+import { PluginPromptHost } from "../plugins/sockets/PluginPromptHost";
 import {
   dispatchPluginKeybindingEvent,
   usePluginKeybindings,
@@ -1709,6 +1710,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
       <WorktreeOpenDialog />
       <PluginWebviewOverlayHost />
+      <PluginPromptHost />
     </div>
   );
 }

@@ -94,14 +94,54 @@ describe("row badges", () => {
     expect(pluginBadgeStripText(strip)).toBe("[risk 8]");
   });
 
-  it("replaces the manifest declaration rather than drawing both", () => {
+  it("draws nothing for a declared badge and everything for a published one", () => {
     const set = contributionsFor([summary()], { lanes: [laneBadgeRecord()] });
     const withRow = pluginRowBadgeStrip(set.lanes, tuiLaneContext(LANE));
-    // Another lane has no published row, so the plugin's declaration stands in.
+    // Another lane has no published row. The manifest declaration reserves the
+    // slot and says nothing about THIS lane, so the row stays unmarked rather
+    // than wearing the plugin's manifest label as a placeholder.
     const withoutRow = pluginRowBadgeStrip(set.lanes, tuiLaneContext({ ...LANE, id: "lane-2" }));
 
     expect(withRow.cells.map((cell) => cell.text)).toEqual(["risk 8"]);
-    expect(withoutRow.cells.map((cell) => cell.text)).toEqual(["risk"]);
+    expect(withoutRow.cells).toEqual([]);
+    expect(pluginBadgeStripText(withoutRow)).toBe("");
+  });
+
+  it("keeps the declaration itself, so a published row still matches it", () => {
+    // The rule is about drawing, not about parsing: the manifest socket is
+    // still in the set (it is what a published row is matched against and what
+    // the install disclosure describes), and only the badge kind is silent.
+    const set = contributionsFor([summary()]);
+
+    expect(set.lanes.staticContributions.map((entry) => entry.id).sort())
+      .toEqual(["lane-audit", "lane-badge", "lane-sweep"]);
+    // …and the other declared sockets are untouched by this rule.
+    expect(pluginRowActionEntries(set.lanes, "lanes", tuiLaneContext(LANE)).map((entry) => entry.actionId))
+      .toEqual(["auditLane"]);
+  });
+
+  it("gives a published badge the visible slot a declaration used to take", () => {
+    // Two declarations, one published row for this lane. Only two badges are
+    // visible on a row, so a placeholder that survived selection could push the
+    // plugin's real answer into the overflow count.
+    const manifest = {
+      sockets: [
+        { socket: "row-badge", surface: "lanes", id: "a", label: "aaa" },
+        { socket: "row-badge", surface: "lanes", id: "b", label: "bbb" },
+        { socket: "row-badge", surface: "lanes", id: "c", label: "ccc" },
+      ],
+    };
+    const set = buildPluginTuiContributions(
+      pluginSocketSources([summary()], new Map([["graph", manifest]])),
+      {
+        lanes: pluginContributionRows([laneBadgeRecord({ socketId: "c", payload: { text: "risk 8", tone: "warning" } })]),
+        work: [],
+      },
+    );
+    const strip = pluginRowBadgeStrip(set.lanes, tuiLaneContext(LANE));
+
+    expect(strip.cells.map((cell) => cell.text)).toEqual(["risk 8"]);
+    expect(strip.overflowCount).toBe(0);
   });
 
   it("drops every contribution when the plugin is disabled", () => {
@@ -133,9 +173,10 @@ describe("row badges", () => {
 
     const chat = pluginRowBadgeStrip(set.work, tuiSessionContext({ sessionId: "chat-1", title: "Refactor" }));
     expect(pluginBadgeStripText(chat)).toBe("[$1.20]");
-    // The lanes set was built from no rows at all, so the lane row falls back to
-    // the manifest declaration and never borrows the chat's published value.
-    expect(pluginBadgeStripText(pluginRowBadgeStrip(set.lanes, tuiLaneContext(LANE)))).toBe("[risk]");
+    // The lanes set was built from no rows at all, so the lane row stays bare —
+    // it never borrows the chat's published value, and the lanes declaration is
+    // not a stand-in for one.
+    expect(pluginBadgeStripText(pluginRowBadgeStrip(set.lanes, tuiLaneContext(LANE)))).toBe("");
   });
 });
 

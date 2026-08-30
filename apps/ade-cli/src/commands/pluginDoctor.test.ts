@@ -217,6 +217,41 @@ describe("buildPluginDoctorReport", () => {
     expect(places.detail).toContain("2 switched off here");
   });
 
+  it("fails the places rung for a switched-off plugin, which places nothing at all", () => {
+    const off = healthy({ record: record({ enabled: false }) });
+    const places = layer(off, "places");
+    expect(places.state).toBe("no");
+    expect(places.detail).toContain("switched off");
+    // The declarations are still named: the reader is asking what comes back
+    // when they turn it on.
+    expect(places.detail).toContain("composer-action in work");
+    expect(places.detail).toContain("ade plugin enable ade-tipsy");
+  });
+
+  /**
+   * The `pane` surface an author declared, that no client has ever drawn.
+   * The parser refuses it now, which removes it from the manifest — so without
+   * this rung the doctor would describe a plugin one declaration lighter than
+   * the file, and stay green while the author waits for a pane to appear.
+   */
+  it("fails the places rung when the parse dropped a declaration", () => {
+    const dropped = healthy({
+      manifestWarnings: [
+        'surfaces[0].kind "pane" is not drawn by any client on its own'
+        + ' — declare a "work-rail-pane" socket for panel "main" instead — entry dropped',
+      ],
+    });
+    const places = layer(dropped, "places");
+    expect(places.state).toBe("no");
+    expect(places.detail).toContain("dropped 1 part of plugin.json");
+    expect(places.detail).toContain("work-rail-pane");
+  });
+
+  it("keeps the places rung quiet about a dropped part when the plugin is not installed here", () => {
+    const elsewhere = healthy({ record: null, manifestWarnings: ["surfaces[0] is not an object — entry dropped"] });
+    expect(layer(elsewhere, "places").state).not.toBe("no");
+  });
+
   it("says a panel is declared but never published", () => {
     const unpublished = healthy({
       live: { ...healthy().live!, usage: { ...healthy().live!.usage!, panelRows: 0 } },

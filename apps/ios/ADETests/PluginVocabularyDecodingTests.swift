@@ -922,6 +922,129 @@ final class PluginVocabularyDecodingTests: XCTestCase {
     XCTAssertNil(result.composer)
   }
 
+  // MARK: - Prompt response verb
+
+  /// The whole shape, read from the handler result rather than the envelope —
+  /// the same one level down every other verb lives at.
+  func testPromptDecodesWholeAndOnlyFromTheHandlerResult() throws {
+    let result = try invokeResult(#"""
+    { "ok": true, "result": { "prompt": {
+        "id": "note", "title": "What are you working on?",
+        "placeholder": "One line", "submitLabel": "Log",
+        "context": { "laneId": "lane-7", "kind": "note" }
+    } } }
+    """#)
+    let prompt = try XCTUnwrap(result.prompt)
+    XCTAssertEqual(prompt.id, "note")
+    XCTAssertEqual(prompt.title, "What are you working on?")
+    XCTAssertEqual(prompt.placeholder, "One line")
+    XCTAssertEqual(prompt.submitLabel, "Log")
+    XCTAssertEqual(prompt.context?["laneId"], .string("lane-7"))
+    XCTAssertTrue(result.askedForPrompt)
+
+    let envelopeLevel = try invokeResult(#"{ "ok": true, "prompt": { "id": "note" } }"#)
+    XCTAssertNil(envelopeLevel.prompt, "`prompt` beside `ok` is an envelope field no plugin writes.")
+    XCTAssertFalse(envelopeLevel.askedForPrompt)
+  }
+
+  /// Title, placeholder and submit label are the tolerant half: a value that is
+  /// blank, not a string, or past its ceiling DROPS and the question is still
+  /// asked, because the client has the control's own label to fall back on.
+  func testUnusablePromptLabelsDropWhileTheQuestionSurvives() throws {
+    let longTitle = String(repeating: "t", count: PluginActionPrompt.maxTitleChars + 1)
+    let longSubmit = String(repeating: "s", count: PluginActionPrompt.maxSubmitLabelChars + 1)
+    let result = try invokeResult(#"""
+    { "result": { "prompt": {
+        "id": "note", "title": "\#(longTitle)", "placeholder": "   ",
+        "submitLabel": "\#(longSubmit)"
+    } } }
+    """#)
+    let prompt = try XCTUnwrap(result.prompt, "A bad label must never cost the plugin its question.")
+    XCTAssertNil(prompt.title)
+    XCTAssertNil(prompt.placeholder, "Blank after trimming is not a placeholder.")
+    XCTAssertNil(prompt.submitLabel)
+
+    // Exactly at the ceiling is kept — the refusal is past it, not at it — and
+    // a non-string is simply absent rather than an error.
+    let atCeiling = String(repeating: "t", count: PluginActionPrompt.maxTitleChars)
+    let kept = try invokeResult(#"""
+    { "result": { "prompt": { "id": "note", "title": "\#(atCeiling)", "placeholder": 7 } } }
+    """#)
+    XCTAssertEqual(kept.prompt?.title, atCeiling)
+    XCTAssertNil(kept.prompt?.placeholder)
+  }
+
+  /// `id` is the one field the question cannot be asked without: the answer
+  /// would come back unattributable, and a handler that asks two things across
+  /// its branches could not tell which was answered.
+  ///
+  /// `askedForPrompt` stays true throughout, which is the point of keeping it —
+  /// a refused question is a line the client can say out loud rather than a
+  /// button that silently does nothing.
+  func testAPromptWithNoUsableIdIsRefusedOutright() throws {
+    let overLong = String(repeating: "n", count: 65)
+    for request in [
+      #"{}"#,
+      #"{ "id": "" }"#,
+      #"{ "id": "  " }"#,
+      #"{ "id": "two words" }"#,
+      #"{ "id": "-leading-dash" }"#,
+      #"{ "id": "note/slash" }"#,
+      #"{ "id": 7 }"#,
+      #"{ "id": null }"#,
+      #"{ "id": "\#(overLong)" }"#,
+    ] {
+      let result = try invokeResult(#"{ "result": { "prompt": \#(request) } }"#)
+      XCTAssertNil(result.prompt, "\(request) is not a question ADE can attribute an answer to.")
+      XCTAssertTrue(result.askedForPrompt, "\(request) still asked something, however malformed.")
+    }
+  }
+
+  /// The pointer is bounded like a navigation's context and drops the same way:
+  /// over the ceiling the plugin loses the pointer, never the question.
+  func testAnOverCeilingPromptContextDropsThePointerNotTheQuestion() throws {
+    let huge = String(repeating: "x", count: PluginPanelContext.maxBytes)
+    let result = try invokeResult(#"""
+    { "result": { "prompt": { "id": "note", "context": { "blob": "\#(huge)" } } } }
+    """#)
+    let prompt = try XCTUnwrap(result.prompt)
+    XCTAssertNil(prompt.context)
+    XCTAssertNil(prompt.answerPayload(text: "hi")?["context"], "A dropped pointer is not handed back.")
+  }
+
+  /// The answer is refused, never truncated, and measured in BYTES: a line of
+  /// emoji is four times its own character count on this wire.
+  func testThePromptAnswerIsRefusedByBytesRatherThanTruncated() throws {
+    let prompt = PluginActionPrompt(id: "note", context: ["laneId": .string("lane-7")])
+
+    let atCeiling = String(repeating: "x", count: PluginActionPrompt.maxTextBytes)
+    let answer = try XCTUnwrap(prompt.answerPayload(text: atCeiling))
+    XCTAssertEqual(answer["id"] as? String, "note")
+    XCTAssertEqual(answer["text"] as? String, atCeiling)
+    XCTAssertEqual(
+      (answer["context"] as? [String: Any])?["laneId"] as? String,
+      "lane-7",
+      "The prompt's own context rides back verbatim."
+    )
+
+    XCTAssertNil(prompt.answerPayload(text: atCeiling + "x"))
+    XCTAssertFalse(PluginActionPrompt.acceptsAnswer(atCeiling + "x"))
+
+    // 1024 four-byte scalars are 4096 bytes and 1024 characters: a character
+    // ceiling would accept four times too much.
+    let emoji = String(repeating: "🙂", count: PluginActionPrompt.maxTextBytes / 4)
+    XCTAssertTrue(PluginActionPrompt.acceptsAnswer(emoji))
+    XCTAssertFalse(PluginActionPrompt.acceptsAnswer(emoji + "🙂"))
+    XCTAssertNil(prompt.answerPayload(text: emoji + "🙂"))
+
+    // An empty answer is a real answer — the reader submitted nothing on
+    // purpose — and a prompt with no context sends none.
+    let contextless = PluginActionPrompt(id: "note")
+    let empty = try XCTUnwrap(contextless.answerPayload(text: ""))
+    XCTAssertEqual(empty["text"] as? String, "")
+    XCTAssertNil(empty["context"])
+  }
+
   // MARK: - chat-card and activity-entry payloads
 
   func testChatCardAndActivityEntryDecodeAndTolerateUnknownKeys() throws {
@@ -2557,6 +2680,228 @@ final class PluginVocabPanelStateTests: XCTestCase {
     ) { $0 }
     XCTAssertEqual(matching.prefix(2).compactMap { $0["title"] as? String }, ["bc-3ac1", "bc-0092"])
   }
+
+  // MARK: - Time
+
+  /// The clock is a PARAMETER, never a `Date()` buried in the loop, so every case
+  /// below pins the instant instead of sleeping. `now` is noon UTC on a Friday;
+  /// the rows sit at readable distances from it. These mirror the TypeScript
+  /// cases in `vocabularyState.test.ts` name for name, so a reader can diff the
+  /// two lists and see a gap on either side.
+  private var now: Double { 1_787_918_400_000 }  // 2026-08-28T12:00:00.000Z
+
+  private var notes: [[String: Any]] {
+    [
+      ["id": "now", "ts": "2026-08-28T12:00:00.000Z"],
+      ["id": "hour", "ts": "2026-08-28T11:00:00.000Z"],
+      ["id": "epoch", "ts": 1_787_911_200_000],  // 2026-08-28T10:00:00.000Z
+      ["id": "yesterday", "ts": "2026-08-27T09:00:00.000Z"],
+      ["id": "week", "ts": "2026-08-23T09:00:00.000Z"],
+      ["id": "unreadable", "ts": "yesterday"],
+      ["id": "absent"],
+    ]
+  }
+
+  private func keptAt(_ json: String, _ instant: Double, state: PluginVocabPanelState = [:]) -> [String] {
+    let (parsed, _) = predicates(json)
+    return PluginVocabState.filter(parsed, notes, state: state, now: instant) { $0 }
+      .compactMap { $0["id"] as? String }
+  }
+
+  func testTheFixtureClockMatchesTheOneTheTypeScriptSuiteUses() {
+    // The literal above is only readable if it really is that instant.
+    XCTAssertEqual(PluginVocabState.timeValue("2026-08-28T12:00:00.000Z"), now)
+    XCTAssertEqual(PluginVocabState.timeValue("2026-08-28T10:00:00.000Z"), 1_787_911_200_000)
+  }
+
+  func testReadsAnISO8601OperandEpochMillisecondsAndARelOffset() {
+    let (parsed, warnings) = predicates(#"""
+    [
+      { "field": "ts", "since": "2026-08-28T00:00:00.000Z" },
+      { "field": "ts", "before": 1756000000000 },
+      { "field": "ts", "since": { "$rel": "-24h" } },
+      { "field": "ts", "before": { "$rel": "+1h" } }
+    ]
+    """#)
+    XCTAssertEqual(warnings, [])
+    XCTAssertEqual(parsed?.count, 4)
+    XCTAssertEqual(
+      parsed?[0],
+      .time(op: .since, field: "ts", at: PluginVocabState.timeValue("2026-08-28T00:00:00.000Z"), relMs: nil, stateKey: nil)
+    )
+    XCTAssertEqual(parsed?[1], .time(op: .before, field: "ts", at: 1_756_000_000_000, relMs: nil, stateKey: nil))
+    // A `$rel` is stored as an OFFSET, resolved at evaluation against the clock.
+    XCTAssertEqual(parsed?[2], .time(op: .since, field: "ts", at: nil, relMs: -86_400_000, stateKey: nil))
+    // A positive offset is legal: "before +1h" is a real "due soon" filter.
+    XCTAssertEqual(parsed?[3], .time(op: .before, field: "ts", at: nil, relMs: 3_600_000, stateKey: nil))
+
+    // A bare date reads as UTC midnight on every client, which is the whole
+    // reason the reader is narrower than a permissive date parser.
+    let (dateOnly, _) = predicates(#"[{ "field": "ts", "since": "2026-08-28" }]"#)
+    XCTAssertEqual(
+      dateOnly?[0],
+      .time(op: .since, field: "ts", at: PluginVocabState.timeValue("2026-08-28T00:00:00.000Z"), relMs: nil, stateKey: nil)
+    )
+  }
+
+  func testResolvesARelOperandAgainstTheClockItIsHanded() {
+    XCTAssertEqual(keptAt(#"[{ "field": "ts", "since": { "$rel": "-24h" } }]"#, now), ["now", "hour", "epoch"])
+    XCTAssertEqual(keptAt(#"[{ "field": "ts", "since": { "$rel": "-30m" } }]"#, now), ["now"])
+    XCTAssertEqual(
+      keptAt(#"[{ "field": "ts", "since": { "$rel": "-7d" } }]"#, now),
+      ["now", "hour", "epoch", "yesterday", "week"]
+    )
+
+    // The same clause a day later. Nothing about the rows changed; the answer
+    // did — which is exactly what the plugin could not express before, and why a
+    // panel left open across midnight must be re-rendered to catch up.
+    let tomorrow = #"[{ "field": "ts", "since": { "$rel": "-24h" } }]"#
+    // Inclusive at the boundary, so the newest note survives its own edge...
+    XCTAssertEqual(keptAt(tomorrow, now + 86_400_000), ["now"])
+    // ...and one millisecond later the whole day has aged out.
+    XCTAssertEqual(keptAt(tomorrow, now + 86_400_001), [])
+  }
+
+  func testSamplesTheWallClockOnceWhenNoClockIsGiven() {
+    let rows: [[String: Any]] = [
+      ["id": "fresh", "ts": ISO8601DateFormatter().string(from: Date())],
+      ["id": "stale", "ts": "2001-01-01"],
+    ]
+    let (parsed, _) = predicates(#"[{ "field": "ts", "since": { "$rel": "-1h" } }]"#)
+    let kept = PluginVocabState.filter(parsed, rows, state: [:]) { $0 }
+    XCTAssertEqual(kept.compactMap { $0["id"] as? String }, ["fresh"])
+  }
+
+  func testDropsAMalformedRelWithAWarningAndKeepsTheRestOfTheBinding() {
+    let (parsed, warnings) = predicates(#"""
+    [
+      { "field": "ts", "since": { "$rel": "24h" } },
+      { "field": "ts", "since": { "$rel": "-1w" } },
+      { "field": "ts", "since": { "$rel": "-24H" } },
+      { "field": "ts", "since": "28/08/2026" }
+    ]
+    """#)
+    // No sign: "24h" is as likely to mean the last day as the next one, and
+    // guessing would point the filter at the wrong half of the timeline.
+    XCTAssertNil(parsed)
+    XCTAssertEqual(warnings.count, 4)
+    XCTAssertTrue(warnings[0].message.contains("$rel"))
+    XCTAssertTrue(warnings[3].message.contains("since"))
+
+    // A broken clause is clause-local: the binding keeps the clauses that
+    // parsed, because a reader can see a filter that did nothing and cannot see
+    // rows a broken filter silently removed.
+    let (mixed, mixedWarnings) = predicates(#"""
+    [{ "field": "ts", "since": { "$rel": "nonsense" } }, { "field": "id", "equals": "week" }]
+    """#)
+    XCTAssertEqual(mixed?.count, 1)
+    XCTAssertEqual(mixedWarnings.count, 1)
+  }
+
+  func testDropsARowWhoseFieldIsMissingOrUnreadableAsATime() {
+    // The one asymmetry worth naming: an unset `$state` is INACTIVE, but a row
+    // that cannot answer the comparison is FALSE — the same thing a row with no
+    // `statusGroup` has always done against an `equals`.
+    XCTAssertEqual(
+      keptAt(#"[{ "field": "ts", "since": "2000-01-01" }]"#, now),
+      ["now", "hour", "epoch", "yesterday", "week"]
+    )
+    XCTAssertEqual(
+      keptAt(#"[{ "field": "ts", "before": "2099-01-01" }]"#, now),
+      ["now", "hour", "epoch", "yesterday", "week"]
+    )
+    // A zoneless date-time is unreadable on purpose: local-vs-UTC is exactly the
+    // disagreement between clients this grammar exists to prevent.
+    XCTAssertNil(predicates(#"[{ "field": "ts", "since": "2026-08-28T12:00:00" }]"#).0)
+  }
+
+  func testReadsSinceAsAtOrAfterAndBeforeAsStrictlyEarlier() {
+    // The two partition the timeline at the same instant: every row is in
+    // exactly one of them, so a pair of controls cannot double-count or lose a row.
+    XCTAssertEqual(keptAt(#"[{ "field": "ts", "since": "2026-08-28T11:00:00.000Z" }]"#, now), ["now", "hour"])
+    XCTAssertEqual(
+      keptAt(#"[{ "field": "ts", "before": "2026-08-28T11:00:00.000Z" }]"#, now),
+      ["epoch", "yesterday", "week"]
+    )
+  }
+
+  func testNestsInsideAndOrAndNotLikeAnyOtherClause() {
+    XCTAssertEqual(keptAt(#"""
+    [{ "or": [
+      { "field": "ts", "before": "2026-08-25" },
+      { "and": [{ "field": "ts", "since": { "$rel": "-24h" } }, { "field": "id", "notEquals": "epoch" }] }
+    ] }]
+    """#, now), ["now", "hour", "week"])
+
+    // `not` inverts an active time clause and stays inactive over an inactive one.
+    XCTAssertEqual(
+      keptAt(#"[{ "not": { "field": "ts", "since": { "$rel": "-24h" } } }]"#, now),
+      ["yesterday", "week", "unreadable", "absent"]
+    )
+    XCTAssertEqual(
+      keptAt(#"[{ "not": { "field": "ts", "since": { "$state": "range" } } }]"#, now, state: ["range": ""]).count,
+      notes.count
+    )
+
+    // Depth is unchanged: a clause four levels down is refused like any other.
+    let (deep, deepWarnings) = predicates(#"""
+    [{ "and": [{ "or": [{ "and": [{ "field": "ts", "since": "2000-01-01" }] }] }] }]
+    """#)
+    XCTAssertNil(deep)
+    XCTAssertTrue(deepWarnings.first?.message.contains("nest at most") == true)
+  }
+
+  func testFollowsASegmentedControlThatOffersRelativeRanges() {
+    // The point of the whole clause: "All / Today / This week" as three option
+    // values, with no field the plugin has to rewrite at midnight.
+    let clause = #"[{ "field": "ts", "since": { "$state": "range" } }]"#
+    XCTAssertEqual(keptAt(clause, now, state: ["range": "-24h"]), ["now", "hour", "epoch"])
+    XCTAssertEqual(
+      keptAt(clause, now, state: ["range": "-7d"]),
+      ["now", "hour", "epoch", "yesterday", "week"]
+    )
+    // An absolute instant is equally legal as an option value.
+    XCTAssertEqual(keptAt(clause, now, state: ["range": "2026-08-28"]), ["now", "hour", "epoch"])
+    // "All", an undeclared key, and a value that reads as no time at all are
+    // inactive rather than false — the house rule, unchanged.
+    XCTAssertEqual(keptAt(clause, now, state: ["range": ""]).count, notes.count)
+    XCTAssertEqual(keptAt(clause, now, state: [:]).count, notes.count)
+    XCTAssertEqual(keptAt(clause, now, state: ["range": "sometime"]).count, notes.count)
+  }
+
+  func testSpendsTheSameBudgetAsAnyOtherComparison() {
+    func children(_ clause: String) -> Int {
+      let list = Array(repeating: clause, count: PluginVocabLimits.maxWhereNodes).joined(separator: ",")
+      let (parsed, _) = predicates("[{ \"and\": [\(list)] }]")
+      guard case let .all(clauses)? = parsed?.first else { return -1 }
+      return clauses.count
+    }
+    // The composer is node 1, so the last child is the one over the ceiling.
+    let timed = children(#"{ "field": "ts", "since": { "$rel": "-1h" } }"#)
+    XCTAssertEqual(timed, PluginVocabLimits.maxWhereNodes - 1)
+    XCTAssertEqual(timed, children(#"{ "field": "id", "equals": "now" }"#))
+
+    // Two operators on one clause is still refused, and `since` is now one of them.
+    let (both, bothWarnings) = predicates(#"[{ "field": "ts", "since": "2026-08-28", "equals": "x" }]"#)
+    XCTAssertNil(both)
+    XCTAssertTrue(bothWarnings.first?.message.contains("only one operator") == true)
+  }
+
+  func testDeclaresNoStateKeyUnlessTheOperandNamesOne() {
+    // The phone has no `vocabWhereStateKeys` walker, so the same fact is pinned
+    // on the parsed shape: a literal or a `$rel` carries no key at all.
+    let (literal, _) = predicates(#"""
+    [{ "field": "ts", "since": { "$rel": "-24h" } }, { "field": "ts", "before": "2026-08-28" }]
+    """#)
+    XCTAssertEqual(literal?[0], .time(op: .since, field: "ts", at: nil, relMs: -86_400_000, stateKey: nil))
+    XCTAssertEqual(
+      literal?[1],
+      .time(op: .before, field: "ts", at: PluginVocabState.timeValue("2026-08-28"), relMs: nil, stateKey: nil)
+    )
+
+    let (stateful, _) = predicates(#"[{ "field": "ts", "since": { "$state": "range" } }]"#)
+    XCTAssertEqual(stateful?[0], .time(op: .since, field: "ts", at: nil, relMs: nil, stateKey: "range"))
+  }
 }
 
 final class PluginActionResponseTests: XCTestCase {
@@ -2694,12 +3039,21 @@ final class PluginPaneFallbackTests: XCTestCase {
       localEntries.filter { $0.pluginId == pluginId && $0.collection == binding.collection }
     }
 
+    /// Scripted answers, oldest first. An empty queue answers with a bare
+    /// success, which is what every test that does not care about the reply
+    /// wants.
+    var invokeReplies: [PluginInvokeResult] = []
+    /// Every payload the store sent, so a re-invocation can be checked against
+    /// the first press rather than against a description of it.
+    private(set) var invokedPayloads: [[String: Any]] = []
+
     func invokePluginAction(
       pluginId: String,
       actionId: String,
       payload: [String: Any]
     ) async throws -> PluginInvokeResult {
-      PluginInvokeResult()
+      invokedPayloads.append(payload)
+      return invokeReplies.isEmpty ? PluginInvokeResult() : invokeReplies.removeFirst()
     }
 
     func fetchPluginPanel(pluginId: String, panelId: String) async throws -> PluginPanelRecord? {
@@ -2767,6 +3121,84 @@ final class PluginPaneFallbackTests: XCTestCase {
       guard case .notReceived(.fetching) = store.presentation else { return }
       await Task.yield()
     }
+  }
+
+  // MARK: - The `{prompt}` verb, end to end
+
+  /// Let a dispatched action land. `perform` fires a detached task, so a test
+  /// has to give it a turn rather than sleep on it.
+  private func settle(until reached: () -> Bool) async {
+    for _ in 0..<200 {
+      if reached() { return }
+      await Task.yield()
+    }
+  }
+
+  /// A `{prompt}` asks once, re-invokes the SAME action with the SAME arguments
+  /// plus the answer, and is not re-askable by its own reply.
+  ///
+  /// The one-hop rule is the security-shaped half: without it a plugin could
+  /// answer every re-invocation with another question and hold the reader in an
+  /// alert they cannot dismiss.
+  func testAPromptReInvokesTheSameActionOnceAndOnlyOnce() async {
+    let sync = FakePaneSync()
+    sync.invokeReplies = [
+      PluginInvokeResult(prompt: PluginActionPrompt(
+        id: "note",
+        title: "What are you working on?",
+        submitLabel: "Log",
+        context: ["laneId": .string("lane-7")]
+      )),
+      // The re-invocation asks again. Every client ignores it.
+      PluginInvokeResult(message: "Logged", prompt: PluginActionPrompt(id: "note")),
+    ]
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.perform(PluginVocabAction(action: "journal.log"), extraArgs: ["kind": "note"], label: "Log it")
+    await settle(until: { pane.pendingPrompt != nil })
+
+    guard let pending = pane.pendingPrompt else { return XCTFail("The question must reach the pane.") }
+    XCTAssertEqual(pending.pending.title, "What are you working on?")
+    XCTAssertEqual(pending.pending.submitLabel, "Log")
+    XCTAssertEqual(sync.invokedPayloads.count, 1, "Asking must not invoke anything on its own.")
+    XCTAssertNil(sync.invokedPayloads.first?["prompt"], "The first press carries no answer.")
+
+    pane.submitPrompt(pending, text: "Shipping the prompt verb")
+    await settle(until: { sync.invokedPayloads.count == 2 })
+
+    XCTAssertEqual(sync.invokedPayloads.count, 2)
+    let second = sync.invokedPayloads[1]
+    XCTAssertEqual(second["kind"] as? String, "note", "The same arguments ride the re-invocation.")
+    let answer = second["prompt"] as? [String: Any]
+    XCTAssertEqual(answer?["id"] as? String, "note")
+    XCTAssertEqual(answer?["text"] as? String, "Shipping the prompt verb")
+    XCTAssertEqual(
+      (answer?["context"] as? [String: Any])?["laneId"] as? String,
+      "lane-7",
+      "The prompt's own pointer comes back untouched."
+    )
+
+    // One hop: the re-invocation's own question is ignored, and the reply's
+    // sentence is what the reader is left with.
+    XCTAssertNil(pane.pendingPrompt, "A plugin must not be able to keep the alert on screen.")
+    XCTAssertEqual(pane.actionMessage?.text, "Logged")
+  }
+
+  /// Cancelling invokes nothing at all — the action already ran once and said
+  /// what it wanted.
+  func testCancellingAPromptInvokesNothing() async {
+    let sync = FakePaneSync()
+    sync.invokeReplies = [PluginInvokeResult(prompt: PluginActionPrompt(id: "note"))]
+    let pane = store(sync, cache: PluginPanelFallbackCache())
+
+    pane.perform(PluginVocabAction(action: "journal.log"), label: "Log it")
+    await settle(until: { pane.pendingPrompt != nil })
+    XCTAssertEqual(pane.pendingPrompt?.pending.title, "Log it", "No title falls back to the control's label.")
+
+    pane.cancelPrompt()
+    await settle(until: { sync.invokedPayloads.count > 1 })
+    XCTAssertEqual(sync.invokedPayloads.count, 1)
+    XCTAssertNil(pane.pendingPrompt)
   }
 
   // MARK: - The mirror stays the primary source

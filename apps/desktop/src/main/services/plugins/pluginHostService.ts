@@ -46,6 +46,7 @@ import {
   PluginSdkError,
   type PluginActionInvokeRecord,
   type PluginAudioClip,
+  type PluginChangeEventName,
   type PluginRuntimeHookName,
   type PluginRuntimeHookPayload,
   type PluginCollectionRow,
@@ -80,8 +81,12 @@ import {
 } from "../../../shared/plugins/sockets";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { createPluginChildSupervisor, type PluginChildSupervisor } from "./pluginChildSupervisor";
-import { subscribeToPluginChanges } from "./pluginEvents";
+import { emitPluginChange, subscribeToPluginChanges } from "./pluginEvents";
 import { subscribeToPluginRuntimeHooks, type PluginRuntimeHookEmission } from "./pluginRuntimeHooks";
+import {
+  subscribeToPluginEntityChanges,
+  type PluginEntityChangeFamily,
+} from "./pluginEntityChanges";
 import { createPluginInstallService, type PluginInstalledPlugin, type PluginInstallService } from "./pluginInstallService";
 import { createPluginInstallServiceAdapter, toPluginPresenceRow } from "./pluginInstallServiceAdapter";
 import {
@@ -358,6 +363,19 @@ export type PluginHostService = {
    * declared-collection rule `pluginSdkServer.ts` applies to a plugin's child.
    */
   writeCollection(args: { pluginId: string; collection: string; key: string; value: unknown }): void;
+  /**
+   * Write a plugin's own declared settings on its behalf, for the webview
+   * bridge. Same reasoning as {@link writeCollection}: not a `plugin` domain
+   * action, reachable only from a guest whose plugin id the host derived from
+   * its own origin, and it applies the same manifest validation a child's
+   * `ade.config.set` gets — including the refusal of `secret` settings.
+   *
+   * Does NOT restart the plugin. Returns the new effective config.
+   */
+  writeConfig(args: {
+    pluginId: string;
+    values: Record<string, unknown>;
+  }): Record<string, string | number | boolean | null>;
   /** Child pids for the resource sampler's "plugin-host" role. */
   listChildPids(): number[];
   skillRoots(): string[];
@@ -440,6 +458,67 @@ function coerceSettingValue(setting: PluginManifestSetting, value: unknown): str
     }
   }
   return value;
+}
+
+/**
+ * Validate one batch of setting values against the manifest and store them.
+ *
+ * The single writer behind BOTH ways a setting gets written — ADE's own
+ * generated settings form (`plugin.setConfig`) and a plugin writing its own
+ * settings from a `settings-section` panel (`ade.config.set`). Sharing it is
+ * the point: two validators would eventually disagree about what a `select`
+ * accepts, and the plugin would be the one that looked broken.
+ *
+ * Throws before touching disk, so a refused batch leaves the stored config
+ * exactly as it was rather than half-applied.
+ */
+function applyStoredConfig(args: {
+  pluginsRoot: string;
+  pluginId: string;
+  declared: PluginManifestSetting[];
+  values: Record<string, unknown>;
+  /**
+   * Refuse `secret`-kind keys.
+   *
+   * False for ADE's own form, which is where a secret setting is typed today.
+   * True for a plugin writing its own settings: `config.json` is a plain file
+   * this host hands to every child at spawn, and `ade.secrets` is the store
+   * built to hold a credential instead.
+   */
+  refuseSecrets: boolean;
+}): void {
+  const declared = new Map(args.declared.map((setting) => [setting.key, setting]));
+  const stored = readStoredConfig(args.pluginsRoot);
+  const values = { ...(stored[args.pluginId] ?? {}) };
+  for (const [key, value] of Object.entries(args.values)) {
+    const setting = declared.get(key);
+    // An undeclared key would read back as a setting the plugin never sees,
+    // which is indistinguishable from a broken plugin.
+    if (!setting) {
+      throw new PluginSdkError("invalid_args", `Plugin "${args.pluginId}" declares no setting "${key}".`);
+    }
+    if (args.refuseSecrets && setting.kind === "secret") {
+      throw new PluginSdkError(
+        "invalid_args",
+        `Setting "${key}" is a secret. Write it with ade.secrets.set("${key}", …) — secrets are not kept in the plain config store.`,
+      );
+    }
+    const coerced = coerceSettingValue(setting, value);
+    // null means "reset", so the stored override is REMOVED rather than
+    // written as null: `effectiveConfig` layers stored values over the
+    // manifest defaults, so a stored null would shadow the default with
+    // nothing instead of restoring it.
+    if (coerced === null) delete values[key];
+    else values[key] = coerced;
+  }
+  stored[args.pluginId] = values;
+  writeStoredConfig(args.pluginsRoot, stored);
+  // The invalidation every other plugin write publishes: `{kind: "installs"}`
+  // is what the marketplace, the slash-command cache and the webview bridge
+  // already treat as "refetch this plugin", so a settings write made from
+  // inside a plugin reaches an open Settings page by the same route one made
+  // in the form does. Identity only, never the values — see `pluginEvents.ts`.
+  emitPluginChange({ kind: "installs", pluginId: args.pluginId });
 }
 
 /** Case variants a plugin may ship its readme under, in the order tried. */
@@ -977,6 +1056,33 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
   const configFor = (pluginId: string, manifest: PluginManifest | null): Record<string, string | number | boolean | null> =>
     effectiveConfig(manifest, readStoredConfig(installs.root)[pluginId]);
 
+  /**
+   * Write a plugin's own settings on its behalf, WITHOUT restarting it.
+   *
+   * The restart `plugin.setConfig` performs is right for ADE's settings form —
+   * the user typed a value and expects the plugin to be running on it — and
+   * fatal here: a plugin calling `ade.config.set` from inside an action handler
+   * would kill itself mid-call. It does not need the restart either, because
+   * `config.get` is served by {@link configFor}, which re-reads `config.json`
+   * on every call rather than from the copy handed to the child at spawn.
+   *
+   * Returns the new effective config so the caller does not have to read back.
+   */
+  const writeConfigFor = (
+    pluginId: string,
+    manifest: PluginManifest | null,
+    values: Record<string, unknown>,
+  ): Record<string, string | number | boolean | null> => {
+    applyStoredConfig({
+      pluginsRoot: installs.root,
+      pluginId,
+      declared: manifest?.settings ?? [],
+      values,
+      refuseSecrets: true,
+    });
+    return configFor(pluginId, manifest);
+  };
+
   const buildSupervisor = args.createSupervisor ?? createPluginChildSupervisor;
 
   const ensureSupervisor = (installed: PluginInstalledPlugin): PluginChildSupervisor => {
@@ -998,6 +1104,7 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
           projectSecrets: manifest.projectSecrets ?? [],
         }),
       readConfig: () => configFor(pluginId, manifest),
+      writeConfig: (values) => writeConfigFor(pluginId, manifest, values),
       readProviderKey,
       // Read through `machine` at call time rather than captured here: a
       // supervisor outlives the desktop that lends it a microphone, and a
@@ -1743,26 +1850,16 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       async setConfig(configArgs): Promise<PluginDetail> {
         const pluginId = requireId(configArgs?.pluginId, "pluginId");
         const installed = requireInstalled(pluginId);
-        const declared = new Map((installed.manifest?.settings ?? []).map((setting) => [setting.key, setting]));
-        const stored = readStoredConfig(installs.root);
-        const values = { ...(stored[pluginId] ?? {}) };
-        for (const [key, value] of Object.entries(configArgs?.values ?? {})) {
-          const setting = declared.get(key);
-          // An undeclared key would read back as a setting the plugin never
-          // sees, which is indistinguishable from a broken plugin.
-          if (!setting) {
-            throw new PluginSdkError("invalid_args", `Plugin "${pluginId}" declares no setting "${key}".`);
-          }
-          const coerced = coerceSettingValue(setting, value);
-          // null means "reset", so the stored override is REMOVED rather than
-          // written as null: `effectiveConfig` layers stored values over the
-          // manifest defaults, so a stored null would shadow the default with
-          // nothing instead of restoring it.
-          if (coerced === null) delete values[key];
-          else values[key] = coerced;
-        }
-        stored[pluginId] = values;
-        writeStoredConfig(installs.root, stored);
+        applyStoredConfig({
+          pluginsRoot: installs.root,
+          pluginId,
+          declared: installed.manifest?.settings ?? [],
+          values: configArgs?.values ?? {},
+          // ADE's own form is where a `secret` setting is typed, so this path
+          // still accepts one. `ade.config.set` does not — see
+          // `applyStoredConfig`.
+          refuseSecrets: false,
+        });
         // The child is handed its config at spawn, so a running one keeps the
         // old values until it is replaced. `reconcile` then brings it back with
         // the values the user just typed — a plugin that stayed stopped after a
@@ -1949,6 +2046,80 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       });
     }
   };
+
+  /**
+   * Lane, PR and session changes, delivered to running plugins as `sdk.events`.
+   *
+   * The other three quarters of the change-event family. `install.changed` had
+   * a producer from the start and these did not, so a plugin subscribing to
+   * `pr.changed` — which is the plugin skill's own worked example — registered
+   * a listener and never heard anything.
+   *
+   * Same delivery contract as `install.changed`, deliberately: broadcast to
+   * every running child (a change event is not filtered by subscription, see
+   * `applyEventSubscription`), coalesced on the same window, capped at the same
+   * id ceiling, and flagged `overflow` past it. One family per queue rather
+   * than one shared queue, so a busy PR poll cannot push a lane id out of the
+   * cap and leave a lane watcher looking at a truncated list it did not cause.
+   *
+   * `projectId` resolves through the same binding map the runtime hooks use, so
+   * a change in a project no host has attached reports null rather than
+   * borrowing whichever project happens to be attached.
+   */
+  const pendingEntityChanges = new Map<
+    PluginChangeEventName,
+    { ids: Set<string>; projectRoot: string | null }
+  >();
+  let entityChangeTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const ENTITY_CHANGE_EVENT_NAMES: Record<PluginEntityChangeFamily, PluginChangeEventName> = {
+    lane: "lane.changed",
+    pr: "pr.changed",
+    session: "session.changed",
+  };
+
+  const flushEntityChanges = (): void => {
+    entityChangeTimer = null;
+    const pending = [...pendingEntityChanges];
+    pendingEntityChanges.clear();
+    if (pending.length === 0) return;
+    const running = [...supervisors].filter(([, supervisor]) => supervisor.status() === "running");
+    if (running.length === 0) return;
+    for (const [event, queue] of pending) {
+      const all = [...queue.ids];
+      const overflow = all.length > PLUGIN_EVENT_MAX_IDS;
+      const ids = all.slice(0, PLUGIN_EVENT_MAX_IDS);
+      const payload = {
+        event,
+        ids,
+        projectId: projectIdForRoot(queue.projectRoot),
+        ...(overflow ? { overflow: true as const } : {}),
+      };
+      for (const [, supervisor] of running) {
+        supervisor.send({ type: "event", payload });
+      }
+    }
+  };
+
+  const unsubscribeEntityChanges = subscribeToPluginEntityChanges((emission) => {
+    if (disposed) return;
+    const event = ENTITY_CHANGE_EVENT_NAMES[emission.family];
+    const queue = pendingEntityChanges.get(event)
+      ?? { ids: new Set<string>(), projectRoot: emission.projectRoot };
+    for (const id of emission.ids) {
+      const trimmed = id.trim();
+      if (trimmed) queue.ids.add(trimmed);
+    }
+    // Last writer names the project. Two checkouts changing inside one 250 ms
+    // window is only possible on a machine running two brains, and the ids in
+    // that payload are re-read against whatever the plugin is scoped to
+    // anyway — a coalesced batch is a refetch hint, not a ledger.
+    if (emission.projectRoot) queue.projectRoot = emission.projectRoot;
+    pendingEntityChanges.set(event, queue);
+    if (entityChangeTimer) return;
+    entityChangeTimer = setTimeout(flushEntityChanges, PLUGIN_EVENT_COALESCE_MS);
+    entityChangeTimer.unref?.();
+  });
 
   const unsubscribePluginChanges = subscribeToPluginChanges((event) => {
     if (disposed) return;
@@ -2398,6 +2569,13 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
         value,
       );
     },
+    writeConfig({ pluginId, values }) {
+      const installed = requireInstalled(pluginId);
+      if (!installed.record.enabled) {
+        throw new PluginSdkError("plugin_disabled", `Plugin "${pluginId}" is disabled.`);
+      }
+      return writeConfigFor(pluginId, installed.manifest, values);
+    },
     listChildPids() {
       return [...supervisors.values()]
         .map((supervisor) => supervisor.pid())
@@ -2413,12 +2591,18 @@ function createHost(args: PluginHostServiceArgs): PluginHostService {
       if (disposed) return;
       disposed = true;
       unsubscribePluginChanges();
+      unsubscribeEntityChanges();
       unsubscribeRuntimeHooks();
       detachChatRuntimeDelivery();
       if (installEventTimer) {
         clearTimeout(installEventTimer);
         installEventTimer = null;
       }
+      if (entityChangeTimer) {
+        clearTimeout(entityChangeTimer);
+        entityChangeTimer = null;
+      }
+      pendingEntityChanges.clear();
       if (hookFlushTimer) {
         clearTimeout(hookFlushTimer);
         hookFlushTimer = null;

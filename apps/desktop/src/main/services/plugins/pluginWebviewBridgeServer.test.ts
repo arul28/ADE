@@ -46,6 +46,7 @@ type Harness = {
     invoke: ReturnType<typeof vi.fn>;
   };
   putCollection: ReturnType<typeof vi.fn>;
+  setConfig: ReturnType<typeof vi.fn>;
   openDeeplink: ReturnType<typeof vi.fn>;
   openExternalUrl: ReturnType<typeof vi.fn>;
 };
@@ -71,16 +72,18 @@ function harness(): Harness {
     invoke: vi.fn(async (args: { pluginId: string; action: string }) => `${args.pluginId}:${args.action}`),
   };
   const putCollection = vi.fn(async () => {});
+  const setConfig = vi.fn(async () => ({ token: "written" }));
   const openDeeplink = vi.fn(async () => {});
   const openExternalUrl = vi.fn(async () => {});
   const server = createPluginWebviewBridgeServer({
     domainFor: () => domain as unknown as PluginWebviewDomain,
     putCollection,
+    setConfig,
     openDeeplink,
     openExternalUrl,
   });
   servers.push(server);
-  return { server, domain, putCollection, openDeeplink, openExternalUrl };
+  return { server, domain, putCollection, setConfig, openDeeplink, openExternalUrl };
 }
 
 const SENDER = {
@@ -216,5 +219,45 @@ describe("createPluginWebviewBridgeServer", () => {
         params: {},
       }),
     ).rejects.toMatchObject({ code: "unsupported_method" });
+  });
+});
+
+describe("createPluginWebviewBridgeServer config.set", () => {
+  it("writes through the injected setter under the sender's own plugin id", async () => {
+    const { server, setConfig } = harness();
+
+    const answer = await server.handle(SENDER, request("config.set", {
+      values: { token: "typed-in-the-page" },
+      // Same rule as every other method: a payload that names another plugin
+      // changes nothing, because the id comes from the frame.
+      pluginId: "other-plugin",
+    }));
+
+    expect(setConfig).toHaveBeenCalledTimes(1);
+    expect(setConfig.mock.calls[0]?.[0]).toMatchObject({
+      values: { token: "typed-in-the-page" },
+    });
+    expect((setConfig.mock.calls[0]?.[0] as { guest: { pluginId: string } }).guest.pluginId)
+      .toBe("demo-plugin");
+    expect(answer).toEqual({ token: "written" });
+  });
+
+  it("never routes a settings write through the domain, which would restart the page's own plugin", async () => {
+    const { server, domain } = harness();
+
+    await server.handle(SENDER, request("config.set", { values: { token: "x" } }));
+
+    expect(domain.invoke).not.toHaveBeenCalled();
+    expect(domain.get).not.toHaveBeenCalled();
+  });
+
+  it("reads a missing or malformed values frame as a write of nothing", async () => {
+    const { server, setConfig } = harness();
+
+    await server.handle(SENDER, request("config.set", {}));
+    await server.handle(SENDER, request("config.set", { values: "token=x" }));
+
+    expect(setConfig.mock.calls.map((call) => (call[0] as { values: unknown }).values))
+      .toEqual([{}, {}]);
   });
 });

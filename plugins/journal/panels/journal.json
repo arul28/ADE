@@ -12,7 +12,16 @@
       "direction": "vertical",
       "gap": "md",
       "children": [
-        { "component": "text", "text": "Journal", "variant": "title" },
+        {
+          "component": "text",
+          "text": "Journal",
+          "variant": "title"
+        },
+        {
+          "component": "text",
+          "text": "Work Journal keeps one-line notes about what you are doing, tagged with the lane you were on. Press \"Log a note\" above any chat — it asks what to write — or type /note followed by the line. Your standup is written from the notes you logged today.",
+          "variant": "body"
+        },
         {
           "component": "stack",
           "direction": "horizontal",
@@ -23,11 +32,20 @@
               "component": "segmented",
               "stateKey": "range",
               "label": "When",
-              "default": "today",
+              "default": "-24h",
               "options": [
-                { "value": "", "label": "All" },
-                { "value": "today", "label": "Today" },
-                { "value": "week", "label": "This week" }
+                {
+                  "value": "",
+                  "label": "All"
+                },
+                {
+                  "value": "-24h",
+                  "label": "Last 24 hours"
+                },
+                {
+                  "value": "-7d",
+                  "label": "Last 7 days"
+                }
               ]
             },
             {
@@ -36,9 +54,18 @@
               "label": "What",
               "default": "",
               "options": [
-                { "value": "", "label": "All" },
-                { "value": "blocked", "label": "Blocked" },
-                { "value": "done", "label": "Done" }
+                {
+                  "value": "",
+                  "label": "All"
+                },
+                {
+                  "value": "blocked",
+                  "label": "Blocked"
+                },
+                {
+                  "value": "done",
+                  "label": "Done"
+                }
               ]
             }
           ]
@@ -48,18 +75,25 @@
           "bind": {
             "collection": "notes",
             "limit": 100,
-            "allowActions": ["deleteNote"],
+            "allowActions": [
+              "deleteNote"
+            ],
             "where": [
               {
-                "or": [
-                  { "field": "today", "equals": { "$state": "range" } },
-                  { "field": "week", "equals": { "$state": "range" } }
-                ]
+                "field": "at",
+                "since": {
+                  "$state": "range"
+                }
               },
-              { "field": "kind", "equals": { "$state": "kind" } }
+              {
+                "field": "kind",
+                "equals": {
+                  "$state": "kind"
+                }
+              }
             ]
           },
-          "emptyText": "No notes match this filter."
+          "emptyText": "No notes in this window. Press \"Add a note\", or \"Log a note\" above any chat."
         },
         {
           "component": "stack",
@@ -72,14 +106,18 @@
               "label": "Write my standup",
               "kind": "primary",
               "icon": "sparkle",
-              "onPress": { "action": "writeStandup" }
+              "onPress": {
+                "action": "writeStandup"
+              }
             },
             {
               "component": "button",
               "label": "Add a note",
               "kind": "default",
               "icon": "note",
-              "onPress": { "action": "addNoteToLane" }
+              "onPress": {
+                "action": "addNoteToLane"
+              }
             }
           ]
         }

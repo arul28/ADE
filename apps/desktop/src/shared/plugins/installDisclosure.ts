@@ -171,6 +171,11 @@ export function describeManifestAdds(manifest: PluginManifest): string[] {
       ? `${tab.title} tab (custom UI on desktop; panel on other devices)`
       : `${tab.title} tab`);
   }
+  // Honest by construction now: the manifest parser refuses a `pane` that
+  // carries no honoured `builtin`, so every pane that reaches here is a
+  // COMPILED ADE pane the plugin gates — one the user really does get back by
+  // installing it. Before that refusal this line promised a surface no client
+  // had ever drawn.
   for (const pane of panes) lines.push(`${pane.title} pane`);
   // Said on the line itself rather than as a chip somewhere else on the page:
   // this is the reader's one preview of what installing changes, and "this tab

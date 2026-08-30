@@ -21,7 +21,16 @@ import {
   type PluginPaneModel,
   type PluginPanelFetch,
 } from "../pluginPane";
-import { defaultPluginPanelId, resolvePluginByName } from "../adeApi";
+import { defaultPluginPanelId, invokePluginAction, resolvePluginByName } from "../adeApi";
+import {
+  pluginPromptAnswerArgs,
+  pluginPromptHint,
+  pluginPromptOutcome,
+  pluginPromptPlaceholder,
+  pluginPromptTitle,
+  pluginPromptTooLongNotice,
+} from "../pluginPrompt";
+import type { AdeCodeConnection } from "../types";
 import { PLUGIN_FIXTURES } from "../../../../desktop/src/renderer/components/plugins/pluginFixtures";
 import {
   readPluginActionNavigation,
@@ -935,5 +944,215 @@ describe("plugin pane navigation from an action", () => {
     expect(readPluginActionNavigation({
       navigate: { panelId: "detail", target: "tools-pane", context: { issue: "ISS-14" } },
     })).toMatchObject({ panelId: "detail", context: { issue: "ISS-14" } });
+  });
+});
+
+/**
+ * The `{prompt}` verb — the one that comes back.
+ *
+ * `dispatchPluginAction` below is the loop app.tsx runs around every plugin
+ * action (a row press, a panel button, a keyboard chord, a declared refresh),
+ * written out of the same two exported functions those four call sites use:
+ * `pluginPromptOutcome` decides whether a question may be asked, and
+ * `pluginPromptAnswerArgs` builds the re-invocation. What the tests pin is the
+ * round trip's shape — SAME action, SAME arguments plus `args.prompt` — because
+ * that shape is what a plugin handler is written against and what the desktop,
+ * the phone and the terminal have to agree on.
+ */
+function promptConnection(results: readonly unknown[]) {
+  const calls: { pluginId: unknown; action: unknown; args: Record<string, unknown> }[] = [];
+  const connection = {
+    action: async (_domain: string, _action: string, args?: Record<string, unknown>) => {
+      calls.push({
+        pluginId: args?.pluginId,
+        action: args?.action,
+        args: (args?.args ?? {}) as Record<string, unknown>,
+      });
+      return results[calls.length - 1] ?? {};
+    },
+  } as unknown as AdeCodeConnection;
+  return { connection, calls };
+}
+
+async function dispatchPluginAction(input: {
+  connection: AdeCodeConnection;
+  args: Record<string, unknown>;
+  /** What the reader types at each question. `null` presses Esc. */
+  answers: readonly (string | null)[];
+}): Promise<{ followed: unknown[]; notices: string[] }> {
+  const followed: unknown[] = [];
+  const notices: string[] = [];
+  const pluginId = "journal";
+  const actionId = "logNote";
+  const label = "Log it";
+  let args = input.args;
+  let result = await invokePluginAction(input.connection, pluginId, actionId, args);
+  for (let asked = 0; ; asked += 1) {
+    const outcome = pluginPromptOutcome({ result, pluginId, displayName: "Work Journal", actionId, args, label });
+    if (outcome.kind === "ignored") notices.push("second question ignored");
+    if (outcome.kind === "unreadable") notices.push("question unreadable");
+    if (outcome.kind !== "ask") {
+      followed.push(result);
+      return { followed, notices };
+    }
+    const typed = input.answers[asked] ?? null;
+    // Esc. Nothing is invoked and no follow-up runs.
+    if (typed === null) return { followed, notices };
+    const next = pluginPromptAnswerArgs(outcome.request, typed);
+    if (!next) {
+      notices.push(pluginPromptTooLongNotice(outcome.request));
+      return { followed, notices };
+    }
+    args = next;
+    result = await invokePluginAction(
+      input.connection,
+      outcome.request.pluginId,
+      outcome.request.actionId,
+      args,
+    );
+  }
+}
+
+const NOTE_PROMPT = {
+  prompt: {
+    id: "note",
+    title: "What are you working on?",
+    placeholder: "One line",
+    submitLabel: "Log",
+    context: { laneId: "lane-1" },
+  },
+};
+
+describe("the plugin action prompt", () => {
+  it("re-invokes the same action with the same arguments plus the answer", async () => {
+    const { connection, calls } = promptConnection([NOTE_PROMPT, { navigate: { panelId: "journal" } }]);
+
+    const run = await dispatchPluginAction({
+      connection,
+      args: { context: { kind: "lane", id: "lane-1" } },
+      answers: ["shipping the badge fix"],
+    });
+
+    expect(calls).toHaveLength(2);
+    // Same plugin, same verb: a button that asks is not a different button.
+    expect(calls[1]?.pluginId).toBe(calls[0]?.pluginId);
+    expect(calls[1]?.action).toBe(calls[0]?.action);
+    expect(calls[1]?.args).toEqual({
+      context: { kind: "lane", id: "lane-1" },
+      prompt: { id: "note", text: "shipping the badge fix", context: { laneId: "lane-1" } },
+    });
+    // The first invocation is untouched by the round trip.
+    expect(calls[0]?.args).toEqual({ context: { kind: "lane", id: "lane-1" } });
+    // Only the SECOND result reaches the call site's follow-up: the first was a
+    // request for an answer, not a finished action.
+    expect(run.followed).toEqual([{ navigate: { panelId: "journal" } }]);
+  });
+
+  it("carries the prompt's own context back, and leaves it off when there was none", async () => {
+    const { connection, calls } = promptConnection([{ prompt: { id: "note" } }]);
+
+    await dispatchPluginAction({ connection, args: {}, answers: ["no context here"] });
+
+    expect(calls[1]?.args).toEqual({ prompt: { id: "note", text: "no context here" } });
+  });
+
+  it("invokes nothing at all when the reader presses Esc", async () => {
+    const { connection, calls } = promptConnection([NOTE_PROMPT]);
+
+    const run = await dispatchPluginAction({ connection, args: {}, answers: [null] });
+
+    expect(calls).toHaveLength(1);
+    expect(run.followed).toEqual([]);
+  });
+
+  it("ignores a second question the re-invocation asks — one hop, never a wizard", async () => {
+    const { connection, calls } = promptConnection([
+      NOTE_PROMPT,
+      { prompt: { id: "blocker", title: "And what is blocking you?" } },
+    ]);
+
+    const run = await dispatchPluginAction({
+      connection,
+      args: {},
+      answers: ["first answer", "second answer"],
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(run.notices).toEqual(["second question ignored"]);
+    // The ignored question is still a RESULT: its other verbs would run.
+    expect(run.followed).toEqual([{ prompt: { id: "blocker", title: "And what is blocking you?" } }]);
+  });
+
+  it("refuses an over-ceiling answer instead of truncating it", async () => {
+    const { connection, calls } = promptConnection([NOTE_PROMPT]);
+
+    const run = await dispatchPluginAction({
+      connection,
+      args: {},
+      answers: ["x".repeat(4097)],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(run.notices).toEqual([
+      "What are you working on?: that answer is too long to send. Shorten it and press enter again.",
+    ]);
+    // 4096 bytes is inside the ceiling and goes through.
+    const ok = promptConnection([NOTE_PROMPT, {}]);
+    await dispatchPluginAction({ connection: ok.connection, args: {}, answers: ["x".repeat(4096)] });
+    expect(ok.calls).toHaveLength(2);
+  });
+
+  it("counts the ceiling in bytes, not characters", async () => {
+    // "é" is two UTF-8 bytes, so 2049 of them are 4098 bytes.
+    const { connection, calls } = promptConnection([NOTE_PROMPT]);
+    await dispatchPluginAction({ connection, args: {}, answers: ["é".repeat(2049)] });
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it("sends an empty answer rather than treating Enter on a blank field as a cancel", async () => {
+    const { connection, calls } = promptConnection([NOTE_PROMPT, {}]);
+
+    await dispatchPluginAction({ connection, args: {}, answers: [""] });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.args).toMatchObject({ prompt: { id: "note", text: "" } });
+  });
+
+  it("says so rather than silently doing nothing when the question is malformed", async () => {
+    const { connection, calls } = promptConnection([{ prompt: { id: "not a valid id!" } }]);
+
+    const run = await dispatchPluginAction({ connection, args: {}, answers: ["ignored"] });
+
+    expect(calls).toHaveLength(1);
+    expect(run.notices).toEqual(["question unreadable"]);
+  });
+
+  it("draws the plugin's words, and its own only where the plugin left a gap", () => {
+    const asked = pluginPromptOutcome({
+      result: NOTE_PROMPT,
+      pluginId: "journal",
+      displayName: "Work Journal",
+      actionId: "logNote",
+      args: {},
+      label: "Log it",
+    });
+    const bare = pluginPromptOutcome({
+      result: { prompt: { id: "note" } },
+      pluginId: "journal",
+      displayName: "Work Journal",
+      actionId: "logNote",
+      args: {},
+      label: "Log it",
+    });
+    if (asked.kind !== "ask" || bare.kind !== "ask") throw new Error("expected both to ask");
+
+    expect(pluginPromptTitle(asked.request)).toBe("What are you working on?");
+    expect(pluginPromptPlaceholder(asked.request)).toBe("One line");
+    expect(pluginPromptHint(asked.request)).toBe("↵ Log · esc cancel");
+    // No title: the control's own label is the question, never a blank line.
+    expect(pluginPromptTitle(bare.request)).toBe("Log it");
+    expect(pluginPromptPlaceholder(bare.request)).toBe("");
+    expect(pluginPromptHint(bare.request)).toBe("↵ Submit · esc cancel");
   });
 });

@@ -217,6 +217,8 @@ import {
   PLUGIN_CHANGED_EVENT_TYPE,
   subscribeToPluginChanges,
 } from "../../desktop/src/main/services/plugins/pluginEvents";
+import { emitPluginEntityChange } from "../../desktop/src/main/services/plugins/pluginEntityChanges";
+import { LANES_INVALIDATED_LANE_ID } from "../../desktop/src/shared/types/lanes";
 import { createPluginWebhookIngressService } from "../../desktop/src/main/services/plugins/pluginWebhookIngressService";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
@@ -1115,6 +1117,10 @@ export async function createAdeRuntime(args: {
       operationService,
       onHeadChanged: (event) => {
         pushEvent("runtime", { type: "lane_head_changed", ...event });
+        // `lane.changed`, for plugins. A head move IS a lane change — it is what
+        // a CI or drift plugin re-reads on — and this bus does nothing at all
+        // when no plugin host is listening.
+        emitPluginEntityChange({ family: "lane", ids: [event.laneId], projectRoot });
         void rebaseSuggestionServiceRef?.onParentHeadChanged(event).catch(() => {});
         void autoRebaseServiceRef?.onHeadChanged(event).catch(() => {});
       },
@@ -1127,6 +1133,15 @@ export async function createAdeRuntime(args: {
       onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
       onLifecycleEvent: (event) => {
         pushEvent("runtime", { type: "lane_lifecycle_event", event });
+        // Every lifecycle transition — created, renamed, archived, deleted —
+        // is a `lane.changed` for plugins. `lanes-invalidated` carries a
+        // placeholder id rather than a real lane, so it emits an id-less
+        // refetch signal instead of naming a lane that does not exist.
+        emitPluginEntityChange({
+          family: "lane",
+          ids: event.laneId && event.laneId !== LANES_INVALIDATED_LANE_ID ? [event.laneId] : [],
+          projectRoot,
+        });
         if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
       },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
@@ -1722,23 +1737,32 @@ export async function createAdeRuntime(args: {
         onEvent: (event) => {
           pushEvent("runtime", event as unknown as Record<string, unknown>);
         },
-        onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
-          analytics: productAnalyticsService,
-          projectId,
-          event,
-        }),
+        onTurnSettled: (event) => {
+          captureAgentTurnSettledAnalytics({ analytics: productAnalyticsService, projectId, event });
+          // `session.changed`, for plugins. A settled turn is the
+          // low-frequency, content-free signal the chat service already
+          // publishes for exactly this shape of consumer — one per finished
+          // turn, never per token — so a plugin that re-reads a conversation
+          // after it moves gets a seam that cannot put it on the streaming
+          // hot path.
+          emitPluginEntityChange({ family: "session", ids: [event.sessionId], projectRoot });
+        },
         onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
           analytics: productAnalyticsService,
           projectId,
           sessionId: event.sessionId,
         }),
-        onSessionMetadataRegenerated: (event) => captureSessionMetadataRegeneratedAnalytics({
-          analytics: productAnalyticsService,
-          projectId,
-          event,
-        }),
+        onSessionMetadataRegenerated: (event) => {
+          captureSessionMetadataRegeneratedAnalytics({ analytics: productAnalyticsService, projectId, event });
+          // A regenerated title IS a `session.changed`, and the one a plugin is
+          // most likely to be waiting on: a chat's real title arrives after the
+          // placeholder one, so a plugin that read the session at turn start
+          // holds a name the user never chose until this says to read it again.
+          emitPluginEntityChange({ family: "session", ids: [event.sessionId], projectRoot });
+        },
         onSessionEnded: (event) => {
           pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
+          emitPluginEntityChange({ family: "session", ids: [event.sessionId], projectRoot });
         },
         getDirtyFileTextForPath: () => undefined,
       });
@@ -2009,6 +2033,21 @@ export async function createAdeRuntime(args: {
     // history was never compacted, even with no paired device.
     const emitPrEvent = (event: PrEventPayload): void => {
       pushEvent("runtime", { type: "pr_event", event });
+      // `pr.changed`, for plugins — the event the plugin skill's own "row badges
+      // from CI" recipe subscribes to. Every PR event kind counts as a change:
+      // the payload is a refetch hint, and a plugin deciding which kinds matter
+      // to it needs to hear them all to decide.
+      //
+      // A poll names every PR it re-read; the per-PR kinds name one. The host
+      // caps and dedupes what a coalesced window collects, so this hands over
+      // everything it honestly knows rather than pre-trimming it.
+      emitPluginEntityChange({
+        family: "pr",
+        ids: event.type === "prs-updated"
+          ? event.prs.map((pr) => pr.id)
+          : "prId" in event ? [event.prId] : [],
+        projectRoot,
+      });
       if (event.type === "prs-updated") {
         syncService?.notifyPrsUpdated();
       }

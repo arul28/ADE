@@ -229,6 +229,128 @@ struct PluginRowMenuItems: View {
   }
 }
 
+// MARK: - The `{prompt}` verb on screen
+
+/// One question, one field, cancel and confirm.
+///
+/// Deliberately an `.alert` rather than a sheet: the question interrupts
+/// something the reader started one tap ago, it is one line long, and an alert
+/// is the only presentation that can land on top of a context menu, a toolbar,
+/// a pane sheet and a chat transcript without any of them having to make room.
+///
+/// The confirm button is DISABLED past the byte ceiling rather than truncating
+/// what was typed — the refusal is visible before the reader presses anything,
+/// which is what "refused, never truncated" has to look like on a phone.
+struct PluginPromptAlert: ViewModifier {
+  let pending: PluginPendingPrompt?
+  /// Main-actor by declaration: both the pane store and `SyncService` are
+  /// main-actor types, and a plain `(String) -> Void` here would make every
+  /// call site an isolation warning today and an error in the Swift 6 language
+  /// mode.
+  let onSubmit: @MainActor (String) -> Void
+  let onCancel: @MainActor () -> Void
+
+  @State private var text = ""
+
+  func body(content: Content) -> some View {
+    content
+      .alert(
+        pending?.title ?? "",
+        isPresented: Binding(
+          get: { pending != nil },
+          // Every dismissal that is not the confirm button is a cancel, and a
+          // cancel invokes nothing. Firing after a submit is harmless: the
+          // question has already been cleared by then.
+          set: { if !$0 { onCancel() } }
+        ),
+        presenting: pending
+      ) { question in
+        TextField(question.prompt.placeholder ?? "", text: $text)
+          .textInputAutocapitalization(.sentences)
+        Button("Cancel", role: .cancel) { onCancel() }
+        Button(question.submitLabel) { onSubmit(text) }
+          .disabled(!PluginActionPrompt.acceptsAnswer(text))
+      } message: { _ in
+        if !PluginActionPrompt.acceptsAnswer(text) {
+          Text("That is longer than a plugin may be sent. Shorten it to continue.")
+        }
+      }
+      // A new question is a new field. Keyed on the pending id rather than on
+      // presentation, so asking the same question twice still starts empty.
+      .onChange(of: pending?.id) { _, _ in text = "" }
+  }
+}
+
+extension View {
+  /// Present a panel action's question, and re-invoke it with the answer.
+  @MainActor
+  func pluginPromptAlert(store: PluginPaneStore) -> some View {
+    modifier(PluginPromptAlert(
+      pending: store.pendingPrompt?.pending,
+      onSubmit: { text in
+        guard let pending = store.pendingPrompt else { return }
+        store.submitPrompt(pending, text: text)
+      },
+      onCancel: { store.cancelPrompt() }
+    ))
+  }
+
+  /// Present a socket press's question, and re-invoke it with the answer.
+  ///
+  /// Hosted at the app root because a socket press has no surface of its own by
+  /// the time it answers — the context menu has dismissed, the toolbar button
+  /// has no error slot — which is the same reason `pluginLinkRefusal` lives
+  /// there.
+  @MainActor
+  func pluginPromptAlert(syncService: SyncService) -> some View {
+    modifier(PluginPromptAlert(
+      pending: syncService.pendingPluginPrompt?.pending,
+      onSubmit: { text in
+        guard let request = syncService.pendingPluginPrompt else { return }
+        syncService.submitPluginPrompt(request, text: text)
+      },
+      onCancel: { syncService.pendingPluginPrompt = nil }
+    ))
+  }
+}
+
+/// A socket press's question, with everything needed to press the same button
+/// again once it has been answered.
+struct PluginSocketPromptRequest: Identifiable, Equatable {
+  var id: UUID { pending.id }
+  var contribution: PluginContribution
+  var actionId: String
+  var context: PluginSocketContext
+  var pending: PluginPendingPrompt
+
+  static func == (lhs: PluginSocketPromptRequest, rhs: PluginSocketPromptRequest) -> Bool {
+    lhs.id == rhs.id
+  }
+}
+
+/// The words on the control a press came from, for a question that named no
+/// title of its own.
+///
+/// Matched on the ACTION rather than taken from the contribution's primary
+/// payload: a split button's second menu entry runs a different action under a
+/// different word, and titling its question with the primary label would ask
+/// "Log it" above a field the reader opened from "Blocked".
+func pluginControlLabel(_ contribution: PluginContribution, actionId: String) -> String? {
+  let button = contribution.toolbarAction ?? contribution.composerAction ?? contribution.chatHeaderAction
+  if let button {
+    if button.actionId == actionId { return button.label }
+    if let entry = button.menu.first(where: { $0.actionId == actionId }) { return entry.label }
+  }
+  if let item = contribution.menuItem, item.actionId == actionId { return item.label }
+  if let empty = contribution.emptyState, empty.actionId == actionId {
+    return empty.actionLabel ?? empty.title
+  }
+  if let entry = contribution.activityEntry, entry.actionId == actionId {
+    return entry.actionLabel ?? entry.title
+  }
+  return nil
+}
+
 extension SyncService {
   /// Dispatch a row's plugin menu item. Fire-and-forget for its OUTCOME: a
   /// context menu has already dismissed by the time the call resolves, so there
@@ -278,16 +400,26 @@ extension SyncService {
   /// Never throws. A socket press has nowhere to show a failure on a phone —
   /// the menu has dismissed, the toolbar button has no error slot — so a
   /// failure resolves to nil and the surface stays as it was.
+  /// - Parameters:
+  ///   - extraArgs: merged over the context payload. Carries `prompt` on a
+  ///     re-invocation and nothing on a first press.
+  ///   - allowsPrompt: the one-hop rule. A re-invocation's own `{prompt}` is
+  ///     ignored, so a plugin cannot keep the alert on screen.
   @discardableResult
   func invokeSocketContribution(
     _ contribution: PluginContribution,
     actionId: String,
-    context: PluginSocketContext
+    context: PluginSocketContext,
+    extraArgs: [String: Any] = [:],
+    allowsPrompt: Bool = true
   ) async -> PluginInvokeResult? {
+    var payload = context.invokePayload
+    // Last, so the context's own keys cannot displace the answer.
+    for (key, value) in extraArgs { payload[key] = value }
     let result = try? await invokePluginAction(
       pluginId: contribution.pluginId,
       actionId: actionId,
-      payload: context.invokePayload
+      payload: payload
     )
     if let navigation = result?.navigate {
       presentedPluginPane = PluginPaneRequest(
@@ -297,7 +429,43 @@ extension SyncService {
         context: navigation.context ?? [:]
       )
     }
+    // After the navigation, and only on the first hop: the question is the rest
+    // of the interaction the reader started, and it must not be re-askable by
+    // the answer's own reply.
+    if allowsPrompt, let prompt = result?.prompt {
+      pendingPluginPrompt = PluginSocketPromptRequest(
+        contribution: contribution,
+        actionId: actionId,
+        context: context,
+        pending: PluginPendingPrompt(
+          prompt: prompt,
+          fallbackTitle: pluginControlLabel(contribution, actionId: actionId)
+            ?? pluginPresenceCatalog().label(for: contribution.pluginId)
+        )
+      )
+    }
     return result
+  }
+
+  /// Press the same button again, carrying the reader's answer.
+  ///
+  /// The SAME action with the same context plus `args.prompt`, which is the
+  /// whole contract: the plugin's handler reads its own arguments back and
+  /// finds the line it asked for. Cancelling calls nothing at all.
+  func submitPluginPrompt(_ request: PluginSocketPromptRequest, text: String) {
+    pendingPluginPrompt = nil
+    // Refused rather than truncated. The alert's confirm button is disabled
+    // past the ceiling, so this is the belt to that brace.
+    guard let answer = request.pending.prompt.answerPayload(text: text) else { return }
+    Task { [weak self] in
+      await self?.invokeSocketContribution(
+        request.contribution,
+        actionId: request.actionId,
+        context: request.context,
+        extraArgs: ["prompt": answer],
+        allowsPrompt: false
+      )
+    }
   }
 }
 
@@ -746,6 +914,10 @@ private struct PluginDetailSection: View {
     .task(id: syncService.pluginsProjectionRevision) {
       store.load()
     }
+    // A section's buttons run through the same store the pane's do, so a
+    // `{prompt}` pressed here has to be asked here — otherwise the same plugin
+    // button works in the pane and does nothing on a detail screen.
+    .pluginPromptAlert(store: store)
   }
 
   /// The degradation ladder, trimmed for a section rather than a page.
@@ -1290,6 +1462,9 @@ struct PluginChatCardPanel: View {
     .task(id: syncService.pluginsProjectionRevision) {
       store.load()
     }
+    // A card's buttons run through the same store, so its questions are asked
+    // in the transcript rather than swallowed.
+    .pluginPromptAlert(store: store)
   }
 }
 

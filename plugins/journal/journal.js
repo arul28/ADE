@@ -15,9 +15,25 @@ const KEY_DIGITS = 16;
 /** Kinds a note may carry. `""` is an ordinary note and is the default. */
 const KINDS = ["", "blocked", "done"];
 
-/** How the filter control spells the two time windows. */
+/** The two windows the standup, the CLI and the agent tools read. Computed from `at`, never stored. */
 const RANGE_TODAY = "today";
 const RANGE_WEEK = "week";
+
+/**
+ * The Journal page's "When" control, as offsets the CLIENT resolves.
+ *
+ * A `since` operand of `{"$rel": "-24h"}` is read against the reader's own
+ * clock on every re-render, so nothing here goes stale at midnight and no row
+ * has to be rewritten to keep a filter true. The labels say ROLLING WINDOWS
+ * rather than "Today", because that is what an offset from now actually is —
+ * naming it "Today" would be the same lie the stored `today` flag used to tell
+ * at 00:01.
+ */
+const RANGE_OPTIONS = [
+  { value: "", label: "All" },
+  { value: "-24h", label: "Last 24 hours" },
+  { value: "-7d", label: "Last 7 days" },
+];
 
 /** A week is the last seven days INCLUDING today, which is what "this week" means to a person keeping a journal. */
 const WEEK_DAYS = 7;
@@ -60,26 +76,6 @@ function daysBetween(later, earlier) {
   return Math.round((a.getTime() - b.getTime()) / 86400000);
 }
 
-/**
- * The two fields the Journal page's range filter compares against.
- *
- * A row cannot hold two values in one field, and a note written today belongs
- * to BOTH windows — so the schema ORs two comparisons and each reads its own
- * field. A row outside a window carries `""` there, which no option's value
- * ever equals, so the row drops out.
- *
- * These are a function of NOW, not of the note, which is why `index.js` rolls
- * them forward rather than writing them once. Yesterday's note would otherwise
- * still claim to be today's for as long as it was stored.
- */
-function rangeFlags(at, now) {
-  const age = daysBetween(now, at);
-  return {
-    today: age === 0 ? RANGE_TODAY : "",
-    week: age >= 0 && age < WEEK_DAYS ? RANGE_WEEK : "",
-  };
-}
-
 function formatTime(at) {
   return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
@@ -114,9 +110,13 @@ function noteText(raw, limit = 180) {
  * ARE the row on screen, and the extra fields below them exist only for the
  * schema's `where` clauses. Storing anything else here would replicate to every
  * device for nothing.
+ *
+ * There are no `today` / `week` fields any more. They were a function of NOW
+ * written into a row that outlives it, so every one of them was a lie by the
+ * next midnight and something had to walk the store to correct them. `at` is a
+ * fact about the note, and `since` reads it against the reader's clock.
  */
-function noteRow({ key, text, kind, laneId, laneName, at, now }) {
-  const flags = rangeFlags(at, now ?? at);
+function noteRow({ key, text, kind, laneId, laneName, at }) {
   const lane = laneName || "no lane";
   const badge = kindBadge(kind);
   return {
@@ -130,26 +130,33 @@ function noteRow({ key, text, kind, laneId, laneName, at, now }) {
     // Filter fields. Compared as strings by the client and never rendered.
     kind,
     laneKey: laneId || "",
-    today: flags.today,
-    week: flags.week,
-    // Read back by the standup writer, the CLI and the search provider.
+    // Read as a TIME by the panels' `since` clauses, and read back by the
+    // standup writer, the CLI and the search provider.
     at,
     text: noteText(text),
     laneName: lane,
   };
 }
 
-/** True when a stored row's flags no longer describe the note's age. */
-function flagsAreStale(row, now) {
-  if (!row || typeof row.at !== "number") return false;
-  const flags = rangeFlags(row.at, now);
-  return row.today !== flags.today || row.week !== flags.week;
-}
-
-function inRange(row, range) {
+/**
+ * Is this note inside the window, RIGHT NOW?
+ *
+ * Computed from the note's own timestamp against the clock at the moment of the
+ * question, which is the whole fix for "notes stay Today past midnight": there
+ * is nothing stored that can be out of date, so there is nothing to roll
+ * forward and no schedule that has to run for the answer to be right.
+ *
+ * A future note is in neither window rather than in both — a clock that jumped,
+ * or a note that synced from a machine running ahead, should not headline
+ * today's standup.
+ */
+function inRange(row, range, now = Date.now()) {
   if (range === "all") return true;
-  if (range === RANGE_WEEK) return row.week === RANGE_WEEK;
-  return row.today === RANGE_TODAY;
+  const at = typeof row?.at === "number" ? row.at : null;
+  if (at === null) return false;
+  const age = daysBetween(now, at);
+  if (age < 0) return false;
+  return range === RANGE_WEEK ? age < WEEK_DAYS : age === 0;
 }
 
 /**
@@ -249,6 +256,7 @@ module.exports = {
   KEEP_DAYS,
   KINDS,
   MAX_LANE_OPTIONS,
+  RANGE_OPTIONS,
   RANGE_TODAY,
   RANGE_WEEK,
   WEEK_DAYS,
@@ -256,7 +264,6 @@ module.exports = {
   dayKey,
   daysBetween,
   expiredKeys,
-  flagsAreStale,
   formatDay,
   formatTime,
   inRange,
@@ -267,7 +274,6 @@ module.exports = {
   noteRow,
   noteText,
   normalizeKind,
-  rangeFlags,
   searchRows,
   standupText,
 };

@@ -10,6 +10,7 @@
  */
 
 import type {
+  PluginActionSubject,
   PluginAutomationContext,
   PluginDialogContext,
   PluginLaneContext,
@@ -121,4 +122,44 @@ export function pluginAutomationContext(rule: {
     name: rule.name?.trim() || "Untitled automation",
     enabled: rule.enabled !== false,
   };
+}
+
+/**
+ * What the reader is looking at, for a control that has no row of its own.
+ *
+ * The palette's answer to "which chat am I in". Pure, like every other builder
+ * here: the caller reads the live store and hands over the two candidates, so
+ * this file keeps having no opinion about where ADE keeps its state.
+ *
+ * The focused chat wins over the selected lane, because a chat is the narrower
+ * of the two and names its lane already. Neither is `{kind: "none"}`, which is
+ * a real answer — the palette over the Files tab of a project with no lane
+ * selected has no subject, and a plugin told so can say "open a chat first"
+ * instead of acting on a guess.
+ */
+export function pluginActionSubject(input: {
+  session: {
+    id: string;
+    title?: string | null;
+    goal?: string | null;
+    toolType?: string | null;
+    runtimeState?: string | null;
+  } | null;
+  lane: {
+    id: string;
+    name: string;
+    branchRef?: string | null;
+    status?: { dirty?: boolean } | null;
+  } | null;
+}): PluginActionSubject {
+  if (input.session) {
+    return pluginSessionContext({
+      id: input.session.id,
+      title: input.session.goal ?? input.session.title,
+      provider: input.session.toolType,
+      status: input.session.runtimeState,
+    });
+  }
+  if (input.lane) return pluginLaneContext(input.lane);
+  return { kind: "none" };
 }

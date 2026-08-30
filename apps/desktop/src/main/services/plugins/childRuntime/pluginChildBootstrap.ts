@@ -246,6 +246,21 @@ export function runPluginChild(): void {
     },
     config: {
       get: async () => (await callHost("config.get", {})) as Record<string, string | number | boolean | null>,
+      // Both author spellings — `set("k", v)` and `set({k: v})` — normalize to
+      // the one `{values}` frame the host validates, so a plugin writing a
+      // whole form pays for one call and one file write.
+      //
+      // `value === undefined` becomes `null`, which the host reads as "reset to
+      // the manifest default". `false` and `0` are values, not absences, so the
+      // check is on `undefined` alone.
+      set: async (
+        keyOrValues: string | Record<string, string | number | boolean | null>,
+        value?: string | number | boolean | null,
+      ) => (await callHost("config.set", {
+        values: typeof keyOrValues === "string"
+          ? { [keyOrValues]: value === undefined ? null : value }
+          : keyOrValues,
+      })) as Record<string, string | number | boolean | null>,
     },
     audio: {
       captureClip: async (options) => (

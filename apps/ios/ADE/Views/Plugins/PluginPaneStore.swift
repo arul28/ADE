@@ -201,6 +201,13 @@ final class PluginPaneStore: ObservableObject {
   @Published var actionMessage: PluginActionMessage?
   /// An action waiting on the confirmation sentence its schema declared.
   @Published var pendingConfirmation: PluginPendingConfirmation?
+  /// An action waiting on the one line of text its `{prompt}` asked for.
+  ///
+  /// Set by ``runAction(_:extraArgs:label:allowsPrompt:)`` and cleared by
+  /// whoever presents it. The pane sheet, a detail section and a chat card all
+  /// draw the same alert from it, because all three run actions through this
+  /// store and a question asked on one of them must not be dropped on another.
+  @Published var pendingPrompt: PluginPanePendingPrompt?
 
   /// The value of every state key the panel's `segmented` controls declared.
   ///
@@ -429,7 +436,7 @@ final class PluginPaneStore: ObservableObject {
   /// whatever the mirror holds now, and the failure says so in the banner.
   func refresh() async {
     if let actionId = refreshAction, canInvoke {
-      await runAction(PluginVocabAction(action: actionId), extraArgs: [:])
+      await runAction(PluginVocabAction(action: actionId), extraArgs: [:], label: nil)
     }
     load()
   }
@@ -754,23 +761,65 @@ final class PluginPaneStore: ObservableObject {
   /// Run an action, routing through its confirmation sentence when it declares
   /// one. Callers do not branch on `confirm` — this is the only entry point, so
   /// a confirmation can never be skipped by a caller that forgot about it.
-  func perform(_ action: PluginVocabAction, extraArgs: [String: Any] = [:]) {
+  ///
+  /// - Parameter label: the control's own words, carried only so a `{prompt}`
+  ///   that named no `title` can be titled with the button the reader pressed.
+  func perform(_ action: PluginVocabAction, extraArgs: [String: Any] = [:], label: String? = nil) {
     if let confirm = action.confirm {
-      pendingConfirmation = PluginPendingConfirmation(action: action, extraArgs: extraArgs, message: confirm)
+      pendingConfirmation = PluginPendingConfirmation(
+        action: action,
+        extraArgs: extraArgs,
+        message: confirm,
+        label: label
+      )
       return
     }
-    dispatch(action, extraArgs: extraArgs)
+    dispatch(action, extraArgs: extraArgs, label: label)
   }
 
   func confirmPending() {
     guard let pending = pendingConfirmation else { return }
     pendingConfirmation = nil
-    dispatch(pending.action, extraArgs: pending.extraArgs)
+    dispatch(pending.action, extraArgs: pending.extraArgs, label: pending.label)
   }
 
-  private func dispatch(_ action: PluginVocabAction, extraArgs: [String: Any]) {
+  /// Re-invoke the action that asked a question, carrying the reader's answer.
+  ///
+  /// The SAME action with the SAME arguments plus `args.prompt`, which is the
+  /// whole contract — a plugin's handler reads its own arguments back and then
+  /// finds the line it asked for. `allowsPrompt: false` is the one-hop rule: a
+  /// re-invocation's own `{prompt}` is ignored, so a plugin cannot keep the
+  /// alert on screen.
+  ///
+  /// An answer past the ceiling never gets here — the alert's confirm button is
+  /// disabled while it is — and is refused rather than truncated if it does.
+  func submitPrompt(_ pending: PluginPanePendingPrompt, text: String) {
+    pendingPrompt = nil
+    guard let answer = pending.pending.prompt.answerPayload(text: text) else {
+      actionMessage = PluginActionMessage(text: "That answer is too long to send.", isFailure: true)
+      return
+    }
+    var args = pending.extraArgs
+    // Last, so a schema's own `args` cannot name `prompt` and quietly replace
+    // the answer — the same rule `context` and `state` are added under.
+    args["prompt"] = answer
+    dispatch(pending.action, extraArgs: args, label: pending.pending.fallbackTitle, allowsPrompt: false)
+  }
+
+  /// Cancelling invokes nothing at all. The action already ran once and said
+  /// what it wanted; the reader declining to answer is a complete outcome.
+  func cancelPrompt() {
+    pendingPrompt = nil
+  }
+
+  private func dispatch(
+    _ action: PluginVocabAction,
+    extraArgs: [String: Any],
+    label: String?,
+    allowsPrompt: Bool = true
+  ) {
     Task { [weak self] in
-      await self?.runAction(action, extraArgs: extraArgs)
+      await self?.runAction(action, extraArgs: extraArgs, label: label, allowsPrompt: allowsPrompt)
     }
   }
 
@@ -780,7 +829,12 @@ final class PluginPaneStore: ObservableObject {
   /// spinner until the plugin has answered. A control that fires and forgets
   /// still goes through here, so there is exactly one definition of what
   /// running an action does to the pane.
-  private func runAction(_ action: PluginVocabAction, extraArgs: [String: Any]) async {
+  private func runAction(
+    _ action: PluginVocabAction,
+    extraArgs: [String: Any],
+    label: String?,
+    allowsPrompt: Bool = true
+  ) async {
     guard !inFlightActionIds.contains(action.action) else { return }
     inFlightActionIds.insert(action.action)
     // The defer clears the in-flight flag on every exit — success, throw, or
@@ -827,6 +881,24 @@ final class PluginPaneStore: ObservableObject {
       if let navigation = result.navigate {
         navigate(to: navigation)
       }
+      // Last, and only on the first hop. A question the reader has to answer is
+      // the continuation of what they started, so it goes up after the pane has
+      // finished moving; and a re-invocation's own `{prompt}` is ignored so a
+      // plugin cannot keep the alert on screen.
+      if allowsPrompt, let prompt = result.prompt {
+        pendingPrompt = PluginPanePendingPrompt(
+          action: action,
+          extraArgs: extraArgs,
+          pending: PluginPendingPrompt(prompt: prompt, fallbackTitle: label ?? displayName)
+        )
+      } else if allowsPrompt, result.askedForPrompt {
+        // Refused for a bad `id`. Said out loud rather than dropped: the button
+        // did something, and silence would read as it being broken.
+        actionMessage = PluginActionMessage(
+          text: "\(displayName) asked a question ADE could not read.",
+          isFailure: true
+        )
+      }
     } catch {
       actionMessage = PluginActionMessage(
         text: (error as NSError).localizedDescription,
@@ -847,8 +919,27 @@ struct PluginPendingConfirmation: Equatable, Identifiable {
   var action: PluginVocabAction
   var extraArgs: [String: Any]
   var message: String
+  /// The control's own words, carried through the confirmation so a `{prompt}`
+  /// the action answers with can still be titled with the button that ran it.
+  var label: String?
 
   static func == (lhs: PluginPendingConfirmation, rhs: PluginPendingConfirmation) -> Bool {
+    lhs.id == rhs.id
+  }
+}
+
+/// A panel action's question, with everything needed to re-invoke it.
+///
+/// The arguments are held VERBATIM rather than rebuilt: the contract is that
+/// the re-invocation carries the same arguments the first one did, and a second
+/// derivation of them would be a second place for the two to differ.
+struct PluginPanePendingPrompt: Equatable, Identifiable {
+  var id: UUID { pending.id }
+  var action: PluginVocabAction
+  var extraArgs: [String: Any]
+  var pending: PluginPendingPrompt
+
+  static func == (lhs: PluginPanePendingPrompt, rhs: PluginPanePendingPrompt) -> Bool {
     lhs.id == rhs.id
   }
 }

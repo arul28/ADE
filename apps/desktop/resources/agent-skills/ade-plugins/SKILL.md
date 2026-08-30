@@ -93,12 +93,12 @@ Nobody asks for a `composer-action`. They ask for "a button next to where I type
 | "in ⌘K" / "the command palette" | `command-palette-action`, surface `app` | ⌘K. Desktop and web only |
 | "a button at the top of the Lanes / PRs / Files list" | `toolbar-action` | That surface's toolbar. All four clients |
 | "a button in the window's top bar, not tied to a tab" | `toolbar-action` on surface `app` | The top bar's trailing cluster, beside feedback/help/zoom. Its context is the window (`{surface: "app"}`), not whatever tab is open |
-| "a little tag on each row" | `row-badge` | On the row. 2 visible, rest behind a "+N". On `lanes` it also rides the per-lane header strip in the multi-lane column view, so splitting Lanes into columns no longer loses it |
+| "a little tag on each row" | `row-badge` | On the row a value was PUBLISHED for. 2 visible, rest behind a "+N". On `lanes` it also rides the per-lane header strip in the multi-lane column view, so splitting Lanes into columns no longer loses it |
 | "an option when I right-click a row" | `row-menu-item` | That row's context menu |
 | "a way to filter the list by my thing" | `filter-chip` + `filterKey` on the rows | The filter row. Publish the tags first or it filters everything out |
 | "extra help when the list is empty" | `empty-state` | Below the surface's own empty state |
 | "more detail when I open one" | `detail-section` | A panel, as a section in the detail view |
-| "a card in the conversation" | `chat-card`, surface `work` | Your panel, inline in the transcript |
+| "a card in the conversation" | `chat-card`, surface `work` | Your panel, inline in the transcript. **Two halves** — the socket is the permission, and you place each card with `chat.emitAdeCard`. See *A card in the transcript* |
 | "a panel beside Terminal / Git / Files" | `work-rail-pane`, surface `work` | The Work tools rail. Desktop and web only |
 | "a tab beside Sources / Agents / Proof" | `drawer-tab`, surface `work` | The chat actions drawer. Desktop and web only |
 | "a section in Settings" | `settings-section`, surface `settings` | Desktop and web only |
@@ -404,7 +404,7 @@ Say the consequence out loud when you ship one: **installing a plugin is trustin
 
 ### What you can put in front of the user
 
-- **Whole surfaces** — a `tab` or a `pane` rendering a panel schema, and on the desktop a `webview` drawing your own HTML page.
+- **Whole surfaces** — a `tab` rendering a panel schema, and on the desktop a `webview` drawing your own HTML page. (A `pane` surface is reserved for official plugins gating a compiled ADE pane; yours belongs in the Work rail as a `work-rail-pane` socket.)
 - **Declarative panels**, which desktop, web, iOS and the `ade code` TUI each render with their own native widgets from one JSON document.
 - **Sockets on eight surfaces** — the six tabs `work`, `lanes`, `files`, `prs`, `automations`, `cto`, plus `app` (top bar, ⌘K palette, activity pane) and `settings` — in seventeen shapes: `toolbar-action`, `row-badge`, `row-menu-item`, `detail-section`, `empty-state`, `filter-chip`, `file-viewer`, `composer-action`, `chat-header-action`, `chat-card`, `slash-command`, `command-palette-action`, `settings-section`, `work-rail-pane`, `drawer-tab`, `activity-entry`, `dialog-section`. Dynamic ones attach to a `lane`, `pr`, `session`, `file`, `automation` or `surface`.
 - **Themes** (token sets, no code at all), **`ade` CLI subcommands**, **agent skills** that load only where the plugin is installed, **deeplinks** into your own panels, **cross-surface navigation** — an action returns `{navigate: {…}}` and the client moves the user to another of your panels — and **draft edits**, where an action returns `{composer: {…}}` and writes into the chat prompt the user is typing.
@@ -531,7 +531,7 @@ Parsing is **strict on keys it knows, tolerant of keys it does not**: an unknown
 | `minAdeVersion` | no | Floor. An ADE below it will not load the plugin; an unknown host version never locks the user out |
 | `vocabVersion` | no | Panel-schema vocabulary version. Positive integer, defaults to `1` |
 | `entry` | no | Relative path to the entry module. **Omit for UI-only plugins** (themes, static panels) — they run no code at all |
-| `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?, mobile?, builtin?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI*. `mobile` — see *Mobile*. `builtin` names a compiled-in ADE tab this plugin gates instead of rendering, and is reserved — see *What you can build* |
+| `surfaces[]` | no | `{kind: "tab"\|"pane"\|"webview", id, title, panelId, icon?, order?, mobile?, builtin?}`. `panelId` is required on all three kinds. A `webview` also needs `entryHtml` — see *Custom UI*. `mobile` — see *Mobile*. `builtin` names a compiled-in ADE tab this plugin gates instead of rendering, and is reserved — see *What you can build*. **`pane` is reserved too**: no client draws a plugin-provided pane, so the parser drops a `pane` that carries no honoured `builtin` and tells you to declare a `work-rail-pane` socket instead |
 | `panels[]` | no | `{id, schemaFile?, title?, icon?, refreshAction?}`. `schemaFile` is the default schema; `sdk.panels.update()` replaces it at runtime. `refreshAction` names one of your actions and turns on a refresh gesture — see *A panel that fetches* |
 | `sockets[]` | no | See *Sockets* below |
 | `collections` | no | `{"<name>": {"sync": true\|false}}`. Every declared collection must be named here before you may read or write it. `sync: true` is a **disclosure**, not a switch: it is what the install sheet tells the user rides to their other devices, and what uninstall scopes its deletion to. The rows themselves are one CRR table either way, so `sync: false` does not keep a collection on this machine — if data must not leave, keep it in your own files on disk instead |
@@ -654,12 +654,12 @@ ade.events.on("webhook.received", async (event) => {
 
 Every surface says whether it belongs on the phone. Set `"mobile": false` on a surface that only makes sense on a big screen, and ADE's iOS app leaves it out of the plugin menu and will not open it.
 
-- **Default: `true`** for a `tab` or a `pane`. Say nothing and your panel shows up on the phone, which is the point of writing a panel schema instead of a page.
+- **Default: `true`** for a `tab` (and for the reserved `pane`). Say nothing and your panel shows up on the phone, which is the point of writing a panel schema instead of a page.
 - **`false` is a good answer** when the panel needs a wide table, a long form, or a keyboard to be worth opening. Hiding it there is kinder than shipping a cramped version of it.
 - **A `webview` is desktop-only either way.** Its page never draws on the phone; the panel named by its `panelId` does. Setting `mobile` on a webview surface changes nothing (ADE warns and ignores it), so put your effort into making that panel say something useful.
 - **`mobile` only ever takes a surface away.** It cannot add one. A value that is not `true` or `false` is ignored with a warning, and the default applies.
 
-Set it per surface, not per plugin: a plugin with a summary pane and a settings tab can keep the first and drop the second.
+Set it per surface, not per plugin: a plugin with a summary tab and a settings tab can keep the first and drop the second.
 
 ### Owning a conversation
 
@@ -899,7 +899,7 @@ Write `statusGroup` onto every row when you publish it. **The client only compar
 
 **An empty `value` means unset, and that is how you write "All".** A comparison whose state key is unset — or names a key no control declares — is *inactive*, not false: it drops out of its `and`/`or`, a `not` of it is inactive too, and a `where` with nothing active keeps every row. That one rule is why the option list needs no second concept for "turn this filter off".
 
-**The grammar.** Clauses are ANDed at the top level. A comparison is `{field, equals|notEquals|in|notIn}` where the operand is a literal, a list of literals, or `{"$state": "key"}` — exactly one operator per clause. Compose with `{"and":[…]}`, `{"or":[…]}` and `{"not":{…}}`. `field` is a top-level field of the row: no paths, no field-to-field comparison, no expressions, no regular expressions.
+**The grammar.** Clauses are ANDed at the top level. A comparison is `{field, equals|notEquals|in|notIn}` where the operand is a literal, a list of literals, or `{"$state": "key"}` — exactly one operator per clause, and `since` / `before` (below) are two more of them. Compose with `{"and":[…]}`, `{"or":[…]}` and `{"not":{…}}`. `field` is a top-level field of the row: no paths, no field-to-field comparison, no expressions, no regular expressions.
 
 ```json
 { "or": [
@@ -910,6 +910,37 @@ Write `statusGroup` onto every row when you publish it. **The client only compar
 ```
 
 A field compares as its JSON words: `archived: false` matches `"false"`, not `"No"`. An object or an array compares as empty, so it matches nothing.
+
+### "Today" and "this week", without rewriting your rows at midnight
+
+`since` and `before` are the two operators that do not compare text. They read the row's field as a *time* and compare it to an instant:
+
+```json
+{ "component": "list",
+  "bind": {
+    "collection": "notes",
+    "where": [{ "field": "ts", "since": { "$rel": "-24h" } }]
+  },
+  "emptyText": "Nothing in the last day." }
+```
+
+The operand is one of four things:
+
+- an **ISO-8601 string** — `"2026-08-01T00:00:00.000Z"`, or a bare `"2026-08-01"` which reads as UTC midnight;
+- **epoch milliseconds** — `1756000000000`;
+- **`{"$rel": "-24h"}`** — an offset from *now*, resolved on the reader's own clock. The sign is required and may be `+`: `{"before": {"$rel": "+1h"}}` is a legitimate "due in the next hour". Units are lower-case `m`, `h`, `d`;
+- **`{"$state": "range"}`** — the reader's selection, read as either of the first three. A `segmented` with option values `""` / `"-24h"` / `"-7d"` is "All / Today / This week" with no fields for you to maintain.
+
+**A date-time must carry its zone.** `"2026-08-28T12:00:00Z"` and `"2026-08-28T12:00:00+02:00"` are read; `"2026-08-28T12:00:00"` is not, and drops with a warning. Four clients evaluate this and "local time" is a different instant on each of them. `new Date().toISOString()` — what you actually write — is always accepted.
+
+**`since` is at-or-after; `before` is strictly earlier.** They partition the timeline at the same instant, so a pair of them never double-counts a row and never loses one.
+
+**A row whose field is missing, or is not a time, does not match.** That is the same thing a row with no `statusGroup` already does against an `equals` — the row could not answer, so it is not in the answer. (The *inactive* rule is about the operand: an unset `$state` still turns the whole clause off and keeps every row.)
+
+**It re-evaluates when the panel re-renders, and a panel re-renders on data change — not on a timer.** Leave a panel open across midnight and it still shows yesterday's answer until something changes. That is deliberate: a timer would wake every open panel on every surface forever to catch a boundary almost nobody is watching. Give a panel that shows a `$rel` filter a `refreshAction` (below) so the reader has a gesture that forces the re-read.
+
+`since` and `before` cost the same as any other comparison — one clause of the same budget, the same one-operator-per-clause rule, the same node-local drop with a warning when the operand is unreadable.
+
 
 **A broken filter shows too much, never too little.** A clause the parser cannot read disappears with a warning and the binding keeps the rest; a `where` where nothing survived is an unfiltered binding. You can see that a filter did nothing — you cannot see rows a filter silently removed.
 
@@ -925,7 +956,7 @@ A field compares as its JSON words: `archived: false` matches `"false"`, not `"N
 
 **Lifecycle.** State is per-panel, per-viewer and session-only. It never reaches sqlite and never syncs. It survives a re-publish of the same controls — your panel refreshing its rows every few seconds must not reset the filter — and reconciles when the controls themselves change: a key the new schema drops goes away, and a value the control no longer offers falls back to that control's default.
 
-**Ceilings.** 4 state keys per panel, 2–8 options per control, 4 top-level `where` clauses, depth 3, 24 clauses in total, 20 literals per list. A `style: "toggle"` with anything other than two options draws as a segmented control, because drawing three options as a switch would hide one.
+**Ceilings.** 4 state keys per panel, 2–8 options per control, 4 top-level `where` clauses, depth 3, 24 clauses in total, 20 literals per list — a `since` or `before` spends from the same budget as any other clause. A `style: "toggle"` with anything other than two options draws as a segmented control, because drawing three options as a switch would hide one.
 
 ### A panel that fetches
 
@@ -998,8 +1029,51 @@ Beside `{navigate}`, `{composer}`, `{dialog}` and `{openWebview}`, an action's r
 |---|---|
 | `openUrl` | Sends the reader to the open web. `{openUrl: "https://…"}` or `{openUrl: {url: "https://…"}}`. **`https:` only**, max 2,048 chars: `http:`, `file:`, `data:`, `javascript:` and `ade:` are all refused, and `ade:` because in-app destinations are what `navigate` and `fallback.deeplink` are for. Opens in the system browser on desktop, a new tab on the web, Safari on iOS; the TUI opens it through the same path a PR link uses and prints it when it has no opener. |
 | `message` | One sentence about how it went, max 400 chars. Every client shows it: a banner under the panel on desktop, web and iOS, a notice in the TUI. Write it once and all four say it. `ok: false` beside it colours the banner as a failure. |
+| `prompt` | Asks the reader one line of text and calls your action AGAIN with the answer. See *Asking for a line of text* below. |
 
-Both are read tolerantly: a result carrying neither behaves exactly as before, and a refused `openUrl` is logged rather than passed on silently.
+All three are read tolerantly: a result carrying none of them behaves exactly as before, and a refused `openUrl` is logged rather than passed on silently.
+
+### Asking for a line of text
+
+A button that needs one short answer — "what are you working on?", "name this bookmark" — answers with `{prompt}` instead of finishing:
+
+```js
+exports.actions = {
+  async logIt(args) {
+    // First press: no answer yet, so ask.
+    if (!args.prompt) {
+      return { prompt: {
+        id: "note",
+        title: "What are you working on?",
+        placeholder: "One line",
+        submitLabel: "Log",
+        // Optional pointer, handed straight back to you on the second pass.
+        context: { sessionId: args.context?.id ?? null },
+      } };
+    }
+    // Second press: the client re-invoked ME with what the reader typed.
+    const text = args.prompt.text.trim();
+    if (!text) return { message: "Nothing to log." };
+    await ade.collections.put("notes", `note:${Date.now()}`, {
+      title: text,
+      at: new Date().toISOString(),
+      lane: args.prompt.context?.sessionId ?? null,
+    });
+    return { message: "Logged." };
+  },
+};
+```
+
+The rules, and they are the same on all four clients:
+
+- **The same action is invoked again**, with the same arguments plus `args.prompt = {id, text}` — plus `context` verbatim when the prompt carried one. Branch on `args.prompt` being present; that is the whole protocol.
+- **`id` is required** and is shaped like every other plugin identifier. It rides back in the answer, so one handler can ask two different questions and tell them apart without keeping state between the two invocations.
+- **Cancel invokes nothing at all.** Not a second call with an empty answer — nothing. An empty *submitted* answer is a real answer and does reach you as `text: ""`, so decide what an empty line means.
+- **One hop.** A prompt returned by the re-invocation is dropped by every client. This is not a wizard: a plugin that needs a second field has a panel `form`, and one that could re-ask forever would trap the reader.
+- **The answer is capped at 4 KiB** and is REFUSED past it, never truncated. Half a note saved is worse than one the reader was asked to shorten.
+- `title` falls back to the word on the control that was pressed, `submitLabel` to the client's own default, and copy over its ceiling (120 / 120 / 24 characters) is dropped while the question is still asked.
+
+Where it draws: a popover at the control on desktop and web, an alert with a text field on iOS, an inline field in the terminal. So it is `{navigate}`-to-a-form that you no longer need for a one-line capture, which is what the whole "quick capture" plugin category is made of.
 
 The same destination has a link:
 
@@ -1077,6 +1151,7 @@ Ship plain `.js` and `.css`. Content types come from a closed map — `.js`, `.m
 | `collections.list(collection, {keyPrefix?, limit?})` | `{key, value}` rows, at most 500 |
 | `invoke(action, args?)` | Call one of the plugin's own action handlers. Needs an `entry` — a page-only plugin has nothing to invoke |
 | `config.get()` | Current values for `manifest.settings`, defaults applied |
+| `config.set(key, value)` / `set({key: value, …})` | Write your own settings from the page — a settings page that could only read was the reason this exists. Same rules as the child's `ade.config.set`: undeclared key, wrong kind and an off-list `select` value are refused, a `secret` setting is refused and belongs in `ade.secrets` (which a page cannot reach at all), and `null` resets to the manifest default. Resolves the new effective config; does not restart the plugin |
 | `events.on("changed", cb)` | Fires when this plugin's data moves. Returns an unsubscribe function; payload is `{kind, panelId?, collection?}`. Refetch on a `kind` you do not recognize |
 | `openDeeplink(url)` | An `ade://` link opens in ADE; an `https:` link goes to the user's real browser. Nothing else is accepted |
 
@@ -1152,7 +1227,7 @@ Eight surfaces: the six list-shaped tabs — `work`, `lanes`, `files`, `prs`, `a
 | Socket kind | Surface | Payload | What it draws |
 |---|---|---|---|
 | `toolbar-action` | any | `{label, actionId, icon?, disabled?, menu?, color?}` | A button in a surface's toolbar |
-| `row-badge` | any | `{text, tone, icon?, tooltip?}` | A badge on a row |
+| `row-badge` | any | `{text, tone, icon?, tooltip?}` | A badge on the row you published it for. The manifest declaration reserves the slot and draws nothing — see *A declared badge marks no rows* |
 | `row-menu-item` | any | `{label, actionId, icon?, danger?}` | An entry in a row's context menu |
 | `detail-section` | any | `{panelId, title?}` | A panel rendered as a section in a detail view |
 | `empty-state` | any | `{title, body?, actionId?, actionLabel?}` | Extra content on a surface's empty state |
@@ -1160,9 +1235,9 @@ Eight surfaces: the six list-shaped tabs — `work`, `lanes`, `files`, `prs`, `a
 | `file-viewer` | `files` | `{panelId, extensions[]}` | A viewer for matching files in the Files tab |
 | `composer-action` | `work` | `{label, actionId, icon?, disabled?, menu?, color?}` | A button in the chat composer's accessory row. May run for minutes — see *Long-running actions* |
 | `chat-header-action` | `work` | `{label, actionId, icon?, disabled?, menu?, color?}` | A button in the chat's header. Receives the **session**, not the surface — see below |
-| `chat-card` | `work` | `{panelId, title?, icon?}` | Your panel, drawn as a card in the chat transcript |
+| `chat-card` | `work` | `{panelId, title?, icon?}` | **Permission** to draw that panel in a transcript. It draws NOTHING on its own — the card is placed by `chat.emitAdeCard`. See *A card in the transcript* |
 | `slash-command` | `work` | `{command, actionId, description?, argumentHint?, icon?}` | A command the user types into the composer. Same long budget as `composer-action` |
-| `command-palette-action` | `app` | `{label, actionId, icon?, disabled?}` | An entry in the ⌘K palette |
+| `command-palette-action` | `app` | `{label, actionId, icon?, disabled?}` | An entry in the ⌘K palette. Its action also receives `args.subject` — what the reader was looking at |
 | `settings-section` | `settings` | `{panelId, title?, section?}` | Your panel as a section on a settings page. `section` names the page and is optional |
 | `work-rail-pane` | `work` | `{label, panelId, icon?}` | A pane in the Work tools rail, beside Terminal / Git / Files |
 | `drawer-tab` | `work` | `{label, panelId, icon?}` | A tab in the chat actions drawer, beside Sources / Agents / Proof |
@@ -1318,6 +1393,64 @@ You cannot reach the lane's worktree, the PR's token, or the session's transcrip
 
 **The `composer` context is the exception, and deliberately so.** `draft` is the user's full unsent prompt, verbatim, and `cursor` is where their caret sits in it — a button that rewrites, translates, or expands a prompt cannot do its job from a session id, and one that asked the user to paste their draft somewhere else would not be a composer button. Installing a plugin grants it, the same grant that already lets the plugin's child process read any file the user can. `sessionId` is null on a composer that has not started a chat yet (the hero composer, a fresh Work pane), and `cursor` is null when the composer holds no live caret — append, in that case. The draft is read when the button is PRESSED, not when it rendered, so what you receive is the text on screen at that moment.
 
+### A card in the transcript
+
+**A `chat-card` socket is a permission, not a card.** Declaring it and publishing the contribution draws nothing at all, forever, with no error anywhere: the manifest parses, `ade plugin doctor` reports `✓ Places … chat-card in work`, and the contribution row is really in the database. That combination — green at every checkable layer, invisible to the user — is exactly the failure this document exists to prevent, so read the two halves carefully:
+
+- **The socket supplies permission.** A transcript is ADE's own conversation, and a plugin may only draw a panel there that it DECLARED as a `chat-card` naming that `panelId`.
+- **The emit supplies chronology.** A transcript row has a position in a conversation; a contribution row does not. So you PLACE each card by emitting an `ade_card`:
+
+```js
+await ade.actions.invoke("chat", "emitAdeCard", {
+  sessionId,                       // the chat the card belongs in
+  card: {
+    cardId: `standup-${today}`,    // identity: re-emitting merges into that row
+    variant: "journal_standup",    // your own word; see below
+    state: "terminal",             // "live" while the work is still running
+    title: "Standup",
+    fallbackText: "Standup — 4 notes today",   // REQUIRED; what a client that
+                                               // does not know the variant draws
+    panel: { panelId: "standup" },             // must match your declared socket
+  },
+});
+```
+
+- `cardId` is identity, not content: emit it again with the same id and the row you already placed updates in place, rather than a second card stacking under the first. Mint one per thing (`standup-2026-08-30`), never one per press.
+- `variant` is an open string, and no client knows yours. Name it after the thing (`journal_standup`), and expect every client to take the unknown-variant path — which is the panel plus `fallbackText`, not an error.
+- `fallbackText` is required and is what a client draws when it cannot draw the panel. Write it as a whole sentence, never a label.
+- `panel.panelId` must name a panel your manifest declares AND a `chat-card` socket must name it. Miss either and the card still draws — as an ordinary card with its title and fallback text — but your panel does not.
+- `authoredBy` is stamped by the host from the invoking plugin. You cannot set it, and you cannot emit a card attributed to anyone else.
+
+### A declared badge marks no rows
+
+`row-badge` is the one socket kind whose manifest declaration draws nothing. A badge is a per-entity VALUE — "this lane has 3 notes" — and a declaration has no entity, so drawing its manifest `label` put the same chip on every row of the surface, forever, until something replaced it. Authors were choosing a label that read acceptably as an empty state (one shipped `"0"`, which is a `0` chip on every lane in the app) because there was no way to say "draw nothing yet".
+
+So: **declare the badge, then publish a row for each entity that deserves one.** The declaration still does real work — it is what the install sheet describes, what `id` matches a published row against when you declare the kind twice, and what carries your `order` — it just reserves the slot instead of filling it. Every other kind is unchanged: a declared `row-menu-item` is still on every row, because a menu item is a verb rather than a value.
+
+```js
+await ade.contributions.publish("lane", lane.id, "row-badge", {
+  text: `${count}`,
+  tone: count > 0 ? "accent" : "neutral",
+  id: "notes",   // WHICH declaration this fills, when you declare the kind twice
+});
+```
+
+To take a badge back off a row, publish `null` for it. Do that rather than leaving a stale count on screen — a badge nobody updated is a wrong badge, and a reader cannot tell the difference.
+
+### What a palette entry is looking at
+
+A `command-palette-action` fires from ⌘K, which belongs to the window rather than to a row, so its `context` is `{kind: "surface", surface: "app"}` and always will be — that context is what selects which entries the palette shows.
+
+What the handler also receives is **`args.subject`**: what the reader was looking at when they chose the row.
+
+| `args.subject.kind` | Fields | When |
+|---|---|---|
+| `"session"` | `id`, `title`, `provider`, `status` | A chat is open and focused |
+| `"lane"` | `id`, `name`, `branch`, `machineKey`, `dirty` | No chat focused, but a lane is selected |
+| `"none"` | — | Neither. The palette over the Files tab, or over no project |
+
+They are the same projections every other socket hands out, so a palette entry reads a session exactly as a chat header action does. **`"none"` is a real answer and the honest one** — say "open a chat first" rather than acting on a guess. Read the subject, never the last `turn.start` you happened to see.
+
 ### Per-surface socket support
 
 | Socket | Desktop | Web | iOS | TUI |
@@ -1348,7 +1481,7 @@ Which still points the same way: **design a socket as an enhancement on top of a
 | Route in | Needs a surface? |
 |---|---|
 | `{navigate: {panelId}}` from an action, and an `ade://plugin/<id>/<panel>` deeplink | No — desktop and web open `/plugin/<id>?panel=…` and iOS presents the plugin pane sheet, whatever the manifest declares |
-| The rail on desktop and web, and the phone's plugin menu | Yes — a `tab`, or a `pane` for the Work rail |
+| The rail on desktop and web, and the phone's plugin menu | Yes — a `tab`. For a slot in the Work tools rail use a `work-rail-pane` SOCKET, not a surface: a `{"kind": "pane"}` surface is refused by the manifest parser unless it gates a compiled ADE pane |
 | The TUI's `/plugin-view <id>` | Yes. With no surface it falls back to the panel id `"main"`, so a panel named anything else opens nothing at all |
 
 So a plugin reached only through a socket the TUI does not draw (the matrix above) is a plugin `ade code` cannot open. If the panel is meant to be a place rather than a pop-up, declare a `tab` surface for it; if it is genuinely an accessory to a chat, say so and accept that the TUI has no door to it.
@@ -1481,6 +1614,7 @@ exports.actions = {
 | `ade.events.on(event, cb)` | Two families — **change events** `lane.changed`, `pr.changed`, `session.changed`, `install.changed` (debounced; payload `{event, ids[], projectId, overflow?}`, where `overflow: true` means `ids` was truncated at the delivery cap and you should treat it as a bare refetch signal rather than trusting the partial list) and **runtime hooks** `turn.start`, `turn.end`, `tool.before` (told as they happen — see *Runtime hooks* below). Returns an unsubscribe function; call it, because a hook kind nobody subscribed to is never delivered at all |
 | `ade.panels.update(panelId, schema)` | Replace a panel's schema. Refused for a panel the manifest never declared |
 | `ade.config.get()` | Current values for `manifest.settings`, defaults applied. `secret` kinds are redacted |
+| `ade.config.set(key, value)` / `set({key: value, …})` | Write your own settings, so a `settings-section` form can save what it renders. Resolves the new effective config. Does **not** restart you, so it is safe inside an action handler, and the next `config.get()` sees it. Refused with `invalid_args` when: the key is not in `manifest.settings`; the value is the wrong kind for it (`toggle` wants a boolean, `number` a number, everything else text); a `select` value is not one of its declared `options`; or the setting's `kind` is `secret` — those go to `ade.secrets.set`, never into the plain config store. **`null` resets**: the stored override is dropped and the manifest `default` comes back |
 | `ade.memory.get/set/delete(key)` / `list({keyPrefix?, limit?})` | Your own durable memory: a reserved slice of your collections, no manifest declaration needed. Shares the collection budget and is dropped on uninstall. **Not** ADE's CTO memory — nothing you write here reaches any agent's prompt. `ade.memory` is refused as a `collections` name in both directions, so this slice has exactly one door |
 | `ade.notifications.post({title, body?, target?, deeplink?})` | Tell the user outside ADE's window. `target` is `"desktop"`, `"mobile"` or `"both"` (default). Your **display name is stamped on by the host** and cannot be set, spoofed or omitted. `deeplink` decides where a tap lands and must be `ade://plugin/<your-own-id>/<panel-id>[?ctx=…]`, max 1,024 chars — anything else costs the destination, not the notification, and the tap opens your plugin as before. It reaches the phone; the desktop notification has no destination field. Resolves `{delivered: [...]}` with what actually landed; rejects `notification_unavailable` only when nothing was reached. Rate-limited — see *Budgets* |
 | `ade.schedules.create({action, cron\|runAt\|delaySeconds, args?, note?})` | Ask ADE to call one of **your own** actions later. `cron` is five-field local time and recurs; `runAt`/`delaySeconds` fire once and are then dropped. Rejects `plugin_budget_exceeded` past the quota |
@@ -1634,7 +1768,7 @@ Panel: a `list` with `{"bind": {"collection": "issues", "keyPrefix": "open:"}}` 
 
 ### Row badges from CI
 
-Declare `{"socket": "row-badge", "surface": "prs", "id": "ci"}`, then publish per PR from the machine that owns the data:
+Declare `{"socket": "row-badge", "surface": "prs", "id": "ci", "label": "CI"}` — the `label` is required, and it names the slot on the install sheet rather than drawing on any row — then publish per PR from the machine that owns the data:
 
 ```js
 ade.events.on("pr.changed", async ({ ids }) => {
@@ -1646,7 +1780,7 @@ ade.events.on("pr.changed", async ({ ids }) => {
 });
 ```
 
-Publishing `null` clears the badge — do that rather than leaving a stale one, and remember badges cap at 2 visible per row.
+Publishing `null` clears the badge — do that rather than leaving a stale one, and remember badges cap at 2 visible per row. Until the first publish lands, the PR rows carry no badge at all: a declaration reserves the slot and draws nothing.
 
 ### A file viewer
 

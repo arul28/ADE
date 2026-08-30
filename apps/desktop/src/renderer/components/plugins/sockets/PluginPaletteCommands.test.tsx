@@ -148,6 +148,66 @@ describe("contributed command palette actions", () => {
     expect(invoked[0]?.timeoutMs).toBe(PLUGIN_SOCKET_INVOKE_TIMEOUT_DEFAULT_MS);
   });
 
+  it("names the subject the reader is looking at, beside the surface context", async () => {
+    // The ledger's B5: a palette entry could not know which chat it was fired
+    // over, so a plugin tracked the last `turn.start` and hoped. The context
+    // stays `app` — it is what selects the rows — and the subject rides beside
+    // it.
+    const { rootAppStoreApi } = await import("../../../state/appStore");
+    const previous = rootAppStoreApi.getState();
+    act(() => {
+      rootAppStoreApi.setState({
+        project: { rootPath: "/repo" } as never,
+        sessionsCacheByProject: {
+          "/repo": [{ id: "chat-9", title: "Ledger", toolType: "claude" }] as never,
+        },
+        workViewByProject: { "/repo": { activeItemId: "chat-9" } as never },
+      });
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByText("New prompt")).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(screen.getByText("New prompt"));
+    });
+
+    const args = invoked[0]?.args as { context: unknown; subject: unknown };
+    expect(args.context).toEqual({ kind: "surface", surface: "app" });
+    expect(args.subject).toEqual({
+      kind: "session",
+      id: "chat-9",
+      title: "Ledger",
+      provider: "claude",
+      status: null,
+    });
+
+    act(() => {
+      rootAppStoreApi.setState(previous);
+    });
+  });
+
+  it("says so honestly when there is nothing to act on", async () => {
+    const { rootAppStoreApi } = await import("../../../state/appStore");
+    const previous = rootAppStoreApi.getState();
+    act(() => {
+      rootAppStoreApi.setState({ project: null, selectedLaneId: null, lanes: [] } as never);
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(screen.getByText("New prompt")).toBeTruthy());
+    await act(async () => {
+      fireEvent.click(screen.getByText("New prompt"));
+    });
+
+    // Not a half-filled session. A plugin told "none" can say "open a chat
+    // first"; one handed a guess writes a note against the wrong thing.
+    expect((invoked[0]?.args as { subject: unknown }).subject).toEqual({ kind: "none" });
+
+    act(() => {
+      rootAppStoreApi.setState(previous);
+    });
+  });
+
   it("reads nothing while the palette is closed", async () => {
     render(<Harness open={false} />);
     // Nothing to wait for — the assertion is that nothing ever arrives, which

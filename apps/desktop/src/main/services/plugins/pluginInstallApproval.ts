@@ -63,8 +63,32 @@ import {
 } from "../../../shared/plugins/installDisclosure";
 import { resolvePluginInstallSource } from "./pluginInstallService";
 
-/** How long the agent's call waits before it stops holding the turn open. */
-export const PLUGIN_INSTALL_APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * How long an install card stands before the host settles it unanswered.
+ *
+ * **An hour, not ten minutes, and the ten minutes were a real defect.** The
+ * loop this gate exists to serve is "an agent builds a plugin and asks the user
+ * to install it", and the user is a person who gets up from the desk. A live
+ * dogfood run failed twice for exactly that reason: the card settled itself
+ * before anyone came back, and the agent read a cancellation the user never
+ * made. The install only succeeded on the third try because the user happened
+ * to be at the keyboard.
+ *
+ * Why there is a ceiling at all: on expiry the host does not merely stop
+ * waiting, it CANCELS the card (see the timeout branch below), because on this
+ * branch an unanswered blocking prompt still blocks the user's next message in
+ * that chat. Leaving it live forever would wedge the conversation on a question
+ * whose asker is gone. `main` no longer has that wedge — PR #1184 keeps a
+ * pending card visible while its asker still waits and reconciles it at read
+ * time — so once that merges here, the honest end state is no timeout at all
+ * and a card the user answers whenever they return.
+ *
+ * Note this clock is not the CLI's. `ade actions run` gives up on its own RPC
+ * long before this fires; that kills the CALLER, not the card, and the card is
+ * then answerable by the next request for the same install (see
+ * {@link pendingInstallCards}).
+ */
+export const PLUGIN_INSTALL_APPROVAL_TIMEOUT_MS = 60 * 60 * 1000;
 
 /* ── The approved-pair record ───────────────────────────────────────────── */
 
@@ -152,6 +176,52 @@ export function recordPluginInstallApproval(args: {
 /** Test seam. Never called in production — the record is process-scoped. */
 export function resetPluginInstallApprovalsForTests(): void {
   approvedPairs.clear();
+}
+
+/* ── The live card, and why a second request must not raise a second one ── */
+
+/**
+ * The install card currently standing in one chat.
+ *
+ * The failure this closes: an agent calls `plugin.install`, the CLI's own RPC
+ * deadline expires while the user is away from the desk, the agent reads that
+ * as a failure and calls `plugin.install` again — and a SECOND card appears
+ * over a first one that is still live and still waiting. Answering either left
+ * the other standing with nobody behind it, which is the orphan.
+ *
+ * So one chat holds at most one install card:
+ *
+ * - A re-request naming the SAME install joins the standing card and resolves
+ *   with the same answer. The user sees one question, answers it once, and both
+ *   callers learn what they decided.
+ * - A request naming a DIFFERENT install settles the standing card explicitly
+ *   (`cancel`, which its waiter reports as `cancelled`) before raising the new
+ *   one. Superseded, never abandoned.
+ *
+ * Keyed on the chat plus what the HOST resolved about the source, never on the
+ * caller's arguments — same rule as the approved-pair record.
+ */
+type PendingInstallCard = {
+  key: string;
+  result: Promise<PluginInstallApprovalResult>;
+  /** Settle the card with no answer, so nothing is left live behind it. */
+  supersede: () => Promise<void>;
+};
+
+const pendingInstallCards = new Map<string, PendingInstallCard>();
+
+function pendingCardKey(canonicalSource: string | null, source: string, grant: string): string {
+  // A git source has no canonical form (`canonicalApprovalSource` returns null
+  // because the same URL can serve different code tomorrow), so the raw string
+  // stands in. That is the right identity HERE — the question on the card is
+  // about that URL — even though it is deliberately not one for the remembered
+  // approval.
+  return `${canonicalSource ?? `raw:${source}`}\u0000${grant}`;
+}
+
+/** Test seam: forget any card this process believes is standing. */
+export function resetPendingPluginInstallCardsForTests(): void {
+  pendingInstallCards.clear();
 }
 
 /* ── The approval itself ────────────────────────────────────────────────── */
@@ -323,12 +393,35 @@ export async function requestPluginInstallApproval(args: {
     };
   }
 
+  const cardKey = pendingCardKey(canonicalSource, args.source, grant);
+  const standing = pendingInstallCards.get(args.chatSessionId);
+  if (standing) {
+    // The same question, asked again. Join the card the user is already
+    // looking at rather than stacking a second one on top of it — this is the
+    // ordinary retry after the CALLER's own RPC deadline expired.
+    if (standing.key === cardKey) return await standing.result;
+    // A different question. Settle the old card explicitly so nothing is left
+    // live with no caller behind it, then ask the new one.
+    await standing.supersede();
+    if (pendingInstallCards.get(args.chatSessionId) === standing) {
+      pendingInstallCards.delete(args.chatSessionId);
+    }
+  }
+
   const title = buildPluginInstallApprovalTitle(disclosure);
   const body = buildPluginInstallApprovalBody(disclosure);
-  // Kept so a timeout can settle the card instead of leaving a live prompt with
-  // nobody listening behind it.
+  // Kept so a timeout, or a superseding request, can settle the card instead of
+  // leaving a live prompt with nobody listening behind it.
   let itemId: string | null = null;
   let timer: NodeJS.Timeout | null = null;
+  // Resolved the moment the chat tells us which item the card became. A
+  // superseding request awaits this rather than reading `itemId` directly: the
+  // two requests can be one microtask apart, and cancelling "whatever card is
+  // up" needs the id even when it has not been reported yet.
+  let announceItemId: (id: string | null) => void = () => {};
+  const itemIdKnown = new Promise<string | null>((resolve) => {
+    announceItemId = resolve;
+  });
 
   const asked = args.chat.requestChatInput({
     chatSessionId: args.chatSessionId,
@@ -352,6 +445,7 @@ export async function requestPluginInstallApproval(args: {
     operatorOnly: true,
     onItemId: (id) => {
       itemId = id;
+      announceItemId(id);
     },
     providerMetadata: {
       pluginInstall: true,
@@ -394,71 +488,103 @@ export async function requestPluginInstallApproval(args: {
       ],
     }],
   });
+  // The chat never reported an id — a runtime that raised no card, or one that
+  // failed. Unblocks anyone waiting to supersede it.
+  void asked.then(() => announceItemId(itemId), () => announceItemId(itemId));
 
-  const timeoutMs = args.timeoutMs ?? PLUGIN_INSTALL_APPROVAL_TIMEOUT_MS;
-  const timedOut = Symbol("timed-out");
-  const race = await Promise.race([
-    asked,
-    new Promise<typeof timedOut>((resolve) => {
-      timer = setTimeout(() => resolve(timedOut), timeoutMs);
-      timer.unref?.();
-    }),
-  ]);
-  if (timer) clearTimeout(timer);
+  const settleCard = async (): Promise<void> => {
+    const id = itemId ?? await itemIdKnown;
+    if (!id) return;
+    await args.chat
+      .respondToInput({ sessionId: args.chatSessionId, itemId: id, decision: "cancel" })
+      .catch(() => undefined);
+  };
 
-  if (race === timedOut) {
-    // Settle the card rather than abandon it: an unanswered prompt also blocks
-    // the user's next message in this chat, so leaving it live would wedge the
-    // conversation on a question whose asker has already given up.
-    if (itemId) {
-      await args.chat
-        .respondToInput({ sessionId: args.chatSessionId, itemId, decision: "cancel" })
-        .catch(() => undefined);
+  const answer = (async (): Promise<PluginInstallApprovalResult> => {
+    const timeoutMs = args.timeoutMs ?? PLUGIN_INSTALL_APPROVAL_TIMEOUT_MS;
+    const timedOut = Symbol("timed-out");
+    const race = await Promise.race([
+      asked,
+      new Promise<typeof timedOut>((resolve) => {
+        timer = setTimeout(() => resolve(timedOut), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+
+    if (race === timedOut) {
+      // Settle the card rather than abandon it: on this branch an unanswered
+      // prompt also blocks the user's next message in this chat, so leaving it
+      // live would wedge the conversation on a question whose asker has already
+      // given up. See PLUGIN_INSTALL_APPROVAL_TIMEOUT_MS for what changes once
+      // PR #1184 merges here.
+      await settleCard();
+      return {
+        allow: false,
+        reason: "timed_out",
+        message: `Nobody answered the install request for ${disclosure.displayName}. Ask again when they are back at the keyboard.`,
+        data: {
+          kind: "plugin_install_approval_timed_out",
+          source: disclosure.source,
+          ...(disclosure.pluginId ? { pluginId: disclosure.pluginId } : {}),
+        },
+      };
     }
+
+    const answered = race;
+    const chosen = answered.answers?.plugin_install?.[0];
+    // Both gates have to agree. The decision is what the approval UI sends; the
+    // answer is what an options list sends. Requiring both means a surface that
+    // reports one without the other cannot be read as consent.
+    const accepted = (answered.decision === "accept" || answered.decision === "accept_for_session")
+      && chosen !== DENY_VALUE;
+
+    if (!accepted) {
+      const cancelled = answered.decision === "cancel" || answered.decision === "none";
+      return {
+        allow: false,
+        reason: cancelled ? "cancelled" : "denied",
+        message: cancelled
+          ? `The install request for ${disclosure.displayName} was dismissed. Nothing was installed.`
+          : `${disclosure.displayName} was not installed — the request was declined. Don't retry it; ask what they'd rather do.`,
+        data: {
+          kind: cancelled ? "plugin_install_cancelled" : "plugin_install_denied",
+          source: disclosure.source,
+          ...(disclosure.pluginId ? { pluginId: disclosure.pluginId } : {}),
+        },
+      };
+    }
+
     return {
-      allow: false,
-      reason: "timed_out",
-      message: `Nobody answered the install request for ${disclosure.displayName}. Ask again when they are back at the keyboard.`,
-      data: {
-        kind: "plugin_install_approval_timed_out",
-        source: disclosure.source,
-        ...(disclosure.pluginId ? { pluginId: disclosure.pluginId } : {}),
-      },
-    };
+      allow: true,
+      reason: "approved",
+      pluginId: disclosure.pluginId,
+      canonicalSource,
+      grant,
+      disclosure,
+    } as PluginInstallApprovalResult;
+  })();
+
+  const entry: PendingInstallCard = {
+    key: cardKey,
+    result: answer,
+    supersede: async () => {
+      if (timer) clearTimeout(timer);
+      await settleCard();
+      // Awaited so the superseding request never raises its own card while the
+      // old one is still on screen. `answer` cannot reject — every branch above
+      // returns a value — so there is nothing here to swallow.
+      await answer;
+    },
+  };
+  pendingInstallCards.set(args.chatSessionId, entry);
+  try {
+    return await answer;
+  } finally {
+    if (pendingInstallCards.get(args.chatSessionId) === entry) {
+      pendingInstallCards.delete(args.chatSessionId);
+    }
   }
-
-  const answered = race;
-  const chosen = answered.answers?.plugin_install?.[0];
-  // Both gates have to agree. The decision is what the approval UI sends; the
-  // answer is what an options list sends. Requiring both means a surface that
-  // reports one without the other cannot be read as consent.
-  const accepted = (answered.decision === "accept" || answered.decision === "accept_for_session")
-    && chosen !== DENY_VALUE;
-
-  if (!accepted) {
-    const cancelled = answered.decision === "cancel" || answered.decision === "none";
-    return {
-      allow: false,
-      reason: cancelled ? "cancelled" : "denied",
-      message: cancelled
-        ? `The install request for ${disclosure.displayName} was dismissed. Nothing was installed.`
-        : `${disclosure.displayName} was not installed — the request was declined. Don't retry it; ask what they'd rather do.`,
-      data: {
-        kind: cancelled ? "plugin_install_cancelled" : "plugin_install_denied",
-        source: disclosure.source,
-        ...(disclosure.pluginId ? { pluginId: disclosure.pluginId } : {}),
-      },
-    };
-  }
-
-  return {
-    allow: true,
-    reason: "approved",
-    pluginId: disclosure.pluginId,
-    canonicalSource,
-    grant,
-    disclosure,
-  } as PluginInstallApprovalResult;
 }
 
 /* ── Removal, disable and enable ────────────────────────────────────────── */

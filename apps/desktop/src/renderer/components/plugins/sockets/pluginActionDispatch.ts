@@ -1,10 +1,13 @@
 import { showToast } from "../../app/toast/toastStore";
 import { navigateToAppTarget, revealPluginWorkRailPane } from "../../../lib/openExternal";
 import {
+  buildPluginActionPromptAnswer,
   hasPluginActionComposerRequest,
+  hasPluginActionPromptRequest,
   hasPluginActionWebviewRequest,
   readPluginActionComposerEdit,
   readPluginActionNavigation,
+  readPluginActionPrompt,
   readPluginActionWebview,
   type PluginActionNavigation,
 } from "../../../../shared/plugins/sdk";
@@ -25,6 +28,7 @@ import {
   type PluginNavigateResolution,
 } from "./pluginNavigateTarget";
 import { openPluginWebviewOverlay } from "./pluginWebviewOverlayStore";
+import { openPluginPrompt, readPluginPromptAnchor } from "./pluginPromptStore";
 
 /**
  * One invocation of a plugin action from a socket, response verbs included.
@@ -64,8 +68,20 @@ export function runPluginSocketAction(
      * alone cannot say.
      */
     args?: Record<string, unknown>;
+    /**
+     * The word on the control that was pressed.
+     *
+     * Used only as the title of a `{prompt}` the action answers with, when the
+     * plugin declared none: the reader just pressed "Log it", so "Log it" is a
+     * better heading over the field than the plugin's name.
+     */
+    label?: string;
   },
 ): Promise<void> {
+  // Sampled BEFORE the round trip. The prompt is anchored at the control that
+  // was pressed, and by the time the plugin answers, the menu that control
+  // lived in may have closed and taken the focus with it.
+  const anchor = readPluginPromptAnchor();
   return invokePluginSocketAction(
     pluginId,
     actionId,
@@ -119,8 +135,50 @@ export function runPluginSocketAction(
 
       // An action may ask to be followed: "I filed the issue, here it is."
       const navigation = readPluginActionNavigation(result);
-      if (!navigation) return;
-      applyPluginActionNavigation(navigation, { pluginId, context, socket: options?.socket });
+      if (navigation) {
+        applyPluginActionNavigation(navigation, { pluginId, context, socket: options?.socket });
+      }
+
+      // An action may ask ONE question before it can finish. Last of the verbs,
+      // because the others describe what the press already did and this one is
+      // the press asking to continue.
+      //
+      // One hop. A re-invocation already carries `args.prompt`, and a second
+      // question from it is dropped rather than asked — a plugin cannot build a
+      // wizard out of this verb, and cannot trap the reader in a loop it keeps
+      // re-opening.
+      if (options?.args?.prompt !== undefined) return;
+      const prompt = readPluginActionPrompt(result);
+      if (!prompt) {
+        if (hasPluginActionPromptRequest(result)) {
+          console.warn("[plugin prompt] ignored a malformed prompt", pluginId, actionId);
+        }
+        return;
+      }
+      openPluginPrompt({
+        pluginId,
+        actionId,
+        prompt,
+        fallbackTitle: options?.label ?? null,
+        anchor,
+        onSubmit: (text) => {
+          const answer = buildPluginActionPromptAnswer(prompt, text);
+          if (!answer) {
+            // Refused, never truncated: the host caps the answer and the card
+            // disables its own button, so this is the belt to that brace.
+            showToast({
+              title: "That answer is too long",
+              message: `${pluginId} couldn’t save it. Shorten it and press the button again.`,
+              tone: "error",
+            });
+            return;
+          }
+          void runPluginSocketAction(pluginId, actionId, context, {
+            ...options,
+            args: { ...(options?.args ?? {}), prompt: answer },
+          });
+        },
+      });
     })
     .catch((cause: unknown) => {
       showToast({

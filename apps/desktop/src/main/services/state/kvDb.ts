@@ -182,8 +182,21 @@ export type AdeDbSyncApi = {
    * reconnects ten times an hour is swept once, not ten times.
    */
   getPluginTablesWatermark: (deviceId: string) => number;
-  /** Record plugin rows as sent through `throughDbVersion`. Never moves backward. */
-  setPluginTablesWatermark: (deviceId: string, throughDbVersion: number) => void;
+  /**
+   * Record plugin rows as sent through `throughDbVersion`, a db_version in THIS
+   * database's version space. Monotonic by default.
+   *
+   * `allowRegression` is the one exception, and it exists for repair: a stored
+   * value above the local head cannot describe an export this machine made, so
+   * the sync host resets it to 0 and re-sweeps. A monotonic write could not
+   * undo such a row, and it would starve the device of plugin rows for the life
+   * of the database (bug A3).
+   */
+  setPluginTablesWatermark: (
+    deviceId: string,
+    throughDbVersion: number,
+    options?: { allowRegression?: boolean },
+  ) => void;
 };
 
 /**
@@ -5042,7 +5055,11 @@ export async function openKvDb(
       const value = Number(row?.through_db_version ?? 0);
       return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
     },
-    setPluginTablesWatermark: (deviceId: string, throughDbVersion: number) => {
+    setPluginTablesWatermark: (
+      deviceId: string,
+      throughDbVersion: number,
+      options?: { allowRegression?: boolean },
+    ) => {
       const key = deviceId.trim();
       if (!key || !Number.isFinite(throughDbVersion)) return;
       const version = Math.max(0, Math.floor(throughDbVersion));
@@ -5050,7 +5067,9 @@ export async function openKvDb(
         `insert into sync_peer_plugin_watermarks(device_id, through_db_version, updated_at)
          values (?, ?, ?)
          on conflict(device_id) do update set
-           through_db_version = max(sync_peer_plugin_watermarks.through_db_version, excluded.through_db_version),
+           through_db_version = ${options?.allowRegression
+             ? "excluded.through_db_version"
+             : "max(sync_peer_plugin_watermarks.through_db_version, excluded.through_db_version)"},
            updated_at = excluded.updated_at`,
         [key, version, new Date().toISOString()],
       );

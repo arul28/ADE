@@ -29,6 +29,21 @@ import Foundation
 /// own machine — it materializes `status`, `laneId` and `archived` onto each row
 /// — and the client still only compares strings.
 ///
+/// ## The one thing the client computes
+///
+/// `since` / `before` compare a row field to an instant, and a `{"$rel": "-24h"}`
+/// operand resolves that instant from the CLIENT CLOCK at evaluation time — the
+/// single exception to "the client only compares strings". It exists because the
+/// alternative was worse: a plugin materializing `today: "today"` onto every row
+/// has written a fact that is false by morning, and there is no cheap "the day
+/// changed" trigger to rewrite it with.
+///
+/// It resolves on RE-RENDER, never on a timer. A panel left open across midnight
+/// still shows yesterday's answer until its rows change or the reader pulls the
+/// declared `refreshAction`. The clock is a PARAMETER — ``filter(_:_:state:now:value:)``
+/// samples it once per pass — so every row of one render sees the same instant
+/// and a test can pin it instead of sleeping.
+///
 /// ## Three-valued evaluation
 ///
 /// A comparison whose state key is unset — the "All" option, or a key no
@@ -152,8 +167,14 @@ struct PluginVocabSegmented: Equatable {
 /// value of a declared state key), never both.
 indirect enum PluginVocabPredicate: Equatable {
   enum Op: String, Equatable { case membership, exclusion }
+  /// The two operators that read a field as a TIME rather than as text.
+  enum TimeOp: String, Equatable { case since, before }
 
   case compare(op: Op, field: String, values: [String]?, stateKey: String?)
+  /// `since` / `before`, holding EITHER an absolute instant in epoch
+  /// milliseconds, an offset from the render clock, or a state key whose
+  /// selected value is read as one of those two.
+  case time(op: TimeOp, field: String, at: Double?, relMs: Double?, stateKey: String?)
   case all([PluginVocabPredicate])
   case any([PluginVocabPredicate])
   case negated(PluginVocabPredicate)
@@ -185,6 +206,114 @@ enum PluginVocabState {
     return ""
   }
 
+  // MARK: Times
+
+  /// The one calendar shape a `since` / `before` operand or row field may take.
+  ///
+  /// Deliberately narrow. Four clients evaluate this predicate and a filter that
+  /// keeps a row on one surface and drops it on another is worse than no filter,
+  /// so the accepted set is a bare `YYYY-MM-DD` (read as UTC midnight) or a
+  /// date-time carrying an EXPLICIT zone. A zoneless date-time is a different
+  /// instant on every device that reads it, so it is not a time at all here.
+  private static let isoPattern = try? NSRegularExpression(
+    pattern: #"^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2})(?::(\d{2}))?(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:?\d{2}))?$"#
+  )
+
+  /// `-24h`, `+90m`, `-7d`. The sign is required — see ``relOffset(_:)``.
+  private static let relPattern = try? NSRegularExpression(pattern: #"^([+-])(\d{1,6})([mhd])$"#)
+
+  private static let isoReader: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+
+  private static func capture(_ match: NSTextCheckingResult, _ index: Int, in text: String) -> String? {
+    let range = match.range(at: index)
+    guard range.location != NSNotFound, let bounds = Range(range, in: text) else { return nil }
+    return String(text[bounds])
+  }
+
+  /// `{"$rel": "-24h"}` as an offset in milliseconds, or `nil`.
+  ///
+  /// The sign is required. A bare `"24h"` is exactly as likely to mean "the last
+  /// day" as "the next one", and guessing would silently point a filter at the
+  /// wrong half of the timeline — the one failure this grammar cannot show the
+  /// reader. Units are lower-case `m`/`h`/`d`: `M` is minutes in one convention
+  /// and months in another, and nothing here is worth that ambiguity.
+  static func relOffset(_ raw: Any?) -> Double? {
+    guard let text = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          let pattern = relPattern,
+          let match = pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+          let sign = capture(match, 1, in: text),
+          let digits = capture(match, 2, in: text),
+          let unit = capture(match, 3, in: text),
+          let magnitude = Double(digits) else { return nil }
+    let scale: Double = unit == "m" ? 60_000 : (unit == "h" ? 3_600_000 : 86_400_000)
+    return sign == "-" ? -(magnitude * scale) : magnitude * scale
+  }
+
+  /// A row field or a literal operand as an instant in epoch MILLISECONDS.
+  ///
+  /// One reader for both sides, so an operand and the field it is compared
+  /// against can never be understood differently.
+  static func timeValue(_ raw: Any?) -> Double? {
+    if let text = raw as? String {
+      let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard let pattern = isoPattern,
+            let match = pattern.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+            let date = capture(match, 1, in: trimmed) else { return nil }
+      let clock = capture(match, 2, in: trimmed)
+      let seconds = capture(match, 3, in: trimmed) ?? "00"
+      // Rebuilt into the one spelling every client agrees on before it is
+      // parsed, so a nanosecond fraction from a Go API and a millisecond one
+      // from a browser land on the same instant, and `+0200` and `+02:00` are
+      // the same zone.
+      let millis = capture(match, 4, in: trimmed).map { String(($0 + "000").prefix(3)) } ?? "000"
+      var offset = "Z"
+      if let zone = capture(match, 5, in: trimmed), zone != "Z", zone != "z" {
+        offset = zone.count == 5 ? String(zone.prefix(3)) + ":" + String(zone.suffix(2)) : zone
+      }
+      let normalized = clock.map { "\(date)T\($0):\(seconds).\(millis)\(offset)" }
+        ?? "\(date)T00:00:00.000Z"
+      guard let parsed = isoReader.date(from: normalized) else { return nil }
+      return parsed.timeIntervalSince1970 * 1000
+    }
+    // A JSON number is epoch milliseconds. `numberValue` refuses a boolean and
+    // never reads a numeric STRING, which matters: `"2026"` is a year an author
+    // wrote, not an instant three seconds after 1970.
+    return PluginPanelParser.numberValue(raw)
+  }
+
+  /// The instant a `since` / `before` clause compares against, or `nil` when the
+  /// clause is INACTIVE.
+  ///
+  /// A `{"$state": …}` operand goes inactive exactly where a text comparison
+  /// does — unset, or a value the reader's control cannot express as a time — so
+  /// a segmented control can offer `""` / `-24h` / `-7d` as "All / Today / This
+  /// week" with no second concept for turning the filter off.
+  static func timeOperand(
+    at: Double?,
+    relMs: Double?,
+    stateKey: String?,
+    state: PluginVocabPanelState,
+    now: Double
+  ) -> Double? {
+    if let stateKey {
+      guard let selected = state[stateKey], !selected.isEmpty else { return nil }
+      if let offset = relOffset(selected) { return now + offset }
+      return timeValue(selected)
+    }
+    if let relMs { return now + relMs }
+    return at
+  }
+
+  /// The wall clock in epoch milliseconds. The default every caller that has no
+  /// opinion uses, and the seam a test replaces instead of sleeping.
+  static func nowMilliseconds() -> Double { Date().timeIntervalSince1970 * 1000 }
+
+  // MARK: Evaluation
+
   /// One clause against one row. `nil` is INACTIVE — see the file comment.
   ///
   /// Total by construction: there is no input that throws and no input that
@@ -193,7 +322,8 @@ enum PluginVocabState {
   static func evaluate(
     _ clause: PluginVocabPredicate,
     row: [String: Any],
-    state: PluginVocabPanelState
+    state: PluginVocabPanelState,
+    now: Double = PluginVocabState.nowMilliseconds()
   ) -> Bool? {
     switch clause {
     case let .compare(op, field, values, stateKey):
@@ -208,10 +338,22 @@ enum PluginVocabState {
       guard let operands, !operands.isEmpty else { return nil }
       return operands.contains(fieldText(row[field])) == (op == .membership)
 
+    case let .time(op, field, at, relMs, stateKey):
+      guard let instant = timeOperand(at: at, relMs: relMs, stateKey: stateKey, state: state, now: now) else {
+        return nil
+      }
+      // A row with no readable time cannot answer the question, so it fails the
+      // comparison — exactly as a row with no `statusGroup` already fails an
+      // `equals`. INACTIVE belongs to the operand side of the grammar (an unset
+      // `$state`, an author's typo); a missing field has always been the row's
+      // problem and has always dropped it.
+      guard let value = timeValue(row[field]) else { return false }
+      return op == .since ? value >= instant : value < instant
+
     case let .all(clauses):
       var result: Bool?
       for child in clauses {
-        guard let value = evaluate(child, row: row, state: state) else { continue }
+        guard let value = evaluate(child, row: row, state: state, now: now) else { continue }
         if !value { return false }
         result = true
       }
@@ -220,14 +362,14 @@ enum PluginVocabState {
     case let .any(clauses):
       var result: Bool?
       for child in clauses {
-        guard let value = evaluate(child, row: row, state: state) else { continue }
+        guard let value = evaluate(child, row: row, state: state, now: now) else { continue }
         if value { return true }
         result = false
       }
       return result
 
     case let .negated(clause):
-      guard let value = evaluate(clause, row: row, state: state) else { return nil }
+      guard let value = evaluate(clause, row: row, state: state, now: now) else { return nil }
       return !value
     }
   }
@@ -240,12 +382,13 @@ enum PluginVocabState {
   static func evaluate(
     _ predicates: [PluginVocabPredicate]?,
     row: Any?,
-    state: PluginVocabPanelState
+    state: PluginVocabPanelState,
+    now: Double = PluginVocabState.nowMilliseconds()
   ) -> Bool {
     guard let predicates, !predicates.isEmpty else { return true }
     let object = row as? [String: Any]
     for clause in predicates {
-      guard let value = evaluate(clause, row: object ?? [:], state: state) else {
+      guard let value = evaluate(clause, row: object ?? [:], state: state, now: now) else {
         // Inactive clauses are not votes. Only a clause that actually compared
         // something can drop a row.
         continue
@@ -263,10 +406,14 @@ enum PluginVocabState {
     _ predicates: [PluginVocabPredicate]?,
     _ rows: [Row],
     state: PluginVocabPanelState,
+    now: Double = PluginVocabState.nowMilliseconds(),
     value: (Row) -> Any?
   ) -> [Row] {
     guard let predicates, !predicates.isEmpty else { return rows }
-    return rows.filter { evaluate(predicates, row: value($0), state: state) }
+    // Read once for the whole pass. A `{"$rel": …}` clock sampled per row would
+    // let two rows a microsecond apart land on different sides of the same
+    // boundary, which is a filter that disagrees with itself.
+    return rows.filter { evaluate(predicates, row: value($0), state: state, now: now) }
   }
 
   // MARK: - Declarations and lifecycle
@@ -599,17 +746,22 @@ extension PluginPanelParser {
       warn("A `where` comparison needs a `field`.")
       return nil
     }
-    let present = ["equals", "notEquals", "in", "notIn"].filter { object[$0] != nil }
+    let present = ["equals", "notEquals", "in", "notIn", "since", "before"].filter { object[$0] != nil }
     guard present.count == 1, let key = present.first else {
       // Two operators on one clause is not a clause the author meant either way,
       // and picking one for them would filter rows nobody asked to hide.
       warn(present.isEmpty
-        ? "A `where` comparison needs one of `equals`, `notEquals`, `in` or `notIn`."
+        ? "A `where` comparison needs one of `equals`, `notEquals`, `in`, `notIn`, `since` or `before`."
         : "A `where` comparison may declare only one operator.")
       return nil
     }
-    let op: PluginVocabPredicate.Op = (key == "equals" || key == "in") ? .membership : .exclusion
     let operand = object[key]
+
+    if let timeOp = PluginVocabPredicate.TimeOp(rawValue: key) {
+      return parseTimeClause(timeOp, operand: operand, field: field, warn: warn)
+    }
+
+    let op: PluginVocabPredicate.Op = (key == "equals" || key == "in") ? .membership : .exclusion
 
     // `{"$state":"statusFilter"}` — the one object form an operand may take.
     if let reference = operand as? [String: Any], let stateKey = stateText(reference["$state"]) {
@@ -631,6 +783,37 @@ extension PluginPanelParser {
       return nil
     }
     return .compare(op: op, field: field, values: values, stateKey: nil)
+  }
+
+  /// One `since` / `before` clause.
+  ///
+  /// Kept apart from the text comparison because the two read their operand
+  /// differently and nothing else about them differs: same budget, same
+  /// one-clause rejection, same place in the tree.
+  static func parseTimeClause(
+    _ op: PluginVocabPredicate.TimeOp,
+    operand: Any?,
+    field: String,
+    warn: (String) -> Void
+  ) -> PluginVocabPredicate? {
+    // `{"$rel": "-24h"}` before `{"$state": …}`, because both are objects and
+    // only one of them names a key.
+    if let reference = operand as? [String: Any], reference["$rel"] != nil {
+      guard let relMs = PluginVocabState.relOffset(reference["$rel"]) else {
+        warn(#"`$rel` must read `-<n><m|h|d>` or `+<n><m|h|d>`, e.g. `{"$rel": "-24h"}`."#)
+        return nil
+      }
+      return .time(op: op, field: field, at: nil, relMs: relMs, stateKey: nil)
+    }
+    if let reference = operand as? [String: Any], let stateKey = stateText(reference["$state"]) {
+      return .time(op: op, field: field, at: nil, relMs: nil, stateKey: stateKey)
+    }
+    guard let at = PluginVocabState.timeValue(operand) else {
+      warn("`\(op.rawValue)` needs an ISO-8601 time, epoch milliseconds, "
+        + #"a `{"$rel": …}` offset or a `{"$state": …}` reference."#)
+      return nil
+    }
+    return .time(op: op, field: field, at: at, relMs: nil, stateKey: nil)
   }
 
   /// A literal operand as text. The same coercion ``PluginVocabState/fieldText(_:)``

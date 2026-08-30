@@ -48,8 +48,18 @@ function cacheScope(args: AgentChatSlashCommandsArgs): string {
   return `project:${projectRoot}:lane:${lane}:provider:${provider}`;
 }
 
+/**
+ * `includePluginCommands` is part of the key, because it changes the ANSWER.
+ *
+ * A caller that leaves the flag off gets the same session's list without its
+ * `source: "plugin"` rows. Keying both requests together let whichever ran
+ * first decide what the other saw for the rest of the TTL — so one refetch from
+ * a site that forgot the flag emptied the composer's plugin commands, and no
+ * later flagged call could put them back until the entry lapsed.
+ */
 function cacheKey(args: AgentChatSlashCommandsArgs, pin?: OpenProjectBinding | null): string {
-  return `binding:${pin?.key ?? "__active_binding__"}:${cacheScope(args)}`;
+  const plugins = args.includePluginCommands ? "plugins" : "no-plugins";
+  return `binding:${pin?.key ?? "__active_binding__"}:${plugins}:${cacheScope(args)}`;
 }
 
 export async function getAgentChatSlashCommandsCached(

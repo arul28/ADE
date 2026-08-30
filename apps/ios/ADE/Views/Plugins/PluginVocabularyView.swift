@@ -431,7 +431,7 @@ private struct PluginVocabRowActionButton: View {
   var body: some View {
     Button {
       ADEHaptics.light()
-      store.perform(entry.action)
+      store.perform(entry.action, label: entry.label)
     } label: {
       HStack(spacing: 5) {
         if isBusy {
@@ -484,7 +484,7 @@ private struct PluginVocabRowOverflowMenu: View {
       ForEach(actions) { entry in
         Button {
           ADEHaptics.light()
-          store.perform(entry.action)
+          store.perform(entry.action, label: entry.label)
         } label: {
           if PluginSymbol.drawsIcon(entry.icon) {
             Label {

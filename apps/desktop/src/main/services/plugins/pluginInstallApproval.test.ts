@@ -11,7 +11,9 @@ import {
   recordPluginInstallApproval,
   requestPluginInstallApproval,
   requestPluginRemovalApproval,
+  resetPendingPluginInstallCardsForTests,
   resetPluginInstallApprovalsForTests,
+  PLUGIN_INSTALL_APPROVAL_TIMEOUT_MS,
   type PluginInstallApprovalChat,
 } from "./pluginInstallApproval";
 import { resolvePluginInstallSource } from "./pluginInstallService";
@@ -78,6 +80,7 @@ function chatMock(response: {
 describe("plugin install approval", () => {
   beforeEach(() => {
     resetPluginInstallApprovalsForTests();
+    resetPendingPluginInstallCardsForTests();
   });
 
   afterEach(() => {
@@ -356,6 +359,116 @@ describe("plugin install approval", () => {
     // A live pending input also blocks the user's next message in this chat, so
     // an abandoned prompt would wedge the conversation.
     expect(responded).toEqual([{ itemId: "item-1", decision: "cancel" }]);
+  });
+
+  /**
+   * The card outlives the CALLER, and a retry must not stack a second one.
+   *
+   * A live dogfood run failed here twice: `ade actions run` gave up on its own
+   * RPC while the user was away, the agent retried, and a second card appeared
+   * over a first that was still live and still waiting. Answering either left
+   * the other standing with nobody behind it.
+   */
+  describe("a re-request while a card is already up", () => {
+    it("joins the standing card for the same install instead of raising a second", async () => {
+      const source = pluginDir(tipsyManifest());
+      let answer: (() => void) | null = null;
+      const held = new Promise<void>((resolve) => { answer = resolve; });
+      const calls: ChatCall[] = [];
+      const chat: PluginInstallApprovalChat = {
+        requestChatInput: vi.fn(async (args: ChatCall) => {
+          calls.push(args);
+          args.onItemId?.(`item-${calls.length}`);
+          await held;
+          return { decision: "accept", answers: { plugin_install: ["install"] }, responseText: null };
+        }),
+        respondToInput: vi.fn(async () => undefined),
+      };
+
+      const first = requestPluginInstallApproval({
+        chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+      });
+      // The retry the agent makes after its own deadline expires.
+      const second = requestPluginInstallApproval({
+        chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+      });
+      answer!();
+      const [a, b] = await Promise.all([first, second]);
+
+      expect(calls).toHaveLength(1);
+      expect(a.allow).toBe(true);
+      // One card, one answer, both callers told what the user decided.
+      expect(b).toEqual(a);
+    });
+
+    it("settles the standing card before raising a different one, never orphaning it", async () => {
+      const first = pluginDir(tipsyManifest());
+      const second = pluginDir(tipsyManifest({ name: "ade-other", displayName: "Other" }));
+      const calls: ChatCall[] = [];
+      const responded: Array<{ itemId: string; decision?: string }> = [];
+      const chat: PluginInstallApprovalChat = {
+        requestChatInput: vi.fn(async (args: ChatCall) => {
+          calls.push(args);
+          const itemId = `item-${calls.length}`;
+          args.onItemId?.(itemId);
+          // Only an explicit `respondToInput` settles this one, exactly as the
+          // real chat behaves.
+          return await new Promise((resolve) => {
+            settle.set(itemId, () => resolve({
+              decision: "cancel",
+              answers: {},
+              responseText: null,
+            }));
+            if (calls.length === 2) {
+              resolve({ decision: "accept", answers: { plugin_install: ["install"] }, responseText: null });
+            }
+          });
+        }),
+        respondToInput: vi.fn(async ({ itemId, decision }) => {
+          responded.push({ itemId, ...(decision ? { decision } : {}) });
+          settle.get(itemId)?.();
+        }),
+      };
+      const settle = new Map<string, () => void>();
+
+      const firstCall = requestPluginInstallApproval({
+        chat, chatSessionId: "chat-1", projectId: "project-1", source: first, builtinPluginsRoot: null,
+      });
+      await Promise.resolve();
+      const secondCall = requestPluginInstallApproval({
+        chat, chatSessionId: "chat-1", projectId: "project-1", source: second, builtinPluginsRoot: null,
+      });
+
+      const firstResult = await firstCall;
+      const secondResult = await secondCall;
+
+      // The first card was settled, by the host, with a receipt — not abandoned.
+      expect(responded).toEqual([{ itemId: "item-1", decision: "cancel" }]);
+      expect(firstResult.allow).toBe(false);
+      if (firstResult.allow) throw new Error("expected the superseded request to refuse");
+      expect(firstResult.reason).toBe("cancelled");
+      expect(secondResult.allow).toBe(true);
+      expect(calls).toHaveLength(2);
+    });
+
+    it("forgets the card once it is answered, so the next install asks again", async () => {
+      const source = pluginDir(tipsyManifest());
+      const { chat, calls } = chatMock({ decision: "decline", answers: { plugin_install: ["deny"] } });
+      const args = {
+        chat, chatSessionId: "chat-1", projectId: "project-1", source, builtinPluginsRoot: null,
+      } as const;
+
+      await requestPluginInstallApproval({ ...args });
+      await requestPluginInstallApproval({ ...args });
+
+      expect(calls).toHaveLength(2);
+    });
+  });
+
+  it("gives the user an hour to come back to the desk, not ten minutes", () => {
+    // The ten-minute window settled the card twice in a live run while the user
+    // was away from the keyboard, and the agent read a cancellation nobody made.
+    expect(PLUGIN_INSTALL_APPROVAL_TIMEOUT_MS).toBe(60 * 60 * 1000);
   });
 
   it("refuses a source ADE cannot read rather than asking someone to vouch for it", async () => {

@@ -152,6 +152,27 @@ export type PluginSurfaceOnlyContext = {
   surface: PluginSurfaceId;
 };
 
+/**
+ * What the reader was looking at when they fired an ambient control.
+ *
+ * The command palette is the case this exists for. A ⌘K entry belongs to the
+ * window rather than to a row, so its `context` is the `app` surface and always
+ * will be — that is what selects which contributions the palette shows, and
+ * pointing it at a chat would quietly change the list. But a plugin asked to
+ * "log what I am doing" from the palette has to know WHICH conversation, and
+ * before this it could only track the last `turn.start` and hope.
+ *
+ * So the subject rides beside the context, under `args.subject`, as the same
+ * projection every other socket already hands out — a plugin reads a session
+ * here exactly as it reads one from a chat header. `{kind: "none"}` is a real
+ * answer and the honest one: the palette is open over the Files tab, or over no
+ * project at all, and a plugin that guessed would guess wrong.
+ */
+export type PluginActionSubject =
+  | PluginSessionContext
+  | PluginLaneContext
+  | { kind: "none" };
+
 export type PluginSurfaceContext =
   | PluginPrContext
   | PluginLaneContext

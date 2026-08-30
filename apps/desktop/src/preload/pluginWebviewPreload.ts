@@ -126,6 +126,21 @@ const adePlugin: AdePluginWebviewBridge = {
       const config = await call("config.get", {});
       return (config ?? {}) as Record<string, string | number | boolean | null>;
     },
+    // Both spellings normalize to the one `{values}` frame the host validates.
+    // `undefined` becomes `null`, which the host reads as "reset to the
+    // manifest default"; `false` and `0` are values, so the check is on
+    // `undefined` alone.
+    set: async (
+      keyOrValues: string | Record<string, string | number | boolean | null>,
+      value?: string | number | boolean | null,
+    ) => {
+      const config = await call("config.set", {
+        values: typeof keyOrValues === "string"
+          ? { [keyOrValues]: value === undefined ? null : value }
+          : keyOrValues,
+      });
+      return (config ?? {}) as Record<string, string | number | boolean | null>;
+    },
   },
 
   events: {

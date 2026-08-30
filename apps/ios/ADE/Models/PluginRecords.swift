@@ -1531,6 +1531,9 @@ struct PluginSocketDeclarations: Equatable {
   /// returns nil and its declaration never becomes a contribution — the same
   /// outcome as a published row for that kind, which keeps the two paths
   /// agreeing about what this client renders.
+  ///
+  /// `row-badge` also returns nil, and for a different reason: a declared badge
+  /// draws nothing on any client. See that arm.
   private static func payload(for kind: PluginSocketKind, wire: PluginManifestSocketWire) -> [String: Any]? {
     var object: [String: Any] = [:]
     func put(_ key: String, _ value: String?) {
@@ -1566,12 +1569,23 @@ struct PluginSocketDeclarations: Equatable {
       put("icon", wire.icon)
       put("actionId", wire.actionId)
     case .rowBadge:
-      // A manifest badge has no value of its own — it is the declaration a
-      // dynamic row later fills in. A neutral label keeps a plugin that never
-      // publishes rows honest rather than invisible.
-      put("text", wire.label)
-      object["tone"] = "neutral"
-      put("icon", wire.icon)
+      // A manifest badge RESERVES THE SLOT AND DRAWS NOTHING. Only a published
+      // per-entity row puts a chip on a row.
+      //
+      // It used to draw its manifest `label` as a placeholder on every row of
+      // its surface, which is bug B4 in the dogfood ledger: the journal plugin
+      // declared `label: "0"` and every lane in the list wore a `0` chip
+      // forever, because there is no label that reads acceptably as "nothing to
+      // say about this row yet". A badge is a value ABOUT one entity, and a
+      // manifest cannot know one — unlike a button, whose label is the same
+      // verb on every row it appears on, which is why no other kind changes
+      // here.
+      //
+      // The declaration itself still matters and is still built: the loop above
+      // files it in `declaredByTriple`, which is what an install disclosure
+      // describes and what a published row is matched against. Only the drawing
+      // stops.
+      return nil
     case .detailSection:
       put("panelId", wire.panelId)
       put("title", wire.label)

@@ -266,6 +266,11 @@ export const PLUGIN_WEBVIEW_CSP = [
  * `contributions.publish` and `panels.update` (a page draws itself; publishing
  * into other surfaces is the child process's job), and `collections.delete`
  * (destructive, and not needed to build a UI).
+ *
+ * `config.set` IS here: a plugin's settings page is a page, and a form that
+ * cannot save what it renders is the reason it was added. It does not reopen
+ * the secrets hole — the host refuses a `secret`-kind setting on this path the
+ * same way it does on the child's.
  */
 export const PLUGIN_WEBVIEW_METHODS = [
   "collections.get",
@@ -273,6 +278,7 @@ export const PLUGIN_WEBVIEW_METHODS = [
   "collections.list",
   "invoke",
   "config.get",
+  "config.set",
   "openDeeplink",
 ] as const;
 
@@ -362,6 +368,21 @@ export type AdePluginWebviewBridge = {
 
   config: {
     get(): Promise<Record<string, string | number | boolean | null>>;
+    /**
+     * Write this plugin's own declared settings; answers with the new
+     * effective config.
+     *
+     * Present here — unlike `secrets` — because a plugin's settings page IS a
+     * page, and a form that renders a setting it cannot save is the whole
+     * reason this method exists. It is not a hole in the secrets rule: the host
+     * refuses a `secret`-kind setting on this path exactly as it does on the
+     * child's, so a credential still cannot be written from a page.
+     *
+     * `null` resets one setting to its manifest default. Same refusals as the
+     * child SDK: undeclared key, wrong kind, a `select` value off its list.
+     */
+    set(key: string, value: string | number | boolean | null): Promise<Record<string, string | number | boolean | null>>;
+    set(values: Record<string, string | number | boolean | null>): Promise<Record<string, string | number | boolean | null>>;
   };
 
   events: {

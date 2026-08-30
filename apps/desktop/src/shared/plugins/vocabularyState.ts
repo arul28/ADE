@@ -17,6 +17,25 @@
  * - a **`where` clause on a binding** keeps the rows whose fields match, read
  *   either against a literal or against the current value of a state key.
  *
+ * ## The one thing the client computes
+ *
+ * `since` / `before` compare a row field to an instant, and a `{"$rel": "-24h"}`
+ * operand resolves that instant from the CLIENT CLOCK at evaluation time. That
+ * is the single exception to "the client only compares strings", and it exists
+ * because the alternative was worse: a plugin materializing `today: "today"`
+ * onto every row has written a fact that is false by morning, and there is no
+ * cheap "the day changed" trigger to rewrite it with.
+ *
+ * It resolves on RE-RENDER, never on a timer. A panel left open across midnight
+ * still shows yesterday's answer until its rows change or the reader pulls the
+ * declared `refreshAction`. A timer would re-render every open panel on every
+ * surface forever to catch a boundary almost nobody is watching.
+ *
+ * The clock is a PARAMETER, not a call inside the loop: {@link filterVocabRows}
+ * samples `Date.now()` once per pass and hands the same instant to every row, so
+ * two rows a microsecond apart cannot land on opposite sides of one boundary,
+ * and a test can pin the instant instead of sleeping.
+ *
  * ## Rule 3 is intact
  *
  * "Data, never code" (`vocabulary.ts`) forbids expressions, formatting strings,
@@ -136,9 +155,86 @@ export type VocabPredicate =
       values?: string[];
       stateKey?: string;
     }
+  | {
+      kind: "time";
+      op: "since" | "before";
+      /** Top-level field of the bound row, read as a time rather than as text. */
+      field: string;
+      /** An absolute instant in epoch milliseconds, from a literal operand. */
+      at?: number;
+      /** An offset from the RENDER clock, from a `{"$rel": …}` operand. */
+      relMs?: number;
+      /** A state key whose selected value is read as either of the two above. */
+      stateKey?: string;
+    }
   | { kind: "and"; clauses: VocabPredicate[] }
   | { kind: "or"; clauses: VocabPredicate[] }
   | { kind: "not"; clause: VocabPredicate };
+
+/* ── Times ──────────────────────────────────────────────────────────────── */
+
+/**
+ * The one calendar shape a `since` / `before` operand or row field may take.
+ *
+ * Deliberately narrower than `Date.parse`, which accepts a pile of engine- and
+ * locale-specific spellings and reads a zoneless date-time as LOCAL. Four
+ * clients evaluate this predicate and a filter that keeps a row on one surface
+ * and drops it on another is worse than no filter, so the accepted set is: a
+ * bare `YYYY-MM-DD` (read as UTC midnight) or a date-time carrying an EXPLICIT
+ * zone. `new Date().toISOString()` — what a plugin actually writes — is in it.
+ */
+const ISO_TIME_PATTERN =
+  /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}:\d{2})(?::(\d{2}))?(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}:?\d{2}))?$/;
+
+/** `-24h`, `+90m`, `-7d`. The sign is REQUIRED — see {@link parseVocabRelOffset}. */
+const REL_OFFSET_PATTERN = /^([+-])(\d{1,6})([mhd])$/;
+
+const REL_UNIT_MS = { m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+
+/**
+ * `{"$rel": "-24h"}` as an offset in milliseconds, or `null`.
+ *
+ * The sign is required. A bare `"24h"` is exactly as likely to mean "the last
+ * day" as "the next one", and guessing would silently point a filter at the
+ * wrong half of the timeline — the one failure this grammar cannot show the
+ * reader. Units are lower-case `m`/`h`/`d`: `M` is minutes in one convention and
+ * months in another, and nothing here is worth that ambiguity.
+ */
+export function parseVocabRelOffset(raw: unknown): number | null {
+  if (typeof raw !== "string") return null;
+  const match = REL_OFFSET_PATTERN.exec(raw.trim());
+  if (match === null) return null;
+  const [, sign, digits, unit] = match;
+  const magnitude = Number(digits) * REL_UNIT_MS[unit as keyof typeof REL_UNIT_MS];
+  return sign === "-" ? -magnitude : magnitude;
+}
+
+/**
+ * A row field or a literal operand as an instant in epoch milliseconds, or
+ * `null` when it is not a time this grammar can read.
+ *
+ * One reader for both sides, so an operand and the field it is compared against
+ * can never be understood differently.
+ */
+export function vocabTimeValue(raw: unknown): number | null {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  if (typeof raw !== "string") return null;
+  const match = ISO_TIME_PATTERN.exec(raw.trim());
+  if (match === null) return null;
+  const [, date, clock, seconds, fraction, zone] = match;
+  // Rebuilt into the one spelling every client agrees on before it is parsed,
+  // so a nanosecond fraction from a Go API and a millisecond one from a browser
+  // land on the same instant, and `+0200` and `+02:00` are the same zone.
+  const millis = fraction === undefined ? "000" : `${fraction}000`.slice(0, 3);
+  const offset =
+    zone === undefined ? "Z" : /^[Zz]$/.test(zone) ? "Z" : zone.length === 5 ? `${zone.slice(0, 3)}:${zone.slice(3)}` : zone;
+  const normalized =
+    clock === undefined
+      ? `${date}T00:00:00.000Z`
+      : `${date}T${clock}:${seconds ?? "00"}.${millis}${offset}`;
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 /**
  * A row field as the text a predicate compares against.
@@ -181,6 +277,46 @@ type WhereParseBudget = { nodes: number; warn: (message: string) => void };
 
 const COMPARISON_KEYS = ["equals", "notEquals", "in", "notIn"] as const;
 type ComparisonKey = (typeof COMPARISON_KEYS)[number];
+
+const TIME_KEYS = ["since", "before"] as const;
+type TimeKey = (typeof TIME_KEYS)[number];
+
+const OPERATOR_KEYS = [...COMPARISON_KEYS, ...TIME_KEYS] as const;
+
+/**
+ * One `since` / `before` clause.
+ *
+ * Kept apart from the text comparison because the two read their operand
+ * differently and nothing else about them differs: same budget, same one-clause
+ * rejection, same place in the tree.
+ */
+function parseTimeClause(
+  op: TimeKey,
+  operand: unknown,
+  field: string,
+  budget: WhereParseBudget,
+): VocabPredicate | null {
+  // `{"$rel": "-24h"}` before `{"$state": …}`, because both are objects and only
+  // one of them names a key.
+  if (isRecord(operand) && operand.$rel !== undefined) {
+    const relMs = parseVocabRelOffset(operand.$rel);
+    if (relMs === null) {
+      budget.warn('`$rel` must read `-<n><m|h|d>` or `+<n><m|h|d>`, e.g. `{"$rel": "-24h"}`.');
+      return null;
+    }
+    return { kind: "time", op, field, relMs };
+  }
+  const fromState = stateRef(operand);
+  if (fromState !== null) return { kind: "time", op, field, stateKey: fromState };
+  const at = vocabTimeValue(operand);
+  if (at === null) {
+    budget.warn(
+      `\`${op}\` needs an ISO-8601 time, epoch milliseconds, a \`{"$rel": …}\` offset or a \`{"$state": …}\` reference.`,
+    );
+    return null;
+  }
+  return { kind: "time", op, field, at };
+}
 
 /**
  * One clause, or `null` when it is unusable.
@@ -231,27 +367,34 @@ function parseClause(raw: unknown, depth: number, budget: WhereParseBudget): Voc
     budget.warn("A `where` comparison needs a `field`.");
     return null;
   }
-  const present = COMPARISON_KEYS.filter((key) => raw[key] !== undefined);
+  const present = OPERATOR_KEYS.filter((key) => raw[key] !== undefined);
   if (present.length !== 1) {
     // Two operators on one clause is not a clause the author meant either way,
     // and picking one for them would filter rows nobody asked to hide.
     budget.warn(
       present.length === 0
-        ? "A `where` comparison needs one of `equals`, `notEquals`, `in` or `notIn`."
+        ? "A `where` comparison needs one of `equals`, `notEquals`, `in`, `notIn`, `since` or `before`."
         : "A `where` comparison may declare only one operator.",
     );
     return null;
   }
-  const key = present[0] as ComparisonKey;
+  const name = present[0] as ComparisonKey | TimeKey;
+  const operand = raw[name];
+  const fieldName = field.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars);
+
+  if (name === "since" || name === "before") {
+    return parseTimeClause(name, operand, fieldName, budget);
+  }
+
+  const key = name;
   const op: "in" | "notIn" = key === "equals" || key === "in" ? "in" : "notIn";
-  const operand = raw[key];
 
   const fromState = stateRef(operand);
   if (fromState !== null) {
     return {
       kind: "compare",
       op,
-      field: field.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars),
+      field: fieldName,
       stateKey: fromState,
     };
   }
@@ -270,7 +413,7 @@ function parseClause(raw: unknown, depth: number, budget: WhereParseBudget): Voc
     budget.warn(`\`${key}\` needs at least one literal value or a \`{"$state": …}\` reference.`);
     return null;
   }
-  return { kind: "compare", op, field: field.slice(0, VOCAB_STATE_LIMITS.maxStateIdChars), values };
+  return { kind: "compare", op, field: fieldName, values };
 }
 
 /**
@@ -302,6 +445,9 @@ export function vocabWhereStateKeys(where: readonly VocabPredicate[] | undefined
   const walk = (clause: VocabPredicate) => {
     switch (clause.kind) {
       case "compare":
+      case "time":
+        // A `since` written against a literal or a `{"$rel": …}` declares no key
+        // at all, which is the honest answer: it reads the clock, not the panel.
         if (clause.stateKey !== undefined) found.add(clause.stateKey);
         return;
       case "not":
@@ -328,6 +474,7 @@ function evaluateClause(
   clause: VocabPredicate,
   row: Record<string, unknown>,
   state: VocabPanelState,
+  now: number,
 ): boolean | null {
   switch (clause.kind) {
     case "compare": {
@@ -343,10 +490,22 @@ function evaluateClause(
       if (!values || values.length === 0) return null;
       return values.includes(vocabPredicateFieldText(row[clause.field])) === (clause.op === "in");
     }
+    case "time": {
+      const at = timeOperand(clause, state, now);
+      if (at === null) return null;
+      const value = vocabTimeValue(row[clause.field]);
+      // A row with no readable time cannot answer the question, so it fails the
+      // comparison — exactly as a row with no `statusGroup` already fails an
+      // `equals`. INACTIVE belongs to the operand side of the grammar (an unset
+      // `$state`, an author's typo); a missing field has always been the row's
+      // problem and has always dropped it.
+      if (value === null) return false;
+      return clause.op === "since" ? value >= at : value < at;
+    }
     case "and": {
       let result: boolean | null = null;
       for (const child of clause.clauses) {
-        const value = evaluateClause(child, row, state);
+        const value = evaluateClause(child, row, state, now);
         if (value === null) continue;
         if (!value) return false;
         result = true;
@@ -356,7 +515,7 @@ function evaluateClause(
     case "or": {
       let result: boolean | null = null;
       for (const child of clause.clauses) {
-        const value = evaluateClause(child, row, state);
+        const value = evaluateClause(child, row, state, now);
         if (value === null) continue;
         if (value) return true;
         result = false;
@@ -364,10 +523,34 @@ function evaluateClause(
       return result;
     }
     case "not": {
-      const value = evaluateClause(clause.clause, row, state);
+      const value = evaluateClause(clause.clause, row, state, now);
       return value === null ? null : !value;
     }
   }
+}
+
+/**
+ * The instant a `since` / `before` clause compares against, or `null` when the
+ * clause is INACTIVE.
+ *
+ * A `{"$state": …}` operand goes inactive exactly where a text comparison does —
+ * unset, or a value the reader's control cannot express as a time — so a
+ * segmented control can offer `""` / `-24h` / `-7d` as "All / Today / This week"
+ * with no second concept for turning the filter off.
+ */
+function timeOperand(
+  clause: Extract<VocabPredicate, { kind: "time" }>,
+  state: VocabPanelState,
+  now: number,
+): number | null {
+  if (clause.stateKey !== undefined) {
+    const selected = state[clause.stateKey];
+    if (selected === undefined || selected === "") return null;
+    const offset = parseVocabRelOffset(selected);
+    return offset === null ? vocabTimeValue(selected) : now + offset;
+  }
+  if (clause.relMs !== undefined) return now + clause.relMs;
+  return clause.at ?? null;
 }
 
 /**
@@ -381,11 +564,13 @@ export function evaluateVocabWhere(
   where: readonly VocabPredicate[] | undefined,
   row: unknown,
   state: VocabPanelState,
+  now?: number,
 ): boolean {
   if (!where || where.length === 0) return true;
   const record = isRecord(row) ? row : {};
+  const instant = now ?? Date.now();
   for (const clause of where) {
-    const value = evaluateClause(clause, record, state);
+    const value = evaluateClause(clause, record, state, instant);
     // Inactive clauses are not votes. Only a clause that actually compared
     // something can drop a row.
     if (value === null) continue;
@@ -399,9 +584,14 @@ export function filterVocabRows(
   where: readonly VocabPredicate[] | undefined,
   values: readonly unknown[],
   state: VocabPanelState,
+  now?: number,
 ): unknown[] {
   if (!where || where.length === 0) return [...values];
-  return values.filter((value) => evaluateVocabWhere(where, value, state));
+  // Read once for the whole pass. A `{"$rel": …}` clock sampled per row would
+  // let two rows a microsecond apart land on different sides of the same
+  // boundary, which is a filter that disagrees with itself.
+  const instant = now ?? Date.now();
+  return values.filter((value) => evaluateVocabWhere(where, value, state, instant));
 }
 
 /* ── Declarations and lifecycle ─────────────────────────────────────────── */

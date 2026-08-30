@@ -17,6 +17,10 @@ from working · **P2** forces a bad workaround · **P3** papercut.
 
 ---
 
+## Status (2026-08-30)
+
+Every A/B/C/D entry below is fixed on plugin-platform. Corrections from the fix round: A1's mechanism was a renderer refetch that dropped `includePluginCommands` plus a cache key that could not tell the two answers apart (the "285 sdk-only" probe was a documented opt-in, not the bug); A3's poisoned number originated on iOS, which folded the phone's own local `db_version` into the host-space cursor — fixed on both sides, with the stored watermark reset to 0 (not the head) when it exceeds the local head.
+
 ## The one-sentence finding
 
 **Every failure in this ledger is green at every checkable layer and invisible
@@ -47,7 +51,7 @@ That is the pattern worth fixing, more than any individual entry.
 
 ## A — Platform bugs (ADE's, not the author's)
 
-### A1 `diagnosed` **P1 — A plugin's `slash-command` never reaches the command menu**
+### A1 `fixed` **P1 — A plugin's `slash-command` never reaches the command menu**
 
 A declared slash command **executes** but is **never listed**, so it is
 undiscoverable: the only way to use it is to already know it exists.
@@ -94,7 +98,7 @@ Related: `namespacedSlashCommand()` re-offers a colliding command as
 whatever fix lands should also make the namespaced form discoverable — a user
 who types `/note` and gets nothing has no way to learn the real name.
 
-### A3 `diagnosed` **P0 — A phone's plugin watermark is seeded from the PEER's version space, so plugin rows can never reach it**
+### A3 `fixed` **P0 — A phone's plugin watermark is seeded from the PEER's version space, so plugin rows can never reach it**
 
 The headline finding of the iOS run, and a regression of the exact failure
 `e4b816f77` was written to fix.
@@ -188,7 +192,7 @@ Two consequences:
 unblock. That was wrong, and the experiment above is what disproved it. The
 write succeeds and is undone on the next reconnect.
 
-### A4 `diagnosed` **P1 — Three of the four SDK change events have no producer**
+### A4 `fixed` **P1 — Three of the four SDK change events have no producer**
 
 `ade.events.on("lane.changed" | "pr.changed" | "session.changed", …)` never
 fires. The names are typed, validated and documented; nothing emits them.
@@ -228,7 +232,7 @@ arrived either way.)
 remove them from the SDK type union and say so — a validated event name with no
 producer is worse than an absent one, because it type-checks.
 
-### A5 `diagnosed` **P2 — The `pane` surface kind is parsed, disclosed, and never drawn**
+### A5 `fixed` **P2 — The `pane` surface kind is parsed, disclosed, and never drawn**
 
 `{"kind": "pane"}` is accepted by the manifest parser (`SURFACE_KINDS`), and the
 install disclosure card describes it to the user
@@ -254,7 +258,7 @@ warning — the manifest parses clean and `doctor` stays green.
 card and the skill. Whichever way, `doctor` should refuse to stay green on a
 surface nothing can draw.
 
-### A2 `reported` **P2 — `plugin.install` cancels its own approval card**
+### A2 `fixed` **P2 — `plugin.install` cancels its own approval card**
 
 An agent cannot install a plugin unless the user happens to be watching at that
 exact moment.
@@ -308,7 +312,7 @@ approval window.
 
 ## B — Missing capabilities (no socket / no API does this)
 
-### B1 `diagnosed` **P1 — No way to capture short text from a button press**
+### B1 `fixed` **P1 — No way to capture short text from a button press**
 
 This is the gap that bent the whole feature, and it is worth taking seriously
 because the user's request was completely ordinary: *"a Log it button that saves
@@ -329,7 +333,7 @@ and re-invoke the same handler with the answer. Small surface, and it unlocks
 the entire "quick capture" plugin category (journals, todos, bookmarks,
 snippets, feedback widgets).
 
-### B2 `diagnosed` **P2 — A plugin cannot write its own settings**
+### B2 `fixed` **P2 — A plugin cannot write its own settings**
 
 `ade.config.get()` is the only config method; there is no `config.set`. So a
 plugin can render a `settings-section` panel with a form, and that form can do
@@ -339,7 +343,7 @@ authoritative.
 
 Directly caused author bug C3 below.
 
-### B3 `diagnosed` **P2 — Nothing time-relative in a binding's `where`**
+### B3 `fixed` **P2 — Nothing time-relative in a binding's `where`**
 
 The client only compares strings and never computes one, so any "today / this
 week" filter must be materialised by the plugin as a literal field on each row
@@ -354,7 +358,7 @@ hit this and most will get it wrong.
 Suggested shape: either a reserved `$now`-relative comparison in `where`, or a
 host-fired `day.changed` event.
 
-### B4 `reported` **P3 — A declared `row-badge` marks every row**
+### B4 `fixed` **P3 — A declared `row-badge` marks every row**
 
 A declared badge draws its manifest `label` as a placeholder on *every* row of
 its surface until a published row replaces it. There is no "draw nothing until
@@ -362,7 +366,7 @@ published" option, so the author must pick a label that reads acceptably as the
 empty state. This plugin chose `"0"`, which puts a `0` chip on every lane row
 forever. Conspicuous on a phone.
 
-### B5 `reported` **P3 — `command-palette-action` has no session**
+### B5 `fixed` **P3 — `command-palette-action` has no session**
 
 A ⌘K entry receives a `surface` context with no subject, so a palette action
 that wants to act on "the chat I am in" has to guess. This plugin tracks the
@@ -376,7 +380,7 @@ a chat should be able to know which one.
 Recorded so the exercise stays honest, and because two of them were caused by
 the platform gaps above rather than excused by them.
 
-### C1 `diagnosed` **P1 — "Log it" logs the chat's auto-generated title**
+### C1 `fixed` **P1 — "Log it" logs the chat's auto-generated title**
 
 The user's journal now literally reads:
 
@@ -396,7 +400,7 @@ pre-filled**, and let the user type one line. Costs a panel open; produces a
 journal worth reading. The current behaviour should have been the fallback, not
 the default.
 
-### C2 `reported` **P1 — The button does not explain itself**
+### C2 `fixed` **P1 — The button does not explain itself**
 
 User's words: *"i have no clue what it does it has four options and im not sure
 what clicking them even does."*
@@ -407,7 +411,7 @@ tooltip. A plugin's first press should not be a guess. Partly a platform
 observation — there is no onboarding affordance for a contributed control — but
 the naming and grouping were the author's to get right.
 
-### C3 `diagnosed` **P2 — Two settings fields that cannot save**
+### C3 `fixed` **P2 — Two settings fields that cannot save**
 
 `applySettings` reads `args.slackWebhookUrl` and writes it to `ade.secrets`, but
 `standupTime` and `autoPost` are read from `config.get()` and never written
@@ -416,7 +420,7 @@ the naming and grouping were the author's to get right.
 Fix: drop them from the panel and point at ADE's own config form, or render them
 read-only.
 
-### C4 `diagnosed` **P2 — Notes stay "Today" past midnight**
+### C4 `fixed` **P2 — Notes stay "Today" past midnight**
 
 `rollDayFlags()` rewrites the stale `today`/`week` fields, but only runs on
 activate, a note write, or a refresh gesture. Leave ADE open overnight, open the
@@ -424,7 +428,7 @@ Journal, and yesterday's notes are still filed under Today. Needs a daily
 `ade.schedules` entry — the author wrote the roller and then did not schedule
 it. Root cause is B3.
 
-### C5 `diagnosed` **P2 — Archive detection reads a field `lane.list` never returns**
+### C5 `fixed` **P2 — Archive detection reads a field `lane.list` never returns**
 
 `syncArchivedLanes()` looks for a lane whose `archivedAt` turned from `null` to
 a date. Verified against the live host: **`lane.list` excludes archived lanes
@@ -440,7 +444,7 @@ Two independent faults stacked on one feature, which is why it produced no note
 and no error: the event never arrives, and the handler would have looked at the
 wrong thing if it had.
 
-### C6 `diagnosed` **P1 — The standup card never appears, because a `chat-card` needs an emit the plugin never made**
+### C6 `fixed` **P1 — The standup card never appears, because a `chat-card` needs an emit the plugin never made**
 
 User pressed ⌘⇧U repeatedly and saw nothing. Everything upstream was fine:
 
@@ -470,7 +474,7 @@ the socket declaration for permission.
 
 See B6 — the documentation is what led here.
 
-### B6 `diagnosed` **P2 — The skill documents `chat-card` as if publishing it were enough**
+### B6 `fixed` **P2 — The skill documents `chat-card` as if publishing it were enough**
 
 Author-facing docs describe `chat-card` in terms that imply the contribution
 alone renders:
@@ -544,7 +548,7 @@ Recorded because a dogfood that only lists failures overstates them.
   `Unknown command 'journal'`, which is the right answer rather than a stack
   trace. This is the cleanest part of the platform we exercised.
 
-### D1 `reported` **P3 — `doctor`'s Places rung stays ✓ on a disabled plugin**
+### D1 `fixed` **P3 — `doctor`'s Places rung stays ✓ on a disabled plugin**
 
 With the plugin switched off, `Places` still reads
 `✓ … 9 declarations; 0 rows published right now`. Nothing is placed anywhere.

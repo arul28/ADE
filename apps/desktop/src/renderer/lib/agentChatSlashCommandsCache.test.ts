@@ -122,6 +122,59 @@ describe("agentChatSlashCommandsCache", () => {
     expect(slashCommands).toHaveBeenCalledTimes(4);
   });
 
+  /**
+   * A plugin's `/note` was invokable and undiscoverable in a live dogfood run.
+   * One cause: the composer asks with `includePluginCommands`, another refetch
+   * on the same session asked without it, and both shared a cache entry — so
+   * the plugin-free answer became the composer's whole list.
+   */
+  it("keeps a plugin-free answer out of the composer's entry", async () => {
+    const slashCommands = vi.mocked(window.ade.agentChat.slashCommands);
+    const withPlugin = [command("/plan"), {
+      name: "/note",
+      description: "Write a note",
+      source: "plugin" as const,
+      plugin: { pluginId: "journal", displayName: "Journal", actionId: "noteCommand" },
+    }];
+    slashCommands
+      .mockResolvedValueOnce([command("/plan")])
+      .mockResolvedValueOnce(withPlugin);
+
+    await expect(getAgentChatSlashCommandsCached({ sessionId: "session-1" }))
+      .resolves.toEqual([command("/plan")]);
+    await expect(
+      getAgentChatSlashCommandsCached({ sessionId: "session-1", includePluginCommands: true }),
+    ).resolves.toEqual(withPlugin);
+
+    expect(slashCommands).toHaveBeenCalledTimes(2);
+    // And the composer's own entry still answers from cache.
+    await expect(
+      getAgentChatSlashCommandsCached({ sessionId: "session-1", includePluginCommands: true }),
+    ).resolves.toEqual(withPlugin);
+    expect(slashCommands).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates both flag variants of one session together", async () => {
+    const slashCommands = vi.mocked(window.ade.agentChat.slashCommands);
+    slashCommands
+      .mockResolvedValueOnce([command("/one")])
+      .mockResolvedValueOnce([command("/two")])
+      .mockResolvedValueOnce([command("/three")])
+      .mockResolvedValueOnce([command("/four")]);
+
+    await getAgentChatSlashCommandsCached({ sessionId: "session-1" });
+    await getAgentChatSlashCommandsCached({ sessionId: "session-1", includePluginCommands: true });
+
+    invalidateAgentChatSlashCommandsCache({ sessionId: "session-1" });
+
+    await expect(getAgentChatSlashCommandsCached({ sessionId: "session-1" }))
+      .resolves.toEqual([command("/three")]);
+    await expect(
+      getAgentChatSlashCommandsCached({ sessionId: "session-1", includePluginCommands: true }),
+    ).resolves.toEqual([command("/four")]);
+    expect(slashCommands).toHaveBeenCalledTimes(4);
+  });
+
   it("does not repopulate an invalidated key from a stale in-flight request", async () => {
     let resolveStale: (commands: AgentChatSlashCommand[]) => void = () => {};
     const stale = new Promise<AgentChatSlashCommand[]>((resolve) => {

@@ -83,6 +83,34 @@ beforeAll(() => {
           { socket: "toolbar-action", surface: "lanes", id: "act-ok", label: "Sync", actionId: "b", order: 2 },
         ],
       }),
+      // The badges are PUBLISHED, not merely declared: a declared badge
+      // reserves its slot and draws nothing, so a test about what a badge does
+      // while rendering needs a row filling it.
+      // Answers for the lane entity kind only. A surface's rows are read once
+      // per entity kind, so a mock that ignored the argument would hand the
+      // same badge back twice and draw it twice.
+      listContributions: async (input: { entityKind?: string }) => (input.entityKind !== "lane" ? [] : [
+        {
+          entityKind: "lane",
+          entityId: "lane-1",
+          pluginId: "graph",
+          socket: "row-badge",
+          socketId: "first",
+          surface: "lanes",
+          payload: { text: "Ahead", tone: "neutral", order: 1 },
+          updatedAt: "2026-08-11T00:00:00.000Z",
+        },
+        {
+          entityKind: "lane",
+          entityId: "lane-1",
+          pluginId: "graph",
+          socket: "row-badge",
+          socketId: "bad",
+          surface: "lanes",
+          payload: { text: "Broken", tone: "neutral", icon: "boom", order: 2 },
+          updatedAt: "2026-08-11T00:00:00.000Z",
+        },
+      ]),
     },
   };
 });

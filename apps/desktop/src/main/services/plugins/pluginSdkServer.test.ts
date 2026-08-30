@@ -53,9 +53,11 @@ function createServer(
   handle: ReturnType<typeof createPluginSdkServer>["handle"];
   puts: PutCall[];
   lists: ListCall[];
+  configWrites: Record<string, unknown>[];
 } {
   const puts: PutCall[] = [];
   const lists: ListCall[] = [];
+  const configWrites: Record<string, unknown>[] = [];
   const data = {
     putCollection(
       _pluginId: string,
@@ -87,9 +89,13 @@ function createServer(
     secrets: {} as PluginSecretStore,
     invokeAdeAction: async () => null,
     readConfig: () => ({}),
+    writeConfig: (values) => {
+      configWrites.push(values);
+      return { greeting: "Hei" };
+    },
     ...overrides,
   });
-  return { handle: server.handle, puts, lists };
+  return { handle: server.handle, puts, lists, configWrites };
 }
 
 async function codeOf(run: () => Promise<unknown>): Promise<string> {
@@ -835,5 +841,48 @@ describe("createPluginSdkServer chat.hydrate paging", () => {
     const transcript = Array.from({ length: 501 }, () => ({ role: "user", text: "x" }));
     expect(await codeOf(() => handle("chat.hydrate", { sessionId: "session-1", transcript })))
       .toBe("plugin_budget_exceeded");
+  });
+});
+
+/**
+ * `config.set` at the wire.
+ *
+ * The manifest validation itself lives in the host (`applyStoredConfig`, shared
+ * with ADE's own settings form) and is proved end to end in
+ * `pluginHostService.test.ts`. What is this layer's own contract is narrower:
+ * the frame it forwards, and that it answers with the host's new config rather
+ * than inventing one.
+ */
+describe("createPluginSdkServer config.set", () => {
+  it("forwards the values frame to the host and answers with the config it returns", async () => {
+    const { handle, configWrites } = createServer();
+
+    const answer = await handle("config.set", { values: { greeting: "Hei", loud: true } });
+
+    expect(configWrites).toEqual([{ greeting: "Hei", loud: true }]);
+    expect(answer).toEqual({ greeting: "Hei" });
+  });
+
+  it("carries a null through rather than dropping it, because null is the reset", async () => {
+    const { handle, configWrites } = createServer();
+
+    await handle("config.set", { values: { greeting: null } });
+
+    // A frame that stripped nulls would turn "put this setting back to its
+    // default" into a no-op the plugin could not tell from a success.
+    expect(configWrites).toEqual([{ greeting: null }]);
+  });
+
+  it("refuses a values frame that is not an object", async () => {
+    expect(await codeOf(() => createServer().handle("config.set", { values: "greeting=Hei" })))
+      .toBe("invalid_args");
+  });
+
+  it("treats an absent values frame as a write of nothing", async () => {
+    const { handle, configWrites } = createServer();
+
+    await handle("config.set", {});
+
+    expect(configWrites).toEqual([{}]);
   });
 });

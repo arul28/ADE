@@ -173,6 +173,10 @@ struct ContentView: View {
       } message: { refusal in
         Text("\(refusal.pluginLabel) isn't on your computer, so this link has nothing to open.")
       }
+      // The `{prompt}` verb: a contributed button asking for one line before it
+      // can finish. Hosted here rather than at the button, because by the time
+      // the action answers, the menu the press came from has dismissed.
+      .pluginPromptAlert(syncService: syncService)
       // The built-in Cursor Cloud pane, and the third place the same question is
       // asked. The toolbar button hides itself and so does the button's own
       // body, but a hidden button is not access control: `cursorCloudPanePresented`

@@ -638,6 +638,30 @@ the filter works whether or not the handler answers. An action may answer with
 what a plugin that just archived everything the current filter was showing should
 do.
 
+**Two operators that are not string comparisons.** `since` and `before` read a
+row field as a TIME — an ISO-8601 string with an explicit zone (or a bare
+`YYYY-MM-DD`, read as UTC midnight), or epoch milliseconds — and compare it to an
+instant given as a literal, as `{"$rel": "-24h"}` against the client clock, or as
+`{"$state": "range"}` so a control can offer "All / Today / This week" as three
+option values. `since` is at-or-after and `before` is strictly earlier, so the
+pair partitions the timeline at one instant. `vocabTimeValue` is the single
+reader for both the operand and the row field, and it is deliberately narrower
+than `Date.parse`: a zoneless date-time is a different instant on every client,
+so it is not a time at all here. A row whose field is missing or unreadable
+FAILS the clause — the same thing a row with no `statusGroup` already does
+against an `equals`; INACTIVE stays what it always was, a statement about the
+operand.
+
+The clock is a parameter, not a `Date.now()` inside the loop: `filterVocabRows`
+and `boundRowValues` sample it once per pass and hand the same instant to every
+row, so a boundary cannot fall between two rows of one render and a test can pin
+it. A `$rel` therefore re-resolves on RE-RENDER, which happens on data change and
+not on a timer — a panel left open across midnight shows yesterday's answer until
+something changes or the reader pulls its `refreshAction`. A timer would wake
+every open panel on every surface forever to catch a boundary almost nobody is
+watching. This is the fix for the ledger's B3, and it is what lets a journal stop
+materializing a `today` field that is false by morning.
+
 Four clients, one evaluator where possible. Desktop, the web client and the TUI
 all call `filterVocabRows` / `boundRowValues` from `shared/plugins`, so a filter
 cannot keep a row on one surface and drop it on another; the TUI draws the
@@ -694,6 +718,24 @@ all four clients:
   because in-app destinations belong to `navigate` and `fallback.deeplink`,
   which pass an installed-and-enabled gate this would bypass. Every open is
   logged with the plugin id.
+- **`prompt`** (`readPluginActionPrompt`) asks the reader ONE line of text and
+  re-invokes the same action with `args.prompt = {id, text, context?}`. It is
+  the ledger's B1, and the gap was ordinary enough to be worth naming: "a Log it
+  button that saves a one-line note of what I'm doing" had no shape at all, so
+  the plugin that wanted it logged the chat's auto-generated title instead.
+  Three rules carry the design. **Cancel invokes nothing** — not a call with an
+  empty answer, nothing at all — which is what makes the verb safe behind any
+  button. **One hop**: a prompt returned by the re-invocation is dropped by
+  every client, so this cannot become a wizard and cannot trap a reader in a
+  loop the plugin keeps re-opening; a second field is a panel `form`. And the
+  answer is **refused, never truncated**, past `PLUGIN_PROMPT_TEXT_MAX_BYTES`
+  (4 KiB) — half a note saved is worse than one the reader was asked to shorten.
+  `buildPluginActionPromptAnswer` is the single builder of the re-invocation
+  frame, so the desktop popover, the phone's alert and the terminal's inline
+  field cannot hand a handler three different shapes. Desktop and web anchor the
+  card at the pressed control by sampling `document.activeElement` at INVOKE
+  time (`readPluginPromptAnchor`) rather than when the answer comes back, by
+  which point the menu the button lived in may have closed.
 - **`message`** (`readPluginActionMessage`) is one sentence about how it went.
   Two shapes reach the renderer and both are normal: over sync the host wraps a
   handler's return as `{ok, message?, result}`, while the desktop's local IPC
@@ -801,6 +843,30 @@ plugins against each other and nothing more. Row badges cap at 2 visible with a
 "+N" overflow; one plugin may place at most 8 contributions in one slot. A
 payload that fails its per-kind validation renders nothing rather than a
 half-built row.
+
+**A DECLARED `row-badge` draws nothing** (the ledger's B4). It is the one kind
+whose manifest entry is a reservation rather than a contribution: a badge is a
+per-entity value and a declaration has no entity, so drawing its manifest label
+put the same chip on every row of the surface forever — the journal plugin's
+`"0"` on all six lanes, which its author had picked precisely because it read
+acceptably as an empty state. `selectContributions` drops static `row-badge`
+entries BEFORE the per-plugin cap, so a placeholder cannot eat the slot a real
+published badge needs; the declaration is still built and still in
+`staticContributions`, because it is what a published row is matched against for
+override and ordering and what the install sheet describes. Every other kind is
+unchanged — a declared `row-menu-item` is still on every row, because a menu
+item is a verb rather than a value. iOS mirrors this by returning nil from the
+`.rowBadge` arm of `PluginSocketDeclarations.payload(for:wire:)`, and the TUI
+inherits it by sharing `selectContributions`.
+
+**A `command-palette-action` receives `args.subject`** (the ledger's B5): the
+focused chat, else the selected lane, else `{kind: "none"}`, built by
+`pluginActionSubject`. It rides BESIDE the surface context rather than replacing
+it — the palette's context is `{kind: "surface", surface: "app"}` and that is
+what selects which entries the palette shows, so pointing it at a chat would
+quietly change the list. `"none"` is a real answer: a plugin told so can say
+"open a chat first" instead of writing against a guess, which is what tracking
+the last `turn.start` amounted to.
 
 Static contributions come from the manifest; dynamic per-entity values come from
 `plugin_contributions` rows computed by the machine that owns the data. Actions

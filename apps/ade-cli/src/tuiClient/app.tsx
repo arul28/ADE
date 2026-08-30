@@ -78,6 +78,15 @@ import {
   readPluginActionOpenUrl,
 } from "../../../desktop/src/shared/plugins/sdk";
 import type { PluginSurfaceContext } from "../../../desktop/src/shared/plugins/context";
+import {
+  pluginPromptAnswerArgs,
+  pluginPromptHint,
+  pluginPromptOutcome,
+  pluginPromptPlaceholder,
+  pluginPromptTitle,
+  pluginPromptTooLongNotice,
+  type PluginPromptRequest,
+} from "./pluginPrompt";
 import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 import type { GitHubPrStackMembership, PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
@@ -3578,6 +3587,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
      */
     surfaceContext: PluginSurfaceContext;
   } | null>(null);
+  /**
+   * The one question a plugin action asked, while it is on screen.
+   *
+   * Held in state AND a ref for the usual reason in this file: the composer
+   * draws from state, and the key handler — which runs outside React's render
+   * — has to read the live value rather than the one its closure captured.
+   *
+   * `restore` is the composer text the question borrowed. Panes in this client
+   * never own a text input, so the prompt line is where the answer is typed;
+   * putting the draft back afterwards is what keeps a keyboard chord fired
+   * mid-sentence from eating what the reader was writing.
+   *
+   * `follow` is the call site's own handling of the result — navigate, openUrl,
+   * composer, refresh — so the re-invocation lands exactly where the first
+   * invocation would have, and a row press, a panel button and a chord cannot
+   * drift into three behaviours.
+   */
+  const [pluginPrompt, setPluginPrompt] = useState<{
+    request: PluginPromptRequest;
+    restore: string;
+    follow: (result: unknown) => void | Promise<void>;
+  } | null>(null);
+  const pluginPromptRef = useRef<typeof pluginPrompt>(null);
   const [subagentPaneViewStateBySessionId, setSubagentPaneViewStateBySessionId] = useState<Record<string, SubagentPaneViewState>>({});
   const subagentPaneViewState = activeSessionId ? (subagentPaneViewStateBySessionId[activeSessionId] ?? {}) : {};
   const updateSubagentPaneViewState = useCallback((update: (current: SubagentPaneViewState) => SubagentPaneViewState) => {
@@ -10589,6 +10621,101 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!openExternalUrl(request.url, addNotice)) addNotice(request.url, "info");
   }, [addNotice]);
 
+  /**
+   * The `{prompt}` verb: ask the one question, then run the action again.
+   *
+   * Returns true when the question is now on screen, which is the caller's
+   * signal to stop — the action has not finished, so its other verbs (a
+   * navigate, an openUrl) belong to the result of the re-invocation rather than
+   * to the request for an answer. Everything else about the round trip is the
+   * caller's own `follow`, so the second half lands where the first would have.
+   */
+  const askPluginPrompt = useCallback((options: {
+    result: unknown;
+    pluginId: string;
+    displayName: string;
+    actionId: string;
+    args: Record<string, unknown>;
+    label: string;
+    follow: (result: unknown) => void | Promise<void>;
+  }): boolean => {
+    const outcome = pluginPromptOutcome(options);
+    if (outcome.kind === "none") return false;
+    // ONE HOP. A re-invocation's own question is dropped rather than re-asked,
+    // so a plugin cannot build a wizard — or a loop — out of this verb. Said
+    // out loud, because a plugin author whose second question never appears has
+    // nothing else to read.
+    if (outcome.kind === "ignored") {
+      addNotice(`${options.label} asked a second question. Only the first one is shown.`, "info");
+      return false;
+    }
+    if (outcome.kind === "unreadable") {
+      addNotice(`${options.label} asked a question this client could not read.`, "info");
+      return false;
+    }
+    stashActiveInput();
+    const session = { request: outcome.request, restore: promptRef.current, follow: options.follow };
+    pluginPromptRef.current = session;
+    setPluginPrompt(session);
+    setPromptValue("");
+    return true;
+  }, [addNotice, setPromptValue, stashActiveInput]);
+
+  /** Esc: the question closes and NOTHING is invoked. */
+  const cancelPluginPrompt = useCallback((): void => {
+    const session = pluginPromptRef.current;
+    if (!session) return;
+    pluginPromptRef.current = null;
+    setPluginPrompt(null);
+    setPromptValue(session.restore);
+    addNotice(`${session.request.label} · question dismissed.`, "info");
+  }, [addNotice, setPromptValue]);
+
+  /**
+   * Enter: re-invoke the SAME action with the same arguments plus the answer.
+   *
+   * An over-ceiling answer is refused rather than cut down — the field stays
+   * open with the reader's words still in it, because a note saved in half is
+   * worse than one they were asked to shorten.
+   */
+  const submitPluginPrompt = useCallback(async (): Promise<void> => {
+    const session = pluginPromptRef.current;
+    if (!session) return;
+    const args = pluginPromptAnswerArgs(session.request, promptRef.current);
+    if (!args) {
+      addNotice(pluginPromptTooLongNotice(session.request), "error");
+      return;
+    }
+    const conn = connectionRef.current;
+    if (!conn) {
+      addNotice("ADE runtime is still connecting.", "error");
+      return;
+    }
+    pluginPromptRef.current = null;
+    setPluginPrompt(null);
+    setPromptValue(session.restore);
+    const { request, follow } = session;
+    try {
+      const result = await invokePluginAction(conn, request.pluginId, request.actionId, args);
+      addNotice(`${request.label} ran.`, "success");
+      // Through the same gate as the first invocation, deliberately: `args` now
+      // carries the answer, so a second `{prompt}` comes back `ignored` here
+      // rather than being dropped by a rule written twice.
+      if (askPluginPrompt({
+        result,
+        pluginId: request.pluginId,
+        displayName: request.displayName,
+        actionId: request.actionId,
+        args,
+        label: request.label,
+        follow,
+      })) return;
+      await follow(result);
+    } catch (error) {
+      addNotice(error instanceof Error ? error.message : String(error), "error");
+    }
+  }, [addNotice, askPluginPrompt, setPromptValue]);
+
   const refreshPluginPane = useCallback(async (options: { announce?: boolean; runDeclared?: boolean } = {}): Promise<void> => {
     const current = rightPaneRef.current;
     if (current.kind !== "plugin-panel") return;
@@ -10602,14 +10729,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (declared && conn) {
       try {
         const statePayload = pluginPaneStatePayload(current.model.state);
-        const result = await invokePluginAction(conn, current.state.pluginId, declared, {
+        const args: Record<string, unknown> = {
           ...(current.state.context ? { context: current.state.context } : {}),
           // The filter the reader is looking at, so a declared refresh can fetch
           // the filtered set rather than everything and let the client throw
           // most of it away.
           ...(statePayload ? { state: statePayload } : {}),
-        });
-        applyPluginOpenUrl(result, current.state.displayName);
+        };
+        const result = await invokePluginAction(conn, current.state.pluginId, declared, args);
+        const follow = (value: unknown): void => applyPluginOpenUrl(value, current.state.displayName);
+        // A declared refresh may ask before it fetches ("which sprint?"). The
+        // panel still reloads below either way — the question is about what the
+        // NEXT refresh returns, not about whether this pane may redraw.
+        if (!askPluginPrompt({
+          result,
+          pluginId: current.state.pluginId,
+          displayName: current.state.displayName,
+          actionId: declared,
+          args,
+          label: current.state.displayName,
+          follow,
+        })) follow(result);
       } catch (error) {
         addNotice(error instanceof Error ? error.message : String(error), "error");
       }
@@ -10620,7 +10760,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       panelId: current.state.panelId,
       context: current.state.context ?? null,
     }, options);
-  }, [addNotice, applyPluginOpenUrl, loadPluginPane]);
+  }, [addNotice, applyPluginOpenUrl, askPluginPrompt, loadPluginPane]);
 
   useEffect(() => {
     if (rightPane.kind !== "plugin-panel" || !rightOpen || !connection) return;
@@ -10748,11 +10888,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("ADE runtime is still connecting.", "error");
       return;
     }
-    try {
-      const result = await invokePluginAction(conn, entry.pluginId, entry.actionId, {
-        context: entry.socket === "toolbar-action" ? pane.surfaceContext : pane.context,
-      });
-      addNotice(`${entry.label} ran.`, "success");
+    const args: Record<string, unknown> = {
+      context: entry.socket === "toolbar-action" ? pane.surfaceContext : pane.context,
+    };
+    const follow = async (result: unknown): Promise<void> => {
       applyPluginOpenUrl(result, entry.label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
@@ -10766,10 +10905,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       applyPluginComposerEdit(result, entry.label);
+    };
+    try {
+      const result = await invokePluginAction(conn, entry.pluginId, entry.actionId, args);
+      addNotice(`${entry.label} ran.`, "success");
+      if (askPluginPrompt({
+        result,
+        pluginId: entry.pluginId,
+        displayName: entry.pluginName,
+        actionId: entry.actionId,
+        args,
+        label: entry.label,
+        follow,
+      })) return;
+      await follow(result);
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
-  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, loadPluginPane]);
+  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, askPluginPrompt, loadPluginPane]);
 
   /**
    * The TUI's row menu: what plugins contribute for the focused lane or chat,
@@ -10950,9 +11103,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (statePayload) args.state = statePayload;
 
     updatePluginPaneState((state) => ({ ...state, editing: null }));
-    try {
-      const result = await invokePluginAction(conn, current.state.pluginId, action.action, args);
-      addNotice(`${interactive.label} ran.`, "success");
+    const follow = async (result: unknown): Promise<void> => {
       applyPluginOpenUrl(result, interactive.label);
       // A plugin may put the reader back on a filter that still has rows: after
       // archiving everything "Active" was showing, an empty list is a puzzle and
@@ -10975,12 +11126,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       await refreshPluginPane();
+    };
+    try {
+      const result = await invokePluginAction(conn, current.state.pluginId, action.action, args);
+      addNotice(`${interactive.label} ran.`, "success");
+      // The question comes first and stops here: the button has not finished,
+      // so a refetch now would redraw the panel around an action still waiting
+      // on the reader.
+      if (askPluginPrompt({
+        result,
+        pluginId: current.state.pluginId,
+        displayName: current.state.displayName,
+        actionId: action.action,
+        args,
+        label: interactive.label,
+        follow,
+      })) return;
+      await follow(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setRightPane((pane) => (pane.kind === "plugin-panel" ? { ...pane, error: message } : pane));
       addNotice(message, "error");
     }
-  }, [addNotice, applyPluginOpenUrl, loadPluginPane, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
+  }, [addNotice, applyPluginOpenUrl, askPluginPrompt, loadPluginPane, refreshPluginPane, setPromptValue, stashActiveInput, updatePluginPaneState]);
 
   const activateRightPaneListItem = useCallback((selectedId: string, actionKind: NonNullable<Extract<RightPaneContent, { kind: "list" }>["action"]>["kind"]) => {
     if (actionKind === "copy-secret") {
@@ -13665,6 +13833,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [activateLaneWithLastChat, addNotice, applyDrawerChatSelection, displaySessions, focusChat, lanes, runInlineCommand, runRightCommand, selectActiveLaneId, slashCommands]);
 
   const submitPrompt = useCallback(async (value: string) => {
+    // A plugin's question borrows this line, so a submit that reaches here by
+    // any route belongs to the question and never to the chat. The key chain
+    // already intercepts Enter; this is the backstop that keeps an answer from
+    // being sent to a model.
+    if (pluginPromptRef.current) {
+      await submitPluginPrompt();
+      return;
+    }
     const text = value.trim();
     const submittedValue = value;
     const draftImageAttachments = promptImageAttachmentsRef.current;
@@ -13899,7 +14075,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       addNotice(message, "error");
     }
-  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, setPromptValue, slashCommands, slashIndex, slashRows, startCliTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm, submitSelectedPendingQuestion, updatePluginPaneState]);
+  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, setPromptValue, slashCommands, slashIndex, slashRows, startCliTerminalForPrompt, submitClaudePromptToTerminal, submitPluginPrompt, submitRightForm, submitSelectedPendingQuestion, updatePluginPaneState]);
 
   const launchPromptInBackground = useCallback(async (value: string) => {
     const text = value.trim();
@@ -14670,9 +14846,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .find((entry) => entry.rawAction === `plugin:${pluginId}:${actionId}`);
     const label = row?.label ?? actionId;
     const who = row?.pluginName ?? pluginId;
-    try {
-      const result = await invokePluginAction(conn, pluginId, actionId, {});
-      addNotice(`${who} · ${label} ran.`, "success");
+    const follow = async (result: unknown): Promise<void> => {
       applyPluginOpenUrl(result, label);
       const navigation = readPluginActionNavigation(result);
       if (navigation) {
@@ -14686,10 +14860,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       applyPluginComposerEdit(result, label);
+    };
+    try {
+      const result = await invokePluginAction(conn, pluginId, actionId, {});
+      addNotice(`${who} · ${label} ran.`, "success");
+      if (askPluginPrompt({
+        result,
+        pluginId,
+        displayName: who,
+        actionId,
+        args: {},
+        label,
+        follow,
+      })) return;
+      await follow(result);
     } catch (error) {
       addNotice(error instanceof Error ? error.message : String(error), "error");
     }
-  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, loadPluginPane]);
+  }, [addNotice, applyPluginComposerEdit, applyPluginOpenUrl, askPluginPrompt, loadPluginPane]);
 
   const runKeybindingAction = useCallback((action: TuiResolvedKeybindingAction): boolean => {
     // The parameterized plugin escape, checked before the closed union: a
@@ -15645,6 +15833,58 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       ctrl: key.ctrl === true,
       meta: key.meta === true,
     });
+
+    // A plugin action's `{prompt}` owns the keyboard while its question is on
+    // screen. Handled here — above every pane branch — because the question is
+    // asked from whichever pane fired the action, and the pane's own Enter,
+    // Esc and letter hotkeys would otherwise take the keystrokes meant for the
+    // field. Enter re-invokes the action with the answer, Esc invokes nothing,
+    // and Ctrl/Meta chords still fall through to the global chain so Ctrl+C is
+    // never trapped behind a plugin's question.
+    if (pluginPromptRef.current) {
+      const pasted = consumeBracketedPasteInput(bracketedPasteStateRef.current, input);
+      bracketedPasteStateRef.current = pasted.state;
+      if (pasted.consumed) {
+        // One field, one line: a pasted break becomes a space rather than a
+        // newline the field has nowhere to draw.
+        const text = printableMultilineInput(pasted.text).replace(/\r?\n/g, " ");
+        if (text) {
+          const next = insertPromptText(prompt, promptCursorRef.current, text);
+          handlePromptChange(next.value, next.cursor);
+        }
+        return;
+      }
+      if (key.escape) {
+        cancelPluginPrompt();
+        return;
+      }
+      if (key.return) {
+        void submitPluginPrompt();
+        return;
+      }
+      if (key.leftArrow) {
+        movePromptCursor(-1);
+        return;
+      }
+      if (key.rightArrow) {
+        movePromptCursor(1);
+        return;
+      }
+      // A one-line field has no line above or below to reach, and letting ↑/↓
+      // through would move a selection in a pane the reader cannot see acting.
+      if (key.upArrow || key.downArrow) return;
+      if (key.backspace || key.delete) {
+        const next = deletePromptForKey(prompt, promptCursorRef.current, key);
+        handlePromptChange(next.value, next.cursor);
+        return;
+      }
+      if (!key.ctrl && !key.meta && input) {
+        const cursor = promptCursorRef.current;
+        const next = applyCoalescedPromptInput(prompt, cursor, input);
+        if (next.value !== prompt || next.cursor !== cursor) handlePromptChange(next.value, next.cursor);
+        return;
+      }
+    }
 
     if (textInputActive) {
       const pasted = consumeBracketedPasteInput(bracketedPasteStateRef.current, input);
@@ -17453,7 +17693,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // focused outline so the user can see the row took over.
   const promptFocused = !inlineRowFocused
     && attachmentFocusIndex == null
-    && ((activePane === "chat" && footerControl == null) || (activePane === "details" && rightPane.kind === "form"));
+    // A plugin's question owns the field from whichever pane raised it, so the
+    // caret has to be drawn there too — otherwise the reader is typing into a
+    // line that looks inert.
+    && (pluginPrompt != null
+      || (activePane === "chat" && footerControl == null)
+      || (activePane === "details" && rightPane.kind === "form"));
   const drawerFooterSelected = footerControl === "drawer";
   const detailsFooterSelected = footerControl === "details";
   const agentsFooterSelected = footerControl === "agents";
@@ -18649,6 +18894,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               {formatPromptSmartLinkStrip(promptSmartLinks)}
             </Text>
           ) : null}
+          {/* A plugin action's question, drawn as the field's own label rather
+              than as a screen of its own: the reader stays where they pressed
+              the button, and the words are the plugin's. */}
+          {pluginPrompt ? (
+            <Text wrap="truncate-end">
+              <Text color={PURPLE} bold>{pluginPromptTitle(pluginPrompt.request)}</Text>
+              <Text color={theme.color.mutedFg} dimColor>{`  ${pluginPromptHint(pluginPrompt.request)}`}</Text>
+            </Text>
+          ) : null}
           {promptRows.map((line, index) => {
             const cursorColumn = promptFocused ? line.cursorColumn : null;
             const hasCursor = cursorColumn != null;
@@ -18684,7 +18938,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 ) : (
                   renderSegments(line.text, line.start, "t")
                 )}
-                {index === 0 && !prompt ? <Text color={theme.color.mutedFg} dimColor>{"  ^V paste image"}</Text> : null}
+                {/* The plugin's placeholder replaces the client's own hint
+                    while its question is open: an empty field belongs to the
+                    question, and "^V paste image" is not an answer to it. */}
+                {index === 0 && !prompt && pluginPrompt
+                  ? <Text color={theme.color.mutedFg} dimColor>{pluginPromptPlaceholder(pluginPrompt.request)}</Text>
+                  : index === 0 && !prompt
+                    ? <Text color={theme.color.mutedFg} dimColor>{"  ^V paste image"}</Text>
+                    : null}
                 {index === 0 && promptCursorOnImageToken && promptRowHintFits(line.text, promptPaneWidth)
                   ? <Text color={theme.color.mutedFg} dimColor>{"  ^B open image"}</Text>
                   : null}

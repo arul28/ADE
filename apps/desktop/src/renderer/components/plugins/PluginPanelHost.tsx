@@ -36,13 +36,17 @@ import {
   type VocabStateDeclaration,
 } from "../../../shared/plugins/vocabulary";
 import {
+  buildPluginActionPromptAnswer,
+  hasPluginActionPromptRequest,
   readPluginActionMessage,
   readPluginActionNavigation,
+  readPluginActionPrompt,
   readPluginPanelRefreshAction,
   type PluginActionMessage,
 } from "../../../shared/plugins/sdk";
 import { applyPluginDialogEdit } from "./sockets/dialogTarget";
 import { applyPluginActionOpenUrl } from "./pluginActionOpenUrl";
+import { openPluginPrompt, readPluginPromptAnchor } from "./sockets/pluginPromptStore";
 
 /**
  * Data plumbing for one plugin panel.
@@ -300,7 +304,11 @@ export function PluginPanelHost({
   }, [active, panelId, pluginId]);
 
   const dispatch = React.useCallback(
-    async (action: VocabAction, extraArgs?: VocabActionArgs) => {
+    // `extraArgs` is wider than `VocabActionArgs` — the node-declared values are
+    // scalars, but the host itself adds one object: the answer to a `{prompt}`
+    // this same action asked for. Widening the parameter keeps this assignable
+    // to `VocabDispatch`, so no node has to know.
+    async (action: VocabAction, extraArgs?: Record<string, unknown>) => {
       // One `context` field, filled by whichever the panel has: a socket's typed
       // surface context when it is mounted at a socket, otherwise the context it
       // was opened with. A panel is never both at once, and sending two shapes
@@ -315,6 +323,9 @@ export function PluginPanelHost({
       // API could not page the filtered set at all. Last, so a schema cannot
       // name an argument that would quietly replace it.
       const statePayload = vocabStatePayload(panelStateRef.current.values);
+      // Sampled before the round trip, while the pressed control still holds
+      // focus — a question this action asks is drawn at the button that asked.
+      const promptAnchor = readPluginPromptAnchor();
       const result = await invokePluginAction(pluginId, action.action, {
         ...action.args,
         ...extraArgs,
@@ -355,9 +366,45 @@ export function PluginPanelHost({
       applyPluginActionOpenUrl(result, { pluginId, actionId: action.action });
       const navigation = readPluginActionNavigation(result);
       if (navigation) onNavigate?.(navigation);
+
+      // An action may ask ONE question before it can finish, and a panel button
+      // asks it exactly as a socket button does — the same store, the same card,
+      // the same one-hop rule: a re-invocation already carries `args.prompt`, so
+      // a second question from it is dropped rather than asked.
+      if (extraArgs?.prompt !== undefined) return;
+      const prompt = readPluginActionPrompt(result);
+      if (!prompt) {
+        if (hasPluginActionPromptRequest(result)) {
+          console.warn("[plugin prompt] ignored a malformed prompt", pluginId, action.action);
+        }
+        return;
+      }
+      openPluginPrompt({
+        pluginId,
+        actionId: action.action,
+        prompt,
+        // A panel action carries no label of its own — the word is on the node
+        // that declared it — so the card falls back to the plugin's name.
+        fallbackTitle: null,
+        anchor: promptAnchor,
+        onSubmit: (text) => {
+          const answer = buildPluginActionPromptAnswer(prompt, text);
+          // Refused rather than truncated. The card disables its own button at
+          // the ceiling, so reaching this branch means something else sent an
+          // over-long answer, and half a note is worse than none.
+          if (!answer) return;
+          void dispatchRef.current?.(action, { ...extraArgs, prompt: answer });
+        },
+      });
     },
     [onNavigate, pluginId, renderContext, surfaceContext],
   );
+
+  // The dispatcher, reachable from inside its own continuation. A prompt
+  // answered later re-invokes the SAME action, and a callback cannot name the
+  // callback it is being defined as.
+  const dispatchRef = React.useRef<typeof dispatch | null>(null);
+  dispatchRef.current = dispatch;
 
   /**
    * The fetched rows, with every `$state` binding filled from the live

@@ -238,6 +238,13 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db.sync.setPluginTablesWatermark("phone-1", 7);
     expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(42);
     expect(db.sync.getPluginTablesWatermark("phone-2")).toBe(0);
+    // The one exception to monotonic, and the only repair for a watermark
+    // stamped from a foreign version space: the sync host resets such a row to
+    // 0 so the device is swept again (bug A3). Monotonic writes cannot undo it.
+    db.sync.setPluginTablesWatermark("phone-1", 0, { allowRegression: true });
+    expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(0);
+    db.sync.setPluginTablesWatermark("phone-1", 9);
+    expect(db.sync.getPluginTablesWatermark("phone-1")).toBe(9);
 
     // Local-only: the watermark describes this host's own link, so it must
     // never appear in a changeset bound for a peer.

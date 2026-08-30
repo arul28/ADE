@@ -601,12 +601,16 @@ export function boundRowValues(
   binding: VocabBinding | undefined,
   rows: readonly { value: unknown }[] | undefined,
   state?: VocabPanelState,
+  now?: number,
 ): unknown[] | null {
   if (!binding || !rows) return null;
   let values = rows.map((row) => row.value);
   if (binding.where && binding.where.length > 0) {
     const current = state ?? {};
-    values = values.filter((value) => evaluateVocabWhere(binding.where, value, current));
+    // One clock for the whole pass, so a `since` boundary cannot fall between
+    // two rows of the same render. Callers pass `now` only in tests.
+    const instant = now ?? Date.now();
+    values = values.filter((value) => evaluateVocabWhere(binding.where, value, current, instant));
   }
   const limit = binding.limit;
   return typeof limit === "number" && limit > 0 ? values.slice(0, limit) : values;

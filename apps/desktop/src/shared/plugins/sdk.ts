@@ -29,7 +29,7 @@
  * for it, and the data-owning machine computes every contribution.
  */
 
-import { isRecord, oneOf } from "./parse";
+import { bounded, isRecord, oneOf } from "./parse";
 import { isValidPluginManifestIdentifier } from "./manifest";
 import type {
   PluginManifest,
@@ -1126,6 +1126,31 @@ export type AdePluginSdk = {
   config: {
     /** Current values for the manifest's `settings`, defaults applied. */
     get(): Promise<Record<string, string | number | boolean | null>>;
+    /**
+     * Write this plugin's own settings, so a `settings-section` panel's form
+     * can actually save what it renders. Answers with the new effective
+     * config, defaults applied — the same shape {@link get} returns.
+     *
+     * Validated against the manifest's `settings`, and refused with
+     * `invalid_args` when:
+     * - the key is not declared (a typo would otherwise read back as a setting
+     *   the plugin never sees);
+     * - the value is the wrong kind for it (`toggle` wants a boolean, `number`
+     *   a number, everything else text);
+     * - a `select` value is not one of its declared `options`;
+     * - the setting's kind is `secret` — those belong in
+     *   {@link AdePluginSdk.secrets}, not in the plain config store every child
+     *   is handed at spawn.
+     *
+     * `null` **resets**: the stored override is removed and the manifest
+     * default comes back, exactly as ADE's own settings form treats it.
+     *
+     * Writing does not restart the plugin, so this is safe to call from inside
+     * an action handler, and the very next {@link get} sees the new value.
+     */
+    set(key: string, value: string | number | boolean | null): Promise<Record<string, string | number | boolean | null>>;
+    /** Write several settings at once. Same rules; one file write. */
+    set(values: Record<string, string | number | boolean | null>): Promise<Record<string, string | number | boolean | null>>;
   };
 
   audio: {
@@ -1753,6 +1778,141 @@ export function hasPluginActionOpenUrlRequest(result: unknown): boolean {
   return typeof result.openUrl === "string" || isRecord(result.openUrl);
 }
 
+// ---------------------------------------------------------------------------
+// Action-response prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Longest answer a reader may type into a prompt.
+ *
+ * A liveness bound, like the composer's, and much smaller because this is one
+ * field rather than a draft message: a line of text about what you are doing,
+ * a bookmark title, a snippet name. Past it the client refuses the submit and
+ * says so, rather than truncating — a note cut in half and then saved is worse
+ * than one the reader was asked to shorten.
+ */
+export const PLUGIN_PROMPT_TEXT_MAX_BYTES = 4 * 1024;
+
+/** Longest title, placeholder and submit label a prompt may carry. */
+export const PLUGIN_PROMPT_TITLE_MAX_CHARS = 120;
+export const PLUGIN_PROMPT_PLACEHOLDER_MAX_CHARS = 120;
+export const PLUGIN_PROMPT_SUBMIT_LABEL_MAX_CHARS = 24;
+
+/**
+ * A one-field question an action asks before it can finish.
+ *
+ * The sixth piece of control flow a plugin has over ADE's UI, beside navigate,
+ * composer, dialog, openWebview and openUrl — and the only one that comes BACK.
+ * A button that answers `{prompt}` is re-invoked: the client asks the question,
+ * and calls the SAME action again with the same arguments plus
+ * {@link PluginActionPromptAnswer} under `args.prompt`.
+ *
+ * It exists because the ordinary request — "a Log it button that saves a
+ * one-line note of what I'm doing" — had no shape at all. The workarounds were
+ * logging the chat's auto-generated title (junk), navigating the reader off
+ * what they were doing into a panel with a form, or a slash command they cannot
+ * discover. One field, in place, is what the request actually was.
+ *
+ * ONE HOP. A re-invocation's own `{prompt}` is ignored by every client, so a
+ * plugin cannot build a wizard out of it and cannot trap the reader in a loop
+ * it keeps re-opening. A plugin needing a second field has a panel `form`.
+ */
+export type PluginActionPrompt = {
+  /**
+   * WHICH question this is.
+   *
+   * Required, and echoed back verbatim in the answer, because one action may
+   * ask more than one thing across its branches — "what are you working on?"
+   * and "what is blocking you?" are the same handler — and a handler that
+   * cannot tell them apart has to keep the distinction somewhere the reader can
+   * invalidate. Shaped like every other plugin identifier.
+   */
+  id: string;
+  /** The question. Absent means the client uses the control's own label. */
+  title?: string;
+  /** Grey text in the empty field. */
+  placeholder?: string;
+  /** The confirm button's word. Absent means the client's own default. */
+  submitLabel?: string;
+  /**
+   * A plugin-authored pointer, handed back untouched in the answer.
+   *
+   * Bounded like a navigation's context and used the same way: the handler
+   * remembers which lane it was asking about without keeping per-reader state
+   * between two invocations of itself.
+   */
+  context?: Record<string, unknown>;
+};
+
+/** What the client puts under `args.prompt` when it re-invokes the action. */
+export type PluginActionPromptAnswer = {
+  /** The `id` of the {@link PluginActionPrompt} this answers. */
+  id: string;
+  /** What the reader typed. Never longer than the ceiling; may be empty. */
+  text: string;
+  /** The prompt's own `context`, verbatim, when it carried one. */
+  context?: Record<string, unknown>;
+};
+
+/**
+ * Read a prompt request out of whatever an action returned.
+ *
+ * Tolerant in the same way as {@link readPluginActionNavigation}: most results
+ * carry no prompt, so anything unrecognizable is `null` rather than an error.
+ * An over-ceiling `context` drops the pointer and keeps the question, exactly
+ * as a navigation keeps its destination.
+ */
+export function readPluginActionPrompt(result: unknown): PluginActionPrompt | null {
+  if (!isRecord(result)) return null;
+  const request = result.prompt;
+  if (!isRecord(request)) return null;
+  const id = request.id;
+  if (typeof id !== "string" || !isValidPluginManifestIdentifier(id)) return null;
+  const prompt: PluginActionPrompt = { id };
+  const title = bounded(request.title, PLUGIN_PROMPT_TITLE_MAX_CHARS);
+  if (title) prompt.title = title;
+  const placeholder = bounded(request.placeholder, PLUGIN_PROMPT_PLACEHOLDER_MAX_CHARS);
+  if (placeholder) prompt.placeholder = placeholder;
+  const submitLabel = bounded(request.submitLabel, PLUGIN_PROMPT_SUBMIT_LABEL_MAX_CHARS);
+  if (submitLabel) prompt.submitLabel = submitLabel;
+  const context = request.context;
+  if (!isRecord(context)) return prompt;
+  let json: string;
+  try {
+    json = JSON.stringify(context) ?? "";
+  } catch {
+    return prompt;
+  }
+  if (!json || pluginUtf8ByteLength(json) > PLUGIN_NAVIGATE_CONTEXT_MAX_BYTES) return prompt;
+  prompt.context = context;
+  return prompt;
+}
+
+/**
+ * Whether an action's result asked a question at all, however malformed.
+ * The warning half of the pair, so a prompt refused for a bad `id` is a logged
+ * line rather than a button that silently does nothing.
+ */
+export function hasPluginActionPromptRequest(result: unknown): boolean {
+  return isRecord(result) && isRecord(result.prompt);
+}
+
+/**
+ * The answer, as the arguments frame the re-invocation carries.
+ *
+ * One builder for all four clients so the shape a handler reads cannot differ
+ * between the desktop popover, the phone's alert and the terminal's input. The
+ * text is REFUSED rather than truncated past the ceiling — `null` here means
+ * the client must not re-invoke and should say why.
+ */
+export function buildPluginActionPromptAnswer(
+  prompt: PluginActionPrompt,
+  text: string,
+): PluginActionPromptAnswer | null {
+  if (pluginUtf8ByteLength(text) > PLUGIN_PROMPT_TEXT_MAX_BYTES) return null;
+  return { id: prompt.id, text, ...(prompt.context ? { context: prompt.context } : {}) };
+}
+
 /**
  * What a plugin's entry module may export. Both hooks are optional: a plugin
  * that only registers CLI commands and panels needs neither.
@@ -2289,6 +2449,7 @@ export type PluginSdkMethod =
   | "contributions.publish"
   | "panels.update"
   | "config.get"
+  | "config.set"
   | "audio.captureClip"
   | "notifications.post"
   | "schedules.create"

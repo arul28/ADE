@@ -100,6 +100,25 @@ function fuzzyMatch(target: string, query: string): boolean {
   return true;
 }
 
+/**
+ * How well a command answers what was typed. Lower is better.
+ *
+ * `fuzzyMatch` alone is a subsequence test, which on a Claude session's ~285
+ * commands says yes to almost everything for a short query. With the list
+ * arriving alphabetically and cut at {@link MAX_COMMAND_RESULTS}, "does it
+ * match" therefore decided nothing and the first ten letters of the alphabet
+ * decided everything.
+ */
+function commandMatchRank(name: string, query: string): number {
+  if (!query) return 0;
+  const target = name.toLowerCase();
+  const needle = query.toLowerCase();
+  if (target === needle) return 0;
+  if (target.startsWith(needle)) return 1;
+  if (target.includes(needle)) return 2;
+  return 3;
+}
+
 /** Split a file path into dirname and basename for display. */
 function splitPath(filePath: string): { dir: string; base: string } {
   const fields = composerAtFileRankFields(filePath);
@@ -302,11 +321,43 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const triggerQuery = trigger?.query ?? "";
 
     // ---- Slash command filtering ----
+    /**
+     * Which ten of them the user sees, and why a plugin's command is among them.
+     *
+     * A plugin declaring a `slash-command` was invokable and undiscoverable:
+     * typing `/note` ran it, and the menu never listed it. Nothing dropped the
+     * row — the host merges plugin commands into every provider's list and the
+     * composer passes them all down here. They were CROWDED OUT. A Claude
+     * session offers ~285 commands, they arrive sorted by name, the subsequence
+     * filter admits nearly all of them for a short query, and the cut at
+     * {@link MAX_COMMAND_RESULTS} then kept whichever ten sorted first. A
+     * plugin's word had to win the alphabet to be seen.
+     *
+     * So the cut is made on relevance rather than on spelling: exact match,
+     * then prefix, then substring, then the old subsequence — and inside one
+     * rank, a plugin's command comes first. The user installed it; ADE and the
+     * runtime ship the other 285.
+     *
+     * That tie-break decides the empty query too, where every command ranks the
+     * same: pressing `/` alone now opens on what this machine's plugins added,
+     * which is the one part of the list a person cannot already guess.
+     */
     const filteredCommands = useMemo(() => {
       if (!trigger || trigger.type !== "slash") return [];
+      const query = trigger.query;
       return slashCommands
-        .filter((cmd) => fuzzyMatch(cmd.name, trigger.query))
-        .slice(0, MAX_COMMAND_RESULTS);
+        .filter((cmd) => fuzzyMatch(cmd.name, query))
+        .map((cmd, index) => ({ cmd, index, rank: commandMatchRank(cmd.name, query) }))
+        .sort((left, right) => (
+          left.rank - right.rank
+          || Number(left.cmd.source === "plugin" ? 0 : 1) - Number(right.cmd.source === "plugin" ? 0 : 1)
+          // Alphabetical, because that is the order they arrived in. Kept as an
+          // explicit tie-break rather than relying on sort stability, so the
+          // rule survives a caller that hands them over unsorted.
+          || left.index - right.index
+        ))
+        .slice(0, MAX_COMMAND_RESULTS)
+        .map((entry) => entry.cmd);
     }, [trigger, slashCommands]);
 
     // ---- @ sources: files + entity mentions, each independently debounced ----

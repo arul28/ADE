@@ -64,6 +64,8 @@ struct PluginPaneSheet: View {
     } message: { pending in
       Text(pending.message)
     }
+    // The `{prompt}` verb, asked inside the pane the button was pressed in.
+    .pluginPromptAlert(store: store)
   }
 
   @ViewBuilder

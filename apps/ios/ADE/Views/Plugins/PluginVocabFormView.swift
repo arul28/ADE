@@ -28,7 +28,7 @@ struct PluginVocabFormView: View {
 
       Button {
         ADEHaptics.light()
-        store.perform(form.submit, extraArgs: payload)
+        store.perform(form.submit, extraArgs: payload, label: form.submitLabel)
       } label: {
         HStack(spacing: 6) {
           if isBusy {

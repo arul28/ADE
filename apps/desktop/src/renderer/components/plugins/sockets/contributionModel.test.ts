@@ -66,6 +66,25 @@ function laneBadgeRow(pluginId: string, payload: Record<string, unknown>): Plugi
   };
 }
 
+/**
+ * A published per-lane `row-menu-item`.
+ *
+ * The vehicle for the identity rules below. It used to be a badge, and cannot
+ * be one any more: a DECLARED badge now draws nothing (it reserves the slot a
+ * published row fills), so a test that reads "the other declaration survives"
+ * has to ride a kind whose declaration is itself the contribution.
+ */
+function laneMenuRow(pluginId: string, payload: Record<string, unknown>): PluginContributionRow {
+  return {
+    entityKind: "lane",
+    entityId: "lane-1",
+    pluginId,
+    socket: "row-menu-item",
+    payload,
+    updatedAt: "2026-08-11T00:00:00.000Z",
+  };
+}
+
 describe("manifest sockets → contributions", () => {
   it("translates each socket kind into its payload shape", () => {
     const contributions = contributionsFromSource(
@@ -548,7 +567,10 @@ describe("static and dynamic merge", () => {
     expect(badges[0]?.payload.text).toBe("3 ahead");
   });
 
-  it("keeps the static declaration for entities the plugin published nothing for", () => {
+  it("draws no badge on an entity the plugin published nothing for", () => {
+    // The declaration reserves the slot; it does not fill it. Drawing the
+    // manifest label put the same chip on every row of the surface forever —
+    // the journal plugin's "0" on all six lanes — which is what B4 recorded.
     const set = buildContributionSet(
       [source("graph", [{ socket: "row-badge", surface: "lanes", id: "state", label: "Graph" }])],
       [laneBadgeRow("graph", { text: "3 ahead", tone: "accent" })],
@@ -556,8 +578,26 @@ describe("static and dynamic merge", () => {
     );
 
     const otherLane: PluginLaneContext = { ...LANE_CONTEXT, id: "lane-2" };
-    const badges = selectContributions(set, "row-badge", otherLane);
-    expect(badges.map((entry) => entry.payload.text)).toEqual(["Graph"]);
+    expect(selectContributions(set, "row-badge", otherLane)).toEqual([]);
+    // The published row still draws on the lane it was published for, and the
+    // declaration is still there for it to be matched against.
+    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+      .toEqual(["3 ahead"]);
+    expect(set.staticContributions.filter((entry) => entry.socket === "row-badge")).toHaveLength(1);
+  });
+
+  it("still draws a declared row-menu-item on every row, because a menu item is not a value", () => {
+    const set = buildContributionSet(
+      [source("graph", [
+        { socket: "row-menu-item", surface: "lanes", id: "open", label: "Open graph", actionId: "open" },
+      ])],
+      [],
+      "lanes",
+    );
+
+    const otherLane: PluginLaneContext = { ...LANE_CONTEXT, id: "lane-2" };
+    expect(selectContributions(set, "row-menu-item", otherLane).map((entry) => entry.payload.label))
+      .toEqual(["Open graph"]);
   });
 
   it("ignores rows from a plugin that is not installed", () => {
@@ -590,20 +630,23 @@ describe("static and dynamic merge", () => {
 });
 
 describe("socketId identity", () => {
+  // Two declarations of ONE kind on one surface, which is what makes "which
+  // declaration does this row fill" a real question. A menu item rather than a
+  // badge: a declared badge draws nothing now, so it cannot show a survivor.
   const twoBadges = source("graph", [
-    { socket: "row-badge", surface: "lanes", id: "ahead", label: "Ahead" },
-    { socket: "row-badge", surface: "lanes", id: "stack", label: "Stack" },
+    { socket: "row-menu-item", surface: "lanes", id: "ahead", label: "Ahead", actionId: "ahead" },
+    { socket: "row-menu-item", surface: "lanes", id: "stack", label: "Stack", actionId: "stack" },
   ]);
 
   it("replaces only the declaration the row fills, not the plugin's others", () => {
     const set = buildContributionSet(
       [twoBadges],
-      [{ ...laneBadgeRow("graph", { text: "3 ahead", tone: "accent" }), socketId: "ahead" }],
+      [{ ...laneMenuRow("graph", { label: "3 ahead", actionId: "ahead" }), socketId: "ahead" }],
       "lanes",
     );
 
     // "stack" was declared and never published for this lane; it must survive.
-    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+    expect(selectContributions(set, "row-menu-item", LANE_CONTEXT).map((entry) => entry.payload.label))
       .toEqual(["3 ahead", "Stack"]);
   });
 
@@ -612,33 +655,33 @@ describe("socketId identity", () => {
     // the published badge on screen and make the switch look broken.
     const set = buildContributionSet(
       [{ ...twoBadges, disabledContributions: ["ahead"] }],
-      [{ ...laneBadgeRow("graph", { text: "3 ahead", tone: "accent" }), socketId: "ahead" }],
+      [{ ...laneMenuRow("graph", { label: "3 ahead", actionId: "ahead" }), socketId: "ahead" }],
       "lanes",
     );
-    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+    expect(selectContributions(set, "row-menu-item", LANE_CONTEXT).map((entry) => entry.payload.label))
       .toEqual(["Stack"]);
   });
 
   it("drops a row that names a different surface", () => {
     const set = buildContributionSet(
       [twoBadges],
-      [{ ...laneBadgeRow("graph", { text: "3 ahead", tone: "accent" }), socketId: "ahead", surface: "prs" }],
+      [{ ...laneMenuRow("graph", { label: "3 ahead", actionId: "ahead" }), socketId: "ahead", surface: "prs" }],
       "lanes",
     );
-    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+    expect(selectContributions(set, "row-menu-item", LANE_CONTEXT).map((entry) => entry.payload.label))
       .toEqual(["Ahead", "Stack"]);
   });
 
   it("falls back to per-plugin replacement on a host that sends no socketId", () => {
     // Such a host can only express one contribution per plugin per socket, so
-    // its row replaces both declarations rather than sitting beside the
-    // placeholder it exists to fill in.
+    // its row replaces both declarations rather than sitting beside the one it
+    // did not fill.
     const set = buildContributionSet(
       [twoBadges],
-      [laneBadgeRow("graph", { text: "3 ahead", tone: "accent" })],
+      [laneMenuRow("graph", { label: "3 ahead", actionId: "ahead" })],
       "lanes",
     );
-    expect(selectContributions(set, "row-badge", LANE_CONTEXT).map((entry) => entry.payload.text))
+    expect(selectContributions(set, "row-menu-item", LANE_CONTEXT).map((entry) => entry.payload.label))
       .toEqual(["3 ahead"]);
   });
 });
@@ -727,6 +770,8 @@ describe("ordering and caps", () => {
   });
 
   it("shows two badges and folds the rest into an overflow count", () => {
+    // PUBLISHED rows, because a declared badge draws nothing: four declarations
+    // with four rows filling them is the only way one lane wears four badges.
     const set = buildContributionSet(
       [
         source(
@@ -740,7 +785,10 @@ describe("ordering and caps", () => {
           })),
         ),
       ],
-      [],
+      [1, 2, 3, 4].map((index) => ({
+        ...laneBadgeRow("graph", { text: `B${index}`, tone: "neutral", order: index }),
+        socketId: `b${index}`,
+      })),
       "lanes",
     );
 

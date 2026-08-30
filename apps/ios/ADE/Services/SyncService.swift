@@ -3931,6 +3931,13 @@ final class SyncService: ObservableObject {
   /// A plugin link the attached machine cannot serve, waiting to be said out
   /// loud. Set by `DeepLinkRouter` and cleared by whoever shows it.
   @Published var pluginLinkRefusal: PluginLinkRefusal?
+  /// The question a socket press is waiting on, or nil.
+  ///
+  /// Root-level for the same reason `pluginLinkRefusal` is: by the time a
+  /// contributed button's action answers, the context menu has dismissed and
+  /// the toolbar icon has nowhere to put a field. Set by
+  /// `invokeSocketContribution` and cleared by whoever shows it.
+  @Published var pendingPluginPrompt: PluginSocketPromptRequest?
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
@@ -18154,6 +18161,40 @@ final class SyncService: ObservableObject {
       activeRemoteDbSiteId = nil
     }
 
+    // The cursor counts versions of the HOST's database, so the host's own head
+    // is its ceiling. A higher one is impossible and describes rows no machine
+    // has written yet: the host reads it as "this phone is current", exports
+    // nothing, and the device is starved for the life of the pairing (bug A3).
+    //
+    // Clamping DOWN is always safe — the phone re-receives rows it may already
+    // hold, and every apply is `insert or ignore`. This is the opposite of the
+    // rule below, which forbids raising the cursor to the server's version.
+    // A phone poisoned by an older build persisted the bad number, so the
+    // repair has to overwrite the stored cursor rather than take a max of it,
+    // and it has to drop the queued write that would put the bad number back.
+    if let hostDbVersion = (payload["serverDbVersion"] as? NSNumber)?.intValue,
+       hostDbVersion >= 0,
+       latestRemoteDbVersion > hostDbVersion {
+      let poisonedCursor = latestRemoteDbVersion
+      latestRemoteDbVersion = hostDbVersion
+      remoteCursorProfilePersistTask?.cancel()
+      remoteCursorProfilePersistTask = nil
+      pendingRemoteProfileDbVersion = nil
+      pendingRemoteProfileDbVersionBySite = [:]
+      let cursorSite = activeRemoteDbSiteId
+      updateProfile { profile in
+        profile.lastRemoteDbVersion = hostDbVersion
+        if let cursorSite {
+          var bySite = profile.remoteDbVersionBySite ?? [:]
+          bySite[cursorSite] = hostDbVersion
+          profile.remoteDbVersionBySite = bySite
+        }
+      }
+      syncConnectLog.warning(
+        "remote_db_cursor_clamped stored=\(poisonedCursor, privacy: .public) hostDbVersion=\(hostDbVersion, privacy: .public)"
+      )
+    }
+
     let features = payload["features"] as? [String: Any]
     func featureEnabled(_ keys: String...) -> Bool {
       for key in keys {
@@ -18662,7 +18703,18 @@ final class SyncService: ObservableObject {
         // ack belong to the dead connection — advancing the new site's cursor
         // here would make the host skip the new project DB's backlog.
         guard isCurrentConnectionGeneration(generation) else { return }
-        latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
+        // `batch.toDbVersion` ONLY. It is a db_version the host stamped from
+        // its own database, which is the space this cursor lives in — it goes
+        // back out as the `dbVersion` of every hello.
+        //
+        // `result.dbVersion` is this phone's `max(db_version)` across the whole
+        // local `crsql_changes`, which mixes every site that ever replicated
+        // here with this device's own writes. Folding it in is what sent a
+        // hello cursor of 45.9M to a Mac whose head was 15.3M: the host then
+        // believed the phone held every row it had, exported nothing, and
+        // seeded the phone's plugin watermark 30M versions past any row that
+        // exists — so no plugin row could ever reach the phone (bug A3).
+        latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion)
         markSyncActivity()
         let advancedVersion = latestRemoteDbVersion
         let cursorSite = activeRemoteDbSiteId

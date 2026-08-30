@@ -33,6 +33,16 @@ export {
   type PluginPanelSlot,
 } from "./PluginPanelSlots";
 export { PluginWebviewOverlayHost } from "./PluginWebviewOverlayHost";
+export { PluginPromptHost } from "./PluginPromptHost";
+export {
+  closePluginPrompt,
+  getPluginPrompt,
+  openPluginPrompt,
+  readPluginPromptAnchor,
+  submitPluginPrompt,
+  usePluginPrompt,
+  type PluginPromptRequest,
+} from "./pluginPromptStore";
 export {
   closePluginWebviewOverlay,
   openPluginWebviewOverlay,
@@ -73,6 +83,7 @@ export {
   type PluginDialogTarget,
 } from "./dialogTarget";
 export {
+  pluginActionSubject,
   pluginAutomationContext,
   pluginDialogContext,
   pluginLaneContext,

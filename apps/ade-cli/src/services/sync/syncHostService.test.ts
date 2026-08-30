@@ -6179,6 +6179,36 @@ describe("initial hydration priority", () => {
     })).toBe(11);
   });
 
+  it("clamps a hello cursor that claims more versions than this database has (A3)", () => {
+    // The cursor is the peer's echo of a `toDbVersion` this host stamped, so it
+    // belongs to this database's version space and cannot exceed its head. An
+    // iOS build folded its own `max(db_version)` — a number mixing every site
+    // in its replica — into the cursor and hellod at 3x the head. Normalizing
+    // it once, here, keeps that number out of every downstream comparison.
+    expect(initialSyncHostCursorForPeer({
+      peer: {
+        deviceType: "phone",
+        dbVersion: 45_963_567,
+        dbVersionBySite: { "site-host": 45_963_567 },
+        capabilities: [SYNC_PLUGIN_TABLES_CAPABILITY],
+      },
+      serverDbSiteId: "site-host",
+      serverDbVersion: 15_330_189,
+    })).toBe(15_330_189);
+    expect(adoptedSyncHostCursorForPeer({
+      peer: {
+        deviceType: "phone",
+        dbVersion: 45_963_567,
+        dbVersionBySite: { "site-host": 45_963_567 },
+        capabilities: [SYNC_PLUGIN_TABLES_CAPABILITY],
+      },
+      serverDbSiteId: "site-host",
+      serverDbVersion: 15_330_189,
+      snapshotServerDbSiteId: "site-host",
+      snapshotLastKnownServerDbVersion: 45_250_073,
+    })).toBe(15_330_189);
+  });
+
   it("preserves an invalidation browser's same-DB handoff cursor but resets for a new DB", () => {
     const peer = {
       deviceType: "browser" as const,
@@ -6996,7 +7026,12 @@ describe("outbound changeset ack retries", () => {
     projectRoot: string,
     state: { dbVersion: number; changes: CrsqlChangeRow[] },
     logger = createDiscoveryLogger(),
-    options: { pollIntervalMs?: number; pluginWatermarks?: Map<string, number> } = {},
+    options: {
+      pollIntervalMs?: number;
+      pluginWatermarks?: Map<string, number>;
+      /** Bind a db that cannot report the oldest plugin row — an older host. */
+      minDbVersionForTablesUnavailable?: boolean;
+    } = {},
   ) {
     const base = createHostArgs(projectRoot, []);
     const exportChangesSince = vi.fn(
@@ -7033,10 +7068,21 @@ describe("outbound changeset ack retries", () => {
           getSiteId: () => "site-host-controlled",
           getDbVersion: () => state.dbVersion,
           exportChangesSince,
-          minDbVersionForTables,
+          ...(options.minDbVersionForTablesUnavailable ? {} : { minDbVersionForTables }),
           getPluginTablesWatermark: (deviceId: string) => pluginWatermarks.get(deviceId) ?? 0,
-          setPluginTablesWatermark: (deviceId: string, throughDbVersion: number) => {
-            pluginWatermarks.set(deviceId, Math.max(pluginWatermarks.get(deviceId) ?? 0, throughDbVersion));
+          setPluginTablesWatermark: (
+            deviceId: string,
+            throughDbVersion: number,
+            writeOptions?: { allowRegression?: boolean },
+          ) => {
+            // Mirrors kvDb: monotonic, except for the explicit repair write
+            // that resets a watermark the local head proves cannot be real.
+            pluginWatermarks.set(
+              deviceId,
+              writeOptions?.allowRegression
+                ? throughDbVersion
+                : Math.max(pluginWatermarks.get(deviceId) ?? 0, throughDbVersion),
+            );
           },
           applyChanges: () => ({ appliedCount: 0 }),
           discardUnpublishedChangesForTables: () => {},
@@ -7048,6 +7094,26 @@ describe("outbound changeset ack retries", () => {
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     return { host, logger, exportChangesSince, pluginWatermarks };
+  }
+
+  /**
+   * Hold the local-head invariant open for long enough that the poll loop can
+   * break it. The regression did not stamp a foreign number in one step: the
+   * catch-up swept toward the peer's cursor a window at a time, so the damage
+   * appears several polls after the batch that looks correct.
+   */
+  async function expectWatermarkStaysWithinHead(
+    pluginWatermarks: Map<string, number>,
+    deviceId: string,
+    head: () => number,
+    windowMs = 500,
+  ): Promise<void> {
+    const startedAt = Date.now();
+    for (;;) {
+      expect(pluginWatermarks.get(deviceId) ?? 0).toBeLessThanOrEqual(head());
+      if (Date.now() - startedAt >= windowMs) return;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
   }
 
   it("reseeds a far-behind iOS replica once, then resumes incrementally from the acknowledged watermark", async () => {
@@ -7719,6 +7785,490 @@ describe("outbound changeset ack retries", () => {
     } finally {
       upgraded?.ws.close();
       legacy?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("sends every plugin row to a peer that hellos with a cursor 3x the local head (A3)", async () => {
+    // The regression that made the plugin platform unusable on mobile. A peer's
+    // hello cursor is a db_version from the PEER's site: an iOS build folded
+    // its own local version into it and arrived claiming 45M against a database
+    // whose head was 15M. Seeded into the local plugin watermark, that number
+    // put every plugin row permanently behind it. Nothing local may be derived
+    // from the peer's number, and the sweep may never chase it.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 20,
+      changes: [
+        ...Array.from({ length: 4 }, (_, index) => makeChange(index + 1, index)),
+        { ...makeChange(9, 9), table: "plugin_panels", cid: "schema_json", pk: "journal/notes" },
+        { ...makeChange(10, 10), table: "plugin_collections", cid: "value_json", pk: "journal/notes/1" },
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host, pluginWatermarks } = createControlledChangesetHost(projectRoot, state, logger);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-absurd-cursor", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+        // Three times the head of the whole database, exactly as observed.
+        dbVersion: state.dbVersion * 3,
+        dbVersionBySite: { "site-host-controlled": state.dbVersion * 3 },
+      });
+
+      const catchUpEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "plugin catch-up for a peer with an absurd cursor",
+      );
+      const catchUp = catchUpEnvelope.payload as SyncChangesetBatchPayload;
+      expect(catchUp.changes.map((change) => change.table).sort())
+        .toEqual(["plugin_collections", "plugin_panels"]);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: catchUp.batchId,
+        payload: {
+          batchId: catchUp.batchId,
+          fromDbVersion: catchUp.fromDbVersion,
+          toDbVersion: catchUp.toDbVersion,
+          appliedDbVersion: catchUp.toDbVersion,
+          appliedCount: catchUp.changes.length,
+          ok: true,
+        },
+      }));
+
+      await waitForValue(
+        () => (pluginWatermarks.get("ios-absurd-cursor") ?? 0) > 0 ? true : undefined,
+        "persisted plugin watermark",
+      );
+      // The sweep stops at the local head. Chasing the peer's number is what
+      // marched the watermark tens of millions of versions past every row —
+      // one empty window per poll, so the damage lands after the batch above.
+      await expectWatermarkStaysWithinHead(
+        pluginWatermarks,
+        "ios-absurd-cursor",
+        () => state.dbVersion,
+      );
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("heals a stored plugin watermark that sits past the local head, on the next hello (A3)", async () => {
+    // No migration repairs the devices already poisoned, and the phone cannot
+    // be repaired from the outside: a hand-written 0 is overwritten seconds
+    // later. The read path itself has to distrust a watermark the local head
+    // proves impossible, so reconnecting is the whole repair.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 20,
+      changes: [
+        ...Array.from({ length: 4 }, (_, index) => makeChange(index + 1, index)),
+        { ...makeChange(9, 9), table: "plugin_panels", cid: "schema_json", pk: "journal/notes" },
+        { ...makeChange(10, 10), table: "plugin_collections", cid: "value_json", pk: "journal/notes/1" },
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const pluginWatermarks = new Map<string, number>([["ios-poisoned", 45_250_073]]);
+    const { host } = createControlledChangesetHost(projectRoot, state, logger, { pluginWatermarks });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-poisoned", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+        dbVersion: state.dbVersion,
+        dbVersionBySite: { "site-host-controlled": state.dbVersion },
+      });
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_host.plugin_watermark_clamped",
+        expect.objectContaining({
+          peerDeviceId: "ios-poisoned",
+          storedThroughDbVersion: 45_250_073,
+          localDbVersion: state.dbVersion,
+          clampedTo: 0,
+        }),
+      );
+      // The repair is written back, so the row stops lying even before the
+      // sweep re-earns it.
+      expect(pluginWatermarks.get("ios-poisoned")).toBeLessThanOrEqual(state.dbVersion);
+
+      const catchUpEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "plugin re-export after healing a poisoned watermark",
+      );
+      const catchUp = catchUpEnvelope.payload as SyncChangesetBatchPayload;
+      expect(catchUp.changes.map((change) => change.table).sort())
+        .toEqual(["plugin_collections", "plugin_panels"]);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps the plugin watermark at or below the local head across hello, reseed, export and ack (A3)", async () => {
+    // The invariant, stated once for the whole flow: no sequence of peer
+    // messages may leave a watermark describing an export this machine could
+    // not have made. It is checked after every step a peer can drive.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      changes: [
+        ...Array.from({ length: 40 }, (_, index) => makeChange(index + 1, index)),
+        { ...makeChange(41, 41), table: "plugin_panels", cid: "schema_json", pk: "journal/notes" },
+        { ...makeChange(42, 42), table: "plugin_collections", cid: "value_json", pk: "journal/notes/1" },
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host, pluginWatermarks } = createControlledChangesetHost(projectRoot, state, logger);
+    const device = "ios-invariant";
+    const expectWithinHead = () => expectWatermarkStaysWithinHead(
+      pluginWatermarks,
+      device,
+      () => state.dbVersion,
+      0,
+    );
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // Far behind AND lying about its cursor: the reseed path and the poisoned
+      // cursor at once.
+      peer = await connectPeer(port, host.getBootstrapToken(), device, {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+        dbVersion: state.dbVersion * 3,
+        dbVersionBySite: { "site-host-controlled": state.dbVersion * 3 },
+      });
+      await expectWithinHead();
+
+      const firstEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "first batch for a far-behind lying peer",
+      );
+      const first = firstEnvelope.payload as SyncChangesetBatchPayload;
+      await expectWithinHead();
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: first.batchId,
+        payload: {
+          batchId: first.batchId,
+          fromDbVersion: first.fromDbVersion,
+          toDbVersion: first.toDbVersion,
+          // A peer may ack with a number from its OWN version space too.
+          appliedDbVersion: state.dbVersion * 3,
+          appliedCount: first.changes.length,
+          ok: true,
+        },
+      }));
+      await waitForValue(
+        () => (pluginWatermarks.get(device) ?? 0) > 0 ? true : undefined,
+        "plugin watermark recorded after the first ack",
+      );
+      await expectWithinHead();
+
+      // A later local write, exported and acked the ordinary way.
+      state.dbVersion += 1;
+      state.changes.push({
+        ...makeChange(state.dbVersion, state.changes.length),
+        table: "plugin_collections",
+        cid: "value_json",
+        pk: "journal/notes/2",
+      });
+      const nextEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) =>
+          candidate.type === "changeset_batch"
+          && (candidate.payload as SyncChangesetBatchPayload).batchId !== first.batchId),
+        "incremental batch after the reseed",
+      );
+      const next = nextEnvelope.payload as SyncChangesetBatchPayload;
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: next.batchId,
+        payload: {
+          batchId: next.batchId,
+          fromDbVersion: next.fromDbVersion,
+          toDbVersion: next.toDbVersion,
+          appliedDbVersion: next.toDbVersion,
+          appliedCount: next.changes.length,
+          ok: true,
+        },
+      }));
+      await waitForValue(
+        () => (pluginWatermarks.get(device) ?? 0) >= next.toDbVersion ? true : undefined,
+        "plugin watermark recorded after the incremental ack",
+      );
+      await expectWatermarkStaysWithinHead(pluginWatermarks, device, () => state.dbVersion);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("does not advance the plugin watermark on an acked batch that carried no plugin row (A3)", async () => {
+    // The second half of the regression: the watermark's `updated_at` moved
+    // after the two notes the phone never saw, so something was stamping it
+    // without sending anything. A reseed that had to drop the plugin tables
+    // acks the peer all the way to its target — and must still earn nothing.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const bulkyValue = "x".repeat(200_000);
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      changes: [
+        ...Array.from({ length: 400 }, (_, index) => makeChange(index + 1, index)),
+        ...Array.from({ length: 30 }, (_, index) => ({
+          ...makeChange(400 + index + 1, 400 + index, bulkyValue),
+          table: "plugin_collections",
+          cid: "value_json",
+          pk: `plugin-key-${index}`,
+        })),
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host, pluginWatermarks } = createControlledChangesetHost(projectRoot, state, logger);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-empty-batch", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+      });
+
+      const reseedEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "reseed recovered after excluding plugin tables",
+      );
+      const reseed = reseedEnvelope.payload as SyncChangesetBatchPayload;
+      expect(reseed.changes.every((change) => change.table === "kv")).toBe(true);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: reseed.batchId,
+        payload: {
+          batchId: reseed.batchId,
+          fromDbVersion: reseed.fromDbVersion,
+          toDbVersion: reseed.toDbVersion,
+          appliedDbVersion: reseed.toDbVersion,
+          appliedCount: reseed.changes.length,
+          ok: true,
+        },
+      }));
+
+      // The ack moved the peer's cursor to the reseed target. The watermark
+      // stays where it was, because no plugin row was in that batch.
+      const catchUpEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => {
+          if (candidate.type !== "changeset_batch") return false;
+          const batch = candidate.payload as SyncChangesetBatchPayload;
+          return batch.batchId !== reseed.batchId
+            && batch.changes.some((change) => change.table === "plugin_collections");
+        }),
+        "plugin catch-up after an ack that carried no plugin row",
+      );
+      expect(pluginWatermarks.get("ios-empty-batch") ?? 0).toBe(0);
+      const catchUp = catchUpEnvelope.payload as SyncChangesetBatchPayload;
+      expect(catchUp.changes.every((change) => change.table === "plugin_collections")).toBe(true);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("clamps a plugin watermark whose batch outlived the local head (A3)", async () => {
+    // The last line of the invariant, reached without a peer lying at all. A
+    // batch earns its watermark on the ack, and a rebuilt database can restart
+    // its version counter between the two — leaving a legitimate number from a
+    // vanished version space about to be stored as local export state. It gets
+    // clamped to the head that exists now and logged, not written.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 20,
+      changes: [
+        ...Array.from({ length: 4 }, (_, index) => makeChange(index + 1, index)),
+        { ...makeChange(9, 9), table: "plugin_panels", cid: "schema_json", pk: "journal/notes" },
+        { ...makeChange(10, 10), table: "plugin_collections", cid: "value_json", pk: "journal/notes/1" },
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host, pluginWatermarks } = createControlledChangesetHost(projectRoot, state, logger);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-rebuilt-db", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+      });
+
+      const batchEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "batch carrying the plugin rows",
+      );
+      const batch = batchEnvelope.payload as SyncChangesetBatchPayload;
+      expect(batch.toDbVersion).toBeGreaterThan(1);
+
+      // The rebuild: the head this host reports is now below the batch that is
+      // still in flight.
+      state.dbVersion = 1;
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: batch.batchId,
+        payload: {
+          batchId: batch.batchId,
+          fromDbVersion: batch.fromDbVersion,
+          toDbVersion: batch.toDbVersion,
+          appliedDbVersion: batch.toDbVersion,
+          appliedCount: batch.changes.length,
+          ok: true,
+        },
+      }));
+
+      await waitForValue(
+        () => logger.warn.mock.calls.some(([event]: [string]) => event === "sync_host.plugin_watermark_clamped")
+          ? true
+          : undefined,
+        "the advance-time clamp",
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_host.plugin_watermark_clamped",
+        expect.objectContaining({
+          peerDeviceId: "ios-rebuilt-db",
+          storedThroughDbVersion: batch.toDbVersion,
+          localDbVersion: 1,
+          clampedTo: 1,
+          source: "advance",
+        }),
+      );
+      expect(pluginWatermarks.get("ios-rebuilt-db") ?? 0).toBeLessThanOrEqual(1);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("sweeps for plugin rows when the host cannot read the plugin floor (A3)", async () => {
+    // "No plugin row exists" and "this host cannot tell" are different answers,
+    // and only the first one may stamp a peer current. A host bound to a db
+    // that cannot report the oldest plugin row used to take the second for the
+    // first and jump the watermark to the peer's cursor, which is the same
+    // stamp-from-nothing that starved a phone. It must sweep instead.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 20,
+      changes: [
+        ...Array.from({ length: 4 }, (_, index) => makeChange(index + 1, index)),
+        { ...makeChange(9, 9), table: "plugin_panels", cid: "schema_json", pk: "journal/notes" },
+        { ...makeChange(10, 10), table: "plugin_collections", cid: "value_json", pk: "journal/notes/1" },
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    const { host } = createControlledChangesetHost(projectRoot, state, logger, {
+      minDbVersionForTablesUnavailable: true,
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      // Cursor at head, watermark at 0: the ordinary export has nothing left to
+      // send, so the plugin rows can only arrive through the sweep.
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-no-floor", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+        dbVersion: state.dbVersion,
+        dbVersionBySite: { "site-host-controlled": state.dbVersion },
+      });
+
+      const catchUpEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => {
+          if (candidate.type !== "changeset_batch") return false;
+          const batch = candidate.payload as SyncChangesetBatchPayload;
+          return batch.changes.some((change) => change.table === "plugin_collections");
+        }),
+        "plugin sweep on a host that cannot read the plugin floor",
+      );
+      const catchUp = catchUpEnvelope.payload as SyncChangesetBatchPayload;
+      expect(catchUp.changes.map((change) => change.table).sort())
+        .toEqual(["plugin_collections", "plugin_panels"]);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("re-sends plugin rows below a stored watermark when a reseed had to drop them (A3)", async () => {
+    // The case the old peer-cursor clamp covered, kept without the clamp. This
+    // device has a watermark from an earlier connection AND arrives wiped, so
+    // its cursor is 0 and every row it was once sent is gone. The reseed that
+    // rebuilds it cannot fit the plugin tables, which is the moment the host
+    // stops having evidence the peer holds any plugin row: the watermark drops
+    // to the floor and the sweep re-sends the rows underneath it.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const bulkyValue = "x".repeat(200_000);
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      changes: [
+        ...Array.from({ length: 400 }, (_, index) => makeChange(index + 1, index)),
+        ...Array.from({ length: 30 }, (_, index) => ({
+          ...makeChange(400 + index + 1, 400 + index, bulkyValue),
+          table: "plugin_collections",
+          cid: "value_json",
+          pk: `plugin-key-${index}`,
+        })),
+      ],
+    };
+    const logger = createDiscoveryLogger();
+    // Above every plugin row in the database, and legitimately below the head:
+    // an ordinary watermark, not a poisoned one.
+    const pluginWatermarks = new Map<string, number>([["ios-wiped", 500]]);
+    const { host } = createControlledChangesetHost(projectRoot, state, logger, { pluginWatermarks });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-wiped", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_PLUGIN_TABLES_CAPABILITY],
+      });
+
+      const reseedEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "reseed recovered after excluding plugin tables",
+      );
+      const reseed = reseedEnvelope.payload as SyncChangesetBatchPayload;
+      expect(reseed.changes.every((change) => change.table === "kv")).toBe(true);
+      expect(logger.info).toHaveBeenCalledWith(
+        "sync_host.plugin_watermark_reset",
+        expect.objectContaining({ peerDeviceId: "ios-wiped", previousThroughDbVersion: 500 }),
+      );
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: reseed.batchId,
+        payload: {
+          batchId: reseed.batchId,
+          fromDbVersion: reseed.fromDbVersion,
+          toDbVersion: reseed.toDbVersion,
+          appliedDbVersion: reseed.toDbVersion,
+          appliedCount: reseed.changes.length,
+          ok: true,
+        },
+      }));
+
+      const catchUpEnvelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => {
+          if (candidate.type !== "changeset_batch") return false;
+          const batch = candidate.payload as SyncChangesetBatchPayload;
+          return batch.batchId !== reseed.batchId
+            && batch.changes.some((change) => change.table === "plugin_collections");
+        }),
+        "plugin rows below the stored watermark, re-sent after a capped reseed",
+      );
+      const catchUp = catchUpEnvelope.payload as SyncChangesetBatchPayload;
+      // Rows 401..430 sit UNDER the 500 the host had recorded.
+      expect(catchUp.changes.every((change) => Number(change.db_version) < 500)).toBe(true);
+    } finally {
+      peer?.ws.close();
       await host.dispose();
       cleanup();
     }

@@ -16,14 +16,6 @@
       "panelId": "journal",
       "icon": "note",
       "mobile": true
-    },
-    {
-      "kind": "pane",
-      "id": "today",
-      "title": "Journal",
-      "panelId": "today",
-      "icon": "note",
-      "mobile": true
     }
   ],
   "panels": [
@@ -37,7 +29,7 @@
     {
       "id": "today",
       "schemaFile": "panels/today.json",
-      "title": "Today",
+      "title": "Recent",
       "icon": "note",
       "refreshAction": "refreshToday"
     },
@@ -65,15 +57,15 @@
       "socket": "chat-header-action",
       "surface": "work",
       "id": "log",
-      "label": "Log it",
+      "label": "Log a note",
       "icon": "note",
       "actionId": "logIt",
       "color": "#2F8F6F",
       "menu": [
-        { "label": "Blocked", "actionId": "logBlocked", "icon": "flag" },
-        { "label": "Done", "actionId": "logDone", "icon": "list-checks" },
-        { "label": "Write my standup", "actionId": "writeStandup", "icon": "sparkle" },
-        { "label": "Open the journal", "actionId": "openJournal", "icon": "clock-counter-clockwise" }
+        { "label": "Log a blocker", "actionId": "logBlocked", "icon": "flag" },
+        { "label": "Log something finished", "actionId": "logDone", "icon": "list-checks" },
+        { "label": "Write my standup (today's notes)", "actionId": "writeStandup", "icon": "sparkle" },
+        { "label": "Open my journal", "actionId": "openJournal", "icon": "clock-counter-clockwise" }
       ]
     },
     {
@@ -90,7 +82,7 @@
       "socket": "row-badge",
       "surface": "lanes",
       "id": "lane-notes",
-      "label": "0",
+      "label": "Notes today",
       "icon": "note"
     },
     {

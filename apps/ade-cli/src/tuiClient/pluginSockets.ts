@@ -19,7 +19,9 @@
 // TUI SUPPORT, stated once (design decision: honest degradation over invented
 // chrome). Of the eight socket kinds:
 //
-//   row-badge      — drawn on the drawer's lane cards and chat rows.
+//   row-badge      — drawn on the drawer's lane cards and chat rows, and only
+//                    from a PUBLISHED per-entity row. The manifest declaration
+//                    reserves the slot and draws nothing.
 //   row-menu-item  — listed by `/plugin-actions` for the focused lane or chat.
 //   toolbar-action — listed by `/plugin-actions` under the surface itself. The
 //                    TUI header is a breadcrumb strip with nothing selectable in

@@ -142,7 +142,9 @@ struct PluginVocabButtonView: View {
   var body: some View {
     Button {
       ADEHaptics.light()
-      store.perform(button.onPress)
+      // The label rides along so a `{prompt}` that named no title of its own is
+      // asked under the words the reader actually pressed.
+      store.perform(button.onPress, label: button.label)
     } label: {
       HStack(spacing: 6) {
         if isBusy {
@@ -200,7 +202,7 @@ struct PluginVocabEmptyStateView: View {
       if let label = emptyState.actionLabel, let action = emptyState.action {
         ADEGlassActionButton(title: label, symbol: "play.circle", tint: ADEColor.accent) {
           ADEHaptics.light()
-          store.perform(action)
+          store.perform(action, label: label)
         }
         .disabled(!store.canInvoke || store.isInFlight(action))
       }

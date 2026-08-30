@@ -909,6 +909,28 @@ function parseSurfaces(raw: unknown, ctx: ParseContext, official: boolean): Plug
         builtin = requested;
       }
     }
+    // A `pane` draws NOTHING on its own, and never did.
+    //
+    // The kind is meaningful in exactly one shape: as the form of a COMPILED
+    // pane an official plugin gates. Linear, the iOS simulator and Electron
+    // Control all live inside Work rather than at a route, and `pane` is how
+    // their manifests say so — but the drawing there is ADE's, not the
+    // plugin's, and the gate is the `builtin` field.
+    //
+    // A `pane` with no honoured `builtin` reached no client at all. The
+    // desktop rail reads `work-rail-pane` SOCKETS and never looks at
+    // `surfaces[]`; the phone's plugin menu keys off panel count; and the
+    // preload's rail mapper keeps only `tab` and `webview`. Meanwhile the
+    // install card disclosed it ("Adds: … pane") and `doctor` stayed green.
+    // A surface nothing can draw, promised to the user at install time, is the
+    // "green while broken" state the rest of this taxonomy exists to prevent —
+    // so it is refused here, by name, with the replacement in the message.
+    if (kind === "pane" && !builtin) {
+      return ctx.drop(
+        `${label}.kind "pane" is not drawn by any client on its own`
+        + ` — declare a "work-rail-pane" socket for panel "${panelId}" instead`,
+      );
+    }
     // `mobile` is a narrowing switch, not a grant. The ceiling comes from what
     // the surface IS — a webview draws a desktop-only page, a gated built-in
     // draws whatever compiled page the phone ships for it — and the manifest may

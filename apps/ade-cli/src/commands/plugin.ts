@@ -749,6 +749,7 @@ async function runPluginDoctor(
     // reporting "plugin.json is missing" for it would answer a question the
     // "Installed here" line already answers better.
     manifestErrors: record ? parsed.errors : [],
+    manifestWarnings: record ? parsed.warnings : [],
     live,
     sourcePresent: record?.source.kind === "local"
       ? fs.existsSync(path.resolve(record.source.path))

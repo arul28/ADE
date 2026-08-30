@@ -15,7 +15,7 @@
         { "component": "text", "text": "Standup", "variant": "title" },
         {
           "component": "text",
-          "text": "Set the time and the Slack webhook below, then press Apply. ADE holds the schedule; the webhook URL is stored in this plugin's encrypted secret store and never leaves this machine except to post.",
+          "text": "Apply saves all three of these. The time and the switch are this plugin's own settings; the webhook URL goes to its encrypted secret store instead, and never leaves this machine except to post.",
           "variant": "caption"
         },
         {

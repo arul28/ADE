@@ -25,6 +25,7 @@ import {
 import type { createPluginChildSupervisor, PluginChildSupervisor } from "./pluginChildSupervisor";
 import { createPluginDataStore, type PluginDataStore } from "./pluginDataStore";
 import { emitPluginChange } from "./pluginEvents";
+import { emitPluginEntityChange } from "./pluginEntityChanges";
 import {
   emitPluginRuntimeHook,
   resetPluginRuntimeHookListenersForTests,
@@ -147,6 +148,16 @@ function fixtureWithProjectSecrets(names: string[]): string {
   const manifestPath = path.join(dir, "plugin.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
   manifest.projectSecrets = names;
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  return dir;
+}
+
+/** The fixture with a settings block of the caller's choosing. */
+function fixtureWithSettings(settings: unknown[]): string {
+  const dir = copyFixture();
+  const manifestPath = path.join(dir, "plugin.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+  manifest.settings = settings;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
   return dir;
 }
@@ -290,6 +301,151 @@ describe("plugin.setConfig", () => {
       .catch((error: unknown) => error);
 
     expect((rejected as PluginSdkError).code).toBe("plugin_not_found");
+  });
+});
+
+/**
+ * `ade.config.set` — a plugin writing its OWN settings.
+ *
+ * Driven end to end through the recording supervisor's `sdk()` so the real SDK
+ * server and the real host validator answer, because the two things this has to
+ * get right are exactly the two a stub would hide: what the manifest lets
+ * through, and that the child survives the call.
+ */
+describe("ade.config.set", () => {
+  afterEach(closeScratch);
+
+  const ALL_KINDS = [
+    { key: "greeting", kind: "text", label: "Greeting", default: "Hello" },
+    { key: "loud", kind: "toggle", label: "Loud", default: false },
+    { key: "port", kind: "number", label: "Port", default: 8080 },
+    {
+      key: "tone",
+      kind: "select",
+      label: "Tone",
+      default: "warm",
+      options: [{ value: "warm", label: "Warm" }, { value: "terse", label: "Terse" }],
+    },
+    { key: "apiKey", kind: "secret", label: "API key" },
+  ];
+
+  async function hostWithSettings() {
+    const scope = await hostWithFixture({ source: fixtureWithSettings(ALL_KINDS) });
+    const child = scope.supervisors.latest("hello-plugin")!;
+    return { ...scope, child };
+  }
+
+  it("stores a declared setting, answers with the new effective config, and leaves the child running", async () => {
+    const { child, supervisors, pluginsRoot } = await hostWithSettings();
+    const startsBefore = child.starts;
+
+    const written = await child.sdk("config.set", { values: { greeting: "Hei" } });
+
+    expect((written as Record<string, unknown>).greeting).toBe("Hei");
+    // Defaults still layered under the override, so the plugin never has to
+    // merge the manifest itself.
+    expect((written as Record<string, unknown>).port).toBe(8080);
+    expect(storedConfig(pluginsRoot)).toEqual({ "hello-plugin": { greeting: "Hei" } });
+
+    // The whole reason this is not `plugin.setConfig`: a plugin calling it from
+    // inside an action handler must not be the thing that kills the handler.
+    expect(child.disposals).toBe(0);
+    expect(child.starts).toBe(startsBefore);
+    expect(child.status()).toBe("running");
+    expect(supervisors.latest("hello-plugin")).toBe(child);
+  });
+
+  it("serves the new value to the plugin's very next config.get, with no restart in between", async () => {
+    const { child } = await hostWithSettings();
+
+    expect((await child.sdk("config.get", {}) as Record<string, unknown>).greeting).toBe("Hello");
+    await child.sdk("config.set", { values: { greeting: "Hei" } });
+
+    // `readConfig` re-reads the store per call rather than serving the copy the
+    // child was handed at spawn — the property the no-restart rule rests on.
+    expect((await child.sdk("config.get", {}) as Record<string, unknown>).greeting).toBe("Hei");
+  });
+
+  it("writes several settings in one call", async () => {
+    const { child, pluginsRoot } = await hostWithSettings();
+
+    await child.sdk("config.set", { values: { greeting: "Hei", loud: true, port: 9090 } });
+
+    expect(storedConfig(pluginsRoot)).toEqual({
+      "hello-plugin": { greeting: "Hei", loud: true, port: 9090 },
+    });
+  });
+
+  it("refuses a key the manifest never declared and writes nothing", async () => {
+    const { child, pluginsRoot } = await hostWithSettings();
+
+    const rejected = await child.sdk("config.set", { values: { greetign: "Hei" } })
+      .catch((error: unknown) => error);
+
+    expect(rejected).toBeInstanceOf(PluginSdkError);
+    expect((rejected as PluginSdkError).code).toBe("invalid_args");
+    expect(fs.existsSync(path.join(pluginsRoot, "config.json"))).toBe(false);
+  });
+
+  it("refuses a value of the wrong kind rather than storing the plugin's own lie about it", async () => {
+    const { child, pluginsRoot } = await hostWithSettings();
+
+    // A `toggle` that stored "yes" would read back as a truthy string in every
+    // plugin on the machine, including this one after a restart.
+    expect((await child.sdk("config.set", { values: { loud: "yes" } })
+      .catch((error: unknown) => error) as PluginSdkError).code).toBe("invalid_args");
+    expect((await child.sdk("config.set", { values: { port: "not-a-port" } })
+      .catch((error: unknown) => error) as PluginSdkError).code).toBe("invalid_args");
+    expect((await child.sdk("config.set", { values: { greeting: 12 } })
+      .catch((error: unknown) => error) as PluginSdkError).code).toBe("invalid_args");
+    expect(fs.existsSync(path.join(pluginsRoot, "config.json"))).toBe(false);
+  });
+
+  it("refuses a select value that is not one of its declared options", async () => {
+    const { child } = await hostWithSettings();
+
+    const rejected = await child.sdk("config.set", { values: { tone: "shouty" } })
+      .catch((error: unknown) => error);
+
+    expect((rejected as PluginSdkError).code).toBe("invalid_args");
+    // The valid one still goes through, so the refusal is about the value and
+    // not about `select` settings being unwritable.
+    await child.sdk("config.set", { values: { tone: "terse" } });
+    expect((await child.sdk("config.get", {}) as Record<string, unknown>).tone).toBe("terse");
+  });
+
+  it("refuses a secret setting and names ade.secrets instead", async () => {
+    const { child, pluginsRoot } = await hostWithSettings();
+
+    const rejected = await child.sdk("config.set", { values: { apiKey: "sk-live-1" } })
+      .catch((error: unknown) => error);
+
+    expect((rejected as PluginSdkError).code).toBe("invalid_args");
+    // The message is the whole remedy here: config.json is a plain file handed
+    // to every child at spawn, so the author has to be sent somewhere else.
+    expect((rejected as PluginSdkError).message).toContain("ade.secrets.set");
+    expect(fs.existsSync(path.join(pluginsRoot, "config.json"))).toBe(false);
+  });
+
+  it("treats null as a reset back to the manifest default", async () => {
+    const { child, pluginsRoot } = await hostWithSettings();
+
+    await child.sdk("config.set", { values: { greeting: "Hei" } });
+    const reset = await child.sdk("config.set", { values: { greeting: null } });
+
+    expect((reset as Record<string, unknown>).greeting).toBe("Hello");
+    // Removed, not stored as null: a stored null would shadow the default with
+    // nothing instead of restoring it.
+    expect(storedConfig(pluginsRoot)).toEqual({ "hello-plugin": {} });
+  });
+
+  it("leaves settings the call did not name alone", async () => {
+    const { child, pluginsRoot } = await hostWithSettings();
+
+    await child.sdk("config.set", { values: { greeting: "Hei" } });
+    await child.sdk("config.set", { values: { loud: true } });
+
+    expect(storedConfig(pluginsRoot)).toEqual({ "hello-plugin": { greeting: "Hei", loud: true } });
   });
 });
 
@@ -659,6 +815,134 @@ describe("plugin start and panel materialization", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /**
+   * The other three quarters of the change-event family.
+   *
+   * `lane.changed`, `pr.changed` and `session.changed` were typed, validated,
+   * accepted by the subscription handler and documented — and emitted by
+   * nothing. A plugin that subscribed registered a listener and never heard a
+   * word; the plugin skill's own "row badges from CI" recipe is `pr.changed`,
+   * so copying it produced a plugin that published nothing, forever, silently.
+   */
+  describe("lane, PR and session changes", () => {
+    const families = [
+      { family: "lane" as const, event: "lane.changed" },
+      { family: "pr" as const, event: "pr.changed" },
+      { family: "session" as const, event: "session.changed" },
+    ];
+
+    for (const { family, event } of families) {
+      it(`delivers ${event} to a running child, with the attached project's id`, async () => {
+        vi.useFakeTimers();
+        try {
+          const { supervisors, projectRoot } = await hostWithFixture();
+          const running = supervisors.latest("hello-plugin")!;
+          running.sent.length = 0;
+
+          emitPluginEntityChange({ family, ids: ["entity-1"], projectRoot });
+          vi.runOnlyPendingTimers();
+
+          expect(running.sent).toContainEqual({
+            type: "event",
+            payload: { event, ids: ["entity-1"], projectId: "project-1" },
+          });
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+    }
+
+    it("coalesces a burst into one frame per family, so a PR poll cannot crowd out a lane", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors, projectRoot } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        emitPluginEntityChange({ family: "lane", ids: ["lane-1"], projectRoot });
+        emitPluginEntityChange({ family: "lane", ids: ["lane-2", "lane-1"], projectRoot });
+        emitPluginEntityChange({ family: "pr", ids: ["pr-9"], projectRoot });
+        vi.runOnlyPendingTimers();
+
+        const frames = running.sent.filter(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event"
+            && (entry.payload.event === "lane.changed" || entry.payload.event === "pr.changed"),
+        );
+        // One frame per family, not one per emission: three emissions, two
+        // frames.
+        expect(frames).toHaveLength(2);
+        expect(frames.find((f) => f.payload.event === "lane.changed")?.payload.ids).toEqual(["lane-1", "lane-2"]);
+        expect(frames.find((f) => f.payload.event === "pr.changed")?.payload.ids).toEqual(["pr-9"]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("flags overflow past the id cap rather than truncating a poll silently", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors, projectRoot } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        // A PR poll on a busy repository really does re-read this many rows.
+        emitPluginEntityChange({
+          family: "pr",
+          ids: Array.from({ length: 55 }, (_, index) => `pr-${index}`),
+          projectRoot,
+        });
+        vi.runOnlyPendingTimers();
+
+        const frame = running.sent.find(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event" && entry.payload.event === "pr.changed",
+        );
+        expect(frame?.payload.ids).toHaveLength(50);
+        expect(frame?.payload.overflow).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("carries a null projectId for a checkout no host has attached, rather than guessing", async () => {
+      vi.useFakeTimers();
+      try {
+        const { supervisors } = await hostWithFixture();
+        const running = supervisors.latest("hello-plugin")!;
+        running.sent.length = 0;
+
+        emitPluginEntityChange({ family: "lane", ids: ["lane-1"], projectRoot: "/not/attached" });
+        vi.runOnlyPendingTimers();
+
+        const frame = running.sent.find(
+          (entry): entry is { type: "event"; payload: PluginEventPayload } =>
+            entry.type === "event" && entry.payload.event === "lane.changed",
+        );
+        expect(frame?.payload.projectId).toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("writes to nobody when no child is running", async () => {
+      vi.useFakeTimers();
+      try {
+        const { plugins, supervisors, projectRoot } = await hostWithFixture();
+        await plugins.disable({ pluginId: "hello-plugin" });
+        const stopped = supervisors.latest("hello-plugin")!;
+        stopped.sent.length = 0;
+
+        emitPluginEntityChange({ family: "session", ids: ["session-1"], projectRoot });
+        vi.runOnlyPendingTimers();
+
+        expect(stopped.sent).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("flags overflow rather than silently truncating an install burst past the id cap", async () => {

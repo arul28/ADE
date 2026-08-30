@@ -1033,9 +1033,16 @@ type PeerState = {
    * lets the host notice it owes a peer plugin rows and send them, instead of
    * treating an advanced cursor as proof they arrived.
    *
-   * Seeded from the persisted per-device watermark at hello, clamped to the
-   * peer's own cursor so a phone that wiped its database is not told it already
-   * has rows it does not.
+   * ALWAYS a number in the LOCAL database's version space. It records how far
+   * THIS machine has exported plugin rows to the peer, so every value written
+   * to it must come from local export state — `crsql_db_version()`, the
+   * db_version of a row this host exported, or a reseed target this host built.
+   * A peer-supplied cursor is a number in the PEER's version space and means
+   * nothing here: seeding from one is what starved a phone of every plugin row
+   * behind a watermark 3x past this database's head (bug A3).
+   *
+   * Seeded at hello from the persisted per-device watermark alone, clamped to
+   * the local database head at read time so a poisoned row self-heals.
    */
   pluginTablesThroughDbVersion: number;
   latencyMs: number | null;
@@ -1539,7 +1546,17 @@ export function initialSyncHostCursorForPeer(args: {
   }
   const cursorForThisDb = args.peer.dbVersionBySite?.[args.serverDbSiteId]
     ?? (args.peer.dbVersionBySite ? 0 : args.peer.dbVersion);
-  return Math.max(0, Math.floor(cursorForThisDb));
+  // The cursor is the peer's record of THIS database's versions, echoed back
+  // from the `toDbVersion` this host stamped on every batch — so it belongs in
+  // the LOCAL version space and can never legitimately exceed the local head.
+  // A higher number means the peer mixed in a db_version from another site
+  // (bug A3: an iOS build folded its own local version into this cursor), and
+  // taking it at face value makes the host believe the peer is at head and
+  // export nothing, forever. Clamp instead of trusting.
+  return Math.min(
+    Math.max(0, Math.floor(cursorForThisDb)),
+    Math.max(0, Math.floor(args.serverDbVersion)),
+  );
 }
 
 export function adoptedSyncHostCursorForPeer(args: {
@@ -1566,8 +1583,12 @@ export function adoptedSyncHostCursorForPeer(args: {
     return Math.min(Math.max(0, Math.floor(args.serverDbVersion)), snapshotCursor);
   }
   // Replica peers may have advertised a newer durable per-site cursor than
-  // the depositing host had observed, so retain the fresher same-DB value.
-  return Math.max(initialCursor, snapshotCursor);
+  // the depositing host had observed, so retain the fresher same-DB value —
+  // still bounded by the local head, for the reason above.
+  return Math.min(
+    Math.max(initialCursor, snapshotCursor),
+    Math.max(0, Math.floor(args.serverDbVersion)),
+  );
 }
 
 function isInvalidationOnlyBrowserPeer(
@@ -3859,10 +3880,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           snapshotServerDbSiteId: snapshot.serverDbSiteId,
           snapshotLastKnownServerDbVersion: snapshot.lastKnownServerDbVersion,
         });
-        peer.pluginTablesThroughDbVersion = initialPluginTablesWatermark(
-          peer,
-          peer.lastKnownServerDbVersion,
-        );
+        peer.pluginTablesThroughDbVersion = initialPluginTablesWatermark(peer);
         // Restore live subscriptions so streaming does not silently stop for
         // a peer that never observes a disconnect. Sessions from a different
         // project simply no-op on this host; the phone that REQUESTED a
@@ -4975,12 +4993,72 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return peerAcceptsPluginTables(peer) && !isCompactInvalidationBrowserPeer(peer.metadata);
   }
 
+  /**
+   * The local database head, in the LOCAL version space, or null when this
+   * host cannot read it.
+   *
+   * Every plugin watermark is bounded by this. A watermark above it is
+   * nonsense — no local row can ever carry a db_version past the head — so it
+   * is the one number that separates a real watermark from a foreign one.
+   *
+   * Null is NOT zero. A failed read that reported 0 would make the invariant
+   * fail closed: every stored watermark would look impossible, every repair
+   * would erase a legitimate one, and no advance would ever be kept. An
+   * unknown head means the invariant is unenforceable on this call, so every
+   * caller skips the clamp instead of acting on a number it does not have.
+   */
+  function localDbVersionHead(): number | null {
+    try {
+      const head = Number(args.db.sync.getDbVersion());
+      if (!Number.isFinite(head)) return null;
+      return Math.max(0, Math.floor(head));
+    } catch (error) {
+      args.logger.warn("sync_host.local_db_version_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  function writePersistedPluginTablesWatermark(
+    deviceId: string,
+    throughDbVersion: number,
+    options?: { allowRegression?: boolean },
+  ): void {
+    const write = args.db.sync.setPluginTablesWatermark;
+    if (typeof write !== "function") return;
+    try {
+      write.call(args.db.sync, deviceId, throughDbVersion, options);
+    } catch (error) {
+      // A watermark that fails to persist costs one repeated sweep on the next
+      // connection, which is idempotent. It must never fail the send.
+      args.logger.warn("sync_host.plugin_watermark_write_failed", {
+        peerDeviceId: deviceId,
+        throughDbVersion,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * The stored watermark for this device, with the local-head invariant
+   * enforced on the way out.
+   *
+   * A stored value above the local head cannot describe anything this machine
+   * ever exported, so it is not trusted at all: it resets to 0 and the peer
+   * gets a full plugin catch-up, which is windowed from each table's clock
+   * floor and carries compacted state. Repairing at READ time is what heals the
+   * devices poisoned by bug A3 on their next hello, with no migration. The
+   * repair is written back so the stored row stops lying, which needs the
+   * regression escape hatch — the ordinary write is monotonic.
+   */
   function readPersistedPluginTablesWatermark(deviceId: string): number {
     const read = args.db.sync.getPluginTablesWatermark;
     if (typeof read !== "function") return 0;
+    let stored = 0;
     try {
-      const stored = Number(read.call(args.db.sync, deviceId));
-      return Number.isFinite(stored) && stored > 0 ? Math.floor(stored) : 0;
+      const value = Number(read.call(args.db.sync, deviceId));
+      stored = Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
     } catch (error) {
       args.logger.warn("sync_host.plugin_watermark_read_failed", {
         peerDeviceId: deviceId,
@@ -4988,52 +5066,117 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       return 0;
     }
+    const localHead = localDbVersionHead();
+    if (localHead != null && stored > localHead) {
+      args.logger.warn("sync_host.plugin_watermark_clamped", {
+        peerDeviceId: deviceId,
+        storedThroughDbVersion: stored,
+        localDbVersion: localHead,
+        clampedTo: 0,
+        source: "read",
+      });
+      writePersistedPluginTablesWatermark(deviceId, 0, { allowRegression: true });
+      return 0;
+    }
+    return stored;
   }
 
   /**
    * Where this peer's plugin catch-up starts on this connection.
    *
-   * Clamped to the peer's own changeset cursor, which is what makes a phone
-   * that deleted its database heal: the ordinary backlog replay carries the
-   * plugin rows with it, so claiming the stored (higher) watermark would skip
-   * exactly the rows the wipe destroyed.
+   * Read from local export state ONLY. The peer's hello cursor is deliberately
+   * not an input: it is a db_version issued by the peer's own site, so
+   * comparing it against this database's versions is a category error, and
+   * seeding from it is what pinned a phone's watermark 30M versions past this
+   * head where no plugin row could ever reach it (bug A3).
+   *
+   * A phone that wiped its database still heals: its cursor comes back at 0,
+   * the ordinary backlog replays from 0 and carries the plugin rows with it,
+   * and that export claims the watermark because the peer had no older debt.
    */
-  function initialPluginTablesWatermark(peer: PeerState, cursor: number): number {
-    if (!peerTracksPluginTables(peer)) return cursor;
+  function initialPluginTablesWatermark(peer: PeerState): number {
+    if (!peerTracksPluginTables(peer)) return 0;
     const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "";
     if (!deviceId) return 0;
-    return Math.min(readPersistedPluginTablesWatermark(deviceId), Math.max(0, cursor));
+    return readPersistedPluginTablesWatermark(deviceId);
+  }
+
+  /**
+   * Forget everything this host believes it has sent this peer's plugin tables.
+   *
+   * The one write that moves a watermark BACKWARD, and it is a local decision:
+   * the host is about to rebuild the peer's replica from a compacted snapshot
+   * it deliberately built WITHOUT the plugin tables, so after that batch it has
+   * no evidence the peer holds a single plugin row — a phone that wiped its
+   * database is in exactly this position. The old code reached the same place
+   * by clamping the seed to the peer's cursor, which is the peer-space read
+   * that starved every plugin row behind a foreign watermark (bug A3). The
+   * sweep that follows is windowed from each table's clock floor and carries
+   * compacted state, so re-sending is cheap and idempotent.
+   */
+  function resetPluginTablesWatermark(peer: PeerState): void {
+    if (!peerTracksPluginTables(peer)) return;
+    if (peer.pluginTablesThroughDbVersion === 0) return;
+    args.logger.info("sync_host.plugin_watermark_reset", {
+      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+      previousThroughDbVersion: peer.pluginTablesThroughDbVersion,
+      reason: "reseed_without_plugin_tables",
+    });
+    peer.pluginTablesThroughDbVersion = 0;
+    const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "";
+    if (!deviceId) return;
+    writePersistedPluginTablesWatermark(deviceId, 0, { allowRegression: true });
   }
 
   function advancePluginTablesWatermark(peer: PeerState, throughDbVersion: number): void {
     if (!peerTracksPluginTables(peer)) return;
     if (!Number.isFinite(throughDbVersion) || throughDbVersion <= peer.pluginTablesThroughDbVersion) return;
-    peer.pluginTablesThroughDbVersion = Math.floor(throughDbVersion);
+    // The invariant, enforced at the single write chokepoint: a watermark above
+    // the local head describes an export that cannot have happened. Clamp it
+    // rather than storing it, and say so — a clamp here means a caller handed
+    // in a number from the wrong version space.
+    const localHead = localDbVersionHead();
+    let candidate = Math.floor(throughDbVersion);
+    if (localHead != null && candidate > localHead) {
+      args.logger.warn("sync_host.plugin_watermark_clamped", {
+        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+        storedThroughDbVersion: candidate,
+        localDbVersion: localHead,
+        clampedTo: localHead,
+        source: "advance",
+      });
+      candidate = localHead;
+      if (candidate <= peer.pluginTablesThroughDbVersion) return;
+    }
+    peer.pluginTablesThroughDbVersion = candidate;
     const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "";
     if (!deviceId) return;
-    const write = args.db.sync.setPluginTablesWatermark;
-    if (typeof write !== "function") return;
-    try {
-      write.call(args.db.sync, deviceId, peer.pluginTablesThroughDbVersion);
-    } catch (error) {
-      // A watermark that fails to persist costs one repeated sweep on the next
-      // connection, which is idempotent. It must never fail the send.
-      args.logger.warn("sync_host.plugin_watermark_write_failed", {
-        peerDeviceId: deviceId,
-        throughDbVersion: peer.pluginTablesThroughDbVersion,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    writePersistedPluginTablesWatermark(deviceId, peer.pluginTablesThroughDbVersion);
   }
 
-  function pluginTablesMinDbVersion(): number | null {
+  /**
+   * The db_version of the OLDEST plugin row in this database.
+   *
+   * Three answers, not two. `known: false` means this host cannot tell, and it
+   * is never the same as "there is no plugin row": the caller stamps a peer
+   * current on the second and must sweep on the first. Collapsing them is how a
+   * watermark gets stamped from an absence of evidence rather than from an
+   * export — the shape of bug A3's second hole.
+   */
+  function pluginTablesMinDbVersion(): { known: true; dbVersion: number | null } | { known: false } {
     const read = args.db.sync.minDbVersionForTables;
-    if (typeof read !== "function") return null;
+    if (typeof read !== "function") return { known: false };
     try {
       const value = read.call(args.db.sync, SYNC_PLUGIN_TABLES);
-      return typeof value === "number" && Number.isFinite(value) ? value : null;
-    } catch {
-      return null;
+      if (value == null) return { known: true, dbVersion: null };
+      return typeof value === "number" && Number.isFinite(value)
+        ? { known: true, dbVersion: value }
+        : { known: false };
+    } catch (error) {
+      args.logger.warn("sync_host.plugin_tables_floor_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { known: false };
     }
   }
 
@@ -5060,18 +5203,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    */
   function sendPluginTablesCatchUp(peer: PeerState, nowMs: number): boolean {
     if (!peerTracksPluginTables(peer)) return false;
-    const cursor = peer.lastKnownServerDbVersion;
+    // The sweep stops where the ordinary export takes over — the peer's cursor
+    // — but that cursor is a number the PEER issued, so it is clamped into this
+    // database's version space first. Without the clamp an inflated cursor made
+    // this loop march the watermark across tens of millions of empty versions
+    // and past every plugin row the peer still needed (bug A3).
+    const localHead = localDbVersionHead();
+    const cursor = localHead == null
+      ? peer.lastKnownServerDbVersion
+      : Math.min(peer.lastKnownServerDbVersion, localHead);
     if (peer.pluginTablesThroughDbVersion >= cursor) return false;
 
-    // Nothing has ever been written to the plugin tables, or everything in them
-    // is already past this peer's watermark by construction: mark the peer
-    // current rather than sweeping versions that cannot contain a plugin row.
+    // Nothing has ever been written to the plugin tables: mark the peer current
+    // rather than sweeping versions that cannot contain a plugin row. This is
+    // the one place an absence advances the watermark, so it runs only on a
+    // POSITIVE answer — a host that cannot read the floor sweeps from 0 instead
+    // of claiming a peer is current on rows it never looked for.
     const floor = pluginTablesMinDbVersion();
-    if (floor == null) {
+    if (floor.known && floor.dbVersion == null) {
       advancePluginTablesWatermark(peer, cursor);
       return false;
     }
-    let scanFrom = Math.max(peer.pluginTablesThroughDbVersion, Math.max(0, floor - 1));
+    const floorDbVersion = floor.known ? (floor.dbVersion ?? 0) : 0;
+    let scanFrom = Math.max(peer.pluginTablesThroughDbVersion, Math.max(0, floorDbVersion - 1));
     if (scanFrom >= cursor) {
       advancePluginTablesWatermark(peer, cursor);
       return false;
@@ -5168,6 +5322,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // jumps to the target.
       const pluginRowsSent = !cache.pluginTablesExcluded && peerTracksPluginTables(peer);
       pending.pluginTablesToDbVersion = pluginRowsSent ? cache.targetDbVersion : null;
+      // A reseed that dropped the plugin tables rebuilds the replica around
+      // them, so whatever this host had recorded as sent is no longer evidence
+      // of anything — a phone that wiped its database keeps none of it. Clear
+      // the debt to the floor and let the catch-up pay it back in full.
+      if (!pluginRowsSent) resetPluginTablesWatermark(peer);
       args.logger.info("sync_host.mobile_replica_reseed_sent", {
         peerDeviceId: deviceId,
         fromDbVersion: payload.fromDbVersion,
@@ -8265,18 +8424,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // drop them — starts at 0 here even though its cursor is at head, which
       // is what makes a capability upgrade re-export instead of inheriting a
       // watermark taken while the peer could not apply a single plugin row.
-      peer.pluginTablesThroughDbVersion = initialPluginTablesWatermark(
-        peer,
-        peer.lastKnownServerDbVersion,
-      );
+      peer.pluginTablesThroughDbVersion = initialPluginTablesWatermark(peer);
       args.logger.info("sync_host.peer_plugin_tables_state", {
         peerDeviceId: hello.peer.deviceId,
         deviceType: hello.peer.deviceType ?? null,
         pluginTables: peerAcceptsPluginTables(peer),
         tracked: peerTracksPluginTables(peer),
         cursorDbVersion: peer.lastKnownServerDbVersion,
+        localDbVersion: serverDbVersion,
         pluginTablesThroughDbVersion: peer.pluginTablesThroughDbVersion,
-        owedVersions: Math.max(0, peer.lastKnownServerDbVersion - peer.pluginTablesThroughDbVersion),
+        // The debt is measured against the CLAMPED cursor, in the local version
+        // space — the only space this watermark lives in.
+        owedVersions: peerTracksPluginTables(peer)
+          ? Math.max(
+            0,
+            Math.min(peer.lastKnownServerDbVersion, serverDbVersion) - peer.pluginTablesThroughDbVersion,
+          )
+          : 0,
       });
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),

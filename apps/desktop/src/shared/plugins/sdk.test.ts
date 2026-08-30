@@ -10,6 +10,7 @@ import {
   hasPluginActionComposerRequest,
   hasPluginActionDialogRequest,
   hasPluginActionOpenUrlRequest,
+  hasPluginActionPromptRequest,
   hasPluginActionWebviewRequest,
   isPluginCollectionIfFull,
   PLUGIN_COLLECTION_IF_FULL_MODES,
@@ -17,10 +18,13 @@ import {
   PLUGIN_DIALOG_FIELD_VALUE_MAX_BYTES,
   PLUGIN_NOTIFICATION_DEEPLINK_MAX_CHARS,
   PLUGIN_OPEN_URL_MAX_CHARS,
+  PLUGIN_PROMPT_TEXT_MAX_BYTES,
   PLUGIN_WEBVIEW_POINTER_MAX_BYTES,
   pluginCollectionPutParams,
   readPluginActionComposerEdit,
+  buildPluginActionPromptAnswer,
   readPluginActionNavigation,
+  readPluginActionPrompt,
   readPluginInvokeAction,
   pluginInvokeActionMissingMessage,
   readPluginActionDialogEdit,
@@ -380,5 +384,65 @@ describe("plugin.invoke action name", () => {
   it("names both spellings in the refusal", () => {
     expect(pluginInvokeActionMissingMessage()).toContain('"action"');
     expect(pluginInvokeActionMissingMessage()).toContain('"actionId"');
+  });
+});
+
+describe("a prompt in an action response", () => {
+  it("reads the whole question and hands the pointer back untouched", () => {
+    expect(readPluginActionPrompt({
+      prompt: {
+        id: "note",
+        title: "What are you working on?",
+        placeholder: "One line",
+        submitLabel: "Log",
+        context: { lane: "plugin-platform" },
+      },
+    })).toEqual({
+      id: "note",
+      title: "What are you working on?",
+      placeholder: "One line",
+      submitLabel: "Log",
+      context: { lane: "plugin-platform" },
+    });
+  });
+
+  it("keeps the question when the copy is unusable, because the field is the point", () => {
+    expect(readPluginActionPrompt({
+      prompt: { id: "note", title: "t".repeat(500), placeholder: 7, submitLabel: "   " },
+    })).toEqual({ id: "note" });
+  });
+
+  it("drops an over-ceiling pointer and still asks", () => {
+    expect(readPluginActionPrompt({ prompt: { id: "note", context: { blob: "x".repeat(4096) } } }))
+      .toEqual({ id: "note" });
+  });
+
+  it("refuses a prompt with no usable id, since the answer would be unattributable", () => {
+    expect(readPluginActionPrompt({ prompt: { title: "What?" } })).toBeNull();
+    expect(readPluginActionPrompt({ prompt: { id: "not an id" } })).toBeNull();
+    expect(readPluginActionPrompt({ message: "done" })).toBeNull();
+    expect(readPluginActionPrompt(null)).toBeNull();
+  });
+
+  it("separates asking badly from not asking, so a refusal can be logged", () => {
+    expect(hasPluginActionPromptRequest({ prompt: { title: "What?" } })).toBe(true);
+    expect(hasPluginActionPromptRequest({ message: "done" })).toBe(false);
+  });
+
+  it("builds the re-invocation frame, carrying the pointer and an empty answer", () => {
+    const prompt = { id: "note", context: { lane: "main" } };
+    expect(buildPluginActionPromptAnswer(prompt, "wrote the ledger"))
+      .toEqual({ id: "note", text: "wrote the ledger", context: { lane: "main" } });
+    expect(buildPluginActionPromptAnswer({ id: "note" }, ""))
+      .toEqual({ id: "note", text: "" });
+  });
+
+  it("refuses an answer over the ceiling rather than saving half of it", () => {
+    const tooLong = "x".repeat(PLUGIN_PROMPT_TEXT_MAX_BYTES + 1);
+    expect(buildPluginActionPromptAnswer({ id: "note" }, tooLong)).toBeNull();
+    // Measured in BYTES, so a field of multi-byte characters fills sooner than
+    // its character count suggests — the same rule the composer verb uses.
+    const multiByte = "é".repeat(PLUGIN_PROMPT_TEXT_MAX_BYTES / 2 + 1);
+    expect(buildPluginActionPromptAnswer({ id: "note" }, multiByte)).toBeNull();
   });
 });

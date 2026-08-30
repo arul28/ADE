@@ -7866,7 +7866,12 @@ export function AgentChatPane({
       if (shouldRefreshSlashCommands) {
         if (envelope.sessionId === selectedSessionIdRef.current) {
           getAgentChatSlashCommandsCached(
-            { sessionId: envelope.sessionId, projectRoot },
+            // `includePluginCommands` on every refetch, not only the first.
+            // This result REPLACES the composer's whole list, so a refetch
+            // without the flag silently drops the plugin rows the first fetch
+            // brought in — and this one runs on "Session ready", so a plugin's
+            // command vanished from the menu moments after the chat opened.
+            { sessionId: envelope.sessionId, projectRoot, includePluginCommands: true },
             {
               force: envelope.event.type === "system_notice",
               pin: chatRuntimePinRef.current,
@@ -13195,7 +13200,9 @@ export function AgentChatPane({
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
                 });
                 getAgentChatSlashCommandsCached(
-                  { sessionId: selectedSessionId, projectRoot },
+                  // The model changed, not what this client can dispatch — so
+                  // the flag stays on. See the fetch effect above.
+                  { sessionId: selectedSessionId, projectRoot, includePluginCommands: true },
                   { force: true, pin: chatRuntimePinRef.current },
                 )
                   .then(setSdkSlashCommands)

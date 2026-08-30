@@ -6577,6 +6577,21 @@ export function registerIpc({
       }
       host.writeCollection({ pluginId: guest.pluginId, collection, key, value });
     },
+    setConfig: ({ guest, values }) => {
+      // No routed fallback, same as `putCollection`: the routed `plugin`
+      // domain's own `setConfig` restarts the plugin, which would kill the
+      // page's own child mid-save.
+      const host = getCtx().pluginHostService;
+      if (!host) {
+        throw new Error(
+          encodeCodedErrorMessage(
+            PLUGIN_SERVICE_UNAVAILABLE_CODE,
+            "This page can’t save settings on this computer.",
+          ),
+        );
+      }
+      return host.writeConfig({ pluginId: guest.pluginId, values });
+    },
     openDeeplink: ({ guest, url }) => {
       const win = guest.hostWindowId == null ? null : BrowserWindow.fromId(guest.hostWindowId);
       if (!win || win.isDestroyed()) throw new Error("There is no ADE window to open that in.");

@@ -154,9 +154,19 @@ struct PluginInvokeResult: Decodable, Equatable {
   /// on "All" rather than leaving them staring at an empty list they have to
   /// debug. Mirrors `readPluginActionResetState` in `vocabularyState.ts`.
   var resetState: PluginInvokeStateReset?
+  /// The one-field question the action asked before it can finish.
+  ///
+  /// The only verb that comes BACK: the client asks it and then invokes the
+  /// SAME action again with the same arguments plus the answer under
+  /// `args.prompt`. Mirrors `readPluginActionPrompt` in
+  /// `apps/desktop/src/shared/plugins/sdk.ts`.
+  var prompt: PluginActionPrompt?
+  /// Whether the action asked a question AT ALL, however malformed — true even
+  /// when ``prompt`` is nil because the request was refused.
+  var askedForPrompt = false
 
   private enum CodingKeys: String, CodingKey {
-    case ok, message, error, result, navigate, composer, openUrl, resetState
+    case ok, message, error, result, navigate, composer, openUrl, resetState, prompt
   }
 
   init(
@@ -165,7 +175,8 @@ struct PluginInvokeResult: Decodable, Equatable {
     navigate: PluginInvokeNavigation? = nil,
     composer: PluginInvokeComposerEdit? = nil,
     openURL: URL? = nil,
-    resetState: PluginInvokeStateReset? = nil
+    resetState: PluginInvokeStateReset? = nil,
+    prompt: PluginActionPrompt? = nil
   ) {
     self.ok = ok
     self.message = message
@@ -173,6 +184,7 @@ struct PluginInvokeResult: Decodable, Equatable {
     self.composer = composer
     self.openURL = openURL
     self.resetState = resetState
+    self.prompt = prompt
   }
 
   /// Mirrors `PLUGIN_OPEN_URL_MAX_CHARS`.
@@ -241,6 +253,16 @@ struct PluginInvokeResult: Decodable, Equatable {
       } else if let keys = (try? handlerResult.decodeIfPresent([String].self, forKey: .resetState)) ?? nil {
         resetState = PluginInvokeStateReset(keys: keys)
       }
+      // A question with no usable `id` drops the whole prompt: the answer would
+      // come back unattributable, and a handler that cannot tell its own two
+      // questions apart is worse off than one that was never asked.
+      prompt = (try? handlerResult.decodeIfPresent(PluginActionPrompt.self, forKey: .prompt)) ?? nil
+      // The warning half of the pair, mirroring `hasPluginActionPromptRequest`:
+      // a question this client refused is a line a caller can say out loud
+      // rather than a button that silently does nothing.
+      if case .object = (try? handlerResult.decodeIfPresent(RemoteJSONValue.self, forKey: .prompt)) ?? nil {
+        askedForPrompt = true
+      }
     }
   }
 }
@@ -272,6 +294,148 @@ enum PluginInvokeStateReset: Equatable {
 /// can tell it apart from the bare-string form.
 private struct PluginOpenURLPayload: Decodable, Equatable {
   var url: String
+}
+
+/// The `{prompt}` verb: a one-field question an action asks before it can
+/// finish. Mirrors `PluginActionPrompt` in
+/// `apps/desktop/src/shared/plugins/sdk.ts`.
+///
+/// The only verb that comes BACK. A button that answers with one is re-invoked:
+/// the client asks the question and calls the SAME action again with the same
+/// arguments plus ``answerPayload(text:)`` under `args.prompt`. Cancelling
+/// invokes nothing at all.
+///
+/// **One hop.** A re-invocation's own `{prompt}` is ignored by every client, so
+/// a plugin cannot build a wizard out of it and cannot trap the reader in a
+/// question it keeps re-opening. A plugin needing a second field has a panel
+/// `form`.
+struct PluginActionPrompt: Decodable, Equatable {
+  /// Mirrors `PLUGIN_PROMPT_TEXT_MAX_BYTES`. Measured in UTF-8 BYTES, like
+  /// every other text ceiling on this wire, and REFUSED rather than truncated:
+  /// a note cut in half and then saved is worse than one the reader was asked
+  /// to shorten.
+  static let maxTextBytes = 4 * 1024
+  /// Mirrors `PLUGIN_PROMPT_TITLE_MAX_CHARS`.
+  static let maxTitleChars = 120
+  /// Mirrors `PLUGIN_PROMPT_PLACEHOLDER_MAX_CHARS`.
+  static let maxPlaceholderChars = 120
+  /// Mirrors `PLUGIN_PROMPT_SUBMIT_LABEL_MAX_CHARS`.
+  static let maxSubmitLabelChars = 24
+
+  /// WHICH question this is, echoed back verbatim in the answer. Required: one
+  /// action may ask more than one thing across its branches, and a handler that
+  /// cannot tell them apart has nowhere to keep the distinction.
+  var id: String
+  /// The question. Absent means the caller uses the control's own label.
+  var title: String?
+  /// Grey text in the empty field.
+  var placeholder: String?
+  /// The confirm button's word. Absent means the client's own default.
+  var submitLabel: String?
+  /// A plugin-authored pointer, handed back untouched in the answer. Bounded
+  /// like a navigation's context and used the same way.
+  var context: [String: RemoteJSONValue]?
+
+  private enum CodingKeys: String, CodingKey {
+    case id, title, placeholder, submitLabel, context
+  }
+
+  init(
+    id: String,
+    title: String? = nil,
+    placeholder: String? = nil,
+    submitLabel: String? = nil,
+    context: [String: RemoteJSONValue]? = nil
+  ) {
+    self.id = id
+    self.title = title
+    self.placeholder = placeholder
+    self.submitLabel = submitLabel
+    self.context = context
+  }
+
+  /// Throws only on an unusable `id`, which is the one field the question
+  /// cannot be asked without: the answer would be unattributable, and a handler
+  /// receiving it could not tell which of its questions was answered. Every
+  /// other field is tolerant — a title that is blank, not a string, or past its
+  /// ceiling DROPS and the question is still asked, because the caller has the
+  /// control's own label to fall back on.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let id = try container.decode(String.self, forKey: .id)
+    // The manifest identifier rule every other plugin id is held to — the same
+    // check `navigate.panelId` makes.
+    guard ADEDeepLinkURLParsing.isValidPluginPanelId(id) else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .id,
+        in: container,
+        debugDescription: "Not a plugin identifier."
+      )
+    }
+    self.id = id
+    title = Self.bounded(container, .title, max: Self.maxTitleChars)
+    placeholder = Self.bounded(container, .placeholder, max: Self.maxPlaceholderChars)
+    submitLabel = Self.bounded(container, .submitLabel, max: Self.maxSubmitLabelChars)
+    // Same ceiling and the same tolerance a navigation's context gets: over it,
+    // the pointer drops and the question survives.
+    context = PluginPanelContext.read(
+      value: (try? container.decodeIfPresent(RemoteJSONValue.self, forKey: .context)) ?? nil
+    )
+  }
+
+  /// Trimmed, non-empty, and REFUSED rather than cut past its ceiling. Mirrors
+  /// `bounded` in `apps/desktop/src/shared/plugins/parse.ts` — deliberately not
+  /// ``PluginPanelParser/cleanString(_:max:)``, which truncates with an
+  /// ellipsis. A label the plugin wrote too long is one the client falls back
+  /// from, not one it edits.
+  private static func bounded(
+    _ container: KeyedDecodingContainer<CodingKeys>,
+    _ key: CodingKeys,
+    max: Int
+  ) -> String? {
+    guard let raw = (try? container.decodeIfPresent(String.self, forKey: key)) ?? nil else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.count <= max else { return nil }
+    return trimmed
+  }
+
+  /// The answer, as the `args.prompt` frame the re-invocation carries. Mirrors
+  /// `buildPluginActionPromptAnswer`.
+  ///
+  /// `nil` past the ceiling: the caller must NOT re-invoke and should say why.
+  /// Bytes, not characters — a line of emoji is four times its own length here.
+  func answerPayload(text: String) -> [String: Any]? {
+    guard text.utf8.count <= Self.maxTextBytes else { return nil }
+    var answer: [String: Any] = ["id": id, "text": text]
+    if let context, !context.isEmpty {
+      answer["context"] = PluginPanelContext.payload(context)
+    }
+    return answer
+  }
+
+  /// Whether an answer of this length may be sent. The alert's confirm button
+  /// reads it, so the refusal is visible before the reader presses anything.
+  static func acceptsAnswer(_ text: String) -> Bool {
+    text.utf8.count <= maxTextBytes
+  }
+}
+
+/// One question waiting on screen, with what to title it when the plugin named
+/// no title of its own.
+struct PluginPendingPrompt: Identifiable, Equatable {
+  /// Fresh per question, so asking the same question twice re-presents the
+  /// alert and clears the field rather than reusing the last answer.
+  let id = UUID()
+  var prompt: PluginActionPrompt
+  /// The control's own label — the fallback title, as on every client.
+  var fallbackTitle: String
+
+  /// What the alert is titled: the plugin's question, or the control's label.
+  var title: String { prompt.title ?? fallbackTitle }
+
+  /// The confirm button's word. "Done" is the phone's own default, deliberately
+  /// plain: the verb belongs to the plugin when it named one.
+  var submitLabel: String { prompt.submitLabel ?? "Done" }
 }
 
 /// What a plugin action asked the composer to do with the user's unsent draft.

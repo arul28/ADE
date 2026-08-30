@@ -337,6 +337,17 @@ export function createPluginSdkServer(deps: {
   invokeAdeAction: (domain: string, action: string, args: Record<string, unknown>) => Promise<unknown>;
   readConfig: () => Record<string, string | number | boolean | null>;
   /**
+   * Write this plugin's own declared settings and answer with the new
+   * effective config.
+   *
+   * Validated against the manifest by the host (undeclared key, wrong kind, a
+   * `select` value off its option list and a `secret` setting are all refused)
+   * and deliberately NOT a restart: a plugin calling this from inside an action
+   * handler would otherwise kill itself mid-call. `readConfig` re-reads the
+   * store, so the next `config.get` already sees the write.
+   */
+  writeConfig: (values: Record<string, unknown>) => Record<string, string | number | boolean | null>;
+  /**
    * Record a clip through ADE's microphone, on this plugin's behalf.
    *
    * Optional because the microphone belongs to the desktop renderer and this
@@ -750,6 +761,14 @@ export function createPluginSdkServer(deps: {
 
         case "config.get":
           return deps.readConfig();
+
+        case "config.set": {
+          // `{values}` rather than `{key, value}` on the wire so one write of
+          // several settings is one call and one file write. The child SDK
+          // accepts both spellings and normalizes to this one.
+          const values = optionalRecord(params.values, "values");
+          return deps.writeConfig(values);
+        }
 
         case "audio.captureClip": {
           if (!deps.captureAudioClip) throw pluginAudioCaptureUnavailable();

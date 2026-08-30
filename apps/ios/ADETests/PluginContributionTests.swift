@@ -456,6 +456,88 @@ final class PluginContributionTests: XCTestCase {
     }
   }
 
+  /// A DECLARED `row-badge` reserves its slot and draws nothing; only a
+  /// PUBLISHED per-entity row puts a chip on a row.
+  ///
+  /// Bug B4 in the dogfood ledger, confirmed on screen: the journal plugin
+  /// declared `label: "0"` and every lane in the list wore a `0` chip forever,
+  /// because a manifest cannot know a value about one entity and no label reads
+  /// acceptably as "nothing to say about this row yet".
+  ///
+  /// Three assertions, and the third is what keeps the fix honest: the same
+  /// manifest's `row-menu-item` still materializes over every lane, so this is
+  /// a rule about badges and not a wildcard mechanism that quietly stopped
+  /// working.
+  func testADeclaredRowBadgeDrawsNothingUntilARowIsPublished() throws {
+    let record = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data(#"""
+      { "pluginId": "journal", "enabled": true, "sockets": [
+          { "socket": "row-badge", "surface": "lanes", "id": "streak", "label": "0" },
+          { "socket": "row-menu-item", "surface": "lanes", "id": "log",
+            "label": "Log it", "actionId": "journal.log" }
+      ] }
+      """#.utf8)
+    )
+    let published = try XCTUnwrap(PluginContributionParser.parse(
+      entityKind: "lane", entityId: "lane-1", pluginId: "journal",
+      socket: "row-badge",
+      payloadJSON: #"{ "id": "streak", "text": "3 days", "tone": "info" }"#,
+      updatedAt: "2026-08-30T00:00:00Z"
+    ))
+    let index = PluginContributionIndex(
+      contributions: [published],
+      declarations: PluginSocketDeclarations(records: [record])
+    )
+
+    // 1. The lane a row was published for wears that row, and nothing else.
+    XCTAssertEqual(index.badges(.lane, "lane-1").visible.map { $0.badge?.text }, ["3 days"])
+
+    // 2. Every other lane wears NOTHING. The declaration is what a published
+    //    row is matched against; it is not a placeholder to draw.
+    XCTAssertTrue(
+      index.badges(.lane, "lane-2").isEmpty,
+      "A declared badge must not mark a lane the plugin has said nothing about."
+    )
+
+    // 3. The declaration still resolves the published row — that is what makes
+    //    assertion 1 a matched row rather than an unjoined one — and every
+    //    other per-entity kind still materializes over every lane.
+    XCTAssertEqual(
+      index.menuItems(.lane, "lane-2").map { $0.menuItem?.label },
+      ["Log it"],
+      "Only row-badge changes; a declared menu item is still for every row."
+    )
+  }
+
+  /// The declaration is still READ, even though it draws nothing: a published
+  /// row that names it has to survive the join, and one that names a socket the
+  /// plugin never declared still drops.
+  func testARowBadgeDeclarationStillGovernsWhichPublishedRowsSurvive() throws {
+    let record = try JSONDecoder().decode(
+      PluginInstallRecordEntry.self,
+      from: Data(#"""
+      { "pluginId": "journal", "enabled": true, "sockets": [
+          { "socket": "row-badge", "surface": "lanes", "id": "streak", "label": "0" }
+      ] }
+      """#.utf8)
+    )
+    let declarations = PluginSocketDeclarations(records: [record])
+    func badges(payloadId: String) -> [String?] {
+      guard let row = PluginContributionParser.parse(
+        entityKind: "lane", entityId: "lane-1", pluginId: "journal",
+        socket: "row-badge",
+        payloadJSON: #"{ "id": "\#(payloadId)", "text": "3 days" }"#,
+        updatedAt: ""
+      ) else { return [] }
+      return PluginContributionIndex(contributions: [row], declarations: declarations)
+        .badges(.lane, "lane-1").visible.map { $0.badge?.text }
+    }
+
+    XCTAssertEqual(badges(payloadId: "streak"), ["3 days"])
+    XCTAssertEqual(badges(payloadId: "not-declared"), [], "An undeclared socket id still drops.")
+  }
+
   /// A declared colour rides the same path a published one does, and a refused
   /// one costs the plugin the tint, never the button.
   func testDeclaredButtonColourIsJudgedTheSameWay() throws {

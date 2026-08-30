@@ -2,9 +2,10 @@
 
 const {
   KEEP_DAYS,
+  RANGE_OPTIONS,
   cronForTime,
+  dayKey,
   expiredKeys,
-  flagsAreStale,
   formatDay,
   inRange,
   isSlackWebhook,
@@ -13,7 +14,6 @@ const {
   noteRow,
   noteText,
   normalizeKind,
-  rangeFlags,
   searchRows,
   standupText,
 } = require("./journal");
@@ -29,6 +29,58 @@ const K_LAST_SESSION = "session:last";
 const K_LANE_SNAPSHOT = "lanes:snapshot";
 const K_STANDUP = "standup:text";
 const K_SETTINGS_ROW = (n) => `settings:${n}`;
+
+/** Version of the lane snapshot's shape. v1 stored `id → archivedAt`, which `lane.list` never fills in. */
+const LANE_SNAPSHOT_VERSION = 2;
+
+/**
+ * Every action this plugin may hold a schedule for.
+ *
+ * `sweep` is the only trigger that actually fires for an archived lane:
+ * `lane.changed` is not delivered on this host, so a lane that vanished from
+ * `lane.list` would otherwise never be noticed. Fifteen minutes is well clear
+ * of the 60-second floor and cheap — one `lane.list` — and it also refreshes
+ * the per-lane badges, which are a count of TODAY's notes and therefore wrong
+ * from midnight until something recounts them.
+ */
+const SCHEDULED_ACTIONS = ["postStandup", "sweep"];
+const SWEEP_CRON = "*/15 * * * *";
+
+/**
+ * The one question each header verb asks before it writes anything.
+ *
+ * The old handler logged `context.title` — the chat's AUTO-GENERATED summary of
+ * its first message — because a button had no way to ask. It does now: an
+ * action may answer `{prompt}`, the client asks in place, and the SAME action
+ * is invoked again with the answer under `args.prompt`. One hop: the second
+ * pass must do the work, because a re-invocation's own `{prompt}` is ignored.
+ */
+const PROMPTS = {
+  "": {
+    id: "note",
+    title: "What are you working on?",
+    placeholder: "reading the migration",
+    submitLabel: "Save note",
+  },
+  blocked: {
+    id: "blocker",
+    title: "What is blocking you?",
+    placeholder: "waiting on the Stripe test key",
+    submitLabel: "Save blocker",
+  },
+  done: {
+    id: "done",
+    title: "What did you finish?",
+    placeholder: "fixed the login redirect",
+    submitLabel: "Save note",
+  },
+};
+
+/** One line of what this plugin is, shown before the reader has pressed anything. */
+const INTRO =
+  "Work Journal keeps one-line notes about what you are doing, tagged with the lane you were on. "
+  + "Press \"Log a note\" above any chat — it asks what to write — or type /note followed by the line. "
+  + "Your standup is written from the notes you logged today.";
 
 let sdk = null;
 /** laneId → display name. Refreshed from `lane.list`; a miss only costs a note its lane label. */
@@ -121,38 +173,11 @@ async function addNote({ text, kind, laneId, laneName }) {
     laneId: laneId || "",
     laneName: laneName || laneNames.get(laneId) || "",
     at,
-    now: at,
   });
   const stored = await put("notes", key, value);
   if (!stored) return null;
   void publishLaneBadges().catch(() => {});
   return { key, value };
-}
-
-/* ── Keeping the stored filter flags true ───────────────────────────────── */
-
-/**
- * `today` and `week` are a function of NOW, so a row written yesterday still
- * claims to be today's until something rewrites it. Nothing else can: the
- * client only compares strings and never computes one.
- *
- * Only the newest rows can be stale — everything older than a week has carried
- * `""` in both fields since it aged out — so this walks a window, not the store.
- */
-async function rollDayFlags() {
-  const now = Date.now();
-  let rolled = 0;
-  try {
-    for (const row of await readNotes(200)) {
-      if (!flagsAreStale(row.value, now)) continue;
-      const flags = rangeFlags(row.value.at, now);
-      await put("notes", row.key, { ...row.value, ...flags });
-      rolled += 1;
-    }
-  } catch (error) {
-    log("warn", `Could not roll the day flags: ${error?.message ?? error}`);
-  }
-  return rolled;
 }
 
 /** Notes age out. 4,000 rows is not "forever", and history-shaped data has to be windowed. */
@@ -172,15 +197,21 @@ async function pruneOldNotes() {
 /**
  * Today's note count, per lane.
  *
- * A lane with none publishes `null` rather than a zero row: the manifest's
- * declaration draws "0" as its placeholder, so clearing is what shows zero, and
- * it costs no contribution row to do it.
+ * A lane with none publishes `null` rather than a zero row. A DECLARED badge
+ * draws nothing — it reserves the slot and the manifest label only describes
+ * what the slot means — so clearing genuinely clears, and a lane the user has
+ * not written about carries no chip at all.
+ *
+ * The count is of TODAY, so it is stale from midnight until something recounts
+ * it. That is what the `sweep` schedule is for; a published contribution has no
+ * reader-side clock the way a panel's `since` clause does.
  */
 async function publishLaneBadges() {
   const counts = new Map();
+  const now = Date.now();
   try {
     for (const row of await readNotes(READ_LIMIT)) {
-      if (row.value.today !== "today" || !row.value.laneKey) continue;
+      if (!row.value.laneKey || !inRange(row.value, "today", now)) continue;
       counts.set(row.value.laneKey, (counts.get(row.value.laneKey) ?? 0) + 1);
     }
   } catch (error) {
@@ -207,12 +238,24 @@ async function publishLaneBadges() {
 /* ── Archived lanes write their own note ────────────────────────────────── */
 
 /**
- * "wrapped up <lane>", once, when a lane's `archivedAt` turns from null to a
- * date.
+ * "wrapped up <lane>", once, for a lane that has LEFT the list.
  *
- * A fresh install seeds the snapshot and writes nothing: every lane the user
- * archived before installing this would otherwise land in today's journal and
- * in this morning's standup.
+ * `lane.list` excludes archived lanes entirely — verified against the live
+ * host: archive a lane and the list returns one fewer, never the same lane
+ * carrying an `archivedAt`. So the transition to detect is disappearance, and
+ * the previous version, which looked for `archivedAt` turning from null to a
+ * date, could not have fired even once.
+ *
+ * The name has to come from the SNAPSHOT for the same reason: by the time we
+ * can tell the lane is gone, the list no longer carries anything about it.
+ *
+ * A lane the user DELETED disappears the same way, and nothing in `lane.list`
+ * distinguishes the two. "wrapped up" is the honest reading of both — the piece
+ * of work is off the board — and is the reason this writes a note rather than
+ * claiming an archive in so many words.
+ *
+ * A fresh install seeds and writes nothing: every lane archived before this was
+ * installed would otherwise land in today's journal and this morning's standup.
  */
 async function syncArchivedLanes(lanes) {
   let previous = null;
@@ -223,27 +266,44 @@ async function syncArchivedLanes(lanes) {
   }
   const snapshot = {};
   for (const lane of lanes) {
-    if (lane && typeof lane.id === "string") snapshot[lane.id] = lane.archivedAt ?? null;
+    if (lane && typeof lane.id === "string") snapshot[lane.id] = String(lane.name ?? lane.id);
   }
-  const seeding = !previous || typeof previous !== "object";
-  if (!seeding) {
-    for (const lane of lanes) {
-      if (!lane || typeof lane.id !== "string" || !lane.archivedAt) continue;
-      const before = previous[lane.id];
-      // `undefined` is a lane this snapshot has never seen — an import or a
-      // machine that just synced — and is not the same fact as "was not
-      // archived a moment ago". Only a recorded null is a transition.
-      if (before !== null) continue;
-      await addNote({
-        text: `wrapped up ${lane.name ?? lane.id}`,
-        kind: "done",
-        laneId: lane.id,
-        laneName: lane.name ?? "",
-      });
-      log("info", `Logged the archive of lane ${lane.name ?? lane.id}.`);
+  // A v1 snapshot recorded `id → archivedAt`, so its values are dates and nulls
+  // rather than names, and it was written by a version that never noticed a
+  // departure. Re-seeding from it is the only honest move: reading it as v2
+  // would name a lane after a timestamp, and every lane archived while v1 was
+  // running would arrive in the journal at once, weeks late.
+  const known = previous
+      && typeof previous === "object"
+      && previous.version === LANE_SNAPSHOT_VERSION
+      && previous.lanes
+      && typeof previous.lanes === "object"
+    ? previous.lanes
+    : null;
+  if (known) {
+    for (const [laneId, laneName] of Object.entries(known)) {
+      if (Object.prototype.hasOwnProperty.call(snapshot, laneId)) continue;
+      const name = typeof laneName === "string" && laneName ? laneName : laneId;
+      await addNote({ text: `wrapped up ${name}`, kind: "done", laneId, laneName: name });
+      log("info", `Logged the archive of lane ${name}.`);
     }
   }
-  await put("state", K_LANE_SNAPSHOT, snapshot);
+  await put("state", K_LANE_SNAPSHOT, { version: LANE_SNAPSHOT_VERSION, lanes: snapshot });
+}
+
+/**
+ * One pass over the lanes: who is still here, who has gone, what today's counts
+ * are now. Shared by the schedule, both refresh gestures and the first load.
+ *
+ * An EMPTY list is never treated as "every lane was archived at once" — a
+ * failed or slow `lane.list` answers the same way, and the cost of guessing
+ * wrong is a journal full of archives that never happened.
+ */
+async function sweepLanes() {
+  const lanes = await refreshLanes();
+  if (lanes.length) await syncArchivedLanes(lanes);
+  await publishLaneBadges();
+  return lanes.length;
 }
 
 /* ── Panels ─────────────────────────────────────────────────────────────── */
@@ -281,6 +341,9 @@ function journalSchema(rows) {
         gap: "md",
         children: [
           { component: "text", text: "Journal", variant: "title" },
+          // The reader is told what this is before they have pressed anything,
+          // and while there is nothing here to read it is the whole page.
+          { component: "text", text: INTRO, variant: rows.length ? "caption" : "body" },
           {
             component: "stack",
             direction: "horizontal",
@@ -291,12 +354,8 @@ function journalSchema(rows) {
                 component: "segmented",
                 stateKey: "range",
                 label: "When",
-                default: "today",
-                options: [
-                  { value: "", label: "All" },
-                  { value: "today", label: "Today" },
-                  { value: "week", label: "This week" },
-                ],
+                default: "-24h",
+                options: RANGE_OPTIONS,
               },
               {
                 component: "segmented",
@@ -327,17 +386,15 @@ function journalSchema(rows) {
               limit: 100,
               allowActions: ROW_ACTIONS,
               where: [
-                {
-                  or: [
-                    { field: "today", equals: { $state: "range" } },
-                    { field: "week", equals: { $state: "range" } },
-                  ],
-                },
+                // One clause, resolved against the READER's clock every time
+                // the panel re-renders. The pair of stored flags this replaced
+                // needed rewriting at every midnight to stay true.
+                { field: "at", since: { $state: "range" } },
                 { field: "kind", equals: { $state: "kind" } },
                 ...(hasLaneFilter ? [{ field: "laneKey", equals: { $state: "lane" } }] : []),
               ],
             },
-            emptyText: "No notes match this filter.",
+            emptyText: "No notes in this window. Press \"Add a note\", or \"Log a note\" above any chat.",
           },
           ...hidden,
           {
@@ -414,6 +471,43 @@ async function webhookUrl() {
   }
 }
 
+/**
+ * Write this plugin's own settings, so the form on the settings page saves what
+ * it renders instead of accepting input and discarding it.
+ *
+ * `config.set` validates against the manifest's `settings` and REJECTS with
+ * `invalid_args` — an undeclared key, a `toggle` handed a string, or the
+ * `secret` kind, which belongs in `ade.secrets` and never in the plain config
+ * store. The rejection is returned rather than thrown so the press can say what
+ * did not save; the plugin is not restarted by a write, so the very next
+ * `config.get()` reads it back.
+ */
+/**
+ * A form toggle as a boolean, or `null` for "the form did not say".
+ *
+ * `config.set` refuses a `toggle` handed a string, and a client that spells the
+ * switch `"true"` would otherwise turn a save into a refusal of the whole form.
+ * An absent field leaves the stored value alone rather than resetting it.
+ */
+function readToggle(raw) {
+  if (typeof raw === "boolean") return raw;
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return null;
+}
+
+async function saveConfig(values) {
+  if (!Object.keys(values).length) return { ok: true };
+  try {
+    await sdk.config.set(values);
+    return { ok: true };
+  } catch (error) {
+    const reason = error?.message ?? String(error);
+    log("warn", `Could not save the settings: ${reason}`);
+    return { ok: false, reason };
+  }
+}
+
 /** The three rows the settings section's `keyValue` binding renders. Written, not computed, because a schema has no expressions. */
 async function writeSettingsRows() {
   const cfg = await config();
@@ -439,27 +533,37 @@ async function writeSettingsRows() {
 }
 
 /**
- * Exactly one standing claim on the clock, rebuilt from the current settings.
+ * Exactly two standing claims on the clock at most, rebuilt from the settings.
  *
  * Dropping ours first rather than diffing: eight live schedules is the quota
- * and a plugin that leaks one a day burns it in a week.
+ * and a plugin that leaks one a day burns it in a week. A listed schedule's id
+ * is `id` — reading `scheduleId` (the name of the DELETE argument) matched
+ * nothing, so every rebuild added a row and deleted none.
  */
-async function syncSchedule() {
+async function syncSchedules() {
   const cfg = await config();
   const cron = cronForTime(cfg.standupTime ?? "09:30");
   const wanted = cfg.autoPost === true && cron;
   try {
     for (const schedule of (await sdk.schedules.list()) ?? []) {
-      if (schedule?.action === "postStandup" && schedule?.scheduleId) {
-        await sdk.schedules.delete(schedule.scheduleId);
+      const scheduleId = schedule?.id ?? schedule?.scheduleId;
+      if (scheduleId && SCHEDULED_ACTIONS.includes(schedule?.action)) {
+        await sdk.schedules.delete(scheduleId);
       }
     }
+    // Unconditional: this is the only trigger that notices an archived lane and
+    // the only thing that recounts the lane badges after midnight.
+    await sdk.schedules.create({
+      action: "sweep",
+      cron: SWEEP_CRON,
+      note: "Notice archived lanes and recount today's badges",
+    });
     if (wanted) {
       await sdk.schedules.create({ action: "postStandup", cron, note: `Post the standup at ${cfg.standupTime}` });
       log("info", `Standup scheduled with cron "${cron}".`);
     }
   } catch (error) {
-    log("warn", `Could not sync the standup schedule: ${error?.message ?? error}`);
+    log("warn", `Could not sync the schedules: ${error?.message ?? error}`);
   }
   await writeSettingsRows();
 }
@@ -471,8 +575,33 @@ async function buildStandup() {
   return { text: standupText(rows, Date.now()), count: rows.length };
 }
 
+/**
+ * The longest standup a card may CARRY. The panel holds the whole thing.
+ *
+ * A plugin-authored card is refused past 4 KiB, and the fallback text is what
+ * the TUI, the phone and any client that has never heard of this plugin draw —
+ * so it is bounded here rather than left to fail the emit on a busy day.
+ */
+const CARD_TEXT_MAX = 1_200;
+
+/**
+ * Put the standup where the user is: the panel, and a row in the transcript.
+ *
+ * TWO HALVES, and the plugin used to do only one of them. The published
+ * `chat-card` contribution is PERMISSION — it says this plugin may draw the
+ * `standup` panel inside a transcript card. The card itself is CHRONOLOGY, and
+ * a contribution row has none: it is placed by emitting an `ade_card` through
+ * `chat.emitAdeCard`, naming the panel in `card.panel`. Without the emit there
+ * is no row for the permission to apply to, which is why ⌘⇧U appeared to do
+ * nothing at all — no card, no error, forever.
+ *
+ * One card id per DAY, so pressing again rewrites today's row rather than
+ * stacking a new one under it; the host merges a re-emit with the same id and
+ * skips a byte-identical one outright.
+ */
 async function showStandup(sessionId, text, postedAt) {
-  await put("state", K_STANDUP, { text, at: Date.now() });
+  const at = Date.now();
+  await put("state", K_STANDUP, { text, at });
   try {
     await sdk.panels.update("standup", standupSchema(text, postedAt));
   } catch (error) {
@@ -485,6 +614,24 @@ async function showStandup(sessionId, text, postedAt) {
       panelId: "standup",
       title: "Standup",
       icon: "list-checks",
+    });
+  } catch (error) {
+    log("warn", `Could not permit the standup card in ${sessionId}: ${error?.message ?? error}`);
+    return false;
+  }
+  const body = text.length > CARD_TEXT_MAX ? `${text.slice(0, CARD_TEXT_MAX - 1)}…` : text;
+  try {
+    await sdk.actions.invoke("chat", "emitAdeCard", {
+      sessionId,
+      card: {
+        cardId: `journal-standup-${dayKey(at)}`,
+        variant: "journal_standup",
+        state: "terminal",
+        title: `Standup — ${formatDay(at)}`,
+        ...(postedAt ? { subtitle: `Posted to Slack at ${postedAt}` } : {}),
+        fallbackText: body,
+        panel: { panelId: "standup" },
+      },
     });
     return true;
   } catch (error) {
@@ -533,24 +680,46 @@ function rememberSession(sessionId) {
   void put("state", K_LAST_SESSION, { sessionId, at: Date.now() }).catch(() => {});
 }
 
-/** What a chat-header press writes down, when the user gave us no words: the conversation's own title. */
-function titleFrom(args) {
-  const context = args?.context;
-  const title = typeof context?.title === "string" ? context.title.trim() : "";
-  return title || "";
+/**
+ * The chat a prompt was asked about, on the way back.
+ *
+ * The client re-invokes with the same argument frame, so `args.context` is
+ * normally still there. The prompt's own `context` is handed back verbatim
+ * beside the answer, and carrying the session in it costs nothing and makes the
+ * second pass independent of how faithfully a client rebuilds the first one.
+ */
+function promptSessionFrom(args) {
+  const carried = args?.prompt?.context;
+  return carried && typeof carried.sessionId === "string" ? carried.sessionId : null;
 }
 
 /* ── Actions ────────────────────────────────────────────────────────────── */
 
+/**
+ * The header's three write verbs. ASK, then write what was typed.
+ *
+ * The first press answers `{prompt}` and stores nothing: the client asks the
+ * question in place and invokes this same handler again with the answer under
+ * `args.prompt`. The second pass does the work — it has to, because a
+ * re-invocation's own `{prompt}` is ignored by every client, so a handler that
+ * asked again would be a button that never writes.
+ *
+ * What this replaced logged `context.title`, the chat's auto-generated summary
+ * of its first message, which produced a journal reading "note Follow Image
+ * Instructions" three times over and a standup built from it.
+ */
 async function logFromChat(args, kind) {
-  const sessionId = sessionFrom(args);
+  const sessionId = sessionFrom(args) ?? promptSessionFrom(args);
   rememberSession(sessionId);
-  const title = titleFrom(args);
-  if (!title) {
-    return { ok: false, message: "This chat has no title yet — type /note <your note> instead." };
+  const answer = args?.prompt;
+  if (!answer || typeof answer !== "object") {
+    const question = PROMPTS[kind] ?? PROMPTS[""];
+    return { prompt: { ...question, ...(sessionId ? { context: { sessionId } } : {}) } };
   }
+  const text = noteText(typeof answer.text === "string" ? answer.text : "");
+  if (!text) return { ok: false, message: "Nothing typed, so nothing was logged." };
   const lane = await laneForSession(sessionId);
-  const saved = await addNote({ text: title, kind, laneId: lane.laneId, laneName: lane.laneName });
+  const saved = await addNote({ text, kind, laneId: lane.laneId, laneName: lane.laneName });
   if (!saved) return { ok: false, message: "Could not save that note — the journal's store is full." };
   await republishJournal();
   const tag = kind === "blocked" ? " as blocked" : kind === "done" ? " as done" : "";
@@ -573,7 +742,7 @@ const actions = {
     if (!text) {
       return {
         ok: false,
-        message: "Type the note after the command — /note fixed the login bug — or press \"Log it\" to save the chat's title.",
+        message: "Type the note after the command — /note fixed the login bug — or press \"Log a note\" above the chat and it will ask.",
       };
     }
     // The composer's own lane, when it has one: a `composer` context carries it
@@ -630,12 +799,14 @@ const actions = {
   async writeStandup(args) {
     const sessionId = sessionFrom(args) ?? lastSessionId;
     rememberSession(sessionId);
-    await rollDayFlags();
     const { text, count } = await buildStandup();
-    const carded = await showStandup(sessionId, text, null);
     if (!count) {
+      // The panel, but no card: a transcript row reading "Nothing logged today"
+      // is a permanent piece of chat history saying nothing happened.
+      await showStandup(null, text, null);
       return { navigate: { panelId: "standup" }, message: "Nothing logged today yet, so the standup is empty." };
     }
+    const carded = await showStandup(sessionId, text, null);
     if (carded) {
       return { message: `Standup written from ${count} note${count === 1 ? "" : "s"} — the card is in this chat.` };
     }
@@ -661,7 +832,6 @@ const actions = {
   },
 
   async postStandup(args) {
-    await rollDayFlags();
     const { text, count } = await buildStandup();
     const sessionId = sessionFrom(args) ?? lastSessionId;
     if (!count) {
@@ -692,17 +862,27 @@ const actions = {
 
   /* Panel refresh gestures: the Refresh button on desktop and web, pull-to-refresh on the phone. */
   async refreshJournal() {
-    await refreshLanes();
-    await rollDayFlags();
-    await publishLaneBadges();
+    await sweepLanes();
     await republishJournal();
     return { message: "Journal refreshed." };
   },
 
   async refreshToday() {
-    await rollDayFlags();
-    await publishLaneBadges();
-    return { message: "Today refreshed." };
+    await sweepLanes();
+    return { message: "Journal refreshed." };
+  },
+
+  /**
+   * The daily sweep, and the refresh gestures' shared body.
+   *
+   * Two things only a clock can do: notice that a lane has left `lane.list`
+   * (nothing fires an event for it here), and recount the per-lane badges,
+   * which count TODAY and are therefore wrong from midnight onward.
+   */
+  async sweep() {
+    const found = await sweepLanes();
+    await republishJournal();
+    return { lanes: found };
   },
 
   /* Settings section. */
@@ -712,9 +892,31 @@ const actions = {
       if (!isSlackWebhook(url)) {
         return { ok: false, message: "That is not a https://hooks.slack.com/… URL, so it was not saved." };
       }
+      // The webhook is a CREDENTIAL, so it goes to the encrypted per-plugin
+      // secret store and never into the plain config every child is handed at
+      // spawn — which is also why `config.set` refuses a `secret` setting.
       await sdk.secrets.set("SLACK_WEBHOOK_URL", url);
     }
-    await syncSchedule();
+    // The two fields that used to render, accept input and silently discard it.
+    // The form owns them now: what the reader typed is what gets stored, and the
+    // schedule below is rebuilt from the stored value rather than from the old
+    // one that never changed.
+    const values = {};
+    const time = typeof args?.standupTime === "string" ? args.standupTime.trim() : "";
+    if (time) {
+      if (!cronForTime(time)) {
+        return { ok: false, message: "The standup time has to be a 24-hour HH:MM time of day, so nothing was saved." };
+      }
+      values.standupTime = time;
+    }
+    const autoPost = readToggle(args?.autoPost);
+    if (autoPost !== null) values.autoPost = autoPost;
+    const saved = await saveConfig(values);
+    if (!saved.ok) {
+      await writeSettingsRows();
+      return { ok: false, message: `Those settings were not saved: ${saved.reason}` };
+    }
+    await syncSchedules();
     const cfg = await config();
     const cron = cronForTime(cfg.standupTime ?? "09:30");
     if (!cron) {
@@ -756,7 +958,6 @@ const actions = {
 
   async toolListNotes(args) {
     const range = ["today", "week", "all"].includes(args?.range) ? args.range : "today";
-    await rollDayFlags();
     const rows = (await readNotes(READ_LIMIT)).map((row) => row.value).filter((row) => inRange(row, range));
     return {
       range,
@@ -767,21 +968,18 @@ const actions = {
 
   /* `ade journal …` */
   async today() {
-    await rollDayFlags();
     const rows = (await readNotes(READ_LIMIT)).map((row) => row.value).filter((row) => inRange(row, "today"));
     return { day: formatDay(Date.now()), count: rows.length, notes: rows.map(cliNote) };
   },
 
   async week() {
-    await rollDayFlags();
     const rows = (await readNotes(READ_LIMIT)).map((row) => row.value).filter((row) => inRange(row, "week"));
     return { count: rows.length, notes: rows.map(cliNote) };
   },
 
   async standup() {
-    await rollDayFlags();
     const { text, count } = await buildStandup();
-    await showStandup(lastSessionId, text, null);
+    await showStandup(count ? lastSessionId : null, text, null);
     return { count, standup: text };
   },
 
@@ -856,24 +1054,21 @@ exports.activate = async (ade) => {
   ade.events.on("turn.start", ({ sessionId }) => rememberSession(sessionId));
 
   // A lane list is the only way to learn an archive happened; `lane.changed` is
-  // the signal, not the payload.
+  // the signal, not the payload — and on this host it does not always arrive at
+  // all, which is why the `sweep` schedule exists and this is only the fast
+  // path when it does.
   ade.events.on("lane.changed", () => {
     void (async () => {
-      const lanes = await refreshLanes();
-      if (lanes.length) await syncArchivedLanes(lanes);
-      await publishLaneBadges();
+      await sweepLanes();
       await republishJournal();
     })().catch((error) => log("warn", `lane.changed handler failed: ${error?.message ?? error}`));
   });
 
   void (async () => {
-    const lanes = await refreshLanes();
-    if (lanes.length) await syncArchivedLanes(lanes);
-    await rollDayFlags();
+    await sweepLanes();
     await pruneOldNotes();
-    await publishLaneBadges();
     await republishJournal();
-    await syncSchedule();
+    await syncSchedules();
     log("info", `Work Journal ready. ${laneNames.size} lane(s) known, notes kept for ${KEEP_DAYS} days.`);
   })().catch((error) => log("warn", `First load failed: ${error?.message ?? error}`));
 };
