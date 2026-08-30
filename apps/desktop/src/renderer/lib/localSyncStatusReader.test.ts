@@ -92,8 +92,105 @@ describe("readLocalSyncStatus", () => {
     nowMs += 100;
     await readLocalSyncStatus();
     expect(getLocalStatus).toHaveBeenCalledTimes(1);
-    await readLocalSyncStatus(undefined, { force: true });
+    await readLocalSyncStatus({ force: true });
     expect(getLocalStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("issues a fresh request for a forced read while a shared read is in flight", async () => {
+    let releaseShared: (value: SyncRoleSnapshot) => void = () => {};
+    getLocalStatus.mockImplementationOnce(
+      () => new Promise<SyncRoleSnapshot>((resolve) => { releaseShared = resolve; }),
+    );
+    const shared = readLocalSyncStatus();
+    await Promise.resolve();
+    await Promise.resolve();
+    // A person asked for this one; it must not inherit an older read's answer.
+    const forced = readLocalSyncStatus({ force: true });
+    await expect(forced).resolves.toBeTruthy();
+    expect(getLocalStatus).toHaveBeenCalledTimes(2);
+    // The shared promise is untouched: it still settles from its own request.
+    const sharedSnapshot = snapshot("shared answer");
+    releaseShared(sharedSnapshot);
+    await expect(shared).resolves.toBe(sharedSnapshot);
+  });
+
+  it("lets a forced read's success reset the backoff for everyone", async () => {
+    getLocalStatus.mockResolvedValueOnce(snapshot("down"));
+    await readLocalSyncStatus();
+    getLocalStatus.mockResolvedValue(snapshot());
+    await readLocalSyncStatus({ force: true });
+    expect(getLocalStatus).toHaveBeenCalledTimes(2);
+    // Healthy again — the very next unforced read hits the runtime instead of
+    // replaying the degraded snapshot the backoff window was holding.
+    await readLocalSyncStatus();
+    expect(getLocalStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("ignores a stale shared failure that lands after a newer forced success", async () => {
+    let rejectShared: (error: unknown) => void = () => {};
+    getLocalStatus.mockImplementationOnce(
+      () => new Promise<SyncRoleSnapshot>((_resolve, reject) => { rejectShared = reject; }),
+    );
+    const shared = readLocalSyncStatus();
+    await Promise.resolve();
+    await Promise.resolve();
+    const healthy = snapshot();
+    getLocalStatus.mockResolvedValue(healthy);
+    await expect(readLocalSyncStatus({ force: true })).resolves.toBe(healthy);
+
+    // The older shared read finally times out. It must not clobber the newer
+    // healthy answer or open a backoff window against it.
+    rejectShared(new Error("runtime unreachable"));
+    await expect(shared).rejects.toThrow("runtime unreachable");
+
+    // No backoff: the next unforced read hits the runtime and gets the snapshot
+    // the forced read established, not a replayed rejection.
+    await expect(readLocalSyncStatus()).resolves.toBe(healthy);
+    expect(getLocalStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it("evicts a still-pending older shared read once a newer read settles", async () => {
+    let rejectShared: (error: unknown) => void = () => {};
+    getLocalStatus.mockImplementationOnce(
+      () => new Promise<SyncRoleSnapshot>((_resolve, reject) => { rejectShared = reject; }),
+    );
+    const shared = readLocalSyncStatus();
+    await Promise.resolve();
+    await Promise.resolve();
+    const healthy = snapshot();
+    getLocalStatus.mockResolvedValue(healthy);
+    await expect(readLocalSyncStatus({ force: true })).resolves.toBe(healthy);
+
+    // The hung shared read is now provably stale. A later non-forced caller
+    // must get a fresh read, not coalesce onto the doomed promise and inherit
+    // its 30s-timeout rejection.
+    await expect(readLocalSyncStatus()).resolves.toBe(healthy);
+    expect(getLocalStatus).toHaveBeenCalledTimes(3);
+
+    rejectShared(new Error("runtime unreachable"));
+    await expect(shared).rejects.toThrow("runtime unreachable");
+  });
+
+  it("counts one failure when a shared and a forced read fail together", async () => {
+    let rejectShared: (error: unknown) => void = () => {};
+    getLocalStatus.mockImplementationOnce(
+      () => new Promise<SyncRoleSnapshot>((_resolve, reject) => { rejectShared = reject; }),
+    );
+    const shared = readLocalSyncStatus();
+    await Promise.resolve();
+    await Promise.resolve();
+    getLocalStatus.mockRejectedValueOnce(new Error("forced down"));
+    await expect(readLocalSyncStatus({ force: true })).rejects.toThrow("forced down");
+    rejectShared(new Error("shared down"));
+    await expect(shared).rejects.toThrow("shared down");
+    expect(getLocalStatus).toHaveBeenCalledTimes(2);
+
+    // One failed generation, so the window is the 1s base — not the 2s two
+    // separately-counted failures would produce.
+    getLocalStatus.mockResolvedValue(snapshot());
+    nowMs += 1_001;
+    await expect(readLocalSyncStatus()).resolves.toBeTruthy();
+    expect(getLocalStatus).toHaveBeenCalledTimes(3);
   });
 
   it("grows the window while degradation persists and resets it on recovery", async () => {

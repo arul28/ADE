@@ -133,7 +133,6 @@ import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus"
 import {
   AgentChatMessageList,
   ChatInfoHostContext,
-  type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import {
   ChatAutoResumeContext,
@@ -142,6 +141,7 @@ import {
   type ChatAutoResumeState,
 } from "./ProviderFailureRecoveryCard";
 import { isPendingAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
+import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";

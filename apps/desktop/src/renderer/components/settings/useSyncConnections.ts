@@ -60,7 +60,7 @@ export function useSyncConnections() {
       ),
       // Shared reader: coalesces with every other subscriber's read of the
       // same broadcast and backs off while the local runtime is unhealthy.
-      readLocalSyncStatus(undefined, { force: options?.force === true }).then(
+      readLocalSyncStatus({ force: options?.force === true }).then(
         (localStatus) => ({ status: localStatus, error: null }),
         (localError: unknown) => ({ status: null, error: localError }),
       ),
@@ -89,7 +89,11 @@ export function useSyncConnections() {
     let cancelled = false;
     void (async () => {
       try {
-        await refresh();
+        // Opening Connections is user intent: issue a real read even if an
+        // earlier degraded read left the shared reader inside its backoff
+        // window. The broadcast- and interval-driven refreshes below stay
+        // unforced so a sick runtime is still only polled at the backoff rate.
+        await refresh({ force: true });
       } catch (refreshError) {
         if (!cancelled) setError(errorMessage(refreshError));
       } finally {

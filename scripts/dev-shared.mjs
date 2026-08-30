@@ -570,9 +570,17 @@ const DEV_RUNTIME_LOG_MAX_BYTES = 20 * 1024 * 1024;
 function openDevRuntimeLogFd(logPath) {
   try {
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    const size = fs.statSync(logPath, { throwIfNoEntry: false })?.size ?? 0;
-    if (size > DEV_RUNTIME_LOG_MAX_BYTES) fs.truncateSync(logPath, 0);
-    return fs.openSync(logPath, "a");
+    try {
+      // A log we cannot stat or truncate is still a log we can append to;
+      // never let the size guard cost us the daemon's only startup trace.
+      const size = fs.statSync(logPath, { throwIfNoEntry: false })?.size ?? 0;
+      if (size > DEV_RUNTIME_LOG_MAX_BYTES) fs.truncateSync(logPath, 0);
+    } catch {
+      // best effort
+    }
+    // The dev log can carry runtime output; keep it owner-only where the mode
+    // is honored (ignored on Windows).
+    return fs.openSync(logPath, "a", 0o600);
   } catch {
     return null;
   }

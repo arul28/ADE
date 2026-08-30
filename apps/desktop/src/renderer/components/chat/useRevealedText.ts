@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
+  advanceSplitScan,
   beginReveal,
   completeReveal,
   isTextRevealEnabled,
   readTextRevealHorizonMs,
   retargetReveal,
+  splitRevealed,
   stepReveal,
   type RevealState,
+  type SplitScanState,
 } from "./textReveal";
 
 /**
@@ -39,9 +42,18 @@ export function useRevealedLength(
 
   const stateRef = useRef<RevealState | null>(null);
   const rafRef = useRef<number | null>(null);
-  // Visibility lives in a ref, not state: a tab switch or a scroll must not
-  // re-render the row, it only has to stop the loop.
-  const visibleRef = useRef(true);
+  // Visibility lives in refs, not state: a tab switch or a scroll must not
+  // re-render the row, it only has to stop the loop. The two inputs are kept
+  // apart because they are observed by two independent sources that each report
+  // only their own axis — folding them into one boolean would let a tab-back
+  // (`visibilitychange`) claim the row is on screen when it is scrolled away,
+  // and the IntersectionObserver would not fire again to correct it.
+  const documentVisibleRef = useRef(true);
+  const intersectingRef = useRef(true);
+  const isVisible = useCallback(
+    () => documentVisibleRef.current && intersectingRef.current,
+    [],
+  );
   const [, bumpTick] = useState(0);
   const rerender = useCallback(() => {
     bumpTick((tick) => tick + 1);
@@ -79,10 +91,10 @@ export function useRevealedLength(
 
   const start = useCallback(() => {
     if (rafRef.current !== null) return;
-    if (!visibleRef.current) return;
+    if (!isVisible()) return;
     const frame = (now: number) => {
       const state = stateRef.current;
-      if (!state || !visibleRef.current) {
+      if (!state || !isVisible()) {
         rafRef.current = null;
         return;
       }
@@ -100,22 +112,24 @@ export function useRevealedLength(
     const state = stateRef.current;
     if (!state || state.revealed >= state.target.length) return;
     rafRef.current = requestAnimationFrame(frame);
-  }, [horizonMs, rerender]);
+  }, [horizonMs, isVisible, rerender]);
 
   // Observers: bound once per (enabled) row, not per delta.
   useEffect(() => {
     if (!enabled) return;
-    const applyVisibility = (visible: boolean) => {
-      if (visible === visibleRef.current) return;
-      visibleRef.current = visible;
-      if (visible) start();
+    // Each source updates only its own axis; the loop runs when both agree.
+    const applyVisibility = () => {
+      if (isVisible()) start();
       else flush();
     };
     const onDocumentVisibility = () => {
-      applyVisibility(document.visibilityState !== "hidden");
+      const documentVisible = document.visibilityState !== "hidden";
+      if (documentVisible === documentVisibleRef.current) return;
+      documentVisibleRef.current = documentVisible;
+      applyVisibility();
     };
 
-    visibleRef.current = document.visibilityState !== "hidden";
+    documentVisibleRef.current = document.visibilityState !== "hidden";
     document.addEventListener("visibilitychange", onDocumentVisibility);
 
     let observer: IntersectionObserver | null = null;
@@ -124,7 +138,9 @@ export function useRevealedLength(
       observer = new IntersectionObserver((entries) => {
         const entry = entries[entries.length - 1];
         if (!entry) return;
-        applyVisibility(entry.isIntersecting && document.visibilityState !== "hidden");
+        if (entry.isIntersecting === intersectingRef.current) return;
+        intersectingRef.current = entry.isIntersecting;
+        applyVisibility();
       });
       observer.observe(host);
     }
@@ -134,7 +150,7 @@ export function useRevealedLength(
       observer?.disconnect();
       stop();
     };
-  }, [enabled, flush, hostRef, start, stop]);
+  }, [enabled, flush, hostRef, isVisible, start, stop]);
 
   // Each store delta widens the backlog; make sure a loop is running for it.
   useEffect(() => {
@@ -145,17 +161,46 @@ export function useRevealedLength(
     start();
   }, [enabled, start, stop, text]);
 
-  // Leaving the paced role (turn done, a newer row took the tail) must snap to
-  // the full text — never leave a truncated message on screen.
-  useEffect(() => {
-    if (!enabled) return;
-    return () => {
-      const state = stateRef.current;
-      if (state) stateRef.current = completeReveal(state);
-    };
-  }, [enabled]);
-
   const state = stateRef.current;
+  // Unpaced rows — including a row that just lost the paced role (turn done, a
+  // newer row took the tail) — read the full text, so leaving the role can
+  // never leave a truncated message on screen.
   if (!enabled || !state) return text.length;
   return Math.min(state.revealed, text.length);
+}
+
+/**
+ * Split the text a paced row is rendering into its settled prefix (whole
+ * markdown blocks that will not change again) and the growing tail.
+ *
+ * The revealed prefix only grows, so each frame rescans just the characters
+ * that arrived since the last one, and the settled string keeps its identity
+ * while the cut point does not move — which is what lets the settled body's
+ * memo bail out instead of reparsing the whole message every frame.
+ */
+export function useSplitRevealed(
+  text: string,
+  revealedLength: number,
+): { settled: string; tail: string } {
+  const cacheRef = useRef<{ scan: SplitScanState; settled: string } | null>(null);
+  if (revealedLength >= text.length) {
+    cacheRef.current = null;
+    return { settled: text, tail: "" };
+  }
+  const previous = cacheRef.current;
+  // The cached scan is only reusable when it stopped at or before the point we
+  // now need, and its settled string still matches the cut it recorded.
+  const resumable = previous
+    && previous.scan.scannedTo <= revealedLength
+    && previous.settled.length === previous.scan.settledEnd
+    ? previous.scan
+    : null;
+  const scan = advanceSplitScan(resumable, text, revealedLength);
+  const parts = splitRevealed(text, revealedLength, scan);
+  // Identity reuse: an unmoved cut point must yield the very same string.
+  const settled = previous && previous.settled.length === scan.settledEnd
+    ? previous.settled
+    : parts.settled;
+  cacheRef.current = { scan, settled };
+  return { settled, tail: parts.tail };
 }

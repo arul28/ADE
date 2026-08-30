@@ -10,7 +10,10 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { resetLocalSyncStatusReaderForTests } from "../../lib/localSyncStatusReader";
+import {
+  readLocalSyncStatus,
+  resetLocalSyncStatusReaderForTests,
+} from "../../lib/localSyncStatusReader";
 import { parsePairingQrUrl } from "../../../shared/pairingQr";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type {
@@ -691,6 +694,30 @@ describe("useSyncConnections local scoping", () => {
     expect(result.current.canManageDevices).toBe(true);
     // Unbound: the routed device list is used as-is.
     expect(result.current.devices.map((d) => d.deviceId)).toEqual(["phone-1"]);
+  });
+
+  it("forces the initial load through an existing backoff window", async () => {
+    const degraded = makeStatus({ degradedReason: "The ADE background service is not reachable." });
+    const healthy = makeStatus();
+    let localCalls = 0;
+    installSyncMock({
+      getStatus: async () => healthy,
+      getLocalStatus: async () => {
+        localCalls += 1;
+        return localCalls === 1 ? degraded : healthy;
+      },
+      listDevices: async () => [device()],
+    });
+    // Someone else already read a degraded snapshot, so the shared reader is
+    // backed off and would replay it to an unforced caller.
+    await readLocalSyncStatus();
+
+    const { result } = renderHook(() => useSyncConnections());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Opening Connections is user intent: a real read, not the cached failure.
+    expect(window.ade.sync.getLocalStatus).toHaveBeenCalledTimes(2);
+    expect(result.current.status?.degradedReason).toBeUndefined();
   });
 
   it("uses the local snapshot and its own peers when remote-bound", async () => {

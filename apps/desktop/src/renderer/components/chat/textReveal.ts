@@ -243,8 +243,11 @@ export function completeReveal(state: RevealState): RevealState {
 /**
  * Advance one animation frame.
  *
- * Returns the same object (reference-equal) when nothing was committed, so the
- * caller can skip its `setState` — the common case on a high-refresh display.
+ * The returned state is a fresh object on almost every frame — the clock and
+ * the carried remainder move even when no character was committed — so callers
+ * must decide whether to re-render by comparing FIELDS (`revealed`), never
+ * references. Reference equality is returned only in the one case where nothing
+ * at all changed (already caught up on the same timestamp).
  */
 export function stepReveal(
   state: RevealState,

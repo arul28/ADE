@@ -39,10 +39,6 @@ let runInitialized = false;
 const deltasBySession: Map<string, number> | null = enabled ? new Map() : null;
 const lastFlushAtBySession: Map<string, number> | null = enabled ? new Map() : null;
 
-export function isChatTextProbeEnabled(): boolean {
-  return enabled;
-}
-
 /** Called once per assistant text delta that enters the coalescer. */
 export function noteChatTextDelta(sessionId: string): void {
   if (!deltasBySession) return;

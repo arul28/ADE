@@ -2,21 +2,36 @@ import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type PerfEventKind =
-  | "scenarioStart"
-  | "scenarioEnd"
-  | "manualStep"
-  | "mark"
-  | "measure"
-  | "webVital"
-  | "longTask"
-  | "ipcInvoke"
-  | "processMetrics"
-  | "rendererMemory"
-  | "mainLoopDelay"
-  | "chatTextFlush"
-  | "streamSmoothness"
-  | "note";
+/**
+ * The single source of truth for event kinds: the type is derived from this
+ * list and `isPerfEventKind` validates against it, so a new kind cannot be
+ * added to one and forgotten in the other.
+ */
+const PERF_EVENT_KINDS = [
+  "scenarioStart",
+  "scenarioEnd",
+  "manualStep",
+  "mark",
+  "measure",
+  "webVital",
+  "longTask",
+  "ipcInvoke",
+  "processMetrics",
+  "rendererMemory",
+  "mainLoopDelay",
+  "chatTextFlush",
+  "streamSmoothness",
+  "note",
+] as const;
+
+export type PerfEventKind = (typeof PERF_EVENT_KINDS)[number];
+
+const VALID_EVENT_KINDS: ReadonlySet<string> = new Set<PerfEventKind>(PERF_EVENT_KINDS);
+
+/** Runtime guard for kinds arriving over IPC from the renderer. */
+export function isPerfEventKind(kind: string): kind is PerfEventKind {
+  return VALID_EVENT_KINDS.has(kind);
+}
 
 export type PerfEvent = {
   ts: number;

@@ -488,12 +488,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // The shared reader coalesces this with Connections' read of the same
     // broadcast and backs off while the runtime is unhealthy; an unhealthy
     // read used to take seconds and the broadcast kept stacking new ones.
-    const readLocal =
-      typeof syncApi.getLocalStatus === "function"
-        ? () => readLocalSyncStatus()
-        : typeof syncApi.getStatus === "function"
-          ? () => syncApi.getStatus()
-          : null;
+    // The `getLocalStatus` check is a capability probe for old preloads that
+    // predate it; the call itself always goes through the shared reader.
+    let readLocal: (() => Promise<SyncRoleSnapshot>) | null = null;
+    if (typeof syncApi.getLocalStatus === "function") {
+      readLocal = () => readLocalSyncStatus();
+    } else if (typeof syncApi.getStatus === "function") {
+      readLocal = () => syncApi.getStatus();
+    }
     const refresh = () => {
       if (!readLocal) return;
       void readLocal().then(apply).catch(() => {});
