@@ -5,8 +5,8 @@ import {
   appendEvent,
   finishPerfRun,
   getActiveRun,
+  isPerfEventKind,
   isRunActive,
-  type PerfEventKind,
 } from "./perfLog";
 import { stopMetricsSampler } from "./metricsSampler";
 
@@ -25,24 +25,6 @@ export type PerfRecordEventArgs = {
   kind: string;
   [key: string]: unknown;
 };
-
-const PERF_EVENT_KINDS: ReadonlySet<string> = new Set<PerfEventKind>([
-  "scenarioStart",
-  "scenarioEnd",
-  "manualStep",
-  "mark",
-  "measure",
-  "webVital",
-  "longTask",
-  "ipcInvoke",
-  "processMetrics",
-  "rendererMemory",
-  "note",
-]);
-
-function isPerfEventKind(kind: string): kind is PerfEventKind {
-  return PERF_EVENT_KINDS.has(kind);
-}
 
 export function registerPerfIpcHandlers(): void {
   ipcMain.removeHandler(IPC.perfGetConfig);

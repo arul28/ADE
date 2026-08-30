@@ -150,6 +150,11 @@ import {
   shouldFlushBufferedAssistantTextForEvent,
   type BufferedAssistantText,
 } from "./chatTextBatching";
+import {
+  noteChatTextDelta,
+  recordChatTextFlush,
+  type ChatTextFlushReason,
+} from "../perf/chatTextProbe";
 import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
@@ -14910,7 +14915,10 @@ export function createAgentChatService(args: {
     emitTransientChatEnvelope(managed.session.id, event);
   };
 
-  const flushBufferedText = (managed: ManagedChatSession): void => {
+  const flushBufferedText = (
+    managed: ManagedChatSession,
+    perfReason: ChatTextFlushReason = "other",
+  ): void => {
     const buffered = managed.bufferedText;
     if (!buffered) return;
     if (buffered.timer) {
@@ -14918,6 +14926,7 @@ export function createAgentChatService(args: {
     }
     managed.bufferedText = null;
     if (!buffered.text.length) return;
+    recordChatTextFlush(managed.session.id, buffered.text.length, perfReason);
     commitChatEvent(managed, {
       type: "text",
       text: buffered.text,
@@ -14935,7 +14944,7 @@ export function createAgentChatService(args: {
       if (managed.bufferedText) {
         managed.bufferedText.timer = null;
       }
-      flushBufferedText(managed);
+      flushBufferedText(managed, "timer");
     }, BUFFERED_TEXT_FLUSH_MS);
   };
 
@@ -14944,6 +14953,7 @@ export function createAgentChatService(args: {
     event: Extract<AgentChatEvent, { type: "text" }>,
   ): void => {
     if (canAppendBufferedAssistantText(managed.bufferedText, event)) {
+      noteChatTextDelta(managed.session.id);
       managed.bufferedText = {
         ...appendBufferedAssistantText(managed.bufferedText, event),
         timer: managed.bufferedText?.timer ?? null,
@@ -14952,7 +14962,8 @@ export function createAgentChatService(args: {
       return;
     }
 
-    flushBufferedText(managed);
+    flushBufferedText(managed, "identityBreak");
+    noteChatTextDelta(managed.session.id);
     managed.bufferedText = {
       ...appendBufferedAssistantText(null, event),
       timer: null,
@@ -15052,7 +15063,7 @@ export function createAgentChatService(args: {
       }
       flushBufferedReasoning(managed);
       if (shouldFlushBufferedAssistantTextForEvent(normalizedEvent)) {
-        flushBufferedText(managed);
+        flushBufferedText(managed, "interleave");
       }
       managed.lastActivitySignature = signature;
       commitChatEvent(managed, normalizedEvent, options);
@@ -15061,7 +15072,7 @@ export function createAgentChatService(args: {
 
     flushBufferedReasoning(managed);
     if (shouldFlushBufferedAssistantTextForEvent(normalizedEvent)) {
-      flushBufferedText(managed);
+      flushBufferedText(managed, "interleave");
       resetAssistantMessageStream(managed);
     }
 

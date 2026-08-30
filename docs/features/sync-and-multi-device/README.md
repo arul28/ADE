@@ -1073,7 +1073,9 @@ Desktop connection UI:
 - `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` — hosts
   the `relay-offline` banner alongside the GitHub/AI-provider family.
   `AppShell` seeds `routeHealth.relay` from `sync.getLocalStatus` (the physical
-  machine's relay, not whichever runtime a remote-bound project routes to),
+  machine's relay, not whichever runtime a remote-bound project routes to) via
+  the shared `localSyncStatusReader`, so its read of a broadcast coalesces with
+  Connections' read of the same one,
   then keeps it current from the existing `sync-status` broadcast, committing a
   new object only when a field the banner reads actually changed.
   `deriveRelayOutageState` reports `"suppressed"` immediately — nothing
@@ -1106,14 +1108,26 @@ Desktop connection UI:
   the account-directory state is the one failure a restart
   actually clears — `isBrainAccountSessionFailure(...)` in
   `shared/types/sync.ts`, currently exactly `token_unreadable` — the This
-  computer card renders a **Repair** control next to the directory summary. The local-brain-only
+  computer card renders a **Repair** control next to the directory summary; the
+  re-read that follows a repair is forced, because a repair is a user action and
+  must not wait out the degraded-read backoff window. The local-brain-only
   `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
   consume so a window bound to another machine can still show the physical
   computer's identity, pairing code, and Phone/Web device lists.
+- `apps/desktop/src/renderer/lib/localSyncStatusReader.ts` — the single shared
+  reader for `ade.sync.getLocalStatus`. Coalesces concurrent readers onto one
+  in-flight invoke, backs off exponentially (1s → 30s) while the local runtime
+  reports `degradedReason`, honors `{ force: true }` for user-initiated reads,
+  and settles last-issued-wins so a fast forced read is not overwritten by an
+  older shared read timing out behind it. Exports
+  `isDegradedLocalSyncSnapshot` and `localSyncStatusBackoffMs`.
 - `apps/desktop/src/renderer/components/settings/useSyncConnections.ts` — the
   hook that keeps the Connections panel local-vs-remote aware. It fetches the
   binding-following `sync.getStatus` **and** the machine-level
-  `sync.getLocalStatus` on every refresh; the This computer card always renders the
+  `sync.getLocalStatus` on every refresh — the latter through the shared
+  `localSyncStatusReader`, with `refresh({ force: true })` for the reads a
+  person asked for (panel open, **Try again**, post-mutation re-read) and plain
+  unforced reads for the broadcast/interval refreshes; the This computer card always renders the
   `getLocalStatus` snapshot, so it names the physical computer even in a remote-bound
   window, and never substitutes a routed (remote) snapshot when the local one is
   unavailable. It derives `isRemoteBound` by comparing the two snapshots'
@@ -2419,6 +2433,36 @@ exception. Preload invokes `ade.sync.getLocalStatus` directly; main dispatches
 the active window's remote project binding, with only the local in-process
 diagnostics service as its unavailable-runtime fallback. This is the path the
 Connections This computer projection and local pairing/device controls should use.
+
+Renderers reach it only through `renderer/lib/localSyncStatusReader.ts`, the one
+shared reader. The `sync-status` broadcast is an *invalidation*, not a payload,
+so every subscriber re-reads the local snapshot when an event lands. That is
+free while the local runtime answers in milliseconds and pathological once it
+does not: a measured perf run recorded 64k `getLocalStatus` calls in seven
+minutes, 71% of them expiring at the 30s IPC timeout — a backlog of stacked
+in-flight invokes, not a poll. The shared reader fixes that with two properties
+and no change to the healthy cadence:
+
+- **Coalescing** — concurrent readers share one in-flight invoke, so N
+  subscribers reacting to one broadcast cost one IPC.
+- **Backoff** — after an unhealthy read, further reads are served from the last
+  known answer until the window elapses (1s → doubling → 30s cap). A healthy
+  read resets it immediately.
+
+"Unhealthy" is stated by main, not inferred: when the local runtime cannot
+answer, `buildMachineOnlySyncSnapshot` sets `degradedReason` on the synthesized
+snapshot. Renderers must key on that rather than on route health, which is
+legitimately all-down on a healthy standalone machine that hosts nothing. Main
+also collapses the accompanying `sync.local_status_degraded` log to once a
+minute per distinct reason, clearing the latch on the first recovered read.
+
+Reads a person asked for pass `{ force: true }` and bypass the backoff window:
+opening Connections, **Try again**, the read after a device mutation, and the
+re-read after a brain **Repair**. Broadcast- and interval-driven refreshes stay
+unforced, so a sick runtime is still only probed at the backoff rate. Because a
+forced read can run alongside the shared one and finish first (the older shared
+read may be sitting at the 30s timeout), the reader settles
+**last-issued-wins**, not last-to-finish.
 
 During project transitions, mutating sync methods (`sync.setPin`,
 `sync.clearPin`, `sync.connectToBrain`, lane-presence updates, model-picker

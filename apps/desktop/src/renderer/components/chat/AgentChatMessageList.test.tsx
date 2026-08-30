@@ -11,6 +11,11 @@ import type {
   ComputerUseArtifactView,
 } from "../../../shared/types";
 import * as modelRegistry from "../../../shared/modelRegistry";
+import {
+  resetTextRevealHorizonCacheForTests,
+  TEXT_REVEAL_HORIZON_STORAGE_KEY,
+} from "./textReveal";
+import { setPerfActive } from "../../perf/markers";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
 import fs from "node:fs";
 import path from "node:path";
@@ -77,6 +82,9 @@ import {
   resolveAnchoredChatRowIndex,
   resolveOlderHistoryPrefetchTriggerPx,
   resolveWorkingIndicatorLabel,
+  sameKeyList,
+  sameMapContents,
+  sameSetContents,
   shouldAbsorbProgrammaticScrollEvent,
   stabilizeTranscriptToolActivity,
   shouldStickToBottomAfterScroll,
@@ -5085,5 +5093,353 @@ describe("transcript tool-activity identity stability", () => {
     const first = deriveTranscriptToolActivity(buildRows("a") as never);
     const second = deriveTranscriptToolActivity(buildRows("a") as never);
     expect(stabilizeTranscriptToolActivity(first, second)).toBe(first);
+  });
+});
+
+describe("streaming-delta identity stabilization", () => {
+  afterEach(() => cleanup());
+
+  it("reuses the previous Map when a delta leaves the resolved-input contents alone", () => {
+    // `resolvedInputStates` / `resolvedInputAnswers` are rebuilt on every delta
+    // (they memoize on `events`, whose identity changes per flush) but their
+    // contents only move when a question is answered.
+    const resolution = { state: "answered" } as const;
+    const previous = new Map<string, { readonly state: string }>([["item-1", resolution]]);
+    const rebuilt = new Map([["item-1", resolution]]);
+    expect(sameMapContents(previous, rebuilt)).toBe(true);
+    expect(sameMapContents(previous, new Map([["item-1", { state: "cancelled" } as const]]))).toBe(false);
+    expect(sameMapContents(previous, new Map())).toBe(false);
+    expect(sameMapContents(previous, new Map([["item-2", resolution]]))).toBe(false);
+  });
+
+  it("reuses the previous Set when a delta leaves the receipt/queue ids alone", () => {
+    const previous = new Set(["a", "b"]);
+    expect(sameSetContents(previous, new Set(["a", "b"]))).toBe(true);
+    expect(sameSetContents(previous, new Set(["b", "a"]))).toBe(true);
+    expect(sameSetContents(previous, new Set(["a"]))).toBe(false);
+    expect(sameSetContents(previous, new Set(["a", "c"]))).toBe(false);
+  });
+
+  it("treats the row-key list as changed as soon as any key moves", () => {
+    // Order matters: `rowHeight` indexes by position, so a reorder MUST be
+    // reported as a change or the virtualizer would measure the wrong row.
+    expect(sameKeyList(["a", "b"], ["a", "b"])).toBe(true);
+    expect(sameKeyList(["a", "b"], ["b", "a"])).toBe(false);
+    expect(sameKeyList(["a", "b"], ["a", "b", "c"])).toBe(false);
+  });
+
+  describe("virtualized rows", () => {
+    let observerConstructions = 0;
+    let observerDisconnects = 0;
+    let previousResizeObserver: unknown;
+
+    beforeEach(() => {
+      observerConstructions = 0;
+      observerDisconnects = 0;
+      previousResizeObserver = (globalThis as Record<string, unknown>).ResizeObserver;
+      (globalThis as Record<string, unknown>).ResizeObserver = class {
+        constructor() {
+          observerConstructions += 1;
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {
+          observerDisconnects += 1;
+        }
+      };
+    });
+
+    afterEach(() => {
+      if (previousResizeObserver === undefined) {
+        delete (globalThis as Record<string, unknown>).ResizeObserver;
+      } else {
+        (globalThis as Record<string, unknown>).ResizeObserver = previousResizeObserver;
+      }
+    });
+
+    // 40 turns → 80 grouped rows, comfortably past the virtualization threshold
+    // so every rendered row goes through MeasuredEventRow's ResizeObserver.
+    const TURNS = 40;
+    function buildTranscript(): AgentChatEventEnvelope[] {
+      const built: AgentChatEventEnvelope[] = [];
+      for (let turn = 0; turn < TURNS; turn += 1) {
+        const stamp = String(turn).padStart(2, "0");
+        built.push({
+          sessionId: "s1",
+          timestamp: `2026-03-17T10:${stamp}:00.000Z`,
+          event: { type: "user_message", text: `ask ${turn}` },
+        } as AgentChatEventEnvelope);
+        built.push({
+          sessionId: "s1",
+          timestamp: `2026-03-17T10:${stamp}:01.000Z`,
+          event: { type: "text", text: `reply ${turn}`, itemId: `text-${turn}`, turnId: `turn-${turn}` },
+        } as AgentChatEventEnvelope);
+      }
+      return built;
+    }
+
+    const listOf = (events: AgentChatEventEnvelope[]) => (
+      <MemoryRouter>
+        <AgentChatMessageList events={events} sessionId="s1" assistantLabel="Assistant" showStreamingIndicator />
+      </MemoryRouter>
+    );
+
+    it("does not tear down per-row ResizeObservers when a streaming delta extends the last row", () => {
+      const base = buildTranscript();
+      const view = render(listOf(base));
+      expect(observerConstructions).toBeGreaterThan(0);
+      const constructionsAfterMount = observerConstructions;
+      const disconnectsAfterMount = observerDisconnects;
+
+      // A streaming delta: same envelopes for every settled row, one longer
+      // text on the tail — exactly what a token flush produces.
+      const tail = base[base.length - 1]!;
+      const delta = [
+        ...base.slice(0, -1),
+        { ...tail, event: { ...tail.event, text: `${(tail.event as { text: string }).text} more` } } as AgentChatEventEnvelope,
+      ];
+      act(() => {
+        view.rerender(listOf(delta));
+      });
+
+      // `handleMeasure` (and the `rowHeight` it closes over) keep their identity
+      // across the delta, so MeasuredEventRow's layout effect does not re-run.
+      expect(observerDisconnects).toBe(disconnectsAfterMount);
+      expect(observerConstructions).toBe(constructionsAfterMount);
+    });
+
+    it("still observes rows that genuinely appear (the counter is live)", () => {
+      const base = buildTranscript();
+      const view = render(listOf(base));
+      const constructionsAfterMount = observerConstructions;
+
+      const appended: AgentChatEventEnvelope[] = [
+        ...base,
+        {
+          sessionId: "s1",
+          timestamp: "2026-03-17T11:00:00.000Z",
+          event: { type: "user_message", text: "one more ask" },
+        } as AgentChatEventEnvelope,
+      ];
+      act(() => {
+        view.rerender(listOf(appended));
+      });
+
+      expect(observerConstructions).toBeGreaterThan(constructionsAfterMount);
+    });
+  });
+});
+
+/**
+ * Paced text reveal (see textReveal.ts). These tests cover the contract the
+ * pacing must never break — the store text is always complete, and anything
+ * that is not a live, growing tail paints in full immediately. The pacing math
+ * itself is covered without rAF in textReveal.test.ts.
+ */
+describe("AgentChatMessageList — paced assistant text", () => {
+  const streamingText = (text: string): AgentChatEventEnvelope[] => ([
+    {
+      sessionId: "session-1",
+      timestamp: "2026-03-17T10:00:00.000Z",
+      event: { type: "text", text, itemId: "text-stream", turnId: "turn-1" },
+    },
+  ]);
+
+  it("paints a message that is already complete when it first mounts", () => {
+    // Mounting mid-turn (history, virtualization remount, backfill) must not
+    // type the message out from zero.
+    renderMessageList(streamingText("The whole answer was already here."), {
+      showStreamingIndicator: true,
+    });
+    expect(screen.getByText("The whole answer was already here.")).toBeTruthy();
+  });
+
+  it("holds back growth that arrives after mount while keeping the store text whole", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+
+    const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={streamingText("Alpha. Beta gamma delta.")}
+            showStreamingIndicator
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    // Painted: only what has been revealed so far.
+    expect(screen.getByText("Alpha.")).toBeTruthy();
+    expect(screen.queryByText(/Beta gamma delta/)).toBeNull();
+    // Stored: the whole thing — copy must never hand back a paced prefix.
+    fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Alpha. Beta gamma delta."));
+  });
+
+  it("snaps to the full text the moment the row stops streaming", () => {
+    const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={streamingText("Alpha. Beta gamma delta.")}
+            showStreamingIndicator
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(screen.queryByText(/Beta gamma delta/)).toBeNull();
+
+    // The turn ends (`done` / settle / a newer row takes the tail): the row is
+    // no longer paced and everything must be on screen in that same commit.
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={streamingText("Alpha. Beta gamma delta.")}
+            showStreamingIndicator={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(screen.getByText("Alpha. Beta gamma delta.")).toBeTruthy();
+  });
+
+  it("never paces a row that is not the trailing streaming row", () => {
+    const view = renderMessageList(
+      [
+        ...streamingText("Earlier block."),
+        {
+          sessionId: "session-1",
+          timestamp: "2026-03-17T10:00:01.000Z",
+          event: { type: "text", text: "Later block.", itemId: "text-2", turnId: "turn-1" },
+        },
+      ],
+      { showStreamingIndicator: true },
+    );
+    // Growing the EARLIER row (a late edit/backfill) paints immediately: only
+    // the trailing row is paced.
+    act(() => {
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatMessageList
+            events={[
+              ...streamingText("Earlier block, extended by a backfill."),
+              {
+                sessionId: "session-1",
+                timestamp: "2026-03-17T10:00:01.000Z",
+                event: { type: "text", text: "Later block.", itemId: "text-2", turnId: "turn-1" },
+              },
+            ]}
+            showStreamingIndicator
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(screen.getByText("Earlier block, extended by a backfill.")).toBeTruthy();
+  });
+
+  it("paints growth on arrival while the row is scrolled out of view", () => {
+    // Visibility must gate the BACKLOG, not just the frame loop. A row that
+    // only stopped its loop would sit on a stale prefix for as long as it is
+    // off screen, and the first sight after scrolling back would show a
+    // truncated message that then types out the whole accumulated backlog.
+    const originalIntersectionObserver = globalThis.IntersectionObserver;
+    let intersectionCallback: IntersectionObserverCallback | null = null;
+    globalThis.IntersectionObserver = class {
+      root = null;
+      rootMargin = "";
+      thresholds = [];
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+      takeRecords(): IntersectionObserverEntry[] { return []; }
+    } as unknown as typeof IntersectionObserver;
+
+    try {
+      const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+      const observed = intersectionCallback as IntersectionObserverCallback | null;
+      expect(observed).toBeTruthy();
+      act(() => {
+        observed!(
+          [{ isIntersecting: false } as IntersectionObserverEntry],
+          {} as IntersectionObserver,
+        );
+      });
+
+      act(() => {
+        view.rerender(
+          <MemoryRouter>
+            <AgentChatMessageList
+              events={streamingText("Alpha. Beta gamma delta.")}
+              showStreamingIndicator
+            />
+          </MemoryRouter>,
+        );
+      });
+
+      // First sight after scrolling back is the full current text — no rAF ran.
+      expect(screen.getByText("Alpha. Beta gamma delta.")).toBeTruthy();
+    } finally {
+      globalThis.IntersectionObserver = originalIntersectionObserver;
+    }
+  });
+
+  it("paints on arrival when the horizon override turns pacing off", () => {
+    // The A/B kill switch: `ade.textRevealHorizonMs = 0` must restore the
+    // exact pre-pacing behavior, growth included.
+    localStorage.setItem(TEXT_REVEAL_HORIZON_STORAGE_KEY, "0");
+    resetTextRevealHorizonCacheForTests();
+    try {
+      const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+      act(() => {
+        view.rerender(
+          <MemoryRouter>
+            <AgentChatMessageList
+              events={streamingText("Alpha. Beta gamma delta.")}
+              showStreamingIndicator
+            />
+          </MemoryRouter>,
+        );
+      });
+      expect(screen.getByText("Alpha. Beta gamma delta.")).toBeTruthy();
+    } finally {
+      localStorage.removeItem(TEXT_REVEAL_HORIZON_STORAGE_KEY);
+      resetTextRevealHorizonCacheForTests();
+    }
+  });
+
+  it("reports the revealed length, not the store length, to the perf sampler", () => {
+    // The attribute only exists during a perf run; without one it must stay
+    // absent so production writes nothing.
+    renderMessageList(streamingText("Measured."), { showStreamingIndicator: true });
+    const node = document.querySelector("[data-assistant-output]");
+    expect(node).toBeTruthy();
+    expect(node!.getAttribute("data-stream-text-len")).toBeNull();
+  });
+
+  it("still reports the painted length to the perf sampler when pacing is off", () => {
+    // The OFF arm of the A/B has to measure something: with pacing disabled
+    // the painted length IS the store length, and the sampler must see it.
+    // Without this the OFF run finds no `[data-stream-text-len]` node at all
+    // and scores a blank baseline.
+    localStorage.setItem(TEXT_REVEAL_HORIZON_STORAGE_KEY, "0");
+    resetTextRevealHorizonCacheForTests();
+    setPerfActive(true);
+    try {
+      renderMessageList(streamingText("Measured."), { showStreamingIndicator: true });
+      const node = document.querySelector("[data-assistant-output]");
+      expect(node).toBeTruthy();
+      expect(node!.getAttribute("data-stream-text-len")).toBe(String("Measured.".length));
+    } finally {
+      setPerfActive(false);
+      localStorage.removeItem(TEXT_REVEAL_HORIZON_STORAGE_KEY);
+      resetTextRevealHorizonCacheForTests();
+    }
   });
 });

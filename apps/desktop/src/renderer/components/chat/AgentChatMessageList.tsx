@@ -1,6 +1,4 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { AnimatePresence, motion } from "motion/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
@@ -63,7 +61,9 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openExternalUrl, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { normalizePath } from "../../lib/pathUtils";
-import { chatMarkdownUrlTransform } from "./chatMarkdown";
+import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
+import { AssistantTextBody } from "./AssistantTextBody";
+import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
 import {
   CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
   splitChatOutputContextSegments,
@@ -71,9 +71,6 @@ import {
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import {
   ChatWorkspacePathProvider,
-  looksLikeWorkspacePath,
-  parseWorkspacePathLocation,
-  resolveWorkspacePathFromHref,
   useWorkspacePathOpener,
   type WorkspacePathLocation,
 } from "./chatWorkspacePaths";
@@ -86,7 +83,7 @@ import {
 } from "./chatTranscriptChrome";
 import { useAppStore } from "../../state/appStore";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { transcriptRowGapPx, useChatChromeTint } from "./chatAppearance";
+import { transcriptRowGapPx } from "./chatAppearance";
 import { UserMessageIssueContext } from "./UserMessageIssueContext";
 import type { AgentChatContextAttachment, AgentChatFileRef } from "../../../shared/types";
 import { getToolMeta } from "./chatToolAppearance";
@@ -143,9 +140,6 @@ import { promptHistoryEventKey } from "./chatPromptHistory";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { classifyProviderFailure, providerFailureEventId, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
-import { HighlightedCode } from "./CodeHighlighter";
-import { MosaicCard } from "./MosaicCard";
-import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   collectUserMessageMinimapSourceEntries,
@@ -181,17 +175,6 @@ function path_isAbsoluteLike(value: string): boolean {
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
-
-/**
- * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
- * ```mosaic fence renders as an interactive card instead of a plain code block.
- * `scope` is the transcript row's stable key so byte-identical cards at
- * different positions keep independent answered state.
- */
-export type MosaicRenderContext = {
-  cardKeyFor: (source: string, scope: string) => string;
-  onSubmit: (submission: { text: string; displayText: string }) => void | Promise<void>;
-};
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 
@@ -1499,208 +1482,6 @@ function ChatActivityBundle({
   );
 }
 
-function WorkspacePathLink({
-  children,
-  code,
-  neutral,
-  onOpen,
-}: {
-  children: React.ReactNode;
-  code: boolean;
-  neutral: boolean;
-  onOpen: () => void;
-}) {
-  const content = (
-    <>
-      <FileCode size={12} aria-hidden className="shrink-0 self-center" />
-      <span className="min-w-0 break-all">{children}</span>
-    </>
-  );
-  let className: string;
-  if (code) {
-    className = neutral
-      ? "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-md border border-white/14 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/22 hover:bg-white/[0.1] hover:text-white"
-      : "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-md border border-sky-400/16 bg-sky-500/[0.08] px-1.5 py-0.5 align-baseline font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/24 hover:bg-sky-500/[0.12] hover:text-sky-100";
-  } else {
-    className = neutral
-      ? "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-sm border border-white/12 bg-white/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-white/88 underline decoration-white/25 underline-offset-2 transition-colors hover:border-white/20 hover:bg-white/[0.1] hover:text-white"
-      : "inline-flex max-w-full cursor-pointer items-baseline gap-1 break-all whitespace-normal rounded-sm border border-sky-400/12 bg-sky-500/[0.06] px-1.5 py-0.5 align-baseline font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-left text-sky-200 underline decoration-sky-300/30 underline-offset-2 transition-colors hover:border-sky-400/22 hover:bg-sky-500/[0.1] hover:text-sky-100";
-  }
-
-  return code ? (
-    <span
-      role="button"
-      tabIndex={0}
-      className={className}
-      onClick={onOpen}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onOpen();
-        }
-      }}
-      title="Open file in Files"
-    >
-      {content}
-    </span>
-  ) : (
-    <button type="button" className={className} onClick={onOpen} title="Open file in Files">
-      {content}
-    </button>
-  );
-}
-
-/* ── Markdown renderer ── */
-
-const MarkdownBlock = React.memo(function MarkdownBlock({
-  markdown,
-  onOpenWorkspacePath,
-  mosaic,
-  mosaicScopeKey,
-}: {
-  markdown: string;
-  onOpenWorkspacePath?: (path: string | WorkspacePathLocation) => void;
-  mosaic?: MosaicRenderContext;
-  /** Stable transcript-row key scoping mosaic answered state per message. */
-  mosaicScopeKey?: string;
-}) {
-  const chromeTint = useChatChromeTint();
-  const neu = chromeTint === "neutral";
-  const openWorkspacePath = useCallback((path: WorkspacePathLocation) => {
-    onOpenWorkspacePath?.(path);
-  }, [onOpenWorkspacePath]);
-
-  return (
-    <div
-      className={cn(
-        "ade-prose-themed prose prose-invert min-w-0 max-w-full break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.8]",
-        neu
-          ? "text-white/92 prose-headings:text-white/95 prose-p:text-white/88 prose-li:text-white/86 prose-strong:text-white prose-blockquote:text-white/76"
-          : "text-fg/96 prose-headings:text-fg prose-p:text-fg/88 prose-li:text-fg/86 prose-strong:text-fg prose-blockquote:text-fg/76",
-        "prose-headings:mb-3 prose-headings:mt-6 prose-headings:font-sans prose-headings:font-semibold prose-headings:tracking-tight",
-        "prose-p:my-3 prose-p:break-words prose-ul:my-3 prose-ul:pl-5 prose-ol:my-3 prose-ol:pl-5 prose-li:my-1.5 prose-li:break-words prose-li:pl-1",
-        "prose-blockquote:border-l-2 prose-blockquote:border-l-white/20 prose-blockquote:pl-4 prose-hr:my-5 prose-hr:border-white/[0.08]",
-      )}
-    >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={chatMarkdownUrlTransform}
-        components={{
-          h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
-          h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
-          h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
-          ul: ({ children }) => <ul className="my-3 list-disc space-y-1.5 pl-5">{children}</ul>,
-          ol: ({ children }) => <ol className="my-3 list-decimal space-y-1.5 pl-5">{children}</ol>,
-          li: ({ children }) => (
-            <li className={neu ? "pl-1 text-white/86" : "pl-1 text-fg/88"}>{children}</li>
-          ),
-          blockquote: ({ children }) => (
-            <blockquote
-              className={neu ? "border-l-2 border-white/20 pl-4 italic text-white/74" : "border-l-2 border-white/20 pl-4 italic text-fg/72"}
-            >
-              {children}
-            </blockquote>
-          ),
-          table: ({ children }) => (
-            <div className="my-4 overflow-x-auto rounded-xl border border-white/[0.06] bg-[#0A090E]/60 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
-              <table className="min-w-full border-separate border-spacing-0 text-[length:calc(var(--chat-font-size)*12/14)]">{children}</table>
-            </div>
-          ),
-          thead: ({ children, node: _, ...props }) => <thead className="bg-white/[0.04]" {...props}>{children}</thead>,
-          tbody: ({ children, node: _, ...props }) => <tbody {...props}>{children}</tbody>,
-          tr: ({ children, node: _, ...props }) => <tr className="align-top" {...props}>{children}</tr>,
-          th: ({ children, node: _, ...props }) => (
-            <th
-              className={
-                neu
-                  ? "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-white/88 first:rounded-tl-xl last:rounded-tr-xl"
-                  : "break-words border-b border-white/[0.06] px-3 py-2 text-left font-medium text-fg/82 first:rounded-tl-xl last:rounded-tr-xl"
-              }
-              {...props}
-            >
-              {children}
-            </th>
-          ),
-          td: ({ children, node: _, ...props }) => (
-            <td
-              className={
-                neu
-                  ? "break-words border-b border-white/[0.05] px-3 py-2 align-top text-white/82 last:border-r-0"
-                  : "break-words border-b border-white/[0.05] px-3 py-2 align-top text-fg/76 last:border-r-0"
-              }
-              {...props}
-            >
-              {children}
-            </td>
-          ),
-          pre: ({ children }) => (
-            <>{children}</>
-          ),
-          code: ({ className, children }) => {
-            const text = String(children ?? "");
-            const isBlock = /\n/.test(text) || (typeof className === "string" && className.length > 0);
-            const workspacePath = !isBlock ? parseWorkspacePathLocation(text) : null;
-            const pathIsClickable = Boolean(workspacePath && looksLikeWorkspacePath(text));
-            const language = typeof className === "string"
-              ? (className.match(/language-([^\s]+)/)?.[1] ?? "text")
-              : "text";
-            if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
-              return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
-            }
-            return isBlock ? (
-              <HighlightedCode code={text} language={language} />
-            ) : pathIsClickable ? (
-              <WorkspacePathLink code neutral={neu} onOpen={() => openWorkspacePath(workspacePath!)}>
-                {children}
-              </WorkspacePathLink>
-            ) : (
-              <code
-                className={
-                  neu
-                    ? "break-all whitespace-normal rounded-md border border-white/[0.1] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-white/90"
-                    : "break-all whitespace-normal rounded-md border border-white/[0.08] bg-black/30 px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/90"
-                }
-              >
-                {children}
-              </code>
-            );
-          },
-          a: ({ children, href }) => {
-            const workspacePath = resolveWorkspacePathFromHref(href);
-            if (workspacePath) {
-              return (
-                <WorkspacePathLink code={false} neutral={neu} onOpen={() => openWorkspacePath(workspacePath)}>
-                  {children}
-                </WorkspacePathLink>
-              );
-            }
-            return (
-              <a
-                href={href}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(event) => {
-                  event.preventDefault();
-                  openUrlInAdeBrowser(href);
-                }}
-                className={
-                  neu
-                    ? "text-white/85 underline decoration-white/28 underline-offset-2 transition-colors hover:text-white hover:decoration-white/45"
-                    : "text-accent underline decoration-accent/30 underline-offset-2 transition-colors hover:text-accent/80 hover:decoration-accent/50"
-                }
-              >
-                {children}
-              </a>
-            );
-          }
-        }}
-      >
-        {markdown}
-      </ReactMarkdown>
-    </div>
-  );
-});
-
 /* ── Collapsible card ── */
 
 function CollapsibleCard({
@@ -2659,6 +2440,11 @@ function renderEvent(
     onCancelQueuedMessage?: (uuid: string) => void;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     settledQueueRecoveryIds?: Set<string>;
+    /**
+     * True for the single trailing streaming assistant text row of a visible
+     * main transcript — the only row whose growth is paced.
+     */
+    pacedTextReveal?: boolean;
   }
 ) {
   const event = envelope.event;
@@ -2879,9 +2665,13 @@ function renderEvent(
               />
             ) : null}
           </div>
-          <div className="min-w-0" data-assistant-output="true">
-            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
-          </div>
+          <AssistantTextBody
+            text={event.text}
+            paced={options?.pacedTextReveal === true}
+            onOpenWorkspacePath={options?.onOpenWorkspacePath}
+            mosaic={options?.mosaic}
+            mosaicScopeKey={envelope.key}
+          />
         </div>
       </motion.div>
     );
@@ -4573,6 +4363,60 @@ export function stabilizeTranscriptToolActivity(
   return { byDoneRowKey, activeEntries, fileEntriesByDoneRowKey, activeFileEntries };
 }
 
+/**
+ * Element-wise identity reuse for the small derived collections the transcript
+ * memoizes on `events`.
+ *
+ * Same rationale as `stabilizeTranscriptToolActivity` above, one level down:
+ * `events` gets a fresh array identity on every streaming delta, so every
+ * `useMemo([events])` rebuilds its Map/Set even though the contents almost
+ * never move mid-turn. Those collections are props on EVERY row, so a new
+ * identity per delta defeats `React.memo` on the whole thread — and, in
+ * virtualized mode, an identity change on the derived `rowHeight`/`onMeasure`
+ * callbacks also tears down and recreates each row's ResizeObserver. Reuse the
+ * previous object whenever a shallow comparison says nothing changed. Values
+ * are read straight off the (stable) event envelopes, so `===` on members is
+ * enough to tell "unchanged" from "changed".
+ */
+export function sameMapContents<K, V>(previous: ReadonlyMap<K, V>, next: ReadonlyMap<K, V>): boolean {
+  if (previous === next) return true;
+  if (previous.size !== next.size) return false;
+  for (const [key, value] of next) {
+    if (!previous.has(key) || previous.get(key) !== value) return false;
+  }
+  return true;
+}
+
+export function sameSetContents<T>(previous: ReadonlySet<T>, next: ReadonlySet<T>): boolean {
+  if (previous === next) return true;
+  if (previous.size !== next.size) return false;
+  for (const value of next) {
+    if (!previous.has(value)) return false;
+  }
+  return true;
+}
+
+export function sameKeyList(previous: readonly string[], next: readonly string[]): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  for (let index = 0; index < previous.length; index += 1) {
+    if (previous[index] !== next[index]) return false;
+  }
+  return true;
+}
+
+/**
+ * Keep the previous value whenever `isSame` says the freshly derived one is
+ * equivalent. `isSame` must be a stable module-level predicate.
+ */
+function useStableIdentity<T>(next: T, isSame: (previous: T, next: T) => boolean): T {
+  const ref = useRef(next);
+  if (ref.current !== next && !isSame(ref.current, next)) {
+    ref.current = next;
+  }
+  return ref.current;
+}
+
 export function deriveTranscriptToolActivity(rows: TranscriptGroupedEnvelope[]): TranscriptToolActivity {
   const entriesByTurnId = new Map<string, ChatWorkLogEntry[]>();
   const byDoneRowKey = new Map<string, ChatWorkLogEntry[]>();
@@ -4762,6 +4606,8 @@ type EventRowProps = {
   inlineProof?: ComputerUseArtifactView[];
   resolveProofThumbnailSrc?: (artifact: ComputerUseArtifactView) => string | null;
   onOpenProofDrawer?: () => void;
+  /** This row is the trailing streaming assistant text row (paced reveal). */
+  pacedTextReveal?: boolean;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -4817,6 +4663,7 @@ const EventRow = React.memo(function EventRow({
   inlineProof,
   resolveProofThumbnailSrc,
   onOpenProofDrawer,
+  pacedTextReveal,
 }: EventRowProps) {
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   return (
@@ -4892,6 +4739,7 @@ const EventRow = React.memo(function EventRow({
             onCancelQueuedMessage,
             onRestoreCancelledQueue,
             settledQueueRecoveryIds,
+            pacedTextReveal,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -5351,9 +5199,13 @@ function writeTranscriptCollapseCache(
   }
 }
 
+/** How far back from the tail we look for the streaming text row. */
+const PACED_TEXT_ROW_SCAN_DEPTH = 8;
+
 function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
+  textPacingEnabled = true,
     className,
   onApproval,
   onCodexRecovery,
@@ -5400,6 +5252,12 @@ function AgentChatMessageListMain({
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
+  /**
+   * Pace the trailing streaming assistant text row (default). Surfaces that
+   * are not the user's main prose view — subagent transcripts above all — pass
+   * false and keep the cheap paint-on-arrival render.
+   */
+  textPacingEnabled?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
@@ -5585,7 +5443,7 @@ function AgentChatMessageListMain({
     if (pinned) scrollToBottomSoonRef.current?.(2);
   }, [resolvedScrollMemoryKey]);
   const onApprovalRef = useRef(onApproval);
-  const resolvedInputStates = useMemo(() => {
+  const resolvedInputStates = useStableIdentity(useMemo(() => {
     const resolved = new Map<string, PendingInputResolution>();
     for (const envelope of events) {
       if (envelope.event.type !== "pending_input_resolved") continue;
@@ -5594,11 +5452,11 @@ function AgentChatMessageListMain({
       }
     }
     return resolved;
-  }, [events]);
+  }, [events]), sameMapContents);
   // What was actually sent, so the answered receipt reads back the choice
   // rather than a bare "answered". Absent on older transcripts and on any
   // question that was secret — the receipt degrades to "answer hidden".
-  const resolvedInputAnswers = useMemo(() => {
+  const resolvedInputAnswers = useStableIdentity(useMemo(() => {
     const answers = new Map<string, Record<string, string | string[]>>();
     for (const envelope of events) {
       if (envelope.event.type !== "pending_input_resolved") continue;
@@ -5608,7 +5466,7 @@ function AgentChatMessageListMain({
       }
     }
     return answers;
-  }, [events]);
+  }, [events]), sameMapContents);
 
   // Virtualization scroll tracking
   const [scrollTop, setScrollTop] = useState(0);
@@ -5785,7 +5643,17 @@ function AgentChatMessageListMain({
     ),
     [allGroupedRows],
   );
-  const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
+  // `groupedRows` gets a fresh array on every streaming delta (the streaming row
+  // is rebuilt), but the ROW KEYS only move when rows are added, removed or
+  // regrouped. Reusing the previous key array on a pure content delta keeps
+  // `rowHeight` — and therefore `handleMeasure`, and therefore every row's
+  // ResizeObserver — from being recreated on each token flush. When the keys do
+  // change, the fresh array is returned and every downstream memo/effect
+  // recomputes exactly as before.
+  const groupedRowKeys = useStableIdentity(
+    useMemo(() => groupedRows.map((row) => row.key), [groupedRows]),
+    sameKeyList,
+  );
   // Mirrored for the render-free paths (scroll handler, unmount snapshot) that
   // must not re-subscribe every time the transcript grows.
   const groupedRowKeysRef = useRef<readonly string[]>(groupedRowKeys);
@@ -5804,6 +5672,30 @@ function AgentChatMessageListMain({
     }
     prevGroupedRowKeysRef.current = groupedRowKeys;
   }
+  // Streaming-text paint smoothness (perf runs only). `showStreamingIndicator`
+  // is the same turn-active signal that drives the WorkingIndicator, so the rAF
+  // loop lives exactly as long as a turn is streaming — never while idle.
+  useStreamSmoothnessSampler(showStreamingIndicator && !sessionEnded, sessionId ?? null);
+
+  /*
+    The one row whose growth is paced: the trailing assistant text row of a
+    streaming turn on a main transcript. Subagent transcript views opt out
+    entirely (`textPacingEnabled={false}`) — they get the cheap
+    paint-on-arrival path, as do ended sessions and idle turns.
+
+    The scan is bounded to the last few rows so it stays O(1) per delta: a text
+    row buried behind a dozen tool rows is no longer the row that grows.
+  */
+  const pacedTextRowKey = useMemo(() => {
+    if (!textPacingEnabled || !showStreamingIndicator || sessionEnded) return null;
+    const floor = Math.max(0, groupedRows.length - PACED_TEXT_ROW_SCAN_DEPTH);
+    for (let index = groupedRows.length - 1; index >= floor; index -= 1) {
+      const row = groupedRows[index];
+      if (row?.event.type === "text") return row.key;
+    }
+    return null;
+  }, [groupedRows, sessionEnded, showStreamingIndicator, textPacingEnabled]);
+
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
   const activeApiRetry = useMemo(
@@ -5813,7 +5705,7 @@ function AgentChatMessageListMain({
   // A stop receipt auto-collapses once its queued messages have run — best-effort:
   // once a *later* turn (different turnId, i.e. the next turn) completes. The
   // interrupted turn's own `done` does not count.
-  const staleInterruptReceipts = useMemo(() => {
+  const staleInterruptReceipts = useStableIdentity(useMemo(() => {
     const stale = new Set<string>();
     const pending: { identity: string; turnId: string | undefined; donesAfter: number }[] = [];
     for (const envelope of events) {
@@ -5836,13 +5728,13 @@ function AgentChatMessageListMain({
       }
     }
     return stale;
-  }, [events]);
-  const settledQueueRecoveryIds = useMemo(() => new Set(
+  }, [events]), sameSetContents);
+  const settledQueueRecoveryIds = useStableIdentity(useMemo(() => new Set(
     events.flatMap(({ event }) =>
       event.type === "queue_recovery" && event.state !== "available"
         ? [event.recoveryId]
         : []),
-  ), [events]);
+  ), [events]), sameSetContents);
   const activeTurnStartedAt = useMemo(
     () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
     [events, showStreamingIndicator, activeTurnId],
@@ -6859,6 +6751,7 @@ function AgentChatMessageListMain({
           onCancelQueuedMessage={onCancelQueuedMessage}
           onRestoreCancelledQueue={onRestoreCancelledQueue}
           settledQueueRecoveryIds={settledQueueRecoveryIds}
+          pacedTextReveal={envelope.key === pacedTextRowKey}
         />
       );
     }
@@ -6918,9 +6811,10 @@ function AgentChatMessageListMain({
         onCancelQueuedMessage={onCancelQueuedMessage}
         onRestoreCancelledQueue={onRestoreCancelledQueue}
         settledQueueRecoveryIds={settledQueueRecoveryIds}
+        pacedTextReveal={envelope.key === pacedTextRowKey}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTitle, sessionProvider, paneActive, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionTitle, sessionProvider, paneActive, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, pacedTextRowKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

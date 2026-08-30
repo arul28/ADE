@@ -134,7 +134,6 @@ import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus"
 import {
   AgentChatMessageList,
   ChatInfoHostContext,
-  type MosaicRenderContext,
 } from "./AgentChatMessageList";
 import {
   ChatAutoResumeContext,
@@ -143,6 +142,7 @@ import {
   type ChatAutoResumeState,
 } from "./ProviderFailureRecoveryCard";
 import { isPendingAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
+import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
@@ -14140,6 +14140,10 @@ export function AgentChatPane({
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
                         sessionTurnActive={turnActive}
+                        // Subagent transcripts are a secondary, plain surface:
+                        // they keep the cheap paint-on-arrival render so only
+                        // the user's own prose pays for the paced reveal.
+                        textPacingEnabled={!subagentView}
                         sessionEnded={selectedSession?.status === "ended"}
                         sessionProvider={selectedSession?.provider ?? sessionProvider}
                         runtimePin={chatRuntimePin}

@@ -160,5 +160,9 @@ export function buildMachineOnlySyncSnapshot(error: unknown): SyncRoleSnapshot {
     },
     survivableStateText: reason,
     blockingStateText: reason,
+    // Marks this as a synthesized fallback rather than a real reading of the
+    // machine, so the renderer can back its polling off instead of hammering
+    // an unreachable runtime once per sync-status broadcast.
+    degradedReason: reason,
   };
 }
