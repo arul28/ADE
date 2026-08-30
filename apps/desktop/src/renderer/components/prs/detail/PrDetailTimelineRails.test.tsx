@@ -533,9 +533,25 @@ describe("PrDetailHeader", () => {
     expect(onStartTitleEdit).toHaveBeenCalledTimes(1);
   });
 
-  it("has no edit pencil for a PR with no lane, which cannot be renamed", () => {
-    renderHeader({ pr: makePr({ laneId: null as unknown as string }) });
-    expect(screen.queryByLabelText("Edit title")).toBeNull();
+  // Renaming is a GitHub mutation, and `updateTitle` resolves a synthetic `gh:`
+  // id, so a PR with no lane can be renamed like any other. The pencil used to
+  // be hidden for it — the last remnant of "no lane means no actions".
+  it("still offers the edit pencil for a PR with no lane", () => {
+    const onStartTitleEdit = vi.fn();
+    renderHeader({ pr: makePr({ laneId: null as unknown as string }), onStartTitleEdit });
+    fireEvent.click(screen.getByLabelText("Edit title"));
+    expect(onStartTitleEdit).toHaveBeenCalledTimes(1);
+  });
+
+  // The opposite case: the graph focuses a lane node, so with no lane the
+  // button would build a route with nothing to focus.
+  it("hides Graph for a PR with no lane", () => {
+    renderHeader({ onShowInGraph: vi.fn() });
+    expect(screen.getByText("Graph")).toBeTruthy();
+
+    cleanup();
+    renderHeader({ pr: makePr({ laneId: null as unknown as string }), onShowInGraph: vi.fn() });
+    expect(screen.queryByText("Graph")).toBeNull();
   });
 
   it("commits the title on Enter and abandons it on Escape", () => {

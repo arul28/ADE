@@ -256,19 +256,20 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
                 ? { label: "RESOLVING", color: COLORS.textMuted, bg: `${COLORS.textMuted}18`, border: `${COLORS.textMuted}30` }
                 : getPrStateBadge(pr.state))} />
             </span>
-            {pr.laneId ? (
-              <SmartTooltip content={{ label: "Edit title", description: "Rename this pull request on GitHub." }}>
-                <button
-                  type="button"
-                  className="ade-pr-detail-header-edit"
-                  onClick={onStartTitleEdit}
-                  style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: COLORS.textMuted, flexShrink: 0, display: "inline-flex" }}
-                  aria-label="Edit title"
-                >
-                  <PencilSimple size={14} />
-                </button>
-              </SmartTooltip>
-            ) : null}
+            {/* No lane gate: the tooltip says it renames the PR on GitHub, and
+                that is exactly what it does — `updateTitle` resolves a synthetic
+                `gh:` id like every other mutation. */}
+            <SmartTooltip content={{ label: "Edit title", description: "Rename this pull request on GitHub." }}>
+              <button
+                type="button"
+                className="ade-pr-detail-header-edit"
+                onClick={onStartTitleEdit}
+                style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: COLORS.textMuted, flexShrink: 0, display: "inline-flex" }}
+                aria-label="Edit title"
+              >
+                <PencilSimple size={14} />
+              </button>
+            </SmartTooltip>
           </div>
 
           <HeaderRule className="ade-pr-detail-header-rule-lead" />
@@ -350,7 +351,10 @@ export const PrDetailHeader = React.memo(function PrDetailHeader({
         {!pr.laneId && unmappedAffordance && !isTerminalPrState(pr.state) ? (
           <UnmappedPrBanner affordance={unmappedAffordance} />
         ) : null}
-        {onShowInGraph ? (
+        {/* The one control here that genuinely needs a lane: the graph focuses a
+            lane node, and an unmapped PR carries an empty `laneId` that would
+            build a route with nothing to focus. */}
+        {onShowInGraph && pr.laneId ? (
           <button
             type="button"
             onClick={() => onShowInGraph(pr.laneId)}

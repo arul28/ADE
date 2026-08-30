@@ -184,6 +184,8 @@ function writeStoredDetailTab(prId: string, tab: DetailTab): void {
 export function buildCiFixPrompt(
   pr: Pick<PrWithConflicts, "githubPrNumber" | "repoOwner" | "repoName" | "headBranch">,
   excerpt: PrCheckLogExcerpt,
+  /** The graph node's name, for the degraded reads that omit `jobName`. */
+  fallbackJobName?: string | null,
 ): string {
   const logTail = excerpt.lines.slice(-80).join("\n").trim();
   const longestFence = Math.max(
@@ -191,8 +193,9 @@ export function buildCiFixPrompt(
     ...Array.from(logTail.matchAll(/`+/g), (match) => match[0].length),
   );
   const fence = "`".repeat(longestFence + 1);
+  const jobName = excerpt.jobName?.trim() || fallbackJobName?.trim() || `job ${excerpt.jobId}`;
   return [
-    `Fix the failing CI job \`${excerpt.jobName}\` on ${pr.repoOwner}/${pr.repoName} PR #${pr.githubPrNumber} (${pr.headBranch}).`,
+    `Fix the failing CI job \`${jobName}\` on ${pr.repoOwner}/${pr.repoName} PR #${pr.githubPrNumber} (${pr.headBranch}).`,
     excerpt.failingStepName ? `Failing step: ${excerpt.failingStepName}.` : null,
     excerpt.headline ? `Failure headline: ${excerpt.headline}` : null,
     "",
@@ -672,9 +675,12 @@ export function PrDetailPane({
     writeDetailPaneWarmCache(pr.id, patch);
   }, [pr.id]);
 
-  const handleFixInChat = React.useCallback(async (excerpt: PrCheckLogExcerpt) => {
+  const handleFixInChat = React.useCallback(async (
+    excerpt: PrCheckLogExcerpt,
+    fallbackJobName?: string | null,
+  ) => {
     if (!pr.laneId) return;
-    const prompt = buildCiFixPrompt(pr, excerpt);
+    const prompt = buildCiFixPrompt(pr, excerpt, fallbackJobName);
     try {
       const session = newestWorkChat(
         await window.ade.agentChat.list({ laneId: pr.laneId, includeArchived: false }),

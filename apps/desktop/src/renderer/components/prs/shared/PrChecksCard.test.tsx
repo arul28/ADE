@@ -221,6 +221,42 @@ describe("PrChecksCard summary + bucketing", () => {
     expect(screen.getByTestId("pr-checks-card-more").textContent).toBe("+1 more");
   });
 
+  // Auto-fill answers "how many rows fit", not "how many are allowed". On a
+  // tall rail it measures past the caller's cap, and letting the measurement
+  // win turned `previewLimit` from a maximum into a floor.
+  it("keeps previewLimit as the maximum with autoFillPreview", () => {
+    const realResizeObserver = globalThis.ResizeObserver;
+    // A rail tall enough for ~19 rows — well past the metadata rail's cap of 5.
+    globalThis.ResizeObserver = class {
+      constructor(private readonly cb: ResizeObserverCallback) {}
+      observe(target: Element) {
+        this.cb(
+          [{ target, contentRect: { height: 500 } } as unknown as ResizeObserverEntry],
+          this as unknown as ResizeObserver,
+        );
+      }
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+
+    try {
+      render(
+        <PrChecksCard
+          fill
+          autoFillPreview
+          previewLimit={5}
+          onOpenChecksTab={() => {}}
+          checks={["a", "b", "c", "d", "e", "f", "g"].map((name) => check({ name }))}
+          actionRuns={[]}
+        />,
+      );
+      expect(rowNames()).toHaveLength(5);
+      expect(screen.getByTestId("pr-checks-card-more").textContent).toBe("+2 more");
+    } finally {
+      globalThis.ResizeObserver = realResizeObserver;
+    }
+  });
+
   it("keeps the list uncapped when no previewLimit is given", () => {
     render(
       <PrChecksCard

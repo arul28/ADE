@@ -52,6 +52,7 @@ import {
   createPrService,
   GITHUB_SNAPSHOT_TTL_MS as GITHUB_SNAPSHOT_TTL_MS_FOR_TEST,
 } from "./prService";
+import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/types/prs";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -4505,7 +4506,13 @@ describe("prService.getCheckLog", () => {
 
       const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 999 });
 
-      expect(excerpt).toMatchObject({ jobId: 999, jobName: "", lines: [], htmlUrl: null });
+      expect(excerpt).toMatchObject({ jobId: 999, lines: [], htmlUrl: null });
+      // A degraded read must not ship empty *defined* values for facts the
+      // caller already holds: the renderer merges with `??` / a length check,
+      // so `jobName: ""` and `steps: []` would replace the graph node's real
+      // name and step list with nothing.
+      expect("jobName" in excerpt).toBe(false);
+      expect("steps" in excerpt).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith("prs.check_log_job_outside_pr", {
         prId: "pr-actions",
@@ -4773,6 +4780,80 @@ describe("prService.getCheckLog", () => {
       // rather than presented as the cleanup group's output.
       expect(excerpt.logScope).toBe("whole-log");
       expect(excerpt.lines.join("\n")).toContain("Tests  413 passed (413)");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not call a passed job's error-marked section its failing step", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const redirectResponse = new Response(null, {
+      status: 302,
+      headers: { location: "https://pipelines.actions.githubusercontent.com/log.txt" },
+    });
+    const githubService = makeGithubService({
+      requestRawWithCredentialFallback: vi.fn(async () => redirectResponse),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return {
+            data: {
+              workflow_runs: [{
+                id: 7, name: "CI", status: "completed", conclusion: "success", head_sha: "head-sha",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                created_at: "2026-07-27T11:55:00.000Z", updated_at: "2026-07-27T11:59:00.000Z",
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs/7/jobs") {
+          return {
+            data: {
+              jobs: [{
+                id: 111, name: "build", status: "completed", conclusion: "success",
+                steps: [{ number: 1, name: "Run npm test", status: "completed", conclusion: "success" }],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    // A green job whose log still carries an `##[error]` line — a retried step,
+    // a tolerated lint warning. The parser's reverse error scan isolates that
+    // section, but GitHub marked no failing step, so labelling it
+    // "failing-step" would have the drawer name a failing step for a job that
+    // passed. That is exactly the ambiguity `logScope` exists to remove.
+    const fetchMock = vi.fn(async () => new Response(
+      [
+        "2026-07-27T11:01:00.0000000Z ##[group]Run npm test",
+        "2026-07-27T11:01:20.0000000Z ##[error]flaky attempt 1 failed, retrying",
+        "2026-07-27T11:01:40.0000000Z  Tests  413 passed (413)",
+        "2026-07-27T11:01:41.0000000Z ##[endgroup]",
+        "",
+      ].join("\n"),
+      { status: 200 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { service } = buildService({ db, githubService });
+
+      const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 111, includeLog: true });
+
+      expect(excerpt.logStatus).toBe("excerpt");
+      expect(excerpt.jobState).toBe("passed");
+      expect(excerpt.failingStepName).toBeNull();
+      expect(excerpt.logScope).toBe("named-step");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -8619,5 +8700,106 @@ describe("prService destructive paths on a PR with no local row", () => {
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+});
+
+/**
+ * A synthetic id is how the GitHub tab keys EVERY row it renders, mapped or
+ * not. Resolution therefore has to look the coordinates up locally instead of
+ * assuming "gh:" means "ADE holds no row" — otherwise a land issued from that
+ * tab silently skips the bookkeeping the same PR gets by row id.
+ */
+describe("prService resolves a synthetic id that names a PR it does hold a row for", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("takes the row-backed path when the coordinates match a local row", async () => {
+    const row = makePrRow({
+      id: "pr-mapped-404",
+      github_pr_number: 404,
+      head_branch: "feature/mapped",
+      state: "open",
+    });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path.endsWith("/pulls/404")) {
+          return {
+            data: makeGitHubPull({
+              number: 404,
+              mergeable: true,
+              mergeable_state: "clean",
+              head: { ref: "feature/mapped", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+            }),
+          };
+        }
+        if (args.method === "PUT") return { data: { merged: true, sha: "merge-sha" } };
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({
+      prId: syntheticGithubPrId({
+        repoOwner: REPO.owner,
+        repoName: REPO.name,
+        githubPrNumber: 404,
+      }),
+      method: "squash",
+    });
+
+    expect(result.success).toBe(true);
+    // recordMergeOutcome — only reachable with a row, and keyed on the ROW id
+    // rather than the synthetic id the caller passed.
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("set merge_method = coalesce(merge_method, ?)"),
+      expect.arrayContaining([row.id]),
+    );
+    // runPostMergeCleanup — its first local step, likewise keyed on the row.
+    expect(db.run).toHaveBeenCalledWith(
+      "delete from pr_group_members where pr_id = ?",
+      [row.id],
+    );
+  });
+});
+
+/**
+ * `parseSyntheticGithubPrId` is the whole authorization boundary for a `gh:` id:
+ * every PR mutation resolves the repository it will call through it.
+ */
+describe("parseSyntheticGithubPrId", () => {
+  it("round-trips a normal id", () => {
+    expect(parseSyntheticGithubPrId("gh:test-owner/test-repo#404")).toEqual({
+      repoOwner: "test-owner",
+      repoName: "test-repo",
+      githubPrNumber: 404,
+    });
+  });
+
+  it("accepts a repository name that merely contains dots", () => {
+    expect(parseSyntheticGithubPrId("gh:owner/my.repo.js#7")?.repoName).toBe("my.repo.js");
+    expect(parseSyntheticGithubPrId("gh:owner/...#7")?.repoName).toBe("...");
+  });
+
+  it.each([".", ".."])(
+    "rejects %s as a repository name, which new URL() would resolve away",
+    (repoName) => {
+      // `/repos/owner/./pulls/1` and `/repos/owner/../pulls/1` normalise to a
+      // path that never names the repo the id claimed. GitHub allows neither
+      // name, so nothing legitimate is lost.
+      expect(parseSyntheticGithubPrId(`gh:owner/${repoName}#1`)).toBeNull();
+    },
+  );
+
+  it.each([
+    "gh:owner/repo#0",
+    "gh:owner/re/po#1",
+    "gh:owner/../../user/repos#999#1",
+    "gh:-owner/repo#1",
+    "pr-row-1",
+  ])("rejects %s", (prId) => {
+    expect(parseSyntheticGithubPrId(prId)).toBeNull();
   });
 });

@@ -2116,6 +2116,14 @@ export function createPrService({
    * ADE holds a local row. So resolution never requires one — `row` is null for
    * an unmapped PR and callers make only their *local bookkeeping* conditional
    * on it (see `refreshAfterMutation`).
+   *
+   * A synthetic id says *which* PR, not whether ADE holds a row for it: the
+   * GitHub tab keys every row it renders that way, mapped or not. So the
+   * coordinates still get looked up locally. Returning `row: null` for every
+   * `gh:` id made a land or cleanup issued from that tab skip the bookkeeping
+   * the same PR gets when it is addressed by row id — merge outcome, child-lane
+   * auto-rebase, lane archive, row refresh. The parsed coordinates stay
+   * authoritative; the row only supplies the local half.
    */
   const resolvePrTarget = (
     prId: string,
@@ -2125,7 +2133,7 @@ export function createPrService({
       return {
         repo: { owner: coords.repoOwner, name: coords.repoName },
         prNumber: coords.githubPrNumber,
-        row: null,
+        row: getRowForRepoPr(coords.repoOwner, coords.repoName, coords.githubPrNumber),
       };
     }
     const row = requireRow(prId);
@@ -2146,10 +2154,13 @@ export function createPrService({
    * refresh window; an unmapped PR has no row to refresh, so it drops the read
    * memos and invalidates the GitHub snapshot cache instead — that is what makes
    * the next list read show the mutation.
+   *
+   * Keyed on the resolved row's own id, never on the caller's `prId`: the caller
+   * may have addressed the PR by a synthetic `gh:` id or a locator, and neither
+   * is something `refreshOne`/`markHotRefresh` can look a row up by.
    */
   const refreshAfterMutation = async (
     target: { repo: GitHubRepoRef; prNumber: number; row: PullRequestRow | null },
-    prId: string,
     options: { hot?: boolean } = {},
   ): Promise<void> => {
     if (!target.row) {
@@ -2157,8 +2168,8 @@ export function createPrService({
       invalidateGithubSnapshotCache();
       return;
     }
-    if (options.hot !== false) markHotRefresh([prId]);
-    await refreshOne(prId);
+    if (options.hot !== false) markHotRefresh([target.row.id]);
+    await refreshOne(target.row.id);
   };
 
   const resolveWriteViewerLogin = async (): Promise<string | null> => {
@@ -6289,7 +6300,7 @@ export function createPrService({
       // `getReviewSnapshot` is row-based (it folds in the local summary). An
       // unmapped PR only needs the head SHA, so read it straight from GitHub.
       commitSha = target.row
-        ? (await getReviewSnapshot(args.prId)).headSha
+        ? (await getReviewSnapshot(target.row.id)).headSha
         : asString((await fetchPr(repo, target.prNumber))?.head?.sha) || null;
     }
     if (inlineComments.length > 0 && !commitSha) {
@@ -6315,7 +6326,7 @@ export function createPrService({
       },
     });
 
-    await refreshAfterMutation(target, args.prId);
+    await refreshAfterMutation(target);
 
     return {
       id: Number.isFinite(Number(data?.id)) ? String(Number(data.id)) : null,
@@ -6829,7 +6840,11 @@ export function createPrService({
     // "this job has no log worth reading".
     const base = (extra: Partial<PrCheckLogExcerpt> = {}): PrCheckLogExcerpt => ({
       jobId: args.jobId,
-      jobName: "",
+      // jobName/steps are deliberately ABSENT here, for the same reason
+      // jobState is (see below). `jobName: ""` and `steps: []` are *defined*
+      // values: they beat the real name and step list the caller already has
+      // from the graph node, so a degraded read renders "CI failure — " and an
+      // empty breakdown for a job whose name and steps were never in doubt.
       failingStepName: null,
       failingStepNumber: null,
       stepTotal: null,
@@ -6844,7 +6859,6 @@ export function createPrService({
       // "Failed" to "Unknown". A degraded read must not overwrite a fact with a
       // placeholder — that is the exact ambiguity this surface exists to remove.
       // The real values are set on the populated job object below.
-      steps: [],
       currentStepName: null,
       currentStepNumber: null,
       logStatus: "unavailable",
@@ -6976,10 +6990,18 @@ export function createPrService({
       lines: parsed.lines,
       truncated: downloaded.truncated,
       logStatus: "excerpt",
-      // A named match only happens when `failingStepName` drove it, and an
-      // errored match is the failure by definition; anything else is the tail of
-      // the whole job and must not be labelled with a step name.
-      logScope: parsed.scope === "whole-log" ? "whole-log" : "failing-step",
+      // All three scopes are reachable, and collapsing them lies about a green
+      // job. `failingStepName` is only ever GitHub's own failing step, so a
+      // name match IS the failure. An `##[error]` match is a step ADE picked
+      // itself: the failure when the job failed, but on a passed job read via
+      // `includeLog` it is just a step that logged an error line — calling that
+      // "the failing step" is the ambiguity `logScope` exists to remove.
+      logScope:
+        parsed.scope === "whole-log"
+          ? "whole-log"
+          : parsed.scope === "named-step" || jobState === "failed"
+            ? "failing-step"
+            : "named-step",
     };
   };
 
@@ -8283,7 +8305,7 @@ export function createPrService({
         const refreshed = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
         const headSha = asString(refreshed?.head?.sha).trim() || null;
         invalidateGithubSnapshotCache();
-        if (row) await refreshOne(args.prId).catch(() => null);
+        if (row) await refreshOne(row.id).catch(() => null);
         return baseResult(true, { headSha });
       } catch (error) {
         const rawMsg = getErrorMessage(error);
@@ -11953,7 +11975,18 @@ export function createPrService({
      * advance, group cleanup, cache refresh). Used when a `gh pr merge --admin`
      * call lands the PR outside of `land`.
      */
-    async runPostMergeCleanup(args: { prId: string; mergeCommitSha?: string | null; archiveLane?: boolean }): Promise<{
+    async runPostMergeCleanup(args: {
+      prId: string;
+      mergeCommitSha?: string | null;
+      archiveLane?: boolean;
+      /**
+       * Opt-in, exactly as on `land`. Dropping it here made the doc above a
+       * lie: branch deletion is listed as part of this cleanup, but the flag
+       * never reached the implementation, so this entry point could not delete
+       * a branch at all.
+       */
+      deleteRemoteBranch?: boolean;
+    }): Promise<{
       branchDeleted: boolean;
       laneArchived: boolean;
       childAutoRebaseBlockedCleanup: boolean;
@@ -11962,6 +11995,7 @@ export function createPrService({
         prId: args.prId,
         mergeCommitSha: args.mergeCommitSha ?? null,
         archiveLane: Boolean(args.archiveLane),
+        deleteRemoteBranch: Boolean(args.deleteRemoteBranch),
         operationId: null,
       });
     },
@@ -12611,7 +12645,7 @@ export function createPrService({
         path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
         body: { title: args.title }
       });
-      await refreshAfterMutation(target, args.prId, { hot: false });
+      await refreshAfterMutation(target, { hot: false });
     },
 
     async updateBody(args: UpdatePrBodyArgs): Promise<void> {
@@ -12621,7 +12655,7 @@ export function createPrService({
         path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}`,
         body: { body: args.body }
       });
-      await refreshAfterMutation(target, args.prId, { hot: false });
+      await refreshAfterMutation(target, { hot: false });
     },
 
     async setLabels(args: SetPrLabelsArgs): Promise<void> {
@@ -12631,7 +12665,7 @@ export function createPrService({
         path: `/repos/${target.repo.owner}/${target.repo.name}/issues/${target.prNumber}/labels`,
         body: { labels: args.labels }
       });
-      await refreshAfterMutation(target, args.prId, { hot: false });
+      await refreshAfterMutation(target, { hot: false });
     },
 
     async requestReviewers(args: RequestPrReviewersArgs): Promise<void> {
@@ -12643,7 +12677,7 @@ export function createPrService({
         path: `/repos/${target.repo.owner}/${target.repo.name}/pulls/${target.prNumber}/requested_reviewers`,
         body
       });
-      await refreshAfterMutation(target, args.prId);
+      await refreshAfterMutation(target);
     },
 
     async submitReview(args: SubmitPrReviewArgs): Promise<SubmitPrReviewResult> {
@@ -12785,7 +12819,7 @@ export function createPrService({
           ["closed", nowIso(), target.row.id, projectId]
         );
       }
-      await refreshAfterMutation(target, args.prId);
+      await refreshAfterMutation(target);
     },
 
     async reopenPr(args: ReopenPrArgs): Promise<void> {
@@ -12801,7 +12835,7 @@ export function createPrService({
           ["open", nowIso(), target.row.id, projectId]
         );
       }
-      await refreshAfterMutation(target, args.prId);
+      await refreshAfterMutation(target);
     },
 
     async rerunChecks(args: RerunPrChecksArgs): Promise<void> {
@@ -12860,7 +12894,7 @@ export function createPrService({
           }
         }
       }
-      await refreshAfterMutation(target, args.prId);
+      await refreshAfterMutation(target);
     },
 
     async aiReviewSummary(args: AiReviewSummaryArgs): Promise<AiReviewSummary> {

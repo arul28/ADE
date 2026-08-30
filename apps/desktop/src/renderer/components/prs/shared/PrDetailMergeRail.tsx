@@ -334,7 +334,9 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   const bypassOnly = !mergeAllowed && Boolean(status?.canBypass) && status?.mergeStateStatus === "blocked";
   const mergeEnabled = mergeAllowed || bypassOnly;
   const mergeTone = bypassOnly ? COLORS.danger : COLORS.success;
-  const showCloseAction = Boolean(onClose) && pr.state === "open";
+  // Draft counts as closeable: it is not a terminal state, and a draft that
+  // turned out to be the wrong approach is exactly the PR you want to close.
+  const showCloseAction = Boolean(onClose) && (pr.state === "open" || pr.state === "draft");
   const isMerged = pr.state === "merged";
   const isClosed = pr.state === "closed";
   const isTerminal = isMerged || isClosed;

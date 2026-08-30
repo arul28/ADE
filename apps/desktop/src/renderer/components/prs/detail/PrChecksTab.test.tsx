@@ -581,7 +581,10 @@ describe("PrChecksTab — log drawer", () => {
 
     await screen.findByTestId("pr-checks-log-headline");
     screen.getByTestId("pr-checks-drawer-fix-in-chat").click();
-    expect(onFixInChat).toHaveBeenCalledWith(excerpt);
+    // The node's own name rides along: a degraded log read omits `jobName`
+    // rather than sending an empty string, so the caller supplies the name it
+    // already has instead of rendering "CI failure — ".
+    expect(onFixInChat).toHaveBeenCalledWith(excerpt, "test-desktop");
   });
 
   it("closes the drawer when the same graph node is activated twice", async () => {

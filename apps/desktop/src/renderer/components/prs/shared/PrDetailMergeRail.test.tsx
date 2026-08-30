@@ -249,4 +249,27 @@ describe("PrDetailMergeRail", () => {
     fireEvent.click(screen.getByTestId("pr-close-confirm-button"));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  // Draft is not a terminal state: an abandoned draft is exactly the PR you
+  // want to close, and gating on `state === "open"` left it with no way out.
+  it("opens close confirmation for draft pull requests", () => {
+    const onClose = vi.fn();
+    render(
+      <PrDetailMergeRail
+        pr={makePr({ state: "draft" })}
+        status={makeStatus({ state: "draft" })}
+        checks={[]}
+        reviews={[]}
+        mergeMethod="squash"
+        actionBusy={false}
+        onMerge={() => {}}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("pr-close-open-dialog-button"));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("pr-close-confirm-button"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

@@ -428,7 +428,7 @@ export type PrChecksTabProps = {
   /** Bumped by the `g k` chord in `PrDetailPane` to open the checks palette. */
   paletteRequest?: number;
   /** Opens the lane's most recent Work chat with the failing log prefilled. */
-  onFixInChat?: (excerpt: PrCheckLogExcerpt) => void;
+  onFixInChat?: (excerpt: PrCheckLogExcerpt, fallbackJobName?: string | null) => void;
   /** Shared brake for every automatic GitHub read on the PRs surface. */
   pollGovernor?: PrChecksPollGovernor;
 };
@@ -840,9 +840,14 @@ export function PrChecksTab({
   const drawerElapsed = drawer ? fmtMs(nodeElapsedMs(drawer.node, now)) : null;
   const handleCopy = React.useCallback(() => {
     if (!excerpt) return;
-    const markdown = buildLogExcerptMarkdown({ excerpt, elapsedLabel: drawerElapsed, pr });
+    const markdown = buildLogExcerptMarkdown({
+      excerpt,
+      elapsedLabel: drawerElapsed,
+      pr,
+      fallbackJobName: drawer?.node.displayName ?? null,
+    });
     void copy(markdown);
-  }, [copy, excerpt, drawerElapsed, pr]);
+  }, [copy, excerpt, drawerElapsed, pr, drawer]);
 
   const rerunFailedVisible = Boolean(onRerunChecks) && buckets.failed > 0;
   const drawerRerun = React.useMemo(() => {
@@ -1142,7 +1147,11 @@ export function PrChecksTab({
           onCopy={handleCopy}
           copied={copied}
           onRerunJob={drawerRerun}
-          onFixInChat={onFixInChat && excerpt ? () => onFixInChat(excerpt) : undefined}
+          onFixInChat={
+            onFixInChat && excerpt
+              ? () => onFixInChat(excerpt, drawer.node.displayName)
+              : undefined
+          }
           onLoadLogExcerpt={forceLog ? undefined : () => setForceLog(true)}
           onClose={closeDrawer}
         />

@@ -1221,18 +1221,27 @@ export function syntheticGithubPrId(coords: PrGithubCoords): string {
  * resolves through here, so the id is an authorization-relevant input.
  *
  * Owner: alphanumeric + hyphen, 1-39 chars, no leading hyphen.
- * Repo: alphanumeric plus `.`, `_`, `-`, 1-100 chars. Neither may contain `/`,
- * `..`, or `#`.
+ * Repo: alphanumeric plus `.`, `_`, `-`, 1-100 chars — so it can never contain
+ * `/` or `#`, and it can never be a run of dots long enough to climb a path.
+ * The two dot segments the character class still admits, `.` and `..`, are
+ * rejected below: `new URL()` collapses them, so `gh:owner/.#1` would address
+ * `/repos/owner/pulls/1` rather than the repo it names. GitHub allows neither
+ * as a repository name, so no valid id is lost.
  */
 const SYNTHETIC_GITHUB_PR_ID =
   /^gh:([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})#(\d+)$/;
 
+/** Repository names that `new URL()` would resolve away instead of requesting. */
+const DOT_SEGMENT_REPO_NAMES = new Set([".", ".."]);
+
 export function parseSyntheticGithubPrId(prId: string): PrGithubCoords | null {
   const m = SYNTHETIC_GITHUB_PR_ID.exec(prId);
   if (!m) return null;
+  const repoName = m[2]!;
+  if (DOT_SEGMENT_REPO_NAMES.has(repoName)) return null;
   const githubPrNumber = Number(m[3]!);
   if (!Number.isSafeInteger(githubPrNumber) || githubPrNumber <= 0) return null;
-  return { repoOwner: m[1]!, repoName: m[2]!, githubPrNumber };
+  return { repoOwner: m[1]!, repoName, githubPrNumber };
 }
 
 /** Full PR detail fetched from GitHub API with body, labels, assignees, etc. */
@@ -1466,7 +1475,11 @@ export type PrCheckLogStatus =
 export type PrCheckLogScope =
   /** The step GitHub marked as the failure. */
   | "failing-step"
-  /** A step matched by name, but not the failure (an explicit user request). */
+  /**
+   * A single step was isolated, but it is not the job's failure — the log of a
+   * job that did not fail, where the only handle was an `##[error]` line. Never
+   * label this one "the failing step".
+   */
   | "named-step"
   /** No step could be isolated, so this is the tail of the whole job log. */
   | "whole-log";
@@ -1481,7 +1494,13 @@ export type PrCheckLogScope =
  */
 export type PrCheckLogExcerpt = {
   jobId: number;
-  jobName: string;
+  /**
+   * GitHub's name for the job. Optional, and ABSENT rather than `""` on a
+   * degraded read: the caller already knows the name from the graph node it
+   * opened, and an empty string is a defined value that would replace that real
+   * name with nothing ("CI failure — "). Same rule as `jobState` below.
+   */
+  jobName?: string;
   /** The step the job failed on, when identifiable. Null whenever it did not fail. */
   failingStepName: string | null;
   failingStepNumber: number | null;

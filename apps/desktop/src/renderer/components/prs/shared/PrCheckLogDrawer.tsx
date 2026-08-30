@@ -174,15 +174,21 @@ export function PrCheckLogDrawer({
   // downloaded a whole log that the drawer then had no branch to render, so the
   // click looked like it did nothing at all.
   const hasLogLines = (excerpt?.lines.length ?? 0) > 0;
-  const showLogBody = failed || hasLogLines;
+  // A read that came back empty-handed is still an answer. Without this the
+  // drawer was byte-identical before and after a failed "Load log excerpt" —
+  // "we tried and couldn't" was indistinguishable from "you never asked".
+  const explicitReadFailed = !failed && Boolean(readFailure);
+  const showLogBody = failed || hasLogLines || explicitReadFailed;
 
   const footerNote = failed
     ? excerpt?.logScope === "whole-log"
       ? "tail of the whole job log · GitHub didn't mark a failing step"
       : "tail of the failing step · fetched on open"
-    : plan.state === "running" || plan.state === "queued"
-      ? "live step state · the job log isn't complete yet"
-      : "step times from this run · no log fetched";
+    : explicitReadFailed
+      ? "step times from this run · ADE couldn't read the log"
+      : plan.state === "running" || plan.state === "queued"
+        ? "live step state · the job log isn't complete yet"
+        : "step times from this run · no log fetched";
 
   return (
     <section
@@ -278,7 +284,9 @@ export function PrCheckLogDrawer({
           style={{ color: COLORS.textDim, fontFamily: SANS_FONT, background: COLORS.recessedBg }}
           data-testid="pr-checks-step-breakdown"
         >
-          {readFailure ?? "GitHub didn't report any steps for this job."}
+          {/* A read failure has its own pane below, so this states only the
+              fact this block is about. */}
+          GitHub didn't report any steps for this job.
         </div>
       )}
 
@@ -296,7 +304,7 @@ export function PrCheckLogDrawer({
           }}
           data-testid="pr-checks-log-body"
         >
-          {excerpt!.lines.join("\n")}
+          {hasLogLines ? excerpt!.lines.join("\n") : readFailure}
         </pre>
       ) : null}
 

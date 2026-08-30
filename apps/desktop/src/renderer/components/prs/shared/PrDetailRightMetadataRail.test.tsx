@@ -31,10 +31,14 @@ function section(title: string): HTMLElement {
   return found as HTMLElement;
 }
 
-function renderRail(detail: PrDetail | null = null, onOpenAsLane?: () => void) {
+function renderRail(
+  detail: PrDetail | null = null,
+  onOpenAsLane?: () => void,
+  prOverride: PrWithConflicts = pr,
+) {
   return render(
     <PrDetailRightMetadataRail
-      pr={pr}
+      pr={prOverride}
       lane={null}
       detail={detail}
       status={null}
@@ -113,6 +117,15 @@ describe("PrDetailRightMetadataRail — can-this-land column", () => {
     // The whole point of collapsing is that the action survives it.
     expect(header?.textContent).toContain("Request");
     expect(reviewers.dataset.empty).toBe("true");
+  });
+
+  // Requesting reviewers and setting labels are plain GitHub API calls that
+  // resolve a synthetic `gh:` id. Gating them on a lane left a PR the user could
+  // read, comment on and merge but not label.
+  it("offers Request and Edit for a PR with no lane", () => {
+    renderRail(null, undefined, { ...pr, laneId: null } as unknown as PrWithConflicts);
+    expect(section("Reviewers").querySelector("header")?.textContent).toContain("Request");
+    expect(section("Labels").querySelector("header")?.textContent).toContain("Edit");
   });
 
   it("collapses labels and assignees too, and spends no hairline between the three", () => {

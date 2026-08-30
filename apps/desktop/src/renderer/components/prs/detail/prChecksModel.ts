@@ -607,6 +607,11 @@ export type CopyExcerptInput = {
   excerpt: PrCheckLogExcerpt;
   elapsedLabel: string | null;
   pr: { repoOwner: string; repoName: string; githubPrNumber: number };
+  /**
+   * The graph node's own name, for the degraded reads that omit `jobName`.
+   * Without it a copy taken while GitHub was unreachable reads "CI failure — ".
+   */
+  fallbackJobName?: string | null;
 };
 
 /**
@@ -616,7 +621,9 @@ export type CopyExcerptInput = {
  * a chat for a job that passed is the same lie the drawer used to tell, and it
  * is the one an agent would then act on.
  */
-export function buildLogExcerptMarkdown({ excerpt, elapsedLabel, pr }: CopyExcerptInput): string {
+export function buildLogExcerptMarkdown(
+  { excerpt, elapsedLabel, pr, fallbackJobName }: CopyExcerptInput,
+): string {
   const deeplink = buildDeeplink(
     { kind: "pr", repoOwner: pr.repoOwner, repoName: pr.repoName, prNumber: pr.githubPrNumber },
     { form: "ade" },
@@ -625,9 +632,10 @@ export function buildLogExcerptMarkdown({ excerpt, elapsedLabel, pr }: CopyExcer
   const outcome = excerpt.jobStatus
     ? outcomeLabelOf({ status: excerpt.jobStatus, conclusion: excerpt.jobConclusion ?? null })
     : "Failed";
+  const jobName = excerpt.jobName?.trim() || fallbackJobName?.trim() || "this job";
   const heading = failed
-    ? `**CI failure — ${excerpt.jobName}**`
-    : `**CI job ${outcome.toLowerCase()} — ${excerpt.jobName}**`;
+    ? `**CI failure — ${jobName}**`
+    : `**CI job ${outcome.toLowerCase()} — ${jobName}**`;
   const stepLabel = excerpt.failingStepName
     ? excerpt.failingStepNumber != null && excerpt.stepTotal != null
       ? `${excerpt.failingStepName} (step ${excerpt.failingStepNumber}/${excerpt.stepTotal})`

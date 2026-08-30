@@ -761,8 +761,24 @@ async function createWindow(args: {
     ? { width: 1460, height: 880 }
     : { width: 1280, height: 820 };
 
+  /**
+   * The narrowest window the PRs tab can render without clipping.
+   *
+   * Electron defaults `minWidth` to 0, so nothing stopped a drag below the point
+   * where a pane's own minimum could not be honoured — and the PR detail pane
+   * clips rather than scrolls, so the merge box simply disappeared. This is the
+   * sum of that surface's floors: the PR list (260) + the drag gutter (8) + the
+   * detail pane (758, itself the thread's 360 + a gutter + the info rail's 390).
+   * Those constants live in `components/prs/tabs/GitHubTabView.tsx` and
+   * `components/prs/detail/PrDetailTimelineRails.tsx`; `GITHUB_PR_DETAIL_MIN_PX`
+   * is derived from the rail constants there so the two halves cannot drift
+   * silently. It sits well under both default widths above.
+   */
+  const MIN_WINDOW_WIDTH = 1026;
+
   const win = new BrowserWindow({
     ...defaultWindowBounds,
+    minWidth: MIN_WINDOW_WIDTH,
     icon,
     ...windowChromeOptions(process.platform),
     // Match renderer dark theme to avoid a flash on load.

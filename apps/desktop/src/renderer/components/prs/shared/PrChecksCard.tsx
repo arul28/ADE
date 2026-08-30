@@ -168,8 +168,14 @@ export const PrChecksCard = memo(function PrChecksCard({
     return () => observer.disconnect();
   }, [autoFillPreview]);
 
+  // Measuring says how many rows *fit*, never how many are *allowed*: a tall
+  // rail measures past `previewLimit`, and letting that win turned the caller's
+  // cap into a floor.
+  const fittedLimit = fittingRows != null && previewLimit != null
+    ? Math.min(fittingRows, previewLimit)
+    : fittingRows;
   const effectiveLimit = autoFillPreview
-    ? (fittingRows ?? previewLimit ?? null)
+    ? (fittedLimit ?? previewLimit ?? null)
     : (previewLimit ?? null);
 
   // Ghosts spend the budget first: a required slot that never reported outranks

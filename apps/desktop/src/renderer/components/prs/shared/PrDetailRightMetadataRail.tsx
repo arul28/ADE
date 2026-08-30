@@ -245,7 +245,10 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
           title="Reviewers"
           meta={reviewerCount || undefined}
           inlineEmpty={reviewerCount ? undefined : "None"}
-          action={pr.laneId ? <EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} /> : undefined}
+          // No lane gate: requesting a reviewer is a GitHub API call and
+          // `requestReviewers` resolves a synthetic `gh:` id like every other
+          // mutation. A lane is a convenience link, not an authorization.
+          action={<EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} />}
         >
           {requestedReviewers.length || requestedTeams.length ? (
             <>
@@ -328,7 +331,8 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
           title="Labels"
           meta={detail?.labels?.length || undefined}
           inlineEmpty={detail?.labels?.length ? undefined : "None"}
-          action={pr.laneId ? <EditLink active={showLabelEditor} label="Edit" onClick={() => setShowLabelEditor(!showLabelEditor)} /> : undefined}
+          // Same as Reviewers above: `setLabels` is a plain GitHub mutation.
+          action={<EditLink active={showLabelEditor} label="Edit" onClick={() => setShowLabelEditor(!showLabelEditor)} />}
         >
           {detail?.labels?.length ? (
             <div className="flex flex-wrap gap-1.5">

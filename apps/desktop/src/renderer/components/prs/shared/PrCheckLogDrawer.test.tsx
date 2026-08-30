@@ -174,6 +174,50 @@ describe("PrCheckLogDrawer — a job that passed", () => {
     expect(screen.queryByTestId("pr-checks-step-breakdown")).not.toBeNull();
     expect(screen.getByTestId("pr-checks-drawer-outcome").textContent).toBe("Passed");
   });
+
+  /**
+   * A read that came back empty-handed is still an answer. The log pane used to
+   * be gated on having lines, so a failed fetch left the drawer byte-identical
+   * to before the click — down to a footer still claiming "no log fetched".
+   */
+  it("shows a non-failed on-demand log read failure", () => {
+    const { rerender } = renderDrawer({
+      excerpt: excerptOf({
+        jobState: "passed",
+        jobStatus: "completed",
+        jobConclusion: "success",
+        logStatus: "unavailable",
+        logUnavailableReason: "ADE couldn't download this job's log from GitHub.",
+      }),
+      onLoadLogExcerpt: vi.fn(),
+    });
+    expect(screen.getByTestId("pr-checks-log-body").textContent)
+      .toContain("ADE couldn't download this job's log");
+    expect(screen.getByTestId("pr-checks-drawer-note").textContent)
+      .toContain("ADE couldn't read the log");
+    // The steps are why the drawer was opened; the read failure is additive.
+    expect(screen.queryByTestId("pr-checks-step-breakdown")).not.toBeNull();
+
+    // A transport-level failure reports through `error` rather than the
+    // excerpt, and has to reach the same pane.
+    rerender(
+      <PrCheckLogDrawer
+        drawer={{ node: node(), jobId: 42 }}
+        excerpt={null}
+        loading={false}
+        error="GitHub rate limit exceeded."
+        elapsedLabel="2m"
+        onCopy={vi.fn()}
+        copied={false}
+        onRerunJob={undefined}
+        onFixInChat={undefined}
+        onClose={vi.fn()}
+        onLoadLogExcerpt={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("pr-checks-log-body").textContent)
+      .toContain("GitHub rate limit exceeded.");
+  });
 });
 
 describe("PrCheckLogDrawer — other states", () => {
