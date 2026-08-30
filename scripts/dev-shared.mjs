@@ -319,7 +319,7 @@ function isTcpSocketPath(socketPath) {
   return socketPath.startsWith("tcp://");
 }
 
-function canAutoStartRuntime(socketPath) {
+export function canAutoStartRuntime(socketPath) {
   if (!isTcpSocketPath(socketPath)) return true;
   try {
     const parsed = new URL(socketPath);
@@ -475,10 +475,18 @@ async function getRuntimeInfo(socketPath) {
   return readRuntimeInfo(result);
 }
 
-function runtimeMismatchReason(info, expected = {}) {
+export function runtimeMismatchReason(info, expected = {}) {
   const expectedVersion = resolveDevAppVersion();
   const expectedBuildHash = computeRuntimeBuildHash();
-  const expectedDefaultRole = normalizeDefaultRole(process.env.ADE_DEFAULT_ROLE, "cto");
+  // Derived from the SANITIZED parent env — the same transform that produces
+  // the daemon's own env (`detachedDevRuntimeEnv`). An agent shell exports
+  // ADE_DEFAULT_ROLE=agent, which we strip at spawn, so the daemon correctly
+  // reports `cto`; comparing against the raw launcher env would call that a
+  // mismatch and restart a healthy daemon on every check.
+  const expectedDefaultRole = normalizeDefaultRole(
+    sanitizeParentEnvForDevRuntime(expected.parentEnv ?? process.env).ADE_DEFAULT_ROLE,
+    "cto",
+  );
   const expectedProjectRoot = expected.projectRoot ? path.resolve(expected.projectRoot) : null;
   if (info.version && info.version !== expectedVersion) {
     return `version ${info.version} != ${expectedVersion}`;
@@ -696,11 +704,29 @@ export function devRuntimeEnv(socketPath, projectRoot, parentEnv = process.env) 
   };
 }
 
-export function detachedDevRuntimeEnv(
-  socketPath,
-  projectRoot,
-  parentEnv = process.env,
-) {
+/**
+ * Strip the launching agent shell's identity out of an environment before it is
+ * handed to the shared dev daemon.
+ *
+ * The shared dev brain is the desktop/operator runtime, not the agent shell
+ * that happened to launch it. If an ADE chat launches this script, carrying
+ * its session identity into the daemon makes every desktop RPC connection
+ * session-bound and clamps the requested CTO role back to an agent
+ * (apps/ade-cli/src/runtimeRoles.ts:78 — any caller context with a
+ * chatSessionId downgrades a `cto` default), and an inherited
+ * ADE_DEFAULT_ROLE=agent (set for every tracked agent CLI terminal in
+ * apps/desktop/src/main/services/pty/ptyService.ts:5758) clamps it outright.
+ * That breaks project-wide desktop actions such as importing external
+ * sessions. Strip by explicit name — the daemon still needs the rest of the
+ * shell env (PATH, HOME, ADE_PERF_RUN_ID, …).
+ *
+ * Exported because freshness checks must derive what they *expect* the daemon
+ * to report from the very same sanitization that produced the daemon's env.
+ * Reading `process.env.ADE_DEFAULT_ROLE` directly makes an agent shell expect
+ * `agent`, see the (correct) `cto` the daemon reports, and restart a healthy
+ * daemon on every `ensureRuntime()` call.
+ */
+export function sanitizeParentEnvForDevRuntime(parentEnv = process.env) {
   const inherited = { ...parentEnv };
   // A shared dev runtime outlives the terminal or Electron process that
   // launched it. ADE-hosted shells can carry these lifecycle controls from a
@@ -708,17 +734,6 @@ export function detachedDevRuntimeEnv(
   // as soon as that unrelated parent exits or its idle timer fires.
   delete inherited.ADE_RUNTIME_PARENT_PID;
   delete inherited.ADE_RUNTIME_IDLE_EXIT_MS;
-  // The shared dev brain is the desktop/operator runtime, not the agent shell
-  // that happened to launch it. If an ADE chat launches this script, carrying
-  // its session identity into the daemon makes every desktop RPC connection
-  // session-bound and clamps the requested CTO role back to an agent
-  // (apps/ade-cli/src/runtimeRoles.ts:78 — any caller context with a
-  // chatSessionId downgrades a `cto` default), and an inherited
-  // ADE_DEFAULT_ROLE=agent (set for every tracked agent CLI terminal in
-  // apps/desktop/src/main/services/pty/ptyService.ts:5758) clamps it outright.
-  // That breaks project-wide desktop actions such as importing external
-  // sessions. Strip by explicit name — the daemon still needs the rest of the
-  // shell env (PATH, HOME, ADE_PERF_RUN_ID, …).
   for (const key of [
     // Identity/role of the launching agent shell.
     "ADE_DEFAULT_ROLE", // ptyService stamps "agent"; the daemon must default to cto
@@ -739,6 +754,15 @@ export function detachedDevRuntimeEnv(
   ]) {
     delete inherited[key];
   }
+  return inherited;
+}
+
+export function detachedDevRuntimeEnv(
+  socketPath,
+  projectRoot,
+  parentEnv = process.env,
+) {
+  const inherited = sanitizeParentEnvForDevRuntime(parentEnv);
   return {
     ...inherited,
     // Computed from the sanitized env: the role must not be read back out of

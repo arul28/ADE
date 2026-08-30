@@ -315,11 +315,53 @@ export type SplitScanState = {
   readonly scannedTo: number;
   /** Open fence marker (``` / ~~~ run) or null at depth zero. */
   readonly fence: string | null;
-  /** Index just past the last blank line at fence depth zero. */
+  /** Index just past the last CONFIRMED block boundary at fence depth zero. */
   readonly settledEnd: number;
+  /**
+   * A blank line at fence depth zero that has not been confirmed as a block
+   * boundary yet, because the line that follows it has not arrived.
+   *
+   * A blank line alone does not end a block: a loose list (`1. a\n\n1. b`) and
+   * an indented code block both contain blank lines that continue the block
+   * they are in. Cutting there splits one document into two, and markdown
+   * restarts ordered-list numbering in the second half — the user watches a
+   * streaming list render "1, 1, 1" until the turn settles. So the cut is only
+   * committed once the next non-blank line proves a new top-level block began.
+   */
+  readonly pendingCut: number | null;
 };
 
-const EMPTY_SCAN: SplitScanState = { scannedTo: 0, fence: null, settledEnd: 0 };
+const EMPTY_SCAN: SplitScanState = {
+  scannedTo: 0,
+  fence: null,
+  settledEnd: 0,
+  pendingCut: null,
+};
+
+/**
+ * Whether `line` (non-blank, fence depth zero) begins a new TOP-LEVEL block —
+ * the only case where a preceding blank line is a safe place to cut.
+ *
+ * Rejected: anything indented (list continuation, indented code block) and any
+ * list marker (`-`/`*`/`+`/`1.`/`1)`), which continues the list above the blank
+ * rather than starting a fresh one. A marker must be followed by whitespace to
+ * count, so `*emphasis*` and a `---` rule still read as ordinary blocks.
+ */
+function startsTopLevelBlock(line: string): boolean {
+  const first = line[0];
+  if (first === " " || first === "\t") return false;
+  if (first === "-" || first === "*" || first === "+") {
+    const after = line[1];
+    return after !== undefined && after !== " " && after !== "\t";
+  }
+  let index = 0;
+  while (index < line.length && line[index]! >= "0" && line[index]! <= "9") index += 1;
+  if (index === 0) return true;
+  const delimiter = line[index];
+  if (delimiter !== "." && delimiter !== ")") return true;
+  const after = line[index + 1];
+  return after !== undefined && after !== " " && after !== "\t";
+}
 
 function fenceRunAt(line: string): string | null {
   let index = 0;
@@ -357,17 +399,27 @@ export function advanceSplitScan(
   let cursor = base.scannedTo;
   let fence = base.fence;
   let settledEnd = base.settledEnd;
+  let pendingCut = base.pendingCut;
 
   while (cursor < limit) {
     const newlineIndex = text.indexOf("\n", cursor);
     if (newlineIndex === -1 || newlineIndex >= limit) break;
     const line = text.slice(cursor, newlineIndex);
     if (fence === null) {
-      const opening = fenceRunAt(line);
-      if (opening !== null) {
-        fence = opening;
-      } else if (line.trim().length === 0) {
-        settledEnd = newlineIndex + 1;
+      if (line.trim().length === 0) {
+        // A run of blank lines proposes its LAST line as the cut.
+        pendingCut = newlineIndex + 1;
+      } else {
+        // A fence opener always begins a new top-level block, including the
+        // 1-3 space indented form that `startsTopLevelBlock` would reject.
+        const opening = fenceRunAt(line);
+        if (pendingCut !== null) {
+          // The proposal is decided here and cleared either way: a rejected cut
+          // must not be revived by a later line of the same block.
+          if (opening !== null || startsTopLevelBlock(line)) settledEnd = pendingCut;
+          pendingCut = null;
+        }
+        if (opening !== null) fence = opening;
       }
     } else if (closesFence(line, fence)) {
       fence = null;
@@ -375,7 +427,28 @@ export function advanceSplitScan(
     cursor = newlineIndex + 1;
   }
 
-  return { scannedTo: cursor, fence, settledEnd };
+  // The line still arriving is not scanned as a line (its fence run may be
+  // half-typed), but its FIRST characters are already final and are usually
+  // enough to decide a pending cut — which is what keeps the cut one blank line
+  // behind the growing paragraph instead of a whole block behind it. Only
+  // unambiguous prefixes count, so an accepted cut can never be un-accepted by
+  // the rest of the line arriving.
+  if (fence === null && pendingCut !== null && cursor < limit) {
+    const partial = text.slice(cursor, limit);
+    if (partial.trim().length > 0 && partialStartsTopLevelBlock(partial)) {
+      settledEnd = pendingCut;
+    }
+  }
+
+  return { scannedTo: cursor, fence, settledEnd, pendingCut };
+}
+
+/** `startsTopLevelBlock` for a line that is still arriving. */
+function partialStartsTopLevelBlock(partial: string): boolean {
+  // "1" is a paragraph; "1." is a list marker. Undecidable until more arrives.
+  if (/^\d+$/.test(partial)) return false;
+  if (fenceRunAt(partial) !== null) return true;
+  return startsTopLevelBlock(partial);
 }
 
 /**

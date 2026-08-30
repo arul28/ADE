@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { StreamSmoothnessAccumulator } from "./streamSmoothness";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setPerfActive } from "./markers";
+import {
+  StreamSmoothnessAccumulator,
+  readSamplerSessionIdForTests,
+  resetStreamSmoothnessSamplerForTests,
+  startStreamSmoothnessSampler,
+  stopStreamSmoothnessSampler,
+} from "./streamSmoothness";
 
 /**
  * Pure window math only — the rAF loop and DOM reads are deliberately not
@@ -124,5 +131,56 @@ describe("StreamSmoothnessAccumulator", () => {
       durationMs: 100,
       charsAdvanced: 0,
     });
+  });
+});
+
+describe("sampler session attribution", () => {
+  // The loop itself is not under test here — only which session its windows are
+  // stamped with — so rAF is a no-op counter and no frame ever runs.
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("performance", { now: () => 0 });
+    vi.stubGlobal("window", {});
+    setPerfActive(true);
+    resetStreamSmoothnessSamplerForTests();
+  });
+  afterEach(() => {
+    resetStreamSmoothnessSamplerForTests();
+    setPerfActive(false);
+    vi.unstubAllGlobals();
+  });
+
+  it("attributes the shared loop to a single owner's session", () => {
+    const owner = {};
+    startStreamSmoothnessSampler("session-a", owner);
+    expect(readSamplerSessionIdForTests()).toBe("session-a");
+    stopStreamSmoothnessSampler(owner);
+  });
+
+  it("reports no session once a second pane with a different id joins", () => {
+    // Grid mode: one rAF loop sums text across EVERY streaming node, so a
+    // window that spans two panes belongs to neither session. Keeping the first
+    // owner's id would silently file the second pane's characters under it.
+    const paneA = {};
+    const paneB = {};
+    startStreamSmoothnessSampler("session-a", paneA);
+    startStreamSmoothnessSampler("session-b", paneB);
+    expect(readSamplerSessionIdForTests()).toBeNull();
+
+    // Losing the second pane un-mixes the loop again.
+    stopStreamSmoothnessSampler(paneB);
+    expect(readSamplerSessionIdForTests()).toBe("session-a");
+    stopStreamSmoothnessSampler(paneA);
+  });
+
+  it("keeps the session when two owners share one id (same pane remounting)", () => {
+    const first = {};
+    const second = {};
+    startStreamSmoothnessSampler("session-a", first);
+    startStreamSmoothnessSampler("session-a", second);
+    expect(readSamplerSessionIdForTests()).toBe("session-a");
+    stopStreamSmoothnessSampler(first);
+    stopStreamSmoothnessSampler(second);
   });
 });

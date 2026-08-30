@@ -3,7 +3,11 @@ import net from "node:net";
 import test from "node:test";
 
 import {
+  canAutoStartRuntime,
+  computeRuntimeBuildHash,
   detachedDevRuntimeEnv,
+  resolveDevAppVersion,
+  runtimeMismatchReason,
   resolveDefaultDevSocketPath,
   resolveDevRuntimeStartupTimeoutMs,
   resolveNpmInvocation,
@@ -205,4 +209,50 @@ test("graceful dev runtime cleanup sends shutdown instead of hard exit", async (
   }
 
   assert.deepEqual(methods, ["ade/initialize", "shutdown"]);
+});
+
+test("an agent shell does not see a healthy cto daemon as stale", () => {
+  // Regression: `runtimeMismatchReason` read the LAUNCHER's ADE_DEFAULT_ROLE
+  // ("agent" in every ADE-hosted terminal) while the daemon's env is built from
+  // the SANITIZED parent env (role stripped → "cto"). Every ensureRuntime()
+  // therefore reported `default role cto != agent` and restarted a healthy
+  // daemon — a shutdown/respawn loop on each dev command from an agent shell.
+  const agentShellEnv = {
+    ADE_DEFAULT_ROLE: "agent",
+    ADE_CHAT_SESSION_ID: "agent-chat",
+    PATH: "/usr/bin",
+  };
+  const healthyDaemon = {
+    version: resolveDevAppVersion(),
+    buildHash: computeRuntimeBuildHash(),
+    defaultRole: "cto",
+    projectRoot: null,
+  };
+
+  assert.equal(
+    runtimeMismatchReason(healthyDaemon, { parentEnv: agentShellEnv }),
+    null,
+  );
+  // The daemon env and the expectation are derived from the same sanitization.
+  assert.equal(
+    detachedDevRuntimeEnv("/tmp/ade-runtime-dev-test.sock", null, agentShellEnv)
+      .ADE_DEFAULT_ROLE,
+    "cto",
+  );
+  // A genuinely wrong role is still reported.
+  assert.match(
+    runtimeMismatchReason(
+      { ...healthyDaemon, defaultRole: "agent" },
+      { parentEnv: agentShellEnv },
+    ) ?? "",
+    /default role agent != cto/,
+  );
+});
+
+test("only local runtimes may be auto-started or stopped", () => {
+  assert.equal(canAutoStartRuntime("/tmp/ade-runtime-dev.sock"), true);
+  assert.equal(canAutoStartRuntime("tcp://127.0.0.1:9999"), true);
+  assert.equal(canAutoStartRuntime("tcp://localhost:9999"), true);
+  assert.equal(canAutoStartRuntime("tcp://10.0.0.4:9999"), false);
+  assert.equal(canAutoStartRuntime("tcp://runtime.internal:9999"), false);
 });

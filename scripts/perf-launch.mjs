@@ -15,7 +15,12 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { canConnectToSocket, resolveDevSocketPath, shutdownRuntime } from "./dev-shared.mjs";
+import {
+  canAutoStartRuntime,
+  canConnectToSocket,
+  resolveDevSocketPath,
+  shutdownRuntime,
+} from "./dev-shared.mjs";
 
 const argv = process.argv.slice(2);
 const args = {
@@ -89,7 +94,15 @@ delete env.ADE_PERF_SCENARIO;
  * one under this run's environment.
  */
 const socketPath = resolveDevSocketPath();
-if (await canConnectToSocket(socketPath)) {
+if (!canAutoStartRuntime(socketPath)) {
+  // A configured remote TCP endpoint is somebody else's daemon; the same
+  // restriction `ensureRuntime` applies to auto-start applies to shutting one
+  // down. Never stop a runtime we would not be allowed to restart.
+  console.warn(
+    `[perf-launch] ${socketPath} is a remote runtime; leaving it running (perf-launch only stops local runtimes).`,
+  );
+  console.warn(`[perf-launch] chatTextFlush events will be missing unless that runtime already has ADE_PERF_RUN_ID=${runId}.`);
+} else if (await canConnectToSocket(socketPath)) {
   console.log(`[perf-launch] stopping existing dev runtime at ${socketPath} so it restarts with runId=${runId}`);
   try {
     await shutdownRuntime(socketPath);

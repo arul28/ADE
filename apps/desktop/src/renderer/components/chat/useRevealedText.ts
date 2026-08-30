@@ -69,9 +69,16 @@ export function useRevealedLength(
     // First sight is whole: a row that mounts already-complete (history,
     // virtualization remount, backfill, a finished message) paints everything
     // at once. Only growth observed after mount is paced.
-    stateRef.current = previous === null
+    const next = previous === null
       ? beginReveal(text, { instant: true })
       : retargetReveal(previous, text);
+    // An invisible row paints on arrival. Visibility must gate the *backlog*,
+    // not just the frame loop: a scrolled-away or backgrounded row that only
+    // stopped its loop would sit on a stale prefix, and the first sight after
+    // scrolling back would show a truncated message that then types out the
+    // whole accumulated backlog. Completing here means first sight is always
+    // the full current text, and it costs nothing — no frame is scheduled.
+    stateRef.current = isVisible() ? next : completeReveal(next);
   }
 
   const stop = useCallback(() => {

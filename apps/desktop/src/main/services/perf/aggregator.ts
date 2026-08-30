@@ -192,6 +192,21 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/**
+ * Coerce an event field to a finite number.
+ *
+ * The JSONL is written by renderers we do not control frame-by-frame, and
+ * `Number()` happily yields `Infinity`/`NaN` for `"Infinity"`, `"1e999"` or any
+ * malformed field. Those survive every arithmetic step in this file and then
+ * `JSON.stringify` turns them into `null` in the summary — a numeric contract
+ * silently broken by one bad event. Treat non-finite as absent (0), which is
+ * what the `?? 0` defaults already do for a missing field.
+ */
+function finiteOr0(value: unknown): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function chatTextFlushStats(samples: ChatTextFlushSample[]): ChatTextFlushStats {
   let chars = 0;
   let deltasCoalesced = 0;
@@ -385,25 +400,25 @@ export function aggregate(runId: string): Summary {
               Boolean(sample) && typeof sample === "object"
             )
             .map((sample) => ({
-              pid: Number(sample.pid ?? 0),
+              pid: finiteOr0(sample.pid),
               type: String(sample.type ?? "unknown"),
-              cpuPercent: Number(sample.cpuPercent ?? 0),
-              workingSetSizeKb: Number(sample.workingSetSizeKb ?? 0),
+              cpuPercent: finiteOr0(sample.cpuPercent),
+              workingSetSizeKb: finiteOr0(sample.workingSetSizeKb),
             })),
-          mainRss: Number(ev.mainRss ?? 0),
-          mainHeapUsed: Number(ev.mainHeapUsed ?? 0),
+          mainRss: finiteOr0(ev.mainRss),
+          mainHeapUsed: finiteOr0(ev.mainHeapUsed),
         });
         break;
       }
       case "rendererMemory": {
-        rendererMem.push({ ts: ev.ts, usedMB: Number(ev.usedMB ?? 0) });
+        rendererMem.push({ ts: ev.ts, usedMB: finiteOr0(ev.usedMB) });
         break;
       }
       case "webVital": {
         webVitals.push({
           ts: ev.ts,
           metric: ev.metric as WebVitalSample["metric"],
-          value: Number(ev.value ?? 0),
+          value: finiteOr0(ev.value),
           scenario: currentScenario,
         });
         break;
@@ -411,7 +426,7 @@ export function aggregate(runId: string): Summary {
       case "longTask": {
         longTasks.push({
           ts: ev.ts,
-          durationMs: Number(ev.durationMs ?? 0),
+          durationMs: finiteOr0(ev.durationMs),
           scenario: currentScenario,
         });
         break;
@@ -420,7 +435,7 @@ export function aggregate(runId: string): Summary {
         ipcCalls.push({
           ts: ev.ts,
           channel: String(ev.channel ?? "unknown"),
-          durationMs: Number(ev.durationMs ?? 0),
+          durationMs: finiteOr0(ev.durationMs),
           failed: ev.failed === true,
           scenario: currentScenario,
         });
@@ -430,10 +445,10 @@ export function aggregate(runId: string): Summary {
         chatTextFlushes.push({
           ts: ev.ts,
           sessionId: String(ev.sessionId ?? "unknown"),
-          chars: Number(ev.chars ?? 0),
-          deltasCoalesced: Number(ev.deltasCoalesced ?? 0),
+          chars: finiteOr0(ev.chars),
+          deltasCoalesced: finiteOr0(ev.deltasCoalesced),
           msSinceLastFlush:
-            typeof ev.msSinceLastFlush === "number" ? ev.msSinceLastFlush : null,
+            Number.isFinite(ev.msSinceLastFlush) ? (ev.msSinceLastFlush as number) : null,
           reason: String(ev.reason ?? "other"),
         });
         break;
@@ -442,24 +457,24 @@ export function aggregate(runId: string): Summary {
         streamSmoothnessWindows.push({
           ts: ev.ts,
           sessionId: typeof ev.sessionId === "string" ? ev.sessionId : null,
-          framesTotal: Number(ev.framesTotal ?? 0),
-          framesAdvanced: Number(ev.framesAdvanced ?? 0),
-          advancedRatio: Number(ev.advancedRatio ?? 0),
-          gapP50: Number(ev.gapP50 ?? 0),
-          gapP95: Number(ev.gapP95 ?? 0),
-          gapMax: Number(ev.gapMax ?? 0),
-          frameIntervalP50: Number(ev.frameIntervalP50 ?? 0),
-          durationMs: Number(ev.durationMs ?? 0),
-          charsAdvanced: Number(ev.charsAdvanced ?? 0),
+          framesTotal: finiteOr0(ev.framesTotal),
+          framesAdvanced: finiteOr0(ev.framesAdvanced),
+          advancedRatio: finiteOr0(ev.advancedRatio),
+          gapP50: finiteOr0(ev.gapP50),
+          gapP95: finiteOr0(ev.gapP95),
+          gapMax: finiteOr0(ev.gapMax),
+          frameIntervalP50: finiteOr0(ev.frameIntervalP50),
+          durationMs: finiteOr0(ev.durationMs),
+          charsAdvanced: finiteOr0(ev.charsAdvanced),
         });
         break;
       }
       case "mainLoopDelay": {
         mainLoopDelays.push({
           ts: ev.ts,
-          p50: Number(ev.p50 ?? 0),
-          p95: Number(ev.p95 ?? 0),
-          max: Number(ev.max ?? 0),
+          p50: finiteOr0(ev.p50),
+          p95: finiteOr0(ev.p95),
+          max: finiteOr0(ev.max),
         });
         break;
       }
@@ -467,7 +482,7 @@ export function aggregate(runId: string): Summary {
         measures.push({
           ts: ev.ts,
           name: String(ev.name ?? "unknown"),
-          durationMs: Number(ev.durationMs ?? 0),
+          durationMs: finiteOr0(ev.durationMs),
           scenario: currentScenario,
         });
         break;

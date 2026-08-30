@@ -5300,6 +5300,55 @@ describe("AgentChatMessageList — paced assistant text", () => {
     expect(screen.getByText("Earlier block, extended by a backfill.")).toBeTruthy();
   });
 
+  it("paints growth on arrival while the row is scrolled out of view", () => {
+    // Visibility must gate the BACKLOG, not just the frame loop. A row that
+    // only stopped its loop would sit on a stale prefix for as long as it is
+    // off screen, and the first sight after scrolling back would show a
+    // truncated message that then types out the whole accumulated backlog.
+    const originalIntersectionObserver = globalThis.IntersectionObserver;
+    let intersectionCallback: IntersectionObserverCallback | null = null;
+    globalThis.IntersectionObserver = class {
+      root = null;
+      rootMargin = "";
+      thresholds = [];
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+      takeRecords(): IntersectionObserverEntry[] { return []; }
+    } as unknown as typeof IntersectionObserver;
+
+    try {
+      const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
+      const observed = intersectionCallback as IntersectionObserverCallback | null;
+      expect(observed).toBeTruthy();
+      act(() => {
+        observed!(
+          [{ isIntersecting: false } as IntersectionObserverEntry],
+          {} as IntersectionObserver,
+        );
+      });
+
+      act(() => {
+        view.rerender(
+          <MemoryRouter>
+            <AgentChatMessageList
+              events={streamingText("Alpha. Beta gamma delta.")}
+              showStreamingIndicator
+            />
+          </MemoryRouter>,
+        );
+      });
+
+      // First sight after scrolling back is the full current text — no rAF ran.
+      expect(screen.getByText("Alpha. Beta gamma delta.")).toBeTruthy();
+    } finally {
+      globalThis.IntersectionObserver = originalIntersectionObserver;
+    }
+  });
+
   it("paints on arrival when the horizon override turns pacing off", () => {
     // The A/B kill switch: `ade.textRevealHorizonMs = 0` must restore the
     // exact pre-pacing behavior, growth included.

@@ -131,6 +131,62 @@ describe("aggregate", () => {
       charsAdvanced: 400,
     });
   });
+
+  it("coerces non-finite numeric fields to finite numbers", () => {
+    // `Number("Infinity")` and `Number("NaN")` sail through every arithmetic
+    // step and only surface at the end, where JSON.stringify writes them as
+    // `null` — a numeric summary field that is suddenly not a number.
+    const runId = `test-nonfinite-${Date.now()}`;
+    writeEvents(runId, [
+      { ts: 1, kind: "runStart", runId },
+      {
+        ts: 2,
+        kind: "chatTextFlush",
+        sessionId: "s1",
+        chars: "Infinity",
+        deltasCoalesced: "NaN",
+        msSinceLastFlush: Number.POSITIVE_INFINITY,
+        reason: "timer",
+      },
+      { ts: 3, kind: "mainLoopDelay", p50: "NaN", p95: "Infinity", max: "-Infinity" },
+      {
+        ts: 4,
+        kind: "streamSmoothness",
+        sessionId: "s1",
+        framesTotal: "Infinity",
+        framesAdvanced: "NaN",
+        advancedRatio: "Infinity",
+        gapP50: "NaN",
+        gapP95: "Infinity",
+        gapMax: "1e999",
+        frameIntervalP50: "NaN",
+        durationMs: "Infinity",
+        charsAdvanced: "NaN",
+      },
+      { ts: 5, kind: "runEnd" },
+    ]);
+
+    const summary = aggregate(runId);
+    const numbers = [
+      summary.chatText.chars,
+      summary.chatText.deltasCoalesced,
+      summary.chatText.meanCharsPerFlush,
+      summary.chatText.maxCharsPerFlush,
+      summary.chatText.meanMsSinceLastFlush,
+      summary.chatText.p95MsSinceLastFlush,
+      summary.mainLoop.p95,
+      summary.mainLoop.max,
+      ...Object.values(summary.streamSmoothness),
+    ];
+    for (const value of numbers) expect(Number.isFinite(value)).toBe(true);
+    // Round-tripping through JSON must not turn any of them into null. (The
+    // summary's only legitimately nullable field is webVitals.fcp.)
+    expect(JSON.stringify(summary.streamSmoothness)).not.toContain("null");
+    expect(JSON.stringify(summary.mainLoop)).not.toContain("null");
+    expect(JSON.stringify(summary.chatText)).not.toContain("null");
+    // A non-finite gap is treated as absent, not as a giant gap.
+    expect(summary.chatText.p95MsSinceLastFlush).toBe(0);
+  });
 });
 
 describe("summarizeStreamSmoothness", () => {

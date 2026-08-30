@@ -268,6 +268,57 @@ describe("settled / growing-tail split", () => {
     expect(tail).toBe("B.");
   });
 
+  it("never cuts inside a loose ordered list, so numbering stays 1, 2, 3", () => {
+    // A loose list is written as repeated `1.` markers separated by blank
+    // lines. Cutting on one of those blank lines makes two documents, and the
+    // second restarts its numbering — the user watches "1, 1, 1" until the
+    // turn settles. The cut must survive every streaming prefix.
+    const text = "1. a\n\n1. b\n\n1. c";
+    for (let end = 0; end <= text.length; end += 1) {
+      const scan = advanceSplitScan(null, text, end);
+      expect(scan.settledEnd).toBe(0);
+      expect(splitRevealed(text, end, scan).settled).toBe("");
+    }
+    // Unordered and paren-delimited markers are the same block.
+    for (const list of ["- a\n\n- b\n\nc", "1) a\n\n1) b\n\n1) c"]) {
+      expect(advanceSplitScan(null, list, list.length - 1).settledEnd).toBe(0);
+    }
+  });
+
+  it("does not split an indented code block on its internal blank lines", () => {
+    const text = "Intro:\n\n    line one\n\n    line two\n\nDone.\n";
+    const afterList = text.indexOf("Done.");
+    for (let end = 0; end <= text.length; end += 1) {
+      const settledEnd = advanceSplitScan(null, text, end).settledEnd;
+      // Only two answers are safe: nothing settled yet, or everything up to the
+      // blank line that precedes the first line at column 0.
+      expect([0, afterList]).toContain(settledEnd);
+    }
+    expect(advanceSplitScan(null, text, text.length).settledEnd).toBe(afterList);
+  });
+
+  it("still settles a plain paragraph boundary while the next paragraph streams", () => {
+    // The guard must not cost the ordinary cut: the moment a non-list,
+    // non-indented line starts arriving, the blank before it settles.
+    const text = "First.\n\nSecond.\n\nthird para stil";
+    expect(split(text).settled).toBe("First.\n\nSecond.\n\n");
+    // A `---` rule and `**bold**` open a block; they are not list markers.
+    expect(split("A.\n\n---\n\n**bo").settled).toBe("A.\n\n---\n\n");
+    expect(split("A.\n\n**bold** start").settled).toBe("A.\n\n");
+  });
+
+  it("resolves a pending cut only once the next line is unambiguous", () => {
+    // "1" is a paragraph, "1." is a list marker. While only "1" has arrived the
+    // cut must wait rather than guess and be wrong half the time.
+    const base = "Para.\n\n";
+    expect(advanceSplitScan(null, `${base}1`, base.length + 1).settledEnd).toBe(0);
+    expect(advanceSplitScan(null, `${base}1.`, base.length + 2).settledEnd).toBe(0);
+    expect(advanceSplitScan(null, `${base}1. x`, base.length + 4).settledEnd).toBe(0);
+    // A digit that turns out to be prose settles normally.
+    expect(advanceSplitScan(null, `${base}1999 was`, base.length + 8).settledEnd)
+      .toBe(base.length);
+  });
+
   it("recomputes identically from scratch and incrementally", () => {
     const text = "A.\n\n```\nx\n```\n\nB.\n\ntail";
     let incremental = advanceSplitScan(null, text, 0);

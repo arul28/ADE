@@ -188,8 +188,39 @@ let samplerSessionId: string | null = null;
 /**
  * Several chat panes can stream at once (grid mode). One loop measures the whole
  * document, so callers are ref-counted: the first starts it, the last stops it.
+ *
+ * The value is each owner's session id, because the loop's samples span every
+ * streaming node in the document. Keeping only the FIRST owner's id would stamp
+ * a second pane's characters with the first pane's session — a per-session
+ * comparison built on that is silently wrong. See `recomputeSamplerSessionId`.
  */
-const owners = new Set<object>();
+const owners = new Map<object, string | null>();
+
+/**
+ * Attribute the shared loop to a session only while every owner agrees on one.
+ * `null` means "mixed" (or unknown) and is the honest answer for a window whose
+ * character total came from more than one pane.
+ */
+function recomputeSamplerSessionId(): void {
+  const distinct = new Set(owners.values());
+  samplerSessionId = distinct.size === 1 ? [...distinct][0]! : null;
+}
+
+/** Test-only: drop ref-counted owners so each case starts from a clean loop. */
+export function resetStreamSmoothnessSamplerForTests(): void {
+  if (rafId !== null) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+  owners.clear();
+  accumulator = null;
+  samplerSessionId = null;
+}
+
+/** Test-only: the session id the next emitted window will carry. */
+export function readSamplerSessionIdForTests(): string | null {
+  return samplerSessionId;
+}
 
 function emit(sample: StreamSmoothnessWindow): void {
   window.ade?.perf?.recordEvent({
@@ -209,10 +240,10 @@ export function startStreamSmoothnessSampler(
   owner: object = globalThis,
 ): void {
   if (!isPerfActive()) return;
-  owners.add(owner);
+  owners.set(owner, sessionId);
+  recomputeSamplerSessionId();
   if (rafId !== null) return;
   accumulator = new StreamSmoothnessAccumulator();
-  samplerSessionId = sessionId;
   const frame = (now: number) => {
     rafId = requestAnimationFrame(frame);
     const completed = accumulator?.addFrame(now, readTotalAssistantTextLength());
@@ -224,7 +255,12 @@ export function startStreamSmoothnessSampler(
 /** Stop the loop and emit the trailing partial window. */
 export function stopStreamSmoothnessSampler(owner: object = globalThis): void {
   owners.delete(owner);
-  if (owners.size > 0) return;
+  if (owners.size > 0) {
+    // Losing an owner can un-mix the loop: if the survivors share one id, later
+    // windows are legitimately that session's again.
+    recomputeSamplerSessionId();
+    return;
+  }
   if (rafId !== null) {
     cancelAnimationFrame(rafId);
     rafId = null;
