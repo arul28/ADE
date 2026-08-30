@@ -25,6 +25,7 @@ import {
   githubRateLimitResourceForPath,
   githubRateLimitRetryAtMs,
 } from "./githubRateLimit";
+import type { GithubRequestAccountingContext } from "./githubRequestAccounting";
 
 export type GithubRawRequestArgs = {
   url: string;
@@ -67,6 +68,21 @@ function responseMessage(text: string, status: number): string {
 export async function requestGithubRawWithCredentialFallback(args: GithubRawRequestArgs & {
   candidates: readonly GithubCredentialCandidate[];
   fetchImpl: (input: string, init: RequestInit) => Promise<Response>;
+  /**
+   * Accounting-aware transport, preferred over {@link fetchImpl} when present.
+   * It receives the credential source of the attempt so ADE's GitHub request
+   * accounting can attribute the request.
+   *
+   * A separate field rather than a third parameter on `fetchImpl`: the headless
+   * CLI's transport already takes a third positional argument of its own (a
+   * fetch override), so widening the shared field would hand it a context
+   * object where it expects a function.
+   */
+  accountingFetchImpl?: (
+    input: string,
+    init: RequestInit,
+    accounting: GithubRequestAccountingContext,
+  ) => Promise<Response>;
   userAgent: string;
   defaultHeaders?: Record<string, string>;
   authMissingMessage: string;
@@ -118,12 +134,15 @@ export async function requestGithubRawWithCredentialFallback(args: GithubRawRequ
     for (const [key, value] of Object.entries(args.defaultHeaders ?? {})) headers.set(key, value);
     headers.set("authorization", `Bearer ${candidate.token}`);
     headers.set("user-agent", args.userAgent);
-    const response = await args.fetchImpl(args.url, {
+    const init: RequestInit = {
       method: args.method ?? "GET",
       headers,
       redirect: args.redirect,
       signal: args.signal,
-    });
+    };
+    const response = args.accountingFetchImpl
+      ? await args.accountingFetchImpl(args.url, init, { tokenSource: candidate.source })
+      : await args.fetchImpl(args.url, init);
     const manualRedirect = args.redirect === "manual"
       && response.status >= 300
       && response.status < 400;

@@ -166,6 +166,7 @@ import {
   isGithubRequestError,
   markGithubRequestError,
 } from "./githubReadBackoff";
+import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
@@ -1278,6 +1279,47 @@ function isGithubWideFailure(error: unknown): boolean {
   if (kind === "rate_limited" || kind === "service_unavailable" || kind === "network") return true;
   const message = getErrorMessage(error);
   return isGithubServiceUnavailable({ message }) || isTransientGithubProbeFailure(message);
+}
+
+/**
+ * Whether GitHub answered "you are rate limited", typed rather than by message.
+ *
+ * This runs in the process that made the request, so the classification
+ * `classifyGitHubAuthFailure` already attached is still on the error — no
+ * substring test, which is the rule the 2026-08-17 outage established.
+ */
+function isGithubRateLimitFailure(error: unknown): boolean {
+  return githubAuthFailureKindOf(error) === "rate_limited";
+}
+
+/**
+ * The reset instant GitHub named on a rate-limit rejection, or null.
+ *
+ * `GitHubRateLimitError` already folds `retry-after` ahead of
+ * `x-ratelimit-reset` (see `githubRateLimitRetryAtMs`), so reading the single
+ * field honours both in GitHub's documented order. Duck-typed for the same
+ * reason `githubAuthFailureKindOf` is: two GitHub service owners throw it.
+ */
+function githubRateLimitResetAtMsOf(error: unknown): number | null {
+  const value = (error as { rateLimitResetAtMs?: unknown } | null)?.rateLimitResetAtMs;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/**
+ * Whether GitHub rejected the GraphQL `stack` field itself, as opposed to
+ * refusing the request. Only this failure is fixable by re-asking without the
+ * field; everything else re-asking just doubles the spend.
+ *
+ * Text, deliberately: GraphQL reports schema errors as prose with no status,
+ * no header, and no `authFailure` to classify. This is not the failure-kind
+ * test the 2026-08-17 outage banned — it never gates a brake. A miss costs one
+ * throttled extra request (the caller falls through to `allowFallback`), and a
+ * false positive costs nothing at all, because the no-stack query is the
+ * correct query for every repo without GitHub stacks.
+ */
+function isGraphqlUndefinedFieldError(error: unknown): boolean {
+  return /field '?stack'?\b|undefined field|doesn't exist on type|cannot query field/i
+    .test(getErrorMessage(error));
 }
 
 function isBackgroundRefreshCandidate(row: PullRequestRow, nowMs: number): boolean {
@@ -3794,6 +3836,14 @@ export function createPrService({
   const githubReadBackoff = createGithubReadBackoff();
 
   /**
+   * The separate brake for the merge-box GraphQL read. It cannot share the
+   * ladder above: that one is armed by whole-snapshot reads on a 120s TTL,
+   * while this one is armed by a per-PR read whose cadence belongs to the
+   * renderer's 2.5s mergeability re-poll (see `mergeStateGraphqlBrake.ts`).
+   */
+  const mergeStateGraphqlBrake = createMergeStateGraphqlBrake();
+
+  /**
    * Remote-tracking branch names for the repository, or `null` when git could
    * not answer.
    *
@@ -4924,10 +4974,31 @@ export function createPrService({
     query?: Record<string, string | number | boolean | undefined | null>;
     select?: (payload: any) => T[];
     maxPages?: number;
+    /**
+     * Delta sweep boundary: stop paginating at the first item whose
+     * `updated_at` predates this instant, because every later page is older
+     * still and its rows are already in `github_pr_projections`.
+     *
+     * GitHub's list-pulls endpoint has no `since` parameter, so this ordered
+     * early exit is the only incremental shape available. It requires
+     * `sort=updated` AND an explicit `direction=desc`, and the guard below
+     * enforces both rather than trusting the call site: GitHub documents the
+     * default direction as `desc` only for `sort=created`, and passing
+     * `sort=updated` flips the documented default to `asc`. Omit `direction`
+     * and the sweep walks oldest-first, where the boundary test fires on the
+     * first item of page 1 and the sweep silently returns nothing.
+     */
+    stopWhenUpdatedBeforeMs?: number | null;
+    /** Called when the boundary above actually truncated the walk. */
+    onDeltaStop?: () => void;
   }): Promise<T[]> => {
     const out: T[] = [];
     const pageSize = 100;
     const maxPages = args.maxPages ?? 10;
+    const deltaBoundaryMs =
+      args.query?.sort === "updated" && args.query?.direction === "desc"
+        ? args.stopWhenUpdatedBeforeMs ?? null
+        : null;
     for (let page = 1; page <= maxPages; page += 1) {
       // The only place a GitHub read failure is tagged, and the snapshot
       // rejection handler only arms its ladder on tagged errors. Every other
@@ -4941,8 +5012,26 @@ export function createPrService({
         query: { ...(args.query ?? {}), per_page: pageSize, page }
       }).catch((error: unknown) => { throw markGithubRequestError(error); });
       const batch = args.select ? args.select(data) : Array.isArray(data) ? (data as T[]) : [];
+      // The whole page is kept even when the boundary sits mid-page: those rows
+      // are already paid for, and re-projecting them costs one local upsert.
       out.push(...batch);
+      // A short page means GitHub has nothing left, so the walk is COMPLETE and
+      // is not a delta truncation however old its rows are. This ordering is
+      // load-bearing: firing `onDeltaStop` here would make a repo with a single
+      // page of PRs report `repoPullRequestsMayHaveMore: true` with nothing
+      // left to load, and a pagination affordance that lies is exactly what the
+      // delta was not allowed to introduce.
       if (batch.length < pageSize) break;
+      if (
+        deltaBoundaryMs != null
+        && batch.some((item) => {
+          const updatedAtMs = parseIsoMs(asString((item as { updated_at?: unknown })?.updated_at));
+          return updatedAtMs > 0 && updatedAtMs < deltaBoundaryMs;
+        })
+      ) {
+        args.onDeltaStop?.();
+        break;
+      }
     }
     return out;
   };
@@ -5608,18 +5697,51 @@ export function createPrService({
     }
   }
 }`;
+    const brakeRepoKey = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
+    const brakePrKey = `${brakeRepoKey}#${prNumber}`;
+    // The caller's cadence is the renderer's, not ours: `getStatus` sits on a
+    // 2.5s mergeability re-poll and every visible surface adds another. While
+    // GitHub is refusing, the only correct request count is zero — GitHub asks
+    // integrations to stop entirely rather than keep asking while limited.
+    const cooling = mergeStateGraphqlBrake.cooldown(brakeRepoKey);
+    if (cooling) {
+      // Once per armed window. The 2026-08-21 runaway wrote 11,202 identical
+      // warn lines for one PR, which buried every other signal in the log.
+      if (cooling.shouldLog) {
+        logger.warn("prs.computeStatus.graphql_rate_limit_cooldown", {
+          repo: `${repo.owner}/${repo.name}`,
+          prNumber,
+          retryAt: new Date(cooling.untilMs).toISOString(),
+        });
+      }
+      return null;
+    }
     try {
       let data: MergeStateGraphqlData;
+      // `stack` is a GitHub-stacks schema field, so a repo either has it or
+      // never will. Asking once and remembering the answer is what turns the
+      // fallback from a per-call tax into a one-off discovery cost.
+      const includeStack = !mergeStateGraphqlBrake.isStackFieldUnsupported(brakeRepoKey);
       try {
         data = await graphqlRequest<MergeStateGraphqlData>(
-          query(true),
+          query(includeStack),
           { owner: repo.owner, name: repo.name, number: prNumber },
           { accept: "application/vnd.github.merge-info-preview+json" },
         );
       } catch (error) {
+        // A rate limit is not schema drift. Re-asking the same endpoint cannot
+        // succeed and doubles what a limited GitHub is charged for, so hand it
+        // to the outer handler, which arms the cooldown above.
+        if (!includeStack || isGithubRateLimitFailure(error)) throw error;
+        const stackUnsupported = isGraphqlUndefinedFieldError(error);
+        // Anything else is transient. The renderer re-polls on its own, so a
+        // second attempt per PR per 5 minutes is all the fallback needs.
+        if (!stackUnsupported && !mergeStateGraphqlBrake.allowFallback(brakePrKey)) throw error;
+        if (stackUnsupported) mergeStateGraphqlBrake.noteStackFieldUnsupported(brakeRepoKey);
         logger.warn("prs.computeStatus.stack_graphql_fallback", {
           repo: `${repo.owner}/${repo.name}`,
           prNumber,
+          stackUnsupported,
           error: getErrorMessage(error),
         });
         data = await graphqlRequest<MergeStateGraphqlData>(
@@ -5687,6 +5809,23 @@ export function createPrService({
         headSha: asString(pull.headRefOid).trim() || null,
       };
     } catch (error) {
+      if (isGithubRateLimitFailure(error)) {
+        // Runs to the instant GitHub named (`retry-after` ahead of
+        // `x-ratelimit-reset`, already folded into `rateLimitResetAtMs`), or
+        // five minutes when it named none. One warn arms it; the short-circuit
+        // above stays silent for the rest of the window.
+        const untilMs = mergeStateGraphqlBrake.armRateLimitCooldown(
+          brakeRepoKey,
+          githubRateLimitResetAtMsOf(error),
+        );
+        logger.warn("prs.computeStatus.graphql_rate_limited", {
+          repo: `${repo.owner}/${repo.name}`,
+          prNumber,
+          retryAt: new Date(untilMs).toISOString(),
+          error: getErrorMessage(error),
+        });
+        return null;
+      }
       // Warn (not debug) so a silent fall-back to REST — which would leave the
       // authoritative merge box null — is visible in default logs. This is the
       // exact failure we want to catch (e.g. a missing preview header on GHES).
@@ -9258,6 +9397,33 @@ export function createPrService({
   };
 
   const GITHUB_OPEN_SNAPSHOT_MAX_PAGES = 10;
+  /**
+   * Skew buffer subtracted from the last successful sweep before it is used as
+   * a delta boundary. GitHub's `updated_at` is its clock, not ours, and a PR
+   * updated while the previous sweep was mid-walk can carry a timestamp just
+   * behind it — re-walking a minute of overlap is far cheaper than a row that
+   * is only ever seen by the 30-minute closed sweep.
+   */
+  const GITHUB_SWEEP_DELTA_SKEW_MS = 60_000;
+  /**
+   * Beyond this gap the sweep runs full again. A delta is only as good as the
+   * projection rows it is standing on, and after a day of not sweeping (a
+   * laptop that was asleep, a project nobody opened) enough can have been
+   * pruned that the cheap walk stops being a safety net.
+   */
+  const GITHUB_SWEEP_FULL_REFETCH_GAP_MS = 24 * 60 * 60_000;
+  /**
+   * Last successful sweep per repo and sweep kind, the cursor the delta walk
+   * stops at. In-memory on the service instance, exactly like the reconcile
+   * throttles it serves: the CRR-replicated `kv` table would ship one machine's
+   * sweep cursor to another that never ran it, and a cold start SHOULD re-walk
+   * in full — that is the safety net, not a gap in it.
+   *
+   * Open and closed sweeps keep separate cursors because they ask different
+   * questions: the open sweep never lists a closed PR, so letting it advance
+   * the closed cursor would hide every PR that closed between closed sweeps.
+   */
+  const lastSweepAtMsByKey = new Map<string, number>();
   const GITHUB_HISTORY_INITIAL_PAGE_LIMIT = 2;
   const GITHUB_HISTORY_MAX_PAGE_LIMIT = 10;
   const GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT = 1_000;
@@ -9371,6 +9537,10 @@ export function createPrService({
     // hatch, since a user-initiated force skips the ladder entirely.
     githubAuthGeneration += 1;
     githubReadBackoff.clear();
+    // Same reasoning for the merge-box brake: a rate limit belongs to the
+    // account behind the old credential, so replaying it against a new one
+    // would blank the merge box for minutes after a successful reconnect.
+    mergeStateGraphqlBrake.clear();
   };
 
   const buildGithubSnapshotAuthError = (githubStatus: GitHubStatus): string => {
@@ -9770,14 +9940,34 @@ export function createPrService({
           null as GitHubPrProjectionStateCounts | null,
         )
       : Promise.resolve(null);
+    // Delta sweeps are for the AUTOMATIC reconcile passes only. A user reading
+    // history is paging deliberately and its `repoPullRequestsMayHaveMore`
+    // affordance describes the page window, so truncating that walk would turn
+    // "you have seen everything" into a lie the user can act on.
+    const sweepKey = `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}:${
+      options.includeExternalClosed === true ? "closed" : "open"
+    }`;
+    const sweepStartedAtMs = Date.now();
+    const lastSweepAtMs = lastSweepAtMsByKey.get(sweepKey) ?? 0;
+    const deltaBoundaryMs =
+      options.automaticRefresh === true
+      && lastSweepAtMs > 0
+      && sweepStartedAtMs - lastSweepAtMs <= GITHUB_SWEEP_FULL_REFETCH_GAP_MS
+        ? lastSweepAtMs - GITHUB_SWEEP_DELTA_SKEW_MS
+        : null;
+    let deltaStopped = false;
     let repoPullRequestsRaw = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls`,
       query: {
         state: options.includeExternalClosed === true ? "all" : "open",
+        // Load-bearing pair, not decoration — see `stopWhenUpdatedBeforeMs`.
+        // `sort: "updated"` alone means `direction: "asc"` by GitHub's docs.
         sort: "updated",
         direction: "desc",
       },
       maxPages: repoPullRequestMaxPages,
+      stopWhenUpdatedBeforeMs: deltaBoundaryMs,
+      onDeltaStop: () => { deltaStopped = true; },
     });
     const repoPullRequestsFetchedBeforeLaneBackfill = repoPullRequestsRaw.length;
     repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(
@@ -9793,7 +9983,12 @@ export function createPrService({
         // by a same-repo projection row is not in that situation — the
         // projection merge below puts it in the snapshot regardless — so once
         // projections are warm those lookups are pure round-trip tax.
-        branchesCoveredByProjections: options.includeExternalClosed === true
+        //
+        // A truncated delta walk needs the same cover for the opposite reason:
+        // it deliberately did not re-list an unchanged PR, and without this a
+        // lane holding one would read as "no PR anywhere" and spend a targeted
+        // lookup — the sweep would buy its saved pages back one branch at a time.
+        branchesCoveredByProjections: options.includeExternalClosed === true || deltaStopped
           ? sameRepoProjectionHeadBranches(repo, options)
           : null,
         skipUnpublishedBranches: options.includeExternalClosed !== true,
@@ -9808,6 +10003,10 @@ export function createPrService({
       githubStackStore.scheduleReconcile(repo, stackNumber);
     }
     upsertGithubPrProjectionsFromRawPulls(repo, repoPullRequestsRaw);
+    // Advance the cursor only once the rows this walk fetched are durable. The
+    // next delta stops where this one started, so moving it before the upsert
+    // would let a crash between the two skip a window nothing ever re-lists.
+    lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
     // runs first so the user-facing path takes precedence. Best-effort — never
     // throws into snapshot building. The legacy backfill below then adopts any
@@ -9848,8 +10047,11 @@ export function createPrService({
         includeExternalClosed: options.includeExternalClosed === true,
         pageLimit: historyPageLimit,
         repoPullRequestsLoaded: repoPullRequestsFetchedBeforeLaneBackfill,
+        // `deltaStopped` means the walk stopped at the delta boundary rather
+        // than at the end of the history, so more of it exists whether or not
+        // the page budget was spent.
         repoPullRequestsMayHaveMore: options.includeExternalClosed === true
-          && repoPullRequestsFetchedBeforeLaneBackfill >= historyPageLimit * 100,
+          && (deltaStopped || repoPullRequestsFetchedBeforeLaneBackfill >= historyPageLimit * 100),
         repoPullRequestCounts,
       },
     };

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
+import { getMachineMainLogger } from "../logging/machineLogger";
 import { runGit } from "../git/git";
 import type {
   GitHubAuthFailure,
@@ -54,6 +55,12 @@ import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
 } from "./githubRawRequest";
+import {
+  configureGithubRequestAccounting,
+  recordGithubRequestResponse,
+  recordGithubRequestTransportFailure,
+  type GithubRequestAccountingContext,
+} from "./githubRequestAccounting";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
@@ -406,7 +413,16 @@ function releaseGitHubResponse(response: Response): void {
   void response.body?.cancel().catch(() => {});
 }
 
-async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
+/**
+ * The single choke point for every GitHub HTTP call this service makes — the
+ * credential-fallback helper, the raw helper, and the token probes all land
+ * here — which makes it the one place request accounting can be complete.
+ */
+async function fetchGitHub(
+  input: string | URL,
+  init: RequestInit,
+  accounting?: GithubRequestAccountingContext,
+): Promise<Response> {
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const onUpstreamAbort = (): void => controller.abort(upstreamSignal?.reason);
@@ -424,6 +440,12 @@ async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Resp
   try {
     const response = await fetch(input, { ...init, signal: controller.signal });
     clearTimeout(timer);
+    recordGithubRequestResponse({
+      url: input,
+      context: accounting,
+      status: response.status,
+      headers: response.headers,
+    });
     return wrapGitHubResponseBody({
       response,
       controller,
@@ -431,6 +453,7 @@ async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Resp
     });
   } catch (error) {
     cleanupUpstreamAbort();
+    recordGithubRequestTransportFailure({ url: input, context: accounting });
     if (headerTimedOut) {
       throw githubRequestTimeoutError("request");
     }
@@ -587,6 +610,10 @@ export function createGithubService({
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
   const githubStateDir = path.join(appDataDir, "secrets", "github");
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
+  // The machine sink, not `logger`: a GitHub quota belongs to a credential on
+  // this computer and every project runtime spends the same one, so filing the
+  // summary under whichever project opened last would split one number in two.
+  configureGithubRequestAccounting(getMachineMainLogger);
   const appUserAuth = createGitHubAppUserAuthService({
     credentialStore,
     logger,
@@ -1161,6 +1188,7 @@ export function createGithubService({
             "x-github-api-version": GITHUB_REST_API_VERSION,
           },
         },
+        { tokenSource: candidate.source },
       );
       if (response.ok) {
         recordGithubCredentialRepositoryAccess(candidate, repo, true);
@@ -1323,6 +1351,7 @@ export function createGithubService({
     ...args,
     candidates: (await readCredentialInventory()).candidates,
     fetchImpl: fetchGitHub,
+    accountingFetchImpl: fetchGitHub,
     userAgent: "ade-desktop",
     defaultHeaders: { "x-github-api-version": GITHUB_REST_API_VERSION },
     authMissingMessage: "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.",
@@ -1456,11 +1485,15 @@ export function createGithubService({
 
       let response: Response;
       try {
-        response = await fetchGitHub(url.toString(), {
-          method: args.method,
-          headers,
-          body: args.body != null ? JSON.stringify(args.body) : undefined,
-        });
+        response = await fetchGitHub(
+          url.toString(),
+          {
+            method: args.method,
+            headers,
+            body: args.body != null ? JSON.stringify(args.body) : undefined,
+          },
+          { tokenSource: candidate.source },
+        );
       } catch (error) {
         recordTransportFailure(error);
       } finally {
@@ -1477,11 +1510,15 @@ export function createGithubService({
         }
         releaseGitHubResponse(response);
         delete headers["if-none-match"];
-        response = await fetchGitHub(url.toString(), {
-          method: args.method,
-          headers,
-          body: args.body != null ? JSON.stringify(args.body) : undefined,
-        }).catch(recordTransportFailure);
+        response = await fetchGitHub(
+          url.toString(),
+          {
+            method: args.method,
+            headers,
+            body: args.body != null ? JSON.stringify(args.body) : undefined,
+          },
+          { tokenSource: candidate.source },
+        ).catch(recordTransportFailure);
       }
 
       // The body has its own timeout, so a response that stalls mid-stream

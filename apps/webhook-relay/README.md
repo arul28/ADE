@@ -155,10 +155,40 @@ uses the hosted relay by default. The hosted auth path is:
 The relay forwards the token to GitHub's REST API only for authorization checks
 and does not store, log, or echo it. It rejects callers unless GitHub reports
 push/write, maintain, or admin access for the authenticated user, so public-repo
-webhook history is not readable by arbitrary GitHub accounts. Keep the ADE
-GitHub App's repository permissions read-only so the token the hosted relay sees
-cannot write repository data; it is app-limited and user-scoped, and ADE
-refreshes it locally when GitHub marks it near expiry.
+webhook history is not readable by arbitrary GitHub accounts.
+
+Those checks are cached so a 30-second poll does not spend a GitHub REST request
+per repository per machine against the account's shared 5,000/hour quota:
+
+- A positive read/write verdict is cached in the isolate for five minutes and in
+  D1 (`github_repo_auth_cache`) for sixty minutes, keyed by a SHA-256 digest of
+  the token plus the repository and access level. The token itself is never
+  stored. Sixty minutes is therefore the worst-case revocation latency for read
+  access, and the durable row is what survives Cloudflare isolate recycling.
+- Admin-level checks (webhook heal) are never cached and always go back to
+  GitHub, so a push/write verdict cannot authorize webhook management.
+- Definitive denials (404, insufficient permission) are cached for five minutes
+  in isolate memory only, so a token that genuinely cannot reach a repository
+  stops hammering GitHub. Denials are never written to D1: the caller chooses
+  the token, so persisting them would let anonymous callers mint unbounded rows.
+  Transport failures and GitHub 5xx responses are never cached at all.
+- When GitHub rate-limits a verification call (403/429 with
+  `x-ratelimit-remaining: 0`, a `retry-after` header, or a rate-limit message),
+  the relay records the reset in `github_token_rate_limits` and stops verifying
+  that token digest until it passes. A previously verified allow keeps working
+  for up to 24 hours during the outage and is logged as
+  `github_repo_auth_stale_served`. A token the relay has never verified for that
+  repository is refused, so a quota outage never fails open; that refusal
+  carries `Retry-After` set from the recorded reset, which is what ADE's ingress
+  backs off on.
+- A GitHub 401 (revoked or expired credential) purges the D1 rows for that token
+  digest and the serving isolate's copy, and is never served stale. Other live
+  isolates can still serve their own cached allow for up to five more minutes,
+  so a purge is immediate in D1 but not instantaneous fleet-wide.
+
+Keep the ADE GitHub App's repository permissions read-only so the token the
+hosted relay sees cannot write repository data; it is app-limited and
+user-scoped, and ADE refreshes it locally when GitHub marks it near expiry.
 
 ## Repo event push and gap-free cursor draining
 

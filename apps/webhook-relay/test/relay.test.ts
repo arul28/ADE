@@ -61,9 +61,22 @@ class FakeD1Statement {
   }
 }
 
+type StoredRepoAuthVerdict = {
+  cache_key: string;
+  token_hash: string;
+  repository_key: string;
+  access_level: string;
+  repository_id: number | null;
+  verified_at: string;
+  fresh_until: string;
+  stale_until: string;
+};
+
 class FakeD1Database {
   events: StoredEvent[] = [];
   appRepositories: StoredAppRepository[] = [];
+  repoAuthVerdicts = new Map<string, StoredRepoAuthVerdict>();
+  tokenRateLimits = new Map<string, { reset_at: string; observed_at: string }>();
   nextEventSeq = 1;
 
   prepare(sql: string): FakeD1Statement {
@@ -71,6 +84,12 @@ class FakeD1Database {
   }
 
   first<T>(sql: string, values: unknown[]): T | null {
+    if (sql.includes("from github_repo_auth_cache")) {
+      return (this.repoAuthVerdicts.get(String(values[0])) ?? null) as T | null;
+    }
+    if (sql.includes("from github_token_rate_limits")) {
+      return (this.tokenRateLimits.get(String(values[0])) ?? null) as T | null;
+    }
     if (sql.includes("json_extract(payload_json, '$.hook.events')")) {
       const ping = [...this.events].reverse().find((event) => event.github_event === "ping");
       if (!ping) return null;
@@ -149,6 +168,39 @@ class FakeD1Database {
   }
 
   run(sql: string, values: unknown[]): void {
+    if (sql.includes("insert into github_repo_auth_cache")) {
+      this.repoAuthVerdicts.set(String(values[0]), {
+        cache_key: String(values[0]),
+        token_hash: String(values[1]),
+        repository_key: String(values[2]),
+        access_level: String(values[3]),
+        repository_id: values[4] == null ? null : Number(values[4]),
+        verified_at: String(values[5]),
+        fresh_until: String(values[6]),
+        stale_until: String(values[7]),
+      });
+    }
+    if (sql.includes("delete from github_repo_auth_cache where token_hash")) {
+      for (const [key, row] of this.repoAuthVerdicts) {
+        if (row.token_hash === String(values[0])) this.repoAuthVerdicts.delete(key);
+      }
+    }
+    if (sql.includes("delete from github_repo_auth_cache where stale_until")) {
+      for (const [key, row] of this.repoAuthVerdicts) {
+        if (row.stale_until < String(values[0])) this.repoAuthVerdicts.delete(key);
+      }
+    }
+    if (sql.includes("insert into github_token_rate_limits")) {
+      this.tokenRateLimits.set(String(values[0]), {
+        reset_at: String(values[1]),
+        observed_at: String(values[2]),
+      });
+    }
+    if (sql.includes("delete from github_token_rate_limits where reset_at")) {
+      for (const [key, row] of this.tokenRateLimits) {
+        if (row.reset_at < String(values[0])) this.tokenRateLimits.delete(key);
+      }
+    }
     if (sql.includes("insert into github_events")) {
       this.events.push({
         event_seq: this.nextEventSeq++,
@@ -581,7 +633,7 @@ describe("webhook relay", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("reuses positive repo authorization for polls and subscriptions but never caches denials", async () => {
+  it("reuses positive repo authorization for polls and subscriptions and rechecks denials after the short negative window", async () => {
     const env = makeEnv();
     const subscriptionFetch = vi.fn(async () => new Response(null, { status: 204 }));
     const idFromName = vi.fn((name: string) => ({ name }) as unknown as DurableObjectId);
@@ -616,8 +668,300 @@ describe("webhook relay", () => {
       headers: githubAuthHeaders("ghp_denied"),
     });
     expect((await handleRequest(deniedRequest(), env)).status).toBe(403);
+    // A definitive denial is remembered only briefly, so a token that genuinely
+    // cannot reach the repo stops hammering GitHub on every 30-second poll.
     expect((await handleRequest(deniedRequest(), env)).status).toBe(403);
-    expect(deniedFetch).toHaveBeenCalledTimes(2);
+    expect(deniedFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // GitHub's 5,000/hour REST quota is shared by every ADE machine polling every
+  // repository every 30 seconds. Cloudflare recycles isolates constantly, so the
+  // in-memory verdict map alone re-verified almost every poll.
+  describe("durable GitHub repo authorization cache", () => {
+    const repoEventsRequest = (token = "ghp_repo_token") =>
+      new Request("https://relay.example.com/github/repos/owner/repo/events", {
+        headers: githubAuthHeaders(token),
+      });
+
+    /** Drops only the isolate-local caches, as a Worker isolate recycle does. */
+    function recycleIsolate(): void {
+      clearGitHubRepoAuthCacheForTests();
+    }
+
+    function stubRepoAccessRateLimited(options: {
+      token?: string;
+      status?: 403 | 429;
+      remaining?: string;
+      resetSeconds?: number;
+      retryAfterSeconds?: number;
+      message?: string;
+    } = {}) {
+      const headers: Record<string, string> = { "content-type": "application/json" };
+      if (options.remaining !== undefined) headers["x-ratelimit-remaining"] = options.remaining;
+      if (options.resetSeconds !== undefined) headers["x-ratelimit-reset"] = String(options.resetSeconds);
+      if (options.retryAfterSeconds !== undefined) headers["retry-after"] = String(options.retryAfterSeconds);
+      return vi.fn(async () => new Response(
+        JSON.stringify({ message: options.message ?? "API rate limit exceeded for user ID 1." }),
+        { status: options.status ?? 403, headers },
+      ));
+    }
+
+    it("serves a poll from the durable verdict after the isolate recycles", async () => {
+      const env = makeEnv();
+      const fetchMock = stubRepoAccess();
+      vi.stubGlobal("fetch", fetchMock);
+
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(env.DB.repoAuthVerdicts.size).toBe(1);
+
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // Verdict refreshes write; cache hits must never add a write to the poll.
+      expect(env.DB.repoAuthVerdicts.size).toBe(1);
+    });
+
+    it("re-verifies against GitHub once the durable verdict expires", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      const fetchMock = stubRepoAccess();
+      vi.stubGlobal("fetch", fetchMock);
+
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+
+      // Inside the 60-minute durable window a recycled isolate still hits cache.
+      vi.setSystemTime(new Date("2026-07-16T12:59:00.000Z"));
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // No recycle here: promoting the durable hit into the isolate map must not
+      // push the verdict past the durable deadline it was read under.
+      vi.setSystemTime(new Date("2026-07-16T13:00:01.000Z"));
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("serves a stale verdict while GitHub rate limits the verification call", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubGlobal("fetch", stubRepoAccess());
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+
+      // Past the fresh window, inside the 24-hour stale ceiling.
+      vi.setSystemTime(new Date("2026-07-16T20:00:00.000Z"));
+      recycleIsolate();
+      const rateLimited = stubRepoAccessRateLimited({ remaining: "0" });
+      vi.stubGlobal("fetch", rateLimited);
+
+      const response = await handleRequest(repoEventsRequest(), env);
+      expect(response.status).toBe(200);
+      expect(rateLimited).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls.flat().join(" ")).toContain("github_repo_auth_stale_served");
+      // The stale verdict must never be logged alongside the token digest.
+      expect(warn.mock.calls.flat().join(" ")).not.toContain("ghp_repo_token");
+    });
+
+    it("stops calling GitHub for a rate-limited token until the reset passes", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubGlobal("fetch", stubRepoAccess());
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+
+      vi.setSystemTime(new Date("2026-07-16T20:00:00.000Z"));
+      recycleIsolate();
+      const resetAt = Date.parse("2026-07-16T20:30:00.000Z");
+      const rateLimited = stubRepoAccessRateLimited({ remaining: "0", resetSeconds: resetAt / 1_000 });
+      vi.stubGlobal("fetch", rateLimited);
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(rateLimited).toHaveBeenCalledTimes(1);
+
+      // Further polls inside the cooldown are served stale without a GitHub call.
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(rateLimited).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2026-07-16T20:31:00.000Z"));
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(rateLimited).toHaveBeenCalledTimes(2);
+    });
+
+    it("honours a secondary rate limit retry-after even when remaining is not zero", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubGlobal("fetch", stubRepoAccess());
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+
+      vi.setSystemTime(new Date("2026-07-16T20:00:00.000Z"));
+      recycleIsolate();
+      const secondary = stubRepoAccessRateLimited({
+        remaining: "42",
+        retryAfterSeconds: 120,
+        message: "You have exceeded a secondary rate limit.",
+      });
+      vi.stubGlobal("fetch", secondary);
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(secondary).toHaveBeenCalledTimes(1);
+    });
+
+    it("denies a never-verified token when GitHub is rate limiting", async () => {
+      const env = makeEnv();
+      await handleRequest(
+        await signedWebhookRequest(
+          { repository: { full_name: "owner/repo" }, pull_request: { number: 42, title: "Secret" } },
+          { "x-github-delivery": "delivery-1" },
+        ),
+        env,
+      );
+      const rateLimited = stubRepoAccessRateLimited({ remaining: "0" });
+      vi.stubGlobal("fetch", rateLimited);
+
+      const response = await handleRequest(repoEventsRequest("ghp_never_seen"), env);
+
+      expect(response.status).toBe(403);
+      const body = await response.json() as { ok: boolean; error: string; events?: unknown };
+      expect(body.ok).toBe(false);
+      expect(body.error).toContain("rate limiting");
+      expect(body.events).toBeUndefined();
+      // ADE's ingress backs off on Retry-After; without it the client falls back
+      // to a generic cap and keeps polling through the outage.
+      const retryAfter = Number(response.headers.get("retry-after"));
+      expect(Number.isInteger(retryAfter)).toBe(true);
+      expect(retryAfter).toBeGreaterThan(0);
+      expect(retryAfter).toBeLessThanOrEqual(60);
+    });
+
+    it("advertises GitHub's own reset instant in Retry-After when it sends one", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      const resetAt = Date.parse("2026-07-16T12:30:00.000Z");
+      vi.stubGlobal("fetch", stubRepoAccessRateLimited({ remaining: "0", resetSeconds: resetAt / 1_000 }));
+
+      const denied = await handleRequest(repoEventsRequest("ghp_never_seen"), env);
+      expect(denied.status).toBe(403);
+      expect(Number(denied.headers.get("retry-after"))).toBe(30 * 60);
+
+      // The cooldown is persisted, so the advertised delay keeps shrinking in
+      // step with the real reset instead of restarting at the full window.
+      vi.setSystemTime(new Date("2026-07-16T12:20:00.000Z"));
+      recycleIsolate();
+      const later = await handleRequest(repoEventsRequest("ghp_never_seen"), env);
+      expect(later.status).toBe(403);
+      expect(Number(later.headers.get("retry-after"))).toBe(10 * 60);
+    });
+
+    it("caches a definitive denial in the isolate only, never in D1", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      const deniedFetch = stubRepoAccessDenied(404);
+      vi.stubGlobal("fetch", deniedFetch);
+
+      expect((await handleRequest(repoEventsRequest("ghp_denied"), env)).status).toBe(404);
+      expect((await handleRequest(repoEventsRequest("ghp_denied"), env)).status).toBe(404);
+      expect(deniedFetch).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2026-07-16T12:05:01.000Z"));
+      expect((await handleRequest(repoEventsRequest("ghp_denied"), env)).status).toBe(404);
+      expect(deniedFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("never writes a durable row for a denial, so anonymous callers cannot grow D1", async () => {
+      const env = makeEnv();
+      const deniedFetch = stubRepoAccessDenied(404);
+      vi.stubGlobal("fetch", deniedFetch);
+
+      // Every attempt picks a fresh token, so each one is a distinct digest and
+      // a distinct cache key: the exact shape that would amplify D1 writes.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        recycleIsolate();
+        expect((await handleRequest(repoEventsRequest(`ghp_attacker_${attempt}`), env)).status).toBe(404);
+      }
+
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+      expect(deniedFetch).toHaveBeenCalledTimes(5);
+    });
+
+    it("does not cache a GitHub server error as a denial", async () => {
+      const env = makeEnv();
+      const failing = vi.fn(async () => new Response(JSON.stringify({ message: "Server Error" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      }));
+      vi.stubGlobal("fetch", failing);
+
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      expect(failing).toHaveBeenCalledTimes(2);
+    });
+
+    it("purges every cached verdict for a token GitHub reports as revoked", async () => {
+      const env = makeEnv();
+      vi.stubGlobal("fetch", stubRepoAccess());
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(env.DB.repoAuthVerdicts.size).toBe(1);
+
+      const revoked = vi.fn(async () => new Response(JSON.stringify({ message: "Bad credentials" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      }));
+      vi.stubGlobal("fetch", revoked);
+      // Force a re-verification the way a durable-window expiry would.
+      env.DB.repoAuthVerdicts.forEach((row) => {
+        row.fresh_until = "2020-01-01T00:00:00.000Z";
+      });
+      recycleIsolate();
+
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+      // The stale allow is gone, so the revoked token cannot ride it under a
+      // later rate limit either.
+      vi.stubGlobal("fetch", stubRepoAccessRateLimited({ remaining: "0" }));
+      recycleIsolate();
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+    });
+
+    it("always re-checks admin access against GitHub", async () => {
+      const env = makeEnv();
+      env.GITHUB_APP_ID = "4180227";
+      env.GITHUB_APP_PRIVATE_KEY = await generateTestPrivateKeyPem();
+      const fetchMock = stubRepoAccessWithPermissions({ admin: false, push: true, pull: true });
+      vi.stubGlobal("fetch", fetchMock);
+
+      // Establish a cached write-level verdict for the same token and repo.
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      const healRequest = () => new Request("https://relay.example.com/github/repos/owner/repo/webhook/heal", {
+        method: "POST",
+        headers: githubAuthHeaders(),
+      });
+      expect((await handleRequest(healRequest(), env)).status).toBe(403);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect((await handleRequest(healRequest(), env)).status).toBe(403);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // A write-level verdict must never be promoted into admin authority.
+      expect([...env.DB.repoAuthVerdicts.values()].every((row) => row.access_level === "write")).toBe(true);
+    });
   });
 
   it("refuses repo events when the token is valid but denied access to the repo", async () => {
