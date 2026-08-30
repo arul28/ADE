@@ -54,6 +54,15 @@ vi.mock("@cursor/sdk", () => ({
 // vi.hoisted mock state
 // ---------------------------------------------------------------------------
 const mockState = vi.hoisted(() => ({
+  /**
+   * Bumped by `beforeEach`. A chat service outlives the test that built it when
+   * that test fails mid-turn, and its in-flight Cursor turn then records into
+   * the NEXT test's freshly-emptied `cursorSdkSendCalls` — which shifts every
+   * index the next test asserts on and turns one honest failure into three
+   * unreadable ones. Connections stamp the generation they were acquired in and
+   * stop recording once it has moved on.
+   */
+  generation: 0,
   sessions: new Map<string, any>(),
   sessionLinearLinks: new Map<string, any[]>(),
   uuidCounter: 0,
@@ -755,6 +764,7 @@ vi.mock("./cursorSdkPool", () => ({
     && pooled?.process?.connected !== false
   ),
   acquireCursorSdkConnection: vi.fn(async (args: Record<string, unknown>) => {
+    const acquiredGeneration = mockState.generation;
     mockState.cursorSdkAcquireCalls.push(args);
     if (mockState.cursorAcquireErrorOnCall === mockState.cursorSdkAcquireCalls.length) {
       throw new Error("Cursor SDK worker failed to start.");
@@ -810,7 +820,11 @@ vi.mock("./cursorSdkPool", () => ({
         return {};
       }),
       sendPrompt: vi.fn(async (payload: Record<string, unknown>) => {
-        mockState.cursorSdkSendCalls.push(payload);
+        // A service leaked by a failed earlier test must not write into this
+        // test's ledger; see `mockState.generation`.
+        if (acquiredGeneration === mockState.generation) {
+          mockState.cursorSdkSendCalls.push(payload);
+        }
         mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
         if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
@@ -2107,6 +2121,7 @@ beforeEach(() => {
   // (~/.claude/commands, ~/.codex/prompts) doesn't leak the developer's real
   // home dir into tests, while project-local .claude roots remain distinct.
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
+  mockState.generation += 1;
   mockState.sessions.clear();
   mockState.sessionLinearLinks.clear();
   mockState.uuidCounter = 0;
@@ -2452,6 +2467,32 @@ const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
 };
 
 /**
+ * Real wall clock and a real event-loop yield, captured before any test can
+ * install fake timers. `vi.useFakeTimers()` replaces the global `Date` and
+ * `setImmediate`, so a faked test that measures elapsed time or waits for the
+ * poll phase has to hold the originals.
+ */
+const pumpRealNow = Date.now.bind(Date);
+const pumpRealSetImmediate = globalThis.setImmediate;
+
+/**
+ * How long `pumpUntil` waits in REAL time. The work it waits on is genuinely
+ * async — fs reads for the injected Cursor system prompt, sqlite persistence —
+ * so the budget has to be wall-clock. An iteration count is not a budget: with
+ * no fake timer pending, one iteration costs microseconds, so a loaded runner
+ * burns the whole thing while the very first read is still queued behind the
+ * libuv pool. Locally the slowest wait in this file converges in 11 iterations.
+ */
+const PUMP_REAL_BUDGET_MS = 5_000;
+/**
+ * Fake-clock advancing stays capped by iteration so 1ms-per-tick pumping can
+ * never drift the virtual clock into the 90s silence watchdog by itself.
+ */
+const PUMP_FAKE_TICK_BUDGET = 800;
+/** Real stall time before `pumpUntil` starts tripping the silence watchdog. */
+const PUMP_WATCHDOG_STALL_MS = 1_000;
+
+/**
  * Real async setup work still needs event-loop turns while the clock is faked,
  * so pump the fake clock instead of assuming a fixed number of ticks.
  *
@@ -2460,14 +2501,27 @@ const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
  * the test queued its steer, and the later recovery wait timed out.
  */
 const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => {
-  // A silence-watchdog recycle can arm the next attempt's timer after the
-  // first 90s jump, so keep extra trips in the budget once setup has flushed.
-  for (let tick = 0; tick < 800 && !ready(); tick += 1) {
-    const tripWatchdog = tick >= 300 && tick % 50 === 0;
-    await vi.advanceTimersByTimeAsync(tripWatchdog
-      ? CURSOR_SILENCE_WATCHDOG_TRIP_MS
-      : 1);
-    if (tripWatchdog) await flushCursorSdkSilenceRecycle();
+  const startedAt = pumpRealNow();
+  // A silence-watchdog recycle can arm the next attempt's timer after the first
+  // 90s jump, so extra trips stay available — but keyed off real stall time
+  // rather than a tick index. Tripping on a tick index recycles the runtime
+  // whose recovery this is waiting for whenever the loop spins faster than the
+  // pending I/O completes, which is exactly what a loaded runner does.
+  let nextWatchdogTripAt = startedAt + PUMP_WATCHDOG_STALL_MS;
+  let fakeTicksLeft = PUMP_FAKE_TICK_BUDGET;
+  while (!ready() && pumpRealNow() - startedAt < PUMP_REAL_BUDGET_MS) {
+    if (pumpRealNow() >= nextWatchdogTripAt) {
+      nextWatchdogTripAt = pumpRealNow() + PUMP_WATCHDOG_STALL_MS;
+      await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+      await flushCursorSdkSilenceRecycle();
+    } else if (fakeTicksLeft > 0) {
+      fakeTicksLeft -= 1;
+      await vi.advanceTimersByTimeAsync(1);
+    } else {
+      // Fake budget spent: keep handing the real event loop turns so pending
+      // fs/sqlite callbacks can still land, without moving the virtual clock.
+      await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
+    }
     await Promise.resolve();
   }
   if (!ready()) throw new Error(`pumpUntil timed out waiting for: ${label}`);
