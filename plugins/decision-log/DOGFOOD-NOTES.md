@@ -151,6 +151,59 @@ Confirmed working as documented, for the record: the degradation ladder itself
 write and are meant to become markers at render), and `plugin.reload` restoring
 a panel from its `schemaFile` after a runtime `panels.update`.
 
+### Contract probe round — 15 checks against the running host
+
+Run with temporary actions and a deliberately invalid manifest, both since
+removed. **Thirteen of fifteen behaved exactly as documented.** The two that
+did not are the writer-enforcement gaps above.
+
+| Contract | Result |
+|---|---|
+| `tools[]` cap 24 | ✅ 26 declared → 2 dropped, one warning each |
+| `automationTriggers[]` cap 8 | ✅ 9 → 1 dropped |
+| `searchProviders[]` cap 2 | ✅ 3 → 1 dropped; `plugin.get` shows exactly 2 |
+| Keybinding: bare key `j` | ✅ refused, *"not a shortcut a plugin can bind"* |
+| Keybinding: reserved `Mod+C` | ✅ refused |
+| Keybinding: two chords, one action | ✅ `duplicate-action`, later ones dropped |
+| `openUrl` `https:` | ✅ allowed |
+| `openUrl` `http:` / `javascript:` / `file:` / `data:` / `ade:` | ✅ all five refused |
+| `openUrl` over 2,048 chars | ✅ refused |
+| `message` over 400 chars | ✅ truncated to 400 (not refused) |
+| Action timeout, non-exempt kind | ✅ `plugin_timeout` at ~62 s for a 65 s handler |
+| Collection value over 64 KiB | ✅ refused, message names both numbers |
+| Undeclared / reserved collection, undeclared panel | ✅ all `not_permitted`, each naming the fix |
+| **Contribution payload ~5 KB** | ❌ accepted (see above) |
+| **Panel schema, 400 nodes** | ❌ accepted (see above) |
+
+Two notes on the keybinding result, so it is not over-read:
+
+- **`Mod+K` — ADE's own command palette — was accepted into the manifest** and
+  `plugin.get` reports it as a live binding of this plugin. That is **not** a
+  stolen chord: `resolvePluginKeybindings` runs in the renderer
+  (`usePluginKeybindings.ts:287`) against a live core-chord index, so it is
+  refused at bind time in the app. What is missing is **visibility** — nothing
+  in `plugin.get`, `ade plugin doctor` or the reload warnings tells an author
+  their chord lost. They see a declared binding that silently never fires.
+  **Ask:** surface the `core-conflict` refusal (which the resolver already
+  builds a sentence for) on the doctor, the way `Places` surfaces disabled
+  sockets.
+- The per-entry warnings are genuinely good: each names the field, the cap and
+  that the *entry* dropped rather than the plugin. This is the pattern the two
+  unenforced ceilings should copy.
+
+### Not tested, and why
+
+- **Uninstall deleting synced copies on other devices.** Destructive — it would
+  delete the user's real decision log. Worth running deliberately with a
+  throwaway plugin, and especially interesting given the replication P0 above:
+  if data never replicates *to* a phone, it is worth knowing whether deletion
+  does.
+- **`{prompt}` one-hop, `{composer}` verbs, `{resetState}`, `{navigate}`.**
+  All enforced client-side, so a headless `plugin.invoke` returns whatever the
+  action returned and proves nothing. Read rather than run: the one-hop rule is
+  `if (extraArgs?.prompt !== undefined) return;` in `PluginPanelHost.tsx:374`,
+  which is correct.
+
 ### P1 — plugin menu items did nothing for ~2 minutes after launch
 
 The user's words: *"for the first 2 mins clicking them did nothing, i spammed
