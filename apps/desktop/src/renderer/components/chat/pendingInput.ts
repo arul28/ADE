@@ -1,5 +1,6 @@
 import type {
   AgentChatEventEnvelope,
+  AgentChatSessionSummary,
   PendingInputOption,
   PendingInputQuestion,
   PendingInputRequest,
@@ -11,6 +12,12 @@ export type DerivedPendingInput = {
   sessionId: string;
   itemId: string;
   request: PendingInputRequest;
+  /**
+   * Something in the transcript implies this card is over, but no
+   * `pending_input_resolved` receipt confirms it. Read only by
+   * {@link resolvePendingInputs} — never by a renderer directly.
+   */
+  sweptWithoutReceipt?: true;
 };
 
 export function getPendingInputQuestionCount(request: PendingInputRequest | null | undefined): number {
@@ -186,15 +193,51 @@ function buildLegacyPendingInputFromStructuredQuestion(envelope: AgentChatEventE
   };
 }
 
+/**
+ * Reconcile a raw derivation against the session summary. See "Pending input
+ * derivation" in `docs/features/chat/README.md` for the incident this exists
+ * to prevent.
+ *
+ * Same placement rule as `resolveTurnActive` — outside the derivation and
+ * outside the view cache — applied here at read time, which leaves not even a
+ * write-time staleness window. `appendRetainedChatSessionEvents` caches raw
+ * scalars from a context with no summary at all, so a summary-tainted
+ * derivation would be cached inconsistently and read back stale.
+ *
+ * Only `pendingInputItemId` can rescue a card swept without a receipt, so one
+ * main has stopped claiming stays swept — that is what keeps a genuinely stale
+ * provider approval (its tool resolved, leaving no receipt) out of the
+ * composer. Main names at most one card, so when two are live at once they
+ * reveal one at a time; harmless, because the composer draws only
+ * `pendingInputs[0]` and the "needs you" badge reads `awaitingInput`, which is
+ * true while any card is live.
+ */
+export function resolvePendingInputs(
+  derived: readonly DerivedPendingInput[],
+  summary: Pick<AgentChatSessionSummary, "pendingInputItemId"> | null | undefined,
+): DerivedPendingInput[] {
+  // `|| null` collapses both "no id" and "blank id" into one sentinel that no
+  // real itemId can equal, so the claim check needs no separate empty branch.
+  const liveItemId = summary?.pendingInputItemId?.trim() || null;
+  return derived.filter((entry) => !entry.sweptWithoutReceipt || entry.itemId === liveItemId);
+}
+
 export function derivePendingInputRequests(events: AgentChatEventEnvelope[]): DerivedPendingInput[] {
   const pending = new Map<string, DerivedPendingInput>();
+  // Record the sweep instead of applying it. A new object every time: entries
+  // are handed to React state and must never be mutated in place.
+  const sweep = (itemId: string): void => {
+    const entry = pending.get(itemId);
+    if (!entry || entry.sweptWithoutReceipt) return;
+    pending.set(itemId, { ...entry, sweptWithoutReceipt: true });
+  };
 
   for (const envelope of events) {
     const event = envelope.event;
 
     if (event.type === "done") {
       if (event.status !== "completed") {
-        pending.clear();
+        for (const itemId of pending.keys()) sweep(itemId);
         continue;
       }
       for (const [itemId, entry] of pending) {
@@ -203,7 +246,7 @@ export function derivePendingInputRequests(events: AgentChatEventEnvelope[]): De
           isAskQuestionRequest(entry.request)
           || entry.request.kind === "plan_approval";
         if (!keepAfterCompletedTurn) {
-          pending.delete(itemId);
+          sweep(itemId);
         }
       }
       continue;
@@ -232,13 +275,16 @@ export function derivePendingInputRequests(events: AgentChatEventEnvelope[]): De
       continue;
     }
 
+    // A hard delete, not a sweep: this is an explicit receipt.
     if (event.type === "pending_input_resolved") {
       pending.delete(event.itemId);
       continue;
     }
 
+    // A provider approval shares its tool call's itemId, so the tool resolving
+    // moots it — but leaves no receipt, so this is evidence and not proof.
     if (event.type === "tool_result" || event.type === "command" || event.type === "file_change") {
-      pending.delete(event.itemId);
+      sweep(event.itemId);
     }
   }
 

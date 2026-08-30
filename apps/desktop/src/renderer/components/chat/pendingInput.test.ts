@@ -6,6 +6,7 @@ import {
   derivePendingInputRequests,
   getPendingInputQuestionCount,
   readPendingInputRequest,
+  resolvePendingInputs,
 } from "./pendingInput";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,21 @@ function envelope(
   timestamp = "2026-03-25T10:00:00.000Z",
 ): AgentChatEventEnvelope {
   return { sessionId, timestamp, event };
+}
+
+/**
+ * What a renderer actually sees: the derivation plus the read-time join.
+ *
+ * `derivePendingInputRequests` marks a swept entry rather than deleting it, so
+ * a sweep only becomes a disappearance once `resolvePendingInputs` agrees the
+ * summary is not still claiming the card. Tests about sweeping assert on this
+ * pair; tests about parsing a request assert on the derivation alone.
+ */
+function visiblePendingInputs(
+  events: AgentChatEventEnvelope[],
+  summary: { pendingInputItemId?: string | null } | null = null,
+) {
+  return resolvePendingInputs(derivePendingInputRequests(events), summary);
 }
 
 // ---------------------------------------------------------------------------
@@ -73,7 +89,7 @@ describe("derivePendingInputRequests", () => {
         status: "completed",
       }),
     ];
-    expect(derivePendingInputRequests(events)).toEqual([]);
+    expect(visiblePendingInputs(events)).toEqual([]);
   });
 
   // ---- approval_request with structured request in detail ---------------
@@ -374,7 +390,7 @@ describe("derivePendingInputRequests", () => {
         status: "completed",
       }),
     ];
-    expect(derivePendingInputRequests(events)).toEqual([]);
+    expect(visiblePendingInputs(events)).toEqual([]);
   });
 
   it("command removes the matching pending input", () => {
@@ -398,7 +414,7 @@ describe("derivePendingInputRequests", () => {
         exitCode: 0,
       }),
     ];
-    expect(derivePendingInputRequests(events)).toEqual([]);
+    expect(visiblePendingInputs(events)).toEqual([]);
   });
 
   it("file_change removes the matching pending input", () => {
@@ -421,7 +437,7 @@ describe("derivePendingInputRequests", () => {
         status: "completed",
       }),
     ];
-    expect(derivePendingInputRequests(events)).toEqual([]);
+    expect(visiblePendingInputs(events)).toEqual([]);
   });
 
   it("clearing event only removes matching itemId, not others", () => {
@@ -451,7 +467,7 @@ describe("derivePendingInputRequests", () => {
         status: "completed",
       }),
     ];
-    const result = derivePendingInputRequests(events);
+    const result = visiblePendingInputs(events);
     expect(result).toHaveLength(1);
     expect(result[0]!.itemId).toBe("keep-me");
   });
@@ -496,7 +512,7 @@ describe("derivePendingInputRequests", () => {
         detail: { tool: "write_file" },
       }),
     ];
-    const result = derivePendingInputRequests(events);
+    const result = visiblePendingInputs(events);
     expect(result).toHaveLength(2);
     const ids = result.map((r) => r.itemId);
     expect(ids).toContain("sq-1");
@@ -528,7 +544,7 @@ describe("derivePendingInputRequests", () => {
         detail: { tool: "exec" },
       }),
     ];
-    const result = derivePendingInputRequests(events);
+    const result = visiblePendingInputs(events);
     expect(result).toHaveLength(1);
     expect(result[0]!.itemId).toBe("after-done");
   });
@@ -1080,5 +1096,176 @@ describe("derivePendingInputRequests", () => {
     ];
     const result = derivePendingInputRequests(events);
     expect(result[0]!.request.providerMetadata).toBeUndefined();
+  });
+});
+
+describe("resolvePendingInputs", () => {
+  // The real wedge: a backgrounded `ade actions run plugin.install` raised a
+  // blocking `approval` card mid-turn; the turn completed 27s later; the
+  // renderer deleted the card because "approval" is not in the
+  // keep-after-completed-turn allowlist, while main went on counting it in
+  // `hasLivePendingInput`. `send` was refused with "Answer or decline the
+  // pending request before sending another message", fork refused because the
+  // session never read idle, and no card was on screen to answer.
+
+  const installRequest = {
+    requestId: "install-1",
+    itemId: "install-1",
+    source: "ade",
+    kind: "approval",
+    title: "Install Work Journal 1.0.0?",
+    questions: [{
+      id: "plugin_install",
+      header: "Plugin install",
+      question: "Install Work Journal 1.0.0?",
+      allowsFreeform: false,
+      options: [
+        { label: "Install", value: "install" },
+        { label: "Don't install", value: "deny" },
+      ],
+    }],
+    blocking: true,
+    canProceedWithoutAnswer: false,
+    turnId: "turn-1",
+  };
+
+  const installCard = envelope({
+    type: "approval_request",
+    itemId: "install-1",
+    kind: "tool_call",
+    description: "Install Work Journal 1.0.0?",
+    turnId: "turn-1",
+    detail: { request: installRequest },
+  });
+
+  const turnCompleted = envelope({ type: "done", turnId: "turn-1", status: "completed" });
+  const summaryAwaiting = { pendingInputItemId: "install-1" };
+
+  function resolved(
+    events: AgentChatEventEnvelope[],
+    summary: { pendingInputItemId?: string | null } | null = null,
+  ): string[] {
+    return visiblePendingInputs(events, summary).map((entry) => entry.itemId);
+  }
+
+  it("keeps a swept card the summary still reports as awaiting", () => {
+    expect(resolved([installCard, turnCompleted], summaryAwaiting)).toEqual(["install-1"]);
+  });
+
+  it("drops a swept card the summary does not claim", () => {
+    // The safety net this must not disable: a provider approval whose tool
+    // resolved leaves no receipt, so only the sweep clears it.
+    expect(resolved([installCard, turnCompleted])).toEqual([]);
+    expect(resolved([installCard, turnCompleted], { pendingInputItemId: null })).toEqual([]);
+  });
+
+  it("keeps a claimed card when the turn is interrupted rather than completed", () => {
+    // Interrupting a turn does not reach into a separate process and cancel
+    // what it is blocked on.
+    const interrupted = envelope({ type: "done", turnId: "turn-1", status: "interrupted" });
+    expect(resolved([installCard, interrupted], summaryAwaiting)).toEqual(["install-1"]);
+  });
+
+  it("drops unclaimed cards on an interrupted turn while keeping the claimed one", () => {
+    const other = envelope({
+      type: "approval_request",
+      itemId: "other-1",
+      kind: "command",
+      description: "Run npm test",
+      turnId: "turn-1",
+      detail: { tool: "exec_command", question: "" },
+    });
+    const interrupted = envelope({ type: "done", turnId: "turn-1", status: "interrupted" });
+    expect(resolved([installCard, other, interrupted], summaryAwaiting)).toEqual(["install-1"]);
+  });
+
+  it("cannot resurrect a card an explicit receipt already resolved", () => {
+    // A receipt hard-deletes, so a summary that is one refresh stale has
+    // nothing left to rescue. Getting this backwards would redraw a card the
+    // user just answered.
+    const receipt = envelope({
+      type: "pending_input_resolved",
+      itemId: "install-1",
+      resolution: "cancelled",
+      turnId: "turn-1",
+    });
+    expect(resolved([installCard, turnCompleted, receipt], summaryAwaiting)).toEqual([]);
+  });
+
+  it("keeps a claimed card whose tool call resolved without a receipt", () => {
+    const toolResult = envelope({
+      type: "tool_result",
+      tool: "Bash",
+      itemId: "install-1",
+      turnId: "turn-1",
+      status: "completed",
+      result: "ok",
+    });
+    expect(resolved([installCard, toolResult], summaryAwaiting)).toEqual(["install-1"]);
+    expect(resolved([installCard, toolResult])).toEqual([]);
+  });
+
+  it("leaves an unswept card alone whether or not the summary claims it", () => {
+    expect(resolved([installCard])).toEqual(["install-1"]);
+    expect(resolved([installCard], summaryAwaiting)).toEqual(["install-1"]);
+  });
+
+  it("keeps question-kind cards after a completed turn with no summary claim", () => {
+    // Unchanged allowlist behavior, pinned so the summary join cannot be
+    // mistaken for the thing that keeps ask-user questions alive.
+    const question = envelope({
+      type: "approval_request",
+      itemId: "ask-1",
+      kind: "tool_call",
+      description: "Which account?",
+      turnId: "turn-1",
+      detail: {
+        request: {
+          requestId: "ask-1",
+          itemId: "ask-1",
+          source: "ade",
+          kind: "question",
+          questions: [{ id: "q1", question: "Which account?" }],
+          turnId: "turn-1",
+        },
+      },
+    });
+    expect(resolved([question, turnCompleted])).toEqual(["ask-1"]);
+  });
+
+  it("trims the summary id so it matches the itemId on the event", () => {
+    expect(resolved([installCard, turnCompleted], { pendingInputItemId: " install-1 " }))
+      .toEqual(["install-1"]);
+  });
+
+  it("treats a blank summary id as no claim", () => {
+    expect(resolved([installCard, turnCompleted], { pendingInputItemId: "   " })).toEqual([]);
+  });
+
+  it("treats a missing summary as no claim, however it is absent", () => {
+    // A pane can be mid-hydration with no summary yet; that must read as "no
+    // claim" rather than throw or rescue everything.
+    expect(resolvePendingInputs(derivePendingInputRequests([installCard, turnCompleted]), undefined))
+      .toEqual([]);
+    expect(resolved([installCard, turnCompleted], {})).toEqual([]);
+  });
+
+  it("marks a swept entry rather than deleting it, so the join has something to rescue", () => {
+    // The contract the memo in AgentChatPane depends on: the raw derivation
+    // that goes into the view cache must retain the evidence.
+    const raw = derivePendingInputRequests([installCard, turnCompleted]);
+    expect(raw).toHaveLength(1);
+    expect(raw[0]!.sweptWithoutReceipt).toBe(true);
+    expect(derivePendingInputRequests([installCard])[0]!.sweptWithoutReceipt).toBeUndefined();
+  });
+
+  it("clears the mark when the same card is raised again after a sweep", () => {
+    // A re-raise must produce a live card, not a swept one the summary has to
+    // rescue. This breaks silently if the re-raise is ever "optimized" into a
+    // merge with the existing entry.
+    const raw = derivePendingInputRequests([installCard, turnCompleted, installCard]);
+    expect(raw).toHaveLength(1);
+    expect(raw[0]!.sweptWithoutReceipt).toBeUndefined();
+    expect(resolved([installCard, turnCompleted, installCard])).toEqual(["install-1"]);
   });
 });
