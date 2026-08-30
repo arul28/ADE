@@ -16,6 +16,50 @@ time or ships a silent defect · **P2** papercut or docs.
 
 ---
 
+## MUST BE CLOSED before the plugin platform ships
+
+One question this dogfood run opened and could **not** answer. It is recorded
+here as a gate, not as a note: it should be answered with a real device, and the
+answer written under it, before this platform is considered done.
+
+### Does uninstalling a plugin delete its data on the user's OTHER devices?
+
+**Why it is open.** Two findings from this run collide:
+
+1. Uninstall on the owning machine deletes everything, verified — registry row,
+   install directory, contributions, panels, and the stored collection rows. A
+   reinstall of byte-identical code came back with **0 rows**.
+2. Plugin data never replicates **to** iOS at all (the write-only P0 above).
+   `plugin_collections` and `plugin_contributions` are excluded from the mobile
+   reseed and the debt is apparently never repaid.
+
+If deletion travels on the same replication path that inbound data does not,
+then a phone keeps a **frozen copy of a deleted plugin's data** — rows the
+owning machine has destroyed and cannot destroy again, because the plugin that
+owned them is gone. The install card promises the opposite: removal "deletes the
+plugin's stored data, and its synced copies on the user's other devices."
+
+**Why it matters more than a stale list.** Staleness is a correctness bug.
+This is a *deletion* bug: a user who removes a plugin to revoke it has been told
+its data is gone. If the phone still holds it, the product told them something
+untrue about their own data — and there is no longer any UI on the machine to
+remove it with.
+
+**How to close it.** With a phone that has a plugin's rows mirrored:
+
+1. Confirm the phone renders the plugin's panel with real rows.
+2. Uninstall the plugin on the owning machine and approve the card.
+3. On the phone, check: is the plugin's ⋯ entry gone? Does its panel still open?
+   Does it still list rows the machine no longer has?
+4. If anything survives, the answer is no, and the install card's wording is a
+   promise the platform does not keep.
+
+**Status: OPEN.** The uninstall in this run was performed while the phone held a
+mirrored copy, so the observation was available and simply not taken — the
+session ended before anyone looked at the phone.
+
+---
+
 ## Checklist results, in the order given
 
 | # | Item | Result |
