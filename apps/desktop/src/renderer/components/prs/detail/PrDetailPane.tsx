@@ -22,6 +22,7 @@ import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
 import { PrChecksTab } from "./PrChecksTab";
+import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergeabilityDeadline";
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
@@ -1172,8 +1173,14 @@ export function PrDetailPane({
   // base status is still computing — so this resolves the spinner for BOTH
   // mapped (live-backed) and unmapped PRs. Bounded so it never polls forever.
   const mergeabilityComputing = Boolean(status?.mergeabilityComputing);
+  // Carried across effect re-runs — see resolveMergeabilityDeadline for why a
+  // per-mount deadline re-arms the ceiling forever during an outage.
+  const mergeabilityDeadlineRef = React.useRef<MergeabilityDeadline | null>(null);
   React.useEffect(() => {
-    if (!mergeabilityComputing) return undefined;
+    if (!mergeabilityComputing) {
+      mergeabilityDeadlineRef.current = null;
+      return undefined;
+    }
     // Unmapped PRs have a synthetic `gh:` id that getStatus(prId) can't resolve,
     // so re-poll them by coords instead. With neither reader available there is
     // nothing to ask, so the loop never starts — it used to resolve `null`
@@ -1207,7 +1214,14 @@ export function PrDetailPane({
     // counter would have turned "~1 minute, then defer to the background poll"
     // into hours of a live 2.5s timer during an outage.
     const pollPeriodMs = githubPollPeriodFor(mergeabilityPollPeriodMs());
-    const deadlineAtMs = Date.now() + 60_000;
+    mergeabilityDeadlineRef.current = resolveMergeabilityDeadline(
+      mergeabilityDeadlineRef.current, pr.id, Date.now(),
+    );
+    const deadlineAtMs = mergeabilityDeadlineRef.current.deadlineAtMs;
+    // A ceiling that already passed arms no timer at all: each governor
+    // transition would otherwise create an interval whose first tick only
+    // clears it.
+    if (Date.now() >= deadlineAtMs) return undefined;
     const seqAtStart = detailLoadSeqRef.current;
     const id = window.setInterval(() => {
       if (Date.now() >= deadlineAtMs) {

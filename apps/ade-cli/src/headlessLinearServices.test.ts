@@ -45,6 +45,11 @@ import {
   githubCredentialRepositoryAccess,
   recordGithubCredentialFailure,
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
+import {
+  configureGithubRequestAccounting,
+  emitGithubRequestUsageSummary,
+  resetGithubRequestAccounting,
+} from "../../desktop/src/main/services/github/githubRequestAccounting";
 
 const HEADLESS_GITHUB_ENV_KEYS = [
   "ADE_HOME",
@@ -185,6 +190,58 @@ describe("headlessLinearServices", () => {
       } else {
         process.env.ADE_HOME = previousAdeHome;
       }
+    }
+  });
+
+  // Same two-owner parity requirement as the outage corroboration below: a
+  // packaged, runtime-bound install spends its GitHub quota through THIS owner,
+  // so accounting wired only into the desktop service would report nothing for
+  // the topology the incident actually happened in.
+  it("counts GitHub requests spent through the headless owner", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-usage-"));
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ login: "arul28" }), {
+      status: 200,
+      headers: { "content-type": "application/json", "x-oauth-scopes": "repo" },
+    })) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const summaryLogger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
+    );
+    try {
+      // Constructed first so the service's own brain-sink resolver is replaced
+      // rather than raced: no test may open the real ~/.ade/runtime log.
+      resetGithubRequestAccounting();
+      configureGithubRequestAccounting(() => summaryLogger as never);
+
+      githubService.setToken("ghp_usage_token");
+      const status = await githubService.getStatus({ forceRefresh: true });
+      emitGithubRequestUsageSummary("manual");
+
+      const call = summaryLogger.info.mock.calls.at(-1);
+      expect(call?.[0]).toBe("github.request_usage_summary");
+      const meta = call?.[1] as { windowTotal: number; buckets: Array<Record<string, unknown>> };
+      expect(meta.windowTotal).toBeGreaterThan(0);
+      // The status probe's `/user` call must land under the credential it used,
+      // not under `unknown` — the summary exists to attribute spend to a token.
+      expect(status.authSource).toBe("pat");
+      expect(meta.buckets).toContainEqual(expect.objectContaining({
+        component: "user",
+        tokenSource: "pat",
+        outcome: "2xx",
+      }));
+      expect(meta.buckets).not.toContainEqual(expect.objectContaining({
+        tokenSource: "unknown",
+      }));
+    } finally {
+      resetGithubRequestAccounting();
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
     }
   });
 

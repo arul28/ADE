@@ -62,6 +62,11 @@ import {
   recordGithubCredentialFailure,
 } from "./githubCredentialHealth";
 import { makeStoredAppUserToken } from "./githubAppUserAuth.testFixtures";
+import {
+  configureGithubRequestAccounting,
+  emitGithubRequestUsageSummary,
+  resetGithubRequestAccounting,
+} from "./githubRequestAccounting";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2202,6 +2207,38 @@ describe("githubService.getStatus", () => {
     expect(status.authSource).toBe("gh");
     expect(status.patTokenStored).toBe(false);
     expect(status.connected).toBe(true);
+  });
+
+  // The status probe runs on a timer against every known credential, so an
+  // unattributed `/user` call is a standing block of requests that the usage
+  // summary cannot assign to any token.
+  it("attributes the status validation probe to the credential it used", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_environment_token";
+    mockFetch.mockResolvedValue(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+    const service = makeService();
+    const summaryLogger = makeLogger();
+    // After construction: creating the service binds the real machine sink.
+    resetGithubRequestAccounting();
+    configureGithubRequestAccounting(() => summaryLogger as never);
+
+    const status = await service.getStatus({ forceRefresh: true });
+    emitGithubRequestUsageSummary("manual");
+
+    const call = summaryLogger.info.mock.calls.at(-1);
+    expect(call?.[0]).toBe("github.request_usage_summary");
+    const buckets = (call?.[1] as { buckets: Array<Record<string, unknown>> }).buckets;
+    // The bucket and the resolved status must name the same credential.
+    expect(status.authSource).toBe("environment");
+    expect(buckets).toContainEqual(expect.objectContaining({
+      component: "user",
+      tokenSource: "environment",
+      outcome: "2xx",
+    }));
+    expect(buckets).not.toContainEqual(expect.objectContaining({ tokenSource: "unknown" }));
+    resetGithubRequestAccounting();
   });
 
   it("fine-grained token that authenticates but cannot read the repo is NOT connected", async () => {

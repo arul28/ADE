@@ -6,6 +6,8 @@ import type { AutomationIngressEventRecord } from "../../../shared/types";
 import {
   createAutomationIngressService,
   GITHUB_RELAY_CONNECTED_SAFETY_POLL_MS,
+  GITHUB_RELAY_IDLE_DECAY_AFTER_MS,
+  GITHUB_RELAY_IDLE_POLL_INTERVAL_MS,
   GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
   type AutomationIngressService,
 } from "./automationIngressService";
@@ -1129,7 +1131,7 @@ describe("automationIngressService", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("caps relay Retry-After cooldowns and clears them on restart", async () => {
+  it("bounds an implausible rate-limit reset by the safety ceiling and clears it on restart", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
     const logger = makeLogger();
@@ -1152,19 +1154,157 @@ describe("automationIngressService", () => {
       },
       listRules: () => [],
       ingressCursorStore: { get: () => null, set: () => {} },
+      random: () => 0,
     });
 
     await service.pollNow();
 
     expect(logger.warn).toHaveBeenCalledWith(
       "automations.github_relay_poll_failed",
-      expect.objectContaining({ retryAt: "2026-08-01T12:15:00.000Z" }),
+      expect.objectContaining({ retryAt: "2026-08-01T13:30:00.000Z", rateLimited: true }),
     );
 
     service.stop();
     await service.start();
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("honors a rate-limit reset well past the generic backoff cap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    const logger = makeLogger();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify({ error: "GitHub API rate limit exceeded" }),
+      {
+        status: 403,
+        headers: {
+          "content-type": "application/json",
+          "x-ratelimit-remaining": "0",
+          // Forty minutes out — the old code clamped this to fifteen and then
+          // knocked on a spent quota for the remaining twenty-five.
+          "x-ratelimit-reset": String(Math.floor(Date.parse("2026-08-01T12:40:00.000Z") / 1000)),
+        },
+      },
+    ));
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: null,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+      random: () => 0,
+    });
+
+    await service.pollNow();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "automations.github_relay_poll_failed",
+      // The reset plus the one-second jitter floor, not the 12:15 cap.
+      expect.objectContaining({ retryAt: "2026-08-01T12:40:01.000Z", rateLimited: true }),
+    );
+  });
+
+  it("keeps the generic backoff cap for failures that are not rate limits", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    const logger = makeLogger();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("relay is down", {
+      status: 503,
+      headers: { "retry-after": "86400" },
+    }));
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: null,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+      random: () => 0,
+    });
+
+    await service.pollNow();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "automations.github_relay_poll_failed",
+      expect.objectContaining({ retryAt: "2026-08-01T12:15:00.000Z", rateLimited: false }),
+    );
+  });
+
+  it("decays the relay poll interval when nothing has been delivered for hours", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    let nextEvents: Array<Record<string, unknown>> = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ events: nextEvents, nextCursor: null, hasMore: false }), {
+        headers: { "content-type": "application/json" },
+      }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+      pollIntervalMs: GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
+    });
+
+    await service.start();
+    expect(setIntervalSpy.mock.calls.at(-1)?.[1]).toBe(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+
+    // Two quiet hours, then one ordinary poll tick to re-evaluate the cadence.
+    vi.setSystemTime(new Date(Date.now() + GITHUB_RELAY_IDLE_DECAY_AFTER_MS + 1_000));
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+    expect(setIntervalSpy.mock.calls.at(-1)?.[1]).toBe(GITHUB_RELAY_IDLE_POLL_INTERVAL_MS);
+
+    // One delivered event restores the fast cadence immediately.
+    nextEvents = [{ cursor: "seq:1", eventId: "delivery-1", githubEvent: "pull_request", payload: {} }];
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_IDLE_POLL_INTERVAL_MS);
+    expect(setIntervalSpy.mock.calls.at(-1)?.[1]).toBe(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+  });
+
+  it("keeps the fast relay cadence while an open pull request exists", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ events: [], nextCursor: null, hasMore: false }), {
+        headers: { "content-type": "application/json" },
+      }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      prService: { listAll: () => [{ state: "open" }] } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+      pollIntervalMs: GITHUB_RELAY_MIN_POLL_INTERVAL_MS,
+    });
+
+    await service.start();
+    vi.setSystemTime(new Date(Date.now() + GITHUB_RELAY_IDLE_DECAY_AFTER_MS + 1_000));
+    await vi.advanceTimersByTimeAsync(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
+
+    expect(setIntervalSpy.mock.calls.at(-1)?.[1]).toBe(GITHUB_RELAY_MIN_POLL_INTERVAL_MS);
   });
 
   it("preserves committed reconciliation when a later relay page is superseded", async () => {

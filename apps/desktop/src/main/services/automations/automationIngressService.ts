@@ -16,6 +16,10 @@ import {
   resolveHostedGitHubRelayAuthToken,
   shouldUseLegacyGitHubRelayProjectRoute,
 } from "../github/githubRelayConfig";
+import {
+  classifyGitHubAuthFailure,
+  githubRateLimitRetryAtMs,
+} from "../github/githubRateLimit";
 
 export type AutomationIngressCursorStore = {
   get(source: AutomationIngressSource): string | null;
@@ -77,12 +81,34 @@ export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_BASE_MS = 1_000;
 export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS = 60_000;
 const GITHUB_RELAY_POLL_BACKOFF_BASE_MS = 30_000;
 const GITHUB_RELAY_POLL_BACKOFF_CAP_MS = 15 * 60_000;
+/**
+ * Safety ceiling for an honored rate-limit reset. A reset is GitHub's own
+ * deadline and is honored in full (see the failure handler), but a bogus
+ * far-future header must not be able to park the relay for a day.
+ */
+export const GITHUB_RELAY_RATE_LIMIT_RETRY_CEILING_MS = 90 * 60_000;
+const GITHUB_RELAY_RATE_LIMIT_JITTER_MIN_MS = 1_000;
+const GITHUB_RELAY_RATE_LIMIT_JITTER_SPAN_MS = 4_000;
+/**
+ * Relay polling decays to this cadence once a project has been quiet — no
+ * delivered relay event, no accepted webhook, no open pull request — for
+ * {@link GITHUB_RELAY_IDLE_DECAY_AFTER_MS}. Seven idle project runtimes at the
+ * 30s floor is 8,400 relay reads a day for nothing.
+ */
+export const GITHUB_RELAY_IDLE_POLL_INTERVAL_MS = 5 * 60_000;
+export const GITHUB_RELAY_IDLE_DECAY_AFTER_MS = 2 * 60 * 60_000;
 const GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH = 500;
 
 class GithubRelayPollError extends Error {
   constructor(
     message: string,
     readonly retryAtMs: number | null,
+    /**
+     * True when the relay reported a spent GitHub quota (429, an exhausted
+     * `x-ratelimit-remaining`, or a rate-limit 403). Only these failures get
+     * their retry deadline honored past the generic backoff cap.
+     */
+    readonly rateLimited: boolean = false,
   ) {
     super(message);
     this.name = "GithubRelayPollError";
@@ -124,6 +150,31 @@ function relayRetryAtMs(headers: Pick<Headers, "get">): number | null {
   if (Number.isFinite(seconds) && seconds >= 0) return Date.now() + seconds * 1_000;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Classifies a failed relay response against GitHub's own rate-limit
+ * vocabulary, reusing the same classifier the GitHub service uses so the two
+ * cannot drift on what "rate limited" means.
+ *
+ * Restricted to 4xx: a 5xx that happens to carry `Retry-After` is a relay
+ * outage, not a spent quota, and must keep the generic backoff cap.
+ */
+function classifyRelayPollFailure(
+  status: number,
+  message: string,
+  headers: Pick<Headers, "get">,
+): { rateLimited: boolean; retryAtMs: number | null } {
+  const fallbackRetryAtMs = relayRetryAtMs(headers);
+  if (status < 400 || status >= 500) return { rateLimited: false, retryAtMs: fallbackRetryAtMs };
+  const { authFailure, rateLimit } = classifyGitHubAuthFailure({ status, message, headers });
+  if (authFailure.kind !== "rate_limited") {
+    return { rateLimited: false, retryAtMs: fallbackRetryAtMs };
+  }
+  return {
+    rateLimited: true,
+    retryAtMs: githubRateLimitRetryAtMs(authFailure, rateLimit) ?? fallbackRetryAtMs,
+  };
 }
 
 export function computeGithubRelaySubscriptionBackoffMs(
@@ -381,6 +432,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let subscriptionReconnectAttempt = 0;
   let subscriptionConnected = false;
   let githubRelayHealthy = false;
+  let pollTimerIntervalMs = 0;
+  let lastRelayActivityAtMs = Date.now();
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
   let subscriptionLoggedState: "connected" | "disconnected" | null = null;
@@ -578,6 +631,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
               return await dispatchLocalWebhook(automationId, payload, body);
             })();
+        noteRelayActivity();
         updateLocalWebhookStatus({
           healthy: true,
           status: "listening",
@@ -603,19 +657,67 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     Math.floor(args.pollIntervalMs ?? 60_000),
   );
 
-  const rearmPollTimer = (): void => {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+  const relayRateLimitJitterMs = (): number =>
+    GITHUB_RELAY_RATE_LIMIT_JITTER_MIN_MS
+    + Math.floor((args.random ?? Math.random)() * GITHUB_RELAY_RATE_LIMIT_JITTER_SPAN_MS);
+
+  /**
+   * Open pull requests are the other half of "this project is quiet": a repo
+   * with a live PR still deserves the fast cadence even between deliveries.
+   *
+   * Read only once the delivery-idle threshold has already been crossed, so
+   * this never runs on the ordinary poll path.
+   */
+  const hasOpenPullRequests = (): boolean => {
+    if (!args.prService) return false;
+    try {
+      return args.prService.listAll()
+        .some((pr) => pr.state === "open" || pr.state === "draft");
+    } catch {
+      // A read failure must never be evidence of idleness.
+      return true;
     }
-    if (!started || stopped) return;
-    const intervalMs = subscriptionConnected
+  };
+
+  const isRelayIdle = (): boolean =>
+    Date.now() - lastRelayActivityAtMs >= GITHUB_RELAY_IDLE_DECAY_AFTER_MS
+    && !hasOpenPullRequests();
+
+  const effectivePollIntervalMs = (): number => {
+    const base = subscriptionConnected
       ? Math.max(regularPollIntervalMs, GITHUB_RELAY_CONNECTED_SAFETY_POLL_MS)
       : regularPollIntervalMs;
+    return isRelayIdle() ? Math.max(base, GITHUB_RELAY_IDLE_POLL_INTERVAL_MS) : base;
+  };
+
+  const rearmPollTimer = (): void => {
+    if (!started || stopped) {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      return;
+    }
+    const intervalMs = effectivePollIntervalMs();
+    // Re-armed on every poll so idle decay can engage on its own, so the guard
+    // matters: rebuilding an unchanged interval would reset its phase and let a
+    // stream of subscription wake-ups postpone the safety poll indefinitely.
+    if (pollTimer && intervalMs === pollTimerIntervalMs) return;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimerIntervalMs = intervalMs;
     pollTimer = setInterval(() => {
       void pollGithubRelayOnce();
     }, intervalMs);
     pollTimer.unref?.();
+  };
+
+  /**
+   * Anything that proves this project is live: a delivered relay event, an
+   * accepted webhook, or an explicit poke. Restores the fast cadence at once.
+   */
+  const noteRelayActivity = (): void => {
+    lastRelayActivityAtMs = Date.now();
+    rearmPollTimer();
   };
 
   const clearRelayPollRetryTimer = (): void => {
@@ -754,6 +856,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       try {
         const frame = JSON.parse(rawDataToText(raw)) as unknown;
         if (isRecord(frame) && frame.t === "github_delivery") {
+          noteRelayActivity();
           void pollGithubRelayOnce();
         }
       } catch {
@@ -1001,11 +1104,17 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             // Keep the plain-text response.
           }
           responseMessage = responseMessage.trim().slice(0, GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH);
+          const failure = classifyRelayPollFailure(
+            response.status,
+            responseMessage,
+            response.headers,
+          );
           throw new GithubRelayPollError(
             responseMessage
               ? `GitHub relay poll failed (${response.status}): ${responseMessage}`
               : `GitHub relay poll failed (${response.status})`,
-            relayRetryAtMs(response.headers),
+            failure.retryAtMs,
+            failure.rateLimited,
           );
         }
         const payload = await run.wait(response.json()) as {
@@ -1096,6 +1205,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       }
       run.assertCurrent();
       flushCommittedPrReconciliation();
+      if (lastDeliveryAt) noteRelayActivity();
       relayPollFailureCount = 0;
       relayPollCooldownUntilMs = 0;
       clearRelayPollRetryTimer();
@@ -1117,17 +1227,28 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         GITHUB_RELAY_POLL_BACKOFF_BASE_MS * 2 ** Math.max(0, relayPollFailureCount - 1),
       );
       const nowMs = Date.now();
-      relayPollCooldownUntilMs = Math.max(
-        nowMs + backoffMs,
-        Math.min(
-          nowMs + GITHUB_RELAY_POLL_BACKOFF_CAP_MS,
-          error instanceof GithubRelayPollError ? error.retryAtMs ?? 0 : 0,
-        ),
-      );
+      const relayError = error instanceof GithubRelayPollError ? error : null;
+      const retryAtMs = relayError?.retryAtMs ?? null;
+      const rateLimited = relayError?.rateLimited === true && retryAtMs != null;
+      // A rate-limit reset is GitHub's own deadline: every poll before it is a
+      // guaranteed failure. Clamping a forty-minute reset to the fifteen-minute
+      // generic cap is what turned one rate limit into a knock every 30-120s
+      // across every project runtime, so honor it in full — bounded only by the
+      // safety ceiling, and nudged by a second or two of jitter so several
+      // runtimes do not all resume on the same millisecond. Every other failure
+      // keeps the generic cap: it has no authoritative deadline to honor.
+      const retryFloorMs = rateLimited && retryAtMs != null
+        ? Math.min(
+            retryAtMs + relayRateLimitJitterMs(),
+            nowMs + GITHUB_RELAY_RATE_LIMIT_RETRY_CEILING_MS,
+          )
+        : Math.min(nowMs + GITHUB_RELAY_POLL_BACKOFF_CAP_MS, retryAtMs ?? 0);
+      relayPollCooldownUntilMs = Math.max(nowMs + backoffMs, retryFloorMs);
       scheduleRelayPollRetry();
       args.logger.warn("automations.github_relay_poll_failed", {
         error: error instanceof Error ? error.message : String(error),
         retryAt: new Date(relayPollCooldownUntilMs).toISOString(),
+        rateLimited,
       });
       updateGithubRelayStatus({
         healthy: false,
@@ -1154,6 +1275,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       } while (pollRerunRequested && !stopped && Date.now() >= relayPollCooldownUntilMs);
     })().finally(() => {
       pollInFlight = null;
+      // The only place idle decay can engage on its own: nothing else runs on a
+      // schedule once the relay goes quiet.
+      rearmPollTimer();
     });
     return await pollInFlight;
   };
@@ -1164,6 +1288,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       started = true;
       stopped = false;
       relayPollGeneration += 1;
+      // A fresh lifecycle starts responsive; decay is re-earned by silence.
+      lastRelayActivityAtMs = Date.now();
       // The local webhook server exists to receive automation webhooks; in
       // PR-freshness-only mode (no automation service) only the relay poll runs.
       if (!server && args.automationService) {
@@ -1213,6 +1339,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       clearRelayPollRetryTimer();
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;
+      // An explicit poke is the user asking for freshness: leave idle decay.
+      noteRelayActivity();
       await pollGithubRelayOnce();
     },
 
@@ -1227,6 +1355,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         clearInterval(pollTimer);
         pollTimer = null;
       }
+      pollTimerIntervalMs = 0;
       clearRelayPollRetryTimer();
       clearSubscriptionReconnectTimer();
       clearSubscriptionConnectTimer();
