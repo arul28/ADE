@@ -8763,6 +8763,60 @@ describe("prService resolves a synthetic id that names a PR it does hold a row f
       [row.id],
     );
   });
+
+  it("treats a detached row as no row, so the admin merge still has a cwd", async () => {
+    // A detached row's lane is gone. Handing its stale `lane_id` to
+    // `getLaneBaseAndBranch` fails the whole admin merge with "the lane
+    // worktree is unavailable" — strictly worse than having no row at all,
+    // which correctly falls back to `projectRoot`.
+    const detached = makePrRow({
+      id: "pr-detached-404",
+      github_pr_number: 404,
+      head_branch: "feature/detached",
+      state: "open",
+      detached_at: "2026-08-01T00:00:00Z",
+    });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [detached]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path.endsWith("/pulls/404")) {
+          return {
+            data: makeGitHubPull({
+              number: 404,
+              mergeable: true,
+              mergeable_state: "clean",
+              head: { ref: "feature/detached", repo: { owner: { login: REPO.owner }, name: REPO.name } },
+            }),
+          };
+        }
+        if (args.method === "PUT") return { data: { merged: true, sha: "merge-sha" } };
+        return { data: {} };
+      }),
+    });
+    const laneService = {
+      ...makeLaneService(),
+      getLaneBaseAndBranch: vi.fn(() => { throw new Error("lane not found"); }),
+    } as any;
+    const { service } = buildService({ db, githubService, laneService });
+
+    const result = await service.land({
+      prId: syntheticGithubPrId({
+        repoOwner: REPO.owner,
+        repoName: REPO.name,
+        githubPrNumber: 404,
+      }),
+      method: "squash",
+    });
+
+    expect(result.success).toBe(true);
+    // The detached row must never be treated as the local half.
+    expect(laneService.getLaneBaseAndBranch).not.toHaveBeenCalled();
+    expect(db.run).not.toHaveBeenCalledWith(
+      "delete from pr_group_members where pr_id = ?",
+      [detached.id],
+    );
+  });
 });
 
 /**

@@ -2133,7 +2133,12 @@ export function createPrService({
       return {
         repo: { owner: coords.repoOwner, name: coords.repoName },
         prNumber: coords.githubPrNumber,
-        row: getRowForRepoPr(coords.repoOwner, coords.repoName, coords.githubPrNumber),
+        // LIVE rows only. A detached row's lane is gone, so it supplies no
+        // usable local half — and its stale `lane_id` is worse than nothing:
+        // `attemptAdminMerge` would hand it to `getLaneBaseAndBranch` and fail
+        // with "the lane worktree is unavailable" instead of falling back to
+        // `projectRoot`, which is exactly what a PR with no lane should do.
+        row: getLiveRowForRepoPr(coords.repoOwner, coords.repoName, coords.githubPrNumber),
       };
     }
     const row = requireRow(prId);
