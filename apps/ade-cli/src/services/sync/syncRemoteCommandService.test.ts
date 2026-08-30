@@ -6,7 +6,16 @@ import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } f
 import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  legacyAttachmentCapMessage,
+} from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  ATTACHMENT_UPLOAD_PATH,
+  createAttachmentUploadRegistry,
+  type AttachmentUploadRegistry,
+} from "./attachmentUploadService";
 
 function makePayload(
   action: string,
@@ -46,6 +55,7 @@ function createService(options?: {
   usageTrackingService?: Record<string, unknown>;
   productAnalyticsService?: Record<string, unknown>;
   pushPublisherService?: Record<string, unknown>;
+  attachmentUploads?: AttachmentUploadRegistry | null;
   personalChatScope?: {
     call: ReturnType<typeof vi.fn>;
     streamEvents?: ReturnType<typeof vi.fn>;
@@ -107,6 +117,7 @@ function createService(options?: {
     ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
     ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
+    ...(options?.attachmentUploads ? { attachmentUploads: options.attachmentUploads } : {}),
     logger,
   } as any);
   return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
@@ -2015,10 +2026,51 @@ describe("createSyncRemoteCommandService", () => {
     }
   });
 
+  it("never lets a remote display name choose the staged temp attachment's extension", async () => {
+    // `filename` is fully remote-controlled on this route. The bytes are a real
+    // PNG (the MIME sniff is what gates the write), but the name claims `.cmd`
+    // — and before this went through the shared staging helpers, `path.extname`
+    // put that straight into the on-disk name.
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-sync-remote-"));
+    const png = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    const { service } = createService({ projectRoot });
+
+    try {
+      const executable = await service.execute(makePayload("chat.saveTempAttachment", {
+        base64: png.toString("base64"),
+        mime: "image/png",
+        filename: "run.cmd",
+      })) as { path: string };
+      // `.cmd` is a syntactically valid extension, so the guard that matters is
+      // the MIME table: the sniffed type owns the name, not the caller's.
+      expect(path.extname(executable.path)).toBe(".png");
+
+      // A traversal-shaped name cannot escape the attachments directory or
+      // smuggle a separator into the basename either.
+      const traversal = await service.execute(makePayload("chat.saveTempAttachment", {
+        base64: png.toString("base64"),
+        mime: "image/png",
+        filename: "../../escape.png",
+      })) as { path: string };
+      expect(path.dirname(traversal.path)).toBe(path.join(projectRoot, ".ade", "attachments"));
+
+      // An extension the validator rejects outright falls back to the sniffed
+      // MIME rather than reaching the destination raw.
+      const overlong = await service.execute(makePayload("chat.saveTempAttachment", {
+        base64: png.toString("base64"),
+        mime: "image/png",
+        filename: `weird.${"a".repeat(40)}`,
+      })) as { path: string };
+      expect(path.extname(overlong.path)).toBe(".png");
+    } finally {
+      await fs.promises.rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects temporary attachments with mismatched MIME or oversized payloads", async () => {
     const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-sync-remote-"));
     const png = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-    const maxEncodedLength = Math.ceil((10 * 1024 * 1024) / 3) * 4;
+    const maxEncodedLength = Math.ceil(LEGACY_MAX_CHAT_ATTACHMENT_BYTES / 3) * 4;
     const { service } = createService({ projectRoot });
 
     try {
@@ -2030,11 +2082,59 @@ describe("createSyncRemoteCommandService", () => {
         base64: "A".repeat(maxEncodedLength + 4),
         mime: "image/png",
         filename: "too-large.png",
-      }))).rejects.toThrow("10 MB or smaller");
+      }))).rejects.toThrow(legacyAttachmentCapMessage("Temporary attachments"));
       await expect(fs.promises.readdir(path.join(projectRoot, ".ade", "attachments"))).rejects.toThrow();
     } finally {
       await fs.promises.rm(projectRoot, { recursive: true, force: true });
     }
+  });
+
+  it("mints a single-use upload ticket for the streamed attachment route", async () => {
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-sync-remote-"));
+    const attachmentUploads = createAttachmentUploadRegistry();
+    const { service } = createService({ projectRoot, attachmentUploads });
+
+    try {
+      const ticket = await service.execute(makePayload("chat.createAttachmentUpload", {
+        filename: "recording.mov",
+      })) as { ticket: string; path: string; maxBytes: number; expiresAtMs: number };
+
+      expect(ticket.path).toBe(ATTACHMENT_UPLOAD_PATH);
+      expect(ticket.ticket).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(ticket.maxBytes).toBe(50 * 1024 * 1024);
+      expect(ticket.expiresAtMs).toBeGreaterThan(Date.now());
+      expect(attachmentUploads.pendingCount()).toBe(1);
+    } finally {
+      attachmentUploads.dispose();
+      await fs.promises.rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the upload-ticket command clearly when the host has no upload route", async () => {
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-sync-remote-"));
+    const { service } = createService({ projectRoot });
+
+    try {
+      await expect(service.execute(makePayload("chat.createAttachmentUpload", {
+        filename: "a.png",
+      }))).rejects.toThrow("Attachment upload is not available on this host.");
+    } finally {
+      await fs.promises.rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose the same-machine attachment copy as a remote command", async () => {
+    // `chat.copyTempAttachment` takes an UNCONSTRAINED absolute source path and
+    // copies it into `.ade/attachments`, which `chat.getImageDataUrl` will then
+    // read back. Reachable over sync that is an arbitrary-file-read primitive
+    // for any paired peer, so it lives only on the local ADE action registry.
+    // Remote peers stage files via `chat.createAttachmentUpload` or base64.
+    const { service } = createService();
+
+    expect(service.getSupportedActions()).not.toContain("chat.copyTempAttachment");
+    await expect(
+      service.execute(makePayload("chat.copyTempAttachment" as never, { sourcePath: "/etc/passwd" })),
+    ).rejects.toThrow(/Unsupported remote command/);
   });
 
   it("advertises the requested web-parity remote actions", () => {

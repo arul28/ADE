@@ -9,6 +9,10 @@ import {
   readFileWithinRootSecure,
   type DirtyFileTextLookup,
 } from "../shared/utils";
+import {
+  exceedsProviderInlineLimit,
+  inlineAttachmentHintPart,
+} from "./attachmentInlineGuard";
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath?: string;
@@ -129,6 +133,13 @@ export async function buildClaudeV2MessageAsync(
         resolvedPath,
         getDirtyFileTextForPath: options.getDirtyFileTextForPath,
       });
+      // Base64 inflates by a third and Anthropic rejects an oversized image
+      // request outright, so an attachment past the inline ceiling becomes the
+      // same path hint a non-image attachment gets. The turn still runs.
+      if (exceedsProviderInlineLimit(data.byteLength)) {
+        content.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
+        continue;
+      }
       content.push({
         type: "image",
         source: { type: "base64", media_type: mediaType, data: data.toString("base64") },

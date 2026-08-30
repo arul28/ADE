@@ -8,6 +8,7 @@ const { spawnSync } = require("child_process");
 const SUBCOMMANDS = [
   "auth",
   "doctor",
+  "triage",
   "code",
   "skill",
   "lanes",

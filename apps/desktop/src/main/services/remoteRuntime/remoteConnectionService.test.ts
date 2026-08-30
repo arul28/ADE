@@ -1,4 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAttachmentUploadRegistry } from "../../../../../ade-cli/src/services/sync/attachmentUploadService";
+import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
+import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
+import {
+  getAdeActionDomainServices,
+  isAllowedAdeAction,
+} from "../adeActions/registry";
 import type {
   RemoteRuntimeConnectResult,
   RemoteRuntimeTarget,
@@ -1421,5 +1432,168 @@ describe("RemoteConnectionService", () => {
     expect(service.snapshot().connections[0]?.lastError).toMatch(
       /connection closed/i,
     );
+  });
+});
+
+describe("uploadChatAttachment", () => {
+  const servers: http.Server[] = [];
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(servers.splice(0).map((server) =>
+      new Promise<void>((resolve) => server.close(() => resolve())),
+    ));
+    await Promise.all(tempDirs.splice(0).map((dir) =>
+      fs.promises.rm(dir, { recursive: true, force: true }),
+    ));
+  });
+
+  /**
+   * The two gates `run_ade_action` applies to a chat action, in its order and
+   * with its wording (adeRpcServer.ts). Deliberately NOT a stub of
+   * `callAction`: the defect this covers was that the real registry had no
+   * `createAttachmentUpload` and the real allowlist had no entry for it, so a
+   * mocked action call would have proved nothing.
+   */
+  function dispatchRunAdeAction(
+    runtime: unknown,
+    request: { domain: string; action: string; args?: Record<string, unknown> },
+  ): Promise<{ domain: string; action: string; result: unknown; statusHints: Record<string, unknown> }> {
+    const services = getAdeActionDomainServices(runtime as never) as Record<
+      string,
+      Record<string, unknown> | null
+    >;
+    const service = services[request.domain];
+    const callable = service?.[request.action];
+    if (typeof callable !== "function") {
+      throw new Error(`Action '${request.domain}.${request.action}' is not callable.`);
+    }
+    if (!isAllowedAdeAction(request.domain as never, request.action)) {
+      throw new Error(
+        `Action '${request.domain}.${request.action}' is not exposed through ADE actions.`,
+      );
+    }
+    return Promise.resolve(callable(request.args ?? {})).then((result) => ({
+      domain: request.domain,
+      action: request.action,
+      result,
+      statusHints: {},
+    }));
+  }
+
+  it("mints a ticket through the real action registry and streams the file to the host's route", async () => {
+    // End to end across the whole two-leg design: the paired desktop asks the
+    // host's ADE action registry for a ticket over `run_ade_action`, then POSTs
+    // the body to the host's real upload route with that ticket as its only
+    // authority. Before `chat.createAttachmentUpload` existed on the registry
+    // and in the allowlist, the first leg failed and remote-paired attach was
+    // dead on every machine.
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-project-"));
+    const sourceDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-src-"));
+    tempDirs.push(projectRoot, sourceDir);
+
+    const uploads = createAttachmentUploadRegistry();
+    const server = http.createServer((request, response) => {
+      if (uploads.handleRequest(request, response)) return;
+      response.writeHead(426);
+      response.end();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    // The host-side runtime the registry builds its chat domain from. Only the
+    // three fields this action reads are populated.
+    const runtime = {
+      projectRoot,
+      agentChatService: {},
+      syncHostService: {
+        issueAttachmentUploadTicket: (args: {
+          projectRoot: string;
+          filename: string;
+          deviceId?: string | null;
+        }) => uploads.issue(args),
+      },
+    };
+
+    const remote = target("paired-host", Date.now());
+    const targetRegistry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => (id === remote.id ? remote : null)),
+      update: vi.fn(),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      onEntryEvicted: vi.fn(() => () => {}),
+      getAttachmentUploadRoute: vi.fn(async () => ({
+        url: `http://127.0.0.1:${port}/ade-attachments/upload`,
+        maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+      })),
+      callActionForTarget: vi.fn(
+        async (
+          _target: RemoteRuntimeTarget,
+          _projectId: string,
+          request: { domain: string; action: string; args?: Record<string, unknown> },
+        ) => dispatchRunAdeAction(runtime, request),
+      ),
+    } as unknown as RemoteConnectionPool;
+
+    const sourcePath = path.join(sourceDir, "design notes.pdf");
+    const content = Buffer.from("%PDF-1.7 real bytes that must survive the wire");
+    await fs.promises.writeFile(sourcePath, content);
+
+    const service = new RemoteConnectionService(targetRegistry, pool);
+    const staged = await service.uploadChatAttachment({
+      targetId: remote.id,
+      projectId: "project-1",
+      sourcePath,
+      filename: "design notes.pdf",
+    });
+
+    // Landed in the host project's attachments dir under a UUID basename that
+    // carries only the validated extension.
+    expect(path.dirname(staged.path)).toBe(projectAttachmentsDir(projectRoot));
+    expect(path.basename(staged.path, ".pdf")).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    await expect(fs.promises.readFile(staged.path)).resolves.toEqual(content);
+    // Single use: the ticket was consumed, and no `.part` file was left behind.
+    expect(uploads.pendingCount()).toBe(0);
+    await expect(fs.promises.readdir(projectAttachmentsDir(projectRoot)))
+      .resolves.toHaveLength(1);
+  });
+
+  it("reports the machine cannot accept uploads when it is not hosting sync", async () => {
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-nohost-"));
+    tempDirs.push(projectRoot);
+
+    const remote = target("paired-host", Date.now());
+    const targetRegistry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => (id === remote.id ? remote : null)),
+      update: vi.fn(),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      onEntryEvicted: vi.fn(() => () => {}),
+      getAttachmentUploadRoute: vi.fn(async () => ({
+        url: "http://127.0.0.1:1/ade-attachments/upload",
+        maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+      })),
+      callActionForTarget: vi.fn(
+        async (
+          _target: RemoteRuntimeTarget,
+          _projectId: string,
+          request: { domain: string; action: string; args?: Record<string, unknown> },
+        ) => dispatchRunAdeAction({ projectRoot, agentChatService: {} }, request),
+      ),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(targetRegistry, pool);
+    await expect(service.uploadChatAttachment({
+      targetId: remote.id,
+      projectId: "project-1",
+      sourcePath: path.join(projectRoot, "missing.png"),
+      filename: "missing.png",
+    })).rejects.toThrow(/not sharing this project/i);
   });
 });

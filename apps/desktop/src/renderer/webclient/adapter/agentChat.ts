@@ -1,4 +1,5 @@
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatCancelScheduledWorkResult,
@@ -474,6 +475,18 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     saveTempAttachment: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("saveTempAttachment", pin);
       return await call("chat.saveTempAttachment", args, { path: "" }, false);
+    },
+    // The hosted web client has no `webUtils`, so a dropped or picked file
+    // never carries a real disk path — there is nothing to copy or stream and
+    // the browser only ever holds bytes. It stays on the base64 command with
+    // the legacy ceiling, and `stageFileAttachment` is unreachable by
+    // construction rather than by a runtime check that could drift.
+    getAttachmentStagingMode: async () => ({
+      mode: "base64" as const,
+      maxBytes: LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+    }),
+    stageFileAttachment: async () => {
+      throw new Error("Attachment upload is not available in the web client.");
     },
     getImageDataUrl: async (path: string, pin?: RuntimePinArg) => {
       guardPin("getImageDataUrl", pin);

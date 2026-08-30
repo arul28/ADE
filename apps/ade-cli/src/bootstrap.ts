@@ -135,6 +135,7 @@ import {
 } from "../../desktop/src/main/services/analytics/dailyUsageAnalytics";
 import {
   captureAgentTurnSettledAnalytics,
+  captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
@@ -1426,6 +1427,10 @@ export async function createAdeRuntime(args: {
           analytics: productAnalyticsService,
           projectId,
           event,
+        }),
+        onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
+          analytics: productAnalyticsService,
+          properties,
         }),
         onSessionEnded: (event) => {
           pushEvent("runtime", { type: "agent_chat_session_ended", ...event });

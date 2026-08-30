@@ -137,6 +137,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // settle-tuple write that had to be reconciled through the chokepoint.
   "settle_teardown_residue",
   "settle_remote_write_reconciled",
+  // The chat auto-resume loop after a provider usage limit: whether a resume
+  // was scheduled, whether one actually ran, and whether the re-arm cap stopped
+  // the chat from spending another turn. Three coarse transitions and nothing
+  // about the chat itself.
+  "auto_resume",
   // One coarse fact per "Report issue" press: whether the GitHub issue page
   // opened. Never the surface it was pressed on, and never the report itself.
   "issue_report",
@@ -284,6 +289,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `failed` on purpose: "we chose not to send" and "we tried and could not"
     // answer different questions, and the first is the guardrail working.
     "skipped_budget",
+    // The three auto-resume transitions. `cancelled` above is deliberately NOT
+    // reused for the fourth one: cancellation fires on ordinary user activity,
+    // so it would be a typing signal rather than a workflow outcome, and it is
+    // derivable from armed minus resumed anyway.
+    "armed", "resumed", "paused",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

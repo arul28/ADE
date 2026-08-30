@@ -6,6 +6,10 @@ import UIKit
 private let workChatRemoteImageMaxBytes = 5 * 1024 * 1024
 private let workChatRemoteImageTimeoutSeconds: TimeInterval = 12
 private let workChatAttachmentPreviewMinimumPixels: CGFloat = 96
+// Mirrors `LEGACY_MAX_CHAT_ATTACHMENT_BYTES` in
+// apps/desktop/src/shared/chatAttachmentLimits.ts: the phone always stages
+// attachments as base64 over sync, which is the leg that cap governs. Change
+// both together.
 private let workChatInputAttachmentMaxBytes = 10 * 1024 * 1024
 private let workChatInputAttachmentInitialMaxDimension: CGFloat = 2400
 private let workChatInputAttachmentMinimumMaxDimension: CGFloat = 960

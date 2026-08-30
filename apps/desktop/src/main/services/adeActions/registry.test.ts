@@ -174,6 +174,107 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("git", "COMMIT")).toBe(false);
   });
 
+  it("allowlists every chat action a caller invokes by string", () => {
+    // The inverse direction of the allowlist: not "is each entry valid" but
+    // "does each name someone actually calls have an entry". A name called by
+    // string with no entry fails at `run_ade_action` with "is not exposed
+    // through ADE actions", which no compiler or type sees.
+    //
+    // Two callers reach the chat domain by string, and BOTH have to be in this
+    // list — `chat.createAttachmentUpload` shipped unallowlisted precisely
+    // because it is called only from the second one, so a preload-only sweep
+    // would have passed:
+    //
+    //   perl -0777 -ne 'while(/"chat",\s*\n?\s*"([A-Za-z][A-Za-z0-9]*)"/g)
+    //     {print "$1\n"}' src/preload/preload.ts | sort -u
+    //   perl -0777 -ne 'while(/domain:\s*"chat",\s*\n?\s*action:\s*"([A-Za-z]
+    //     [A-Za-z0-9]*)"/g){print "$1\n"}' \
+    //     src/main/services/remoteRuntime/remoteConnectionService.ts | sort -u
+    //
+    // Re-run both when adding a chat action to either caller.
+    const CALLED_BY_STRING = [
+      // src/preload/preload.ts
+      "approveToolUse", "archiveSession", "cancelDispatchedSteer", "cancelScheduledWork",
+      "cancelSteer", "clearCodexGoal", "copyTempAttachment", "createPromptStash",
+      "createScheduledWork", "createSession", "deletePromptStash", "deleteSession",
+      "dispatchSteer", "editSteer", "ensureCtoSession", "fileSearch",
+      "generateAutoLaneIdentity", "getAvailableModels", "getChatEventHistory",
+      "getChatEventHistoryPage", "getClaudeSessionInfo", "getClaudeSessionMessages",
+      "getCodexGoal", "getContextUsage", "getImageDataUrl", "getMainTranscript",
+      "getParallelLaunchState", "getSessionCapabilities", "getSessionSummary",
+      "getSlashCommands", "getSubagentTranscript", "getTurnFileDiff", "handoffSession",
+      "interrupt", "killDroidWorker", "launchCli", "launchHeadless",
+      "listClaudeOutputStyles", "listClaudePlugins", "listClaudeSessions",
+      "listMentionSuggestions", "listPromptStashes", "listScheduledWork", "listSessions",
+      "listSubagents", "markCrossMachineHandoff", "modelCatalog",
+      "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
+      "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
+      "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
+      "restoreCancelledQueue", "rewindFiles", "saveTempAttachment", "sendMessage",
+      "setClaudeOutputStyle", "setCodexGoal", "setCodexGoalStatus", "setParallelLaunchState",
+      "setScheduledWorkPaused", "steer", "suggestLaneNameFromPrompt",
+      "terminateCodexBackgroundTerminal", "unarchiveSession", "updateSession",
+      "validateCrossMachineSource", "warmupModel",
+      // src/main/services/remoteRuntime/remoteConnectionService.ts
+      "createAttachmentUpload",
+    ];
+
+    // A silently emptied list would make every assertion below vacuous.
+    expect(CALLED_BY_STRING.length).toBeGreaterThan(50);
+    for (const action of CALLED_BY_STRING) {
+      expect(ADE_ACTION_ALLOWLIST.chat, `chat.${action} is called by string but not allowlisted`)
+        .toContain(action);
+    }
+  });
+
+  it("implements the chat actions the registry owns rather than forwarding", () => {
+    // Allowlisting a name nothing implements is invisible in desktop-only
+    // builds (the renderer's own IPC handler answers) and fatal in
+    // runtime-backed ones: `callAction` rejects with "is not callable" and the
+    // feature is dead on every remote/brain-backed machine.
+    // `chat.createAttachmentUpload` was exactly that on this branch before the
+    // fix: `remoteConnectionService.uploadChatAttachment` called it by string,
+    // and it existed only on the sync command channel — never on this domain
+    // service — so remote-paired attach failed on every machine.
+    //
+    // These are the actions the chat domain service builds ITSELF from the
+    // runtime's project root rather than forwarding to `agentChatService`, so a
+    // bare stub is enough to catch one going missing.
+    const service = getAdeActionDomainServices({
+      projectRoot: "/tmp/ade-registry-test",
+      agentChatService: {},
+    } as never).chat as Record<string, unknown> | null;
+
+    expect(service).toBeTruthy();
+    for (const action of [
+      "saveTempAttachment",
+      "copyTempAttachment",
+      "createAttachmentUpload",
+      "getImageDataUrl",
+      "getTurnFileDiff",
+      "listMentionSuggestions",
+    ]) {
+      expect(ADE_ACTION_ALLOWLIST.chat).toContain(action);
+      expect(typeof service?.[action], `chat.${action} is not callable`).toBe("function");
+    }
+  });
+
+  it("keeps copyTempAttachment's remote reach tied to authority a paired peer already holds", () => {
+    // `chat.copyTempAttachment` takes an unconstrained absolute source path and
+    // is NOT local-only: `run_ade_action` is reachable over the sync runtime RPC
+    // channel, whose JSON-RPC handler is the same origin-blind factory the local
+    // unix socket gets, so a paired peer can read any file on this disk with it.
+    //
+    // That is acceptable only while the same peer already holds strictly greater
+    // authority through the same door. `chat.launchCli` runs arbitrary processes
+    // and is allowlisted and un-gated, which is the comparison the registry's
+    // comment makes. If that ever stops being true, the comparison is void and
+    // copyTempAttachment needs a real gate rather than a reassuring comment.
+    expect(ADE_ACTION_ALLOWLIST.chat).toContain("copyTempAttachment");
+    expect(isAllowedAdeAction("chat", "launchCli")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
+  });
+
   it("each allowlist entry is marked allowed by the predicate", () => {
     // Round-trip: whatever is in the data drives the predicate, so this
     // guards against accidental mutations (e.g. a trailing space in a name).

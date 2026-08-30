@@ -1344,14 +1344,24 @@ export function latestTokenStats(
       cacheCreationTokens = null;
     }
     if (event.type === "system_notice" && event.noticeKind === "rate_limit") {
+      // `rate_limit` is a shared noticeKind, not a dedicated usage-snapshot
+      // event: the plan-usage warning carries "<n>% utilized | resets <iso>",
+      // but the auto-resume lines ("Auto-resume scheduled for …", "Auto-resume
+      // paused after two attempts") wear the same kind with prose detail.
+      // Overwriting unconditionally therefore wiped the statusline's rate-limit
+      // window the moment a limit actually tripped — the warning is emitted at
+      // most once per session (`claudeRateLimitWarningEmitted`), so nothing ever
+      // put the numbers back. Only a notice that actually parses replaces the
+      // snapshot; the rest leave the last known window standing.
       const detail = typeof event.detail === "string" ? event.detail : "";
       const pct = detail.match(/(\d+(?:\.\d+)?)%\s+utilized/i);
       const reset = detail.match(/resets\s+([0-9TZ:.-]+)/i);
       const resetMs = reset?.[1] ? Date.parse(reset[1]) : Number.NaN;
-      rateLimit = {
-        usedPercentage: pct?.[1] ? Number(pct[1]) : null,
-        resetsAt: Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : null,
-      };
+      const usedPercentage = pct?.[1] ? Number(pct[1]) : null;
+      const resetsAt = Number.isFinite(resetMs) ? Math.round(resetMs / 1000) : null;
+      if (usedPercentage != null || resetsAt != null) {
+        rateLimit = { usedPercentage, resetsAt };
+      }
     }
   }
   if (contextState !== "measured") {

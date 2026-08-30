@@ -6,6 +6,7 @@ import {
   buildDiagnosticReport,
   diagnosticReportFilePath,
   writeDiagnosticReportFile,
+  type DiagnosticRedactionContext,
 } from "../services/diagnostics/diagnosticReport";
 import {
   collectMachineDiagnosticSources,
@@ -60,6 +61,16 @@ export type ReportIssueResult = {
    * sender saves to, so the desktop toast's "View" reaches a CLI report too.
    */
   reportsDir: string;
+  /**
+   * The redaction rules this report was built with — this machine's home
+   * directory, account name, host name, project roots.
+   *
+   * Returned so a caller that writes its own sections beside the report
+   * (`ade triage` builds a context file around it) redacts them with the same
+   * rules rather than inventing a second, weaker set. Collection is what makes
+   * these expensive; handing them back costs nothing.
+   */
+  redaction: DiagnosticRedactionContext;
 };
 
 /**
@@ -138,6 +149,7 @@ function finishCliDiagnosticReport(
     appVersion: options.cliVersion ?? null,
     secretsDir: sources.layout.secretsDir,
     reportsDir: path.join(sources.layout.adeDir, "diagnostic-reports"),
+    redaction: sources.redaction,
     issueUrl: buildDiagnosticIssueUrl({
       surface,
       headline: options.headline?.trim().slice(0, 300) || null,

@@ -19,6 +19,7 @@ import {
   type AgentChatEvent,
   type AgentChatEventEnvelope,
   type AgentChatEventHistorySnapshot,
+  type AgentChatEventMetadata,
   type AgentChatContextAttachment,
   type AgentChatFileRef,
   type ChatMentionSuggestion,
@@ -134,6 +135,13 @@ import {
   ChatInfoHostContext,
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
+import {
+  ChatAutoResumeContext,
+  classifyProviderFailure,
+  providerFailureEventId,
+  type ChatAutoResumeState,
+} from "./ProviderFailureRecoveryCard";
+import { isPendingAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
@@ -490,6 +498,19 @@ function hasChatActionsAutoOpenFired(storage: ChatActionsAutoOpenStorage, sessio
     return false;
   }
   return true;
+}
+
+/**
+ * Metadata minus the scheduled-wake marker, or `undefined` when nothing else
+ * was riding along — so a replay that had only the marker sends no metadata at
+ * all rather than an empty object the host has never seen.
+ */
+function withoutScheduledWake(metadata: AgentChatEventMetadata): AgentChatEventMetadata | undefined {
+  const rest: AgentChatEventMetadata = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (key !== "scheduledWake") rest[key] = value;
+  }
+  return Object.keys(rest).length ? rest : undefined;
 }
 
 function transcriptRecordText(record: Record<string, unknown> | null): string | null {
@@ -7569,6 +7590,68 @@ export function AgentChatPane({
     });
   }, []);
 
+  // ADE's own auto-resume row for this chat, if the provider usage limit left
+  // one armed. Published as context so the failure card can offer a Cancel next
+  // to the retry affordances without drilling props through every event row.
+  // User- and agent-created schedules are excluded by the `auto_resume_limit`
+  // tag, so cancelling here can never drop a schedule the user asked for.
+  const pendingAutoResumeSchedule = useMemo(
+    () => (selectedSession?.scheduledWork ?? []).find(isPendingAutoResumeScheduledWork) ?? null,
+    [selectedSession?.scheduledWork],
+  );
+  // The schedule belongs to the failure that armed it, which is always the most
+  // recent usage-limit error in the transcript. Anchoring to it keeps every
+  // older usage-limit card in the same chat from advertising a live schedule.
+  // Gated on the schedule: without one there is nothing to anchor, and the walk
+  // below is a full-transcript scan that would otherwise re-run on every event
+  // append for the overwhelmingly common case of a chat with no armed resume.
+  const latestRateLimitFailureEventId = useMemo(() => {
+    if (!pendingAutoResumeSchedule) return null;
+    for (let index = selectedEventsForDisplay.length - 1; index >= 0; index -= 1) {
+      const envelope = selectedEventsForDisplay[index];
+      const event = envelope?.event;
+      if (!envelope || event?.type !== "error") continue;
+      if (classifyProviderFailure(event)?.kind !== "rate_limit") continue;
+      return providerFailureEventId(envelope.timestamp, event);
+    }
+    return null;
+  }, [pendingAutoResumeSchedule, selectedEventsForDisplay]);
+  const autoResumeContextValue = useMemo<ChatAutoResumeState>(() => {
+    if (!selectedSessionId || !pendingAutoResumeSchedule) return null;
+    const scheduleId = pendingAutoResumeSchedule.id;
+    const sessionId = selectedSessionId;
+    return {
+      scheduleId,
+      nextRunAt: pendingAutoResumeSchedule.nextRunAt ?? null,
+      anchorEventId: latestRateLimitFailureEventId,
+      cancel: async () => {
+        try {
+          const result = await window.ade.agentChat.cancelScheduledWork(
+            { sessionId, scheduleId },
+            chatRuntimePinRef.current,
+          );
+          patchSessionSummary(sessionId, {
+            scheduledWork: (selectedSession?.scheduledWork ?? []).filter((item) =>
+              item.id !== scheduleId || !(
+                result.providerCancellationConfirmed || result.schedule.status === "cancelled"
+              )),
+          });
+          scheduleSessionsRefresh();
+          return null;
+        } catch (cancelError) {
+          return cancelError instanceof Error ? cancelError.message : String(cancelError);
+        }
+      },
+    };
+  }, [
+    latestRateLimitFailureEventId,
+    patchSessionSummary,
+    pendingAutoResumeSchedule,
+    scheduleSessionsRefresh,
+    selectedSession?.scheduledWork,
+    selectedSessionId,
+  ]);
+
   useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
@@ -8226,10 +8309,16 @@ export function AgentChatPane({
     const attachments = Array.isArray(userEvent.attachments) ? userEvent.attachments : [];
     const contextAttachments = Array.isArray(userEvent.contextAttachments) ? userEvent.contextAttachments : [];
     const metadata = userEvent.metadata;
+    // The host skips its auto-resume cancel for any send carrying
+    // `scheduledWake` — that is how the auto-resume's own turn avoids
+    // cancelling the schedule it was fired by. Replaying that marker would make
+    // a user-initiated retry inherit the exemption and leave the schedule
+    // armed, contradicting the notice that says retrying cancels it.
+    const replayMetadata = metadata?.scheduledWake ? withoutScheduledWake(metadata) : metadata;
     const replayContext = {
       ...(attachments.length ? { attachments } : {}),
       ...(contextAttachments.length ? { contextAttachments } : {}),
-      ...(metadata !== undefined ? { metadata } : {}),
+      ...(replayMetadata !== undefined ? { metadata: replayMetadata } : {}),
     };
     try {
       submitInFlightRef.current = true;
@@ -13965,6 +14054,7 @@ export function AgentChatPane({
                         may render here. PersonalChatsPage provides no such context. */}
                     {!cloudConversationPending && !(cloudHydrateFailed && !chatHasMessages) ? (
                     <ChatInfoHostContext.Provider value={true}>
+                    <ChatAutoResumeContext.Provider value={autoResumeContextValue}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
@@ -14040,6 +14130,7 @@ export function AgentChatPane({
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                       />
+                    </ChatAutoResumeContext.Provider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
                     {!appPanelOpen ? composerNoticeOverlay : null}

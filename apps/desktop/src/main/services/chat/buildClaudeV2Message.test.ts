@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentChatFileRef } from "../../../shared/types/chat";
+import { MAX_PROVIDER_INLINE_IMAGE_BYTES } from "../../../shared/chatAttachmentLimits";
 import {
   buildClaudeV2Message,
   buildClaudeV2MessageAsync,
@@ -145,6 +146,43 @@ describe("buildClaudeV2Message", () => {
     const source = imgBlock.source as Record<string, unknown>;
 
     expect(Buffer.from(source.data as string, "base64").toString()).toBe("unsaved-image-bytes");
+  });
+
+  // Raising the composer attachment cap to 50 MB must not raise what Claude is
+  // asked to swallow inline: base64 inflates by a third and the API rejects the
+  // request outright, which would kill the turn instead of degrading it.
+  it("does not inline an image past the provider inline limit", async () => {
+    const oversized = Buffer.alloc(MAX_PROVIDER_INLINE_IMAGE_BYTES + 1, 0x41);
+    fs.writeFileSync(path.join(tmpDir, "huge.png"), oversized);
+    const attachments: AgentChatFileRef[] = [{ path: "huge.png", type: "image" }];
+
+    const result = await buildClaudeV2MessageAsync("Describe this", attachments, {
+      baseDir: tmpDir,
+      forceUserMessage: true,
+    });
+    const msg = result as SDKUserMessagePartial;
+    const blocks = msg.message.content as Array<Record<string, unknown>>;
+
+    expect(blocks.some((block) => block.type === "image")).toBe(false);
+    const hint = blocks.find((block) => block.type === "text" && String(block.text).includes("huge.png"));
+    expect(hint).toBeDefined();
+    expect(String(hint!.text)).toContain("not inlined");
+  });
+
+  it("still inlines an image exactly at the provider inline limit", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "exact.png"),
+      Buffer.alloc(MAX_PROVIDER_INLINE_IMAGE_BYTES, 0x42),
+    );
+    const attachments: AgentChatFileRef[] = [{ path: "exact.png", type: "image" }];
+
+    const result = await buildClaudeV2MessageAsync("Describe this", attachments, {
+      baseDir: tmpDir,
+      forceUserMessage: true,
+    });
+    const msg = result as SDKUserMessagePartial;
+    const blocks = msg.message.content as Array<Record<string, unknown>>;
+    expect(blocks.some((block) => block.type === "image")).toBe(true);
   });
 
   // ─────────────────────────────────────────────────────────────────────────

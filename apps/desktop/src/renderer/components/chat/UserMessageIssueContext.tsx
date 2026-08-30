@@ -5,6 +5,7 @@ import { chatContextAttachmentKey } from "../../../shared/chatContextAttachments
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 export function UserMessageIssueContext({
   attachments,
@@ -17,6 +18,12 @@ export function UserMessageIssueContext({
   mode: ChatSurfaceMode;
   sessionId?: string | null;
 }) {
+  // The machine that owns this chat, so attachment previews read from it.
+  // Taken from the chat's runtime scope rather than a prop: this renders inside
+  // `AgentChatMessageList`, which sits under `ChatRuntimeScopeProvider` with the
+  // identical pin, and the prop form drilled that same value through four
+  // layers of transcript row plumbing to arrive here unchanged.
+  const machinePin = useChatRuntimeScope().pin;
   const [linearDetailsIssueId, setLinearDetailsIssueId] = useState<string | null>(null);
   const [githubDetailsIssueId, setGitHubDetailsIssueId] = useState<string | null>(null);
   const [hiddenContextKeys, setHiddenContextKeys] = useState<string[]>([]);
@@ -41,6 +48,7 @@ export function UserMessageIssueContext({
       <ChatAttachmentTray
         attachments={attachments}
         contextAttachments={visibleContextAttachments}
+        machinePin={machinePin}
         mode={mode}
         className="mt-1 px-0 py-0"
         onOpenContext={(attachment) => {

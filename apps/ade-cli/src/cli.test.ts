@@ -6666,6 +6666,17 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["doctor", "--online"])).toEqual({ kind: "doctor", online: true });
   });
 
+  // `ade triage` is the command for a machine where the brain is down, so its
+  // parse must stay local: no socket, no project, and a bad `--provider` has to
+  // surface as usage ("Run 'ade help'") rather than a stack trace.
+  it("builds triage locally and resolves provider aliases at parse time", () => {
+    expect(buildCliPlan(["triage"])).toEqual({ kind: "triage", agent: false, provider: null });
+    expect(buildCliPlan(["triage", "--agent", "--provider", "cursor"]))
+      .toEqual({ kind: "triage", agent: true, provider: "cursor-agent" });
+    expect(() => buildCliPlan(["triage", "--provider", "gemini"]))
+      .toThrow(/Unknown provider 'gemini'/);
+  });
+
   it.skipIf(process.platform === "win32")("bounds doctor when a dead socket accepts a connection but never responds", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-dead-sock-"));
     const socketPath = path.join(root, "ade.sock");

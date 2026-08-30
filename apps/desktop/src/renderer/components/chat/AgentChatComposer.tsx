@@ -133,12 +133,21 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import type { AgentChatPromptHistoryEntry } from "./chatPromptHistory";
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
+import {
+  AttachmentConversionError,
+  attachmentPlanRejection,
+  planAttachmentStaging,
+  readAttachmentStagingMode,
+  stageAttachmentBytesFromFile,
+  type StagedAttachment,
+} from "./chatAttachmentStaging";
 
-const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+// Attachment ceilings are not a renderer constant any more: they depend on the
+// leg the bytes take, which depends on the machine that owns the chat. See
+// `chatAttachmentStaging.ts` and `shared/chatAttachmentLimits.ts`.
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
 const PROMPT_HISTORY_SEQUENCE_TIMEOUT_MS = 3_000;
 type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
-const BASE64_ENCODE_CHUNK_SIZE = 0x8000;
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
@@ -150,13 +159,6 @@ const HEIC_CONVERSION_MESSAGES: Record<HeicConversionErrorCode, string> = {
   unavailable: HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
   failed: HEIC_CONVERSION_FAILED_MESSAGE,
 };
-
-class AttachmentConversionError extends Error {
-  constructor(readonly code: HeicConversionErrorCode) {
-    super(code);
-    this.name = "AttachmentConversionError";
-  }
-}
 
 function attachmentErrorMessage(error: unknown, filename: string): string {
   if (error instanceof AttachmentConversionError) {
@@ -331,16 +333,6 @@ function normalizeImageAttachmentUrl(value: string | null | undefined): string |
   } catch {
     return null;
   }
-}
-
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  const parts: string[] = [];
-  for (let i = 0; i < bytes.length; i += BASE64_ENCODE_CHUNK_SIZE) {
-    const chunk = bytes.subarray(i, i + BASE64_ENCODE_CHUNK_SIZE);
-    parts.push(String.fromCharCode(...chunk));
-  }
-  return btoa(parts.join(""));
 }
 
 type ExecutionModeOption = {
@@ -1912,9 +1904,16 @@ export function AgentChatComposer({
   const [attachmentResults, setAttachmentResults] = useState<AgentChatFileRef[]>([]);
   const [attachmentCursor, setAttachmentCursor] = useState(0);
   const [attachError, setAttachError] = useState<string | null>(null);
+  // Files whose staging failed for a reason a second attempt could fix — a
+  // dropped connection, a host that was mid-restart. Holding the `File` handles
+  // is what makes the retry real rather than a message telling the user to
+  // drag it in again. Size rejections deliberately do NOT land here: retrying
+  // a too-large file cannot succeed, so offering it would be a lie.
+  const [attachRetryFiles, setAttachRetryFiles] = useState<File[] | null>(null);
   const [attachNotice, setAttachNotice] = useState<{ message: string; undoPath: string } | null>(null);
   const [pendingImageAttachments, setPendingImageAttachments] = useState<ChatAttachmentPendingImage[]>([]);
   const [imagePreviewUrls, setImagePreviewUrls] = useState<Record<string, string>>({});
+  const [attachmentSizes, setAttachmentSizes] = useState<Record<string, number>>({});
 
   useEffect(() => {
     if (!attachNotice) return;
@@ -2422,9 +2421,36 @@ export function AgentChatComposer({
     });
   }, []);
 
+  /**
+   * Byte size of a file this composer staged, keyed by its staged path. Only
+   * the composer can know this without a round trip — it held the `File`.
+   * Kept alongside the preview URLs and dropped with them.
+   */
+  const rememberAttachmentSize = useCallback((path: string, size: number) => {
+    if (!Number.isFinite(size) || size < 0) return;
+    setAttachmentSizes((current) => (
+      current[path] === size ? current : { ...current, [path]: size }
+    ));
+  }, []);
+
+  /**
+   * Forget everything this composer remembers about a staged path.
+   *
+   * Preview URL and byte size are two halves of one record — both are keyed by
+   * the staged path and both are only knowable here — so they are dropped
+   * together. Clearing only the preview left the size map growing for the
+   * lifetime of the composer, one entry per file the user ever attached and
+   * then removed.
+   */
   const clearPreviewForPath = useCallback((path: string) => {
     setImagePreviewUrls((current) => {
       if (!current[path]) return current;
+      const next = { ...current };
+      delete next[path];
+      return next;
+    });
+    setAttachmentSizes((current) => {
+      if (!(path in current)) return current;
       const next = { ...current };
       delete next[path];
       return next;
@@ -2508,18 +2534,25 @@ export function AgentChatComposer({
     previousPendingImageAttachmentsRef.current = pendingImageAttachments;
   }, [imagePreviewUrls, pendingImageAttachments, revokePreviewUrl]);
 
+  // Attachments the parent dropped (a send, a reset, a removal that did not
+  // come through `handleRemoveAttachment`) take their per-path composer state
+  // with them. Previews and sizes are pruned by the same rule so the two maps
+  // cannot disagree about which paths this composer still knows.
   useEffect(() => {
     const currentPaths = new Set(attachments.map((attachment) => attachment.path));
     const previousPaths = previousAttachmentPathsRef.current;
-    setImagePreviewUrls((current) => {
+    const isStale = (path: string): boolean => previousPaths.has(path) && !currentPaths.has(path);
+    const pruneStale = <T,>(current: Record<string, T>): Record<string, T> => {
       let next = current;
       for (const path of Object.keys(current)) {
-        if (!previousPaths.has(path) || currentPaths.has(path)) continue;
+        if (!isStale(path)) continue;
         if (next === current) next = { ...current };
         delete next[path];
       }
       return next;
-    });
+    };
+    setImagePreviewUrls(pruneStale);
+    setAttachmentSizes(pruneStale);
     previousAttachmentPathsRef.current = currentPaths;
   }, [attachments]);
 
@@ -2588,9 +2621,15 @@ export function AgentChatComposer({
     if (fileAddInProgressRef.current) return;
     fileAddInProgressRef.current = true;
     setAttachError(null);
+    setAttachRetryFiles(null);
+    const retryable: File[] = [];
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
+      // One probe per batch, not per file: the answer is a property of the
+      // machine, and asking again mid-batch would only widen the window in
+      // which half the files were staged under a different contract.
+      const stagingMode = await readAttachmentStagingMode(composerMachineBinding);
       for (const file of Array.from(files)) {
         if (parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
@@ -2599,11 +2638,19 @@ export function AgentChatComposer({
         const sourceAttachmentName = file.name || "clipboard.png";
         const isHeicUpload = isHeicAttachment(sourceAttachmentName, file.type);
         const isImageAttachment = inferAttachmentType(sourceAttachmentName, file.type) === "image";
+        const plan = planAttachmentStaging({
+          mode: stagingMode,
+          sourcePath: window.ade?.project?.getDroppedPath?.(file) ?? null,
+          requiresByteConversion: isHeicUpload,
+        });
 
-        if (file.size > MAX_TEMP_ATTACHMENT_BYTES) {
-          setAttachError(
-            `File "${file.name || "clipboard"}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum allowed size is 10 MB.`,
-          );
+        const rejection = attachmentPlanRejection(
+          plan,
+          file.name || "clipboard",
+          file.size,
+        );
+        if (rejection) {
+          setAttachError(rejection);
           continue;
         }
 
@@ -2612,35 +2659,27 @@ export function AgentChatComposer({
           : null;
         const attachmentOwnerBinding = composerMachineBinding;
         try {
-          const buf = await file.arrayBuffer();
-          let attachmentName = sourceAttachmentName;
-          let attachmentData = arrayBufferToBase64(buf);
-          let attachmentMimeType: string | null = file.type || null;
-          let convertedPreviewDataUrl: string | null = null;
-          if (isHeicUpload) {
-            const convertImageToJpeg = window.ade?.app?.convertImageToJpeg;
-            if (typeof convertImageToJpeg !== "function") {
-              throw new AttachmentConversionError("unavailable");
-            }
-            const converted = await convertImageToJpeg({
-              data: attachmentData,
+          // The two transports differ only in HOW the bytes reach the host.
+          // Each yields the same three facts, and everything after — the
+          // binding-changed guard, the cancelled-pending guard, the preview and
+          // size bookkeeping, the hand-off to the parent — is identical, so it
+          // is written once below. Duplicating it is how the two branches drift.
+          let staged: StagedAttachment;
+          if (plan.transport === "path") {
+            const { path: stagedPath } = await window.ade.agentChat.stageFileAttachment(
+              { sourcePath: plan.sourcePath, filename: sourceAttachmentName },
+              attachmentOwnerBinding,
+            );
+            staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
+          } else {
+            staged = await stageAttachmentBytesFromFile({
+              file,
               filename: sourceAttachmentName,
-              mimeType: file.type || null,
+              requiresHeicConversion: isHeicUpload,
+              pin: attachmentOwnerBinding,
             });
-            if (converted.ok !== true) {
-              throw new AttachmentConversionError(
-                converted.errorCode === "unavailable" ? "unavailable" : "failed",
-              );
-            }
-            attachmentName = converted.filename;
-            attachmentData = converted.data;
-            attachmentMimeType = converted.mimeType;
-            convertedPreviewDataUrl = `data:${converted.mimeType};base64,${converted.data}`;
           }
-          const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
-            data: attachmentData,
-            filename: attachmentName,
-          }, attachmentOwnerBinding);
+
           if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
             if (pendingImage) dropPendingImageAttachment(pendingImage.id);
             setAttachError(`"${sourceAttachmentName}" was not attached because the selected machine changed. Attach it again.`);
@@ -2650,27 +2689,28 @@ export function AgentChatComposer({
             cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
             continue;
           }
-          const attachmentType = inferAttachmentType(tempPath, attachmentMimeType);
-          const pendingPreviewUrl = pendingImage?.previewUrl ?? null;
+          const attachmentType = inferAttachmentType(staged.path, staged.mimeType);
           if (attachmentType === "image") {
-            if (convertedPreviewDataUrl) {
-              rememberPreviewUrl(tempPath, convertedPreviewDataUrl);
-            } else if (pendingPreviewUrl) {
-              rememberPreviewUrl(tempPath, pendingPreviewUrl);
-            }
+            // A converted JPEG's data URL wins over the object URL for the
+            // original: the HEIC the browser could not decode has no preview.
+            rememberPreviewUrl(staged.path, staged.previewDataUrl ?? pendingImage?.previewUrl);
           }
-          onAddAttachment({ path: tempPath, type: attachmentType });
-          if (pendingImage) {
-            dropPendingImageAttachment(pendingImage.id);
-          }
+          rememberAttachmentSize(staged.path, file.size);
+          onAddAttachment({ path: staged.path, type: attachmentType });
+          if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           addedInBatch += 1;
         } catch (error) {
+          // The pending placeholder always comes down, whatever went wrong.
+          // A staging failure that left a spinner up would read as "still
+          // working" forever.
           if (pendingImage) dropPendingImageAttachment(pendingImage.id);
           setAttachError(attachmentErrorMessage(error, sourceAttachmentName));
+          if (!(error instanceof AttachmentConversionError)) retryable.push(file);
         }
       }
     } finally {
       fileAddInProgressRef.current = false;
+      setAttachRetryFiles(retryable.length ? retryable : null);
     }
   };
   addFileAttachmentsRef.current = addFileAttachments;
@@ -5366,11 +5406,28 @@ export function AgentChatComposer({
             {attachError ? (
               <div className="flex items-center gap-1.5 px-3">
                 <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-red-300/75">{attachError}</span>
+                {attachRetryFiles?.length ? (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded px-1 text-[length:calc(var(--chat-font-size)*10/14)] text-red-200/80 underline underline-offset-2 transition-colors hover:text-red-100"
+                    onClick={() => {
+                      const files = attachRetryFiles;
+                      setAttachRetryFiles(null);
+                      setAttachError(null);
+                      void addFileAttachments(files);
+                    }}
+                  >
+                    Try again
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   aria-label="Dismiss error"
                   className="shrink-0 rounded p-0.5 text-red-300/60 hover:text-red-200/80 transition-colors"
-                  onClick={() => setAttachError(null)}
+                  onClick={() => {
+                    setAttachError(null);
+                    setAttachRetryFiles(null);
+                  }}
                 >
                   <X size={10} weight="bold" />
                 </button>
@@ -5407,6 +5464,8 @@ export function AgentChatComposer({
               contextAttachments={contextAttachments}
               pendingImageAttachments={pendingImageAttachments}
               imagePreviewUrls={imagePreviewUrls}
+              attachmentSizes={attachmentSizes}
+              machinePin={composerMachineBinding}
               mode={surfaceMode}
               onRemove={handleRemoveAttachment}
               onRemoveContext={onRemoveContextAttachment}
