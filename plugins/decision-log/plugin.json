@@ -1,0 +1,97 @@
+{
+  "name": "decision-log",
+  "version": "1.0.0",
+  "displayName": "Decision Log",
+  "description": "Log a project decision in one line from any chat, and keep the whole log — with its lane and its date — in one place on every device.",
+  "icon": "note",
+  "accent": "#7C6FF0",
+  "vocabVersion": 1,
+  "entry": "index.js",
+  "surfaces": [
+    {
+      "kind": "tab",
+      "id": "decisions",
+      "title": "Decisions",
+      "icon": "note",
+      "panelId": "log",
+      "order": 70,
+      "mobile": true
+    }
+  ],
+  "panels": [
+    { "id": "log", "schemaFile": "panels/log.json", "title": "Decisions", "icon": "note", "refreshAction": "refreshLog" },
+    { "id": "card", "schemaFile": "panels/card.json", "title": "Decision", "icon": "note" },
+    { "id": "settings", "schemaFile": "panels/settings.json", "title": "Decision Log", "icon": "note" }
+  ],
+  "sockets": [
+    {
+      "socket": "chat-header-action",
+      "surface": "work",
+      "id": "log-decision",
+      "label": "Log decision",
+      "icon": "note",
+      "actionId": "logDecision",
+      "color": "#7C6FF0",
+      "menu": [
+        { "label": "Open decision log", "actionId": "openLog", "icon": "list" }
+      ]
+    },
+    {
+      "socket": "command-palette-action",
+      "surface": "app",
+      "id": "log-decision-palette",
+      "label": "Log a decision",
+      "icon": "note",
+      "actionId": "logDecision"
+    },
+    {
+      "socket": "chat-card",
+      "surface": "work",
+      "id": "decision-card",
+      "panelId": "card",
+      "title": "Decision"
+    },
+    {
+      "socket": "row-badge",
+      "surface": "lanes",
+      "id": "count",
+      "label": "Decisions"
+    },
+    {
+      "socket": "settings-section",
+      "surface": "settings",
+      "id": "settings",
+      "panelId": "settings",
+      "title": "Decision Log"
+    }
+  ],
+  "collections": {
+    "decisions": { "sync": true }
+  },
+  "settings": [
+    {
+      "key": "digestEnabled",
+      "kind": "toggle",
+      "label": "Weekly digest",
+      "description": "A notification each week summarizing the decisions you logged.",
+      "default": false
+    },
+    {
+      "key": "digestDay",
+      "kind": "select",
+      "label": "Digest day",
+      "description": "The day the weekly digest is sent, at 09:13 local time.",
+      "default": "1",
+      "options": [
+        { "value": "1", "label": "Monday" },
+        { "value": "2", "label": "Tuesday" },
+        { "value": "3", "label": "Wednesday" },
+        { "value": "4", "label": "Thursday" },
+        { "value": "5", "label": "Friday" },
+        { "value": "6", "label": "Saturday" },
+        { "value": "0", "label": "Sunday" }
+      ]
+    }
+  ],
+  "cli": ["log", "list", "digest"]
+}

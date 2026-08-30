@@ -1,0 +1,16 @@
+{
+  "v": 1,
+  "title": "Decision",
+  "fallback": {
+    "title": "Decision logged",
+    "text": "Open ADE to read your decision log.",
+    "deeplink": "ade://plugin/decision-log/log"
+  },
+  "body": [
+    {
+      "component": "keyValue",
+      "emptyText": "Open the Decisions tab to see this decision in the log.",
+      "bind": { "collection": "$context" }
+    }
+  ]
+}
