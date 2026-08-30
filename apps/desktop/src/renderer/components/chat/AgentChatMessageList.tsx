@@ -1796,7 +1796,10 @@ const AssistantTextBody = React.memo(function AssistantTextBody({
       renderer/perf/streamSmoothness.ts). It reports the REVEALED length — what
       this commit actually puts on screen — so the smoothness sampler measures
       paint rather than store state; on every unpaced row that is the full
-      text. The sampler reads it from a rAF callback (post-commit, pre-paint),
+      text, and with pacing disabled entirely (`ade.textRevealHorizonMs` <= 0
+      or no `Intl.Segmenter`) `useRevealedLength` returns `text.length`, so the
+      paint-on-arrival A/B arm still reports a length instead of vanishing from
+      the sampler. The sampler reads it from a rAF callback (post-commit, pre-paint),
       so it approximates the paint by at most one frame. In production
       `isPerfActive()` is false, React drops the `undefined` prop, and no
       attribute is written.

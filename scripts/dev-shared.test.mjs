@@ -120,6 +120,40 @@ test("detached dev runtime does not inherit another runtime's shutdown controls"
   assert.equal(env.ADE_RUNTIME_SOCKET_PATH, "\\\\.\\pipe\\ade-runtime-dev-test");
 });
 
+test("detached dev runtime keeps the cto role when launched from an agent shell", () => {
+  // Observed live: a dev daemon spawned from an ADE agent terminal reported
+  // defaultRole "agent" because the shell's session binding survived.
+  const env = detachedDevRuntimeEnv(
+    "/tmp/ade-runtime-dev-test.sock",
+    "/dev/ADE",
+    {
+      ADE_DEFAULT_ROLE: "agent",
+      ADE_CHAT_SESSION_ID: "agent-chat",
+      ADE_PARENT_CHAT_SESSION_ID: "parent-chat",
+      ADE_SPAWN_KIND: "subagent",
+      ADE_BROWSER_ACTOR_TOKEN: "token",
+      ADE_LANE_ID: "lane-1",
+      ADE_PROJECT_ROOT: "/dev/ADE/.ade/worktrees/lane-1",
+      ADE_WORKSPACE_ROOT: "/dev/ADE/.ade/worktrees/lane-1",
+      ADE_PERF_RUN_ID: "perf-run-1",
+      PATH: "/usr/bin",
+    },
+  );
+
+  assert.equal(env.ADE_DEFAULT_ROLE, "cto");
+  assert.equal(env.ADE_CHAT_SESSION_ID, undefined);
+  assert.equal(env.ADE_PARENT_CHAT_SESSION_ID, undefined);
+  assert.equal(env.ADE_SPAWN_KIND, undefined);
+  assert.equal(env.ADE_BROWSER_ACTOR_TOKEN, undefined);
+  assert.equal(env.ADE_LANE_ID, undefined);
+  assert.equal(env.ADE_WORKSPACE_ROOT, undefined);
+  // The daemon's own project root wins over the agent shell's worktree.
+  assert.equal(env.ADE_PROJECT_ROOT, "/dev/ADE");
+  // Perf runs must still reach the daemon (chatTextProbe depends on it).
+  assert.equal(env.ADE_PERF_RUN_ID, "perf-run-1");
+  assert.equal(env.PATH, "/usr/bin");
+});
+
 test("graceful dev runtime cleanup sends shutdown instead of hard exit", async () => {
   const methods = [];
   const server = net.createServer((socket) => {

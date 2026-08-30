@@ -15,6 +15,7 @@ import {
   resetTextRevealHorizonCacheForTests,
   TEXT_REVEAL_HORIZON_STORAGE_KEY,
 } from "./textReveal";
+import { setPerfActive } from "../../perf/markers";
 import { ADE_NAVIGATE_TARGET_EVENT } from "../../lib/openExternal";
 import fs from "node:fs";
 import path from "node:path";
@@ -5330,5 +5331,25 @@ describe("AgentChatMessageList — paced assistant text", () => {
     const node = document.querySelector("[data-assistant-output]");
     expect(node).toBeTruthy();
     expect(node!.getAttribute("data-stream-text-len")).toBeNull();
+  });
+
+  it("still reports the painted length to the perf sampler when pacing is off", () => {
+    // The OFF arm of the A/B has to measure something: with pacing disabled
+    // the painted length IS the store length, and the sampler must see it.
+    // Without this the OFF run finds no `[data-stream-text-len]` node at all
+    // and scores a blank baseline.
+    localStorage.setItem(TEXT_REVEAL_HORIZON_STORAGE_KEY, "0");
+    resetTextRevealHorizonCacheForTests();
+    setPerfActive(true);
+    try {
+      renderMessageList(streamingText("Measured."), { showStreamingIndicator: true });
+      const node = document.querySelector("[data-assistant-output]");
+      expect(node).toBeTruthy();
+      expect(node!.getAttribute("data-stream-text-len")).toBe(String("Measured.".length));
+    } finally {
+      setPerfActive(false);
+      localStorage.removeItem(TEXT_REVEAL_HORIZON_STORAGE_KEY);
+      resetTextRevealHorizonCacheForTests();
+    }
   });
 });
