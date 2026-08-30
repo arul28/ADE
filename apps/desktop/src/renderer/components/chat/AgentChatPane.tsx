@@ -210,7 +210,7 @@ import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, 
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
-import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
+import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -3481,6 +3481,10 @@ export function AgentChatPane({
   // later pass renders a catch-up hairline from this flag.
   const [syncPendingBySession, setSyncPendingBySession] = useState<Record<string, boolean>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
+  // Raw derivations, straight from the transcript. Every reader goes through
+  // `resolvedPendingInputsBySession` below instead of reading this directly —
+  // an entry swept at a turn boundary is still in here, and only the session
+  // summary can say whether that sweep was right. See `resolvePendingInputs`.
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
   const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
@@ -4781,7 +4785,26 @@ export function AgentChatPane({
   );
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
-  const selectedPendingInputs = composerSessionId ? (pendingInputsBySession[composerSessionId] ?? []) : [];
+  /**
+   * The one place the raw derivation is reconciled against the session summary.
+   *
+   * Recomputed whenever either input changes, so the join cannot be served
+   * stale: a summary that moves with no new event still repaints the card.
+   * Cheap because it walks summaries, never the transcript.
+   */
+  const resolvedPendingInputsBySession = useMemo(() => {
+    const resolved: Record<string, DerivedPendingInput[]> = {};
+    for (const [sessionId, entries] of Object.entries(pendingInputsBySession)) {
+      const summary = sessions.find((entry) => entry.sessionId === sessionId)
+        ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
+      resolved[sessionId] = resolvePendingInputs(entries, summary);
+    }
+    return resolved;
+  }, [pendingInputsBySession, sessions, initialSessionSummary]);
+
+  const selectedPendingInputs = composerSessionId
+    ? (resolvedPendingInputsBySession[composerSessionId] ?? [])
+    : [];
   const pendingInput = selectedPendingInputs[0] ?? null;
   const planApprovalPendingInput = selectedPendingInputs.find((entry) =>
     isOrchestrationPlanApprovalRequest(entry.request),
@@ -5116,11 +5139,11 @@ export function AgentChatPane({
   }
   const pendingApprovalIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const entry of pendingInputsBySession[selectedSessionId ?? ""] ?? []) {
+    for (const entry of resolvedPendingInputsBySession[selectedSessionId ?? ""] ?? []) {
       ids.add(entry.itemId);
     }
     return ids;
-  }, [pendingInputsBySession, selectedSessionId]);
+  }, [resolvedPendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
@@ -10417,7 +10440,7 @@ export function AgentChatPane({
       return;
     }
     if (selectedSessionId) {
-      const sessionPending = pendingInputsBySession[selectedSessionId] ?? [];
+      const sessionPending = resolvedPendingInputsBySession[selectedSessionId] ?? [];
       const planReadyGate = sessionPending.find((entry) =>
         isOrchestrationPlanApprovalRequest(entry.request),
       ) ?? null;
@@ -11145,7 +11168,7 @@ export function AgentChatPane({
     patchSessionSummary,
     projectTransitionBlocksChat,
     reasoningEffort,
-    pendingInputsBySession,
+    resolvedPendingInputsBySession,
     refreshAvailableModels,
     refreshSessions,
     selectedSession,
@@ -11434,10 +11457,10 @@ export function AgentChatPane({
     answers?: Record<string, string | string[]>,
   ) => {
     if (!selectedSessionId) return;
-    const request = pendingInputsBySession[selectedSessionId]?.[0];
+    const request = resolvedPendingInputsBySession[selectedSessionId]?.[0];
     if (!request) return;
     await handleApproval(request.itemId, decision, responseText, answers);
-  }, [handleApproval, pendingInputsBySession, selectedSessionId]);
+  }, [handleApproval, resolvedPendingInputsBySession, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -12844,7 +12867,7 @@ export function AgentChatPane({
             {sessions.map((session) => {
               const title = chatSessionTitle(session);
               const isActive = session.sessionId === selectedSessionId;
-              const sessionNeedsInput = Boolean(pendingInputsBySession[session.sessionId]?.length) || session.awaitingInput === true;
+              const sessionNeedsInput = Boolean(resolvedPendingInputsBySession[session.sessionId]?.length) || session.awaitingInput === true;
               const isRunning = !sessionNeedsInput && turnActiveBySession[session.sessionId] === true;
               const sessionReadyForPrompt = !sessionNeedsInput && !isRunning && session.status === "idle";
               const sessionIndicatorStatus = sessionNeedsInput || sessionReadyForPrompt

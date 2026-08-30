@@ -14,7 +14,12 @@ func buildWorkChatTimelineSnapshot(
     artifacts: artifacts,
     localEchoMessages: localEchoMessages
   )
-  let pendingInputs = derivePendingWorkInputs(from: transcript)
+  // Raw derivation. `pendingInputs` is the transcript-only view of it and is
+  // what suppresses the originating approval/tool envelopes below; the full
+  // queue travels on the snapshot so the view can reconcile a receipt-less
+  // sweep against the session summary at read time. See `WorkPendingInputQueue`.
+  let pendingInputQueue = deriveWorkPendingInputQueue(from: transcript)
+  let pendingInputs = pendingInputQueue.liveItems
   let pendingSteers = derivePendingWorkSteers(from: transcript)
   let suppressedItemIds = Set(pendingInputs.map(\.itemId))
   let suppressedToolItemIds = Set(pendingInputs.map(\.itemId))
@@ -51,6 +56,7 @@ func buildWorkChatTimelineSnapshot(
   return WorkChatTimelineSnapshot(
     signature: signature,
     pendingInputs: pendingInputs,
+    pendingInputQueue: pendingInputQueue,
     pendingSteers: pendingSteers,
     toolCards: toolCards,
     eventCards: eventCards,
@@ -2492,14 +2498,22 @@ func buildWorkAdeCards(from transcript: [WorkChatEnvelope]) -> [WorkAdeCardModel
 }
 
 /// Map each resolved pending-input `itemId` to its resolution word so the
-/// question / plan / approval cards can render the outcome inline. When several
-/// resolutions share an itemId the last one wins (a re-answer supersedes).
+/// question / plan / approval cards can render the outcome inline.
+///
+/// First one wins, matching `resolvedInputStates` in `AgentChatMessageList.tsx`
+/// — the two surfaces must not disagree about the same transcript. A second
+/// receipt for one itemId is not a re-answer; it is a late click landing after
+/// the asker is gone, which `settleUnclaimedPendingInput` records without any
+/// runtime having acted on it (downgrading an accept to `cancelled`). Taking
+/// the last would show that outcome on iOS for a tool that really ran, while
+/// desktop kept showing the real one.
 private func workPendingInputResolutions(from transcript: [WorkChatEnvelope]) -> [String: String] {
   var result: [String: String] = [:]
   for envelope in transcript {
     guard case .pendingInputResolved(let itemId, let resolution, _) = envelope.event else { continue }
     let trimmed = resolution.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { continue }
+    guard result[itemId] == nil else { continue }
     result[itemId] = trimmed
   }
   return result
@@ -2575,6 +2589,15 @@ func buildWorkEventCards(
   // folded away (below) to avoid rendering the resolution twice.
   let resolutionByItemId = workPendingInputResolutions(from: transcript)
   let foldedResolutionItemIds = workResolvedInlineItemIds(from: transcript)
+  // One ribbon per itemId, first receipt wins — the same rule (and the same
+  // unsorted traversal order) as `workPendingInputResolutions` above, so the
+  // ribbon can never disagree with the inline outcome. A gate can now carry two
+  // receipts: a late click on a card whose asker is gone is settled by the
+  // host's `settleUnclaimedPendingInput` with a downgraded `cancelled`, and
+  // painting that beside the real outcome would read as two different answers
+  // to one question. Only permission / model-selection gates reach here at all;
+  // the rest are folded inline above.
+  var ribbonedResolutionItemIds = Set<String>()
   for envelope in transcript {
     if !suppressedItemIds.isEmpty {
       switch envelope.event {
@@ -2586,9 +2609,9 @@ func buildWorkEventCards(
         break
       }
     }
-    if case .pendingInputResolved(let itemId, _, _) = envelope.event,
-       foldedResolutionItemIds.contains(itemId) {
-      continue
+    if case .pendingInputResolved(let itemId, _, _) = envelope.event {
+      if foldedResolutionItemIds.contains(itemId) { continue }
+      guard ribbonedResolutionItemIds.insert(itemId).inserted else { continue }
     }
     if redundantWorkTerminalStatus(envelope.event, terminalDoneTurnIds: terminalDoneTurnIds) {
       continue

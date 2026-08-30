@@ -636,7 +636,14 @@ The Work model/activity parity path is concentrated in these files:
   structured web-search `results`, threaded onto the tool card's `Sources` chips
   and deduped against the action URLs), plus the Work context meter's
   provider-neutral measured/compacting/recalculating/unknown reduction across
-  live and persisted history. The Codex spending
+  live and persisted history. `WorkTimelineHelpers.swift` also owns
+  `workPendingInputResolutions`, the first-receipt-wins `itemId` → resolution
+  word map that gives question / plan / approval cards their inline outcome.
+  `WorkErrorAndMessageHelpers.swift` owns the pending-input gate derivation —
+  `workPendingInputSweepState`, `WorkPendingInputQueue`, and
+  `deriveWorkPendingInputQueue` — whose swept-vs-open split is reconciled against
+  the host by `WorkChatSessionView`'s `canonicalPendingInputs`.
+  The Codex spending
   cap surfaces as a "Spending cap reached" note under the Codex row in
   `WorkUsageActivityCarousel`.
 - `ADE/Services/SyncService.swift`, `ADE/Views/Work/WorkSessionDestinationView.swift`,
@@ -3212,6 +3219,73 @@ the stats and shows update guidance.
   narrow phones retain the activity verb and monospaced elapsed time without
   squeezing tool details into the same line. The association is data-driven and
   never invents file changes for providers that did not emit them.
+- **A swept pending-input gate is marked, not deleted, and the host decides.**
+  The phone mirrors desktop's split (see the "Pending input derivation" entry in
+  [Chat](../chat/README.md#fragile-and-tricky-wiring)) because it had the same
+  bug: a gate whose asker outlives its turn — a backgrounded `ade actions run`,
+  an `ask_user` whose caller stopped waiting — vanished from the strip while the
+  host went on counting it, so the composer unlocked, the send was refused, and
+  no card was left to answer. `workPendingInputSweepState`
+  (`WorkErrorAndMessageHelpers.swift`) now returns
+  `{ openItemIds, sweptItemIds }` instead of deleting: only
+  `pending_input_resolved` removes an id outright, while a `done` boundary or
+  the `tool_result` / `command` / `file_change` sharing the gate's `itemId`
+  merely records the sweep (and a re-request under the same id clears it, since
+  a fresh ask is not a swept one). `deriveWorkPendingInputQueue` returns a
+  `WorkPendingInputQueue` carrying both halves.
+
+  The queue has **two** readers, and the distinction is the point.
+  `liveItems` is what the transcript alone can prove, and serves the surfaces
+  with no summary to reconcile against: the snapshot builder's
+  `suppressedItemIds`, and `SyncService.pendingInputItemIdForSnapshot`, which
+  walks `derivePendingWorkInputs(...).last?.itemId` for the App Group widget
+  snapshot when the session row carries no `pendingInputItemId` of its own.
+  `derivePendingWorkInputs` is now just `liveItems`, and it must stay that way —
+  routing it through `resolved(...)` with the nil id those callers have would
+  make every receipt-less sweep look live, and the Lock Screen widget would
+  start over-claiming "needs you" with nothing in the app to show for it.
+  `resolved(hostPendingInputItemId:)` is the mirror of `resolvePendingInputs`,
+  keeping a swept entry the host still names and dropping the rest.
+  `WorkChatSessionView`'s `canonicalPendingInputs` applies it, reading
+  `hostPendingInputItemId` from the chat summary and falling back to the session
+  row — the same precedence `workCanonicalSessionState` uses for the "needs you"
+  phase. It is computed on **read**, deliberately outside the cached
+  `WorkChatTimelineSnapshot`: that snapshot is built without a summary, so
+  folding the join into it would cache a summary-tainted derivation and serve it
+  stale, exactly as it would in desktop's retained-session cache. Optimistic
+  answer-hiding composes on top (`pendingInputs`), and the reconciliation
+  fingerprint reads the canonical list so an optimistic hide cannot look like a
+  host-side change.
+
+  That placement leaves one accepted residual: a **rescued** gate renders twice,
+  once in the interactive strip and once as its static timeline chip. Timeline
+  suppression is computed from `liveItems` and baked into the cached snapshot,
+  and `timelinePresentation` is `@State` rather than a computed property, so
+  suppressing at read time would mean rebuilding the whole timeline on every
+  summary tick. A redundant chip beats an unanswerable card; this is a known
+  trade, not a regression.
+
+  One divergence is deliberate. Desktop's `keepAfterCompletedTurn` spares a
+  `plan_approval` after a completed turn because Codex raises one *after* its
+  turn ends; iOS classifies plan gates as approvals and sweeps them. That is now
+  safe rather than wrong — the host naming the gate in `pendingInputItemId`
+  brings it straight back — but it is why the two derivations are not
+  line-for-line equal.
+- **A gate's outcome is first-receipt-wins, on both surfaces and in both
+  renderings.** `workPendingInputResolutions` in `WorkTimelineHelpers.swift`
+  maps each resolved `itemId` to the resolution word the question / plan /
+  approval card renders inline, and keeps the **first** receipt for an `itemId` —
+  matching `resolvedInputStates` in `AgentChatMessageList.tsx`, because the phone
+  and the desktop are reading the same durable transcript and must not disagree
+  about it. The standalone "Input resolved" ribbon — which iOS paints only for
+  the permission / model-selection gates *not* folded inline — dedupes
+  first-wins over the same traversal order, so the ribbon cannot contradict the
+  inline outcome either. A second `pending_input_resolved` for one `itemId` is
+  not a re-answer: it is a late click landing after the asker is gone, which
+  `settleUnclaimedPendingInput` records without any runtime having acted on it
+  (downgrading an accept to `cancelled`). Taking the last receipt would show that
+  outcome on iOS for a tool that really ran, while desktop kept showing the real
+  one.
 - **Active-turn send and Stop use dismissing native popovers.** The in-session
   composer's delivery choices come from `WorkActiveSendCapability` in
   `WorkModels.swift` — a hand-mirrored copy of the desktop's canonical

@@ -34,6 +34,7 @@
 		AC7600000000000000000001 /* ActivityRowPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000001 /* ActivityRowPresentationTests.swift */; };
 		AC7600000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift */; };
 		AC7600000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift */; };
+		AC7600000000000000000007 /* WorkPendingInputRescueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */; };
 		AC7600000000000000000003 /* WorkSessionGroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000003 /* WorkSessionGroupingTests.swift */; };
 		AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */; };
 		AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000002 /* HubProjectPresentationTests.swift */; };
@@ -359,6 +360,7 @@
 		AC7500000000000000000001 /* ActivityRowPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRowPresentationTests.swift; path = ADETests/ActivityRowPresentationTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSpawnCompletionNoticeFoldTests.swift; path = ADETests/WorkSpawnCompletionNoticeFoldTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ApprovalRequestKindPrecedenceTests.swift; path = ADETests/ApprovalRequestKindPrecedenceTests.swift; sourceTree = "<group>"; };
+		AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPendingInputRescueTests.swift; path = ADETests/WorkPendingInputRescueTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000003 /* WorkSessionGroupingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGroupingTests.swift; path = ADETests/WorkSessionGroupingTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityWidgetPresentationTests.swift; path = ADETests/ActivityWidgetPresentationTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000002 /* HubProjectPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubProjectPresentationTests.swift; path = ADETests/HubProjectPresentationTests.swift; sourceTree = "<group>"; };
@@ -1168,6 +1170,7 @@
 				AC7500000000000000000001 /* ActivityRowPresentationTests.swift */,
 				AC7500000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift */,
 				AC7500000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift */,
+				AC7500000000000000000007 /* WorkPendingInputRescueTests.swift */,
 				AC7500000000000000000003 /* WorkSessionGroupingTests.swift */,
 				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
@@ -1703,6 +1706,7 @@
 				AC7600000000000000000001 /* ActivityRowPresentationTests.swift in Sources */,
 				AC7600000000000000000005 /* WorkSpawnCompletionNoticeFoldTests.swift in Sources */,
 				AC7600000000000000000006 /* ApprovalRequestKindPrecedenceTests.swift in Sources */,
+				AC7600000000000000000007 /* WorkPendingInputRescueTests.swift in Sources */,
 				AC7600000000000000000003 /* WorkSessionGroupingTests.swift in Sources */,
 				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,

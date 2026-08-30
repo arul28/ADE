@@ -1926,11 +1926,58 @@ func pendingWorkModelSelectionFromApproval(
   )
 }
 
+/// Raw pending-input derivation: every gate the transcript still implies, in the
+/// order it was requested, together with the subset that was swept at a turn
+/// boundary (or by its tool resolving) WITHOUT a `pending_input_resolved`
+/// receipt to prove it.
+///
+/// Mirrors the desktop `DerivedPendingInput.sweptWithoutReceipt` split in
+/// `pendingInput.ts`. Nothing renders this directly — every reader goes through
+/// `resolved(hostPendingInputItemId:)`, because only the session summary can say
+/// whether a receipt-less sweep was right. See "Pending input derivation" in
+/// `docs/features/chat/README.md`.
+struct WorkPendingInputQueue: Equatable {
+  var items: [WorkPendingInputItem]
+  var sweptItemIds: Set<String>
+
+  static let empty = WorkPendingInputQueue(items: [], sweptItemIds: [])
+
+  /// What the transcript alone can prove is open. Used for transcript-only
+  /// surfaces (event-card suppression, the widget snapshot) that have no
+  /// session summary to reconcile against.
+  var liveItems: [WorkPendingInputItem] {
+    guard !sweptItemIds.isEmpty else { return items }
+    return items.filter { !sweptItemIds.contains($0.itemId) }
+  }
+
+  /// Reconcile the sweep against the host's own count of what is still blocking.
+  ///
+  /// Desktop parity: `resolvePendingInputs` in `pendingInput.ts`. Only
+  /// `pendingInputItemId` can rescue a card swept without a receipt, so a gate
+  /// the host has stopped claiming stays swept — that is what keeps a genuinely
+  /// stale provider approval (its tool resolved, leaving no receipt) out of the
+  /// strip. The host names at most one item, so two live-at-once swept cards
+  /// reveal one at a time; harmless, because the strip draws `first` and the
+  /// "needs you" row badge reads the session's own pending/attention state.
+  func resolved(hostPendingInputItemId: String?) -> [WorkPendingInputItem] {
+    guard !sweptItemIds.isEmpty else { return items }
+    let trimmed = hostPendingInputItemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    // Collapse "no id" and "blank id" into one sentinel no real itemId equals.
+    let rescuedItemId: String? = trimmed.isEmpty ? nil : trimmed
+    return items.filter { !sweptItemIds.contains($0.itemId) || $0.itemId == rescuedItemId }
+  }
+}
+
 /// Ordered list of still-open pending inputs (approvals + structured questions + permission
 /// gates) in the order they were requested. Mirrors the desktop `derivePendingInputRequests`
 /// helper — resolved items are filtered out using the same predicate as `pendingWorkInputItemIds`.
 func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendingInputItem] {
-  let openIds = pendingWorkInputItemIds(from: transcript)
+  deriveWorkPendingInputQueue(from: transcript).liveItems
+}
+
+func deriveWorkPendingInputQueue(from transcript: [WorkChatEnvelope]) -> WorkPendingInputQueue {
+  let sweepState = workPendingInputSweepState(from: transcript)
+  let openIds = sweepState.allItemIds
   var seen = Set<String>()
   var results: [WorkPendingInputItem] = []
   // Question text of every gate that arrived wrapped in an `approval_request` /
@@ -1990,15 +2037,26 @@ func derivePendingWorkInputs(from transcript: [WorkChatEnvelope]) -> [WorkPendin
       continue
     }
   }
-  guard !rawToolCallQuestionTexts.isEmpty, !wrappedQuestionTexts.isEmpty else { return results }
-  return results.filter { item in
-    guard case .question(let model) = item,
-          let rawTexts = rawToolCallQuestionTexts[model.id]
-    else {
-      return true
+  let items: [WorkPendingInputItem]
+  if rawToolCallQuestionTexts.isEmpty || wrappedQuestionTexts.isEmpty {
+    items = results
+  } else {
+    items = results.filter { item in
+      guard case .question(let model) = item,
+            let rawTexts = rawToolCallQuestionTexts[model.id]
+      else {
+        return true
+      }
+      return rawTexts.isDisjoint(with: wrappedQuestionTexts)
     }
-    return rawTexts.isDisjoint(with: wrappedQuestionTexts)
   }
+  guard !sweepState.sweptItemIds.isEmpty else {
+    return WorkPendingInputQueue(items: items, sweptItemIds: [])
+  }
+  return WorkPendingInputQueue(
+    items: items,
+    sweptItemIds: sweepState.sweptItemIds.intersection(items.map(\.itemId))
+  )
 }
 
 /// Comparable question text for one gate, used to recognise the same ask
@@ -2122,9 +2180,38 @@ func workSystemNoticeResolvesQueuedSteer(_ message: String) -> Bool {
     || normalized.contains("delivering")
 }
 
+/// Ids the transcript still implies are open, split by how sure it is.
+///
+/// `openItemIds` is proof: nothing in the transcript says the gate is over.
+/// `sweptItemIds` is only evidence — a turn boundary passed, or the tool sharing
+/// the gate's itemId resolved — with no `pending_input_resolved` receipt to
+/// confirm it. A swept id is dead to every transcript-only reader and revivable
+/// by exactly one thing: the session summary's `pendingInputItemId`.
+struct WorkPendingInputSweepState: Equatable {
+  var openItemIds: Set<String>
+  var sweptItemIds: Set<String>
+
+  var allItemIds: Set<String> { openItemIds.union(sweptItemIds) }
+}
+
+/// Ids of pending inputs the transcript can prove are still open. Swept-without-
+/// receipt ids are deliberately excluded: callers with no session summary to
+/// reconcile against must not treat mere evidence as proof.
 func pendingWorkInputItemIds(from transcript: [WorkChatEnvelope]) -> Set<String> {
+  workPendingInputSweepState(from: transcript).openItemIds
+}
+
+func workPendingInputSweepState(from transcript: [WorkChatEnvelope]) -> WorkPendingInputSweepState {
   var approvals: [String: String?] = [:]
   var questions: [String: String?] = [:]
+  // Recorded, not applied. Cleared by a re-request under the same id (a fresh
+  // ask is not a swept one) and by a receipt (which deletes outright).
+  var swept = Set<String>()
+
+  func sweep(_ itemId: String) {
+    guard approvals.keys.contains(itemId) || questions.keys.contains(itemId) else { return }
+    swept.insert(itemId)
+  }
 
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
@@ -2134,34 +2221,57 @@ func pendingWorkInputItemIds(from transcript: [WorkChatEnvelope]) -> Set<String>
       } else {
         approvals.updateValue(turnId, forKey: itemId)
       }
+      swept.remove(itemId)
     case .structuredQuestion(_, _, let itemId, let turnId):
       questions.updateValue(turnId, forKey: itemId)
+      swept.remove(itemId)
     case .toolCall(let tool, let argsText, let itemId, _, let turnId):
       if isQuestionInputToolName(tool),
          pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) != nil {
         questions.updateValue(turnId, forKey: itemId)
+        swept.remove(itemId)
       }
     case .pendingInputResolved(let itemId, _, _):
+      // A hard delete, not a sweep: this is an explicit receipt.
       approvals.removeValue(forKey: itemId)
       questions.removeValue(forKey: itemId)
+      swept.remove(itemId)
     case .toolResult(_, _, let itemId, _, _, _),
          .command(_, _, _, _, let itemId, _, _, _),
          .fileChange(_, _, _, _, let itemId, _):
-      approvals.removeValue(forKey: itemId)
-      questions.removeValue(forKey: itemId)
+      // A provider approval shares its tool call's itemId, so the tool resolving
+      // moots it — but leaves no receipt, so this is evidence and not proof.
+      sweep(itemId)
     case .done(let status, _, _, let turnId, _, _, _):
       if status == "completed" {
-        approvals = approvals.filter { $0.value != turnId }
+        // Approvals only, and only this turn's; questions outlive their turn.
+        // An id that is ALSO registered as a question keeps that registration —
+        // matching the pre-sweep code, which dropped the approvals entry and
+        // left the questions one standing.
+        //
+        // Narrower than desktop's `keepAfterCompletedTurn`, which also spares a
+        // `plan_approval` (Codex raises one AFTER its turn completes). Here a
+        // plan gate is classified as an approval and so gets swept — which is
+        // now safe rather than wrong, because the host naming it in
+        // `pendingInputItemId` brings it straight back.
+        for (itemId, itemTurnId) in approvals where itemTurnId == turnId {
+          guard !questions.keys.contains(itemId) else { continue }
+          sweep(itemId)
+        }
       } else {
-        approvals.removeAll()
-        questions.removeAll()
+        for itemId in approvals.keys { sweep(itemId) }
+        for itemId in questions.keys { sweep(itemId) }
       }
     default:
       continue
     }
   }
 
-  return Set(approvals.keys).union(questions.keys)
+  let all = Set(approvals.keys).union(questions.keys)
+  return WorkPendingInputSweepState(
+    openItemIds: all.subtracting(swept),
+    sweptItemIds: swept.intersection(all)
+  )
 }
 
 func sortedWorkChatEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {

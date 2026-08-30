@@ -1690,7 +1690,7 @@ extension WorkChatSessionView {
   @MainActor
   func reconcileOptimisticallyAnsweredInputs() {
     guard !optimisticallyAnsweredInputIds.isEmpty else { return }
-    let canonical = Set(timelineSnapshot.pendingInputs.map(\.itemId))
+    let canonical = Set(canonicalPendingInputs.map(\.itemId))
     optimisticallyAnsweredInputIds.formIntersection(canonical)
   }
 

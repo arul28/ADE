@@ -44398,6 +44398,40 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Settle a card the user answered but whose asker is already gone.
+   *
+   * Returning silently is not enough, and "the UI will clear the stale entry"
+   * is no longer true: the renderer defers to the summary for a card swept
+   * without a receipt, and the summary's own restart fallback
+   * (`latestPendingInputItemIdFromEvents`) clears only on
+   * `pending_input_resolved`. With no receipt written, the card is redrawn by
+   * the next full re-derivation and the click accomplishes nothing — an
+   * unanswerable card, which is the failure this whole path exists to avoid.
+   *
+   * An accept is recorded as `cancel` because nothing consumed the acceptance;
+   * saying "accepted" of an approval no runtime received would be a lie in the
+   * durable, synced transcript.
+   */
+  const settleUnclaimedPendingInput = (
+    managed: ManagedChatSession,
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+  ): void => {
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: decision === "accept" || decision === "accept_for_session" ? "cancel" : decision,
+      turnId: null,
+      questions: [],
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: "That request is no longer active.",
+    });
+    persistChatState(managed);
+  };
+
   const respondToInput = async ({
     sessionId,
     itemId,
@@ -44450,18 +44484,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
-          turnId: null,
-          questions: [],
-        });
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: "That request is no longer active.",
-        });
-        persistChatState(managed);
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       const ensureWritable = (): void => {
@@ -44568,13 +44591,15 @@ export function createAgentChatService(args: {
       const pending = managed.runtime.approvals.get(itemId);
       if (!pending) {
         // The approval may have already been resolved (e.g. double-click,
-        // turn interrupted, or stale UI state). Log and return silently
-        // instead of throwing — the UI will clear the stale entry.
+        // turn interrupted, or stale UI state). Settle rather than throw —
+        // but settle with a receipt, not silence. See
+        // `settleUnclaimedPendingInput`.
         logger.warn("agent_chat.claude_approval_not_found", {
           sessionId,
           itemId,
-          decision,
+          decision: resolvedDecision,
         });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       managed.runtime.approvals.delete(itemId);
@@ -44617,12 +44642,17 @@ export function createAgentChatService(args: {
     if (cursorRuntime) {
       const pending = cursorRuntime.permissionWaiters.get(itemId);
       if (!pending) {
-        // Treat missing waiter as a benign race (e.g. the Cursor turn already
-        // resolved or was cancelled before the user responded). Simply no-op.
-        logger.debug("agent_chat.cursor_permission_waiter_missing", {
+        // Missing waiter is a benign race (e.g. the Cursor turn already
+        // resolved or was cancelled before the user responded), but the card
+        // the user just clicked still needs a receipt or it comes back.
+        // Warn, not debug: this no longer passes silently — it writes a durable
+        // receipt and paints a notice, so it needs a log that explains one.
+        logger.warn("agent_chat.cursor_permission_waiter_missing", {
           sessionId,
           itemId,
+          decision: resolvedDecision,
         });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       cursorRuntime.permissionWaiters.delete(itemId);
@@ -44642,10 +44672,12 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "droid") {
       const pending = managed.runtime.permissionWaiters.get(itemId);
       if (!pending) {
-        logger.debug("agent_chat.droid_permission_waiter_missing", {
+        logger.warn("agent_chat.droid_permission_waiter_missing", {
           sessionId,
           itemId,
+          decision: resolvedDecision,
         });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       managed.runtime.permissionWaiters.delete(itemId);
@@ -44668,18 +44700,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: resolvedDecision,
     });
-    emitPendingInputResolved(managed, {
-      itemId,
-      decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
-      turnId: null,
-      questions: [],
-    });
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      message: "That request is no longer active.",
-    });
-    persistChatState(managed);
+    settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
   };
 
   const approveToolUse = async ({
