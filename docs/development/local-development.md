@@ -101,6 +101,37 @@ The dev commands intentionally use a temp endpoint and a separate Electron profi
 ~/Library/Application Support/ade-desktop-dev
 ```
 
+The auto-started dev runtime is **detached**, so nobody is reading its stdout or
+stderr. Its output goes to an append-only dev log instead — a daemon that dies
+during startup would otherwise leave no trace at all:
+
+```text
+~/.ade/runtime/dev-runtime.out.log
+```
+
+The log is created mode `0600`, truncated when it passes ~20 MB, and is strictly
+best effort: if it cannot be opened the runtime still starts (with `stdio:
+"ignore"`, as before). The startup line printed by `dev:desktop` names the path
+whenever the log is in use.
+
+The detached runtime also gets a **sanitized environment**. It inherits the rest
+of the shell env (`PATH`, `HOME`, `ADE_PERF_RUN_ID`, …), but variables that
+identify the *launching* agent shell rather than the shared daemon are stripped
+by name: `ADE_DEFAULT_ROLE`, `ADE_CHAT_SESSION_ID`,
+`ADE_PARENT_CHAT_SESSION_ID`, `ADE_SPAWN_KIND`, `ADE_BROWSER_ACTOR_TOKEN`, the
+orchestration run identity (`ADE_RUN_ID`, `ADE_STEP_ID`, `ADE_ATTEMPT_ID`,
+`ADE_OWNER_ID`), and the location binding (`ADE_LANE_ID`, `ADE_PROJECT_ROOT`,
+`ADE_WORKSPACE_ROOT`). This matters when an ADE chat is what launched the
+script: `ptyService` stamps `ADE_DEFAULT_ROLE=agent` on every tracked agent CLI
+terminal, and any caller context carrying a `chatSessionId` downgrades a `cto`
+default to an agent — either one clamps the shared dev brain to an agent role
+and breaks project-wide desktop actions such as importing external sessions. The
+daemon's own role is computed from the sanitized env, never read back out of the
+shell that was just stripped, and its project/workspace comes from its own
+arguments. `ADE_RUNTIME_PARENT_PID` / `ADE_RUNTIME_IDLE_EXIT_MS` are removed for
+the separate reason that a shared daemon must outlive the process that launched
+it.
+
 Override it when needed:
 
 ```bash

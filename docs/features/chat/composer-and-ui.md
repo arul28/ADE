@@ -70,6 +70,10 @@ subagents, computer use). The pane derives all visible state from the
 | `QuestionReceipts.tsx` | The transcript record for a question: a one-line expandable receipt on the `chatCardPrimitives` / `AdeCard` convention once resolved (`AnsweredQuestionReceipt`), and an "awaiting you" row while the gate is open (`OpenQuestionReceipt`). |
 | `apps/desktop/src/shared/pendingInputAnswers.ts` | The shared answer contract — `answerState`, `sendLabel`, `buildAnswers`, `notePlaceholder`, `foldedSummary`, plus `sanitizeAnswersForTranscript` and `flattenAnswerForSingleStringProvider`. Imported directly by the desktop renderer, the web client (same component), and the TUI; iOS mirrors it in Swift. It also owns `isQuestionKind(kind)` — "is the agent asking you something, or asking you to allow something" — which `isAskQuestionRequest` now delegates to, and which the push publisher imports so the split is decided once. Anything unrecognised, including a kind from a newer runtime and the absent kind of an older event, is an approval: the safer of the two words to be wrong with. |
 | `chatMarkdown.tsx` | The shared agent-markdown renderer (`ChatMarkdown`, `buildChatMarkdownComponents`, `SAFE_PREVIEW_SCHEMA`) used by plan cards, question-option previews, and other non-transcript surfaces. Links route through `ChatMarkdownAnchor`: a resolvable workspace path becomes a button that opens through the chat workspace-path context (the Work tools-pane Files panel when the file is in this chat's own lane on this machine, the Files tab otherwise), a real URL opens in the in-app browser, and anything that is neither (including a bare `file:` href) renders as inert text. A file path must never reach the browser opener — `normalizeBrowserUrlInput` turns `laneService.ts` into `https://laneService.ts` and navigates the built-in browser to a garbage host. `SAFE_PREVIEW_SCHEMA` allows the `file:` protocol and single-letter drive "schemes" (both cases) on `href` because `rehypeSanitize` runs before `urlTransform` and would otherwise strip a Windows `C:\repo\x.ts` before it could be linkified; `javascript:` / `data:` / `vbscript:` stay blocked. `chatMarkdownUrlTransform` decodes the percent-encoded link destination before the drive check, since the markdown pipeline delivers `C:%5Crepo%5Cx.ts`. |
+| `chatMarkdownBlock.tsx` | `MarkdownBlock` — the transcript's own markdown renderer (extracted from `AgentChatMessageList.tsx`, which now imports it) plus the `MosaicRenderContext` type. Owns the prose wrapper classes, the `react-markdown` component overrides (headings, lists, tables, blockquotes, workspace-path links, `HighlightedCode` fences, the Claude-gated ` ```mosaic ` fence → `MosaicCard`) and an inner memoized `MarkdownBody`. It accepts an optional `tailMarkdown`: when the paced reveal is running, the settled prefix and the growing tail are rendered as two bodies inside one prose flow, so the settled half is byte-identical between frames and the memo bails out while only the short tail re-parses. Rows that are not being paced pass no tail and render exactly one body, identical to the pre-pacing output. |
+| `AssistantTextBody.tsx` | The assistant text row's markdown leaf, and the only component that re-renders at 60 Hz while a turn streams. Holds the reveal state (`useRevealedLength` / `useSplitRevealed`) so a frame costs one small subtree render instead of touching the transcript derivations, the row list, or sibling rows. `paced` is true for at most one row at a time. Writes `data-stream-text-len` (the **revealed** length, i.e. what the commit actually paints) only while a perf run is active — that is what `renderer/perf/streamSmoothness.ts` samples. |
+| `textReveal.ts` | Pure paced-reveal state machine — no rAF, no DOM, no React. Per commit, `step = min(backlog, max(1, ceil(backlog * elapsedMs / horizonMs)))`, i.e. exponential decay toward zero backlog with a one-character floor, so a burst drains within roughly `horizonMs` and a trickle still advances. Cuts are grapheme-safe (`clampToGraphemeBoundary`); without `Intl.Segmenter` pacing disables itself entirely. Also owns the horizon config (`DEFAULT_TEXT_REVEAL_HORIZON_MS = 150`, `localStorage` key `ade.textRevealHorizonMs`, `<= 0` restores paint-on-arrival), the 250 ms elapsed clamp that stops a backgrounded tab from dumping its backlog in one frame, the 60 Hz commit floor, and the incremental block scanner (`advanceSplitScan` / `splitRevealed`) that places the settled/tail cut only on a blank line at fence depth zero. |
+| `useRevealedText.ts` | The rAF binding for `textReveal.ts`. Runs a frame loop only while the row is paced, pacing is enabled, the document is visible, **and** the row intersects the viewport; any of those dropping reveals everything immediately and stops the loop, so background grid tiles, hidden windows, and scrolled-away rows keep paint-on-arrival. Visibility lives in refs (two independent axes, deliberately not folded into one boolean) so a tab switch or a scroll stops the loop without re-rendering. Retargeting happens during render, and a row whose first sight is already complete (history, virtualization remount, backfill) paints in full — only growth observed after mount is paced. |
 | `chatWorkspacePaths.tsx` | Workspace-path parsing/resolution plus the React context that carries the opener. See the chat [README](README.md#source-file-map) source map row for the full contract. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `pendingInput.ts` is the renderer's **only** pending-input derivation — a second, drifted copy once lived under `chat/hooks/` and was deleted; do not reintroduce one. It owns both halves of the contract: `derivePendingInputRequests` (transcript in, raw cards out) and `resolvePendingInputs` (raw cards plus session summary in, live cards out). `chatTranscriptRows.ts` also owns two message-list helpers: `shouldCollapseUserMessageText` (a user message over 600 characters or 8 lines renders collapsed) and `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
@@ -940,7 +944,7 @@ render unwindowed. Key rules:
 - Plan approval cards display the plan body as rich markdown inside a
   scrollable container (capped at `360px`). When a plan-approval event
   carries non-empty body text, it is rendered as a `MarkdownBlock`
-  beneath the header.
+  (`chatMarkdownBlock.tsx`) beneath the header.
 - The jump-to-latest pill (shown while scrolled away from the bottom of
   a live session) reads `N new · jump to latest` when rows arrived after
   the reader detached, and plain `Jump to latest` otherwise. The count
@@ -1014,12 +1018,71 @@ render unwindowed. Key rules:
 Row derivation uses `chatTranscriptRows.ts` (see
 [transcript-and-turns](transcript-and-turns.md)).
 
+### Row identity stabilization
+
+`events` gets a fresh array on every streaming delta, so every `useMemo`
+keyed on it produced a new object each token flush even when nothing it
+described had changed. `useStableIdentity(value, isSame)` returns the
+previous reference whenever a cheap content comparison says the two are
+equivalent — `sameMapContents`, `sameSetContents`, `sameKeyList` — and is
+applied to `resolvedInputStates`, `resolvedInputAnswers`,
+`staleInterruptReceipts`, `settledQueueRecoveryIds`, and `groupedRowKeys`.
+`groupedRowKeys` is the load-bearing one: its identity feeds `rowHeight`,
+which feeds `handleMeasure`, which feeds every rendered row's
+`ResizeObserver`. Without the latch, a pure content delta recreated all of
+them on each flush. When the keys genuinely change (rows added, removed,
+regrouped) the fresh array is returned and every downstream memo and effect
+recomputes exactly as before.
+
+### Paced text reveal
+
+Streamed assistant text arrives in lumps — the runtime coalesces deltas and
+flushes 5–7 times a second, and in subagent-heavy turns the gaps stretch
+past half a second — so unpaced prose lands as visible chunks rather than as
+a stream. The **store** is never delayed (copy, export, and every derivation
+read the full text the instant it arrives); only the painted slice is.
+
+`AgentChatMessageList` picks exactly one row to pace: the trailing `text`
+row of a streaming turn, found by scanning back at most
+`PACED_TEXT_ROW_SCAN_DEPTH` (8) rows so the search stays O(1) per delta. It
+passes `pacedTextReveal` down to that row, and `AssistantTextBody` owns the
+reveal from there. Everything else — ended sessions, idle turns, history,
+rows that mount already complete — keeps the pre-pacing paint-on-arrival
+path. `AgentChatPane` passes `textPacingEnabled={false}` for subagent
+transcript views: they are a secondary surface, so only the user's own prose
+pays for the reveal.
+
+Mechanics and guardrails:
+
+- The pacing algorithm, the grapheme-safe cutting, and the settled/tail
+  block scanner live in `textReveal.ts`; the frame loop lives in
+  `useRevealedText.ts`. See their source-map rows above.
+- Reveal is a leaf concern. The re-rendering component is
+  `AssistantTextBody`, not the row, the list, or any derivation above it.
+- The revealed prefix is split at the last blank line at fence depth zero.
+  The settled half is byte-identical between frames so `MarkdownBlock`'s
+  memoized body bails out; only the growing tail re-parses. The cut is never
+  placed inside a fenced code block, which would leave the settled half with
+  an unterminated fence and swallow the rest of the message.
+- Kill switch: set `ade.textRevealHorizonMs` in renderer `localStorage` and
+  reload. `0` (or any non-positive value) restores paint-on-arrival exactly;
+  the default is `150`. The value is read once per session and memoized —
+  it is on the per-frame path. A missing `Intl.Segmenter` disables pacing
+  the same way, because grapheme-safe cuts cannot be guaranteed without it.
+- Elapsed time fed into a commit is clamped to 250 ms, so a backgrounded tab
+  or a stalled runtime cannot make the first frame after the stall dump the
+  entire backlog — the exact lump the reveal exists to remove.
+- Commits are capped at 60 Hz. On a 240 Hz display one character per frame
+  is invisible and costs four times the React work for the same perceived
+  speed, so sub-interval frames accumulate their elapsed time instead.
+
 ## Mosaic cards
 
 A Claude-family agent can emit a fenced ` ```mosaic ` code block whose body
 is strict versioned JSON (`{"v":1,...}`) describing a small form — text /
 select / multiselect / number-or-slider / input / approve-deny / key-value
-table elements. `MarkdownBlock`'s code-fence handler renders it as an
+table elements. `MarkdownBlock`'s code-fence handler
+(`chatMarkdownBlock.tsx`) renders it as an
 interactive `MosaicCard` (`MosaicCard.tsx`) when the pane passes a
 Claude-gated `mosaic` context prop (`AgentChatPane`); non-Claude sessions,
 and any card that fails the strict parse in `chatMosaic.ts`

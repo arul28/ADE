@@ -462,6 +462,25 @@ type added to the union must be considered for this check.
 `getRecentEntries` (used by auto-title and compaction flush) calls the
 flush helper first so reads always reflect the latest streamed content.
 
+Every flush is labelled with why it happened — `timer` (the 100 ms
+window elapsed), `identityBreak` (the incoming fragment could not be
+appended to the buffered one), `interleave` (a non-text event forced the
+ordering flush) — and, while `ADE_PERF_RUN_ID` is set, recorded as a
+`chatTextFlush` perf event by `services/perf/chatTextProbe.ts`. That probe
+is what measures the real cadence the renderer has to absorb (flush count,
+characters per flush, deltas coalesced, gap since the previous flush). It
+is a no-op with no allocations when no run id is set. Note that
+`agentChatService` is not Electron-only: in a normal dev session the `ade`
+runtime daemon hosts the chat sessions, so it — not Electron main — is the
+process that emits these events, and both may append to the same log at
+once. See [ARCHITECTURE.md](../../ARCHITECTURE.md).
+
+The lumpiness this batching produces is what the renderer's paced text
+reveal smooths out; see
+[composer-and-ui.md](composer-and-ui.md#paced-text-reveal). The store still
+receives each flush whole and immediately — only the painted slice is
+paced.
+
 ## Virtual scrolling and message-list layout
 
 `AgentChatMessageList.tsx` keeps render cost proportional to the visible

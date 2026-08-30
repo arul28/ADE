@@ -1210,7 +1210,10 @@ ADE desktop**, even while the window is bound to a remote project. Most
 machine, so the Connections panel reads its identity, pairing code, and local
 device lists through `window.ade.sync.getLocalStatus(...)`, which deliberately
 bypasses the binding and targets this machine's local brain (see the
-`ade.sync.getLocalStatus` IPC handler and `useSyncConnections.ts`). The
+`ade.sync.getLocalStatus` IPC handler and `useSyncConnections.ts`; the call goes
+through the shared `renderer/lib/localSyncStatusReader.ts`, which coalesces it
+with every other subscriber's read and backs off while the local runtime is
+degraded). The
 binding-routed `sync.getStatus` is still fetched, but only to detect that the
 window is remote-bound and to name the machine it is working on. Because the
 pairing and device *mutations* (`setPin`, `generatePin`, `clearPin`,
