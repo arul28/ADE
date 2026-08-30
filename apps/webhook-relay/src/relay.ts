@@ -847,6 +847,12 @@ async function readDurableGitHubRepoAccess(env: RelayEnv, cacheKey: string): Pro
  * whose only pruning runs on the webhook-ingest path. Positive verdicts are
  * written durably, and only on refresh (roughly once an hour per token digest
  * and repository) — never on the cache hits that serve the 30-second poll.
+ *
+ * A denial must still retire any durable allow the same pair had earned, or the
+ * stale-on-rate-limit path would keep serving access the token just lost once
+ * the short isolate-level denial expired. `existingDurable` is the row this
+ * request already read, so an anonymous caller who has never been allowed
+ * causes no D1 write at all.
  */
 async function recordGitHubRepoAccessVerdict(
   env: RelayEnv,
@@ -855,10 +861,17 @@ async function recordGitHubRepoAccessVerdict(
   repo: { owner: string; name: string },
   level: GitHubRepoAccessLevel,
   verdict: GitHubRepoAccessVerdict,
+  existingDurable: DurableGitHubRepoAccess | null,
 ): Promise<void> {
   if (!cacheKey || !tokenHash) return;
+  if (verdict.verdict !== "allow") {
+    // Retire the durable allow first: the purge also clears isolate entries for
+    // this token and repository, and the denial below must outlive it.
+    if (existingDurable) await deleteDurableGitHubRepoAccess(env, tokenHash, repo);
+    cacheGitHubRepoAccess(cacheKey, verdict);
+    return;
+  }
   cacheGitHubRepoAccess(cacheKey, verdict);
-  if (verdict.verdict !== "allow") return;
 
   const now = Date.now();
   try {
@@ -887,6 +900,31 @@ async function recordGitHubRepoAccessVerdict(
       .run();
   } catch {
     // The isolate cache still holds the verdict; durability is best-effort.
+  }
+}
+
+/**
+ * Retires the durable allow for one token digest and repository. Both cached
+ * access levels go, so a denial can never leave a sibling row behind for the
+ * stale-on-rate-limit path to serve.
+ */
+async function deleteDurableGitHubRepoAccess(
+  env: RelayEnv,
+  tokenHash: string,
+  repo: { owner: string; name: string },
+): Promise<void> {
+  const repositoryKey = gitHubRepoKey(repo);
+  const prefix = `${tokenHash}:${repositoryKey}:`;
+  for (const key of [...githubRepoAccessByTokenHashAndRepo.keys()]) {
+    if (key.startsWith(prefix)) githubRepoAccessByTokenHashAndRepo.delete(key);
+  }
+  try {
+    await env.DB
+      .prepare("delete from github_repo_auth_cache where token_hash = ? and repository_key = ?")
+      .bind(tokenHash, repositoryKey)
+      .run();
+  } catch {
+    // Best-effort. The row still expires, and the denial holds in this isolate.
   }
 }
 
@@ -1118,14 +1156,14 @@ async function assertGitHubRepoAuthorized(
         await recordGitHubRepoAccessVerdict(env, cacheKey, tokenHash, repo, level, {
           verdict: "allow",
           repositoryId,
-        });
+        }, durable);
         return { authorized: true, repositoryId };
       }
       await recordGitHubRepoAccessVerdict(env, cacheKey, tokenHash, repo, level, {
         verdict: "deny",
         denyStatus: 403,
         denyMessage: null,
-      });
+      }, durable);
       return {
         authorized: false,
         response: insufficientRepoPermissionResponse(level),
@@ -1137,18 +1175,23 @@ async function assertGitHubRepoAuthorized(
       await recordGitHubRepoAccessVerdict(env, cacheKey, tokenHash, repo, level, {
         verdict: "allow",
         repositoryId,
-      });
+      }, durable);
       return { authorized: true, repositoryId };
     }
     if (fallback.outcome === "rate_limited") {
       const cooldown = await rememberGitHubRateLimit(env, tokenHash, fallback.rateLimitResetAt);
       return await serveStaleOrDenyUnderRateLimit(durable, repo, cooldown);
     }
+    if (fallback.outcome === "unavailable") {
+      // GitHub never answered the access question, so nothing is cached and the
+      // caller simply retries; the same policy the primary path applies to 5xx.
+      return { authorized: false, response: unverifiedRepoAccessResponse() };
+    }
     await recordGitHubRepoAccessVerdict(env, cacheKey, tokenHash, repo, level, {
       verdict: "deny",
       denyStatus: 403,
       denyMessage: null,
-    });
+    }, durable);
     return {
       authorized: false,
       response: insufficientRepoPermissionResponse(level),
@@ -1165,7 +1208,7 @@ async function assertGitHubRepoAuthorized(
       verdict: "deny",
       denyStatus: status,
       denyMessage: message,
-    });
+    }, durable);
   }
   return {
     authorized: false,
@@ -1210,6 +1253,13 @@ function collaboratorPermissionAllowsAccess(permission: string, level: GitHubRep
   return normalized === "admin" || normalized === "write" || normalized === "maintain";
 }
 
+function unverifiedRepoAccessResponse(): Response {
+  return json(
+    { ok: false, error: "GitHub could not confirm repository access right now. Try again shortly." },
+    { status: 403 },
+  );
+}
+
 function insufficientRepoPermissionResponse(level: GitHubRepoAccessLevel): Response {
   const error = level === "admin"
     ? "GitHub token must have admin access to manage the ADE webhook for this repository."
@@ -1218,9 +1268,20 @@ function insufficientRepoPermissionResponse(level: GitHubRepoAccessLevel): Respo
 }
 
 type AuthenticatedUserRepoPermission = {
-  outcome: "authorized" | "denied" | "rate_limited";
+  /** `unavailable` means GitHub gave no usable answer; it must not be cached. */
+  outcome: "authorized" | "denied" | "unavailable" | "rate_limited";
   rateLimitResetAt: number | null;
 };
+
+/**
+ * Only GitHub's own 401/403/404 are definitive answers about access. Anything
+ * else — a 5xx, an unexpected status, or a 200 whose body is missing the field
+ * we need — is a failure to determine access, and caching it as a denial would
+ * lock a legitimate caller out for the negative-cache window.
+ */
+function fallbackOutcomeForFailedCall(status: number): "denied" | "unavailable" {
+  return status === 401 || status === 403 || status === 404 ? "denied" : "unavailable";
+}
 
 async function fetchAuthenticatedUserRepoPermission(
   apiBaseUrl: string,
@@ -1233,8 +1294,11 @@ async function fetchAuthenticatedUserRepoPermission(
   if (userResponse.rateLimited) {
     return { outcome: "rate_limited", rateLimitResetAt: userResponse.rateLimitResetAt };
   }
+  if (!userResponse.ok) {
+    return { outcome: fallbackOutcomeForFailedCall(userResponse.status), rateLimitResetAt: null };
+  }
   const login = readString(userResponse.payload, "login");
-  if (!userResponse.ok || !login) return { outcome: "denied", rateLimitResetAt: null };
+  if (!login) return { outcome: "unavailable", rateLimitResetAt: null };
 
   const permissionResponse = await fetchGitHubApiJson(
     apiBaseUrl,
@@ -1244,11 +1308,14 @@ async function fetchAuthenticatedUserRepoPermission(
   if (permissionResponse.rateLimited) {
     return { outcome: "rate_limited", rateLimitResetAt: permissionResponse.rateLimitResetAt };
   }
-  if (!permissionResponse.ok) return { outcome: "denied", rateLimitResetAt: null };
+  if (!permissionResponse.ok) {
+    return { outcome: fallbackOutcomeForFailedCall(permissionResponse.status), rateLimitResetAt: null };
+  }
 
   const permission = readString(permissionResponse.payload, "permission");
+  if (!permission) return { outcome: "unavailable", rateLimitResetAt: null };
   return {
-    outcome: permission && collaboratorPermissionAllowsAccess(permission, level) ? "authorized" : "denied",
+    outcome: collaboratorPermissionAllowsAccess(permission, level) ? "authorized" : "denied",
     rateLimitResetAt: null,
   };
 }

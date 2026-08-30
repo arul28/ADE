@@ -746,6 +746,113 @@ describe("webhook relay", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
+    it("drops the durable allow when a live check denies the token, so no stale access survives", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));
+      const env = makeEnv();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.stubGlobal("fetch", stubRepoAccess());
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(env.DB.repoAuthVerdicts.size).toBe(1);
+
+      // The durable allow has gone stale-only, so the next poll re-verifies and
+      // GitHub now says the token lost access.
+      vi.setSystemTime(new Date("2026-07-16T13:00:01.000Z"));
+      recycleIsolate();
+      vi.stubGlobal("fetch", stubRepoAccessDenied(403));
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+
+      // A rate limit must not resurrect the retired allow, even after the short
+      // isolate-level denial has expired.
+      vi.setSystemTime(new Date("2026-07-16T13:10:00.000Z"));
+      recycleIsolate();
+      const rateLimited = stubRepoAccessRateLimited({ remaining: "0" });
+      vi.stubGlobal("fetch", rateLimited);
+      const response = await handleRequest(repoEventsRequest(), env);
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual(expect.objectContaining({ ok: false }));
+    });
+
+    it("does not cache a fallback-path server error as a denial", async () => {
+      const env = makeEnv();
+      // No `permissions` block forces the documented collaborator fallback, and
+      // GitHub then fails that call with a 5xx rather than answering it.
+      const flakyFallback = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://api.github.com/repos/owner/repo") {
+          return new Response(JSON.stringify({ id: 4242, full_name: "owner/repo" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ message: "Server Error" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      vi.stubGlobal("fetch", flakyFallback);
+
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+
+      // Nothing was cached, so the caller is re-verified rather than locked out
+      // for the negative-cache window, and now succeeds.
+      expect(flakyFallback).toHaveBeenCalledTimes(2);
+      const recovered = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://api.github.com/repos/owner/repo") {
+          return new Response(JSON.stringify({ id: 4242, full_name: "owner/repo" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url === "https://api.github.com/user") {
+          return new Response(JSON.stringify({ login: "octocat" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ permission: "write" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      vi.stubGlobal("fetch", recovered);
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(200);
+      expect(recovered).toHaveBeenCalledTimes(3);
+    });
+
+    it("still caches a fallback-path 404 as a definitive denial", async () => {
+      const env = makeEnv();
+      const notACollaborator = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "https://api.github.com/repos/owner/repo") {
+          return new Response(JSON.stringify({ id: 4242, full_name: "owner/repo" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url === "https://api.github.com/user") {
+          return new Response(JSON.stringify({ login: "octocat" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      vi.stubGlobal("fetch", notACollaborator);
+
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      expect((await handleRequest(repoEventsRequest(), env)).status).toBe(403);
+      // Three calls for the first attempt, none for the cached second.
+      expect(notACollaborator).toHaveBeenCalledTimes(3);
+      expect(env.DB.repoAuthVerdicts.size).toBe(0);
+    });
+
     it("serves a stale verdict while GitHub rate limits the verification call", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-16T12:00:00.000Z"));

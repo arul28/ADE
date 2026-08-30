@@ -4991,6 +4991,16 @@ export function createPrService({
     stopWhenUpdatedBeforeMs?: number | null;
     /** Called when the boundary above actually truncated the walk. */
     onDeltaStop?: () => void;
+    /**
+     * Called when `maxPages` ran out with the last page still full — GitHub had
+     * more to give and the budget, not the data, ended the walk.
+     *
+     * Deliberately a separate signal from `onDeltaStop` rather than something
+     * the caller infers from `out.length`: a delta cursor may only be recorded
+     * by a walk that actually reached the end of what it was asking for, and
+     * "did the budget cut this short" is a fact only this loop holds.
+     */
+    onBudgetExhausted?: () => void;
   }): Promise<T[]> => {
     const out: T[] = [];
     const pageSize = 100;
@@ -4999,6 +5009,10 @@ export function createPrService({
       args.query?.sort === "updated" && args.query?.direction === "desc"
         ? args.stopWhenUpdatedBeforeMs ?? null
         : null;
+    // Set by the two terminations that mean "there is nothing left to ask for
+    // on this walk": a short page, or the delta boundary. Falling out of the
+    // loop without it means the page budget ran out mid-history.
+    let walkComplete = false;
     for (let page = 1; page <= maxPages; page += 1) {
       // The only place a GitHub read failure is tagged, and the snapshot
       // rejection handler only arms its ladder on tagged errors. Every other
@@ -5021,7 +5035,10 @@ export function createPrService({
       // page of PRs report `repoPullRequestsMayHaveMore: true` with nothing
       // left to load, and a pagination affordance that lies is exactly what the
       // delta was not allowed to introduce.
-      if (batch.length < pageSize) break;
+      if (batch.length < pageSize) {
+        walkComplete = true;
+        break;
+      }
       if (
         deltaBoundaryMs != null
         && batch.some((item) => {
@@ -5030,9 +5047,11 @@ export function createPrService({
         })
       ) {
         args.onDeltaStop?.();
+        walkComplete = true;
         break;
       }
     }
+    if (!walkComplete) args.onBudgetExhausted?.();
     return out;
   };
 
@@ -9956,6 +9975,7 @@ export function createPrService({
         ? lastSweepAtMs - GITHUB_SWEEP_DELTA_SKEW_MS
         : null;
     let deltaStopped = false;
+    let sweepBudgetExhausted = false;
     let repoPullRequestsRaw = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls`,
       query: {
@@ -9968,6 +9988,7 @@ export function createPrService({
       maxPages: repoPullRequestMaxPages,
       stopWhenUpdatedBeforeMs: deltaBoundaryMs,
       onDeltaStop: () => { deltaStopped = true; },
+      onBudgetExhausted: () => { sweepBudgetExhausted = true; },
     });
     const repoPullRequestsFetchedBeforeLaneBackfill = repoPullRequestsRaw.length;
     repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(
@@ -10006,7 +10027,16 @@ export function createPrService({
     // Advance the cursor only once the rows this walk fetched are durable. The
     // next delta stops where this one started, so moving it before the upsert
     // would let a crash between the two skip a window nothing ever re-lists.
-    lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
+    //
+    // And only when the walk actually reached the end of what it asked for. The
+    // cursor's whole claim is "everything updated since this instant has been
+    // fetched", and a walk the PAGE BUDGET cut short never established that —
+    // it stopped with full pages still waiting. Recording it anyway is
+    // self-sealing: the next sweep would take it as a boundary, stop on page 1
+    // the moment the repo goes quiet, and never revisit the rows the truncated
+    // walk missed. Leaving the older cursor in place makes the next sweep walk
+    // deeper instead, which is how this heals itself.
+    if (!sweepBudgetExhausted) lastSweepAtMsByKey.set(sweepKey, sweepStartedAtMs);
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
     // runs first so the user-facing path takes precedence. Best-effort — never
     // throws into snapshot building. The legacy backfill below then adopts any

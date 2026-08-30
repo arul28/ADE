@@ -60,6 +60,7 @@ import {
   recordGithubRequestResponse,
   recordGithubRequestTransportFailure,
   type GithubRequestAccountingContext,
+  type GithubRequestTokenSource,
 } from "./githubRequestAccounting";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
@@ -182,6 +183,18 @@ function processGithubAuthState(provider: GitHubCliAuthProvider): ProcessGithubA
   };
   processGithubAuthStates.set(provider, created);
   return created;
+}
+
+/**
+ * Attribution for a request made with a resolved credential lookup.
+ *
+ * `none` is not a token source — it means no credential was found at all, so
+ * the request that follows is unauthenticated or about to fail. Counting it as
+ * `unknown` keeps the accounting key space aligned with
+ * `GitHubCredentialSource` instead of inventing a sixth bucket.
+ */
+function accountingTokenSource(source: GitHubAuthSource): GithubRequestTokenSource {
+  return source === "none" ? "unknown" : source;
 }
 
 function githubStatusProbeKey(token: string, repo: GitHubRepoRef | null): string {
@@ -617,7 +630,10 @@ export function createGithubService({
   const appUserAuth = createGitHubAppUserAuthService({
     credentialStore,
     logger,
-    fetchImpl: (input, init) => fetchGitHub(input, init ?? {}),
+    // Device-flow exchanges and the App credential's own `/user` validation all
+    // spend the GitHub App's quota, so they are attributed to it. The component
+    // tag still separates the `oauth` legs from the `user` probe.
+    fetchImpl: (input, init) => fetchGitHub(input, init ?? {}, { tokenSource: "app" }),
     userAgent: "ade-desktop",
   });
 
@@ -1106,21 +1122,31 @@ export function createGithubService({
     return { repo: parseGitHubRepoFromRemoteUrl(url), hasOrigin: true };
   };
 
-  const validateToken = async (token: string): Promise<{
+  const validateToken = async (
+    token: string,
+    // Status probes run on a timer against every known credential, so an
+    // unattributed `/user` call here is a standing block of requests nobody can
+    // assign to a token. Every caller knows which credential it is holding.
+    tokenSource: GithubRequestTokenSource = "unknown",
+  ): Promise<{
     userLogin: string | null;
     scopes: string[];
     tokenType: NonNullable<GitHubStatus["tokenType"]>;
     rateLimit: GitHubRateLimitState | null;
   }> => {
-    const response = await fetchGitHub("https://api.github.com/user", {
-      method: "GET",
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "user-agent": "ade-desktop",
-        "x-github-api-version": GITHUB_REST_API_VERSION,
-      }
-    });
+    const response = await fetchGitHub(
+      "https://api.github.com/user",
+      {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "user-agent": "ade-desktop",
+          "x-github-api-version": GITHUB_REST_API_VERSION,
+        },
+      },
+      { tokenSource },
+    );
 
     const scopes = parseGitHubScopeHeaders(response.headers);
     const rateLimit = readGitHubRateLimitState(response.headers);
@@ -1248,7 +1274,7 @@ export function createGithubService({
     forceRefresh = false,
   ): Promise<SharedGithubStatusProbeResult> => {
     try {
-      const validated = await validateToken(candidate.token);
+      const validated = await validateToken(candidate.token, candidate.source);
       let repoAccessOk: boolean | null = null;
       let repoAccessError: string | null = null;
       if (repo && (candidate.source === "app" || validated.tokenType === "fine-grained")) {
@@ -2297,8 +2323,12 @@ export function createGithubService({
     // personal account (the authenticated user's own login) must use
     // `/user/repos`. The renderer now populates `owner` from the connected
     // login, so detect that case and avoid the org route for personal publishes.
-    const authenticatedLogin = owner
-      ? ((await validateToken((await readAuthToken("write")).token ?? "").catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
+    const writeAuth = owner ? await readAuthToken("write") : null;
+    const authenticatedLogin = writeAuth
+      ? ((await validateToken(
+          writeAuth.token ?? "",
+          accountingTokenSource(writeAuth.source),
+        ).catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
       : null;
     // Only take the org route when we POSITIVELY resolved the authenticated
     // login and it differs from `owner`. If token validation failed (transient
@@ -2357,7 +2387,8 @@ export function createGithubService({
   const publishCurrentProject = async (
     args: { owner?: string; name: string; description?: string; isPrivate: boolean },
   ): Promise<{ state: "pushed" | "remote_added"; owner: string; name: string; fullName: string; htmlUrl: string }> => {
-    const token = (await readAuthToken("write")).token;
+    const writeAuth = await readAuthToken("write");
+    const token = writeAuth.token;
     if (!token) {
       const err = new Error("GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.") as Error & { code?: string };
       err.code = "github_not_connected";
@@ -2392,7 +2423,8 @@ export function createGithubService({
 
       const validated = requestedOwner
         ? null
-        : await validateToken(token).catch(() => ({ userLogin: null as string | null }));
+        : await validateToken(token, accountingTokenSource(writeAuth.source))
+            .catch(() => ({ userLogin: null as string | null }));
       const owner = requestedOwner || validated?.userLogin;
       if (!owner) throw createErr;
 

@@ -219,16 +219,23 @@ describe("headlessLinearServices", () => {
       configureGithubRequestAccounting(() => summaryLogger as never);
 
       githubService.setToken("ghp_usage_token");
-      await githubService.getStatus({ forceRefresh: true });
+      const status = await githubService.getStatus({ forceRefresh: true });
       emitGithubRequestUsageSummary("manual");
 
       const call = summaryLogger.info.mock.calls.at(-1);
       expect(call?.[0]).toBe("github.request_usage_summary");
       const meta = call?.[1] as { windowTotal: number; buckets: Array<Record<string, unknown>> };
       expect(meta.windowTotal).toBeGreaterThan(0);
+      // The status probe's `/user` call must land under the credential it used,
+      // not under `unknown` — the summary exists to attribute spend to a token.
+      expect(status.authSource).toBe("pat");
       expect(meta.buckets).toContainEqual(expect.objectContaining({
         component: "user",
+        tokenSource: "pat",
         outcome: "2xx",
+      }));
+      expect(meta.buckets).not.toContainEqual(expect.objectContaining({
+        tokenSource: "unknown",
       }));
     } finally {
       resetGithubRequestAccounting();

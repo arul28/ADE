@@ -68,6 +68,7 @@ import {
   recordGithubRequestResponse,
   recordGithubRequestTransportFailure,
   type GithubRequestAccountingContext,
+  type GithubRequestTokenSource,
 } from "../../desktop/src/main/services/github/githubRequestAccounting";
 import {
   classifyGitHubAuthFailure,
@@ -686,6 +687,17 @@ function boundGitHubResponseBody(
 }
 
 /**
+ * Attribution for a request made with a resolved credential lookup. Mirrors the
+ * desktop twin: `none` is not a token source, so it is counted as `unknown`
+ * rather than inventing a sixth bucket.
+ */
+function accountingTokenSource(
+  source: HeadlessGitHubStatus["authSource"],
+): GithubRequestTokenSource {
+  return source === "none" ? "unknown" : source;
+}
+
+/**
  * The machine-scoped sink the daemon's GitHub request accounting writes to.
  *
  * `createHeadlessGitHubService` is handed a project logger — and in the
@@ -774,7 +786,10 @@ export function createHeadlessGitHubService(
   const appUserAuth = createGitHubAppUserAuthService({
     credentialStore,
     logger,
-    fetchImpl: (input, init) => requestGitHub(input, init ?? {}),
+    // Device-flow exchanges and the App credential's own `/user` validation all
+    // spend the GitHub App's quota, so they are attributed to it. The component
+    // tag still separates the `oauth` legs from the `user` probe.
+    fetchImpl: (input, init) => requestGitHub(input, init ?? {}, { tokenSource: "app" }),
     userAgent: "ade-cli",
   });
   const tokenKey = "github.token.v1";
@@ -1026,20 +1041,28 @@ export function createHeadlessGitHubService(
   };
   const validateToken = async (
     token: string,
+    // Same gap the desktop twin had: status probes run on a timer against every
+    // known credential, so an unattributed `/user` call is a standing block of
+    // requests nobody can assign to a token.
+    tokenSource: GithubRequestTokenSource = "unknown",
   ): Promise<{
     userLogin: string | null;
     scopes: string[];
     tokenType: NonNullable<HeadlessGitHubStatus["tokenType"]>;
     rateLimit: GitHubRateLimitState | null;
   }> => {
-    const response = await requestGitHub("https://api.github.com/user", {
-      method: "GET",
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "user-agent": "ade-cli",
+    const response = await requestGitHub(
+      "https://api.github.com/user",
+      {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "user-agent": "ade-cli",
+        },
       },
-    });
+      { tokenSource },
+    );
     const scopes = parseGitHubScopeHeaders(response.headers);
     const rateLimit = readGitHubRateLimitState(response.headers);
     const payload = await response.json().catch(() => ({}));
@@ -1193,7 +1216,7 @@ export function createHeadlessGitHubService(
     forceRefresh: boolean,
   ): Promise<HeadlessGithubStatusProbeResult> => {
     try {
-      const validated = await validateToken(candidate.token);
+      const validated = await validateToken(candidate.token, candidate.source);
       let repoAccessOk: boolean | null = null;
       let repoAccessError: string | null = null;
       if (repo && (candidate.source === "app" || validated.tokenType === "fine-grained")) {
@@ -2304,7 +2327,8 @@ export function createHeadlessGitHubService(
     listRepoPulls,
     listPullRequestReviews,
     async publishCurrentProject(args) {
-      const token = (await readTokenAsync()).token ?? "";
+      const writeAuth = await readTokenAsync();
+      const token = writeAuth.token ?? "";
       if (!token) {
         const err = new Error(
           "GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a PAT in Settings.",
@@ -2352,7 +2376,10 @@ export function createHeadlessGitHubService(
 
         const validated = requestedOwner
           ? null
-          : await validateToken(token).catch(() => ({
+          : await validateToken(
+              token,
+              accountingTokenSource(writeAuth.source),
+            ).catch(() => ({
               userLogin: null as string | null,
             }));
         const owner = requestedOwner || validated?.userLogin;

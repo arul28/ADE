@@ -7974,20 +7974,40 @@ describe("reconcile sweep delta pagination", () => {
    * boundary a second sweep could derive. A full walk therefore costs three
    * requests and a delta walk costs one.
    */
+  function makeSweptPulls(page: number, count: number, updatedAt: string) {
+    return Array.from({ length: count }, (_value, index) => makeGitHubPull({
+      number: (page - 1) * 100 + index + 1,
+      title: `Swept PR ${(page - 1) * 100 + index + 1}`,
+      head: { ref: `feature/swept-${(page - 1) * 100 + index + 1}` },
+      updated_at: updatedAt,
+    }));
+  }
+
   function makePagedGithubService(updatedAt: string) {
     return makeGithubService({
       getStatus: vi.fn(async () => makeGithubStatus()),
       apiRequest: vi.fn(async (args: { query?: { page?: number } }) => {
         const page = Number(args.query?.page ?? 1);
         if (page > 2) return { data: [] };
-        return {
-          data: Array.from({ length: 100 }, (_value, index) => makeGitHubPull({
-            number: (page - 1) * 100 + index + 1,
-            title: `Swept PR ${(page - 1) * 100 + index + 1}`,
-            head: { ref: `feature/swept-${(page - 1) * 100 + index + 1}` },
-            updated_at: updatedAt,
-          })),
-        };
+        return { data: makeSweptPulls(page, 100, updatedAt) };
+      }),
+    });
+  }
+
+  /**
+   * Two pages ending in a SHORT one, so the walk completes inside either page
+   * budget — the open sweep's 10 and the closed sweep's 2. Tests that need a
+   * cursor to exist afterwards have to use this rather than
+   * `makePagedGithubService`, whose second full page exhausts the closed
+   * budget and therefore (correctly) records no cursor at all.
+   */
+  function makeCompletingGithubService(updatedAt: string) {
+    return makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: { page?: number } }) => {
+        const page = Number(args.query?.page ?? 1);
+        if (page > 2) return { data: [] };
+        return { data: makeSweptPulls(page, page === 1 ? 100 : 40, updatedAt) };
       }),
     });
   }
@@ -8055,8 +8075,10 @@ describe("reconcile sweep delta pagination", () => {
 
   it("keeps the open and closed sweep cursors apart", async () => {
     // The open sweep never lists a closed PR, so letting it advance the closed
-    // cursor would hide every PR that closed between closed sweeps.
-    const githubService = makePagedGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    // cursor would hide every PR that closed between closed sweeps. The open
+    // walk here completes, so it really does record a cursor — the closed sweep
+    // that follows must still walk both its pages.
+    const githubService = makeCompletingGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
     const { service } = buildService({ githubService, laneService: makeLaneService([]) });
 
     await service.getGithubSnapshot({ force: true, automaticRefresh: true });
@@ -8126,8 +8148,9 @@ describe("reconcile sweep delta pagination", () => {
 
   it("still reports more history when a full page is cut short by the boundary", async () => {
     // The other side of the same test: a full page carrying an old row really
-    // was truncated, and the affordance has to say so.
-    const githubService = makePagedGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    // was truncated, and the affordance has to say so. The first sweep has to
+    // COMPLETE for a cursor to exist at all, hence the short second page.
+    const githubService = makeCompletingGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
     const { service } = buildService({ githubService, laneService: makeLaneService([]) });
 
     await service.getGithubSnapshot({
@@ -8171,5 +8194,57 @@ describe("reconcile sweep delta pagination", () => {
     expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
       .toEqual([1]);
     expect(second.history?.repoPullRequestsMayHaveMore).toBe(true);
+  });
+
+  it("records no cursor when the page budget cut the walk short", async () => {
+    // The cursor claims "everything updated since this instant has been
+    // fetched". A walk that stopped with full pages still waiting never
+    // established that, and recording it anyway is self-sealing: the next sweep
+    // would take it as a boundary, stop on page 1 as soon as the repo went
+    // quiet, and never revisit the rows this walk missed. The closed sweep is
+    // the reachable case — its budget is two pages, so any repo with more than
+    // 200 PRs in `state:all` exhausts it on the very first sweep.
+    const githubService = makePagedGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+    const firstSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+
+    // Both pages full, budget spent: incomplete.
+    expect(firstSweep.map((query) => query.page)).toEqual([1, 2]);
+    // No cursor was recorded, so this one runs full again rather than stopping
+    // on page 1 against a boundary the first walk never earned.
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1, 2]);
+  });
+
+  it("records no cursor when an open sweep exhausts its own larger budget", async () => {
+    // Same rule on the open sweep, whose budget is ten pages. Rarer, but the
+    // failure mode is identical and the guard must not be closed-sweep-specific.
+    const updatedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: { page?: number } }) => ({
+        data: makeSweptPulls(Number(args.query?.page ?? 1), 100, updatedAt),
+      })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+    const firstSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+
+    expect(firstSweep.map((query) => query.page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 });
