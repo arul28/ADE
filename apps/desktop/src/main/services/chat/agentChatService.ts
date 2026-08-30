@@ -44618,7 +44618,17 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "opencode") {
       const pending = managed.runtime.pendingApprovals.get(itemId);
       if (!pending) {
-        throw new Error(`No pending approval found for item '${itemId}'.`);
+        // Throwing here is the same dead end as returning silently, only
+        // louder: the click surfaces an error, no receipt is written, and the
+        // summary goes on naming a card nothing can answer. Settle it like
+        // every other runtime.
+        logger.warn("agent_chat.opencode_approval_not_found", {
+          sessionId,
+          itemId,
+          decision: resolvedDecision,
+        });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        return;
       }
       managed.runtime.pendingApprovals.delete(itemId);
       const reply = resolvedDecision === "accept_for_session"

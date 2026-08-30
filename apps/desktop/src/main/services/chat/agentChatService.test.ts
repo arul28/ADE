@@ -39773,7 +39773,10 @@ describe("createAgentChatService", () => {
         setPermissionMode,
       } as any);
 
-      const { service, logger } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -39801,6 +39804,21 @@ describe("createAgentChatService", () => {
           decision: "accept",
         }),
       );
+
+      // A silent return is not enough. The renderer keeps a card the summary
+      // still names, and the summary's restart fallback only stops naming it
+      // once a receipt exists — so without this the click accomplishes nothing
+      // and the next full re-derivation draws the card again.
+      const receipt = events.find((entry) =>
+        entry.event.type === "pending_input_resolved"
+        && entry.event.itemId === "nonexistent-item-id");
+      expect(receipt, "answering a card with no waiter must write a receipt").toBeTruthy();
+      // Recorded as cancelled, not accepted: no runtime ever received the
+      // acceptance, and this event is durable and synced.
+      expect((receipt!.event as { resolution: string }).resolution).toBe("cancelled");
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.message === "That request is no longer active.")).toBe(true);
     });
 
   it("preserves original attachments across local auto-continuation retries", async () => {
