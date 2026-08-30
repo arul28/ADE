@@ -1,0 +1,22 @@
+---
+title: "v1.2.69"
+description: "Release notes for ADE v1.2.69 - August 30, 2026"
+---
+
+Chat recovery is more resilient, attachments are easier to send and inspect, and `ade triage` can hand a broken installation to your agent.
+
+## Chat recovery
+
+- **Usage-limit recovery can resume automatically.** Claude and Codex sessions can schedule a durable, cancellable resume when a provider reports a reset time, with a cap on consecutive retries and clear status in the recovery card and Chat info.
+- **Pending questions stay visible until they are resolved.** A question can outlive the turn that raised it without wedging the chat or disappearing from the Work surface. Answering a question whose caller has gone away now records the resolution consistently across runtimes and iOS.
+- **Settled chat activity is quieter.** Completion notices fold together and settled sessions file consistently across local and paired runtimes.
+
+## Attachments and triage
+
+- **Attachments work across local and remote sessions.** ADE stages files up to 50 MB, uses a path-copy route locally and a ticketed upload route remotely, and provides composer chips plus a shared preview modal.
+- **`ade triage` creates a safe handoff for broken installations.** It gathers redacted context, maintains a troubleshooting playbook, and can hand the result to the user’s own agent CLI or print it for an already-running agent.
+
+## Sessions and iOS
+
+- **Metadata refreshes use focused context.** Title, lane, and status regeneration sends only the requested identity and recent assistant context, while Work surfaces show which fields are being refreshed.
+- **iOS follows the pending-input recovery rules.** The companion app keeps unresolved questions visible, applies the first receipt only, and avoids duplicate resolution notices.

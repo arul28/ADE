@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.69] - 2026-08-30
+
+### Chat recovery
+
+- Usage-limit recovery can resume Claude and Codex sessions automatically when a provider reports a reset time, with durable cancellation, bounded consecutive retries, and visible status in the recovery card and Chat info.
+- Pending questions stay visible until they are resolved, even when they outlive the turn that raised them. Answering a question whose caller has gone away now records the resolution consistently across runtimes and iOS (#1184).
+- Completion notices fold together and settled sessions file consistently across local and paired runtimes.
+
+### Attachments and triage
+
+- Attachments work across local and remote sessions with 50 MB staging, path-copy and ticketed upload routes, composer chips, and a shared preview modal (#1182).
+- `ade triage` gathers redacted context, maintains a troubleshooting playbook, and hands broken installations to the user’s own agent CLI or prints the handoff for an already-running agent (#1182).
+
+### Sessions and iOS
+
+- Metadata refreshes use focused context for the requested title, lane, or status fields, and Work surfaces show which fields are being refreshed (#1181).
+- iOS keeps unresolved questions visible, applies the first resolution receipt only, and avoids duplicate resolution notices (#1184).
+
 ## [1.2.68] - 2026-08-29
 
 ### Agent reliability
@@ -1819,7 +1837,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.68...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.69...HEAD
+[1.2.69]: https://github.com/arul28/ADE/compare/v1.2.68...v1.2.69
 [1.2.68]: https://github.com/arul28/ADE/compare/v1.2.67...v1.2.68
 [1.2.67]: https://github.com/arul28/ADE/compare/v1.2.66...v1.2.67
 [1.2.66]: https://github.com/arul28/ADE/compare/v1.2.65...v1.2.66
