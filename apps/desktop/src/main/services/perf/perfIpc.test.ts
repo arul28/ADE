@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IPC } from "../../../shared/ipc";
+import type * as PerfLogModule from "./perfLog";
 
 const ipcHandlers = vi.hoisted(
   () => new Map<string, (...args: unknown[]) => unknown>(),
@@ -32,7 +33,10 @@ vi.mock("./metricsSampler", () => ({
   stopMetricsSampler: stopMetricsSamplerMock,
 }));
 
-vi.mock("./perfLog", () => ({
+// Partial mock: only the run-state functions are faked. `isPerfEventKind` must
+// stay real — it is the single source the handler validates against.
+vi.mock("./perfLog", async () => ({
+  ...(await vi.importActual<typeof PerfLogModule>("./perfLog")),
   appendEvent: appendEventMock,
   finishPerfRun: finishPerfRunMock,
   getActiveRun: getActiveRunMock,

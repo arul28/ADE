@@ -5582,6 +5582,25 @@ export function registerIpc({
     );
   });
 
+  // A degraded local runtime stays degraded for as long as it takes a human to
+  // fix it, and every renderer read logs the same sentence. Report the edge into
+  // a reason, then at most once a minute while it persists — same shape as the
+  // account publisher's warnOnce. A recovered read clears the latch, so the next
+  // outage is reported immediately.
+  const LOCAL_STATUS_DEGRADED_WARN_INTERVAL_MS = 60_000;
+  let lastDegradedWarnReason: string | null = null;
+  let lastDegradedWarnAtMs = 0;
+  const warnLocalStatusDegraded = (reason: string): void => {
+    const nowMs = Date.now();
+    const suppressed =
+      lastDegradedWarnReason === reason
+      && nowMs - lastDegradedWarnAtMs < LOCAL_STATUS_DEGRADED_WARN_INTERVAL_MS;
+    if (suppressed) return;
+    lastDegradedWarnReason = reason;
+    lastDegradedWarnAtMs = nowMs;
+    getCtx().logger.warn("sync.local_status_degraded", { error: reason });
+  };
+
   const readLocalSyncStatus = async (arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const params = {
       includeTransferReadiness: arg?.includeTransferReadiness === true,
@@ -5591,10 +5610,12 @@ export function registerIpc({
       try {
         // Machine-level call: intentionally bypasses the window's local/remote
         // project binding so Connections can always describe this computer.
-        return await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
+        const snapshot = await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
           "sync.getStatus",
           params,
         );
+        lastDegradedWarnReason = null;
+        return snapshot;
       } catch (error) {
         if (!isSyncServiceUnavailableError(error)) {
           // This is the ONLY source for the This-Machine card, and the card is
@@ -5604,9 +5625,7 @@ export function registerIpc({
           // load connection details" whenever the local runtime was down.
           // Answer with a machine-only snapshot whose routes are honestly all
           // down and whose blocking text carries the real reason instead.
-          getCtx().logger.warn("sync.local_status_degraded", {
-            error: error instanceof Error ? error.message : String(error),
-          });
+          warnLocalStatusDegraded(error instanceof Error ? error.message : String(error));
           return buildMachineOnlySyncSnapshot(error);
         }
       }

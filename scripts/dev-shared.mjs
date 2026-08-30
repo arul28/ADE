@@ -319,7 +319,7 @@ function isTcpSocketPath(socketPath) {
   return socketPath.startsWith("tcp://");
 }
 
-function canAutoStartRuntime(socketPath) {
+export function canAutoStartRuntime(socketPath) {
   if (!isTcpSocketPath(socketPath)) return true;
   try {
     const parsed = new URL(socketPath);
@@ -475,10 +475,18 @@ async function getRuntimeInfo(socketPath) {
   return readRuntimeInfo(result);
 }
 
-function runtimeMismatchReason(info, expected = {}) {
+export function runtimeMismatchReason(info, expected = {}) {
   const expectedVersion = resolveDevAppVersion();
   const expectedBuildHash = computeRuntimeBuildHash();
-  const expectedDefaultRole = normalizeDefaultRole(process.env.ADE_DEFAULT_ROLE, "cto");
+  // Derived from the SANITIZED parent env — the same transform that produces
+  // the daemon's own env (`detachedDevRuntimeEnv`). An agent shell exports
+  // ADE_DEFAULT_ROLE=agent, which we strip at spawn, so the daemon correctly
+  // reports `cto`; comparing against the raw launcher env would call that a
+  // mismatch and restart a healthy daemon on every check.
+  const expectedDefaultRole = normalizeDefaultRole(
+    sanitizeParentEnvForDevRuntime(expected.parentEnv ?? process.env).ADE_DEFAULT_ROLE,
+    "cto",
+  );
   const expectedProjectRoot = expected.projectRoot ? path.resolve(expected.projectRoot) : null;
   if (info.version && info.version !== expectedVersion) {
     return `version ${info.version} != ${expectedVersion}`;
@@ -554,6 +562,38 @@ export async function shutdownRuntime(socketPath) {
   await waitForSocketToClose(socketPath);
 }
 
+/** Where the detached dev daemon's stdout/stderr lands. Dev-only, append-only. */
+export function devRuntimeLogPath() {
+  return path.join(os.homedir(), ".ade", "runtime", "dev-runtime.out.log");
+}
+
+/** Appending forever is fine for a dev log; ~20 MB is where it stops being useful. */
+const DEV_RUNTIME_LOG_MAX_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Open the dev runtime log for appending, truncating it first when it has
+ * grown past the size guard. Returns null when the log cannot be opened — a
+ * missing log must never stop the runtime from starting.
+ */
+function openDevRuntimeLogFd(logPath) {
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    try {
+      // A log we cannot stat or truncate is still a log we can append to;
+      // never let the size guard cost us the daemon's only startup trace.
+      const size = fs.statSync(logPath, { throwIfNoEntry: false })?.size ?? 0;
+      if (size > DEV_RUNTIME_LOG_MAX_BYTES) fs.truncateSync(logPath, 0);
+    } catch {
+      // best effort
+    }
+    // The dev log can carry runtime output; keep it owner-only where the mode
+    // is honored (ignored on Windows).
+    return fs.openSync(logPath, "a", 0o600);
+  } catch {
+    return null;
+  }
+}
+
 export async function ensureRuntime(socketPath, projectRoot = null) {
   try {
     const info = await getRuntimeInfo(socketPath);
@@ -572,14 +612,28 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
   if (!canAutoStartRuntime(socketPath)) {
     throw new Error(`Cannot auto-start ADE dev runtime on remote TCP socket ${socketPath}. Start it with npm run dev:runtime, or use a local TCP/Unix socket for auto mode.`);
   }
-  process.stdout.write(`[ade] starting dev runtime at ${socketPath}\n`);
+  const logPath = devRuntimeLogPath();
+  const logFd = openDevRuntimeLogFd(logPath);
+  process.stdout.write(
+    `[ade] starting dev runtime at ${socketPath}${logFd === null ? "" : ` (log: ${logPath})`}\n`,
+  );
   const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath], {
     cwd: repoRoot,
     env: detachedDevRuntimeEnv(socketPath, projectRoot),
     detached: true,
-    stdio: "ignore",
+    // Detached means nobody is reading this process's output — without a log
+    // file a dev daemon that dies at startup leaves no trace at all.
+    stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
     windowsHide: process.platform === "win32",
   });
+  if (logFd !== null) {
+    // The child owns its dup of the fd now.
+    try {
+      fs.closeSync(logFd);
+    } catch {
+      // best effort
+    }
+  }
   const runtimeExitedBeforeReady = new Promise((_, reject) => {
     child.once("error", (error) => {
       reject(new Error(
@@ -638,10 +692,10 @@ async function terminateSpawnedRuntime(child) {
   }
 }
 
-export function devRuntimeEnv(socketPath, projectRoot) {
+export function devRuntimeEnv(socketPath, projectRoot, parentEnv = process.env) {
   return {
     ADE_CLI_VERSION: resolveDevAppVersion(),
-    ADE_DEFAULT_ROLE: normalizeDefaultRole(process.env.ADE_DEFAULT_ROLE, "cto"),
+    ADE_DEFAULT_ROLE: normalizeDefaultRole(parentEnv.ADE_DEFAULT_ROLE, "cto"),
     ADE_DEV_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
     ADE_RPC_SOCKET_PATH: socketPath,
@@ -650,34 +704,69 @@ export function devRuntimeEnv(socketPath, projectRoot) {
   };
 }
 
+/**
+ * Strip the launching agent shell's identity out of an environment before it is
+ * handed to the shared dev daemon.
+ *
+ * The shared dev brain is the desktop/operator runtime, not the agent shell
+ * that happened to launch it. If an ADE chat launches this script, carrying
+ * its session identity into the daemon makes every desktop RPC connection
+ * session-bound and clamps the requested CTO role back to an agent
+ * (apps/ade-cli/src/runtimeRoles.ts:78 — any caller context with a
+ * chatSessionId downgrades a `cto` default), and an inherited
+ * ADE_DEFAULT_ROLE=agent (set for every tracked agent CLI terminal in
+ * apps/desktop/src/main/services/pty/ptyService.ts:5758) clamps it outright.
+ * That breaks project-wide desktop actions such as importing external
+ * sessions. Strip by explicit name — the daemon still needs the rest of the
+ * shell env (PATH, HOME, ADE_PERF_RUN_ID, …).
+ *
+ * Exported because freshness checks must derive what they *expect* the daemon
+ * to report from the very same sanitization that produced the daemon's env.
+ * Reading `process.env.ADE_DEFAULT_ROLE` directly makes an agent shell expect
+ * `agent`, see the (correct) `cto` the daemon reports, and restart a healthy
+ * daemon on every `ensureRuntime()` call.
+ */
+export function sanitizeParentEnvForDevRuntime(parentEnv = process.env) {
+  const inherited = { ...parentEnv };
+  // A shared dev runtime outlives the terminal or Electron process that
+  // launched it. ADE-hosted shells can carry these lifecycle controls from a
+  // different runtime; inheriting them makes this detached server disappear
+  // as soon as that unrelated parent exits or its idle timer fires.
+  delete inherited.ADE_RUNTIME_PARENT_PID;
+  delete inherited.ADE_RUNTIME_IDLE_EXIT_MS;
+  for (const key of [
+    // Identity/role of the launching agent shell.
+    "ADE_DEFAULT_ROLE", // ptyService stamps "agent"; the daemon must default to cto
+    "ADE_CHAT_SESSION_ID", // session-bound caller context → cto clamped to agent
+    "ADE_PARENT_CHAT_SESSION_ID", // spawn lineage of the launching CLI, not the daemon's
+    "ADE_SPAWN_KIND", // ditto — would make daemon-launched work look spawned
+    "ADE_BROWSER_ACTOR_TOKEN", // browser capability minted for that chat session
+    // Orchestration run identity (worker-like callers).
+    "ADE_RUN_ID",
+    "ADE_STEP_ID",
+    "ADE_ATTEMPT_ID",
+    "ADE_OWNER_ID",
+    // Location binding: the agent shell runs inside a lane worktree; the shared
+    // daemon must resolve its project/workspace from its own arguments instead.
+    "ADE_LANE_ID",
+    "ADE_PROJECT_ROOT",
+    "ADE_WORKSPACE_ROOT",
+  ]) {
+    delete inherited[key];
+  }
+  return inherited;
+}
+
 export function detachedDevRuntimeEnv(
   socketPath,
   projectRoot,
   parentEnv = process.env,
 ) {
-  const env = {
-    ...parentEnv,
-    ...devRuntimeEnv(socketPath, projectRoot),
+  const inherited = sanitizeParentEnvForDevRuntime(parentEnv);
+  return {
+    ...inherited,
+    // Computed from the sanitized env: the role must not be read back out of
+    // the agent shell we just stripped.
+    ...devRuntimeEnv(socketPath, projectRoot, inherited),
   };
-  // A shared dev runtime outlives the terminal or Electron process that
-  // launched it. ADE-hosted shells can carry these lifecycle controls from a
-  // different runtime; inheriting them makes this detached server disappear
-  // as soon as that unrelated parent exits or its idle timer fires.
-  delete env.ADE_RUNTIME_PARENT_PID;
-  delete env.ADE_RUNTIME_IDLE_EXIT_MS;
-  // The shared dev brain is the desktop/operator runtime, not the agent shell
-  // that happened to launch it. If an ADE chat launches this script, carrying
-  // its session identity into the daemon makes every desktop RPC connection
-  // session-bound and clamps the requested CTO role back to an agent. That
-  // breaks project-wide desktop actions such as importing external sessions.
-  for (const key of [
-    "ADE_CHAT_SESSION_ID",
-    "ADE_RUN_ID",
-    "ADE_STEP_ID",
-    "ADE_ATTEMPT_ID",
-    "ADE_OWNER_ID",
-  ]) {
-    delete env[key];
-  }
-  return env;
 }

@@ -2,18 +2,36 @@ import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export type PerfEventKind =
-  | "scenarioStart"
-  | "scenarioEnd"
-  | "manualStep"
-  | "mark"
-  | "measure"
-  | "webVital"
-  | "longTask"
-  | "ipcInvoke"
-  | "processMetrics"
-  | "rendererMemory"
-  | "note";
+/**
+ * The single source of truth for event kinds: the type is derived from this
+ * list and `isPerfEventKind` validates against it, so a new kind cannot be
+ * added to one and forgotten in the other.
+ */
+const PERF_EVENT_KINDS = [
+  "scenarioStart",
+  "scenarioEnd",
+  "manualStep",
+  "mark",
+  "measure",
+  "webVital",
+  "longTask",
+  "ipcInvoke",
+  "processMetrics",
+  "rendererMemory",
+  "mainLoopDelay",
+  "chatTextFlush",
+  "streamSmoothness",
+  "note",
+] as const;
+
+export type PerfEventKind = (typeof PERF_EVENT_KINDS)[number];
+
+const VALID_EVENT_KINDS: ReadonlySet<string> = new Set<PerfEventKind>(PERF_EVENT_KINDS);
+
+/** Runtime guard for kinds arriving over IPC from the renderer. */
+export function isPerfEventKind(kind: string): kind is PerfEventKind {
+  return VALID_EVENT_KINDS.has(kind);
+}
 
 export type PerfEvent = {
   ts: number;
@@ -99,6 +117,14 @@ export function finishPerfRun(runId: string): void {
   }
 }
 
+/**
+ * More than one process can be writing this file at once — Electron main and
+ * the `ade` runtime daemon both host chat sessions and both append here. Keep
+ * this a SINGLE `appendFileSync` of one already newline-terminated string: that
+ * is one O_APPEND write per event, which the kernel will not interleave with
+ * another writer's line. Never split the payload and the newline into two
+ * writes, and never build a line across multiple calls.
+ */
 export function appendEvent(event: PerfEvent): void {
   if (!active) return;
   try {

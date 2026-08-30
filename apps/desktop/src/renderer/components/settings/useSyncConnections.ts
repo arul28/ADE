@@ -4,6 +4,7 @@ import {
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import { readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 
 export type SyncConnections = ReturnType<typeof useSyncConnections>;
 
@@ -43,7 +44,9 @@ export function useSyncConnections() {
   const [error, setError] = useState<string | null>(null);
   const refreshGeneration = useRef(0);
 
-  const refresh = useCallback(async () => {
+  // `force` bypasses the local-status backoff window for reads a person asked
+  // for (Try again, or the read that follows a device mutation).
+  const refresh = useCallback(async (options?: { force?: boolean }) => {
     const generation = ++refreshGeneration.current;
     // Settle each read independently. The local snapshot is authoritative for
     // the This-Mac card; the routed status/devices are best-effort context
@@ -55,7 +58,9 @@ export function useSyncConnections() {
         (routed) => ({ status: routed }),
         () => ({ status: null }),
       ),
-      window.ade.sync.getLocalStatus().then(
+      // Shared reader: coalesces with every other subscriber's read of the
+      // same broadcast and backs off while the local runtime is unhealthy.
+      readLocalSyncStatus({ force: options?.force === true }).then(
         (localStatus) => ({ status: localStatus, error: null }),
         (localError: unknown) => ({ status: null, error: localError }),
       ),
@@ -84,7 +89,11 @@ export function useSyncConnections() {
     let cancelled = false;
     void (async () => {
       try {
-        await refresh();
+        // Opening Connections is user intent: issue a real read even if an
+        // earlier degraded read left the shared reader inside its backoff
+        // window. The broadcast- and interval-driven refreshes below stay
+        // unforced so a sick runtime is still only polled at the backoff rate.
+        await refresh({ force: true });
       } catch (refreshError) {
         if (!cancelled) setError(errorMessage(refreshError));
       } finally {
@@ -127,7 +136,7 @@ export function useSyncConnections() {
     setNotice(null);
     try {
       await work();
-      await refresh();
+      await refresh({ force: true });
     } catch (actionError) {
       setError(errorMessage(actionError));
     } finally {
@@ -171,7 +180,7 @@ export function useSyncConnections() {
   const retryInitialLoad = useCallback(() => {
     setLoading(true);
     setError(null);
-    void refresh()
+    void refresh({ force: true })
       .catch((refreshError) => setError(errorMessage(refreshError)))
       .finally(() => setLoading(false));
   }, [refresh]);
