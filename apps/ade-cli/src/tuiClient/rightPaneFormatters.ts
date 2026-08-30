@@ -189,13 +189,12 @@ export function formatPrSummary(value: unknown): string {
   const draft = pickBoolean(pr, ["isDraft", "draft"]) === true ? " · draft" : "";
   const title = pickString(pr, ["title", "name"]) ?? "Untitled PR";
   const id = pickString(pr, ["id", "prId"]);
-  // A PR whose lane was deleted (or moved to another branch) keeps its row and its now
-  // dangling `laneId`, so the raw id would read as a live mapping. Show it as history.
+  // The lane row names the local worktree you can work in, nothing more — a PR
+  // without one is fully operable. A PR whose lane was deleted (or moved to
+  // another branch) keeps a dangling `laneId`, which would point at a worktree
+  // that is not there, so that row is dropped rather than printed as history.
   const detached = isRecord(pr.detached) ? pr.detached : null;
-  const laneValue = pickString(pr, ["laneName", "laneId"]);
-  const lane = detached
-    ? `was ${pickString(detached, ["laneName"]) ?? laneValue ?? "deleted lane"}`
-    : laneValue;
+  const lane = detached ? null : pickString(pr, ["laneName", "laneId"]);
   const head = pickString(pr, ["headBranch", "headRefName", "branchRef", "branch"]);
   const base = pickString(pr, ["baseBranch", "baseRefName", "baseRef", "targetBranch"]);
   const githubUrl = pickString(root, ["githubUrl", "githubPrUrl"])
@@ -356,7 +355,7 @@ export function derivePrMergeReadiness(value: unknown): PrMergeReadiness {
 /**
  * Compact merge-readiness block for the right pane: a status line plus a short
  * bullet list of blockers. Falls back to a single line when GitHub merge state
- * is unavailable (older runtimes / unmapped PRs).
+ * is unavailable (older runtimes, or a payload that carries no merge fields).
  */
 export function formatPrMergeState(value: unknown): string {
   const readiness = derivePrMergeReadiness(value);

@@ -483,6 +483,28 @@ The default machine-wide ceiling is 200 accepted events per UTC day, shared acro
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
 
+Pull-request mutations reach analytics through that ledger and nowhere else.
+`prs.land`, `prs.close`, `prs.reopen`, `prs.createFromLane`, `prs.updateBranch`,
+`prs.retargetBase`, `prs.addComment`, `prs.submitReview`, and `prs.rerunChecks`
+are recorded at the IPC channel / RPC domain boundary, keyed on the action name
+rather than on the presence of a local `pull_requests` row — so removing the
+lane-mapping gate widened what an installation can do without needing any new
+instrumentation. `prs.cleanupBranch` joined the set for the same reason: while
+deleting a merged PR's branch was reachable only from a mapped PR it was a
+corner of the product, and it is now an offer on every merged row.
+
+Whether a merge also deleted the head branch is deliberately **not** a property.
+It is a parameter of `prs.land`, the merge itself is already counted, and there
+is no product question attached to the split — adding a coarse value to the
+closed `outcome` set to answer nobody widens the dimension for free. Revisit it
+when someone asks the question.
+
+Everything else the PRs tab does is a read or a view mechanic — list polling,
+snapshot refreshes, the CI graph fetch, tab and drawer toggles, commit-tick
+hover, header narrowing, pane resizing — and stays untracked by the rule above.
+The `ade_screen_viewed` `prs` arrival already records that the surface was
+opened.
+
 The fresh-install milestone is stored in machine analytics state before enqueue. Activation is stored the same way and derives `time_since_install_seconds` locally. Legacy analytics state is marked as already installed and activated during migration so upgrades never create false funnel entrants. Account identification is pseudonymous and limited to three accepted identity changes per UTC day and two per minute. It still consumes PostHog ingestion quota. Explicit sign-out rotates the anonymous ID so later anonymous activity is not attached to the signed-out account.
 
 Daily usage summaries report coarse totals and only the top coarse provider and model family. They never report provider account IDs, exact model strings, prompt content, or per-session content.

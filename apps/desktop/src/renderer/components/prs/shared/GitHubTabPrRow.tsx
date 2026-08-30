@@ -10,8 +10,8 @@ import { formatTimeAgoCompact } from "./prFormatters";
 import { PrCiRunningIndicator } from "./prVisuals";
 import { GitHubStackBadge } from "./GitHubStackBadge";
 import { formatPrListGroupDiff, type PrListGroupHeader as PrListGroupHeaderModel } from "./prListGrouping";
-import { branchNameFromRef } from "../tabs/githubPrBranch";
 import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
+import "./prListRow.css";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -51,6 +51,13 @@ function stateBadgeStyle(item: GitHubPrListItem): React.CSSProperties {
   };
 }
 
+/**
+ * The glyph sits at the end of the headline row, so it carries its own optical
+ * nudge onto the title's first line rather than being wrapped by the caller —
+ * a wrapper would leave a flex gap behind on the statuses that render nothing.
+ */
+const CI_GLYPH_STYLE: React.CSSProperties = { display: "inline-flex", flexShrink: 0, marginTop: 2 };
+
 function PrRowCiStatus({
   status,
   reason,
@@ -61,19 +68,19 @@ function PrRowCiStatus({
   switch (status) {
     case "passing":
       return (
-        <span title="CI passing" style={{ display: "inline-flex", flexShrink: 0 }}>
+        <span title="CI passing" style={CI_GLYPH_STYLE}>
           <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />
         </span>
       );
     case "failing":
       return (
-        <span title="CI failing" style={{ display: "inline-flex", flexShrink: 0 }}>
+        <span title="CI failing" style={CI_GLYPH_STYLE}>
           <XCircle size={14} weight="fill" style={{ color: COLORS.danger }} />
         </span>
       );
     case "pending":
       return (
-        <span title="CI pending" style={{ display: "inline-flex", flexShrink: 0 }}>
+        <span title="CI pending" style={CI_GLYPH_STYLE}>
           <PrCiRunningIndicator color={COLORS.warning} size={14} />
         </span>
       );
@@ -85,7 +92,7 @@ function PrRowCiStatus({
         <span
           aria-label="No CI has run"
           title={reason || NO_CI_REASON}
-          style={{ display: "inline-flex", flexShrink: 0 }}
+          style={CI_GLYPH_STYLE}
         >
           <CircleDashed size={14} weight="bold" style={{ color: COLORS.textMuted }} />
         </span>
@@ -153,39 +160,22 @@ function labelTextColor(hexColor: string): string {
 
 
 /**
- * Whether the "unmapped" badge would actually lead somewhere. Selecting the row offers
- * one of two actions depending on whether a lane already tracks the head branch — map
- * to it, or create one — so the presence of a usable local branch is the real gate.
- * Fork PRs have no local branch to work with, and a terminal PR cannot be mapped at all.
- *
- * Drives the amber-vs-neutral choice, so the warning colour is only ever spent on rows
- * the user can do something about.
- */
-function isPrRowMappable(item: GitHubPrListItem): boolean {
-  if (item.linkedPrId || item.scope !== "repo") return false;
-  if (item.state !== "open" && item.state !== "draft") return false;
-  return Boolean(branchNameFromRef(item.headBranch));
-}
-
-/**
  * The lane column of a PR row.
  *
- * Three states, deliberately distinct:
- * - **mapped** — the lane chip, in the lane's colour.
+ * Two states, deliberately distinct:
+ * - **has a lane** — the lane chip, in the lane's colour.
  * - **detached** — `was: <lane>` plus the activity frozen when the lane was deleted.
  *   This is history, so it is dim and carries no call to action.
- * - **no lane** — nothing at all in terminal buckets (absence already reads as "no
- *   lane"), and a neutral chip in Open. It only turns amber when there is genuinely
- *   something to do, so amber keeps meaning "act on this".
+ *
+ * Anything else renders nothing. The absence of a chip already says there is no lane,
+ * and starting local work on a PR is an offer, not a warning.
  */
 function PrRowLaneChip({
   item,
   linkedLaneColor,
-  mappable,
 }: {
   item: GitHubPrListItem;
   linkedLaneColor: string | null;
-  mappable: boolean;
 }) {
   if (item.linkedLaneName) {
     return (
@@ -209,31 +199,7 @@ function PrRowLaneChip({
 
   if (item.detached) return <PrRowGhostLaneChip detached={item.detached} />;
 
-  // A linked id is internal identity, not user-facing copy. If the lane metadata is
-  // temporarily unavailable, omit the chip instead of leaking a UUID or claiming the
-  // PR is unmapped.
-  if (item.linkedLaneId) return null;
-
-  // Terminal PRs have no mapping story worth telling — the lane is gone and mapping one
-  // now would do nothing. Showing a badge here is what made Merged a wall of warnings.
-  if (isTerminalPrState(item.state)) return null;
-
-  const actionable = mappable;
-  return (
-    <span
-      title={actionable ? "Not mapped to a lane — you can map or create one" : "Not mapped to an ADE lane"}
-      style={{
-        ...inlineBadge(actionable ? COLORS.warning : COLORS.textMuted),
-        fontSize: 10,
-        padding: "2px 7px",
-        borderRadius: 5,
-        fontWeight: 600,
-        fontFamily: SANS_FONT,
-      }}
-    >
-      unmapped
-    </span>
-  );
+  return null;
 }
 
 /**
@@ -265,7 +231,14 @@ function PrRowDiffStat({ additions, deletions }: { additions: number | null; del
   );
 }
 
-/** `was: <lane> · 3 chats · 2 proof` — what ADE knows that GitHub cannot show. */
+/**
+ * `was: <lane>` plus `3 chats · 2 proof` — what ADE knows that GitHub cannot show.
+ *
+ * The two halves are separate elements on purpose: as the list column narrows the
+ * lane name drops first and the counts hold on for another 40px (see
+ * `.ade-pr-row-provenance` in `index.css`). The full sentence stays in the tooltip
+ * either way, so nothing is actually lost when the chip shrinks.
+ */
 function PrRowGhostLaneChip({ detached }: { detached: NonNullable<GitHubPrListItem["detached"]> }) {
   const counts = [
     detached.chats > 0 ? `${detached.chats} chat${detached.chats === 1 ? "" : "s"}` : null,
@@ -276,22 +249,74 @@ function PrRowGhostLaneChip({ detached }: { detached: NonNullable<GitHubPrListIt
   if (!name && counts.length === 0) return null;
   return (
     <span
+      className="ade-pr-row-provenance"
+      data-counts={counts.length > 0 ? "1" : "0"}
       title={`Built in lane "${name ?? "unknown"}", deleted ${detachedAgo ? `${detachedAgo} ago` : "earlier"}`}
       style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        padding: "2px 7px",
         fontSize: 10,
         fontFamily: SANS_FONT,
         color: COLORS.textDim,
-        borderRadius: 5,
       }}
     >
-      {detached.laneColor ? <LaneAccentDot lane={{ color: detached.laneColor }} size={6} /> : null}
-      {name ? <span>was: {name}</span> : null}
-      {counts.length > 0 ? <span style={{ opacity: 0.85 }}>· {counts.join(" · ")}</span> : null}
+      {name ? (
+        // No inline `display` here: an inline style outranks the container
+        // query in `index.css` that has to hide this at <=340px.
+        <span className="ade-pr-row-provenance-lane">
+          {detached.laneColor ? <LaneAccentDot lane={{ color: detached.laneColor }} size={6} /> : null}
+          was: {name}
+        </span>
+      ) : null}
+      {counts.length > 0 ? (
+        <span className="ade-pr-row-provenance-counts" style={{ opacity: 0.85 }}>{counts.join(" · ")}</span>
+      ) : null}
     </span>
+  );
+}
+
+/**
+ * The author, parked in the card's top-right corner.
+ *
+ * The card already reserves a 42px right gutter for the GitHub link that sits at the
+ * bottom-right, and the top of that gutter was empty. Taking the avatar out of the
+ * headline's flex flow and pinning it there costs the title nothing — an 18px glyph
+ * inset 14px from the edge stops 10px short of the text column, so the title keeps the
+ * full-width wrap it has today and never re-flows around the avatar. Out of flow also
+ * means the row's measured height is unchanged, which matters for a virtualiser that
+ * re-measures every row.
+ *
+ * Absolutely positioned *inside* the row button, not beside it, so the corner is still
+ * part of the row's click target.
+ */
+function PrRowAuthorAvatar({ item, accentBg }: { item: GitHubPrListItem; accentBg: string }) {
+  const base: React.CSSProperties = {
+    position: "absolute",
+    top: 11,
+    right: 14,
+    width: 18,
+    height: 18,
+    borderRadius: "50%",
+    flexShrink: 0,
+  };
+  if (item.author) {
+    return (
+      <img
+        className="ade-pr-row-avatar"
+        src={`https://avatars.githubusercontent.com/${item.author}?size=32`}
+        alt=""
+        style={{ ...base, border: `1.5px solid ${accentBg}` }}
+        onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+      />
+    );
+  }
+  return (
+    <div
+      className="ade-pr-row-avatar"
+      style={{
+        ...base,
+        background: "rgba(255,255,255,0.05)",
+        border: "1px solid rgba(255,255,255,0.08)",
+      }}
+    />
   );
 }
 
@@ -303,7 +328,24 @@ function useLaneColorById(laneId: string | null | undefined): string | null {
   });
 }
 
-export function GitHubTabPrRow({
+/**
+ * One PR in the list column.
+ *
+ * The column is drag-resizable down to 260px, and the row used to spend that width
+ * badly: the title shared its line with a timestamp and a comment count, so it was
+ * the first thing to truncate while decoration kept its space. Now the title owns a
+ * full-width line of its own and wraps to as many lines as it needs, the author sits
+ * in the top-right corner and the timestamp at the bottom-right beside the GitHub
+ * link, and the row sheds decoration in a fixed order as it narrows — the frozen lane
+ * name, then that lane's chat and proof counts, and only at the very floor of the
+ * drag range the avatar. The PR number and title never drop.
+ *
+ * The narrowing is driven by `.ade-pr-row`'s container query in `index.css`, keyed on
+ * the row's own width. That is deliberately not a React density prop: the width that
+ * matters is the row's, the tab does not otherwise measure it, and threading a tier
+ * down would put a resize observer and a re-render in the path of every drag frame.
+ */
+export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
   item,
   selected,
   linkedPr,
@@ -316,8 +358,9 @@ export function GitHubTabPrRow({
 }) {
   const sc = stateColor(item.state);
   // A merged PR is a record, not a queue item: CI outcome, "review required" and the
-  // state badge are all answered by the fact that it merged. Dropping them is what lets
-  // the row collapse to two lines and stops the list reading as a wall of signals.
+  // state badge are all answered by the fact that it merged. Dropping them is what keeps
+  // a merged row down to a headline and a meta line, and stops the list reading as a
+  // wall of signals.
   const terminal = isTerminalPrState(item.state);
   const review = terminal ? null : reviewIndicator(linkedPr);
   // Open rows are about how long something has been waiting; merged rows are about
@@ -327,14 +370,14 @@ export function GitHubTabPrRow({
   const visibleLabels = labels.slice(0, 4);
   const overflowCount = labels.length - 4;
   const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
-  const mappable = isPrRowMappable(item);
   return (
-    <div style={{ position: "relative" }}>
+    <div className="ade-pr-row" style={{ position: "relative" }}>
       <button
         type="button"
         data-tour="prs.listRow"
         onClick={() => onSelect(item)}
         style={{
+          position: "relative",
           display: "flex",
           width: "100%",
           flexDirection: "column",
@@ -353,82 +396,55 @@ export function GitHubTabPrRow({
         onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
         onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
       >
-      {/* Row 1: avatar, bot badge, PR number, title, CI icon, time, comments */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-        {item.author ? (
-          <img
-            src={`https://avatars.githubusercontent.com/${item.author}?size=32`}
-            alt=""
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: "50%",
-              flexShrink: 0,
-              border: `1.5px solid ${sc.bg}`,
-            }}
-            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-          />
-        ) : (
-          <div style={{
-            width: 22,
-            height: 22,
-            borderRadius: "50%",
-            flexShrink: 0,
-            background: "rgba(255,255,255,0.05)",
-            border: "1px solid rgba(255,255,255,0.08)",
-          }} />
-        )}
-        {item.isBot ? (
-          <span style={{
-            fontSize: 9,
-            fontWeight: 700,
-            fontFamily: SANS_FONT,
-            textTransform: "uppercase",
-            padding: "1px 5px",
-            borderRadius: 3,
-            background: "rgba(255,255,255,0.06)",
-            color: COLORS.textDim,
-            flexShrink: 0,
-            letterSpacing: "0.3px",
-          }}>
-            bot
-          </span>
-        ) : null}
-        <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: sc.text, flexShrink: 0 }}>
-          #{item.githubPrNumber}
-        </span>
-        <GitHubStackBadge stack={item.stack} compact />
-        <span style={{
-          fontSize: 12,
-          fontWeight: 600,
-          color: COLORS.textPrimary,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          fontFamily: SANS_FONT,
+      {/* The author, pinned to the card's top-right gutter and out of the headline's
+          flow. See `PrRowAuthorAvatar`. */}
+      <PrRowAuthorAvatar item={item} accentBg={sc.bg} />
+      {/* Row 1: the headline — number and title, which are the row's reason to exist
+          and the two things that never drop. They share one wrapping text flow, so
+          the title takes the whole card and runs to as many lines as it needs
+          instead of ellipsing after a few characters. Only the CI glyph flanks it. */}
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8, minWidth: 0 }}>
+        <div style={{
           flex: 1,
           minWidth: 0,
+          fontSize: 12,
+          fontWeight: 600,
+          lineHeight: 1.35,
+          color: COLORS.textPrimary,
+          fontFamily: SANS_FONT,
+          // A single unbroken token (a branch name, a URL) can be wider than the
+          // whole column; break it rather than let it overflow the card.
+          overflowWrap: "anywhere",
         }}>
+          {item.isBot ? (
+            <span style={{
+              fontSize: 9,
+              fontWeight: 700,
+              fontFamily: SANS_FONT,
+              textTransform: "uppercase",
+              padding: "1px 5px",
+              marginRight: 5,
+              borderRadius: 3,
+              background: "rgba(255,255,255,0.06)",
+              color: COLORS.textDim,
+              letterSpacing: "0.3px",
+              whiteSpace: "nowrap",
+            }}>
+              bot
+            </span>
+          ) : null}
+          <span style={{ fontFamily: MONO_FONT, fontSize: 11, fontWeight: 400, color: sc.text }}>
+            #{item.githubPrNumber}
+          </span>{" "}
           {item.title}
-        </span>
+        </div>
         {terminal ? null : (
           <PrRowCiStatus status={linkedPr?.checksStatus ?? null} reason={linkedPr?.checksReason ?? null} />
         )}
-        {ago ? (
-          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
-            {ago}
-          </span>
-        ) : null}
-        {item.commentCount > 0 ? (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, color: COLORS.textDim }}>
-            <ChatText size={12} />
-            <span style={{ fontFamily: MONO_FONT, fontSize: 10 }}>{item.commentCount}</span>
-          </span>
-        ) : null}
       </div>
-      {/* Row 1.5: labels */}
+      {/* Row 2: labels */}
       {visibleLabels.length > 0 ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
           {visibleLabels.map((label) => {
             const bg = `#${label.color}`;
             const textColor = labelTextColor(label.color);
@@ -459,16 +475,22 @@ export function GitHubTabPrRow({
           ) : null}
         </div>
       ) : null}
-      {/* Row 2: branch info. Merged rows fold the base into the meta line below. */}
+      {/* Row 3: branch info. Merged rows fold the base into the meta line below.
+          Kept at every width: it is one line, it truncates from the head branch
+          inwards, and with the title on its own line it no longer costs the title
+          anything. */}
       {!terminal && item.baseBranch && item.headBranch ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.headBranch}</span>
           <span style={{ color: COLORS.textMuted }}>→</span>
           <span>{item.baseBranch}</span>
         </div>
       ) : null}
-      {/* Row 3: inline stats */}
-      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, paddingLeft: 30 }}>
+      {/* Row 4: inline stats, and the timestamp pinned to the right so it lands
+          beside the GitHub link below. `minHeight` keeps that row's optical centre
+          on the link button's even when it holds nothing but the timestamp. */}
+      <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, minHeight: 20 }}>
+        <GitHubStackBadge stack={item.stack} compact />
         {/* The state badge is redundant on a merged row — the bucket, the glyph colour
             and the merge facts all already say it. Closed keeps it: "closed" is a
             genuinely different outcome from "merged" and worth calling out. */}
@@ -482,7 +504,7 @@ export function GitHubTabPrRow({
             {item.repoOwner}/{item.repoName}
           </span>
         ) : null}
-        <PrRowLaneChip item={item} linkedLaneColor={rowLinkedLaneColor} mappable={mappable} />
+        <PrRowLaneChip item={item} linkedLaneColor={rowLinkedLaneColor} />
         {review ? (
           <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `${review.color}10`, borderRadius: 4 }}>
             {review.label}
@@ -503,6 +525,33 @@ export function GitHubTabPrRow({
           >
             <GitBranch size={10} weight="bold" />
             branch
+          </span>
+        ) : null}
+        {/* Activity, pushed to the right so it ends up beside the GitHub link at the
+            bottom-right of the card. Open rows count how long this has been waiting;
+            terminal rows say when it shipped. */}
+        {item.commentCount > 0 ? (
+          <span style={{
+            marginLeft: "auto",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 3,
+            flexShrink: 0,
+            color: COLORS.textDim,
+          }}>
+            <ChatText size={12} />
+            <span style={{ fontFamily: MONO_FONT, fontSize: 10 }}>{item.commentCount}</span>
+          </span>
+        ) : null}
+        {ago ? (
+          <span style={{
+            ...(item.commentCount > 0 ? {} : { marginLeft: "auto" }),
+            flexShrink: 0,
+            fontFamily: MONO_FONT,
+            fontSize: 10,
+            color: COLORS.textDim,
+          }}>
+            {ago}
           </span>
         ) : null}
       </div>
@@ -536,7 +585,7 @@ export function GitHubTabPrRow({
       </button>
     </div>
   );
-}
+});
 
 /**
  * Period header for the merged/closed log. Announced as a heading so screen readers get

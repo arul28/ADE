@@ -7,6 +7,7 @@
  */
 
 import type {
+  PrActionStep,
   PrCheck,
   PrCheckLogExcerpt,
   PrPipelineState,
@@ -16,10 +17,11 @@ import type {
   PrWorkflowMatrixLeg,
 } from "../../../../shared/types";
 import { buildDeeplink } from "../../../../shared/deeplinks";
+import { STATE_RANK, worstPipelineState } from "../../../../shared/prPipelineState";
+import { STATE_LABEL } from "./prChecksVisuals";
 import {
   checkElapsedMs,
   pipelineStateOf,
-  summarizePipelineStates,
   type PrCheckBuckets,
   type UnifiedCheckItem,
 } from "../shared/prUnifiedChecks";
@@ -31,8 +33,6 @@ import {
 export type ChecksView = "graph" | "list" | "failures";
 
 export const CHECKS_VIEW_STORAGE_KEY = "ade:prs:checksView:v1";
-export const CHECKS_VIEWS: ChecksView[] = ["graph", "list", "failures"];
-export const DEFAULT_CHECKS_VIEW: ChecksView = "graph";
 
 function isChecksView(value: unknown): value is ChecksView {
   return value === "graph" || value === "list" || value === "failures";
@@ -100,10 +100,24 @@ export function graphUnavailableCopy(
  * check-run row spells it as `"<workflow> / <job>"`, which is the only handle we
  * get for PRs where the jobs API is unavailable (e.g. unmapped GitHub-tab PRs).
  */
-function workflowNameOf(item: UnifiedCheckItem): string | null {
-  if (item.workflowName) return item.workflowName;
+export function workflowNameOf(item: UnifiedCheckItem): string | null {
+  if (item.workflowName?.trim()) return item.workflowName.trim();
   const idx = item.name.indexOf(" / ");
   return idx > 0 ? item.name.slice(0, idx).trim() : null;
+}
+
+/**
+ * A job's own name, with its workflow's name stripped off the front.
+ *
+ * `"CI / build"` inside the `CI` workflow reads as `build`; a name that does not
+ * carry the prefix comes back untouched. One implementation, because the graph
+ * fallback, the live matrix and the list sections all need exactly this and had
+ * grown three copies of it.
+ */
+export function stripWorkflowPrefix(displayName: string, workflowName: string | null): string {
+  const name = displayName.trim();
+  const prefix = workflowName?.trim() ? `${workflowName.trim()} / ` : null;
+  return prefix && name.startsWith(prefix) ? name.slice(prefix.length).trim() : name;
 }
 
 /**
@@ -133,9 +147,7 @@ export function deriveFallbackGraph(
     .filter(belongsToAWorkflow)
     .map((item) => {
       const workflowName = workflowNameOf(item);
-      const displayName = workflowName && item.displayName.startsWith(`${workflowName} / `)
-        ? item.displayName.slice(workflowName.length + 3)
-        : item.displayName;
+      const displayName = stripWorkflowPrefix(item.displayName, workflowName);
       return {
         jobId: item.id,
         displayName,
@@ -189,30 +201,10 @@ function normalizedName(value: string | null | undefined): string {
 }
 
 function liveJobName(item: UnifiedCheckItem): string {
-  const workflowName = item.workflowName?.trim();
-  const displayName = item.displayName.trim();
-  return workflowName && displayName.startsWith(`${workflowName} / `)
-    ? displayName.slice(workflowName.length + 3).trim()
-    : displayName;
+  return stripWorkflowPrefix(item.displayName, item.workflowName ?? null);
 }
 
-const LIVE_STATE_RANK: Record<PrPipelineState, number> = {
-  failed: 0,
-  unknown: 1,
-  running: 2,
-  queued: 3,
-  passed: 4,
-  skipped: 5,
-};
 
-function worstLiveState(items: UnifiedCheckItem[]): PrPipelineState {
-  if (items.length === 0) return "unknown";
-  return items
-    .map(pipelineStateOf)
-    .reduce((worst, state) => (
-      LIVE_STATE_RANK[state] < LIVE_STATE_RANK[worst] ? state : worst
-    ));
-}
 
 function earliestTimestamp(values: Array<string | null>): string | null {
   return values
@@ -257,7 +249,7 @@ function matchingLiveItems(
 
 function representativeLiveItem(items: UnifiedCheckItem[]): UnifiedCheckItem | null {
   return [...items].sort((left, right) => (
-    LIVE_STATE_RANK[pipelineStateOf(left)] - LIVE_STATE_RANK[pipelineStateOf(right)]
+    STATE_RANK[pipelineStateOf(left)] - STATE_RANK[pipelineStateOf(right)]
     || liveJobName(left).localeCompare(liveJobName(right))
   ))[0] ?? null;
 }
@@ -299,7 +291,7 @@ export function hydrateWorkflowGraph(
 
     return {
       ...node,
-      state: worstLiveState(liveItems),
+      state: worstPipelineState(liveItems.map(pipelineStateOf)),
       durationMs: checkElapsedMs({ startedAt, completedAt }, now),
       startedAt,
       completedAt,
@@ -333,53 +325,6 @@ export function hydrateWorkflowGraph(
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
-
-export type GraphColumn = {
-  tier: number;
-  nodes: PrWorkflowGraphNode[];
-  /** Column heading — "Setup" for tier 0, "Gate" for the last tier, else "Parallel · n". */
-  label: string;
-};
-
-/** Groups nodes into ordered tier columns. Empty tiers are dropped. */
-export function buildGraphColumns(nodes: PrWorkflowGraphNode[]): GraphColumn[] {
-  const byTier = new Map<number, PrWorkflowGraphNode[]>();
-  for (const node of nodes) {
-    const tier = Number.isFinite(node.tier) ? node.tier : 0;
-    const bucket = byTier.get(tier);
-    if (bucket) bucket.push(node);
-    else byTier.set(tier, [node]);
-  }
-  const tiers = Array.from(byTier.keys()).sort((a, b) => a - b);
-  return tiers.map((tier, index) => {
-    const tierNodes = byTier.get(tier) ?? [];
-    const label = index === 0
-      ? "Setup"
-      : index === tiers.length - 1 && tierNodes.length === 1
-        ? "Gate"
-        : `Parallel · ${tierNodes.length}`;
-    return { tier, nodes: tierNodes, label };
-  });
-}
-
-/**
- * True when the connector drawn after column `index` feeds a node that is
- * actually running. Only these edges animate — a pulsing line into a queued or
- * finished job is a lie about what the machine is doing.
- */
-export function isEdgeLive(graph: PrWorkflowGraph, columns: GraphColumn[], index: number): boolean {
-  const upstreamTiers = new Set(columns.slice(0, index + 1).map((c) => c.tier));
-  const downstream = new Map<string, PrWorkflowGraphNode>();
-  for (const column of columns.slice(index + 1)) {
-    for (const node of column.nodes) downstream.set(node.jobId, node);
-  }
-  const upstreamIds = new Set(
-    graph.nodes.filter((n) => upstreamTiers.has(n.tier)).map((n) => n.jobId),
-  );
-  return graph.edges.some(
-    (edge) => upstreamIds.has(edge.from) && downstream.get(edge.to)?.state === "running",
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Node presentation
@@ -501,25 +446,157 @@ export function pipelineElapsedMs(graph: PrWorkflowGraph, now: number = Date.now
   return Math.max(0, end - earliest);
 }
 
-/** Groups items into swimlanes by workflow, for the `source: "none"` fallback. */
-export function groupByWorkflow(
-  nodes: PrWorkflowGraphNode[],
-): Array<{ workflowName: string; nodes: PrWorkflowGraphNode[] }> {
-  const byWorkflow = new Map<string, PrWorkflowGraphNode[]>();
-  for (const node of nodes) {
-    const key = node.workflowName || "Checks";
-    const bucket = byWorkflow.get(key);
-    if (bucket) bucket.push(node);
-    else byWorkflow.set(key, [node]);
+// ---------------------------------------------------------------------------
+// Job detail plan — what the log drawer should actually show
+// ---------------------------------------------------------------------------
+
+/** One step of a job, ready to render: number, name, outcome, own duration. */
+export type CheckStepRow = {
+  number: number;
+  name: string;
+  state: PrPipelineState;
+  /** Precise outcome word. `state` alone folds cancelled/timed-out into "failed". */
+  outcomeLabel: string;
+  durationMs: number | null;
+};
+
+/**
+ * Whether a job-log excerpt is worth a GitHub round trip on open.
+ *
+ * Only a failed job earns one automatically. The `steps` array below already
+ * carries names, outcomes, and per-step timings for every other state, and it
+ * arrived with the checks poll the tab was running anyway — rendering it costs
+ * nothing. Downloading a passed job's log costs a redirect plus a
+ * multi-megabyte blob to show the tail of `Post Run actions/checkout`.
+ */
+export type CheckDetailPlan = {
+  state: PrPipelineState;
+  /** Header word. Always rendered as text, never carried by colour alone. */
+  outcomeLabel: string;
+  /** One line of fact under the header. Empty string when there is nothing true to say. */
+  summary: string;
+  /** True only for a failed job, or when the user explicitly asked for the log. */
+  wantsLogExcerpt: boolean;
+  steps: CheckStepRow[];
+  /** The step that failed, for a failed job. */
+  failedStep: CheckStepRow | null;
+  /** The step in flight, for a running job. */
+  currentStep: CheckStepRow | null;
+  /** Summed step durations — where the job's time actually went. */
+  stepsTotalMs: number | null;
+};
+
+/**
+ * Precise outcome word for a step or job.
+ *
+ * `pipelineStateOf` folds cancelled, timed-out, and action-required into
+ * `failed` on purpose — they are all "not green, blocks merge". That is right
+ * for counting and wrong for narrating: telling a user their cancelled job
+ * "failed" is a small lie that sends them looking for a test failure that does
+ * not exist.
+ */
+export function outcomeLabelOf(
+  item: { status: "queued" | "in_progress" | "completed"; conclusion: string | null },
+): string {
+  if (item.status === "queued") return "Queued";
+  if (item.status === "in_progress") return "Running";
+  switch (item.conclusion) {
+    case "success": return "Passed";
+    case "failure": return "Failed";
+    case "cancelled": return "Cancelled";
+    case "timed_out": return "Timed out";
+    case "action_required": return "Needs action";
+    case "neutral": return "Neutral";
+    case "skipped": return "Skipped";
+    default: return "Unknown";
   }
-  return Array.from(byWorkflow.entries())
-    .map(([workflowName, groupNodes]) => ({ workflowName, nodes: groupNodes }))
-    .sort((a, b) => a.workflowName.localeCompare(b.workflowName));
 }
 
-/** Summary counts for the unified list/failures views. */
-export function itemBuckets(items: UnifiedCheckItem[]): PrCheckBuckets {
-  return summarizePipelineStates(items);
+/**
+ * Header word for a node we only know by pipeline state.
+ *
+ * Derived from `STATE_LABEL` rather than written out again: the drawer's header
+ * word and the glyph's accessible name have to agree, and two hand-kept tables
+ * eventually disagree.
+ */
+const STATE_OUTCOME_LABEL = Object.fromEntries(
+  Object.entries(STATE_LABEL).map(([state, word]) => [state, word.charAt(0).toUpperCase() + word.slice(1)]),
+) as Record<PrPipelineState, string>;
+
+function toStepRow(step: PrActionStep, now: number): CheckStepRow {
+  return {
+    number: step.number,
+    name: step.name,
+    state: pipelineStateOf(step),
+    outcomeLabel: outcomeLabelOf(step),
+    durationMs: checkElapsedMs(step, now),
+  };
+}
+
+/**
+ * What the drawer should show for one job.
+ *
+ * Reads the graph node first — it is already hydrated from the checks the tab
+ * polls, so the whole plan resolves with zero extra GitHub calls — and lets a
+ * loaded excerpt refine the step list and the outcome word when one is present.
+ */
+export function buildCheckDetailPlan(
+  node: Pick<PrWorkflowGraphNode, "state" | "steps" | "durationMs">,
+  excerpt: PrCheckLogExcerpt | null,
+  now: number = Date.now(),
+): CheckDetailPlan {
+  const state = excerpt?.jobState ?? node.state;
+  const outcomeLabel = excerpt?.jobStatus
+    ? outcomeLabelOf({ status: excerpt.jobStatus, conclusion: excerpt.jobConclusion ?? null })
+    : STATE_OUTCOME_LABEL[state];
+
+  const rawSteps = (excerpt?.steps?.length ? excerpt.steps : node.steps) ?? [];
+  const steps = [...rawSteps]
+    .sort((left, right) => left.number - right.number)
+    .map((step) => toStepRow(step, now));
+
+  const measured = steps.filter((step) => step.durationMs != null);
+  const stepsTotalMs = measured.length > 0
+    ? measured.reduce((total, step) => total + (step.durationMs ?? 0), 0)
+    : null;
+
+  const failedStep = steps.find((step) => step.state === "failed") ?? null;
+  const currentStep = steps.find((step) => step.state === "running") ?? null;
+
+  const total = steps.length;
+  const doneCount = steps.filter((step) => step.state !== "running" && step.state !== "queued").length;
+  const summary = (() => {
+    switch (state) {
+      case "failed":
+        return failedStep
+          ? `Failed at step ${failedStep.number}${total ? ` of ${total}` : ""} · ${failedStep.name}`
+          : "GitHub didn't say which step failed.";
+      case "passed":
+        return total > 0 ? `${total} steps, all passed` : "Passed. GitHub reported no steps for this job.";
+      case "running":
+        return currentStep
+          ? `Running step ${currentStep.number}${total ? ` of ${total}` : ""} · ${currentStep.name}`
+          : total > 0 ? `${doneCount} of ${total} steps done` : "Running. No steps reported yet.";
+      case "queued":
+        return "Queued. GitHub hasn't started this job yet.";
+      case "skipped":
+        return total > 0 ? `Didn't run · ${total} steps skipped` : "Didn't run.";
+      default:
+        return "GitHub didn't report an outcome for this job.";
+    }
+  })();
+
+  return {
+    state,
+    outcomeLabel,
+    summary,
+    // Only a failure earns an automatic log download; see the type's doc above.
+    wantsLogExcerpt: state === "failed",
+    steps,
+    failedStep,
+    currentStep,
+    stepsTotalMs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -530,35 +607,66 @@ export type CopyExcerptInput = {
   excerpt: PrCheckLogExcerpt;
   elapsedLabel: string | null;
   pr: { repoOwner: string; repoName: string; githubPrNumber: number };
+  /**
+   * The graph node's own name, for the degraded reads that omit `jobName`.
+   * Without it a copy taken while GitHub was unreachable reads "CI failure — ".
+   */
+  fallbackJobName?: string | null;
 };
 
-/** Job, step, elapsed, fenced excerpt, and an ADE deeplink back to this tab. */
-export function buildLogExcerptMarkdown({ excerpt, elapsedLabel, pr }: CopyExcerptInput): string {
+/**
+ * Job, step, elapsed, fenced excerpt, and an ADE deeplink back to this tab.
+ *
+ * The heading follows the job's real outcome. Pasting "CI failure — build" into
+ * a chat for a job that passed is the same lie the drawer used to tell, and it
+ * is the one an agent would then act on.
+ */
+export function buildLogExcerptMarkdown(
+  { excerpt, elapsedLabel, pr, fallbackJobName }: CopyExcerptInput,
+): string {
   const deeplink = buildDeeplink(
     { kind: "pr", repoOwner: pr.repoOwner, repoName: pr.repoName, prNumber: pr.githubPrNumber },
     { form: "ade" },
   );
+  const failed = (excerpt.jobState ?? "failed") === "failed";
+  const outcome = excerpt.jobStatus
+    ? outcomeLabelOf({ status: excerpt.jobStatus, conclusion: excerpt.jobConclusion ?? null })
+    : "Failed";
+  const jobName = excerpt.jobName?.trim() || fallbackJobName?.trim() || "this job";
+  const heading = failed
+    ? `**CI failure — ${jobName}**`
+    : `**CI job ${outcome.toLowerCase()} — ${jobName}**`;
   const stepLabel = excerpt.failingStepName
     ? excerpt.failingStepNumber != null && excerpt.stepTotal != null
       ? `${excerpt.failingStepName} (step ${excerpt.failingStepNumber}/${excerpt.stepTotal})`
       : excerpt.failingStepName
-    : "unknown step";
+    : failed
+      ? "unknown step"
+      : null;
   const longestFence = Math.max(
     2,
     ...Array.from(excerpt.lines.join("\n").matchAll(/`+/g), (match) => match[0].length),
   );
   const fence = "`".repeat(longestFence + 1);
+  // No fenced block at all when there is no excerpt — an empty fence reads as
+  // "the job produced no output", which is a different claim from "ADE did not
+  // fetch the log".
+  const body = excerpt.lines.length > 0
+    ? [fence, ...excerpt.lines, ...(excerpt.truncated ? ["… (truncated)"] : []), fence]
+    : [
+        excerpt.logStatus === "unavailable"
+          ? `_ADE couldn't read this job's log: ${excerpt.logUnavailableReason ?? "GitHub didn't answer."}_`
+          : "_No log excerpt was fetched — see the full log on GitHub._",
+      ];
   const lines = [
-    `**CI failure — ${excerpt.jobName}**`,
+    heading,
     "",
-    `- Step: ${stepLabel}`,
+    ...(stepLabel ? [`- Step: ${stepLabel}`] : []),
+    ...(!failed && excerpt.stepTotal != null ? [`- Steps: ${excerpt.stepTotal}`] : []),
     ...(elapsedLabel ? [`- Elapsed: ${elapsedLabel}`] : []),
     ...(excerpt.headline ? [`- Headline: ${excerpt.headline}`] : []),
     "",
-    fence,
-    ...excerpt.lines,
-    ...(excerpt.truncated ? ["… (truncated)"] : []),
-    fence,
+    ...body,
     "",
     `[Open in ADE](${deeplink})`,
   ];

@@ -199,7 +199,7 @@ private enum PrRowCardPreviewData {
   .background(PrsLiquidBackdrop())
 }
 
-#Preview("Unmapped bot PR #346") {
+#Preview("No-lane bot PR #346") {
   PrRowCard(
     item: PrRowCardPreviewData.github346
   )

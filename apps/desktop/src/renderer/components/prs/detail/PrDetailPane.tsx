@@ -1,11 +1,10 @@
 import React from "react";
 import {
-  GithubLogo, CheckCircle, XCircle, Circle, CircleDashed,
-  CircleNotch, ArrowRight, Eye, Code,
-  PencilSimple, X, Check, ArrowsClockwise, Play,
+  CheckCircle, XCircle,
+  CircleNotch,
+  X,
   CaretDown, CaretRight,
 } from "@phosphor-icons/react";
-import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
@@ -21,13 +20,12 @@ import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/P
 import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
+import { PrDetailHeader, type UnmappedAffordance } from "./PrDetailHeader";
 import { PrChecksTab } from "./PrChecksTab";
 import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergeabilityDeadline";
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
-import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
-import { getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
-import { isTerminalPrState } from "../../../lib/prState";
 import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
@@ -40,7 +38,6 @@ import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
 import { isWebClientMode } from "../../../lib/webClientMode";
-import { SmartTooltip } from "../../ui/SmartTooltip";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -187,6 +184,8 @@ function writeStoredDetailTab(prId: string, tab: DetailTab): void {
 export function buildCiFixPrompt(
   pr: Pick<PrWithConflicts, "githubPrNumber" | "repoOwner" | "repoName" | "headBranch">,
   excerpt: PrCheckLogExcerpt,
+  /** The graph node's name, for the degraded reads that omit `jobName`. */
+  fallbackJobName?: string | null,
 ): string {
   const logTail = excerpt.lines.slice(-80).join("\n").trim();
   const longestFence = Math.max(
@@ -194,8 +193,9 @@ export function buildCiFixPrompt(
     ...Array.from(logTail.matchAll(/`+/g), (match) => match[0].length),
   );
   const fence = "`".repeat(longestFence + 1);
+  const jobName = excerpt.jobName?.trim() || fallbackJobName?.trim() || `job ${excerpt.jobId}`;
   return [
-    `Fix the failing CI job \`${excerpt.jobName}\` on ${pr.repoOwner}/${pr.repoName} PR #${pr.githubPrNumber} (${pr.headBranch}).`,
+    `Fix the failing CI job \`${jobName}\` on ${pr.repoOwner}/${pr.repoName} PR #${pr.githubPrNumber} (${pr.headBranch}).`,
     excerpt.failingStepName ? `Failing step: ${excerpt.failingStepName}.` : null,
     excerpt.headline ? `Failure headline: ${excerpt.headline}` : null,
     "",
@@ -364,8 +364,6 @@ type PrDetailPaneProps = {
   onOpenRebaseTab?: (laneId?: string) => void;
   initialDetailTab?: DetailTab | null;
   onDetailTabChange?: (tab: DetailTab) => void;
-  onUnmap?: () => void;
-  unmapBusy?: boolean;
   /**
    * When set, the PR is NOT mapped to an ADE lane. The pane routes all detail
    * fetches through the coordinate-based endpoints (which never require a DB
@@ -382,103 +380,7 @@ type PrDetailPaneProps = {
   unmappedAffordance?: UnmappedAffordance | null;
 };
 
-/** Create/map controls for an unmapped GitHub PR, surfaced as an in-pane banner. */
-export type UnmappedAffordance = {
-  /** Lanes whose branch matches (or could match) the PR head; for the link select. */
-  linkableLanes: Array<{ id: string; name: string }>;
-  selectedLaneId: string;
-  onSelectLane: (laneId: string) => void;
-  onLink: () => void;
-  linkBusy: boolean;
-  /** Whether the "create lane from PR branch" action is offered for this PR. */
-  canCreateLane: boolean;
-  onCreateLane: () => void;
-  scope: "repo" | "external";
-};
-
-/**
- * Compact unmapped-PR affordance, surfaced in the top-right of the detail
- * header (directly above the refresh / GitHub action buttons) rather than as a
- * full-width banner. The full detail view renders as usual; this cluster offers
- * the create-lane / map-to-lane actions, with the "not mapped" reason kept as a
- * concise tinted label (full sentence on hover).
- */
-function UnmappedPrBanner({ affordance }: { affordance: UnmappedAffordance }) {
-  const notMappedLabel =
-    affordance.scope === "external"
-      ? "This pull request comes from a fork and is not mapped to an ADE lane."
-      : "This pull request is not mapped to an ADE lane.";
-  return (
-    <div
-      data-testid="pr-unmapped-affordance"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "flex-end",
-        flexWrap: "wrap",
-        flexShrink: 0,
-        gap: 8,
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-      }}
-    >
-      <span
-        title={notMappedLabel}
-        style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#FBBF24", whiteSpace: "nowrap" }}
-      >
-        <GithubLogo size={14} weight="fill" style={{ flexShrink: 0 }} />
-        <span>Not mapped to a lane</span>
-      </span>
-      {affordance.canCreateLane ? (
-        <button
-          type="button"
-          onClick={affordance.onCreateLane}
-          style={primaryButton({ height: 30, padding: "0 10px", borderRadius: 8, whiteSpace: "nowrap" })}
-        >
-          <BranchIcon size={14} /> Create lane from PR branch
-        </button>
-      ) : null}
-      {affordance.linkableLanes.length > 0 ? (
-        <>
-          <select
-            value={affordance.selectedLaneId}
-            onChange={(event) => affordance.onSelectLane(event.target.value)}
-            aria-label="Select lane to map"
-            style={{
-              height: 30,
-              background: COLORS.recessedBg,
-              border: `1px solid ${COLORS.border}`,
-              color: COLORS.textPrimary,
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              padding: "0 8px",
-              borderRadius: 8,
-            }}
-          >
-            <option value="">Map to lane…</option>
-            {affordance.linkableLanes.map((lane) => (
-              <option key={lane.id} value={lane.id}>{lane.name}</option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={!affordance.selectedLaneId || affordance.linkBusy}
-            onClick={affordance.onLink}
-            aria-label={affordance.linkBusy ? "Mapping lane to pull request" : "Map selected lane to pull request"}
-            style={primaryButton({
-              height: 30,
-              padding: "0 10px",
-              borderRadius: 8,
-              opacity: !affordance.selectedLaneId || affordance.linkBusy ? 0.5 : 1,
-            })}
-          >
-            {affordance.linkBusy ? "Mapping…" : "Map"}
-          </button>
-        </>
-      ) : null}
-    </div>
-  );
-}
+export type { UnmappedAffordance };
 
 export function PrDetailPane({
   pr,
@@ -498,8 +400,6 @@ export function PrDetailPane({
   onOpenRebaseTab,
   initialDetailTab,
   onDetailTabChange,
-  onUnmap,
-  unmapBusy = false,
   githubCoords = null,
   unmapped = false,
   provisional = false,
@@ -522,6 +422,8 @@ export function PrDetailPane({
     noteGithubReadSuccess,
     githubPollPeriodFor,
     githubPollGeneration,
+    markPrTerminalLocally,
+    clearPrTerminalLocally,
   } = usePrs();
   const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
   const initialPaneWarmCache = readDetailPaneWarmCache(pr.id);
@@ -587,7 +489,7 @@ export function PrDetailPane({
   // refresh cadence below.
   const headerChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
   // Prefer the live status when we have it; fall back to the row. Both carry
-  // the canonical rollup, which the header's own bucket counts cannot see.
+  // the canonical rollup, which per-check bucket counts cannot see.
   const checksStatusForHeader = status?.checksStatus ?? pr.checksStatus;
   const checksTerminal = React.useMemo(
     // An empty result is not terminal: a workflow may not have created its
@@ -773,9 +675,12 @@ export function PrDetailPane({
     writeDetailPaneWarmCache(pr.id, patch);
   }, [pr.id]);
 
-  const handleFixInChat = React.useCallback(async (excerpt: PrCheckLogExcerpt) => {
+  const handleFixInChat = React.useCallback(async (
+    excerpt: PrCheckLogExcerpt,
+    fallbackJobName?: string | null,
+  ) => {
     if (!pr.laneId) return;
-    const prompt = buildCiFixPrompt(pr, excerpt);
+    const prompt = buildCiFixPrompt(pr, excerpt, fallbackJobName);
     try {
       const session = newestWorkChat(
         await window.ade.agentChat.list({ laneId: pr.laneId, includeArchived: false }),
@@ -1257,7 +1162,7 @@ export function PrDetailPane({
   ]);
 
   // ---- Action helper to reduce repetitive try/catch/finally ----
-  const runAction = async (fn: () => Promise<void>) => {
+  const runAction = React.useCallback(async (fn: () => Promise<void>) => {
     setActionBusy(true);
     setActionError(null);
     try {
@@ -1267,7 +1172,7 @@ export function PrDetailPane({
     } finally {
       setActionBusy(false);
     }
-  };
+  }, []);
 
   // ---- Actions ----
   const handleMerge = (
@@ -1281,14 +1186,9 @@ export function PrDetailPane({
   ) => {
     setActionResult(null);
     return runAction(async () => {
-      // `land` is row-based; an unmapped GitHub-tab PR has a synthetic `gh:` id
-      // with no DB row, so it would throw "PR not found". Surface a clear reason
-      // instead of crashing — these PRs are merged from their project lane / GitHub.
-      if (isUnmapped) {
-        throw new Error(
-          "This PR isn't mapped to an ADE lane — open it from its project lane or merge it on GitHub.",
-        );
-      }
+      // No mapping check: `land` resolves a synthetic `gh:` id as readily as a
+      // row id, because merging is a GitHub API call. A lane only decides
+      // whether there is local bookkeeping to run afterwards.
       const res = await window.ade.prs.land({
         prId: pr.id,
         method,
@@ -1298,6 +1198,9 @@ export function PrDetailPane({
         expectedHeadSha: options?.expectedHeadSha,
       });
       setActionResult(res);
+      // GitHub has accepted the merge. Move the row to Merged now rather than
+      // leaving it in Open until the snapshot refetch agrees.
+      if (res.success) markPrTerminalLocally(pr, "merged");
       await onRefresh();
     });
   };
@@ -1373,14 +1276,21 @@ export function PrDetailPane({
     });
   };
 
-  const handleUpdateTitle = async () => {
+  const handleUpdateTitle = React.useCallback(() => {
     if (!titleDraft.trim()) return;
-    return runAction(async () => {
+    void runAction(async () => {
       await window.ade.prs.updateTitle({ prId: pr.id, title: titleDraft });
       setEditingTitle(false);
       await onRefresh();
     });
-  };
+  }, [onRefresh, pr.id, runAction, titleDraft]);
+
+  const handleStartTitleEdit = React.useCallback(() => {
+    setTitleDraft(pr.title);
+    setEditingTitle(true);
+  }, [pr.title]);
+
+  const handleCancelTitleEdit = React.useCallback(() => setEditingTitle(false), []);
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
     await window.ade.prs.setLabels({ prId: pr.id, labels });
@@ -1406,11 +1316,15 @@ export function PrDetailPane({
 
   const handleClosePr = () => runAction(async () => {
     await window.ade.prs.close({ prId: pr.id });
+    markPrTerminalLocally(pr, "closed");
     await onRefresh();
   });
 
   const handleReopenPr = () => runAction(async () => {
     await window.ade.prs.reopen({ prId: pr.id });
+    // Drop the optimistic "closed" this same pane may have recorded, or the row
+    // and this pane both keep painting the PR as closed until it expires.
+    clearPrTerminalLocally(pr);
     await onRefresh();
   });
 
@@ -1428,251 +1342,40 @@ export function PrDetailPane({
     if (!laneForPr) return;
     setManageLaneOpen(true);
   }, [laneForPr]);
-  const handleRefresh = React.useCallback(async () => {
-    try {
-      await Promise.all([
-        onRefresh({ prId: pr.id }),
-        loadDetail({ forceLive: true }),
-        refreshReviewThreads(),
-      ]);
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    }
-  }, [loadDetail, onRefresh, pr.id, refreshReviewThreads]);
-
-  const TAB_ACTIVE_COLORS: Record<DetailTab, string> = {
-    overview: COLORS.accent,
-    files: COLORS.info,
-    checks: COLORS.checkPass,
-  };
   const showDetailLoadingPill = (detailLoading || detailBusy) && !hasVisibleDetailData;
 
-  const headerCi = React.useMemo(() => {
-    // A `not_run` rollup with zero rows is the pure layer-3 case: required
-    // contexts are known and none reported. Returning null there left the
-    // header silent in exactly the situation the rule exists to surface.
-    if (headerChecks.length === 0) {
-      return checksStatusForHeader === "not_run"
-        ? { color: COLORS.textMuted, label: "No CI has run", icon: <CircleDashed size={12} weight="bold" /> }
-        : null;
-    }
-    // Same rollup as the CI tab and the overview card — one implementation.
-    const buckets = summarizePipelineStates(headerChecks);
-    const passing = buckets.passed;
-    const failing = buckets.failed + buckets.unknown;
-    const pending = buckets.running + buckets.queued;
-    if (failing > 0) {
-      return { color: COLORS.danger, label: `${failing} failed`, icon: <XCircle size={12} weight="fill" /> };
-    }
-    if (pending > 0) {
-      return { color: COLORS.info, label: `${pending} running`, icon: <CircleNotch size={12} className="animate-spin" /> };
-    }
-    // ADE-135: this pill is the surface in the ticket title. The bucket counts
-    // above are producer-blind, so three third-party successes rendered a green
-    // "3/3 passed" here. The canonical rollup decides whether green is earned.
-    if (checksStatusForHeader === "not_run") {
-      return {
-        color: COLORS.textMuted,
-        label: "No CI has run",
-        icon: <CircleDashed size={12} weight="bold" />,
-      };
-    }
-    return { color: COLORS.checkPass, label: `${passing}/${headerChecks.length} passed`, icon: <CheckCircle size={12} weight="fill" /> };
-  }, [headerChecks, checksStatusForHeader]);
-
-  const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
-    { id: "overview", label: "Overview", icon: Eye },
-    { id: "files", label: "Files", icon: Code, count: files.length },
-    { id: "checks", label: "CI / Checks", icon: Play, count: headerChecks.length },
-  ];
-
   const overviewRailsActive = activeTab === "overview";
+
+  /**
+   * The CI tab's workflow-graph read is an automatic GitHub read, so it stands
+   * down with every other one on this surface rather than keeping its own brake.
+   */
+  const checksPollGovernor = React.useMemo(() => ({
+    isGithubPollStoodDown,
+    noteGithubReadFailure,
+    noteGithubReadSuccess,
+    githubPollGeneration,
+  }), [githubPollGeneration, isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.prSurface }}>
       {/* ===== HEADER ===== */}
-      <div style={{ padding: "18px 20px 0", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, background: COLORS.prSurface }}>
-        {/* Title row */}
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            {editingTitle ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <input
-                  value={titleDraft}
-                  onChange={(e) => setTitleDraft(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") void handleUpdateTitle(); if (e.key === "Escape") setEditingTitle(false); }}
-                  autoFocus
-                  style={{
-                    flex: 1, height: 36, padding: "0 12px", fontSize: 16, fontWeight: 700,
-                    fontFamily: SANS_FONT, color: COLORS.textPrimary,
-                    background: COLORS.recessedBg, border: `1px solid ${COLORS.accent}`, borderRadius: 8, outline: "none",
-                  }}
-                />
-                <button type="button" onClick={() => void handleUpdateTitle()} style={outlineButton({ height: 28, padding: "0 8px", color: COLORS.success, borderColor: "color-mix(in srgb, var(--color-success) 40%, transparent)" })}>
-                  <Check size={14} weight="bold" />
-                </button>
-                <button type="button" onClick={() => setEditingTitle(false)} style={outlineButton({ height: 28, padding: "0 8px" })}>
-                  <X size={14} weight="bold" />
-                </button>
-              </div>
-            ) : (
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontFamily: MONO_FONT, fontSize: 14, color: COLORS.accent, fontWeight: 600, opacity: 0.8 }}>#{pr.githubPrNumber}</span>
-                <span style={{ fontSize: 18, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: "-0.01em" }}>
-                  {pr.title}
-                </span>
-                <span style={{ flexShrink: 0 }}>
-                  <InlinePrBadge {...(provisional
-                    ? { label: "RESOLVING", color: COLORS.textMuted, bg: `${COLORS.textMuted}18`, border: `${COLORS.textMuted}30` }
-                    : getPrStateBadge(pr.state))} />
-                </span>
-                {pr.laneId ? (
-                  <SmartTooltip content={{ label: "Edit title", description: "Rename this pull request on GitHub." }}>
-                    <button
-                      type="button"
-                      onClick={() => { setTitleDraft(pr.title); setEditingTitle(true); }}
-                      style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: COLORS.textMuted, flexShrink: 0, opacity: 0.6 }}
-                      aria-label="Edit title"
-                    >
-                      <PencilSimple size={14} />
-                    </button>
-                  </SmartTooltip>
-                ) : null}
-              </div>
-            )}
-            <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted, fontWeight: 500 }}>{pr.repoOwner}/{pr.repoName}</span>
-              <span style={{ color: COLORS.border }}>|</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", padding: "2px 8px", borderRadius: 6, border: "1px solid color-mix(in srgb, var(--color-accent) 20%, transparent)" }}>
-                <BranchIcon size={12} style={{ color: COLORS.accent }} />
-                <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.accent }}>{pr.headBranch}</span>
-              </span>
-              <ArrowRight size={10} style={{ color: COLORS.textDim }} />
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "color-mix(in srgb, var(--color-info) 12%, transparent)", padding: "2px 8px", borderRadius: 6, border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)" }}>
-                <BranchIcon size={12} style={{ color: COLORS.info }} />
-                <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.info }}>{pr.baseBranch}</span>
-              </span>
-              {headerCi ? (
-                <button
-                  type="button"
-                  onClick={() => setActiveTab("checks")}
-                  title="View CI / Checks"
-                  style={{
-                    display: "inline-flex", alignItems: "center", gap: 5,
-                    padding: "2px 8px", borderRadius: 6, cursor: "pointer",
-                    fontFamily: SANS_FONT, fontSize: 11, fontWeight: 500,
-                    color: headerCi.color,
-                    background: `color-mix(in srgb, ${headerCi.color} 12%, transparent)`,
-                    border: `1px solid color-mix(in srgb, ${headerCi.color} 28%, transparent)`,
-                  }}
-                  data-testid="pr-header-ci-badge"
-                >
-                  {headerCi.icon}
-                  {headerCi.label}
-                </button>
-              ) : null}
-            </div>
-          </div>
-          {/* Unmapped-PR affordance: top-right of the header, above the
-              refresh / GitHub action buttons.
-
-              Never shown for a terminal PR. Its two actions cannot fire there —
-              "create lane from PR branch" requires an open PR, and mapping matches on a
-              head branch that has usually been deleted — so on a merged PR it was a
-              warning with nothing behind it. The merge rail carries the shipped summary
-              instead. */}
-          {!pr.laneId && unmappedAffordance && !isTerminalPrState(pr.state) ? (
-            <UnmappedPrBanner affordance={unmappedAffordance} />
-          ) : null}
-        </div>
-
-        {/* Sub-tab bar */}
-        <div style={{ display: "flex", alignItems: "center", gap: 2, marginTop: 16 }}>
-          {DETAIL_TABS.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            const tabColor = TAB_ACTIVE_COLORS[tab.id];
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => setActiveTab(tab.id)}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6,
-                  padding: "9px 16px", fontSize: 12, fontWeight: isActive ? 600 : 500, fontFamily: SANS_FONT,
-                  color: isActive ? COLORS.textPrimary : COLORS.textMuted,
-                  background: isActive ? `${tabColor}14` : "transparent",
-                  borderBottom: isActive ? `2.5px solid ${tabColor}` : "2.5px solid transparent",
-                  borderTop: "none",
-                  borderLeft: "none",
-                  borderRight: "none",
-                  borderRadius: "8px 8px 0 0",
-                  cursor: "pointer", transition: "all 120ms ease",
-                }}
-              >
-                <Icon size={15} weight={isActive ? "fill" : "regular"} style={{ color: isActive ? tabColor : COLORS.textMuted, transition: "color 120ms ease" }} />
-                {tab.label}
-                {tab.count != null && tab.count > 0 && (
-                  <span style={{
-                    fontSize: 10, fontFamily: MONO_FONT, padding: "1px 6px", fontVariantNumeric: "tabular-nums",
-                    borderRadius: 10,
-                    background: isActive ? `${tabColor}28` : "color-mix(in srgb, var(--color-muted-fg) 30%, transparent)",
-                    color: isActive ? tabColor : COLORS.textMuted,
-                    fontWeight: 600,
-                  }}>
-                    {tab.count}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-
-          {/* Right-side action buttons */}
-          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
-            <SmartTooltip content={{ label: "Refresh", description: "Re-read this pull request's status, checks, and reviews from GitHub." }}>
-              <button type="button" onClick={() => void handleRefresh()} style={outlineButton({ height: 30, padding: "0 8px" })} aria-label="Refresh">
-                <ArrowsClockwise size={14} weight="bold" />
-              </button>
-            </SmartTooltip>
-            {onUnmap ? (
-              <button
-                type="button"
-                disabled={unmapBusy}
-                onClick={() => void onUnmap()}
-                style={outlineButton({
-                  height: 30,
-                  padding: "0 10px",
-                  color: COLORS.warning,
-                  borderColor: "color-mix(in srgb, var(--color-warning) 38%, transparent)",
-                  opacity: unmapBusy ? 0.55 : 1,
-                })}
-              >
-                {unmapBusy ? "Unmapping..." : "Unmap"}
-              </button>
-            ) : null}
-            {onShowInGraph ? (
-              <button type="button" onClick={() => onShowInGraph(pr.laneId)} style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.info, borderColor: "color-mix(in srgb, var(--color-info) 40%, transparent)" })}>
-                <LaneIcon size={14} /> Graph
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                // Open the PR's GitHub URL directly. `openInGitHub(pr.id)`
-                // resolves via a DB row and would fail for unmapped PRs.
-                if (pr.githubUrl) {
-                  void window.ade.app.openExternal(pr.githubUrl);
-                } else {
-                  void window.ade.prs.openInGitHub(pr.id);
-                }
-              }}
-              style={outlineButton({ height: 30, padding: "0 10px" })}
-            >
-              <GithubLogo size={14} /> GitHub
-            </button>
-          </div>
-        </div>
-      </div>
+      <PrDetailHeader
+        pr={pr}
+        provisional={provisional}
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        filesCount={files.length}
+        checksCount={headerChecks.length}
+        editingTitle={editingTitle}
+        titleDraft={titleDraft}
+        onTitleDraftChange={setTitleDraft}
+        onStartTitleEdit={handleStartTitleEdit}
+        onCancelTitleEdit={handleCancelTitleEdit}
+        onSubmitTitle={handleUpdateTitle}
+        onShowInGraph={onShowInGraph}
+        unmappedAffordance={unmappedAffordance}
+      />
 
       {/* ===== ERROR BAR ===== */}
       {actionError && (
@@ -1734,7 +1437,7 @@ export function PrDetailPane({
             actionRuns={actionRuns}
             onSelectCheck={handleSelectCheckFromRail}
             onOpenChecksTab={handleOpenChecksTab}
-            onRerunChecks={pr.laneId ? handleRerunChecks : undefined}
+            onRerunChecks={handleRerunChecks}
             onOpenFilesTab={() => setActiveTab("files")}
             mergeMethod={mergeMethod}
             showReviewerEditor={showReviewerEditor}
@@ -1746,18 +1449,23 @@ export function PrDetailPane({
             labelInput={labelInput}
             setLabelInput={setLabelInput}
             onMerge={handleMerge}
-            onUpdateBranch={pr.laneId ? handleUpdateBranch : undefined}
+            onUpdateBranch={handleUpdateBranch}
             updateBranchBusy={updateBranchBusy}
             updateBranchNotice={updateBranchNotice}
             onRequestReviewers={handleRequestReviewers}
             onSetLabels={handleSetLabels}
-            onDeleteBranch={pr.laneId ? handleDeleteBranch : undefined}
+            onDeleteBranch={handleDeleteBranch}
             deleteBranchBusy={actionBusy}
             lane={laneForPr}
             onOpenManageLane={handleOpenManageLane}
-            onClose={pr.laneId ? handleClosePr : undefined}
-            onReopen={pr.laneId ? handleReopenPr : undefined}
+            onClose={handleClosePr}
+            onReopen={handleReopenPr}
             onSubmitReview={handleSubmitReview}
+            // ADE review needs a working tree, so when there is no lane the
+            // button offers the checkout rather than going dead.
+            onOpenAsLane={
+              unmappedAffordance?.canCreateLane ? unmappedAffordance.onCreateLane : undefined
+            }
           />
         )}
         <PrManageLaneDialogHost
@@ -1776,12 +1484,12 @@ export function PrDetailPane({
             actionRuns={actionRuns}
             actionBusy={actionBusy}
             checksStatus={checksStatusForHeader}
-            unmapped={isUnmapped}
-            onRerunChecks={pr.laneId ? handleRerunChecks : undefined}
+            onRerunChecks={handleRerunChecks}
             focusedCheckId={focusedCheckId}
             onFocusedCheckConsumed={handleFocusedCheckConsumed}
             paletteRequest={checksPaletteRequest}
             onFixInChat={pr.laneId ? handleFixInChat : undefined}
+            pollGovernor={checksPollGovernor}
           />
           </div>
         )}

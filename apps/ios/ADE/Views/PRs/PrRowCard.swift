@@ -125,9 +125,7 @@ struct PrRowCard: View {
     if let ci = data.ciIndicator { parts.append(ci.title) }
     if let review = data.reviewIndicator { parts.append(review.label) }
     if data.commentCount > 0 { parts.append("\(data.commentCount) comments") }
-    if data.isUnmapped {
-      parts.append("Not mapped to an ADE lane")
-    } else if let provenance = data.provenanceLabel {
+    if let provenance = data.provenanceLabel {
       parts.append(provenance)
     } else if let lane = data.laneLabel {
       parts.append("Lane \(lane)")
@@ -158,20 +156,10 @@ struct PrRowCard: View {
         Text("\(data.repoOwner)/\(data.repoName)")
           .lineLimit(1)
       }
-      if data.isUnmapped {
-        // Neutral, not amber: an unmapped PR is a fact, not a problem. Amber is
-        // reserved for the branch-cleanup chip, which is genuinely actionable.
-        Text("Unmapped")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(PrsGlass.textMuted)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 2)
-          .background(
-            Capsule(style: .continuous)
-              .fill(PrsGlass.textMuted.opacity(0.12))
-          )
-          .fixedSize(horizontal: true, vertical: false)
-      } else if let provenance = data.provenanceLabel {
+      // A lane chip when a lane exists, and nothing when one does not: the
+      // absence of the chip already says there is no lane, and every action on
+      // the row works either way.
+      if let provenance = data.provenanceLabel {
         // The lane is gone, but what happened in it is not.
         Label(provenance, systemImage: "clock.arrow.circlepath")
           .font(.caption2)
@@ -498,9 +486,9 @@ extension PrRowCard {
     }
 
     init(item: GitHubPrListItem, linkedPr: PullRequestListItem?) {
-      // Mapping is a live-work concept. On a merged or closed PR the lane is usually
-      // gone and mapping one would do nothing, so the badge is suppressed there —
-      // otherwise the merged list reads as a wall of warnings.
+      // No lane link. Nothing user-facing is drawn from this any more — it only
+      // suppresses the workflow warn banner, which reads ADE-side workflow state
+      // that a PR with no local row cannot have.
       let terminal = item.state == "merged" || item.state == "closed"
       let unmapped = !terminal
         && item.scope != "external"

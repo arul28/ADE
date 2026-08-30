@@ -1935,14 +1935,25 @@ const HELP_BY_COMMAND: Record<string, string> = {
   prs: `${ADE_BANNER}
   Pull requests
 
-  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, or full PR URLs.
-  Creating or linking a PR persists the lane mapping in ADE so the PR tab tracks it.
+  PR identifiers may be ADE PR ids, GitHub PR numbers, #numbers, full PR URLs, or
+  the 'gh:owner/repo#<n>' form that 'prs list-open' prints for a PR ADE has no row
+  for — quote that one, since most shells treat '#' as a comment.
+  Merging, closing, reopening, commenting, reviewing, labels, reviewers, checks and
+  branch cleanup all work on any PR in the repo, whether or not a lane exists for it.
+  The exceptions need one: create and link take a lane by definition, and threads,
+  deployments and ai-review-summary still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
-    $ ade prs create --lane <lane> --base main      Open and map a GitHub PR; prints GitHub + ADE URLs
+    $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
-    $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
+    $ ade prs land <pr> --method squash             Merge; keeps the remote branch
+    $ ade prs land <pr> --delete-remote-branch      Merge and delete the head branch on the remote
+    $ ade prs close <pr>                            Close on GitHub; the branch is kept and you can reopen it
+    $ ade prs reopen <pr>                           Reopen a closed PR
+    $ ade prs cleanup-branch <pr> --delete-remote-branch
+                                                    Delete a merged/closed PR's branch (local too, unless --keep-local)
+    $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs comment-edit <pr> --comment <id> --body "..."
@@ -6359,6 +6370,33 @@ function buildPrPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "cleanup-branch" || sub === "cleanup") {
+    // Branch cleanup is now a step of its own, because merging no longer does it
+    // for you: `prs land` keeps the head branch unless `--delete-remote-branch`
+    // is passed, so the "merge now, tidy up later" path needs a command.
+    // Works on any merged or closed PR in this project's repository, whether or
+    // not a lane maps to it — pass a `gh:owner/repo#<n>` id for one that does not.
+    const id = requireValue(prId ?? firstPositional(args), "prId");
+    // Mirrors the service defaults exactly: the local branch goes unless the
+    // caller opts out, the remote branch stays unless the caller opts in.
+    // Sending `deleteLocalBranch` explicitly rather than omitting it keeps the
+    // CLI's behaviour pinned to what the flags say, not to a service default
+    // that could change under it.
+    const keepLocal = readFlag(args, ["--keep-local", "--no-delete-local-branch"]);
+    const input: JsonObject = {
+      prId: id,
+      deleteLocalBranch: !keepLocal,
+      deleteRemoteBranch: readFlag(args, ["--delete-remote-branch"]),
+    };
+    maybePut(input, "remoteName", readValue(args, ["--remote", "--remote-name"]));
+    return {
+      kind: "execute",
+      label: "PR cleanup branch",
+      steps: [
+        actionStep("result", "pr", "cleanupBranch", collectGenericObjectArgs(args, input)),
+      ],
+    };
+  }
   if (
     sub === "delete" ||
     sub === "land" ||
@@ -6372,19 +6410,25 @@ function buildPrPlan(args: string[]): CliPlan {
       close: "closePr",
       reopen: "reopenPr",
     };
+    const input: JsonObject = { prId: id };
+    if (sub === "land") {
+      // Only `land` has a merge method. `close`/`reopen`/`delete` used to be
+      // handed a `method: null` they have no field for (ClosePrArgs and
+      // ReopenPrArgs are `{ prId }`), which is noise in every log and audit of
+      // the call and reads like the action supports something it does not.
+      input.method = readValue(args, ["--method"]);
+      // Deleting the head branch on the remote is opt-in. The merge used to do
+      // it unconditionally; a branch someone may still want is not ours to drop.
+      // One spelling only. `--delete-branch` already means the LOCAL branch in
+      // `ade lanes delete`, so accepting it here for the remote one would give
+      // the same flag two opposite meanings.
+      input.deleteRemoteBranch = readFlag(args, ["--delete-remote-branch"]);
+    }
     return {
       kind: "execute",
       label: `PR ${sub}`,
       steps: [
-        actionStep(
-          "result",
-          "pr",
-          actionBySub[sub]!,
-          collectGenericObjectArgs(args, {
-            prId: id,
-            method: readValue(args, ["--method"]),
-          }),
-        ),
+        actionStep("result", "pr", actionBySub[sub]!, collectGenericObjectArgs(args, input)),
       ],
     };
   }
@@ -20080,19 +20124,16 @@ function formatLaneDetail(value: unknown): string {
 }
 
 /**
- * Lane cell for a PR row.
+ * Lane cell for a PR row: the local worktree you can work in, when there is one.
  *
- * PR rows are soft-detached rather than deleted when their lane is removed or moves to
- * another branch, and their `lane_id` intentionally keeps pointing at the gone lane. So
- * printing `laneId` alone would present dead history as a live mapping. Detached rows
- * render as `was <lane>` instead.
+ * An empty cell means exactly that — no local worktree — and never that the PR
+ * is off-limits; every `ade prs` subcommand runs against GitHub either way.
+ * PR rows are soft-detached rather than deleted when their lane is removed or
+ * moves to another branch, and their `lane_id` keeps pointing at the gone lane,
+ * so detached rows print nothing rather than a path that is not there.
  */
 function prLaneCell(pr: JsonObject): unknown {
-  const detached = isRecord(pr.detached) ? pr.detached : null;
-  if (detached) {
-    const name = asString(detached.laneName) ?? asString(pr.laneName);
-    return `was ${name ?? "deleted lane"}`;
-  }
+  if (isRecord(pr.detached)) return null;
   return pr.laneId ?? pr.laneName;
 }
 

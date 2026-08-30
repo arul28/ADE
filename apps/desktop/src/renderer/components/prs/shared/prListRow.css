@@ -1,0 +1,77 @@
+/*
+ * The PR list row's density rules.
+ *
+ * Co-located with the markup, the same way `detail/PrDetailHeader.css` is: PR
+ * surface CSS has one home per component, not a shared tail on `index.css`.
+ *
+ * ── Why `display` lives here and not in a `style={{}}` ──────────────────────
+ * An inline style beats a stylesheet rule. The lane chip below set
+ * `display: inline-flex` inline while the container query set `display: none`,
+ * so it never dropped at any width. Anything a query has to hide belongs in this
+ * file, not on the element.
+ */
+
+/* ═══════════════════════════════════════════════════════════
+   PRs tab — PR list row density
+   ═══════════════════════════════════════════════════════════
+
+   The PR list column is drag-resizable between 260px and 560px, so the row has to
+   degrade against its own width rather than the window's. A container query keeps
+   that in CSS: no resize observer, no density prop threaded through the list, and
+   no re-render on every drag frame.
+
+   What leaves, and in what order, is a claim about what the row is for. The PR
+   number and the title never drop — the title now owns a full-width line and wraps.
+   Above them, in ascending order of usefulness: the frozen lane name, then that
+   lane's chat and proof counts. Everything the chip drops stays in its tooltip.
+
+   The author avatar now sits out of flow in the card's top-right gutter, so it costs
+   the title no width at any size and has no reason to leave until the row is at the
+   floor of its drag range. It drops at 280px — the last 20px of a 260–560px range,
+   where the meta line's badges, diff stat, timestamp and GitHub link have already
+   filled the width and a corner glyph reads as clutter. At 400px, where it used to
+   go, it was vanishing within a few pixels of the drag starting. */
+.ade-pr-row {
+  container-type: inline-size;
+  container-name: pr-list-row;
+}
+
+.ade-pr-row-provenance {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* Declared here, not inline on the element: an inline `display` wins over the
+   `display: none` in the container query below, so the lane name would never
+   drop. */
+.ade-pr-row-provenance-lane {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@container pr-list-row (max-width: 340px) {
+  .ade-pr-row-provenance-lane {
+    display: none;
+  }
+
+  /* A chip whose only content was the lane name goes with it, rather than leaving
+     an empty tooltip target sitting in the meta row. */
+  .ade-pr-row-provenance[data-counts="0"] {
+    display: none;
+  }
+}
+
+@container pr-list-row (max-width: 300px) {
+  .ade-pr-row-provenance {
+    display: none;
+  }
+}
+
+@container pr-list-row (max-width: 280px) {
+  .ade-pr-row-avatar {
+    display: none;
+  }
+}

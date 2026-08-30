@@ -337,11 +337,13 @@ private struct PrSummaryCommitRow: View {
   }
 }
 
-/// Amber banner shown at the top of the thread when the PR is not mapped to an
-/// ADE lane. Primary action is auto-map ("Create lane from PR branch", gated on
-/// host support); mapping to an existing lane and opening GitHub stay available
-/// without leaving the full detail view.
-struct PrUnmappedThreadBanner: View {
+/// Collapsed offer at the top of the thread when no local lane tracks this PR's
+/// branch: create one from the branch, link an existing one, or open GitHub.
+///
+/// Deliberately quiet and neutral. Every PR action on this screen is a GitHub
+/// call that works without a lane, so this is an offer to start local work — not
+/// a warning, and not a gate on anything.
+struct PrLocalLaneOfferBanner: View {
   let canAutoMap: Bool
   let canMap: Bool
   @Binding var isExpanded: Bool
@@ -357,10 +359,10 @@ struct PrUnmappedThreadBanner: View {
         }
       } label: {
         HStack(spacing: 10) {
-          Image(systemName: "exclamationmark.triangle.fill")
+          Image(systemName: "arrow.triangle.branch")
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.warning)
-          Text("Not mapped to a lane")
+            .foregroundStyle(ADEColor.textSecondary)
+          Text("Work on this branch locally")
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           Spacer(minLength: 0)
@@ -374,15 +376,15 @@ struct PrUnmappedThreadBanner: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .accessibilityLabel("Not mapped to a lane")
+      .accessibilityLabel("Work on this branch locally")
       .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-      .accessibilityHint(isExpanded ? "Collapses lane mapping actions" : "Shows lane mapping actions")
+      .accessibilityHint(isExpanded ? "Collapses lane actions" : "Shows lane actions")
 
       if isExpanded {
-        Divider().overlay(ADEColor.warning.opacity(0.22))
+        Divider().overlay(ADEColor.textMuted.opacity(0.22))
 
         VStack(alignment: .leading, spacing: 0) {
-          Text("Connect this GitHub branch to an ADE lane to unlock local actions.")
+          Text("Create a lane from this branch, or link one you already have, to edit the code on your machine.")
             .font(.system(size: 12))
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -390,7 +392,7 @@ struct PrUnmappedThreadBanner: View {
             .padding(.vertical, 10)
 
           if canAutoMap {
-            PrUnmappedActionRow(
+            PrLaneOfferActionRow(
               title: "Create lane from PR branch",
               systemImage: "arrow.triangle.branch",
               tint: ADEColor.accent,
@@ -399,15 +401,15 @@ struct PrUnmappedThreadBanner: View {
           }
 
           if canMap {
-            PrUnmappedActionRow(
-              title: "Map to existing lane",
+            PrLaneOfferActionRow(
+              title: "Link an existing lane",
               systemImage: "link",
               tint: ADEColor.accent,
               action: onMap
             )
           }
 
-          PrUnmappedActionRow(
+          PrLaneOfferActionRow(
             title: "Open in GitHub",
             systemImage: "arrow.up.right.square",
             trailingSystemImage: "arrow.up.right",
@@ -419,15 +421,15 @@ struct PrUnmappedThreadBanner: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEColor.warning.opacity(0.06), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+    .background(PrGlassPalette.threadCard, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .strokeBorder(ADEColor.warning.opacity(0.24), lineWidth: 0.7)
+        .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.7)
     )
   }
 }
 
-private struct PrUnmappedActionRow: View {
+private struct PrLaneOfferActionRow: View {
   let title: String
   let systemImage: String
   var trailingSystemImage = "chevron.right"

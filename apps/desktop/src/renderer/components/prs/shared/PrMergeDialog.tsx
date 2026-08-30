@@ -63,12 +63,10 @@ export const PrMergeDialog = memo(function PrMergeDialog({
   const [commitBody, setCommitBody] = useState("");
   const [methodMenuOpen, setMethodMenuOpen] = useState(false);
   const [bypassRules, setBypassRules] = useState(false);
-  const [overrideArmed, setOverrideArmed] = useState(false);
   const [showCli, setShowCli] = useState(false);
   const [staleHead, setStaleHead] = useState(false);
 
   const methodMenuRef = useRef<HTMLDivElement | null>(null);
-  const overrideArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Head SHA captured when the dialog opened — FROZEN; drives the stale-head
   // guard (submitted as expectedHeadSha). Never advanced while the dialog is open.
   const openedHeadShaRef = useRef<string | null>(null);
@@ -102,7 +100,6 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     setCommitTitle(defaults.title);
     setCommitBody(defaults.body);
     setBypassRules(false);
-    setOverrideArmed(false);
     setStaleHead(false);
     openedHeadShaRef.current = status?.headSha ?? null;
     acknowledgedHeadRef.current = status?.headSha ?? null;
@@ -142,12 +139,9 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     }
   }, [computeDefaults, method, open, status?.headSha]);
 
-  // Reset the bypass arm if bypass becomes unavailable.
+  // Drop the bypass choice if bypass becomes unavailable.
   useEffect(() => {
-    if (!canBypass) {
-      setBypassRules(false);
-      setOverrideArmed(false);
-    }
+    if (!canBypass) setBypassRules(false);
   }, [canBypass]);
 
   useEffect(() => {
@@ -158,10 +152,6 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [methodMenuOpen]);
-
-  useEffect(() => () => {
-    if (overrideArmTimer.current) clearTimeout(overrideArmTimer.current);
-  }, []);
 
   const handleResetDefaults = useCallback(() => {
     const defaults = computeDefaults(method);
@@ -195,27 +185,12 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     });
   }, [actionBusy, bypassRules, commitBody, commitTitle, mergeEnabled, method, onMerge, showCommitEditor]);
 
-  const handlePrimaryClick = useCallback(() => {
-    // Override path requires a deliberate second click (arm/confirm).
-    if (bypassRules) {
-      if (overrideArmed) {
-        if (overrideArmTimer.current) clearTimeout(overrideArmTimer.current);
-        setOverrideArmed(false);
-        submitMerge();
-        return;
-      }
-      setOverrideArmed(true);
-      if (overrideArmTimer.current) clearTimeout(overrideArmTimer.current);
-      overrideArmTimer.current = setTimeout(() => setOverrideArmed(false), 4000);
-      return;
-    }
-    submitMerge();
-  }, [bypassRules, overrideArmed, submitMerge]);
-
+  // The bypass checkbox is already the deliberate confirmation, so the override
+  // path submits on one click — a second confirm on the same screen adds nothing.
   const primaryLabel = actionBusy
     ? "Merging…"
     : bypassRules
-      ? (overrideArmed ? "Click again to override" : "Override & merge")
+      ? "Override & merge"
       : `Confirm ${mergeMethodShortLabel(method).toLowerCase()}`;
 
   return (
@@ -427,7 +402,7 @@ export const PrMergeDialog = memo(function PrMergeDialog({
         <button
           type="button"
           disabled={!mergeEnabled || actionBusy}
-          onClick={handlePrimaryClick}
+          onClick={submitMerge}
           data-testid="pr-merge-primary-button"
           className="inline-flex h-8 items-center gap-1.5 rounded-md px-3.5 text-[11px] font-semibold"
           style={{

@@ -3308,6 +3308,9 @@ function parseLandPrArgs(value: Record<string, unknown>): LandPrArgs {
   }
   const bypassRules = asOptionalBoolean(value.bypassRules);
   const archiveLane = asOptionalBoolean(value.archiveLane);
+  // Opt-in and destructive: without this pass-through a remote caller asking to
+  // delete the head branch would silently get a merge that keeps it.
+  const deleteRemoteBranch = asOptionalBoolean(value.deleteRemoteBranch);
   // Optional pass-through so the mobile/remote merge surface can drive the same
   // bypass + editable commit-message flow as desktop (commit message ignored by
   // the `rebase` method downstream). Strings are trimmed; blanks are dropped.
@@ -3319,6 +3322,7 @@ function parseLandPrArgs(value: Record<string, unknown>): LandPrArgs {
     method,
     ...(bypassRules !== undefined ? { bypassRules } : {}),
     ...(archiveLane !== undefined ? { archiveLane } : {}),
+    ...(deleteRemoteBranch !== undefined ? { deleteRemoteBranch } : {}),
     ...(commitTitle ? { commitTitle } : {}),
     ...(commitBody ? { commitBody } : {}),
     ...(expectedHeadSha ? { expectedHeadSha } : {}),
@@ -5698,6 +5702,12 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
       prId: requirePrId(payload, "prs.getCheckLog"),
       jobId,
       ...(maxLines != null ? { maxLines } : {}),
+      // A passed job no longer downloads its log automatically, so `includeLog`
+      // is the only way a client asks for one anyway. Rebuilding this payload
+      // field-by-field means a forgotten field is silently dropped, not a type
+      // error: without this line a remote client's explicit "load the log"
+      // would no-op with no diagnostic.
+      ...(payload.includeLog === true ? { includeLog: true } : {}),
     });
   });
   // Coordinate-based PR reads for PRs that are not mapped to an ADE lane (no DB

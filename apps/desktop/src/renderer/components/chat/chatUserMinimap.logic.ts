@@ -1,5 +1,6 @@
 import type { ChatTranscriptGroupedEnvelope } from "./chatTranscriptRows";
 import { summarizeInlineText } from "./chatTranscriptRows";
+import { tickIndexFromPointer, tickTopPercent } from "../../lib/tickStripGeometry";
 
 /** Comfortable-density default; keep aligned with `transcriptRowGapPx("comfortable")` in chatAppearance. */
 export const CHAT_TIMELINE_ROW_GAP_PX = 14;
@@ -300,8 +301,7 @@ export function minimapHasPersistentGutter(listWidthPx: number, columnWidthPx: n
 
 /** Tick position as a percentage of rail height — compresses instead of overflowing. */
 export function resolveMinimapTopPercent(index: number, itemCount: number): number {
-  if (itemCount <= 1) return 0;
-  return (Math.max(0, Math.min(index, itemCount - 1)) / (itemCount - 1)) * 100;
+  return tickTopPercent(index, itemCount);
 }
 
 export function resolveMinimapIndexFromPointer(input: {
@@ -310,10 +310,12 @@ export function resolveMinimapIndexFromPointer(input: {
   readonly railHeight: number;
   readonly pointerY: number;
 }): number | null {
-  if (input.itemCount <= 0 || input.railHeight <= 0) return null;
-  if (input.itemCount === 1) return 0;
-  const progress = Math.max(0, Math.min(1, (input.pointerY - input.railTop) / input.railHeight));
-  return Math.max(0, Math.min(input.itemCount - 1, Math.round(progress * (input.itemCount - 1))));
+  return tickIndexFromPointer({
+    itemCount: input.itemCount,
+    stripTop: input.railTop,
+    stripHeight: input.railHeight,
+    pointerY: input.pointerY,
+  });
 }
 
 /**

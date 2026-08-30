@@ -5,9 +5,11 @@ import type {
   PrSummary,
 } from "../../../../shared/types";
 import { buildPrListRows } from "../shared/prListGrouping";
+import type { OptimisticTerminalState } from "../state/PrsContext";
 import {
   GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT,
   GITHUB_TAB_VIRTUALIZE_AT,
+  applyOptimisticTerminalState,
   computeTerminalOverlayItems,
   countGitHubItemsByState,
   githubCoordKey,
@@ -27,6 +29,7 @@ export function useGitHubTabListModel({
   renderedHydrationItems,
   lastSeenRowByCoordRef,
   currentHistoryPageLimit,
+  optimisticTerminalByCoord,
 }: {
   snapshot: GitHubPrSnapshot | null;
   searchQuery: string;
@@ -36,6 +39,8 @@ export function useGitHubTabListModel({
   renderedHydrationItems: GitHubPrListItem[];
   lastSeenRowByCoordRef: React.MutableRefObject<Map<string, GitHubPrListItem>>;
   currentHistoryPageLimit: () => number;
+  /** Merges/closes GitHub has confirmed but the snapshot has not caught up to. */
+  optimisticTerminalByCoord?: ReadonlyMap<string, OptimisticTerminalState> | null;
 }) {
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
     if (!searchQuery.trim()) return true;
@@ -56,9 +61,16 @@ export function useGitHubTabListModel({
     () => allItems.map((item) => {
       const linkedPr = item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null;
       const coordinatePr = prsByCoordinateMap.get(githubCoordKey(item));
-      return reconcileLinkedPrState(item, linkedPr ?? coordinatePr);
+      // Row reconciliation first, then the local optimistic layer. A PR with no
+      // local row has nothing in `prsByIdMap` to reconcile against, so the
+      // optimistic layer is the only thing that moves it out of Open before the
+      // next snapshot lands.
+      return applyOptimisticTerminalState(
+        reconcileLinkedPrState(item, linkedPr ?? coordinatePr),
+        optimisticTerminalByCoord,
+      );
     }),
-    [allItems, prsByCoordinateMap, prsByIdMap],
+    [allItems, optimisticTerminalByCoord, prsByCoordinateMap, prsByIdMap],
   );
 
   React.useEffect(() => {

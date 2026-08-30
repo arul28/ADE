@@ -6,6 +6,7 @@ import type {
 } from "../../../../shared/types";
 import { syntheticGithubPrId } from "../../../../shared/types/prs";
 import { isTerminalPrState } from "../../../lib/prState";
+import type { OptimisticTerminalState } from "../state/PrsContext";
 import {
   prRouteCoordinatesKey,
   prRouteCoordinatesMatch,
@@ -131,6 +132,37 @@ export function reconcileLinkedPrState(
     title: linkedPr.title || item.title,
     updatedAt: linkedPr.updatedAt || item.updatedAt,
   };
+}
+
+/**
+ * How long a locally-confirmed merge/close keeps overriding the snapshot.
+ *
+ * The override only has to bridge the gap until the next GitHub read agrees.
+ * It expires because a closed PR can be reopened: without a deadline, the entry
+ * would pin that PR to Closed for the rest of the session even though every
+ * later snapshot says it is open again.
+ */
+export const OPTIMISTIC_TERMINAL_TTL_MS = 5 * 60_000;
+
+/**
+ * Apply a locally-confirmed merge/close to a list row.
+ *
+ * GitHub has already accepted the mutation; the snapshot just has not caught up.
+ * Only ever moves a row *into* a terminal bucket — never back out — so a stale
+ * optimistic entry can't resurrect a row the snapshot has since corrected.
+ */
+export function applyOptimisticTerminalState(
+  item: GitHubPrListItem,
+  optimisticByCoord: ReadonlyMap<string, OptimisticTerminalState> | null | undefined,
+  now: number = Date.now(),
+): GitHubPrListItem {
+  if (!optimisticByCoord?.size) return item;
+  if (isTerminalPrState(item.state)) return item;
+  const pending = optimisticByCoord.get(githubCoordKey(item));
+  if (!pending) return item;
+  const markedAt = pending.at ? Date.parse(pending.at) : Number.NaN;
+  if (Number.isFinite(markedAt) && now - markedAt > OPTIMISTIC_TERMINAL_TTL_MS) return item;
+  return { ...item, state: pending.state, isDraft: false };
 }
 
 export function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
