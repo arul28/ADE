@@ -47,6 +47,15 @@ import {
   saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./commands/reportIssue";
+import {
+  formatTriageText,
+  parseTriageProviderName,
+  runTriageCommand,
+  TRIAGE_NO_FETCH_ENV,
+  TriageCommandError,
+  TriageUsageError,
+  type TriageProviderName,
+} from "./commands/triage";
 import { redactDiagnosticText } from "./services/diagnostics/diagnosticReport";
 export { readInstalledDesktopVersion };
 import {
@@ -450,6 +459,7 @@ type CliPlan =
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
   | { kind: "report-issue"; open: boolean; send: boolean }
+  | { kind: "triage"; agent: boolean; provider: TriageProviderName | null }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -751,6 +761,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -1304,6 +1315,42 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
+  triage: `${ADE_BANNER}
+  ADE Triage
+
+  Hand a broken ADE install to your own coding agent. Runs the same checks as
+  "ade doctor" and collects the same redacted diagnostics as "ade report-issue",
+  writes them plus a maintained repair playbook into a fresh temp directory, and
+  then starts whichever agent CLI is installed so you can work the fix with it.
+
+  The playbook is fetched from GitHub when the network allows (3s timeout) and
+  falls back to the copy shipped with this build; the output says which won.
+
+    $ ade triage                          Launch the first installed agent CLI
+    $ ade triage --provider codex         Launch a specific one
+    $ ade triage --agent --json           Print the handoff for an agent already running
+    $ ade triage --agent --text           The same, human-readable
+
+  Flags:
+    --agent                Launch nothing; print contextPath, playbookPath,
+                           playbookSource, suggestedPrompt and the detected
+                           agent CLIs. Use this from inside an agent session.
+    --provider <name>      claude | codex | cursor-agent | opencode | droid.
+    --text                 Human-readable output.
+    --json                 Structured JSON output (default).
+
+  Notes:
+    Detection order is claude, codex, cursor-agent, opencode, droid. With no
+    agent CLI installed, triage prints the --agent output and exits 0 — the
+    files are the deliverable, the launch is a convenience.
+    When an agent is launched the terminal belongs to it: the file paths are
+    printed on stderr before it starts, stdout stays empty, and triage exits
+    with the agent's own exit code.
+    The context file is redacted with the same rules as "ade report-issue"; it
+    never contains credentials, and it is written to a temp directory, not into
+    your project.
+    Set ${TRIAGE_NO_FETCH_ENV}=1 to skip the playbook fetch entirely.
+`,
   connect: `${ADE_BANNER}
   ADE Connect
 
@@ -13124,6 +13171,19 @@ function buildCliPlan(
       send: readFlag(args, ["--send"]),
     };
   }
+  if (primary === "triage") {
+    const provider = readValue(args, ["--provider", "--agent-cli"]);
+    try {
+      return {
+        kind: "triage",
+        agent: readFlag(args, ["--agent"]),
+        provider: provider == null ? null : parseTriageProviderName(provider),
+      };
+    } catch (error) {
+      if (error instanceof TriageUsageError) throw new CliUsageError(error.message);
+      throw error;
+    }
+  }
   if (primary === "auth") {
     const sub = firstPositional(args) ?? "status";
     if (sub !== "status")
@@ -23399,6 +23459,49 @@ async function runCli(
           undefined,
         ),
         exitCode: 0,
+      };
+    }
+    if (plan.kind === "triage") {
+      const { projectRoot } = resolveRoots(parsed.options);
+      const { payload, exitCode } = await runTriageCommand(
+        { agent: plan.agent, provider: plan.provider },
+        {
+          cliVersion: VERSION,
+          projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
+          // The same probe `ade doctor` runs. It may fail outright — that is the
+          // machine this command exists for — and `runTriageCommand` records the
+          // failure in the context file instead of taking the handoff down.
+          runDoctor: () =>
+            runDoctorCommand(false, parsed.options, {
+              resolveMachineRuntimeSocketPath,
+              connectRuntime: (socketPath, timeoutMs, label) =>
+                SocketJsonRpcClient.connect(socketPath, timeoutMs, label),
+              buildInitializeParams,
+              readMachineRuntimeInfo,
+              resolveExpectedMachineRuntimeBuildHash,
+              machineRuntimeMismatchReason,
+              unwrapActionEnvelope,
+            }),
+        },
+      ).catch((error: unknown) => {
+        // A full temp directory or an agent CLI that will not start is a
+        // failure of this command, not a crash: print the sentence that names
+        // the path, not a stack trace, to the person whose machine is already
+        // broken.
+        if (error instanceof TriageCommandError) throw new CliToolError(error.message, undefined);
+        throw error;
+      });
+      // Nothing on stdout once an agent has been launched: the terminal was
+      // handed to it, and printing a JSON blob (the default format) after the
+      // user quits their session is noise. The pre-launch notice on stderr
+      // already named both files. `--agent` is the machine-readable path.
+      if (payload.mode === "launch") return { output: "", exitCode };
+      if (parsed.options.text) {
+        return { output: formatTriageText(payload), exitCode };
+      }
+      return {
+        output: formatOutput(payload, parsed.options, undefined),
+        exitCode,
       };
     }
     if (plan.kind === "doctor") {

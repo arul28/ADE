@@ -214,6 +214,11 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
+  exceedsProviderInlineLimit,
+  inlineAttachmentHintPart,
+} from "./attachmentInlineGuard";
+import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
+import {
   resolveCliSpawnInvocation,
   terminateProcessTree,
 } from "../shared/processExecution";
@@ -572,6 +577,9 @@ import {
   snapshotFromClaudeSessionQuotaText,
   type ClaudeSessionQuotaSnapshot,
 } from "../../../shared/claudeSessionQuota";
+import { isAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
+import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
+import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import {
@@ -709,10 +717,12 @@ import {
   AUTO_LANE_IDENTITY_JSON_SCHEMA,
   AUTO_TITLE_SYSTEM_PROMPT,
   buildSessionIntelligenceModelCandidates,
+  formatConversationTranscript,
   LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
   LEGACY_LANE_NAME_SYSTEM_PROMPT,
   MAX_NAMING_WORDS,
   runNamingAcrossProviders,
+  type SessionMetadataConversationEntry,
 } from "./sessionNaming";
 import { createSessionMetadataRegenerator } from "./sessionMetadataService";
 import {
@@ -6029,6 +6039,14 @@ async function buildStreamingUserContent(
       const data = await args.readAttachmentBytes(attachment);
       const mediaType = inferAttachmentMediaType(attachment);
 
+      // Every branch below this point inlines `data` into the request body.
+      // The attachment cap is larger than what a provider accepts inline, so
+      // an oversized file degrades to a path hint rather than a rejected turn.
+      if (exceedsProviderInlineLimit(data.byteLength)) {
+        parts.push(inlineAttachmentHintPart(attachment.path, data.byteLength));
+        continue;
+      }
+
       if (attachment.type === "image") {
         if (args.runtimeKind === "claude" || args.modelDescriptor?.capabilities.vision) {
           parts.push({
@@ -7952,6 +7970,12 @@ export function createAgentChatService(args: {
     sessionId: string;
     outcome: "completed" | "partial" | "failed";
   }) => void;
+  /**
+   * Content-free hook fired once per auto-resume transition (armed, resumed,
+   * paused). Carries no session id by construction — see
+   * `ChatAutoResumeAnalyticsProperties`.
+   */
+  onAutoResumeOutcome?: (properties: ChatAutoResumeAnalyticsProperties) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -8009,6 +8033,7 @@ export function createAgentChatService(args: {
     onTurnSettled,
     onChatMentionsExpanded,
     onSessionMetadataRegenerated,
+    onAutoResumeOutcome,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -8470,11 +8495,34 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  // Declared here rather than next to its only caller further down the file:
+  // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
+  // and a `const` declared thousands of lines later is in its temporal dead zone
+  // for any call that lands before that line executes. Every dependency below is
+  // read through a closure at call time, so nothing else has to move with it.
+  const autoResume = createChatAutoResumeCoordinator({
+    getScheduler: () => scheduledWorkScheduler,
+    whenSchedulerReady: () => scheduledWorkReady,
+    isSessionSchedulable: (sessionId) => {
+      const row = sessionService.get(sessionId);
+      return Boolean(row && !row.archivedAt && isSchedulableAgentSession(row));
+    },
+    emitNotice: (sessionId, notice) => {
+      const managed = managedSessions.get(sessionId);
+      if (!managed) return;
+      emitChatEvent(managed, notice);
+    },
+    ...(onAutoResumeOutcome ? { captureAnalytics: onAutoResumeOutcome } : {}),
+    logger,
+  });
   // Listeners for "this chat is over" (deleted or archived). Services that hold
   // a per-chat lock — the iOS simulator session, for one — release it here
   // instead of staying bound to a chat that no longer exists.
   const chatSessionEndedListeners = new Set<(sessionId: string) => void>();
   const notifyChatSessionEnded = (sessionId: string): void => {
+    // Covers archive and delete both. Auto-resume state outlives nothing here:
+    // the chat is over, so a streak counter for it is pure retention.
+    autoResume.forgetSession(sessionId);
     for (const listener of chatSessionEndedListeners) {
       try {
         listener(sessionId);
@@ -9568,25 +9616,6 @@ export function createAgentChatService(args: {
     timeoutMs,
     `${label} timed out after ${timeoutMs}ms`,
   );
-
-  const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
-    try {
-      return readTranscriptEnvelopes(managed)
-        .flatMap((entry) => {
-          if (entry.event.type === "user_message") {
-            const text = entry.event.text.trim();
-            return text.length ? [`User: ${text}`] : [];
-          }
-          if (entry.event.type === "text") {
-            const text = entry.event.text.trim();
-            return text.length ? [`Assistant: ${text}`] : [];
-          }
-          return [];
-        });
-    } catch {
-      return [];
-    }
-  };
 
   const readTranscriptEntries = async (
     managed: ManagedChatSession,
@@ -11210,17 +11239,40 @@ export function createAgentChatService(args: {
     });
   };
 
-  const buildRecentConversationContext = (managed: ManagedChatSession, limit = 20): string => {
-    const liveEntries = managed.recentConversationEntries.map((entry) =>
-      `${entry.role === "user" ? "User" : "Assistant"}: ${entry.text}`,
-    );
-    const combined: string[] = [];
-    for (const entry of [...readTranscriptConversationEntries(managed), ...liveEntries]) {
-      if (!entry.trim().length) continue;
-      if (combined[combined.length - 1] === entry) continue;
+  const collectConversationEntries = (
+    managed: ManagedChatSession,
+  ): SessionMetadataConversationEntry[] => {
+    const fromTranscript: SessionMetadataConversationEntry[] = [];
+    try {
+      for (const entry of readTranscriptEnvelopes(managed)) {
+        if (entry.event.type === "user_message") {
+          const text = entry.event.text.trim();
+          if (text) fromTranscript.push({ role: "user", text });
+        } else if (entry.event.type === "text") {
+          const text = entry.event.text.trim();
+          if (text) fromTranscript.push({ role: "assistant", text });
+        }
+      }
+    } catch {
+      // Live ring still helps when the transcript file is unreadable.
+    }
+    const live = managed.recentConversationEntries
+      .map((entry) => ({
+        role: entry.role,
+        text: entry.text.trim(),
+      }))
+      .filter((entry) => entry.text.length > 0);
+    const combined: SessionMetadataConversationEntry[] = [];
+    for (const entry of [...fromTranscript, ...live]) {
+      const prev = combined[combined.length - 1];
+      if (prev && prev.role === entry.role && prev.text === entry.text) continue;
       combined.push(entry);
     }
-    return combined.slice(-limit).join("\n");
+    return combined;
+  };
+
+  const buildRecentConversationContext = (managed: ManagedChatSession, limit = 20): string => {
+    return formatConversationTranscript(collectConversationEntries(managed).slice(-limit));
   };
 
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
@@ -12157,8 +12209,33 @@ export function createAgentChatService(args: {
           sessionModel: managed.session.model,
         });
       },
-      buildRecentConversationContext: (managed, limit) =>
-        buildRecentConversationContext(managed, limit),
+      collectConversationEntries: (managed) => collectConversationEntries(managed),
+      listLaneThreads: (managed) => {
+        const rows = sessionService.list({ laneId: managed.session.laneId, limit: 40 });
+        return rows
+          .filter((row) => isChatToolType(row.toolType))
+          .map((row) => ({
+            title: row.title,
+            statusNote: row.statusNote,
+            summary: row.summary,
+            isCurrent: row.id === managed.session.id,
+          }));
+      },
+      gatherLaneWorkVersusRemote: async ({ worktreePath, baseRef }) => {
+        const cwd = worktreePath.trim();
+        if (!cwd) return null;
+        const [changedFiles, commits, uncommitted] = await Promise.all([
+          runGit(["diff", "--name-status", `${baseRef}...HEAD`], { cwd, timeoutMs: 8_000 }).catch(() => null),
+          runGit(["log", "-n20", "--oneline", `${baseRef}..HEAD`], { cwd, timeoutMs: 8_000 }).catch(() => null),
+          runGit(["status", "--short"], { cwd, timeoutMs: 8_000 }).catch(() => null),
+        ]);
+        return {
+          baseRef,
+          changedFiles: changedFiles?.exitCode === 0 ? changedFiles.stdout : null,
+          commits: commits?.exitCode === 0 ? commits.stdout : null,
+          uncommitted: uncommitted?.exitCode === 0 ? uncommitted.stdout : null,
+        };
+      },
       runPrompt: ({ cwd, modelId, prompt, systemPrompt, jsonSchema }) => runSessionIntelligencePrompt({
         cwd,
         modelId,
@@ -14591,6 +14668,26 @@ export function createAgentChatService(args: {
     };
   };
 
+  // ── Auto-resume after a provider usage limit resets ──
+
+  /**
+   * Reset instant the provider published for the current usage limit, in ms.
+   * Only providers that actually report one are consulted — Claude's plan
+   * quota snapshot and Codex's `account/rateLimits` view. Every other provider
+   * returns null, which keeps today's manual-recovery-only behaviour.
+   */
+  const usageLimitResetAtMs = (managed: ManagedChatSession): number | null => {
+    const claudeReset = managed.claudeSessionQuotaSnapshot?.resetsAtMs;
+    if (typeof claudeReset === "number" && Number.isFinite(claudeReset)) return claudeReset;
+    const runtime = managed.runtime;
+    if (runtime?.kind === "codex") {
+      const resetAt = runtime.rateLimits?.resetAt;
+      const parsed = typeof resetAt === "string" ? Date.parse(resetAt) : Number.NaN;
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  };
+
   type CommitChatEventOptions = {
     liveEvent?: AgentChatEvent;
   };
@@ -14601,6 +14698,14 @@ export function createAgentChatService(args: {
     options: CommitChatEventOptions = {},
   ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    if (decoratedEvent.type === "error") {
+      autoResume.maybeArmAfterUsageLimit({
+        sessionId: managed.session.id,
+        provider: managed.session.provider,
+        resetAtMs: usageLimitResetAtMs(managed),
+        error: decoratedEvent,
+      });
+    }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
     managed.session.lastActivityAt = nowIso();
@@ -14993,27 +15098,31 @@ export function createAgentChatService(args: {
     if (
       normalizedEvent.type === "user_message"
       && normalizedEvent.deliveryState !== "queued"
-      && normalizedEvent.turnId
       && normalizedEvent.metadata?.scheduledWake?.scheduleId
-      && scheduledWorkScheduler
     ) {
-      runScheduledWorkMutation(
-        "record_turn_started",
-        scheduledWorkScheduler.recordTurnStarted(
-          normalizedEvent.metadata.scheduledWake.scheduleId,
-          normalizedEvent.turnId,
-        ),
-      );
+      const scheduleId = normalizedEvent.metadata.scheduledWake.scheduleId;
+      if (normalizedEvent.turnId && scheduledWorkScheduler) {
+        runScheduledWorkMutation(
+          "record_turn_started",
+          scheduledWorkScheduler.recordTurnStarted(scheduleId, normalizedEvent.turnId),
+        );
+      }
+      if (isAutoResumeScheduledWork({ id: scheduleId })) {
+        autoResume.noteResumeTurnStarted(managed.session.id);
+      }
     }
 
-    if (normalizedEvent.type === "done" && normalizedEvent.turnId && scheduledWorkScheduler) {
-      runScheduledWorkMutation(
-        "record_turn_finished",
-        scheduledWorkScheduler.recordTurnFinished(
-          normalizedEvent.turnId,
-          managed.preview?.trim() || undefined,
-        ),
-      );
+    if (normalizedEvent.type === "done") {
+      autoResume.noteTurnFinished(managed.session.id);
+      if (normalizedEvent.turnId && scheduledWorkScheduler) {
+        runScheduledWorkMutation(
+          "record_turn_finished",
+          scheduledWorkScheduler.recordTurnFinished(
+            normalizedEvent.turnId,
+            managed.preview?.trim() || undefined,
+          ),
+        );
+      }
     }
 
     const compactionEvent = mapLegacyCompactionEvent(
@@ -31378,6 +31487,12 @@ export function createAgentChatService(args: {
       });
       return false;
     }
+    // Past the drop, so a steer the queue refused is not mistaken for activity
+    // and leaves any pending auto-resume armed. The queued message itself is
+    // real user input, and it will run.
+    if (!metadata?.scheduledWake) {
+      autoResume.cancelForSession(sessionId, "user_message");
+    }
     const displayText = extra?.displayText?.trim().length ? extra.displayText.trim() : text;
     const uuid = randomUUID();
     runtime.pendingSteers.push({
@@ -36923,6 +37038,13 @@ export function createAgentChatService(args: {
       try {
         let buf: Buffer;
         if (attachment.type === "image") {
+          // An image has no path-shaped fallback here — it is inlined or it is
+          // a text hint — so the size check happens before the read, not after.
+          const imageSize = resolvedAttachmentDiskSize(attachment);
+          if (imageSize != null && exceedsProviderInlineLimit(imageSize)) {
+            blocks.push(inlineAttachmentHintPart(attachment.path, imageSize));
+            continue;
+          }
           buf = await readResolvedAttachmentBytes(attachment);
         } else {
           const dirtyBuf = await readDirtyResolvedAttachmentBytes(attachment);
@@ -40968,6 +41090,16 @@ export function createAgentChatService(args: {
       optimisticCodexTurnStart,
     } = prepared;
 
+    // Both dispatch commit points cancel the pending auto-resume: this one and
+    // the accepted branch of `enqueueSteerOrDrop`. Together they cover every
+    // route a message can take — send, steer, wake queue, continuity capsule
+    // and the headless `runSessionTurn`, which reaches the provider through
+    // here and so can no longer walk past the sweep. A message that was refused
+    // upstream never gets here, so it leaves the resume armed. Scheduled wakes
+    // are excluded: a fired resume must not cancel itself.
+    if (!metadata?.scheduledWake) {
+      autoResume.cancelForSession(sessionId, "user_message");
+    }
     recordLinearIssueContextForLane(managed, contextAttachments);
     recordGitHubIssueContextForLane(managed, contextAttachments);
 
@@ -44683,6 +44815,7 @@ export function createAgentChatService(args: {
     cancellable: true,
     ...(schedule.lateFlag ? { late: true } : {}),
     ...(schedule.outcomeSummary ? { outcomeSummary: schedule.outcomeSummary } : {}),
+    ...(schedule.source ? { source: schedule.source } : {}),
   });
 
   const createScheduledWork = async (
@@ -44947,6 +45080,9 @@ export function createAgentChatService(args: {
       .find((schedule) => schedule.id === normalizedScheduleId);
     if (!existing) {
       throw new Error(`Scheduled work '${normalizedScheduleId}' was not found in chat '${normalizedSessionId}'.`);
+    }
+    if (isAutoResumeScheduledWork(existing)) {
+      autoResume.noteScheduleDismissed(normalizedSessionId);
     }
     if (existing.provider === "claude") {
       const cancellation = await requestClaudeScheduledWorkCancellation(
@@ -45574,6 +45710,40 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Settle a card the user answered but whose asker is already gone.
+   *
+   * Returning silently is not enough, and "the UI will clear the stale entry"
+   * is no longer true: the renderer defers to the summary for a card swept
+   * without a receipt, and the summary's own restart fallback
+   * (`latestPendingInputItemIdFromEvents`) clears only on
+   * `pending_input_resolved`. With no receipt written, the card is redrawn by
+   * the next full re-derivation and the click accomplishes nothing — an
+   * unanswerable card, which is the failure this whole path exists to avoid.
+   *
+   * An accept is recorded as `cancel` because nothing consumed the acceptance;
+   * saying "accepted" of an approval no runtime received would be a lie in the
+   * durable, synced transcript.
+   */
+  const settleUnclaimedPendingInput = (
+    managed: ManagedChatSession,
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+  ): void => {
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: decision === "accept" || decision === "accept_for_session" ? "cancel" : decision,
+      turnId: null,
+      questions: [],
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "info",
+      message: "That request is no longer active.",
+    });
+    persistChatState(managed);
+  };
+
   const respondToInput = async ({
     sessionId,
     itemId,
@@ -45626,18 +45796,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
-          turnId: null,
-          questions: [],
-        });
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: "That request is no longer active.",
-        });
-        persistChatState(managed);
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       const ensureWritable = (): void => {
@@ -45744,13 +45903,15 @@ export function createAgentChatService(args: {
       const pending = managed.runtime.approvals.get(itemId);
       if (!pending) {
         // The approval may have already been resolved (e.g. double-click,
-        // turn interrupted, or stale UI state). Log and return silently
-        // instead of throwing — the UI will clear the stale entry.
+        // turn interrupted, or stale UI state). Settle rather than throw —
+        // but settle with a receipt, not silence. See
+        // `settleUnclaimedPendingInput`.
         logger.warn("agent_chat.claude_approval_not_found", {
           sessionId,
           itemId,
-          decision,
+          decision: resolvedDecision,
         });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       managed.runtime.approvals.delete(itemId);
@@ -45769,7 +45930,17 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "opencode") {
       const pending = managed.runtime.pendingApprovals.get(itemId);
       if (!pending) {
-        throw new Error(`No pending approval found for item '${itemId}'.`);
+        // Throwing here is the same dead end as returning silently, only
+        // louder: the click surfaces an error, no receipt is written, and the
+        // summary goes on naming a card nothing can answer. Settle it like
+        // every other runtime.
+        logger.warn("agent_chat.opencode_approval_not_found", {
+          sessionId,
+          itemId,
+          decision: resolvedDecision,
+        });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        return;
       }
       managed.runtime.pendingApprovals.delete(itemId);
       const reply = resolvedDecision === "accept_for_session"
@@ -45793,12 +45964,17 @@ export function createAgentChatService(args: {
     if (cursorRuntime) {
       const pending = cursorRuntime.permissionWaiters.get(itemId);
       if (!pending) {
-        // Treat missing waiter as a benign race (e.g. the Cursor turn already
-        // resolved or was cancelled before the user responded). Simply no-op.
-        logger.debug("agent_chat.cursor_permission_waiter_missing", {
+        // Missing waiter is a benign race (e.g. the Cursor turn already
+        // resolved or was cancelled before the user responded), but the card
+        // the user just clicked still needs a receipt or it comes back.
+        // Warn, not debug: this no longer passes silently — it writes a durable
+        // receipt and paints a notice, so it needs a log that explains one.
+        logger.warn("agent_chat.cursor_permission_waiter_missing", {
           sessionId,
           itemId,
+          decision: resolvedDecision,
         });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       cursorRuntime.permissionWaiters.delete(itemId);
@@ -45818,10 +45994,12 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "droid") {
       const pending = managed.runtime.permissionWaiters.get(itemId);
       if (!pending) {
-        logger.debug("agent_chat.droid_permission_waiter_missing", {
+        logger.warn("agent_chat.droid_permission_waiter_missing", {
           sessionId,
           itemId,
+          decision: resolvedDecision,
         });
+        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
         return;
       }
       managed.runtime.permissionWaiters.delete(itemId);
@@ -45844,18 +46022,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: resolvedDecision,
     });
-    emitPendingInputResolved(managed, {
-      itemId,
-      decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
-      turnId: null,
-      questions: [],
-    });
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "info",
-      message: "That request is no longer active.",
-    });
-    persistChatState(managed);
+    settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
   };
 
   const approveToolUse = async ({
@@ -46880,6 +47047,7 @@ export function createAgentChatService(args: {
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
+    autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
     for (const sessionId of [...managedSessions.keys()]) {
@@ -46913,6 +47081,7 @@ export function createAgentChatService(args: {
     cursorCloudHydrateInFlight.clear();
     cursorCloudHydratedRunIds.clear();
     scheduledWorkScheduler?.dispose();
+    autoResume.forgetAll();
     for (const recovery of cancelledQueueRecoveries.values()) clearTimeout(recovery.timer);
     cancelledQueueRecoveries.clear();
     for (const sessionId of [...sessionTurnCollectors.keys()]) {
@@ -50411,7 +50580,7 @@ export function createAgentChatService(args: {
           }
         };
 
-        cleanupDir(path.join(projectRoot, ".ade", "attachments"));
+        cleanupDir(projectAttachmentsDir(projectRoot));
         cleanupDir(path.join(resolveAdeLayout(projectRoot).tmpDir, "agent-chat-attachments"));
       } catch { /* ignore */ }
     },

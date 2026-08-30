@@ -379,6 +379,10 @@ struct WorkChatSummaryRenderContext: Equatable {
   let orchestrationParentSessionId: String?
   let subagentTakeoverPromptShownAt: String?
   let parentTitle: String?
+  /// The host's own count of what is still blocking this chat. The only thing
+  /// that can rescue a pending-input card the transcript swept without a
+  /// `pending_input_resolved` receipt — see `WorkPendingInputQueue.resolved(_:)`.
+  let pendingInputItemId: String?
 
   init(_ summary: AgentChatSessionSummary?, parentTitle: String? = nil) {
     guard let summary else {
@@ -401,6 +405,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.orchestrationParentSessionId = nil
       self.subagentTakeoverPromptShownAt = nil
       self.parentTitle = nil
+      self.pendingInputItemId = nil
       return
     }
 
@@ -423,6 +428,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.orchestrationParentSessionId = summary.orchestrationParentSessionId
     self.subagentTakeoverPromptShownAt = summary.subagentTakeoverPromptShownAt
     self.parentTitle = parentTitle
+    self.pendingInputItemId = summary.pendingInputItemId
   }
 
   var currentModelId: String {
@@ -437,6 +443,10 @@ struct WorkChatSessionRenderContext: Equatable {
   let endedAt: String?
   let lastOutputPreview: String?
   let normalizedStatus: String
+  /// Session-row fallback for the chat summary's `pendingInputItemId`, used the
+  /// same way `workSessionCanonicalState` already prefers the summary and falls
+  /// back to the row.
+  let pendingInputItemId: String?
 
   init(_ session: TerminalSessionSummary) {
     self.id = session.id
@@ -445,6 +455,7 @@ struct WorkChatSessionRenderContext: Equatable {
     self.endedAt = session.endedAt
     self.lastOutputPreview = session.lastOutputPreview
     self.normalizedStatus = normalizedWorkChatSessionStatus(session: session, summary: nil)
+    self.pendingInputItemId = session.pendingInputItemId
   }
 }
 
@@ -763,6 +774,32 @@ struct WorkChatSessionView: View {
     isStreamingTurn && timelineSnapshot.transcriptHasInterruptibleActivity
   }
 
+  /// The host's own count of what is still blocking, preferring the chat summary
+  /// and falling back to the session row — the same precedence
+  /// `workCanonicalSessionState` uses for the "needs you" phase.
+  var hostPendingInputItemId: String? {
+    let fromSummary = chatSummaryContext.pendingInputItemId?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !fromSummary.isEmpty { return fromSummary }
+    return session.pendingInputItemId
+  }
+
+  /// The one place the raw derivation is reconciled against the session summary.
+  ///
+  /// Recomputed on every read, so the join cannot be served stale: a summary that
+  /// moves with no new transcript event still repaints the strip. Cheap because
+  /// it walks the (tiny) pending queue, never the transcript — the transcript
+  /// walk stays inside the cached, summary-free `WorkChatTimelineSnapshot`, which
+  /// is exactly why the reconciliation cannot live there.
+  ///
+  /// Without this, a blocking gate whose asker outlived its turn vanishes from
+  /// the strip while the host still counts it: the composer unlocks, the send is
+  /// refused, and there is no card left to answer. Desktop parity:
+  /// `resolvedPendingInputsBySession` in `AgentChatPane.tsx`.
+  var canonicalPendingInputs: [WorkPendingInputItem] {
+    timelineSnapshot.pendingInputQueue.resolved(hostPendingInputItemId: hostPendingInputItemId)
+  }
+
   /// Canonical open pending inputs minus the ones the user just answered.
   /// `optimisticallyAnsweredInputIds` hides an item the instant a decision is
   /// dispatched so the consolidated strip advances to the next request without
@@ -770,10 +807,11 @@ struct WorkChatSessionView: View {
   /// the card visibly flickered). Entries are reconciled back out once the item
   /// leaves the derived queue, or rolled back if the command errored.
   var pendingInputs: [WorkPendingInputItem] {
+    let canonical = canonicalPendingInputs
     guard !optimisticallyAnsweredInputIds.isEmpty else {
-      return timelineSnapshot.pendingInputs
+      return canonical
     }
-    return timelineSnapshot.pendingInputs.filter {
+    return canonical.filter {
       !optimisticallyAnsweredInputIds.contains($0.itemId)
     }
   }
@@ -789,7 +827,7 @@ struct WorkChatSessionView: View {
   /// a request, which is exactly when `reconcileOptimisticallyAnsweredInputs`
   /// should prune resolved optimistic entries.
   var canonicalPendingInputSignature: String {
-    timelineSnapshot.pendingInputs.map(\.itemId).joined(separator: "\u{1F}")
+    canonicalPendingInputs.map(\.itemId).joined(separator: "\u{1F}")
   }
 
   var pendingSteers: [WorkPendingSteerModel] {

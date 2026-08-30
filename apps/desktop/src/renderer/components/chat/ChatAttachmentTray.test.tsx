@@ -43,8 +43,12 @@ describe("ChatAttachmentTray", () => {
   const getImageDataUrl = vi.fn();
   const getRuntimeImageDataUrl = vi.fn();
   const writeClipboardImage = vi.fn();
+  const listWorkspaces = vi.fn();
 
   beforeEach(() => {
+    listWorkspaces.mockResolvedValue([
+      { id: "primary", kind: "primary", laneId: null, name: "ADE", branchRef: null, rootPath: "/tmp", isReadOnlyByDefault: false, mobileReadOnly: true },
+    ]);
     getImageDataUrl.mockResolvedValue({ dataUrl: "data:image/png;base64,abc123" });
     getRuntimeImageDataUrl.mockResolvedValue({ dataUrl: "data:image/png;base64,runtime123" });
     writeClipboardImage.mockResolvedValue(undefined);
@@ -57,6 +61,12 @@ describe("ChatAttachmentTray", () => {
         },
         agentChat: {
           getImageDataUrl: getRuntimeImageDataUrl,
+        },
+        files: {
+          listWorkspaces,
+          readFile: vi.fn(async () => {
+            throw new Error("not needed for image previews");
+          }),
         },
       },
     });
@@ -82,7 +92,8 @@ describe("ChatAttachmentTray", () => {
 
     fireEvent.click(openButton);
 
-    expect(screen.getByRole("dialog", { name: "screenshot.png" })).toBeTruthy();
+    // The preview popup is code-split, so it resolves a tick after the click.
+    expect(await screen.findByRole("dialog", { name: "screenshot.png" })).toBeTruthy();
   });
 
   it("renders seeded image previews without reading the file back", () => {
@@ -201,7 +212,9 @@ describe("ChatAttachmentTray", () => {
     expect(onFocusPrompt).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps non-image attachments as filename chips", () => {
+  it("renders non-image attachments as openable filename chips", () => {
+    // Non-image attachments used to be inert filename pills. Every attachment
+    // now opens in the universal preview, so the chip is the affordance.
     render(
       <ChatAttachmentTray
         attachments={[{ path: "/tmp/context.txt", type: "file" }]}
@@ -210,7 +223,7 @@ describe("ChatAttachmentTray", () => {
     );
 
     expect(screen.getByText("context.txt")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Open context.txt" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open context.txt" })).toBeTruthy();
   });
 
   it("renders image URL attachments as URL chips without loading a local preview", () => {
@@ -289,5 +302,127 @@ describe("ChatAttachmentTray", () => {
     fireEvent.click(screen.getByRole("button", { name: `Remove ${githubIssueIdentifier(issue)}` }));
 
     expect(onRemoveContext).toHaveBeenCalledWith("github:ade/app#42");
+  });
+});
+
+describe("ChatAttachmentTray file chips", () => {
+  const listWorkspaces = vi.fn();
+  const readFile = vi.fn();
+
+  beforeEach(() => {
+    readFile.mockResolvedValue({
+      path: ".ade/attachments/9f3a.csv",
+      content: "a,b\n1,2\n",
+      encoding: "utf-8",
+      size: 8,
+      totalSize: 8,
+      isBinary: false,
+      isPartial: false,
+    });
+    listWorkspaces.mockResolvedValue([
+      {
+        id: "primary",
+        kind: "primary",
+        laneId: null,
+        name: "ADE",
+        branchRef: null,
+        rootPath: "/Users/a/Projects/ADE",
+        isReadOnlyByDefault: false,
+        mobileReadOnly: true,
+      },
+    ]);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { app: {}, agentChat: {}, files: { listWorkspaces, readFile } },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("renders a non-image attachment as a chip with its name and size", () => {
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/Users/a/Projects/ADE/.ade/attachments/9f3a.pdf", type: "file" }]}
+        attachmentSizes={{ "/Users/a/Projects/ADE/.ade/attachments/9f3a.pdf": 2_411_724 }}
+        mode="standard"
+        onRemove={() => undefined}
+      />,
+    );
+
+    const chip = screen.getByTestId("chat-file-attachment-chip");
+    expect(chip.textContent).toContain("9f3a.pdf");
+    expect(chip.textContent).toContain("2.3 MB");
+    expect(screen.getByRole("button", { name: "Remove 9f3a.pdf" })).toBeTruthy();
+  });
+
+  it("omits the size when the caller does not know it", () => {
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/Users/a/Projects/ADE/.ade/attachments/notes.txt", type: "file" }]}
+        mode="standard"
+      />,
+    );
+    const chip = screen.getByTestId("chat-file-attachment-chip");
+    expect(chip.textContent).toContain("notes.txt");
+    expect(chip.textContent).not.toMatch(/\d+(\.\d+)? (B|KB|MB|GB)/);
+  });
+
+  it("middle-truncates a long filename so the extension survives", () => {
+    render(
+      <ChatAttachmentTray
+        attachments={[{
+          path: "/Users/a/Projects/ADE/.ade/attachments/quarterly-engineering-report-final-v7.xlsx",
+          type: "file",
+        }]}
+        mode="standard"
+      />,
+    );
+    const chip = screen.getByTestId("chat-file-attachment-chip");
+    expect(chip.textContent).toContain("…");
+    expect(chip.textContent).toContain(".xlsx");
+  });
+
+  it("removes a chip with Delete and Backspace", () => {
+    const onRemove = vi.fn();
+    const path = "/Users/a/Projects/ADE/.ade/attachments/a.zip";
+    render(
+      <ChatAttachmentTray attachments={[{ path, type: "file" }]} mode="standard" onRemove={onRemove} />,
+    );
+    fireEvent.keyDown(screen.getByTestId("chat-file-attachment-chip"), { key: "Delete" });
+    fireEvent.keyDown(screen.getByTestId("chat-file-attachment-chip"), { key: "Backspace" });
+    expect(onRemove).toHaveBeenCalledTimes(2);
+    expect(onRemove).toHaveBeenCalledWith(path);
+  });
+
+  it("opens the preview popup on Enter and closes it on Escape", async () => {
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/Users/a/Projects/ADE/.ade/attachments/9f3a.csv", type: "file" }]}
+        mode="standard"
+      />,
+    );
+    fireEvent.keyDown(screen.getByTestId("chat-file-attachment-chip"), { key: "Enter" });
+
+    const dialog = await screen.findByRole("dialog", { name: "9f3a.csv" });
+    await waitFor(() => expect(listWorkspaces).toHaveBeenCalled());
+
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "9f3a.csv" })).toBeNull());
+  });
+
+  it("closes the preview popup on a click outside", async () => {
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/Users/a/Projects/ADE/.ade/attachments/9f3a.csv", type: "file" }]}
+        mode="standard"
+      />,
+    );
+    fireEvent.click(screen.getByTestId("chat-file-attachment-chip"));
+    const dialog = await screen.findByRole("dialog", { name: "9f3a.csv" });
+    fireEvent.click(dialog);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "9f3a.csv" })).toBeNull());
   });
 });

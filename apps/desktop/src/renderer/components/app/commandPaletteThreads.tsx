@@ -54,10 +54,12 @@ import {
 } from "../../lib/sessionSnooze";
 import {
   canonicalInputFromSummary,
+  effectiveSessionFilingBuckets,
   sessionFilingBucket,
   sessionIsMidFlight,
   sessionCanonicalUiState,
   sessionStatusDisplay,
+  type SessionFilingBucket,
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
 import { highlightRanges, highlightTitle } from "./commandPaletteSearch";
@@ -250,8 +252,10 @@ export function buildThreadIndex(
 export function matchesThreadWorkFacets(
   entry: ThreadIndexEntry,
   parsed: ParsedWorkSearch,
+  effectiveFilingBuckets?: ReadonlyMap<string, SessionFilingBucket>,
 ): boolean {
-  const filingBucket = sessionFilingBucket(entry.session);
+  const filingBucket = effectiveFilingBuckets?.get(entry.session.id)
+    ?? sessionFilingBucket(entry.session);
   if (!matchesWorkSearchFilters(parsed.filters, {
     lane: [entry.laneName],
     provider: [entry.provider, entry.toolTypeLower],
@@ -372,6 +376,8 @@ export type ThreadRowAction = "new-chat" | "rename" | "settle" | "snooze";
 export function rankThreads(
   index: readonly ThreadIndexEntry[],
   query: string,
+  effectiveFilingBuckets: ReadonlyMap<string, SessionFilingBucket> =
+    effectiveSessionFilingBuckets(index.map((entry) => entry.session)),
 ): ThreadMatch[] {
   const parsed = parseWorkSearchQuery(query);
   if (
@@ -383,7 +389,7 @@ export function rankThreads(
   }
   const matches: ThreadMatch[] = [];
   for (const entry of index) {
-    if (!matchesThreadWorkFacets(entry, parsed)) continue;
+    if (!matchesThreadWorkFacets(entry, parsed, effectiveFilingBuckets)) continue;
     let total = 0;
     let matchedEveryTerm = true;
     const matchFields: ThreadMatchField[] = [];

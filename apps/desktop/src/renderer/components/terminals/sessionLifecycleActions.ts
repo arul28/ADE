@@ -17,8 +17,9 @@ import {
 
 /**
  * One place for the Work tab's snooze/wake/keep-active writes, so the sidebar
- * row menu, the row context menu, and the chat header chips can never disagree
- * about what an action does (or about the copy it confirms with).
+ * row menu, the row context menu, the chat header snooze affordance, and the
+ * composer lifecycle pill can never disagree about what an action does (or
+ * about the copy it confirms with).
  */
 
 const UNDO_TOAST_MS = 5_000;

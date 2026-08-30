@@ -144,7 +144,8 @@ from the project tab's binding; a grouped header owns the glyph so its child
 cards do not repeat it. The singleton/header transition participates in the
 same layout animation as lane reordering.
 
-Filing comes from `sessionFilingBucket`, which combines canonical lifecycle
+Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
+`sessionFilingBucket` rule), which combines canonical lifecycle
 with the snooze visibility overlay in one shared answer. Snooze still yields to
 a `needs_you` phase, so a snoozed row that is blocked on the user stays in its
 normal section. Ordering inside the quiet tiers
@@ -168,7 +169,7 @@ layout animation rather than remeasuring on every session tick.
 The same funnel also owns the persisted session chips. Status (Your move,
 Running, Ended, Settled, Snoozed) and Tool choices are ORed within their own
 axis; the Status, Tool, Has PR, and Dirty-lane axes are ANDed together. The
-status chip uses the same `sessionFilingBucket` result as the sidebar, Has PR
+status chip uses the same effective filing result as the sidebar, Has PR
 uses the coalesced PR snapshot that powers lane-header badges, and Dirty reads
 the already-loaded lane status. Chips apply before all three organization
 modes. A remote lane has no local PR snapshot, so Has PR fails closed there;
@@ -206,7 +207,7 @@ lane refresh. ADE never deletes a session or Git data from this recovery row.
 
 Foreign-machine lane rows follow the same filing contract instead of using a
 parallel card-only renderer. `partitionQuietSessions` splits each row with
-`sessionFilingBucket`; active cards render normally, while snoozed and settled
+`effectiveSessionFilingBuckets`; active cards render normally, while snoozed and settled
 cards use the same collapsed quiet tails as local lanes. A fully quiet foreign
 lane starts as the same minimal header with inline counts and uses
 `lane-open:<machineId>:<laneId>` for explicit expansion. When active work
@@ -983,7 +984,14 @@ The right-click menu uses one grouped, liquid-glass menu vocabulary:
   clears live/restored pending input before writing settle instead of sending a
   synthetic decline.
 - Chat metadata generation makes one structured request for all three visible
-  fields and applies only the selected fields. It may intentionally replace a
+  fields and applies only the selected fields. A status-only refresh sends the
+  lane name, chat title, worktree folder, and last assistant paragraphs — not
+  the full transcript, sibling threads, or git dump. Title refresh still carries
+  this thread's full transcript; lane-name refresh still carries every other
+  thread in the lane plus the git work that differs from the remote/base. While
+  those fields generate, the session card and work-surface header mask them in
+  place with the same shimmering "Naming …" animation auto-created lanes use.
+  It may intentionally replace a
   manual title because the menu action is explicit user intent; edits made while
   the request is running win per field. Generate lane name is disabled for the
   primary lane, and a busy session disables duplicate generation.
@@ -1206,12 +1214,16 @@ nothing when no delta is available.
 - Do not derive anything from the snooze columns except *where a row is filed*.
   Snooze is a visibility overlay: `canonicalSessionState()` never reads it, the
   status dot never changes, and the counts, badges, and Dock badge stay
-  truthful. Use `sessionFilingBucket` for renderer grouping and the raw
+  truthful. Use `effectiveSessionFilingBuckets` for renderer grouping (and
+  `sessionFilingBucket` for the base single-row rule) and the raw
   `isSessionSnoozed` for row chrome.
-- Do not schedule anything for snooze expiry. Expiry is derived by comparing
-  `snoozedUntil` to now. The Work hook's single timer only bumps a counter to
-  force a re-derive; a watchdog that mutated rows on expiry would give a second,
-  divergent answer on every surface not running it.
+- Do not schedule lifecycle writes for snooze expiry. Expiry is derived by
+  comparing `snoozedUntil` to now. Render-only deadline timers may bump a
+  counter to repaint an open surface: the Work hook covers the full roster,
+  while an open chat, the command palette, and the standalone foreign-row pane
+  arm their own bounded timer when they need one. None mutates session state, so
+  there is still one source of truth rather than a watchdog that can diverge
+  from surfaces not currently mounted.
 - Nothing *derives* a settle. A clean process exit leaves a row `ended`, never
   `settled` (`sessionCanonicalState.ts`), so every settled row has either a
   `settledAt` or a `"settled"` override and plain Unsettle clears both. The

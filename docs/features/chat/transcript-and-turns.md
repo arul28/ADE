@@ -251,7 +251,7 @@ implements a two-layer transform:
      `user_message` carrying `metadata.scheduledWake`, the transform inserts a
      `scheduled_wake_divider` keyed
      `scheduled-wake:<scheduleId>:<turnId>` with fire time, reason, and late
-     state; the while-you-were-away strip scrolls to these stable keys.
+     state; the compact while-you-were-away card scrolls to these stable keys.
    - `subagent_started` / `subagent_progress` / `subagent_result`
      events collapse per agent (keyed by `agentId ?? taskId`) into two
      stable render rows — a `subagent_spawn_anchor` at the start

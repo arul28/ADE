@@ -15,6 +15,8 @@ ade doctor                # local runtime, git, GitHub, Linear, and provider rea
 `ade doctor` reports local readiness only — it never calls provider, GitHub, or Linear networks and never prints secret values. It's safe to run anytime.
 </Tip>
 
+If a check fails and you'd rather not work it by hand, `ade triage` hands the whole thing to your own coding agent: it writes a redacted machine context plus a repair playbook to a temp directory and starts the first agent CLI it finds (`claude`, `codex`, `cursor-agent`, `opencode`, `droid`). Inside an agent session already, run `ade triage --agent` — it prints the two file paths and a prompt instead of launching anything.
+
 <AccordionGroup>
   <Accordion title="The app won't connect / nothing loads" icon="plug">
     The desktop app, `ade code`, and the iOS app are all clients of the **brain** — the always-on ADE process for your channel. If it isn't running, clients have nothing to attach to.

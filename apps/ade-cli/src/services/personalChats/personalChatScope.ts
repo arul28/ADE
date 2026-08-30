@@ -14,6 +14,7 @@ import { resolveReadableHistoryPath } from "../../../../desktop/src/main/service
 import type { AdeRuntime } from "../../bootstrap";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
+import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 
 type PersonalChatScopeOptions = {
   createRuntime?: typeof import("../../bootstrap").createAdeRuntime;
@@ -374,13 +375,13 @@ export class PersonalChatScope {
       }
       case "saveTempAttachment":
         result = await saveImageTempAttachment(
-          path.join(runtime.projectRoot, ".ade", "attachments"),
+          projectAttachmentsDir(runtime.projectRoot),
           args,
         );
         break;
       case "getImageDataUrl": {
         const attachmentsRoot = await fs.promises.realpath(
-          path.join(runtime.projectRoot, ".ade", "attachments"),
+          projectAttachmentsDir(runtime.projectRoot),
         );
         const requestedPath = await fs.promises.realpath(requiredString(args.path, "path"));
         if (requestedPath !== attachmentsRoot && !requestedPath.startsWith(`${attachmentsRoot}${path.sep}`)) {

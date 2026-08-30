@@ -196,6 +196,7 @@ function headerChevron(sectionId: string): HTMLElement {
 
 describe("SessionListPane", () => {
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     lanePrsByLaneIdForTest.clear();
     useAppStore.setState({ laneDeleteProgressByLaneId: {} });
@@ -1689,12 +1690,92 @@ describe("SessionListPane", () => {
         expect(foreignGroup(container)!.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
 
+      it("keeps an attached child settled when search hides its parent", () => {
+        const parent = foreignSettled({
+          id: "session-foreign-parent",
+          title: "Settled parent chat",
+        });
+        const child = makeSession({
+          id: "session-foreign-shell",
+          laneId: "lane-elsewhere",
+          laneName: "Elsewhere Lane",
+          title: "Attached shell",
+          toolType: "shell",
+          chatSessionId: parent.id,
+          status: "running",
+          runtimeState: "running",
+          settledAt: null,
+        });
+        seedForeignMachine({ sessions: [parent, child] });
+        const { container } = renderPane({
+          q: "attached shell",
+          workCollapsedSectionIds: [
+            ...OPEN_QUIET_SHELVES,
+            "lane-open:target-studio:lane-elsewhere",
+          ],
+        });
+
+        // The parent is not in the filtered row, but it still participates in
+        // the relationship-aware filing map. The child therefore follows the
+        // settled parent into the same shelf instead of keeping the lane live.
+        expect(shelfContains(container, "settled")).toBe(true);
+        expect(document.querySelector('[data-session-id="session-foreign-shell"]')).toBeTruthy();
+      });
+
       it("files a fully snoozed foreign lane into the Snoozed shelf", () => {
         seedForeignMachine({ sessions: [foreignSnoozed()] });
         const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
 
         expect(shelfContains(container, "snoozed")).toBe(true);
         expect(shelfContains(container, "settled")).toBe(false);
+      });
+
+      it("re-files a foreign lane when its snooze deadline expires", () => {
+        vi.useFakeTimers();
+        const nowMs = Date.parse("2026-08-29T12:00:00.000Z");
+        vi.setSystemTime(nowMs);
+        seedForeignMachine({
+          sessions: [foreignSnoozed({
+            snoozedUntil: new Date(nowMs + 1_000).toISOString(),
+          })],
+        });
+        const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
+
+        expect(shelfContains(container, "snoozed")).toBe(true);
+        act(() => {
+          vi.advanceTimersByTime(1_250);
+        });
+
+        // The row is still running; only the derived filing changed. The lane
+        // therefore returns to the inbox without waiting for a store refresh.
+        expect(shelfContains(container, "snoozed")).toBe(false);
+        expect(foreignGroup(container)).toBeTruthy();
+      });
+
+      it("keeps the fallback expiry timer for a partial filing map", () => {
+        vi.useFakeTimers();
+        const nowMs = Date.parse("2026-08-29T12:00:00.000Z");
+        vi.setSystemTime(nowMs);
+        seedForeignMachine({
+          sessions: [foreignSnoozed({
+            snoozedUntil: new Date(nowMs + 1_000).toISOString(),
+          })],
+        });
+        const { container } = renderPane({
+          // A caller may know the local roster but not yet have a complete
+          // cross-machine map. The uncovered foreign row still needs its
+          // render-only deadline timer so it can leave the shelf on time.
+          effectiveFilingBuckets: new Map([["session-mobile", "running"]]),
+          workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+        });
+
+        expect(shelfContains(container, "snoozed")).toBe(true);
+        act(() => {
+          vi.advanceTimersByTime(1_250);
+        });
+
+        expect(shelfContains(container, "snoozed")).toBe(false);
+        expect(foreignGroup(container)).toBeTruthy();
       });
 
       it("files a mixed-quiet foreign lane by its dominant kind, ties to Snoozed", () => {
@@ -2516,6 +2597,47 @@ describe("SessionListPane singleton lanes and shelves", () => {
     const tail = screen.getByRole("button", { name: /1 settled/i });
     expect(tail.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Already done")).toBeNull();
+  });
+
+  it("files a settled chat and its still-running attached shell together in the settled shelf", () => {
+    const parent = makeSession({
+      id: "settled-parent-chat",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Settled parent chat",
+      status: "completed",
+      runtimeState: "exited",
+      endedAt: "2026-07-23T12:00:00.000Z",
+      settledAt: "2026-07-23T12:01:00.000Z",
+    });
+    const child = makeSession({
+      id: "attached-running-shell",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "shell",
+      title: "Attached running shell",
+      ptyId: "pty-attached-running",
+      chatSessionId: parent.id,
+      status: "running",
+      runtimeState: "running",
+      endedAt: null,
+      settledAt: null,
+    });
+
+    const { container } = renderPane({
+      lanes: [makeLane()],
+      runningFiltered: [child],
+      settledFiltered: [parent],
+      allSessionsUnfiltered: [parent, child],
+      sessionsGroupedByLane: new Map([["lane-known", [parent, child]]]),
+      workCollapsedSectionIds: OPEN_QUIET_SHELVES,
+    });
+
+    const settledShelf = container.querySelector('[data-testid="shelf-body-settled"]');
+    expect(settledShelf).toBeTruthy();
+    expect(settledShelf?.contains(screen.getByText("Settled parent chat"))).toBe(true);
+    expect(settledShelf?.contains(screen.getByText("Attached running shell"))).toBe(true);
+    expect(screen.getByRole("button", { name: /1 shell/i })).toBeTruthy();
   });
 
   it("files a lane mixing both quiet kinds by the dominant one, still flat", () => {

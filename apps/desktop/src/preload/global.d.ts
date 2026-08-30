@@ -728,7 +728,11 @@ import type {
   SearchRebuildResult,
 } from "../shared/types";
 import type { GitHubIssueLike } from "../shared/laneGitHubIssue";
-import type { ConvertImageToJpegResult } from "../shared/types/chat";
+import type {
+  AgentChatCopyTempAttachmentArgs,
+  ChatAttachmentStagingMode,
+  ConvertImageToJpegResult,
+} from "../shared/types/chat";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
   MaintenanceRunReport,
@@ -2022,6 +2026,13 @@ declare global {
             data: string;
             filename: string;
           },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ path: string }>;
+        getAttachmentStagingMode: (
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatAttachmentStagingMode>;
+        stageFileAttachment: (
+          args: AgentChatCopyTempAttachmentArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ path: string }>;
         getImageDataUrl: (

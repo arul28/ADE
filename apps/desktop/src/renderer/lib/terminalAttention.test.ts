@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { TerminalSessionSummary } from "../../shared/types";
 import {
+  effectiveSessionFilingBuckets,
   runningSessionNeedsAttention,
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
@@ -28,6 +30,54 @@ describe("terminalAttention", () => {
         lastOutputPreview: "Confirm continue? (y/n)",
       }),
     ).toBe("running");
+  });
+
+  it("preserves an explicitly snoozed child when its chat parent is settled", () => {
+    const nowMs = Date.parse("2026-08-01T10:00:00.000Z");
+    const parent = {
+      id: "chat-parent",
+      laneId: "lane-1",
+      laneName: "lane-1",
+      ptyId: null,
+      tracked: true,
+      pinned: false,
+      goal: null,
+      toolType: "codex-chat",
+      title: "Settled chat",
+      status: "completed",
+      startedAt: "2026-08-01T09:00:00.000Z",
+      endedAt: "2026-08-01T09:30:00.000Z",
+      exitCode: 0,
+      transcriptPath: "",
+      headShaStart: null,
+      headShaEnd: null,
+      lastOutputPreview: "Done",
+      summary: null,
+      runtimeState: "idle",
+      settledAt: "2026-08-01T09:30:00.000Z",
+      resumeCommand: null,
+    } as TerminalSessionSummary;
+    const child = {
+      ...parent,
+      id: "shell-child",
+      ptyId: "pty-child",
+      toolType: "shell",
+      title: "Attached shell",
+      status: "running",
+      startedAt: "2026-08-01T09:45:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      runtimeState: "running",
+      settledAt: null,
+      chatSessionId: parent.id,
+      snoozedUntil: "2026-08-01T12:00:00.000Z",
+      snoozedAt: "2026-08-01T09:50:00.000Z",
+    } as TerminalSessionSummary;
+
+    const buckets = effectiveSessionFilingBuckets([parent, child], nowMs);
+
+    expect(buckets.get(parent.id)).toBe("settled");
+    expect(buckets.get(child.id)).toBe("snoozed");
   });
 
   it("removes cursor save and restore escapes from inline previews", () => {

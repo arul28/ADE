@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
+import { getMachineMainLogger } from "../logging/machineLogger";
 import { runGit } from "../git/git";
 import type {
   GitHubAuthFailure,
@@ -54,6 +55,13 @@ import {
   requestGithubRawWithCredentialFallback,
   type GithubRawRequestArgs,
 } from "./githubRawRequest";
+import {
+  configureGithubRequestAccounting,
+  recordGithubRequestResponse,
+  recordGithubRequestTransportFailure,
+  type GithubRequestAccountingContext,
+  type GithubRequestTokenSource,
+} from "./githubRequestAccounting";
 import { attachGitHubServiceHealth } from "./githubStatusPage";
 import {
   classifyGitHubAuthFailure,
@@ -175,6 +183,18 @@ function processGithubAuthState(provider: GitHubCliAuthProvider): ProcessGithubA
   };
   processGithubAuthStates.set(provider, created);
   return created;
+}
+
+/**
+ * Attribution for a request made with a resolved credential lookup.
+ *
+ * `none` is not a token source — it means no credential was found at all, so
+ * the request that follows is unauthenticated or about to fail. Counting it as
+ * `unknown` keeps the accounting key space aligned with
+ * `GitHubCredentialSource` instead of inventing a sixth bucket.
+ */
+function accountingTokenSource(source: GitHubAuthSource): GithubRequestTokenSource {
+  return source === "none" ? "unknown" : source;
 }
 
 function githubStatusProbeKey(token: string, repo: GitHubRepoRef | null): string {
@@ -406,7 +426,16 @@ function releaseGitHubResponse(response: Response): void {
   void response.body?.cancel().catch(() => {});
 }
 
-async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
+/**
+ * The single choke point for every GitHub HTTP call this service makes — the
+ * credential-fallback helper, the raw helper, and the token probes all land
+ * here — which makes it the one place request accounting can be complete.
+ */
+async function fetchGitHub(
+  input: string | URL,
+  init: RequestInit,
+  accounting?: GithubRequestAccountingContext,
+): Promise<Response> {
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const onUpstreamAbort = (): void => controller.abort(upstreamSignal?.reason);
@@ -424,6 +453,12 @@ async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Resp
   try {
     const response = await fetch(input, { ...init, signal: controller.signal });
     clearTimeout(timer);
+    recordGithubRequestResponse({
+      url: input,
+      context: accounting,
+      status: response.status,
+      headers: response.headers,
+    });
     return wrapGitHubResponseBody({
       response,
       controller,
@@ -431,6 +466,7 @@ async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Resp
     });
   } catch (error) {
     cleanupUpstreamAbort();
+    recordGithubRequestTransportFailure({ url: input, context: accounting });
     if (headerTimedOut) {
       throw githubRequestTimeoutError("request");
     }
@@ -587,10 +623,17 @@ export function createGithubService({
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
   const githubStateDir = path.join(appDataDir, "secrets", "github");
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
+  // The machine sink, not `logger`: a GitHub quota belongs to a credential on
+  // this computer and every project runtime spends the same one, so filing the
+  // summary under whichever project opened last would split one number in two.
+  configureGithubRequestAccounting(getMachineMainLogger);
   const appUserAuth = createGitHubAppUserAuthService({
     credentialStore,
     logger,
-    fetchImpl: (input, init) => fetchGitHub(input, init ?? {}),
+    // Device-flow exchanges and the App credential's own `/user` validation all
+    // spend the GitHub App's quota, so they are attributed to it. The component
+    // tag still separates the `oauth` legs from the `user` probe.
+    fetchImpl: (input, init) => fetchGitHub(input, init ?? {}, { tokenSource: "app" }),
     userAgent: "ade-desktop",
   });
 
@@ -1079,21 +1122,31 @@ export function createGithubService({
     return { repo: parseGitHubRepoFromRemoteUrl(url), hasOrigin: true };
   };
 
-  const validateToken = async (token: string): Promise<{
+  const validateToken = async (
+    token: string,
+    // Status probes run on a timer against every known credential, so an
+    // unattributed `/user` call here is a standing block of requests nobody can
+    // assign to a token. Every caller knows which credential it is holding.
+    tokenSource: GithubRequestTokenSource = "unknown",
+  ): Promise<{
     userLogin: string | null;
     scopes: string[];
     tokenType: NonNullable<GitHubStatus["tokenType"]>;
     rateLimit: GitHubRateLimitState | null;
   }> => {
-    const response = await fetchGitHub("https://api.github.com/user", {
-      method: "GET",
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "user-agent": "ade-desktop",
-        "x-github-api-version": GITHUB_REST_API_VERSION,
-      }
-    });
+    const response = await fetchGitHub(
+      "https://api.github.com/user",
+      {
+        method: "GET",
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "user-agent": "ade-desktop",
+          "x-github-api-version": GITHUB_REST_API_VERSION,
+        },
+      },
+      { tokenSource },
+    );
 
     const scopes = parseGitHubScopeHeaders(response.headers);
     const rateLimit = readGitHubRateLimitState(response.headers);
@@ -1161,6 +1214,7 @@ export function createGithubService({
             "x-github-api-version": GITHUB_REST_API_VERSION,
           },
         },
+        { tokenSource: candidate.source },
       );
       if (response.ok) {
         recordGithubCredentialRepositoryAccess(candidate, repo, true);
@@ -1220,7 +1274,7 @@ export function createGithubService({
     forceRefresh = false,
   ): Promise<SharedGithubStatusProbeResult> => {
     try {
-      const validated = await validateToken(candidate.token);
+      const validated = await validateToken(candidate.token, candidate.source);
       let repoAccessOk: boolean | null = null;
       let repoAccessError: string | null = null;
       if (repo && (candidate.source === "app" || validated.tokenType === "fine-grained")) {
@@ -1323,6 +1377,7 @@ export function createGithubService({
     ...args,
     candidates: (await readCredentialInventory()).candidates,
     fetchImpl: fetchGitHub,
+    accountingFetchImpl: fetchGitHub,
     userAgent: "ade-desktop",
     defaultHeaders: { "x-github-api-version": GITHUB_REST_API_VERSION },
     authMissingMessage: "GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.",
@@ -1456,11 +1511,15 @@ export function createGithubService({
 
       let response: Response;
       try {
-        response = await fetchGitHub(url.toString(), {
-          method: args.method,
-          headers,
-          body: args.body != null ? JSON.stringify(args.body) : undefined,
-        });
+        response = await fetchGitHub(
+          url.toString(),
+          {
+            method: args.method,
+            headers,
+            body: args.body != null ? JSON.stringify(args.body) : undefined,
+          },
+          { tokenSource: candidate.source },
+        );
       } catch (error) {
         recordTransportFailure(error);
       } finally {
@@ -1477,11 +1536,15 @@ export function createGithubService({
         }
         releaseGitHubResponse(response);
         delete headers["if-none-match"];
-        response = await fetchGitHub(url.toString(), {
-          method: args.method,
-          headers,
-          body: args.body != null ? JSON.stringify(args.body) : undefined,
-        }).catch(recordTransportFailure);
+        response = await fetchGitHub(
+          url.toString(),
+          {
+            method: args.method,
+            headers,
+            body: args.body != null ? JSON.stringify(args.body) : undefined,
+          },
+          { tokenSource: candidate.source },
+        ).catch(recordTransportFailure);
       }
 
       // The body has its own timeout, so a response that stalls mid-stream
@@ -2369,8 +2432,12 @@ export function createGithubService({
     // personal account (the authenticated user's own login) must use
     // `/user/repos`. The renderer now populates `owner` from the connected
     // login, so detect that case and avoid the org route for personal publishes.
-    const authenticatedLogin = owner
-      ? ((await validateToken((await readAuthToken("write")).token ?? "").catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
+    const writeAuth = owner ? await readAuthToken("write") : null;
+    const authenticatedLogin = writeAuth
+      ? ((await validateToken(
+          writeAuth.token ?? "",
+          accountingTokenSource(writeAuth.source),
+        ).catch(() => ({ userLogin: null as string | null }))).userLogin?.trim() || null)
       : null;
     // Only take the org route when we POSITIVELY resolved the authenticated
     // login and it differs from `owner`. If token validation failed (transient
@@ -2429,7 +2496,8 @@ export function createGithubService({
   const publishCurrentProject = async (
     args: { owner?: string; name: string; description?: string; isPrivate: boolean },
   ): Promise<{ state: "pushed" | "remote_added"; owner: string; name: string; fullName: string; htmlUrl: string }> => {
-    const token = (await readAuthToken("write")).token;
+    const writeAuth = await readAuthToken("write");
+    const token = writeAuth.token;
     if (!token) {
       const err = new Error("GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.") as Error & { code?: string };
       err.code = "github_not_connected";
@@ -2464,7 +2532,8 @@ export function createGithubService({
 
       const validated = requestedOwner
         ? null
-        : await validateToken(token).catch(() => ({ userLogin: null as string | null }));
+        : await validateToken(token, accountingTokenSource(writeAuth.source))
+            .catch(() => ({ userLogin: null as string | null }));
       const owner = requestedOwner || validated?.userLogin;
       if (!owner) throw createErr;
 

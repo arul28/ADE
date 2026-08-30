@@ -1172,7 +1172,13 @@ struct WorkScheduledWorkSnapshot: Identifiable, Equatable {
 
 struct WorkChatTimelineSnapshot: Equatable {
   var signature: Int
+  /// Transcript-only view of the pending queue: what the events alone can prove
+  /// is open. Drives event-card suppression. Readers that can reach the session
+  /// summary should go through `pendingInputQueue.resolved(_:)` instead.
   var pendingInputs: [WorkPendingInputItem]
+  /// The same derivation plus the gates swept without a `pending_input_resolved`
+  /// receipt, which only the session summary can rescue.
+  var pendingInputQueue: WorkPendingInputQueue
   var pendingSteers: [WorkPendingSteerModel]
   var toolCards: [WorkToolCardModel]
   var eventCards: [WorkEventCardModel]
@@ -1194,6 +1200,7 @@ struct WorkChatTimelineSnapshot: Equatable {
   static let empty = WorkChatTimelineSnapshot(
     signature: 0,
     pendingInputs: [],
+    pendingInputQueue: .empty,
     pendingSteers: [],
     toolCards: [],
     eventCards: [],

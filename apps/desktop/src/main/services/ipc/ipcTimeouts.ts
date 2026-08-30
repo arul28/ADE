@@ -247,6 +247,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // it wraps carries its own, shorter budget from remoteConnectionPool.
     case IPC.iosSimulatorLaunch:
       return IOS_SIMULATOR_LAUNCH_TIMEOUT_MS;
+    // Streams up to 50 MB to a paired host over HTTP. The upload client's own
+    // budget is 5 minutes, so on the 30s default the renderer reported a
+    // failure — and dropped the pending attachment chip — for an upload that
+    // was still in flight. This has to sit above the client's budget so the
+    // legible reason wins.
+    case IPC.remoteRuntimeUploadChatAttachment:
+      return 6 * 60_000;
     // Preview Lab compiles the target before it can render a frame, so these
     // three carry the same 10 minute budget the local runtime map gives them.
     // The remote-runtime path reads its IPC budget from these same cases via

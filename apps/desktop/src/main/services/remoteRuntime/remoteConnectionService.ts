@@ -33,11 +33,20 @@ import type {
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
+import type { ChatAttachmentStagingMode } from "../../../shared/types/chat";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  MAX_CHAT_ATTACHMENT_BYTES,
+} from "../../../shared/chatAttachmentLimits";
 import {
   capRemoteRuntimeErrorDetail,
   RemoteRuntimeConnectError,
 } from "../../../shared/types";
 import { coerceProjects } from "./remoteBootstrap";
+import {
+  parseRemoteAttachmentUploadTicket,
+  uploadRemoteAttachment,
+} from "./attachmentUploadClient";
 import {
   isRemoteRuntimeConnectionError,
   type RemoteConnectionPool,
@@ -956,6 +965,75 @@ export class RemoteConnectionService {
       "projects.listMyGitHubRepos",
       asRecord(input),
     )) as ListMyGitHubReposResult;
+  }
+
+  /**
+   * How this target accepts a staged chat attachment, and how large one may be.
+   *
+   * `"upload"` means the host advertised the streamed HTTP route and the socket
+   * is direct enough to use it. `"base64"` is every other case — SSH targets,
+   * relay-routed sockets, and hosts predating the feature — and keeps the
+   * legacy base64 command with its smaller, image-only ceiling.
+   *
+   * The answer is already a {@link ChatAttachmentStagingMode}, so the renderer
+   * routes on it directly. It used to be a separate `"command"` vocabulary that
+   * preload renamed on the way out, which meant two names for one fact.
+   * `"copy"` is the one mode this can never return: it is a property of the
+   * caller (same machine), not of the target.
+   */
+  async getAttachmentUploadCapability(
+    targetId: string,
+  ): Promise<ChatAttachmentStagingMode> {
+    const legacy: ChatAttachmentStagingMode = {
+      mode: "base64",
+      maxBytes: LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+    };
+    try {
+      const route = await this.pool.getAttachmentUploadRoute(targetId);
+      if (!route) return legacy;
+      return {
+        mode: "upload",
+        maxBytes: Math.min(route.maxBytes, MAX_CHAT_ATTACHMENT_BYTES),
+      };
+    } catch {
+      // A target that is not connected cannot be probed; the caller degrades to
+      // the base64 path, which reconnects on its own.
+      return legacy;
+    }
+  }
+
+  /**
+   * Stage an attachment on a paired machine by streaming its bytes over HTTP.
+   *
+   * Two legs, in this order and only this order: mint a single-use ticket over
+   * the authenticated sync socket, then POST the body with that ticket. The
+   * HTTP leg never carries the pairing secret, and a ticket that is not spent
+   * expires on its own.
+   */
+  async uploadChatAttachment(args: {
+    targetId: string;
+    projectId: string;
+    sourcePath: string;
+    filename: string;
+  }): Promise<{ path: string }> {
+    const route = await this.pool.getAttachmentUploadRoute(args.targetId);
+    if (!route) {
+      throw new Error("This machine does not accept attachment uploads.");
+    }
+    const minted = await this.callAction(args.targetId, args.projectId, {
+      domain: "chat",
+      action: "createAttachmentUpload",
+      args: { filename: args.filename },
+    });
+    const ticket = parseRemoteAttachmentUploadTicket(minted.result);
+    if (!ticket) {
+      throw new Error("This machine returned an unusable attachment upload ticket.");
+    }
+    return await uploadRemoteAttachment({
+      route,
+      ticket,
+      sourcePath: args.sourcePath,
+    });
   }
 
   async callAction(

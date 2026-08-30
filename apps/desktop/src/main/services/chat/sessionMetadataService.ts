@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type {
   AgentChatRegenerateSessionMetadataArgs,
   AgentChatRegenerateSessionMetadataResult,
@@ -5,10 +7,21 @@ import type {
   AgentChatSessionMetadataField,
 } from "../../../shared/types/chat";
 import { normalizeAgentChatSessionMetadataFields } from "../../../shared/types/chat";
+
 import {
   buildSessionMetadataPrompt,
+  buildSessionMetadataSystemPrompt,
+  clipFromEnd,
   deriveDeterministicSessionMetadata,
+  extractLatestAssistantParagraphs,
+  formatConversationTranscript,
+  formatLaneThreadsForPrompt,
+  formatLaneWorkVersusRemote,
   runSessionMetadataGeneration,
+  sessionMetadataPromptNeeds,
+  SESSION_METADATA_TRANSCRIPT_CHAR_LIMIT,
+  type SessionMetadataConversationEntry,
+  type SessionMetadataLaneThread,
   type SessionMetadataPromptRunner,
 } from "./sessionNaming";
 import type { Logger } from "../logging/logger";
@@ -33,6 +46,15 @@ export type SessionMetadataSessionRow = {
 
 export type SessionMetadataLaneSummary = {
   name: string;
+  baseRef?: string | null;
+  worktreePath?: string | null;
+};
+
+export type SessionMetadataLaneWorkSnapshot = {
+  baseRef: string;
+  commits?: string | null;
+  changedFiles?: string | null;
+  uncommitted?: string | null;
 };
 
 export type SessionMetadataRegeneratorDependencies<ManagedSession extends SessionMetadataManagedSession> = {
@@ -43,7 +65,12 @@ export type SessionMetadataRegeneratorDependencies<ManagedSession extends Sessio
     options: { includeStatus?: boolean },
   ) => Promise<SessionMetadataLaneSummary | null>;
   resolveModelCandidates: (managed: ManagedSession) => Promise<string[]>;
-  buildRecentConversationContext: (managed: ManagedSession, limit: number) => string;
+  collectConversationEntries: (managed: ManagedSession) => SessionMetadataConversationEntry[];
+  listLaneThreads: (managed: ManagedSession) => SessionMetadataLaneThread[];
+  gatherLaneWorkVersusRemote: (args: {
+    worktreePath: string;
+    baseRef: string;
+  }) => Promise<SessionMetadataLaneWorkSnapshot | null>;
   runPrompt: SessionMetadataPromptRunner;
   normalizeTitle: (value: string) => string | null;
   normalizeStatusLine: (value: string) => string | null;
@@ -110,17 +137,47 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
 
     try {
       const candidateModelIds = await dependencies.resolveModelCandidates(managed);
-      const recentConversation = dependencies.buildRecentConversationContext(managed, 8).trim();
+      const needs = sessionMetadataPromptNeeds(fields);
+      const conversationEntries = (needs.title || needs.statusLine)
+        ? dependencies.collectConversationEntries(managed)
+        : [];
+      const threadTranscript = needs.title
+        ? clipFromEnd(
+          formatConversationTranscript(conversationEntries),
+          SESSION_METADATA_TRANSCRIPT_CHAR_LIMIT,
+        )
+        : "";
+      const latestAssistantParagraphs = needs.statusLine
+        ? extractLatestAssistantParagraphs(conversationEntries)
+        : "";
       let latestOutputPreview: string | null = null;
-      const storedOutputPreview = initialRow.lastOutputPreview?.trim();
-      if (storedOutputPreview) {
-        latestOutputPreview = storedOutputPreview.slice(0, 1_000);
-      } else {
-        const managedOutputPreview = managed.preview?.trim();
-        if (managedOutputPreview) {
-          latestOutputPreview = managedOutputPreview.slice(0, 1_000);
+      if (needs.statusLine) {
+        const storedOutputPreview = initialRow.lastOutputPreview?.trim();
+        if (storedOutputPreview) {
+          latestOutputPreview = storedOutputPreview.slice(0, 4_000);
+        } else {
+          const managedOutputPreview = managed.preview?.trim();
+          if (managedOutputPreview) {
+            latestOutputPreview = managedOutputPreview.slice(0, 4_000);
+          }
         }
       }
+      const statusSource = latestAssistantParagraphs || latestOutputPreview;
+      const laneThreads = needs.laneName
+        ? formatLaneThreadsForPrompt(dependencies.listLaneThreads(managed))
+        : "";
+      const laneWorkSnapshot = needs.laneName
+        ? await dependencies.gatherLaneWorkVersusRemote({
+          worktreePath: initialLane?.worktreePath || managed.laneWorktreePath,
+          baseRef: initialLane?.baseRef?.trim() || "HEAD",
+        }).catch(() => null)
+        : null;
+      const laneWorkVersusRemote = laneWorkSnapshot
+        ? formatLaneWorkVersusRemote(laneWorkSnapshot)
+        : "";
+      const worktreeName = path.basename(
+        initialLane?.worktreePath || managed.laneWorktreePath,
+      ) || null;
 
       let generated: {
         result: ReturnType<typeof deriveDeterministicSessionMetadata>;
@@ -134,16 +191,22 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
           currentLaneName: snapshot.laneName,
           currentChatTitle: snapshot.title,
           currentStatusLine: snapshot.statusLine,
+          worktreeName,
+          requestedFields: fields,
           goal: managed.session.goal?.trim().slice(0, 2_000) ?? null,
           summary: initialRow.summary?.trim().slice(0, 2_000) ?? null,
           latestOutputPreview,
           originalRequest: managed.autoTitleSeed?.trim().slice(0, 2_000) ?? null,
-          recentConversation: recentConversation.slice(-8_000),
+          threadTranscript: threadTranscript || null,
+          latestAssistantParagraphs: statusSource,
+          laneThreads: laneThreads || null,
+          laneWorkVersusRemote: laneWorkVersusRemote || null,
         });
         generated = await runSessionMetadataGeneration({
           candidateModelIds,
           cwd: managed.laneWorktreePath,
           prompt,
+          systemPrompt: buildSessionMetadataSystemPrompt(fields),
           runPrompt: dependencies.runPrompt,
           normalizeTitle: dependencies.normalizeTitle,
           normalizeStatusLine: dependencies.normalizeStatusLine,
@@ -162,16 +225,22 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
       }
       selectedModelId = generated.selectedModelId;
       attemptCount = generated.attemptCount;
-      const metadata = generated.result ?? deriveDeterministicSessionMetadata({
-        seeds: [
-          initialRow.summary,
-          latestOutputPreview,
-          managed.autoTitleSeed,
-          recentConversation,
-        ],
-        normalizeTitle: dependencies.normalizeTitle,
-        normalizeStatusLine: dependencies.normalizeStatusLine,
-      });
+      const laneNameOnly = needs.laneName && !needs.title && !needs.statusLine;
+      const metadata = generated.result ?? (laneNameOnly
+        ? null
+        : deriveDeterministicSessionMetadata({
+          seeds: needs.statusLine && !needs.title && !needs.laneName
+            ? [latestAssistantParagraphs, latestOutputPreview]
+            : [
+              initialRow.summary,
+              threadTranscript,
+              latestAssistantParagraphs,
+              latestOutputPreview,
+              managed.autoTitleSeed,
+            ],
+          normalizeTitle: dependencies.normalizeTitle,
+          normalizeStatusLine: dependencies.normalizeStatusLine,
+        }));
       if (!metadata) {
         throw new Error("The AI returned no usable session metadata.");
       }

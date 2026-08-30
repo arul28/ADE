@@ -66,6 +66,15 @@ vi.mock("@cursor/sdk", () => ({
 // vi.hoisted mock state
 // ---------------------------------------------------------------------------
 const mockState = vi.hoisted(() => ({
+  /**
+   * Bumped by `beforeEach`. A chat service outlives the test that built it when
+   * that test fails mid-turn, and its in-flight Cursor turn then records into
+   * the NEXT test's freshly-emptied `cursorSdkSendCalls` — which shifts every
+   * index the next test asserts on and turns one honest failure into three
+   * unreadable ones. Connections stamp the generation they were acquired in and
+   * stop recording once it has moved on.
+   */
+  generation: 0,
   sessions: new Map<string, any>(),
   sessionLinearLinks: new Map<string, any[]>(),
   uuidCounter: 0,
@@ -765,6 +774,7 @@ vi.mock("./cursorSdkPool", () => ({
     && pooled?.process?.connected !== false
   ),
   acquireCursorSdkConnection: vi.fn(async (args: Record<string, unknown>) => {
+    const acquiredGeneration = mockState.generation;
     mockState.cursorSdkAcquireCalls.push(args);
     if (mockState.cursorAcquireErrorOnCall === mockState.cursorSdkAcquireCalls.length) {
       throw new Error("Cursor SDK worker failed to start.");
@@ -820,7 +830,11 @@ vi.mock("./cursorSdkPool", () => ({
         return {};
       }),
       sendPrompt: vi.fn(async (payload: Record<string, unknown>) => {
-        mockState.cursorSdkSendCalls.push(payload);
+        // A service leaked by a failed earlier test must not write into this
+        // test's ledger; see `mockState.generation`.
+        if (acquiredGeneration === mockState.generation) {
+          mockState.cursorSdkSendCalls.push(payload);
+        }
         mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
         if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
@@ -2121,6 +2135,7 @@ beforeEach(() => {
   // (~/.claude/commands, ~/.codex/prompts) doesn't leak the developer's real
   // home dir into tests, while project-local .claude roots remain distinct.
   vi.spyOn(os, "homedir").mockReturnValue(tmpHomeRoot);
+  mockState.generation += 1;
   mockState.sessions.clear();
   mockState.sessionLinearLinks.clear();
   mockState.uuidCounter = 0;
@@ -2466,6 +2481,32 @@ const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
 };
 
 /**
+ * Real wall clock and a real event-loop yield, captured before any test can
+ * install fake timers. `vi.useFakeTimers()` replaces the global `Date` and
+ * `setImmediate`, so a faked test that measures elapsed time or waits for the
+ * poll phase has to hold the originals.
+ */
+const pumpRealNow = Date.now.bind(Date);
+const pumpRealSetImmediate = globalThis.setImmediate;
+
+/**
+ * How long `pumpUntil` waits in REAL time. The work it waits on is genuinely
+ * async — fs reads for the injected Cursor system prompt, sqlite persistence —
+ * so the budget has to be wall-clock. An iteration count is not a budget: with
+ * no fake timer pending, one iteration costs microseconds, so a loaded runner
+ * burns the whole thing while the very first read is still queued behind the
+ * libuv pool. Locally the slowest wait in this file converges in 11 iterations.
+ */
+const PUMP_REAL_BUDGET_MS = 5_000;
+/**
+ * Fake-clock advancing stays capped by iteration so 1ms-per-tick pumping can
+ * never drift the virtual clock into the 90s silence watchdog by itself.
+ */
+const PUMP_FAKE_TICK_BUDGET = 800;
+/** Real stall time before `pumpUntil` starts tripping the silence watchdog. */
+const PUMP_WATCHDOG_STALL_MS = 1_000;
+
+/**
  * Real async setup work still needs event-loop turns while the clock is faked,
  * so pump the fake clock instead of assuming a fixed number of ticks.
  *
@@ -2474,14 +2515,27 @@ const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
  * the test queued its steer, and the later recovery wait timed out.
  */
 const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => {
-  // A silence-watchdog recycle can arm the next attempt's timer after the
-  // first 90s jump, so keep extra trips in the budget once setup has flushed.
-  for (let tick = 0; tick < 800 && !ready(); tick += 1) {
-    const tripWatchdog = tick >= 300 && tick % 50 === 0;
-    await vi.advanceTimersByTimeAsync(tripWatchdog
-      ? CURSOR_SILENCE_WATCHDOG_TRIP_MS
-      : 1);
-    if (tripWatchdog) await flushCursorSdkSilenceRecycle();
+  const startedAt = pumpRealNow();
+  // A silence-watchdog recycle can arm the next attempt's timer after the first
+  // 90s jump, so extra trips stay available — but keyed off real stall time
+  // rather than a tick index. Tripping on a tick index recycles the runtime
+  // whose recovery this is waiting for whenever the loop spins faster than the
+  // pending I/O completes, which is exactly what a loaded runner does.
+  let nextWatchdogTripAt = startedAt + PUMP_WATCHDOG_STALL_MS;
+  let fakeTicksLeft = PUMP_FAKE_TICK_BUDGET;
+  while (!ready() && pumpRealNow() - startedAt < PUMP_REAL_BUDGET_MS) {
+    if (pumpRealNow() >= nextWatchdogTripAt) {
+      nextWatchdogTripAt = pumpRealNow() + PUMP_WATCHDOG_STALL_MS;
+      await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+      await flushCursorSdkSilenceRecycle();
+    } else if (fakeTicksLeft > 0) {
+      fakeTicksLeft -= 1;
+      await vi.advanceTimersByTimeAsync(1);
+    } else {
+      // Fake budget spent: keep handing the real event loop turns so pending
+      // fs/sqlite callbacks can still land, without moving the virtual clock.
+      await new Promise<void>((resolve) => { pumpRealSetImmediate(resolve); });
+    }
     await Promise.resolve();
   }
   if (!ready()) throw new Error(`pumpUntil timed out waiting for: ${label}`);
@@ -18466,6 +18520,616 @@ describe("createAgentChatService", () => {
       );
 
       expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    describe("auto-resume after a provider usage limit resets", () => {
+      /**
+       * Drives one Codex turn to a usage-limit failure. `resetAt` is the reset
+       * instant the provider publishes through `account/rateLimits/updated`;
+       * `null` models a provider that reports no reset time at all.
+       */
+      const codexTurnStarts = (): number => mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+
+      const waitForNextCodexTurnStart = async (startsBefore: number): Promise<void> => {
+        await vi.waitFor(() => {
+          expect(codexTurnStarts()).toBeGreaterThan(startsBefore);
+        }, { timeout: 5_000, interval: 10 });
+      };
+
+      const failCodexTurnAtUsageLimit = (turnId: string, resetAt: string | null): void => {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/started",
+          params: { turn: { id: turnId, status: "inProgress" } },
+        });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "account/rateLimits/updated",
+          params: { rateLimits: { remaining: 0, limit: 100, resetAt } },
+        });
+        const error = {
+          message: "You've hit your usage limit.",
+          codexErrorInfo: "usageLimitReached",
+        };
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "error",
+          params: { turnId, error, willRetry: false },
+        });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: turnId, status: "failed", error } },
+        });
+      };
+
+      const completeCodexTurn = (turnId: string): void => {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/started",
+          params: { turn: { id: turnId, status: "inProgress" } },
+        });
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "turn/completed",
+          params: { turn: { id: turnId, status: "completed" } },
+        });
+      };
+
+      const failTurnAtUsageLimit = async (
+        service: any,
+        sessionId: string,
+        turnId: string,
+        resetAt: string | null,
+      ): Promise<void> => {
+        const turnStartsBefore = codexTurnStarts();
+        const turn = service.runSessionTurn({ sessionId, text: "Ship the fix." });
+        await waitForNextCodexTurnStart(turnStartsBefore);
+        failCodexTurnAtUsageLimit(turnId, resetAt);
+        await turn;
+      };
+
+      /**
+       * A reset instant whose armed fire time lands `inMs` from now, once the
+       * 90s anti-race buffer is added. Tests that need the resume to actually
+       * fire have to arm against a window that is nearly over — the buffer is
+       * the whole reason a fresh reset instant is minutes away, not seconds.
+       */
+      const resetFiringIn = (inMs: number): string =>
+        new Date(Date.now() - 90_000 + inMs).toISOString();
+
+      /**
+       * A scheduled-work store whose load blocks until the test releases it.
+       *
+       * Both halves of the arm/cancel race only exist while the scheduler has
+       * no rows: an arm parked on `scheduledWorkReady` has not written its row
+       * yet, and a booting brain has not read the durable one back yet. Holding
+       * `loadState` open is the only way to stand in that window on purpose
+       * instead of hoping a sleep lands inside it.
+       */
+      const createBootGatedScheduledWorkDb = () => {
+        const backing = createScheduledWorkDb();
+        let releaseBoot!: () => void;
+        const booted = new Promise<void>((resolve) => { releaseBoot = resolve; });
+        return {
+          db: {
+            ...backing.db,
+            getJson: (key: string) => (key === SCHEDULED_WORK_STATE_KEY
+              // Read on release, not on call, so the test can seed the durable
+              // row after it knows the session id.
+              ? booted.then(() => backing.db.getJson(key))
+              : backing.db.getJson(key)),
+          },
+          seed: (state: ChatScheduledWorkState) => {
+            backing.db.setJson(SCHEDULED_WORK_STATE_KEY, state);
+          },
+          readState: backing.readState,
+          releaseBoot: () => releaseBoot(),
+        };
+      };
+
+      it("cancels an auto-resume that was arming when the user sent a message", async () => {
+        const scheduledWork = createBootGatedScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-arming",
+          new Date(Date.now() + 30 * 60_000).toISOString(),
+        );
+        // The failure event is what starts the arm, so this is the point after
+        // which the arm is parked on the scheduler with no row written yet.
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope => event.event.type === "error",
+        );
+        // The user gets there first. A sweep now finds nothing to cancel — the
+        // row it is looking for is still in flight behind the scheduler.
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Never mind, I'll drive this myself.",
+        });
+
+        scheduledWork.releaseBoot();
+
+        // The row really was created and then undone — asserting only that
+        // nothing is pending would pass before the arm had even written it.
+        await vi.waitFor(() => {
+          expect(scheduledWork.readState()?.schedules).toEqual([
+            expect.objectContaining({
+              id: `auto-resume:${session.id}`,
+              source: "auto_resume_limit",
+              status: "cancelled",
+            }),
+          ]);
+        });
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+      });
+
+      it("cancels a durable auto-resume during scheduler boot", async () => {
+        const scheduledWork = createBootGatedScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        // A row armed before the last restart, still on disk, not yet loaded.
+        scheduledWork.seed({
+          version: 1,
+          schedules: [{
+            id: `auto-resume:${session.id}`,
+            sessionId: session.id,
+            kind: "wakeup",
+            prompt: "Continue the interrupted task from where it stopped.",
+            reason: "Auto-resume after usage limit reset",
+            fireAt: Date.now() + 30 * 60_000,
+            createdAt: Date.now() - 60_000,
+            status: "scheduled",
+            pausedFlag: false,
+            lateFlag: false,
+            durable: true,
+            source: "auto_resume_limit",
+          }],
+          pausedSessionIds: [],
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "I'm back, taking this over.",
+        });
+
+        scheduledWork.releaseBoot();
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        });
+        expect(scheduledWork.readState()?.schedules).toEqual([
+          expect.objectContaining({
+            id: `auto-resume:${session.id}`,
+            status: "cancelled",
+          }),
+        ]);
+      });
+
+      it("stops re-arming after two consecutive auto-resume failures", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        // The cap only counts resumes that actually ran and died at the limit
+        // again, so this drives the real trip path: every failure after the
+        // first one belongs to a turn the scheduler itself dispatched. Claude's
+        // snapshot is session-scoped and `mergeSnapshot` carries a stale reset
+        // forward, so a limit the resume cannot clear still publishes a fresh
+        // reset instant on every cycle; Codex's rolling window models that here.
+        await failTurnAtUsageLimit(service, session.id, "turn-cap-1", resetFiringIn(400));
+
+        const firstResumeStarts = codexTurnStarts();
+        await waitForNextCodexTurnStart(firstResumeStarts);
+        failCodexTurnAtUsageLimit("turn-cap-2", resetFiringIn(400));
+
+        const secondResumeStarts = codexTurnStarts();
+        await waitForNextCodexTurnStart(secondResumeStarts);
+        failCodexTurnAtUsageLimit("turn-cap-3", resetFiringIn(400));
+
+        const paused = await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "system_notice"
+            && typeof event.event.message === "string"
+            && event.event.message.startsWith("Auto-resume paused"),
+        );
+        expect(paused.event).toMatchObject({ noticeKind: "rate_limit", severity: "info" });
+        // The notice explains the failure, so it has to be committed after it.
+        // The cap check runs from inside the error's own commit, before that
+        // event has minted its sequence, so an inline emit would number the
+        // notice below the error and render it above.
+        const lastLimitError = [...events].reverse().find((event) =>
+          event.event.type === "error"
+          && typeof event.event.message === "string"
+          && event.event.message.includes("usage limit"));
+        expect(lastLimitError?.sequence).toEqual(expect.any(Number));
+        expect(paused.sequence ?? -1).toBeGreaterThan(lastLimitError?.sequence ?? 0);
+
+        // Three failures, two arms: the third window is never armed, so no
+        // further turn is spent on a limit that is not lifting.
+        expect(events.filter((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.message === "string"
+          && event.event.message.startsWith("Auto-resume scheduled for")))
+          .toHaveLength(2);
+        const [afterCap] = await service.listScheduledWork({ sessionId: session.id });
+        expect(afterCap?.status).toBe("fired");
+
+        // A user message is the intervening event that clears the streak, so
+        // the next limit arms again rather than staying paused forever.
+        await vi.waitFor(() => {
+          expect(service.hasActiveWorkloads()).toBe(false);
+        }, { timeout: 5_000, interval: 10 });
+        const userTurnStarts = codexTurnStarts();
+        await service.sendMessage({ sessionId: session.id, text: "Try again now." });
+        await waitForNextCodexTurnStart(userTurnStarts);
+        completeCodexTurn("turn-cap-user");
+
+        const nextResetMs = Date.now() + 150 * 60_000;
+        await failTurnAtUsageLimit(
+          service, session.id, "turn-cap-4", new Date(nextResetMs).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          const [next] = await service.listScheduledWork({ sessionId: session.id });
+          expect(Date.parse(next?.nextRunAt ?? "")).toBe(nextResetMs + 90_000);
+        }, { timeout: 5_000, interval: 10 });
+      });
+
+      it("a successful auto-resume resets the streak", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        // Walk the chat right up to the cap, then let a resume actually work.
+        await failTurnAtUsageLimit(service, session.id, "streak-1", resetFiringIn(400));
+        const firstResumeStarts = codexTurnStarts();
+        await waitForNextCodexTurnStart(firstResumeStarts);
+        failCodexTurnAtUsageLimit("streak-2", resetFiringIn(400));
+
+        const secondResumeStarts = codexTurnStarts();
+        await waitForNextCodexTurnStart(secondResumeStarts);
+        completeCodexTurn("streak-resume-ok");
+
+        // The next limit arrives on another scheduled turn, so nothing in
+        // between clears the streak by hand — only the successful resume can.
+        // A fired resume always carries `scheduledWake`, which is exactly what
+        // the dispatch sweep skips, so without the completion hook this chat
+        // would still be holding two failed arms and would pause itself here
+        // instead of scheduling a third resume.
+        await vi.waitFor(() => {
+          expect(service.hasActiveWorkloads()).toBe(false);
+        }, { timeout: 5_000, interval: 10 });
+        const wakeupStarts = codexTurnStarts();
+        await service.createScheduledWork({
+          sessionId: session.id,
+          runAt: new Date(Date.now() + 300).toISOString(),
+          prompt: "Pick the task back up.",
+          reason: "Follow-up",
+        });
+        await waitForNextCodexTurnStart(wakeupStarts);
+        const laterResetMs = Date.now() + 60 * 60_000;
+        failCodexTurnAtUsageLimit("streak-3", new Date(laterResetMs).toISOString());
+
+        await vi.waitFor(async () => {
+          const rows = await service.listScheduledWork({ sessionId: session.id });
+          const resume = rows.find((row: { id: string }) => row.id === `auto-resume:${session.id}`);
+          expect(Date.parse(resume?.nextRunAt ?? "")).toBe(laterResetMs + 90_000);
+        }, { timeout: 5_000, interval: 10 });
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.message === "string"
+          && event.event.message.startsWith("Auto-resume paused"))).toBe(false);
+      });
+
+      it("explicit cancel wins over an in-flight arm", async () => {
+        const scheduledWork = createBootGatedScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        // A durable row from before the last restart, so Chat info has
+        // something to offer Cancel for while this process is still booting the
+        // scheduler — and while the fresh arm below is parked behind it.
+        scheduledWork.seed({
+          version: 1,
+          schedules: [{
+            id: `auto-resume:${session.id}`,
+            sessionId: session.id,
+            kind: "wakeup",
+            prompt: "Continue the interrupted task from where it stopped.",
+            reason: "Auto-resume after usage limit reset",
+            fireAt: Date.now() + 30 * 60_000,
+            createdAt: Date.now() - 60_000,
+            status: "scheduled",
+            pausedFlag: false,
+            lateFlag: false,
+            durable: true,
+            source: "auto_resume_limit",
+          }],
+          pausedSessionIds: [],
+        });
+
+        // Both the dismissal and the arm below park behind the booting
+        // scheduler, and the dismissal parked first, so it is the one that runs
+        // first on release — the arm's upsert lands on an already-cancelled row
+        // and its `scheduled` status would otherwise win, resurrecting exactly
+        // the row the user just dismissed.
+        const dismissal = service.cancelScheduledWork({
+          sessionId: session.id,
+          scheduleId: `auto-resume:${session.id}`,
+        });
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-dismissed",
+          new Date(Date.now() + 45 * 60_000).toISOString(),
+        );
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope => event.event.type === "error",
+        );
+
+        scheduledWork.releaseBoot();
+        await dismissal;
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        }, { timeout: 5_000, interval: 10 });
+        expect(scheduledWork.readState()?.schedules).toEqual([
+          expect.objectContaining({
+            id: `auto-resume:${session.id}`,
+            status: "cancelled",
+          }),
+        ]);
+      });
+
+      it("an empty send leaves a pending auto-resume armed", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-empty-send",
+          new Date(Date.now() + 30 * 60_000).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        }, { timeout: 5_000, interval: 10 });
+
+        // A send that never becomes a turn is not the user taking over.
+        await service.sendMessage({ sessionId: session.id, text: "   " });
+
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+      });
+
+      it("schedules a tagged auto-resume when the usage limit reports a reset time", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        const resetAtMs = Date.now() + 30 * 60_000;
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-1",
+          new Date(resetAtMs).toISOString(),
+        );
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+        const [schedule] = await service.listScheduledWork({ sessionId: session.id });
+        expect(schedule).toMatchObject({
+          id: `auto-resume:${session.id}`,
+          sessionId: session.id,
+          kind: "wakeup",
+          status: "scheduled",
+          source: "auto_resume_limit",
+          durable: true,
+        });
+        expect(schedule.prompt).toContain("Continue the interrupted task from where it stopped");
+        // Reset instant plus the 90s buffer, so the resume never races the reset.
+        expect(Date.parse(schedule.nextRunAt ?? "")).toBe(resetAtMs + 90_000);
+        // The tag survives a brain restart alongside the rest of the row.
+        expect(scheduledWork.readState()?.schedules).toEqual([
+          expect.objectContaining({
+            id: `auto-resume:${session.id}`,
+            source: "auto_resume_limit",
+            fireAt: resetAtMs + 90_000,
+          }),
+        ]);
+
+        const notice = await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "system_notice"
+            && typeof event.event.message === "string"
+            && event.event.message.startsWith("Auto-resume scheduled for"),
+        );
+        expect(notice.event).toMatchObject({ noticeKind: "rate_limit", severity: "info" });
+      });
+
+      it("schedules no auto-resume when the usage limit reports no reset time", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          db: scheduledWork.db,
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await failTurnAtUsageLimit(service, session.id, "turn-limit-noreset", null);
+
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope => event.event.type === "error",
+        );
+        expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && typeof event.event.message === "string"
+          && event.event.message.startsWith("Auto-resume scheduled for"))).toBe(false);
+      });
+
+      it("replaces the pending auto-resume instead of stacking on a repeat usage limit", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        const firstResetMs = Date.now() + 30 * 60_000;
+        const secondResetMs = Date.now() + 90 * 60_000;
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-a",
+          new Date(firstResetMs).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-b",
+          new Date(secondResetMs).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          const [schedule] = await service.listScheduledWork({ sessionId: session.id });
+          expect(Date.parse(schedule?.nextRunAt ?? "")).toBe(secondResetMs + 90_000);
+        });
+        expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+      });
+
+      it("cancels the pending auto-resume when the user sends a message", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-user",
+          new Date(Date.now() + 30 * 60_000).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(1);
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Never mind, I'll drive this myself.",
+        });
+
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([]);
+        });
+      });
+
+      it("leaves user-created scheduled work untouched when it cancels an auto-resume", async () => {
+        const scheduledWork = createScheduledWorkDb();
+        const { service } = createService({ db: scheduledWork.db });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        const userSchedule = await service.createScheduledWork({
+          sessionId: session.id,
+          delaySeconds: 3_600,
+          prompt: "Check CI in an hour.",
+          reason: "CI watcher",
+        });
+
+        await failTurnAtUsageLimit(
+          service,
+          session.id,
+          "turn-limit-scoped",
+          new Date(Date.now() + 30 * 60_000).toISOString(),
+        );
+        await vi.waitFor(async () => {
+          expect(await service.listScheduledWork({ sessionId: session.id })).toHaveLength(2);
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Taking over manually.",
+        });
+
+        await vi.waitFor(async () => {
+          const remaining = await service.listScheduledWork({ sessionId: session.id });
+          expect(remaining.map((item: { id: string }) => item.id)).toEqual([userSchedule.item.id]);
+        });
+        const [survivor] = await service.listScheduledWork({ sessionId: session.id });
+        expect(survivor.source).toBeUndefined();
+      });
     });
 
     it("creates durable recurring and one-shot scheduled work and validates inputs and session state", async () => {
@@ -39469,7 +40133,10 @@ describe("createAgentChatService", () => {
         setPermissionMode,
       } as any);
 
-      const { service, logger } = createService();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, logger } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
@@ -39497,6 +40164,21 @@ describe("createAgentChatService", () => {
           decision: "accept",
         }),
       );
+
+      // A silent return is not enough. The renderer keeps a card the summary
+      // still names, and the summary's restart fallback only stops naming it
+      // once a receipt exists — so without this the click accomplishes nothing
+      // and the next full re-derivation draws the card again.
+      const receipt = events.find((entry) =>
+        entry.event.type === "pending_input_resolved"
+        && entry.event.itemId === "nonexistent-item-id");
+      expect(receipt, "answering a card with no waiter must write a receipt").toBeTruthy();
+      // Recorded as cancelled, not accepted: no runtime ever received the
+      // acceptance, and this event is durable and synced.
+      expect((receipt!.event as { resolution: string }).resolution).toBe("cancelled");
+      expect(events.some((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.message === "That request is no longer active.")).toBe(true);
     });
 
   it("preserves original attachments across local auto-continuation retries", async () => {

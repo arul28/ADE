@@ -477,6 +477,16 @@ revalidate again.
 
 **PR creation: prefer the ADE CLI.** Opening the PR via `ade` registers it in ADE's PR tracking (lane ↔ PR link, check/comment inventory, review-thread state). `gh pr create` is the fallback, not the default. Falling back too eagerly defeats the purpose — do it only after you've genuinely confirmed the ADE path is broken.
 
+**PR body house style (both creation paths — never rely on `--fill` alone).** Write the body in this order, per the AGENTS.md "Pull requests" section:
+
+1. **Problem** — one or two sentences.
+2. **Cause** — when known; omit the heading otherwise.
+3. **Change and boundary** — what moved, and what deliberately did not.
+4. **Verification** — the exact focused tests/typechecks run and their counts (mirror the quality/test summaries).
+5. Final line — the model and harness that did the work (e.g. `Authored with <model> via <harness>.`).
+
+UI changes attach before/after images; motion attaches a short video. Upload evidence to GitHub — never commit it to the repo.
+
 ### Discovery protocol (for the agent — not a script)
 
 The `ade` surface evolves. Don't assume flag names or output shapes from this playbook; discover them live.

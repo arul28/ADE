@@ -18,6 +18,7 @@ import {
   type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../shared/modelRegistry";
+import type { AgentChatSessionMetadataField } from "../../../shared/types/chat";
 import { parseStructuredOutput } from "../ai/utils";
 
 /**
@@ -36,22 +37,94 @@ Return only the title text.
 - No emoji.
 - No trailing punctuation.`;
 
-export const SESSION_METADATA_SYSTEM_PROMPT = `You name the visible metadata for a software development chat in ADE.
-Return strict JSON only with exactly these string fields: {"chatTitle":"...","laneName":"...","statusLine":"..."}.
-chatTitle:
+const SESSION_METADATA_JSON_INSTRUCTION =
+  `Return strict JSON only with exactly these string fields: {"chatTitle":"...","laneName":"...","statusLine":"..."}.`;
+
+const SESSION_METADATA_TITLE_RULES = `chatTitle — this thread only:
+- Name the work done in THIS chat thread. The full conversation transcript is the source of truth.
 - A meaningful 2 to ${MAX_NAMING_WORDS} word title for the task, feature, bug, or deliverable.
 - Do not start with Completed, Complete, Done, Finished, Resolved, or Success.
 - Do not use generic words such as Chat, Session, Status, or Untitled by themselves.
-- No quotes, emoji, or trailing punctuation.
-laneName:
-- A readable 2 to ${MAX_NAMING_WORDS} word name for the durable workstream.
+- No quotes, emoji, or trailing punctuation.`;
+
+const SESSION_METADATA_LANE_RULES = `laneName — the durable workstream for the whole lane:
+- Combine every thread in this lane with the git work that differs from the remote/base.
 - Describe the feature, bug, UI surface, or outcome rather than the act of asking.
-- No branch prefixes, slash characters, quotes, emoji, or trailing punctuation.
-statusLine:
+- A readable 2 to ${MAX_NAMING_WORDS} word name. No branch prefixes, slash characters, quotes, emoji, or trailing punctuation.`;
+
+const SESSION_METADATA_STATUS_RULES = `statusLine — what is currently being done:
+- Derive this only from the latest assistant output (the last two or three paragraphs of what the agent just said or did).
 - A concise current progress or outcome line, at most 72 characters and ideally ${MAX_NAMING_WORDS} words or fewer.
-- State only what the supplied context supports. Never invent a completion, blocker, test result, or decision.
-- No quotes, emoji, or trailing punctuation.
-Use the current metadata only as context; the user's explicit regenerate choice permits replacing it.`;
+- State only what that latest output supports. Never invent a completion, blocker, test result, or decision.
+- No quotes, emoji, or trailing punctuation.`;
+
+export const SESSION_METADATA_SYSTEM_PROMPT = `You name the visible metadata for a software development chat in ADE.
+${SESSION_METADATA_JSON_INSTRUCTION}
+Always fill all three fields. Current metadata is context only; the user's explicit regenerate choice permits replacing it.
+
+${SESSION_METADATA_TITLE_RULES}
+
+${SESSION_METADATA_LANE_RULES}
+
+${SESSION_METADATA_STATUS_RULES}`;
+
+export type SessionMetadataPromptNeeds = {
+  title: boolean;
+  laneName: boolean;
+  statusLine: boolean;
+};
+
+/** Which prompt sources to gather and send for this regenerate request. */
+export function sessionMetadataPromptNeeds(
+  fields?: readonly AgentChatSessionMetadataField[] | null,
+): SessionMetadataPromptNeeds {
+  const requested = fields ?? [];
+  if (!requested.length) {
+    return { title: true, laneName: true, statusLine: true };
+  }
+  return {
+    title: requested.includes("title"),
+    laneName: requested.includes("laneName"),
+    statusLine: requested.includes("statusLine"),
+  };
+}
+
+export function buildSessionMetadataSystemPrompt(
+  fields?: readonly AgentChatSessionMetadataField[] | null,
+): string {
+  const needs = sessionMetadataPromptNeeds(fields);
+  if (needs.title && needs.laneName && needs.statusLine) {
+    return SESSION_METADATA_SYSTEM_PROMPT;
+  }
+
+  const write: string[] = [];
+  const copy: string[] = [];
+  if (needs.title) write.push("chatTitle");
+  else copy.push("chatTitle");
+  if (needs.laneName) write.push("laneName");
+  else copy.push("laneName");
+  if (needs.statusLine) write.push("statusLine");
+  else copy.push("statusLine");
+
+  const intro = needs.statusLine && !needs.title && !needs.laneName
+    ? [
+      "You write a short status line for a software development chat in ADE.",
+      "Users scan many threads at once and need to see what this agent just did.",
+    ].join("\n")
+    : "You name the visible metadata for a software development chat in ADE.";
+
+  return [
+    intro,
+    SESSION_METADATA_JSON_INSTRUCTION,
+    [
+      write.length ? `Write new values for: ${write.join(", ")}.` : null,
+      copy.length ? `Copy these current values unchanged: ${copy.join(", ")}.` : null,
+    ].filter(Boolean).join(" "),
+    needs.title ? SESSION_METADATA_TITLE_RULES : null,
+    needs.laneName ? SESSION_METADATA_LANE_RULES : null,
+    needs.statusLine ? SESSION_METADATA_STATUS_RULES : null,
+  ].filter((line): line is string => Boolean(line)).join("\n\n");
+}
 
 export const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `Generate the stable identity for an automatically created software workspace.
 Return strict JSON only: {"laneTitle":"...","branchFragment":"..."}.
@@ -166,31 +239,169 @@ export function deriveDeterministicSessionMetadata(args: {
   return { chatTitle, laneName: chatTitle, statusLine };
 }
 
+export const SESSION_METADATA_TRANSCRIPT_CHAR_LIMIT = 64_000;
+export const SESSION_METADATA_ASSISTANT_TAIL_CHAR_LIMIT = 6_000;
+export const SESSION_METADATA_LANE_WORK_CHAR_LIMIT = 8_000;
+
+export type SessionMetadataConversationEntry = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+export type SessionMetadataLaneThread = {
+  title: string;
+  statusNote?: string | null;
+  summary?: string | null;
+  isCurrent?: boolean;
+};
+
+/** Keep the newest tail of a large blob so latest work survives the prompt cap. */
+export function clipFromEnd(text: string, maxChars: number): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  if (trimmed.length <= maxChars) return trimmed;
+  return `…(earlier omitted)\n${trimmed.slice(trimmed.length - maxChars)}`;
+}
+
+export function formatConversationTranscript(
+  entries: SessionMetadataConversationEntry[],
+): string {
+  return entries
+    .filter((entry) => entry.text.trim())
+    .map((entry) => `${entry.role === "user" ? "User" : "Assistant"}: ${entry.text.trim()}`)
+    .join("\n");
+}
+
+/**
+ * Status lines should come from the last two or three paragraphs of the
+ * agent's most recent output — what is currently being done — not from the
+ * kickoff prompt or a sibling thread.
+ */
+export function takeLastParagraphs(text: string, count = 3): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const paragraphs = trimmed.split(/\n\s*\n/u).map((part) => part.trim()).filter(Boolean);
+  if (paragraphs.length >= 2) {
+    return clipFromEnd(paragraphs.slice(-count).join("\n\n"), SESSION_METADATA_ASSISTANT_TAIL_CHAR_LIMIT);
+  }
+  const lines = trimmed.split(/\n/u).map((line) => line.trim()).filter(Boolean);
+  if (lines.length >= 2) {
+    return clipFromEnd(lines.slice(-Math.max(count, 3)).join("\n"), SESSION_METADATA_ASSISTANT_TAIL_CHAR_LIMIT);
+  }
+  return clipFromEnd(trimmed, SESSION_METADATA_ASSISTANT_TAIL_CHAR_LIMIT);
+}
+
+export function extractLatestAssistantParagraphs(
+  entries: SessionMetadataConversationEntry[],
+  paragraphCount = 3,
+): string {
+  const lastAssistant = [...entries].reverse().find((entry) => entry.role === "assistant" && entry.text.trim());
+  return lastAssistant ? takeLastParagraphs(lastAssistant.text, paragraphCount) : "";
+}
+
+export function formatLaneThreadsForPrompt(threads: SessionMetadataLaneThread[]): string {
+  if (!threads.length) return "";
+  return threads.map((thread) => {
+    const tag = thread.isCurrent ? " (this thread)" : "";
+    const lines = [`- ${thread.title.trim() || "Untitled"}${tag}`];
+    const status = thread.statusNote?.trim();
+    const summary = thread.summary?.trim();
+    if (status) lines.push(`  status: ${status}`);
+    if (summary) lines.push(`  summary: ${clipFromEnd(summary, 240)}`);
+    return lines.join("\n");
+  }).join("\n");
+}
+
+export function formatLaneWorkVersusRemote(args: {
+  baseRef: string;
+  commits?: string | null;
+  changedFiles?: string | null;
+  uncommitted?: string | null;
+}): string {
+  const commits = args.commits?.trim() || "";
+  const changedFiles = args.changedFiles?.trim() || "";
+  const uncommitted = args.uncommitted?.trim() || "";
+  if (!commits && !changedFiles && !uncommitted) return "";
+  return clipFromEnd(
+    [
+      `Compared to ${args.baseRef}:`,
+      commits ? `Commits:\n${commits}` : null,
+      changedFiles ? `Changed files:\n${changedFiles}` : null,
+      uncommitted ? `Uncommitted:\n${uncommitted}` : null,
+    ].filter((line): line is string => Boolean(line)).join("\n\n"),
+    SESSION_METADATA_LANE_WORK_CHAR_LIMIT,
+  );
+}
+
 export function buildSessionMetadataPrompt(args: {
   provider: string;
   chatModel?: string | null;
   currentLaneName?: string | null;
   currentChatTitle?: string | null;
   currentStatusLine?: string | null;
+  worktreeName?: string | null;
+  requestedFields?: readonly AgentChatSessionMetadataField[] | null;
   goal?: string | null;
   summary?: string | null;
   latestOutputPreview?: string | null;
   originalRequest?: string | null;
-  recentConversation?: string | null;
+  threadTranscript?: string | null;
+  latestAssistantParagraphs?: string | null;
+  laneThreads?: string | null;
+  laneWorkVersusRemote?: string | null;
 }): string {
+  const needs = sessionMetadataPromptNeeds(args.requestedFields);
+  const requested = args.requestedFields ?? [];
+  const statusSource = args.latestAssistantParagraphs?.trim() || args.latestOutputPreview?.trim() || "";
+
+  if (needs.statusLine && !needs.title && !needs.laneName) {
+    const recent = statusSource;
+    return [
+      "This is a long-running coding thread in ADE.",
+      "Users manage many threads at once and need a short status line for what this agent has just done.",
+      args.currentLaneName?.trim() ? `Lane name: ${args.currentLaneName.trim()}` : null,
+      args.worktreeName?.trim() ? `Worktree: ${args.worktreeName.trim()}` : null,
+      args.currentChatTitle?.trim() ? `Chat title: ${args.currentChatTitle.trim()}` : null,
+      args.currentStatusLine?.trim() ? `Current status line: ${args.currentStatusLine.trim()}` : null,
+      recent
+        ? `Latest assistant output (what the agent has done in the last couple of minutes):\n${recent}`
+        : null,
+      "Write a short statusLine from that recent output only. Repeat the current chatTitle and laneName unchanged.",
+    ].filter((line): line is string => Boolean(line && line.trim().length)).join("\n\n");
+  }
+
+  const copyFields: string[] = [];
+  if (!needs.title) copyFields.push("chatTitle");
+  if (!needs.laneName) copyFields.push("laneName");
+  if (!needs.statusLine) copyFields.push("statusLine");
+
   return [
     "The user explicitly asked ADE to refresh the selected session metadata.",
-    "Use the supplied context to produce all three fields, even when only some fields will be applied.",
+    "Produce all three JSON fields in one response, even when only some fields will be applied.",
+    requested.length ? `Fields the user asked to apply: ${requested.join(", ")}` : null,
+    copyFields.length
+      ? `Repeat these current values unchanged: ${copyFields.join(", ")}.`
+      : null,
     `Provider: ${args.provider}`,
     `Chat model: ${args.chatModel ?? ""}`,
     `Current lane name: ${args.currentLaneName ?? ""}`,
     `Current chat title: ${args.currentChatTitle ?? ""}`,
     args.currentStatusLine ? `Current status line: ${args.currentStatusLine}` : null,
-    args.goal ? `Chat goal: ${args.goal}` : null,
-    args.summary ? `Existing summary: ${args.summary}` : null,
-    args.latestOutputPreview ? `Latest output preview: ${args.latestOutputPreview}` : null,
-    args.originalRequest ? `Original request: ${args.originalRequest}` : null,
-    args.recentConversation ? `Recent conversation:\n${args.recentConversation}` : null,
+    needs.title && args.goal ? `Chat goal: ${args.goal}` : null,
+    needs.title && args.summary ? `Existing summary: ${args.summary}` : null,
+    needs.title && args.originalRequest ? `Original request: ${args.originalRequest}` : null,
+    needs.title && args.threadTranscript
+      ? `This thread's full conversation (source for chatTitle):\n${args.threadTranscript}`
+      : null,
+    needs.statusLine && statusSource
+      ? `Latest assistant output (source for statusLine — last 2-3 paragraphs of what is currently being done):\n${statusSource}`
+      : null,
+    needs.laneName && args.laneThreads
+      ? `Other threads in this lane (source for laneName, together with git work):\n${args.laneThreads}`
+      : null,
+    needs.laneName && args.laneWorkVersusRemote
+      ? `Work on this lane that differs from remote (source for laneName):\n${args.laneWorkVersusRemote}`
+      : null,
   ].filter((line): line is string => Boolean(line && line.trim().length)).join("\n\n");
 }
 
@@ -198,6 +409,7 @@ export async function runSessionMetadataGeneration(args: {
   candidateModelIds: string[];
   cwd: string;
   prompt: string;
+  systemPrompt?: string;
   runPrompt: SessionMetadataPromptRunner;
   normalizeTitle: (value: string) => string | null;
   normalizeStatusLine: (value: string) => string | null;
@@ -207,6 +419,7 @@ export async function runSessionMetadataGeneration(args: {
   // Walk the caller's setting-then-session candidates only. Cursor Grok (and
   // other non-schema models) often return unusable JSON; the next candidate
   // still gets a turn. ADE already holds the transcript excerpt.
+  const systemPrompt = args.systemPrompt ?? SESSION_METADATA_SYSTEM_PROMPT;
   return runNamingAcrossProviders<GeneratedSessionMetadata>(args.candidateModelIds, {
     shouldStop: args.shouldStop,
     run: async (descriptor) => {
@@ -214,7 +427,7 @@ export async function runSessionMetadataGeneration(args: {
         cwd: args.cwd,
         modelId: descriptor.id,
         prompt: args.prompt,
-        systemPrompt: SESSION_METADATA_SYSTEM_PROMPT,
+        systemPrompt,
         jsonSchema: SESSION_METADATA_JSON_SCHEMA,
       });
       const parserArgs = {

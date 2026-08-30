@@ -163,6 +163,7 @@ import {
 } from "../../desktop/src/main/services/analytics/dailyUsageAnalytics";
 import {
   captureAgentTurnSettledAnalytics,
+  captureChatAutoResumeAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
@@ -1760,6 +1761,10 @@ export async function createAdeRuntime(args: {
           // holds a name the user never chose until this says to read it again.
           emitPluginEntityChange({ family: "session", ids: [event.sessionId], projectRoot });
         },
+        onAutoResumeOutcome: (properties) => captureChatAutoResumeAnalytics({
+          analytics: productAnalyticsService,
+          properties,
+        }),
         onSessionEnded: (event) => {
           pushEvent("runtime", { type: "agent_chat_session_ended", ...event });
           emitPluginEntityChange({ family: "session", ids: [event.sessionId], projectRoot });

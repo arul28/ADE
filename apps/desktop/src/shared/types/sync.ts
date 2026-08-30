@@ -727,6 +727,20 @@ export type SyncFeatureFlags = {
   chatHistoryPaging?: {
     enabled: true;
   };
+  /**
+   * Streamed HTTP attachment upload. When present, a client may mint a ticket
+   * with `chat.createAttachmentUpload` and POST the file body to `path` on this
+   * host's sync HTTP port instead of base64-ing it through the command channel,
+   * which lifts the attachment ceiling to `maxBytes` and allows non-image types.
+   * Older hosts omit this field; clients must fall back to
+   * `chat.saveTempAttachment` with the legacy image-only cap,
+   * `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`.
+   */
+  attachmentUploadV1?: {
+    enabled: true;
+    path: string;
+    maxBytes: number;
+  };
   projectCatalog: {
     enabled: boolean;
   };
@@ -1995,6 +2009,7 @@ export type SyncRemoteCommandAction =
   | "chat.rewindFiles"
   | "chat.getTurnFileDiff"
   | "chat.saveTempAttachment"
+  | "chat.createAttachmentUpload"
   | "chat.listPromptStashes"
   | "chat.createPromptStash"
   | "chat.deletePromptStash"

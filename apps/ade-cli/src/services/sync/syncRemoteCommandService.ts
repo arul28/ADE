@@ -30,6 +30,8 @@ import {
   isPluginSurfaceId,
   readPluginContributionEntityTag,
 } from "../../../../desktop/src/shared/plugins/sockets";
+import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type {
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
@@ -444,6 +446,13 @@ type SyncRemoteCommandServiceArgs = {
   issueRuntimeHostPairingGrant?: () => string;
   /** Whether the account-gated machine relay is currently available. */
   isCloudRelayEnabled?: () => boolean;
+  /**
+   * Ticket registry for the streamed HTTP attachment-upload route on this
+   * host's sync listener. Absent when the host fronts no http server, in which
+   * case `chat.createAttachmentUpload` fails with a clear message and the
+   * client falls back to base64 `chat.saveTempAttachment`.
+   */
+  attachmentUploads?: AttachmentUploadRegistry | null;
   logger: Logger;
 };
 
@@ -2005,8 +2014,43 @@ async function saveAgentChatTempAttachment(
   payload: Record<string, unknown>,
 ): Promise<{ path: string; mimeType: string; previewDataUrl: string | null }> {
   const projectRoot = requireProjectRoot(args, "chat.saveTempAttachment");
-  return await saveImageTempAttachment(path.join(projectRoot, ".ade", "attachments"), payload);
+  return await saveImageTempAttachment(projectAttachmentsDir(projectRoot), payload);
 }
+
+/**
+ * Mint a single-use ticket for the streamed HTTP upload route. The WS session
+ * this command arrives on is already authenticated, so the ticket is the only
+ * authority the (unauthenticated) HTTP leg ever gets.
+ *
+ * This is how a mobile or browser sync client stages a file-shaped attachment;
+ * a paired DESKTOP arrives instead through the runtime RPC channel, on the ADE
+ * action registry's `chat.createAttachmentUpload`. Both mint from the host's
+ * one `AttachmentUploadRegistry` — the registry half reaches it through
+ * `syncHostService.issueAttachmentUploadTicket`, which is this same
+ * `args.attachmentUploads` instance — because only the HTTP request handler
+ * holding that map can redeem what it issues.
+ *
+ * There is deliberately no remote "copy this path" command on THIS channel:
+ * `chat.copyTempAttachment` takes an unconstrained absolute source path, and
+ * the mobile command allowlist is the one place ADE draws that line. The action
+ * registry does not draw it (see the note on `copyTempAttachment` there), so
+ * this exclusion narrows what a phone can do, not what a paired desktop can.
+ */
+function createAgentChatAttachmentUpload(
+  args: SyncRemoteCommandServiceArgs,
+  payload: Record<string, unknown>,
+): AttachmentUploadTicket {
+  const projectRoot = requireProjectRoot(args, "chat.createAttachmentUpload");
+  const registry = args.attachmentUploads;
+  if (!registry) throw new Error("Attachment upload is not available on this host.");
+  const rawFilename = typeof payload.filename === "string" ? payload.filename.trim() : "";
+  return registry.issue({
+    projectRoot,
+    filename: rawFilename || "attachment",
+    deviceId: typeof payload.deviceId === "string" ? payload.deviceId : null,
+  });
+}
+
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
   const descriptor = getModelById(modelId);
@@ -4550,6 +4594,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.getTurnFileDiff", { viewerAllowed: true }, async (payload) => getRemoteTurnFileDiff(args, payload));
   register("chat.saveTempAttachment", { viewerAllowed: true }, async (payload) =>
     saveAgentChatTempAttachment(args, payload));
+  register("chat.createAttachmentUpload", { viewerAllowed: true }, async (payload) =>
+    createAgentChatAttachmentUpload(args, payload));
   register("chat.listPromptStashes", { viewerAllowed: true }, async () =>
     listPromptStashes(requireService(args.db, "Database not available.")));
   register("chat.createPromptStash", { viewerAllowed: true }, async (payload) =>

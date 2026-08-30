@@ -19,6 +19,7 @@ import {
   type AgentChatEvent,
   type AgentChatEventEnvelope,
   type AgentChatEventHistorySnapshot,
+  type AgentChatEventMetadata,
   type AgentChatContextAttachment,
   type AgentChatFileRef,
   type ChatMentionSuggestion,
@@ -119,7 +120,8 @@ import {
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
-import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatLifecycleBanner, shouldRenderChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -134,8 +136,16 @@ import {
   ChatInfoHostContext,
   type MosaicRenderContext,
 } from "./AgentChatMessageList";
+import {
+  ChatAutoResumeContext,
+  classifyProviderFailure,
+  providerFailureEventId,
+  type ChatAutoResumeState,
+} from "./ProviderFailureRecoveryCard";
+import { isPendingAutoResumeScheduledWork } from "../../../shared/chatAutoResume";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
 import { useForeignSessionLaneId } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
@@ -196,7 +206,7 @@ import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, 
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
-import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
+import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -486,6 +496,19 @@ function hasChatActionsAutoOpenFired(storage: ChatActionsAutoOpenStorage, sessio
     return false;
   }
   return true;
+}
+
+/**
+ * Metadata minus the scheduled-wake marker, or `undefined` when nothing else
+ * was riding along — so a replay that had only the marker sends no metadata at
+ * all rather than an empty object the host has never seen.
+ */
+function withoutScheduledWake(metadata: AgentChatEventMetadata): AgentChatEventMetadata | undefined {
+  const rest: AgentChatEventMetadata = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (key !== "scheduledWake") rest[key] = value;
+  }
+  return Object.keys(rest).length ? rest : undefined;
 }
 
 function transcriptRecordText(record: Record<string, unknown> | null): string | null {
@@ -3460,6 +3483,10 @@ export function AgentChatPane({
   // later pass renders a catch-up hairline from this flag.
   const [syncPendingBySession, setSyncPendingBySession] = useState<Record<string, boolean>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
+  // Raw derivations, straight from the transcript. Every reader goes through
+  // `resolvedPendingInputsBySession` below instead of reading this directly —
+  // an entry swept at a turn boundary is still in here, and only the session
+  // summary can say whether that sweep was right. See `resolvePendingInputs`.
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
   const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
   const [respondingApprovalIds, setRespondingApprovalIds] = useState<Set<string>>(new Set());
@@ -4028,6 +4055,11 @@ export function AgentChatPane({
     () => chatMachineRouter.pinForLane(renderedSession?.laneId ?? foreignRenderedLaneId ?? laneId),
     [chatMachineRouter, foreignRenderedLaneId, laneId, renderedSession?.laneId],
   );
+  // Lifecycle actions must follow the session currently rendered in the pane.
+  // Resolve this after the machine pin so foreign chats never send a wake or
+  // unsettle request to the tab-bound runtime.
+  const composerLifecycleSession = useSessionLifecycleSnapshot(composerSessionId);
+  const hasComposerLifecycleBanner = shouldRenderChatLifecycleBanner(composerLifecycleSession);
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -4360,18 +4392,6 @@ export function AgentChatPane({
       }];
     }).sort((left, right) => left.firedAtMs - right.firedAtMs);
   }, [selectedEventsForDisplay, selectedSessionId, wakeAwayWindow]);
-  const latestUnattendedOutcome = useMemo(() => {
-    const latest = unattendedWakeTurns[unattendedWakeTurns.length - 1];
-    if (!latest) return null;
-    const text = selectedEventsForDisplay
-      .filter((envelope) => envelope.event.type === "text" && envelope.event.turnId === latest.turnId)
-      .map((envelope) => envelope.event.type === "text" ? envelope.event.text : "")
-      .join("")
-      .replace(/\s+/g, " ")
-      .trim();
-    return (text || latest.reason || selectedSession?.lastOutputPreview || "Scheduled work ran while this chat was closed.")
-      .slice(0, 180);
-  }, [selectedEventsForDisplay, selectedSession?.lastOutputPreview, unattendedWakeTurns]);
   const dispatchedAuthRecoveryRef = useRef<Set<string>>(new Set());
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
@@ -4779,7 +4799,26 @@ export function AgentChatPane({
   );
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
-  const selectedPendingInputs = composerSessionId ? (pendingInputsBySession[composerSessionId] ?? []) : [];
+  /**
+   * The one place the raw derivation is reconciled against the session summary.
+   *
+   * Recomputed whenever either input changes, so the join cannot be served
+   * stale: a summary that moves with no new event still repaints the card.
+   * Cheap because it walks summaries, never the transcript.
+   */
+  const resolvedPendingInputsBySession = useMemo(() => {
+    const resolved: Record<string, DerivedPendingInput[]> = {};
+    for (const [sessionId, entries] of Object.entries(pendingInputsBySession)) {
+      const summary = sessions.find((entry) => entry.sessionId === sessionId)
+        ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
+      resolved[sessionId] = resolvePendingInputs(entries, summary);
+    }
+    return resolved;
+  }, [pendingInputsBySession, sessions, initialSessionSummary]);
+
+  const selectedPendingInputs = composerSessionId
+    ? (resolvedPendingInputsBySession[composerSessionId] ?? [])
+    : [];
   const pendingInput = selectedPendingInputs[0] ?? null;
   const planApprovalPendingInput = selectedPendingInputs.find((entry) =>
     isOrchestrationPlanApprovalRequest(entry.request),
@@ -5114,11 +5153,11 @@ export function AgentChatPane({
   }
   const pendingApprovalIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const entry of pendingInputsBySession[selectedSessionId ?? ""] ?? []) {
+    for (const entry of resolvedPendingInputsBySession[selectedSessionId ?? ""] ?? []) {
       ids.add(entry.itemId);
     }
     return ids;
-  }, [pendingInputsBySession, selectedSessionId]);
+  }, [resolvedPendingInputsBySession, selectedSessionId]);
   const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
   const selectedModelDesc = resolveScopedModelDescriptor(modelId, modelCatalogScopeKey);
   const subagentViewCacheKey = subagentView
@@ -7631,6 +7670,68 @@ export function AgentChatPane({
     });
   }, []);
 
+  // ADE's own auto-resume row for this chat, if the provider usage limit left
+  // one armed. Published as context so the failure card can offer a Cancel next
+  // to the retry affordances without drilling props through every event row.
+  // User- and agent-created schedules are excluded by the `auto_resume_limit`
+  // tag, so cancelling here can never drop a schedule the user asked for.
+  const pendingAutoResumeSchedule = useMemo(
+    () => (selectedSession?.scheduledWork ?? []).find(isPendingAutoResumeScheduledWork) ?? null,
+    [selectedSession?.scheduledWork],
+  );
+  // The schedule belongs to the failure that armed it, which is always the most
+  // recent usage-limit error in the transcript. Anchoring to it keeps every
+  // older usage-limit card in the same chat from advertising a live schedule.
+  // Gated on the schedule: without one there is nothing to anchor, and the walk
+  // below is a full-transcript scan that would otherwise re-run on every event
+  // append for the overwhelmingly common case of a chat with no armed resume.
+  const latestRateLimitFailureEventId = useMemo(() => {
+    if (!pendingAutoResumeSchedule) return null;
+    for (let index = selectedEventsForDisplay.length - 1; index >= 0; index -= 1) {
+      const envelope = selectedEventsForDisplay[index];
+      const event = envelope?.event;
+      if (!envelope || event?.type !== "error") continue;
+      if (classifyProviderFailure(event)?.kind !== "rate_limit") continue;
+      return providerFailureEventId(envelope.timestamp, event);
+    }
+    return null;
+  }, [pendingAutoResumeSchedule, selectedEventsForDisplay]);
+  const autoResumeContextValue = useMemo<ChatAutoResumeState>(() => {
+    if (!selectedSessionId || !pendingAutoResumeSchedule) return null;
+    const scheduleId = pendingAutoResumeSchedule.id;
+    const sessionId = selectedSessionId;
+    return {
+      scheduleId,
+      nextRunAt: pendingAutoResumeSchedule.nextRunAt ?? null,
+      anchorEventId: latestRateLimitFailureEventId,
+      cancel: async () => {
+        try {
+          const result = await window.ade.agentChat.cancelScheduledWork(
+            { sessionId, scheduleId },
+            chatRuntimePinRef.current,
+          );
+          patchSessionSummary(sessionId, {
+            scheduledWork: (selectedSession?.scheduledWork ?? []).filter((item) =>
+              item.id !== scheduleId || !(
+                result.providerCancellationConfirmed || result.schedule.status === "cancelled"
+              )),
+          });
+          scheduleSessionsRefresh();
+          return null;
+        } catch (cancelError) {
+          return cancelError instanceof Error ? cancelError.message : String(cancelError);
+        }
+      },
+    };
+  }, [
+    latestRateLimitFailureEventId,
+    patchSessionSummary,
+    pendingAutoResumeSchedule,
+    scheduleSessionsRefresh,
+    selectedSession?.scheduledWork,
+    selectedSessionId,
+  ]);
+
   useLayoutEffect(() => {
     if (!isTileVisible) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
@@ -8293,10 +8394,16 @@ export function AgentChatPane({
     const attachments = Array.isArray(userEvent.attachments) ? userEvent.attachments : [];
     const contextAttachments = Array.isArray(userEvent.contextAttachments) ? userEvent.contextAttachments : [];
     const metadata = userEvent.metadata;
+    // The host skips its auto-resume cancel for any send carrying
+    // `scheduledWake` — that is how the auto-resume's own turn avoids
+    // cancelling the schedule it was fired by. Replaying that marker would make
+    // a user-initiated retry inherit the exemption and leave the schedule
+    // armed, contradicting the notice that says retrying cancels it.
+    const replayMetadata = metadata?.scheduledWake ? withoutScheduledWake(metadata) : metadata;
     const replayContext = {
       ...(attachments.length ? { attachments } : {}),
       ...(contextAttachments.length ? { contextAttachments } : {}),
-      ...(metadata !== undefined ? { metadata } : {}),
+      ...(replayMetadata !== undefined ? { metadata: replayMetadata } : {}),
     };
     try {
       submitInFlightRef.current = true;
@@ -10395,7 +10502,7 @@ export function AgentChatPane({
       return;
     }
     if (selectedSessionId) {
-      const sessionPending = pendingInputsBySession[selectedSessionId] ?? [];
+      const sessionPending = resolvedPendingInputsBySession[selectedSessionId] ?? [];
       const planReadyGate = sessionPending.find((entry) =>
         isOrchestrationPlanApprovalRequest(entry.request),
       ) ?? null;
@@ -11125,7 +11232,7 @@ export function AgentChatPane({
     patchSessionSummary,
     projectTransitionBlocksChat,
     reasoningEffort,
-    pendingInputsBySession,
+    resolvedPendingInputsBySession,
     refreshAvailableModels,
     refreshSessions,
     selectedSession,
@@ -11414,10 +11521,10 @@ export function AgentChatPane({
     answers?: Record<string, string | string[]>,
   ) => {
     if (!selectedSessionId) return;
-    const request = pendingInputsBySession[selectedSessionId]?.[0];
+    const request = resolvedPendingInputsBySession[selectedSessionId]?.[0];
     if (!request) return;
     await handleApproval(request.itemId, decision, responseText, answers);
-  }, [handleApproval, pendingInputsBySession, selectedSessionId]);
+  }, [handleApproval, resolvedPendingInputsBySession, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
     if (isPersistentIdentitySurface && sessionMutationKind) return;
@@ -12525,15 +12632,15 @@ export function AgentChatPane({
           type="button"
           onClick={() => navigateToSpawnedChat(spawnLineage.parentId, null)}
           className={cn(
-            "inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[10px] font-medium transition-colors",
+            "inline-flex max-w-[220px] items-center gap-1.5 px-0.5 py-0.5 font-sans text-[10px] font-medium underline-offset-2 transition-colors hover:underline",
             spawnLineage.spawnKind === "peer"
-              ? "border-slate-400/18 bg-slate-400/[0.06] text-slate-300/75 hover:border-slate-300/30 hover:text-slate-100/90"
-              : "border-violet-400/20 bg-violet-400/[0.06] text-violet-200/80 hover:border-violet-300/32 hover:text-violet-100",
+              ? "text-slate-300/70 hover:text-slate-100/90"
+              : "text-violet-200/75 hover:text-violet-100",
           )}
-          title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "View parent thread"}
+          title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "Go to parent thread"}
         >
-          <span aria-hidden className="shrink-0">↳</span>
-          <span className="min-w-0 truncate">View parent thread</span>
+          <ArrowBendUpRight size={12} weight="regular" aria-hidden className="shrink-0" />
+          <span className="min-w-0 truncate">Go to parent thread</span>
         </button>
       ) : null}
       {chatTerminalVisible && selectedSessionId ? (
@@ -12776,9 +12883,10 @@ export function AgentChatPane({
         onLaneChipClick={laneId ? () => navigate(openLaneInLanesTabPath(laneId)) : undefined}
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
-        // Ambient settled/snoozed chips — the chat pane otherwise has no
-        // lifecycle awareness at all. The composer slot below stays with drift.
         lifecycleSessionId={selectedSessionId ?? null}
+        // Snooze keeps a small header affordance; settled state is shown only
+        // in the compact pill floating directly above the composer.
+        snoozeSessionId={selectedSessionId ?? null}
         showGitToolbar={showWorkspaceChrome}
         prSessionId={renderedSessionId}
         // Only wire the pane toggle where the pane actually renders (a selected
@@ -12808,7 +12916,7 @@ export function AgentChatPane({
             {sessions.map((session) => {
               const title = chatSessionTitle(session);
               const isActive = session.sessionId === selectedSessionId;
-              const sessionNeedsInput = Boolean(pendingInputsBySession[session.sessionId]?.length) || session.awaitingInput === true;
+              const sessionNeedsInput = Boolean(resolvedPendingInputsBySession[session.sessionId]?.length) || session.awaitingInput === true;
               const isRunning = !sessionNeedsInput && turnActiveBySession[session.sessionId] === true;
               const sessionReadyForPrompt = !sessionNeedsInput && !isRunning && session.status === "idle";
               const sessionIndicatorStatus = sessionNeedsInput || sessionReadyForPrompt
@@ -12935,11 +13043,8 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
-  // Settled/snoozed notice pinned above the composer. The header chips say WHAT
-  // the state is; this says what sending will do about it, where the eye already
-  // is while typing. Renders null for a live chat, so nothing below it moves.
-  const lifecycleBanner = composerSessionId ? (
-    <ChatLifecycleBanner sessionId={composerSessionId} />
+  const lifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
+    <ChatLifecycleBanner sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"
@@ -13449,35 +13554,32 @@ export function AgentChatPane({
       />
   );
 
-  const awayDigestStrip = unattendedWakeTurns.length > 0 ? (
-    <div className="flex shrink-0 items-center gap-2 border-t border-amber-200/[0.08] bg-amber-300/[0.055] px-3 py-1.5 font-sans text-[11px] text-amber-100/75">
-      <span className="min-w-0 flex-1 truncate">
-        While you were away: {unattendedWakeTurns.length} wakeup{unattendedWakeTurns.length === 1 ? "" : "s"}
-        {latestUnattendedOutcome ? ` · ${latestUnattendedOutcome}` : ""}
-      </span>
-      <span className="flex shrink-0 items-center gap-1" aria-label="Jump to scheduled wakeups">
-        {unattendedWakeTurns.slice(-3).map((wake, index) => (
-          <button
-            key={`${wake.scheduleId}:${wake.turnId}`}
-            type="button"
-            className="rounded px-1 py-0.5 text-amber-200/65 underline-offset-2 hover:bg-amber-200/10 hover:text-amber-100 hover:underline"
-            onClick={() => setWakeJumpRequest((current) => ({
-              key: `scheduled-wake:${wake.scheduleId}:${wake.turnId}`,
-              requestId: (current?.requestId ?? 0) + 1,
-            }))}
-          >
-            {Math.max(1, unattendedWakeTurns.length - Math.min(3, unattendedWakeTurns.length) + index + 1)}
-          </button>
-        ))}
-      </span>
-      <button
-        type="button"
-        aria-label="Dismiss while-you-were-away summary"
-        className="grid h-5 w-5 shrink-0 place-items-center rounded text-amber-100/45 hover:bg-amber-200/10 hover:text-amber-100/80"
-        onClick={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
-      >
-        <X size={11} weight="bold" />
-      </button>
+  const firstUnattendedWake = unattendedWakeTurns[0] ?? null;
+  const awayDigestCard = firstUnattendedWake ? (
+    <ChatAwayDigestCard
+      count={unattendedWakeTurns.length}
+      firstReason={firstUnattendedWake.reason}
+      onReview={() => setWakeJumpRequest((current) => ({
+        key: `scheduled-wake:${firstUnattendedWake.scheduleId}:${firstUnattendedWake.turnId}`,
+        requestId: (current?.requestId ?? 0) + 1,
+      }))}
+      onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
+    />
+  ) : null;
+  const appPanelLifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
+    <ChatLifecycleBanner
+      sessionId={composerSessionId}
+      runtimePin={renderedChatRuntimePin}
+      className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
+    />
+  ) : null;
+  const composerNoticeOverlay = awayDigestCard || lifecyclePill ? (
+    <div
+      data-testid="chat-composer-notice-overlay"
+      className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
+    >
+      {awayDigestCard}
+      {lifecyclePill}
     </div>
   ) : null;
 
@@ -13595,9 +13697,7 @@ export function AgentChatPane({
         );
       })}
       {authStickyBar}
-      {awayDigestStrip}
       <LaneBranchDriftStrip laneId={laneId} />
-      {lifecycleBanner}
       {takeoverBanner}
       {composerElement}
     </div>
@@ -13875,7 +13975,7 @@ export function AgentChatPane({
                     data-chat-sync-pending={selectedSyncPending ? "true" : undefined}
                     style={{ ...chatAppearanceRootStyle, ...splitChatColStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
                     className={cn(
-                      "flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
+                      "relative flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
                     )}
                   >
@@ -14032,6 +14132,7 @@ export function AgentChatPane({
                         may render here. PersonalChatsPage provides no such context. */}
                     {!cloudConversationPending && !(cloudHydrateFailed && !chatHasMessages) ? (
                     <ChatInfoHostContext.Provider value={true}>
+                    <ChatAutoResumeContext.Provider value={autoResumeContextValue}>
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
@@ -14114,8 +14215,10 @@ export function AgentChatPane({
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
                       />
+                    </ChatAutoResumeContext.Provider>
                     </ChatInfoHostContext.Provider>
                     ) : null}
+                    {!appPanelOpen ? composerNoticeOverlay : null}
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">
                         <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
@@ -14125,9 +14228,13 @@ export function AgentChatPane({
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {authStickyBar}
-                        {awayDigestStrip}
                         <LaneBranchDriftStrip laneId={laneId} />
-                        {lifecycleBanner}
+                        {awayDigestCard ? (
+                          <div data-testid="chat-app-panel-notice-stack" className="flex flex-col items-center gap-1.5 px-3 py-1.5">
+                            {awayDigestCard}
+                            {appPanelLifecyclePill}
+                          </div>
+                        ) : appPanelLifecyclePill}
                         {takeoverBanner}
                         {composerElement}
                       </div>

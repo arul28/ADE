@@ -21,12 +21,27 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 - **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards; records a named regression test or exact alternate verification for every accepted correctness finding.
 - **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). Run baseline `/quality` and `/test` first; after any ship-loop mutation, ship reruns commit-bound `/quality` revalidation before pushing or merging. Wraps `docs/playbooks/ship-lane.md`.
 
+**"Run the dev loop"** — when the user says this (or "dev loop") after work is implemented, it names one task, not a suggestion: invoke `/quality`, then `/test`, then `/ship`, in that order. Actually invoke each skill — approximating one (running tests is not `/test`; green CI is not `/quality`) does not count. Print each skill's summary, then continue to the next without stopping; stop early only for a genuine blocker (a failing gate or a decision only the user can make) and name it.
+
 Utilities (run when relevant, not part of the core loop): **/audit** (targeted bug hunt), **/finalize** (optional pre-push local-CI gate), **/optimize** (perf profiling), **/release** (cut a release).
 
 ## Playbooks
 
 - `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge). Baseline `/quality` and `/test` run before it; mutation-specific commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
 - `docs/playbooks/windows-signed-release.md` — maintainer handoff for taking the gated Windows x64 build through signing, clean-host and installed-update proof, draft verification, publication, and website enablement without changing the macOS or iOS release paths.
+
+## Hit every ADE surface
+
+The most common defect class in this repo is a change that works on the path you tested and is missing everywhere else. Before you call a change done (and again in `/quality`), walk this list and state which entries applied:
+
+- **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `ade` CLI, the `ade code` TUI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
+- **Clients.** Desktop (Electron), hosted web, iOS, and the TUI attach to the same brain. Shared logic belongs in shared services and types, not re-implemented per client.
+- **Providers.** Claude, Codex, Cursor, OpenCode, and Droid each have an adapter with different capabilities. A provider-shaped feature needs a decision per adapter, even when the decision is "not supported here" — record it in the capability gate, not by silence.
+- **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
+- **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
+- **Connection modes.** Local runtime, remote runtime, and relay behave differently. Multi-device and offline cases are real; the phone can be newer than the host.
+- **Windows.** Parity is part of "done" for all new code, never a follow-up.
+- **Docs.** User-visible behavior changes update the matching `docs/features/` doc in present tense.
 
 ## Working norms
 
@@ -36,6 +51,28 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
 - For ADE CLI changes, verify both headless mode and the desktop socket-backed ADE RPC path.
 - For computer-use changes, treat policy enforcement and artifact ownership as hard requirements, not prompt guidance.
 - `ade search "<query>" --text` searches everything in ADE (chats, terminal scrollback, PRs, commits, branches, lanes, files, Linear) instead of grepping `.ade/` internals; see the ade-search skill.
+
+## Ways to hurt yourself
+
+These are the operational hazards of developing ADE from inside ADE. Each one has caused real damage.
+
+1. **Killing by pattern.** Do not `pkill -f`, `pgrep | kill`, or kill a PID you found by matching a name or path. Your own agent process carries this worktree's path in its argv, `pgrep -f xcodebuild` also matches xcodebuildmcp and its wrapper shell, and this machine runs the real ADE brain plus other dev runtimes. Kill only a PID you captured at spawn time, after confirming its cwd is your worktree.
+2. **Writing to live state.** The project root's `.ade/` (database, secrets, artifacts) and the installed brain are the developer's real, in-use ADE instance. Read from them for realistic data; never point a dev server at them, never open them read-write, never "clean them up". Isolated dev state belongs under your worktree or a temp directory.
+3. **Editing outside the lane worktree.** Every edit targets `.ade/worktrees/<lane>/...`, never the project-root checkout. Search tools may print root-checkout paths — translate them before editing, or the change lands on the wrong branch.
+4. **Restarting shared runtimes casually.** `ensureRuntime`-style commands can restart a brain another session is using. Check what is running before starting or restarting sockets, brains, or dev servers.
+
+## Work artifacts
+
+- Keep implementation plans, research notes, and agent scratch files out of the repository. They are inputs to the work, not project documentation. The merged PR is the implementation record.
+- Docs describe the present tense. When behavior changes, update the matching `docs/features/` doc in the same branch. A task-tracking list in a feature doc must be kept current by the branch that changes the feature, or deleted — a stale checklist misleads every later agent.
+- Track future work in Linear (see the ade-linear skill), not in committed TODO files.
+
+## Pull requests
+
+- Conventional commit titles in plain language: `fix(desktop): new chats no longer spike CPU`.
+- Body house style, in order: **Problem** (a sentence or two), **Cause** (when known), **Change and boundary** (what moved, what deliberately did not), **Verification** (the exact focused tests/typechecks run and their counts). End with the model and harness that did the work.
+- UI changes need before/after images. Motion or timing needs a short video. Upload evidence to GitHub; never commit screenshots or PR-only assets to the repo.
+- One concern per PR. If the description says "also", consider splitting it.
 
 ## Validation
 
@@ -48,8 +85,9 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
   - `npm --prefix apps/ade-cli run typecheck`
   - `npm --prefix apps/ade-cli run test`
   - `npm --prefix apps/ade-cli run build`
-- Run the smallest relevant subset first when iterating, then finish with the broader checks that cover the touched surfaces.
+- **Smallest proof first.** Run the narrowest check that proves the change: the touched test files, a scoped typecheck, one shard. Do not run full local suites by default — CI owns the full matrix, and `/finalize` is the opt-in local full gate before a push.
 - Run full desktop tests with the root `npm run test:desktop:sharded` command; use single-file or single-shard Vitest commands for iteration.
+- Tests wait on events, receipts, and promises — never on wall-clock sleeps. A test that needs a `sleep` or a raised timeout to pass is wrong; fix the seam instead.
 - Installing deps: use `npm run install:apps` from the repo root, or `cd apps/<app> && npm install`. Never `npm --prefix apps/<app> install`. `--prefix` only redirects where npm writes `node_modules`; the package npm treats as "the one being installed" is still the one in the *current working directory*. From the repo root that is the root package `ade`, so npm installs the repo into the sub-app: it writes `"ade": "file:../.."` into the app's `package.json` and `package-lock.json` and leaves an `apps/<app>/node_modules/ade` symlink back to the root. Revert that churn if you hit it. `npm --prefix apps/<app> run <script>` and `npm --prefix apps/<app> exec` do not install anything and are unaffected -- but note `exec` runs Vitest with the *current* working directory, so run whole suites as `cd apps/<app> && npx vitest run` or the app's own `npm run test`.
 
 ## Terminology

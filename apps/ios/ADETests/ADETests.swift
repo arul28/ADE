@@ -14694,6 +14694,64 @@ final class ADETests: XCTestCase {
     XCTAssertNil(summary.nextWakeAt)
   }
 
+  /// The other direction of the same contract: a host newer than this build.
+  ///
+  /// Desktop tags rows ADE armed itself (`source: "auto_resume_limit"`, the
+  /// auto-resume-after-usage-limit row) and iOS deliberately ships no UI for
+  /// that tag. The exclusion only holds if the tag is inert AND the row still
+  /// reaches the generic Chat info schedule list self-describing — its title
+  /// carries the host's reason, and `cancellable` keeps the Cancel affordance
+  /// that routes back through `chat.cancelScheduledWork`, which is where the
+  /// host clears its own re-arm state. A `CodingKeys` block or a stricter
+  /// decoder added later would drop the whole row, not just the tag.
+  func testScheduledWorkRowFromNewerHostDecodesAndRendersWithoutTagAwareness() throws {
+    let summaryData = Data(#"""
+    {
+      "sessionId":"chat-auto-resume",
+      "laneId":"lane-1",
+      "provider":"claude",
+      "model":"claude-sonnet",
+      "status":"idle",
+      "startedAt":"2026-07-08T00:00:00.000Z",
+      "lastActivityAt":"2026-07-08T00:00:03.000Z",
+      "scheduledWork":[{
+        "id":"auto-resume:chat-auto-resume",
+        "sessionId":"chat-auto-resume",
+        "kind":"wakeup",
+        "status":"scheduled",
+        "title":"Auto-resume after usage limit reset",
+        "prompt":"The provider usage limit has reset. Continue the interrupted task from where it stopped; do not restart work that already completed.",
+        "reason":"Auto-resume after usage limit reset",
+        "nextRunAt":"2026-07-08T01:00:00.000Z",
+        "createdAt":"2026-07-08T00:00:03.000Z",
+        "durable":true,
+        "cancellable":true,
+        "source":"auto_resume_limit"
+      }]
+    }
+    """#.utf8)
+
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: summaryData)
+    XCTAssertEqual(summary.scheduledWork?.count, 1)
+
+    let merged = mergeManagedWorkScheduledWorkSnapshots(
+      local: [],
+      managedWork: summary.scheduledWork
+    )
+    let row = try XCTUnwrap(merged.first)
+    XCTAssertEqual(row.id, "auto-resume:chat-auto-resume")
+    XCTAssertEqual(row.title, "Auto-resume after usage limit reset")
+    XCTAssertEqual(row.origin, "schedule_wakeup")
+    XCTAssertEqual(row.nextRunAt, "2026-07-08T01:00:00.000Z")
+    XCTAssertEqual(row.cancellable, true)
+    XCTAssertEqual(row.durable, true)
+    // Lands in the schedule section, not background, and is not filed as an
+    // already-finished item — so it shows as live work the user can cancel.
+    XCTAssertEqual(workChatInfoScheduleItems(merged).map(\.id), [row.id])
+    XCTAssertTrue(workChatInfoBackgroundItems(merged).isEmpty)
+    XCTAssertFalse(workScheduleItemIsEarlier(row))
+  }
+
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
     // The two activity updates are consecutive so they cluster into one bundle;
     // the real subagent's spawn row is a hard timeline boundary that sits

@@ -38,6 +38,11 @@ import {
   DesktopPairedMachineStore,
 } from "./syncPairedMachineStore";
 import type { SyncPortForwardClient } from "./syncPortForwardClient";
+import type { SyncRuntimeTransport } from "./syncRuntimeTransport";
+import {
+  resolveRemoteAttachmentUploadRoute,
+  type RemoteAttachmentUploadRoute,
+} from "./attachmentUploadRoute";
 import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
 
@@ -55,6 +60,14 @@ type PoolEntry =
   | (PoolEntryBase & {
       transport: "paired";
       pairedPortForwardClient: SyncPortForwardClient;
+      /**
+       * The live authenticated sync socket. Retained (not just its derived
+       * port-forward client) because `connection.hello.features` is the host's
+       * capability advertisement and `connection.endpoint` is the only place
+       * the host's address and port exist on this side. Both are needed to
+       * decide whether an attachment can be uploaded over HTTP and where to.
+       */
+      pairedTransport: SyncRuntimeTransport;
       relayAccountOwnerUserId: string | null;
     });
 
@@ -469,6 +482,7 @@ export class RemoteConnectionPool {
           client: paired.client,
           transport: "paired",
           pairedPortForwardClient: paired.portForwardClient,
+          pairedTransport: paired.transport,
           relayAccountOwnerUserId: paired.relayAccountOwnerUserId,
           result: paired.result,
         };
@@ -562,6 +576,21 @@ export class RemoteConnectionPool {
     const entry = await this.requireEntry(targetId);
     assertRequiredActionRoute(entry, request.requiredRouteKind);
     return await this.callActionWithEntry(entry, projectId, request);
+  }
+
+  /**
+   * The HTTP attachment-upload route this target advertises, or null when it
+   * has none. Null is an ordinary answer — an SSH target, a relay-routed
+   * paired target, and a host older than the feature all return it, and every
+   * caller falls back to the base64 command path.
+   */
+  async getAttachmentUploadRoute(targetId: string): Promise<RemoteAttachmentUploadRoute | null> {
+    const entry = await this.requireEntry(targetId);
+    if (entry.transport !== "paired") return null;
+    return resolveRemoteAttachmentUploadRoute({
+      endpoint: entry.pairedTransport.connection.endpoint,
+      hello: entry.pairedTransport.connection.hello,
+    });
   }
 
   async callActionForTarget(

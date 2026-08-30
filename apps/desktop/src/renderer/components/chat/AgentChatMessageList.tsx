@@ -142,7 +142,7 @@ import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
-import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
+import { classifyProviderFailure, providerFailureEventId, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
 import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
@@ -3909,6 +3909,7 @@ function renderEvent(
           {recovery ? (
             <ProviderFailureRecoveryCard
               recovery={recovery}
+              eventId={providerFailureEventId(envelope.timestamp, event)}
               disabled={Boolean(options?.sessionTurnActive)}
               onRetry={options?.onRetryProviderFailure
                 ? () => options.onRetryProviderFailure!(event.turnId ?? null)
@@ -5425,8 +5426,11 @@ function AgentChatMessageListMain({
   laneId?: string | null;
   /**
    * Machine that owns this chat. Null = the machine this project tab is bound
-   * to. Threaded through so a filename clicked in a foreign chat is looked up
-   * on the machine that actually has the file.
+   * to. Used by the workspace-path opener, so a filename clicked in a foreign
+   * chat is looked up on the machine that actually has the file.
+   *
+   * Row-level consumers (attachment previews) do NOT take it from here: they
+   * read `useChatRuntimeScope()`, which the pane provides with this same value.
    */
   runtimePin?: OpenProjectBinding | null;
   sessionId?: string | null;

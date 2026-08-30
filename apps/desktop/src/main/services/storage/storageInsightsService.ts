@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { projectAttachmentsDir } from "../../../shared/chatAttachmentStagingFs";
 import type {
   DbBreakdownEntry,
   MaintenanceAction,
@@ -1034,7 +1035,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       if (await hasSymlinkAncestor(projectRoot, targetPath)) {
         return { valid: null, reason: "Links cannot be used in a cleanup path." };
       }
-      const attachmentsRoot = path.join(layout.adeDir, "attachments");
+      const attachmentsRoot = projectAttachmentsDir(projectRoot);
       if (isSameOrWithin(attachmentsRoot, targetPath)) {
         // This store backs prompt stashes and renderer-owned composer drafts.
         // Main cannot enumerate every active draft, so recursive or per-file

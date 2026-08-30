@@ -1501,6 +1501,29 @@ describe("product analytics producers", () => {
     })).not.toHaveProperty("count_bucket");
   });
 
+  it("keeps the three auto-resume outcomes through the sanitizer and drops a fourth", () => {
+    // `action` is allowlisted separately from the event's key list and every
+    // outcome value has its own allowlist, so an unregistered pair ships
+    // anonymous rather than not at all — the failure mode the settle-teardown
+    // event hit first.
+    for (const outcome of ["armed", "resumed", "paused"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "auto_resume",
+        outcome,
+        provider: "claude",
+      })).toEqual({ feature: "work", action: "auto_resume", outcome, provider: "claude" });
+    }
+
+    // The set is closed at three. A fourth transition cannot be added by
+    // spelling it at a call site.
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "auto_resume",
+      outcome: "rescheduled",
+    })).not.toHaveProperty("outcome");
+  });
+
   it("keeps the Report-issue outcome through the sanitizer and nothing else", () => {
     // "Report issue" is the one control on ADE's error screens, so the only
     // product question is whether pressing it reaches GitHub. `action` is

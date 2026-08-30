@@ -36,6 +36,10 @@ import {
 } from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
+import {
+  getSessionMetadataGenerating,
+  setSessionMetadataGenerating,
+} from "../../state/sessionMetadataGeneratingStore";
 import type { DropEdge } from "../ui/paneTreeOps";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
@@ -173,7 +177,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
   const [sessionActionError, setSessionActionError] = useState<string | null>(null);
-  const [regeneratingMetadataSessionIds, setRegeneratingMetadataSessionIds] = useState<Set<string>>(new Set());
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
@@ -1494,6 +1497,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             endedFiltered={work.endedFiltered}
             settledFiltered={work.settledFiltered}
             snoozedFiltered={work.snoozedFiltered}
+            effectiveFilingBuckets={work.effectiveFilingBuckets}
             allSessionsUnfiltered={work.sessions}
             loading={work.loading}
             active={active}
@@ -1670,16 +1674,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           });
         }}
         onRegenerateMetadata={(session, fields, runtimePin) => {
-          if (regeneratingMetadataSessionIds.has(session.id)) return;
-          setRegeneratingMetadataSessionIds((current) => new Set(current).add(session.id));
+          if (getSessionMetadataGenerating(session.id)) return;
+          setSessionMetadataGenerating(session.id, { fields, laneId: session.laneId });
           const regenerate = runtimePin
             ? window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields }, runtimePin)
             : window.ade.agentChat.regenerateSessionMetadata({ sessionId: session.id, fields });
-          runSessionMutation(session.id, regenerate.finally(() => setRegeneratingMetadataSessionIds((current) => {
-            const next = new Set(current);
-            next.delete(session.id);
-            return next;
-          })), {
+          runSessionMutation(session.id, regenerate.finally(() => {
+            setSessionMetadataGenerating(session.id, null);
+          }), {
             actionName: "regenerate session metadata",
             errorLabel: "Generate metadata",
             refreshLabel: "metadata generation",
@@ -1691,7 +1693,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             },
           });
         }}
-        regeneratingMetadataSessionIds={regeneratingMetadataSessionIds}
       />
 
       <SessionInfoPopover

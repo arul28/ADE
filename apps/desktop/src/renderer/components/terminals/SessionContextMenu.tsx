@@ -8,6 +8,7 @@ import type {
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState, sessionIsMidFlight } from "../../lib/terminalAttention";
+import { useSessionMetadataGenerating } from "../../state/sessionMetadataGeneratingStore";
 import {
   isSessionSnoozed,
   resolveSnoozePresets,
@@ -128,7 +129,6 @@ type SessionContextMenuProps = {
     fields: AgentChatSessionMetadataField[],
     binding?: OpenProjectBinding | null,
   ) => void;
-  regeneratingMetadataSessionIds?: ReadonlySet<string>;
   onSetChatTag?: (
     session: TerminalSessionSummary,
     tag: string | null,
@@ -186,7 +186,6 @@ function SessionContextMenuPanel({
   onCopySessionId,
   onRename,
   onRegenerateMetadata,
-  regeneratingMetadataSessionIds,
   onSetChatTag,
   onCopySessionDeepLink,
   onOpenSessionInWeb,
@@ -243,7 +242,7 @@ function SessionContextMenuPanel({
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
   const isPrimaryLane = laneType === "primary";
-  const isRegeneratingMetadata = regeneratingMetadataSessionIds?.has(session.id) ?? false;
+  const isRegeneratingMetadata = Boolean(useSessionMetadataGenerating(session.id));
   const canonicalPhase = sessionCanonicalUiState(session).phase;
   const isActivelyRunning = sessionIsMidFlight(session);
   const canDismissNeedsYou =

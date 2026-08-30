@@ -31,6 +31,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
+import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
@@ -5119,6 +5120,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
+      // Vite-only preview runs in a browser: no webUtils, so no real path.
+      getAttachmentStagingMode: resolvedArg({
+        mode: "base64" as const,
+        maxBytes: LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+      }),
+      stageFileAttachment: async () => {
+        throw new Error("Attachment upload is not available in the browser preview.");
+      },
       getImageDataUrl: resolvedArg({ dataUrl: BROWSER_MOCK_IMAGE_DATA_URL }),
       resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
       getEventHistory: async (arg: {

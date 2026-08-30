@@ -1,8 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  legacyAttachmentCapMessage,
+} from "../../../desktop/src/shared/chatAttachmentLimits";
+import {
+  resolveStagedAttachmentExtension,
+  stagedAttachmentDestPath,
+} from "../../../desktop/src/shared/chatAttachmentStagingFs";
 
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+// The base64/in-memory ceiling, single-sourced so the constant and every
+// rejection message that renders it stay in step.
+const MAX_IMAGE_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   ".bmp": "image/bmp",
   ".gif": "image/gif",
@@ -39,7 +48,7 @@ function sniffImageMimeType(buffer: Buffer): string | null {
 export async function readImageFileAndSniffMime(filePath: string): Promise<{ data: Buffer; mimeType: string }> {
   const stat = await fs.promises.stat(filePath);
   if (!stat.isFile()) throw new Error("Path is not a file.");
-  if (stat.size > MAX_IMAGE_BYTES) throw new Error("Image must be 10 MB or smaller.");
+  if (stat.size > MAX_IMAGE_BYTES) throw new Error(legacyAttachmentCapMessage("Image"));
   const data = await fs.promises.readFile(filePath);
   const mimeType = sniffImageMimeType(data);
   if (!mimeType) throw new Error("Path is not an image.");
@@ -62,9 +71,9 @@ function decodeBase64ImagePayload(value: string): Buffer {
     throw new Error("Temporary attachment base64 is invalid.");
   }
   const maxEncodedLength = Math.ceil(MAX_IMAGE_BYTES / 3) * 4;
-  if (compact.length > maxEncodedLength) throw new Error("Temporary attachments must be 10 MB or smaller.");
+  if (compact.length > maxEncodedLength) throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
   const content = Buffer.from(compact, "base64");
-  if (content.byteLength > MAX_IMAGE_BYTES) throw new Error("Temporary attachments must be 10 MB or smaller.");
+  if (content.byteLength > MAX_IMAGE_BYTES) throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
   return content;
 }
 
@@ -80,7 +89,7 @@ function parseTempAttachmentPayload(payload: Record<string, unknown>) {
     const content = match[2] === ";base64"
       ? decodeBase64ImagePayload(match[3] ?? "")
       : Buffer.from(decodeURIComponent(match[3] ?? ""), "utf8");
-    if (content.byteLength > MAX_IMAGE_BYTES) throw new Error("Temporary attachments must be 10 MB or smaller.");
+    if (content.byteLength > MAX_IMAGE_BYTES) throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
     if (sniffImageMimeType(content) !== mimeType) throw new Error("Temporary attachment MIME type does not match payload.");
     return { content, filename, mimeType };
   }
@@ -98,10 +107,21 @@ export async function saveImageTempAttachment(
   payload: Record<string, unknown>,
 ): Promise<{ path: string; mimeType: string; previewDataUrl: string | null }> {
   const { content, filename, mimeType } = parseTempAttachmentPayload(payload);
-  await fs.promises.mkdir(baseDir, { recursive: true });
-  const ext = path.extname(filename) || Object.entries(IMAGE_MIME_BY_EXTENSION)
-    .find(([, entryMime]) => entryMime === mimeType)?.[0] || ".png";
-  const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
+  const attachmentsDir = path.resolve(baseDir);
+  await fs.promises.mkdir(attachmentsDir, { recursive: true });
+  // The display name is remote-controlled on this path (`chat.saveTempAttachment`
+  // over sync), and unlike the generic byte-staging helper this route has
+  // already sniffed the bytes and verified them against a declared image MIME.
+  // So the bytes name the file, not the caller: a real PNG called `run.cmd`
+  // stages as `.png`. The caller's extension is honoured only where the table
+  // agrees it names this exact MIME, which is what keeps a `.jpg` from being
+  // rewritten to the table's first `image/jpeg` entry.
+  const namedExtension = resolveStagedAttachmentExtension(filename, null);
+  const ext = namedExtension && IMAGE_MIME_BY_EXTENSION[namedExtension] === mimeType
+    ? namedExtension
+    : Object.entries(IMAGE_MIME_BY_EXTENSION)
+      .find(([, entryMime]) => entryMime === mimeType)?.[0] || ".png";
+  const destPath = stagedAttachmentDestPath(attachmentsDir, ext);
   await fs.promises.writeFile(destPath, content);
   return { path: destPath, mimeType, previewDataUrl: null };
 }

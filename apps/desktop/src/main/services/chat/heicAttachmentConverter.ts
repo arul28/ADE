@@ -7,9 +7,15 @@ import {
   isHeicAttachment,
   type HeicConversionErrorCode,
 } from "../../../shared/types/chat";
+import {
+  LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
+  legacyAttachmentCapMessage,
+} from "../../../shared/chatAttachmentLimits";
 
 const execFileAsync = promisify(execFile);
-const MAX_HEIC_BYTES = 10 * 1024 * 1024;
+// A HEIC arrives as base64 in a command payload and is decoded in memory, so it
+// carries the legacy ceiling rather than the 50 MB file one.
+const MAX_HEIC_BYTES = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
 const SIPS_TIMEOUT_MS = 30_000;
 
 type RunSips = (inputPath: string, outputPath: string) => Promise<void>;
@@ -94,7 +100,7 @@ export async function convertHeicBufferToJpeg(
     throw new HeicAttachmentConversionError("unavailable");
   }
   if (content.byteLength > MAX_HEIC_BYTES) {
-    throw new Error("Temporary attachments must be 10 MB or smaller.");
+    throw new Error(legacyAttachmentCapMessage("Temporary attachments"));
   }
 
   const tempDir = await fs.promises.mkdtemp(

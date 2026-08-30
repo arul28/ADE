@@ -7785,3 +7785,466 @@ describe("prService detached PR rows", () => {
     expect(detached?.laneId).toBe(LANE_ID);
   });
 });
+
+describe("computeStatus merge-box GraphQL brake", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * A rate-limit rejection as the GitHub service actually throws it: the kind is
+   * on the error as data (`GitHubRateLimitError` / `GithubCredentialAttemptError`
+   * both carry it), never inferred from the message.
+   */
+  function rateLimitError(resetAtMs: number | null): Error {
+    const error = new Error("API rate limit exceeded (rate limit exceeded; resets at ...)");
+    Object.assign(error, {
+      authFailure: { kind: "rate_limited", message: error.message, retryAt: null },
+      rateLimitResetAtMs: resetAtMs,
+    });
+    return error;
+  }
+
+  function mergeBoxOkPayload() {
+    return {
+      data: {
+        data: {
+          repository: {
+            viewerPermission: "WRITE",
+            pullRequest: {
+              mergeable: "MERGEABLE",
+              mergeStateStatus: "CLEAN",
+              reviewDecision: null,
+              headRefOid: "head-sha",
+              baseRefName: "main",
+              baseRef: { branchProtectionRule: null },
+              latestOpinionatedReviews: { nodes: [] },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  /**
+   * REST for a status compute: the pull, combined status, check-runs, reviews
+   * and compare. All five go through `githubService.apiRequest`, which is where
+   * If-None-Match / ETag lives — they are deliberately not stubbed away.
+   */
+  function restStatusResponse(args: { path: string }): unknown | null {
+    if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+      return {
+        data: makeGitHubPull({
+          number: 90,
+          mergeable: true,
+          mergeable_state: "clean",
+          head: { ref: "my-feature", sha: "head-sha" },
+          base: { ref: "main", sha: "base-sha" },
+        }),
+      };
+    }
+    if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+      return { data: { state: "success", statuses: [] } };
+    }
+    if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+      return { data: { check_runs: [] } };
+    }
+    if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") return { data: [] };
+    if (args.path.includes("/compare/")) return { data: { behind_by: 0 } };
+    if (args.path.includes("/rules/branches/")) return { data: [] };
+    if (args.path.includes("/protection")) return { data: {} };
+    return null;
+  }
+
+  function graphqlCalls(githubService: any): Array<{ query: string }> {
+    return githubService.apiRequest.mock.calls
+      .filter(([args]: [{ method?: string; path: string }]) =>
+        args.method === "POST" && args.path === "/graphql")
+      .map(([args]: [{ body?: { query?: string } }]) => ({ query: String(args.body?.query ?? "") }));
+  }
+
+  it("makes no GraphQL attempt at all until the reset GitHub named, and warns once", async () => {
+    // The 2026-08-21 runaway: `getStatus` sits on the detail pane's 2.5s
+    // mergeability re-poll, so a rate-limited GraphQL read was retried ~47x/min
+    // for a single PR across two hours. The brake has to make the *request
+    // count* zero — GitHub asks integrations to stop while limited — not merely
+    // stretch the cadence.
+    const row = makePrRow({ id: "pr-brake", github_pr_number: 90 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const resetAtMs = Date.now() + 42 * 60_000;
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.method === "POST" && args.path === "/graphql") throw rateLimitError(resetAtMs);
+        return restStatusResponse(args) ?? { data: {} };
+      }),
+    });
+    const { service, logger } = buildService({ db, githubService });
+
+    for (let i = 0; i < 25; i += 1) {
+      await service.getStatus("pr-brake");
+    }
+
+    // One attempt total: the first arms the cooldown, the other 24 never reach
+    // GitHub. Without the brake this is 25 attempts (50 with the old fallback).
+    expect(graphqlCalls(githubService)).toHaveLength(1);
+    const warnEvents: string[] = logger.warn.mock.calls.map(([event]: [string]) => event);
+    expect(warnEvents.filter((event) => event === "prs.computeStatus.graphql_rate_limited"))
+      .toHaveLength(1);
+    expect(warnEvents.filter((event) => event === "prs.computeStatus.graphql_rate_limit_cooldown"))
+      .toHaveLength(1);
+    // The runaway's two log lines are gone entirely, not merely thinned.
+    expect(warnEvents).not.toContain("prs.computeStatus.stack_graphql_fallback");
+    expect(warnEvents).not.toContain("prs.computeStatus.graphql_failed");
+  });
+
+  it("never spends the stack fallback on a rate limit", async () => {
+    // The fallback re-asks the same endpoint without one field. That can only
+    // fix schema drift, so on a rate limit it doubled the spend for nothing.
+    const row = makePrRow({ id: "pr-brake-fallback", github_pr_number: 90 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.method === "POST" && args.path === "/graphql") throw rateLimitError(null);
+        return restStatusResponse(args) ?? { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await service.getStatus("pr-brake-fallback");
+
+    expect(graphqlCalls(githubService)).toHaveLength(1);
+  });
+
+  it("stops re-discovering a missing stack field once GitHub has rejected it", async () => {
+    // `stack` is a GitHub-stacks schema field: a repo either has it or never
+    // will. Rediscovering that on every 2.5s tick is a permanent 2x on the
+    // merge-box read for every repo that does not use stacks.
+    const row = makePrRow({ id: "pr-brake-schema", github_pr_number: 90 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string; body?: { query?: string } }) => {
+        if (args.method === "POST" && args.path === "/graphql") {
+          if (String(args.body?.query ?? "").includes("stack {")) {
+            throw new Error("Field 'stack' doesn't exist on type 'PullRequest'");
+          }
+          return mergeBoxOkPayload();
+        }
+        return restStatusResponse(args) ?? { data: {} };
+      }),
+    });
+    const { service, logger } = buildService({ db, githubService });
+
+    const first = await service.getStatus("pr-brake-schema");
+    const calls = [...graphqlCalls(githubService)];
+    for (let i = 0; i < 9; i += 1) {
+      await service.getStatus("pr-brake-schema");
+    }
+
+    // First compute pays the discovery (stack, then no-stack); the next nine
+    // ask once each, and the merge box keeps working throughout.
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.query).toContain("stack {");
+    expect(calls[1]?.query).not.toContain("stack {");
+    expect(graphqlCalls(githubService)).toHaveLength(2 + 9);
+    expect(graphqlCalls(githubService).slice(2).every((call) => !call.query.includes("stack {")))
+      .toBe(true);
+    expect(first.mergeStateStatus).toBe("clean");
+    expect(
+      logger.warn.mock.calls.filter(([event]: [string]) => event === "prs.computeStatus.stack_graphql_fallback"),
+    ).toHaveLength(1);
+  });
+});
+
+describe("reconcile sweep delta pagination", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function pullsCalls(githubService: any): Array<Record<string, unknown>> {
+    return githubService.apiRequest.mock.calls
+      .filter(([args]: [{ path?: string }]) => args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`)
+      .map(([args]: [{ query?: Record<string, unknown> }]) => args.query ?? {});
+  }
+
+  /**
+   * Two full pages plus an empty third, every row already older than any delta
+   * boundary a second sweep could derive. A full walk therefore costs three
+   * requests and a delta walk costs one.
+   */
+  function makeSweptPulls(page: number, count: number, updatedAt: string) {
+    return Array.from({ length: count }, (_value, index) => makeGitHubPull({
+      number: (page - 1) * 100 + index + 1,
+      title: `Swept PR ${(page - 1) * 100 + index + 1}`,
+      head: { ref: `feature/swept-${(page - 1) * 100 + index + 1}` },
+      updated_at: updatedAt,
+    }));
+  }
+
+  function makePagedGithubService(updatedAt: string) {
+    return makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: { page?: number } }) => {
+        const page = Number(args.query?.page ?? 1);
+        if (page > 2) return { data: [] };
+        return { data: makeSweptPulls(page, 100, updatedAt) };
+      }),
+    });
+  }
+
+  /**
+   * Two pages ending in a SHORT one, so the walk completes inside either page
+   * budget — the open sweep's 10 and the closed sweep's 2. Tests that need a
+   * cursor to exist afterwards have to use this rather than
+   * `makePagedGithubService`, whose second full page exhausts the closed
+   * budget and therefore (correctly) records no cursor at all.
+   */
+  function makeCompletingGithubService(updatedAt: string) {
+    return makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: { page?: number } }) => {
+        const page = Number(args.query?.page ?? 1);
+        if (page > 2) return { data: [] };
+        return { data: makeSweptPulls(page, page === 1 ? 100 : 40, updatedAt) };
+      }),
+    });
+  }
+
+  it("walks every page on the first sweep, then stops at the boundary on the next", async () => {
+    const githubService = makePagedGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+    const firstSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+    const secondSweep = pullsCalls(githubService).slice(firstSweep.length);
+
+    // No cursor yet, so the safety-net full walk: two full pages then the empty
+    // third that ends it.
+    expect(firstSweep.map((query) => query.page)).toEqual([1, 2, 3]);
+    // Cursor in hand, page 1 already contains rows older than the boundary, so
+    // pages 2 and 3 are never asked for.
+    expect(secondSweep.map((query) => query.page)).toEqual([1]);
+  });
+
+  it("sends sort=updated with an explicit direction=desc on every sweep page", async () => {
+    // GitHub documents the default direction as `desc` only for `sort=created`.
+    // Passing `sort=updated` flips the documented default to `asc`, which would
+    // walk oldest-first and fire the early exit on the first row of page 1.
+    const githubService = makePagedGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+
+    expect(pullsCalls(githubService).length).toBeGreaterThan(0);
+    for (const query of pullsCalls(githubService)) {
+      expect(query).toEqual(expect.objectContaining({ sort: "updated", direction: "desc" }));
+    }
+  });
+
+  it("keeps walking while every listed PR is newer than the boundary", async () => {
+    // The delta is an early exit, not a page cap: a repo where everything moved
+    // since the last sweep still gets the whole list.
+    const githubService = makePagedGithubService(new Date(Date.now() + 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+    const firstSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1, 2, 3]);
+  });
+
+  it("does not truncate a user-driven read", async () => {
+    // Only the automatic reconcile sweeps take the delta. A user paging history
+    // is asking deliberately, and its "may have more" affordance describes the
+    // page window it actually walked.
+    const githubService = makePagedGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+    const firstSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({ force: true });
+
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1, 2, 3]);
+  });
+
+  it("keeps the open and closed sweep cursors apart", async () => {
+    // The open sweep never lists a closed PR, so letting it advance the closed
+    // cursor would hide every PR that closed between closed sweeps. The open
+    // walk here completes, so it really does record a cursor — the closed sweep
+    // that follows must still walk both its pages.
+    const githubService = makeCompletingGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+    const openSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+
+    const closedSweep = pullsCalls(githubService).slice(openSweep.length);
+    expect(closedSweep.every((query) => query.state === "all")).toBe(true);
+    expect(closedSweep.map((query) => query.page)).toEqual([1, 2]);
+  });
+
+  /**
+   * A repo whose entire history fits on one page. Every row is old enough to
+   * sit behind any delta boundary, so this is the case where "contains an old
+   * item" and "was truncated" come apart.
+   */
+  function makeSinglePageGithubService(count: number) {
+    return makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: { page?: number } }) => {
+        if (Number(args.query?.page ?? 1) > 1) return { data: [] };
+        return {
+          data: Array.from({ length: count }, (_value, index) => makeGitHubPull({
+            number: index + 1,
+            title: `Small repo PR ${index + 1}`,
+            head: { ref: `feature/small-${index + 1}` },
+            state: "closed",
+            updated_at: new Date(Date.now() - 60 * 60_000).toISOString(),
+          })),
+        };
+      }),
+    });
+  }
+
+  it("does not call a completed short-page walk a delta truncation", async () => {
+    // A short page means GitHub has nothing left, so the walk finished — the
+    // age of its rows says nothing about truncation. Testing the closed sweep
+    // because that is the variant whose `repoPullRequestsMayHaveMore` is a user
+    // affordance, and a "load more" that loads nothing is the lie this guards.
+    const githubService = makeSinglePageGithubService(12);
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const first = await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+    const firstSweep = pullsCalls(githubService);
+    const second = await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+
+    // Both sweeps walk the single page and stop on its shortness, not on the
+    // boundary — the second has a cursor and every row predates it.
+    expect(firstSweep.map((query) => query.page)).toEqual([1]);
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1]);
+    expect(first.history?.repoPullRequestsMayHaveMore).toBe(false);
+    expect(second.history?.repoPullRequestsMayHaveMore).toBe(false);
+  });
+
+  it("still reports more history when a full page is cut short by the boundary", async () => {
+    // The other side of the same test: a full page carrying an old row really
+    // was truncated, and the affordance has to say so. The first sweep has to
+    // COMPLETE for a cursor to exist at all, hence the short second page.
+    const githubService = makeCompletingGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+    const firstSweep = pullsCalls(githubService);
+    const second = await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1]);
+    expect(second.history?.repoPullRequestsMayHaveMore).toBe(true);
+  });
+
+  it("treats a page that exactly fills the budget as complete when the next is empty", async () => {
+    // `pageSize` rows followed by an empty page: the walk is complete on page 2
+    // and never reaches the boundary test, so nothing reports truncation.
+    const githubService = makeSinglePageGithubService(100);
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+    const firstSweep = pullsCalls(githubService);
+    const second = await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+
+    expect(firstSweep.map((query) => query.page)).toEqual([1, 2]);
+    // The delta does stop this one on page 1 — that page is full and carries a
+    // row behind the boundary, which is a real truncation of a two-page walk.
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1]);
+    expect(second.history?.repoPullRequestsMayHaveMore).toBe(true);
+  });
+
+  it("records no cursor when the page budget cut the walk short", async () => {
+    // The cursor claims "everything updated since this instant has been
+    // fetched". A walk that stopped with full pages still waiting never
+    // established that, and recording it anyway is self-sealing: the next sweep
+    // would take it as a boundary, stop on page 1 as soon as the repo went
+    // quiet, and never revisit the rows this walk missed. The closed sweep is
+    // the reachable case — its budget is two pages, so any repo with more than
+    // 200 PRs in `state:all` exhausts it on the very first sweep.
+    const githubService = makePagedGithubService(new Date(Date.now() - 60 * 60_000).toISOString());
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+    const firstSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({
+      force: true,
+      automaticRefresh: true,
+      includeExternalClosed: true,
+    });
+
+    // Both pages full, budget spent: incomplete.
+    expect(firstSweep.map((query) => query.page)).toEqual([1, 2]);
+    // No cursor was recorded, so this one runs full again rather than stopping
+    // on page 1 against a boundary the first walk never earned.
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1, 2]);
+  });
+
+  it("records no cursor when an open sweep exhausts its own larger budget", async () => {
+    // Same rule on the open sweep, whose budget is ten pages. Rarer, but the
+    // failure mode is identical and the guard must not be closed-sweep-specific.
+    const updatedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: { page?: number } }) => ({
+        data: makeSweptPulls(Number(args.query?.page ?? 1), 100, updatedAt),
+      })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+    const firstSweep = pullsCalls(githubService);
+    await service.getGithubSnapshot({ force: true, automaticRefresh: true });
+
+    expect(firstSweep.map((query) => query.page)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(pullsCalls(githubService).slice(firstSweep.length).map((query) => query.page))
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  });
+});

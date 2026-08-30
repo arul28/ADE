@@ -451,7 +451,7 @@ Shared types and IPC:
   exported helpers; nothing here reads or writes a canonical phase.
 - `apps/desktop/src/renderer/components/terminals/sessionLifecycleActions.ts` —
   one place for the Work tab's snooze / wake / settle-override writes, so the
-  sidebar row menu, the row context menu, and the chat header chips can never
+  sidebar row menu, the row context menu, and the chat header snooze affordance can never
   disagree about what an action does or the copy it confirms with. Snooze
   computes the deadline client-side and hands it over as a concrete ISO instant
   (expiry is derived from it everywhere, so no scheduler is involved) and offers
@@ -489,16 +489,16 @@ Shared types and IPC:
   supports clickable PR/parent-thread rows, cancels on scroll/resize, clamps to
   the viewport, and uses a reduced-motion-aware fade/slide.
 - `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` —
-  ambient settled/snoozed chips for a chat surface header, mounted by
-  `WorkSurfaceHeader` through its `lifecycleSessionId` prop. A chat pane
-  otherwise has no lifecycle awareness at all: a settled or snoozed chat looks
-  identical to a live one once you are inside it. State is resolved from the
-  same derived helpers the Work sidebar uses (`sessionCanonicalUiState` +
-  `isSessionSnoozed`), so a chip and its sidebar row can never disagree.
-  `useSessionLifecycleSnapshot(sessionId)` reads the row out of the per-project
-  session cache the Work tab already mirrors into the app store, so there is no
-  extra IPC. These are header chips; the slot above the composer belongs to lane
-  branch drift (`LaneBranchDriftStrip`).
+  the optional `SessionSnoozeChip` for a chat surface header, mounted by
+  `WorkSurfaceHeader` through its `snoozeSessionId` prop. Settled state is shown
+  once by the compact `ChatLifecycleBanner` pill floating above the composer,
+  rather than repeated in the header. Both surfaces read the same local
+  per-project session cache, with a root cross-machine snapshot fallback for a
+  foreign chat, and the same canonical helpers as the Work sidebar; the snooze
+  menu calls `wakeSessionNow`, while the banner offers Un-settle. A bounded
+  render-only deadline timer repaints an open foreign/local snapshot when its
+  snooze expires. The slot above the composer also hosts lane branch drift
+  (`LaneBranchDriftStrip`).
 - `apps/ade-cli/src/sessionSnoozeDuration.ts` — snooze duration grammar shared
   by the `ade session snooze` planner in `cli.ts` and `ade code`'s
   `/session snooze`, extracted so there is exactly one answer to "what does
@@ -778,8 +778,9 @@ Renderer surfaces:
   restores the normal lane header and compact quiet rows. Quiet expansion uses
   the inverted `lane-open:<laneId>` marker, which is removed when active work
   returns so the next quiet spell collapses automatically. The classification
-  runs through `sessionFilingBucket`, the shared canonical-lifecycle-plus-snooze
-  filing helper, whose `needs_you` precedence is
+  runs through `effectiveSessionFilingBuckets`, the relationship-aware wrapper
+  around the shared canonical-lifecycle-plus-snooze `sessionFilingBucket`, whose
+  `needs_you` precedence is
   load-bearing: filtering or snoozing must never fold a row that is waiting on
   the user into the quiet header.
   Renders a bulk action bar at the bottom when sessions are multi-selected
@@ -855,7 +856,7 @@ Renderer surfaces:
   never permits a cross-tier move. The funnel also has Status and Tool
   multi-select chips (OR within a row), Has PR, and Dirty lane filters (AND
   across rows). Their shared pure matcher files status through
-  `sessionFilingBucket`; the Has PR result reuses the coalesced PR snapshot
+  `effectiveSessionFilingBuckets` (falling back to `sessionFilingBucket`); the Has PR result reuses the coalesced PR snapshot
   that serves lane badges, and a filtered empty state identifies and clears the
   active chips.
 - `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` — the
@@ -962,10 +963,15 @@ Renderer surfaces:
   `useLaneNaming(laneId)` is the label-side subscription. Bridges the
   draft-launch flow (which owns the naming lifecycle) to singleton cards,
   hover details, and grouped lane headers in a separate component tree.
+- `apps/desktop/src/renderer/state/sessionMetadataGeneratingStore.ts` —
+  ephemeral renderer-only store for explicit Generate title / lane / status
+  runs. Session cards, lane headers, and the work-surface title mask only
+  the requested fields with the same in-place "Naming …" animation
+  auto-create uses. `useLaneNamePending` ORs auto-create with lane-name regen.
 - `apps/desktop/src/renderer/components/terminals/LaneNamingLabel.tsx` —
-  shared reduced-motion-aware `Naming lane…` label with three animated dots;
-  callers supply the resolved naming state so visible and accessible labels
-  stay consistent.
+  shared reduced-motion-aware pending label (`NamingPendingLabel`) with three
+  animated dots; chat title, lane name, and status line pass their own
+  pending copy so visible and accessible labels stay consistent.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from
@@ -1205,8 +1211,8 @@ Renderer surfaces:
   `focusSession`, and `openSessionTab` so the launch happens silently
   without stealing the user's current focus.
   It also owns the quiet-tier partitioning and ordering. `snoozedFiltered` and
-  `buildWorkTabGroupModel` both file through `sessionFilingBucket`, where
-  `"snoozed"` is a
+  `buildWorkTabGroupModel` both file through `effectiveSessionFilingBuckets`
+  (falling back to `sessionFilingBucket`), where `"snoozed"` is a
   partition of the grouping rather than a canonical bucket
   (`running`, `awaiting-input`, `ended`, `snoozed`, `settled`). Ordering inside
   the quiet tails deliberately diverges from the list's default `startedAt`
@@ -1772,7 +1778,8 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    through `isSessionFiledAsSnoozed(session, phase)`, which yields to a
    `needs_you` phase, so a snoozed row blocked on the user is never hidden even
    under an "Until I'm asked" (~100 year) deadline. The desktop flat list and
-   `buildWorkTabGroupModel` consume that rule through `sessionFilingBucket`;
+   `buildWorkTabGroupModel` consume that rule through
+   `effectiveSessionFilingBuckets` (whose base rule is `sessionFilingBucket`);
    the `ade code` row marker
    (`tuiClient/sessionLifecycle.ts`), and the iOS `workSessionGroups` snoozed
    tail all use it; `isSessionSnoozed` stays the raw read for row chrome.
@@ -1907,7 +1914,8 @@ in-memory reset stays separate.
 - **Two quiet tiers, not one** — Settled is a lifecycle phase; Snoozed is a
   visibility overlay that files a row without changing what its status dot says.
   They remain distinct inputs, combined for desktop filing by
-  `sessionFilingBucket` (canonical lifecycle plus
+  `effectiveSessionFilingBuckets` (whose base rule is `sessionFilingBucket`,
+  canonical lifecycle plus
   `isSessionFiledAsSnoozed`), and rendered as two separate tails; every
   surface — desktop, iOS, `ade code`, hosted web, `ade` CLI, CTO tools — has
   both. Nothing about session lifecycle is desktop-only.
@@ -2085,16 +2093,18 @@ degrades to "no ADE prompt" rather than a failed launch.
   doing and every count, badge, and capsule downstream inherits the lie. Snooze
   only changes where a surface *files* the row, through
   `isSessionFiledAsSnoozed` (wrapped with canonical lifecycle as
-  `sessionFilingBucket` in the desktop renderer). The shared helper yields to a
+  `sessionFilingBucket`, then relationship-aware filing in the desktop
+  renderer). The shared helper yields to a
   `needs_you` phase,
   which is what makes "Until I'm asked" true for tracked CLI rows at all: their
   needs-input state is purely derived, so no early-wake event ever fires for
   them and filing is the only thing that can un-hide them.
 - **There is no snooze scheduler.** Expiry is derived by comparing
-  `snoozed_until` to now, everywhere. The Work hook's timer only nudges a
-  re-render; it is not the source of truth, and adding a watchdog that mutates
-  rows on expiry would create a second, divergent answer on every surface that
-  is not running it. Similarly, only `markLastTurnFailed` applies the
+  `snoozed_until` to now, everywhere. The Work hook, open chat, command palette,
+  and standalone foreign-row pane use bounded render-only timers to nudge a
+  re-render; none is the source of truth or mutates a row. A watchdog that
+  writes on expiry would create a second, divergent answer on every surface
+  that is not running it. Similarly, only `markLastTurnFailed` applies the
   strictly-newer-than-`snoozed_at` comparison — drop it and the error the user
   snoozed on top of instantly re-wakes the row, making snooze a no-op.
 - **TUI-marker needs-you rides on `attentionSource: "provider_structured"`, and

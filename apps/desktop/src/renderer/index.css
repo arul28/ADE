@@ -2313,6 +2313,7 @@ button:active, [role="button"]:active {
   .ade-update-installed-card,
   .ade-tool-bounce,
   .ade-title-landed,
+  .ade-naming-pending,
   .ade-fade-in,
   .ade-glow-pulse,
   .ade-glow-pulse-blue,
@@ -2323,7 +2324,8 @@ button:active, [role="button"]:active {
   .pull-btn-flash {
     animation: none !important;
   }
-  .ade-title-landed {
+  .ade-title-landed,
+  .ade-naming-pending {
     background-image: none !important;
     -webkit-text-fill-color: currentColor !important;
   }
@@ -3770,6 +3772,28 @@ button:active, [role="button"]:active {
   50%, 100% { opacity: 1; }
 }
 
+/* In-place shimmer while a chat title, lane name, or status line is being
+   regenerated — the same motion auto-create uses on "Naming lane…". */
+.ade-naming-pending,
+.ade-title-landed {
+  background-image: linear-gradient(
+    100deg,
+    currentColor 0%,
+    currentColor 35%,
+    color-mix(in srgb, var(--chat-accent, #a78bfa) 85%, #ffffff 15%) 50%,
+    currentColor 65%,
+    currentColor 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.ade-naming-pending {
+  animation: ade-title-land 1.1s ease-in-out infinite;
+}
+
 .ade-lane-naming-dots > span {
   animation: ade-lane-naming-dot 1.2s ease-in-out infinite;
   animation-fill-mode: both;
@@ -4350,18 +4374,6 @@ button:active, [role="button"]:active {
 }
 
 .ade-title-landed {
-  background-image: linear-gradient(
-    100deg,
-    currentColor 0%,
-    currentColor 35%,
-    color-mix(in srgb, var(--chat-accent, #a78bfa) 85%, #ffffff 15%) 50%,
-    currentColor 65%,
-    currentColor 100%
-  );
-  background-size: 300% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
   animation: ade-title-land 640ms ease-out 1;
 }
 

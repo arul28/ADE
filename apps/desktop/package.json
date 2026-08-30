@@ -308,6 +308,10 @@
         ]
       },
       {
+        "from": "../../docs/triage",
+        "to": "docs/triage"
+      },
+      {
         "from": "../../NOTICE",
         "to": "NOTICE"
       }

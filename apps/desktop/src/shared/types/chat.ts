@@ -366,6 +366,40 @@ export type AgentChatImageUrlRef = {
 
 export type AgentChatFileRef = AgentChatLocalFileRef | AgentChatImageUrlRef;
 
+/**
+ * Stage an attachment that already exists on the same machine as the main
+ * process, by path. Local-only by construction: `sourcePath` names a file on
+ * the client's disk, so this never routes to a remote runtime — a paired host
+ * gets the bytes over the attachment upload route (or base64) instead.
+ */
+export type AgentChatCopyTempAttachmentArgs = {
+  /** Absolute path on this machine, from `webUtils.getPathForFile`. */
+  sourcePath: string;
+  /** Display name; only its extension is used for the staged copy. */
+  filename: string;
+};
+
+/**
+ * How the composer must move an attachment to the machine that owns the chat,
+ * and the ceiling that path can carry.
+ *
+ * - `copy` — same machine. Send the path, the brain copies the file.
+ * - `upload` — paired host advertising the streamed HTTP route. Send the path,
+ *   the main process streams the bytes.
+ * - `base64` — everything else: a host predating the upload route, a
+ *   relay-routed socket, or a client with no real path for the file (clipboard
+ *   paste, hosted web). Read the bytes and use `saveTempAttachment`, which
+ *   keeps the legacy image-only contract capped at
+ *   `LEGACY_MAX_CHAT_ATTACHMENT_BYTES`.
+ *
+ * The cap travels WITH the mode on purpose. A renderer that hardcoded 50 MB
+ * would let a user stage a file the chosen transport then rejects halfway.
+ */
+export type ChatAttachmentStagingMode = {
+  mode: "copy" | "upload" | "base64";
+  maxBytes: number;
+};
+
 /** MIME/extension checks for photos from iPhone and other HEIF-producing cameras. */
 const HEIC_MIME_RE = /^image\/hei[cf](?:[-+;]|$)/i;
 const HEIC_EXTENSION_RE = /\.(heic|heif)$/i;
@@ -3011,6 +3045,11 @@ export type AgentChatScheduledWorkItem = {
   cancellable: boolean;
   late?: boolean;
   outcomeSummary?: string;
+  /**
+   * Provenance for rows ADE armed itself rather than the user or the agent.
+   * Additive and optional: older clients simply ignore it.
+   */
+  source?: "auto_resume_limit";
 };
 
 export type AgentChatListScheduledWorkArgs = {

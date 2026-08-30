@@ -3,13 +3,15 @@ import { SidebarSimple } from "@phosphor-icons/react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { LaneBranchDriftChip } from "../lanes/LaneBranchDrift";
 import { LaneChip } from "../terminals/LaneChip";
-import { SessionLifecycleChips } from "./SessionLifecycleChips";
+import { SessionSnoozeChip } from "./SessionLifecycleChips";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { PluginSessionContext } from "../../../shared/plugins/context";
 import { PluginChatHeaderActions, PluginToolbarActions } from "../plugins/sockets";
+import { useLaneNamePending, useSessionFieldGenerating } from "../../state/sessionMetadataGeneratingStore";
+import { NamingPendingLabel } from "../terminals/LaneNamingLabel";
 
 // Provider default chat titles — mirrors DEFAULT_SESSION_TITLES in
 // agentChatService.ts. When a chat's title transitions FROM one of these TO a
@@ -36,27 +38,31 @@ function prefersReducedMotion(): boolean {
     && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-function WorkSurfaceTitle({ title }: { title: string }) {
+function WorkSurfaceTitle({ title, generating = false }: { title: string; generating?: boolean }) {
   const prevTitleRef = useRef(title);
+  const prevGeneratingRef = useRef(generating);
   const [landed, setLanded] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const prev = prevTitleRef.current;
+    const wasGenerating = prevGeneratingRef.current;
     prevTitleRef.current = title;
-    if (prev === title) return;
+    prevGeneratingRef.current = generating;
+    if (generating) return;
+    if (prev === title && !wasGenerating) return;
+    const landedFromDefault = PROVIDER_DEFAULT_TITLES.has(prev) && !PROVIDER_DEFAULT_TITLES.has(title);
+    const landedFromRegen = wasGenerating && prev !== title;
     if (
-      PROVIDER_DEFAULT_TITLES.has(prev)
-      && !PROVIDER_DEFAULT_TITLES.has(title)
+      (landedFromDefault || landedFromRegen)
       && title.trim().length > 0
       && !prefersReducedMotion()
     ) {
       setLanded(true);
-      // Safety clear in case animationend never fires (element re-measured, etc.).
       if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
       clearTimerRef.current = setTimeout(() => setLanded(false), 800);
     }
-  }, [title]);
+  }, [title, generating]);
 
   useEffect(() => () => {
     if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
@@ -65,11 +71,16 @@ function WorkSurfaceTitle({ title }: { title: string }) {
   return (
     <span
       className={cn("min-w-0 shrink truncate font-sans text-[13px] font-bold tracking-tight text-white", landed && "ade-title-landed")}
-      title={title}
+      title={generating ? "Naming chat…" : title}
       data-title-landed={landed ? "true" : undefined}
+      data-title-generating={generating ? "true" : undefined}
       onAnimationEnd={() => setLanded(false)}
     >
-      {title}
+      {generating ? (
+        <NamingPendingLabel text={title} naming pendingLabel="Naming chat" />
+      ) : (
+        title
+      )}
     </span>
   );
 }
@@ -189,12 +200,10 @@ export type WorkSurfaceHeaderProps = {
    */
   showCacheBadge?: boolean;
   cacheIdleSinceAt?: string | null;
-  /**
-   * Session id whose lifecycle (settled / snoozed) should surface as ambient
-   * header chips. Chips render only when the session is actually in one of those
-   * states; the composer slot below is owned by lane branch drift.
-   */
+  /** Session id whose metadata-generation state controls the title shimmer. */
   lifecycleSessionId?: string | null;
+  /** Session id whose snooze state should surface as an ambient header chip. */
+  snoozeSessionId?: string | null;
   /** When true and laneId is set, renders the ChatGitToolbar. */
   showGitToolbar?: boolean;
   /** Chat session owning the header; lets PR badges stay chat-specific. */
@@ -272,6 +281,7 @@ export function WorkSurfaceHeader({
   showCacheBadge = false,
   cacheIdleSinceAt,
   lifecycleSessionId = null,
+  snoozeSessionId = null,
   showGitToolbar = false,
   prSessionId = null,
   onTogglePrPane,
@@ -294,6 +304,8 @@ export function WorkSurfaceHeader({
   // so the chat/CLI surface looks identical in or out of a grid.
   const embeddedChrome = useFloatingPaneEmbeddedChrome();
   const tileDragProps = embeddedChrome?.dragHandleProps ?? null;
+  const generatingTitle = useSessionFieldGenerating(lifecycleSessionId, "title");
+  const namingLane = useLaneNamePending(laneId);
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, className)} data-testid={testId} onContextMenu={onContextMenu}>
       <div className="flex w-full items-center gap-2">
@@ -309,18 +321,19 @@ export function WorkSurfaceHeader({
           {...(tileDragProps ?? {})}
           title={tileDragProps ? "Drag to rearrange or out of the grid" : undefined}
         >
-          <WorkSurfaceTitle title={title} />
+          <WorkSurfaceTitle title={title} generating={generatingTitle} />
           {titleAccessory}
           {showLaneChip && laneId && laneChipName ? (
             <LaneChip
               laneName={laneChipName}
               laneColor={laneChipColor}
+              naming={namingLane}
               onClick={onLaneChipClick}
               aria-label={onLaneChipClick ? `Open ${laneChipName} in Lanes tab` : undefined}
             />
           ) : null}
           {laneId ? <LaneBranchDriftChip laneId={laneId} /> : null}
-          {lifecycleSessionId ? <SessionLifecycleChips sessionId={lifecycleSessionId} /> : null}
+          {snoozeSessionId ? <SessionSnoozeChip sessionId={snoozeSessionId} runtimePin={runtimePin} /> : null}
           {showCacheBadge ? (
             <ClaudeCacheTtlBadge idleSinceAt={cacheIdleSinceAt ?? null} />
           ) : null}

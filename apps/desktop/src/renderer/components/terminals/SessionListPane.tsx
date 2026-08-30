@@ -10,12 +10,14 @@ import type { SessionContextMenuLaneActions, SessionContextMenuOpenIn } from "./
 import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
 import {
   canonicalInputFromSummary,
-  sessionFilingBucket,
+  effectiveSessionFilingBuckets,
   sessionNeedsYou,
   sessionStatusBucket,
+  type SessionFilingBucket,
 } from "../../lib/terminalAttention";
+import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore } from "../../state/appStore";
-import { useLaneNaming } from "../../state/laneNamingStore";
+import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
   useCrossMachineLaneUnion,
   type CrossMachineLaneMarker,
@@ -91,7 +93,8 @@ const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
 };
 const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
 const EMPTY_PLUGIN_FILTER_KEYS: readonly string[] = [];
-
+/** Upper bound on the foreign-row snooze-expiry timer. */
+const FOREIGN_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 /**
@@ -269,6 +272,8 @@ type ForeignLaneEntry = {
   row: CrossMachineLaneRow;
   compositeLaneId: string;
   quiet: ReturnType<typeof partitionQuietSessions>;
+  /** Full-row partition used for stable shelving and collapse shape. */
+  fullQuiet: ReturnType<typeof partitionQuietSessions>;
   shelf: "snoozed" | "settled" | null;
 };
 
@@ -320,7 +325,10 @@ function renderSharedBranchClusters(
   return nodes;
 }
 
-function partitionQuietSessions(sessions: readonly TerminalSessionSummary[]): {
+function partitionQuietSessions(
+  sessions: readonly TerminalSessionSummary[],
+  effectiveFilingBuckets?: ReadonlyMap<string, SessionFilingBucket>,
+): {
   active: TerminalSessionSummary[];
   snoozed: TerminalSessionSummary[];
   settled: TerminalSessionSummary[];
@@ -328,9 +336,9 @@ function partitionQuietSessions(sessions: readonly TerminalSessionSummary[]): {
   const active: TerminalSessionSummary[] = [];
   const snoozed: TerminalSessionSummary[] = [];
   const settled: TerminalSessionSummary[] = [];
-  const nowMs = Date.now();
+  const buckets = effectiveFilingBuckets ?? effectiveSessionFilingBuckets(sessions);
   for (const session of sessions) {
-    const bucket = sessionFilingBucket(session, nowMs);
+    const bucket = buckets.get(session.id) ?? null;
     if (bucket === "snoozed") {
       snoozed.push(session);
     } else if (bucket === "settled") {
@@ -555,7 +563,7 @@ function StickyGroupHeader({
   // a transformed ancestor sticks to the transformed box, so the header visibly
   // detaches from the top of the list mid-slide.
   const [sliding, setSliding] = useState(false);
-  const laneNaming = useLaneNaming(namingLaneId);
+  const namingLane = useLaneNamePending(namingLaneId);
   if (count === 0) return null;
   const isLane = variant === "lane";
   const isQuietShelf = variant === "quiet-shelf";
@@ -568,7 +576,7 @@ function StickyGroupHeader({
   // flexible text nodes in one row competing for width, which is what pushed the
   // PR badge off the edge. Non-lane group headers keep their sub-label.
   const showBranchCluster = !isLane && branchText.length > 0;
-  const resolvedLabel = laneNaming ? "Naming lane…" : label;
+  const resolvedLabel = namingLane ? "Naming lane…" : label;
   const laneHeaderTitle = branchText ? `${resolvedLabel} · ${branchText}` : resolvedLabel;
   // `laneSurfaceTint` is now consulted for its TEXT channel only. The background,
   // border, and left-accent it also returns are deliberately unused here: surface
@@ -727,7 +735,7 @@ function StickyGroupHeader({
                 style={laneLabelColor ? { color: laneLabelColor } : undefined}
                 title={laneHeaderTitle}
               >
-                <LaneNamingLabel laneName={label} naming={laneNaming} />
+                <LaneNamingLabel laneName={label} naming={namingLane} />
                 {showInlineCount ? ` (${count})` : null}
               </span>
               {/* Branch sits immediately right of the label and expands to fill
@@ -875,6 +883,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   endedFiltered,
   settledFiltered,
   snoozedFiltered = EMPTY_SESSIONS,
+  effectiveFilingBuckets: effectiveFilingBucketsProp,
   allSessionsUnfiltered,
   loading: _loading,
   filterLaneId,
@@ -931,6 +940,8 @@ export const SessionListPane = React.memo(function SessionListPane({
    * by `useWorkSessions` (snooze is a visibility overlay, not a status).
    */
   snoozedFiltered?: TerminalSessionSummary[];
+  /** Relationship-aware filing map for the complete Work roster. */
+  effectiveFilingBuckets?: ReadonlyMap<string, SessionFilingBucket>;
   /** All sessions before the search/lane filter — the live-children badge counts
    * from this so a filtered-out running child doesn't undercount its parent. */
   allSessionsUnfiltered: TerminalSessionSummary[];
@@ -1086,6 +1097,65 @@ export const SessionListPane = React.memo(function SessionListPane({
     workLaneSortMode,
     workLaneOrder,
   );
+  // Standalone callers can omit the hook's full-roster filing map, so keep the
+  // foreign slice fresh here as well. The normal Work path supplies the map and
+  // its own timer; this fallback timer prevents a foreign snooze from staying
+  // visible until an unrelated store update when the pane is rendered alone.
+  const foreignSessionsForFiling = useMemo(() => {
+    const seen = new Set<string>();
+    const sessions: TerminalSessionSummary[] = [];
+    for (const session of allSessionsUnfiltered) {
+      if (seen.has(session.id)) continue;
+      seen.add(session.id);
+      sessions.push(session);
+    }
+    for (const row of foreignRows) {
+      for (const session of row.sessions) {
+        if (seen.has(session.id)) continue;
+        seen.add(session.id);
+        sessions.push(session);
+      }
+    }
+    return sessions;
+  }, [allSessionsUnfiltered, foreignRows]);
+  const [foreignFilingEpoch, setForeignFilingEpoch] = useState(0);
+  const foreignFilingNowMs = useMemo(() => {
+    // The epoch is a deadline tick; reading it makes this clock refresh when a
+    // foreign snooze expires even if the row arrays retain their identity.
+    void foreignFilingEpoch;
+    return Date.now();
+  }, [foreignFilingEpoch]);
+  useEffect(() => {
+    // The normal Work hook already arms the complete-roster timer and supplies
+    // its refreshed map. This local timer is only the standalone-pane fallback.
+    if (
+      effectiveFilingBucketsProp
+      && foreignSessionsForFiling.every((session) => effectiveFilingBucketsProp.has(session.id))
+    ) return undefined;
+    const deadlineMs = nextSnoozeDeadlineMs(foreignSessionsForFiling);
+    if (deadlineMs == null) return undefined;
+    const delay = Math.min(
+      Math.max(deadlineMs - Date.now(), 250),
+      FOREIGN_SNOOZE_TICK_MAX_DELAY_MS,
+    );
+    const timer = window.setTimeout(() => setForeignFilingEpoch((value) => value + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [effectiveFilingBucketsProp, foreignFilingEpoch, foreignSessionsForFiling]);
+  const filingBucketsForForeignSessions = useCallback(
+    (sessions: readonly TerminalSessionSummary[]) => {
+      // The Work hook's map covers the retained cross-machine roster. If a
+      // standalone caller supplies only a partial map, derive this row from its
+      // complete snapshot so parent/child relationships are still visible.
+      if (
+        effectiveFilingBucketsProp
+        && sessions.every((session) => effectiveFilingBucketsProp.has(session.id))
+      ) {
+        return effectiveFilingBucketsProp;
+      }
+      return effectiveSessionFilingBuckets(sessions, foreignFilingNowMs);
+    },
+    [effectiveFilingBucketsProp, foreignFilingNowMs],
+  );
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
   const {
@@ -1208,16 +1278,18 @@ export const SessionListPane = React.memo(function SessionListPane({
   //
   // Split per bucket, not just unioned: deciding WHICH bottom shelf a fully
   // quiet lane files into needs "all snoozed" and "all settled" separately.
-  // Both come from `sessionFilingBucket`, which routes through
-  // `isSessionFiledAsSnoozed` — so a lane where everything is snoozed but one
+  // Both come from `effectiveSessionFilingBuckets` (whose base rule is
+  // `sessionFilingBucket` and which also folds settled-chat children) — so a
+  // lane where everything is snoozed but one
   // row has raised its hand is not snoozed here either, for free.
   const unfilteredQuietBuckets = useMemo(() => {
-    const nowMs = Date.now();
     const snoozed = new Set<string>();
     const settled = new Set<string>();
     const all = new Set<string>();
+    const buckets = effectiveFilingBucketsProp
+      ?? effectiveSessionFilingBuckets(allSessionsUnfiltered);
     for (const session of allSessionsUnfiltered) {
-      const bucket = sessionFilingBucket(session, nowMs);
+      const bucket = buckets.get(session.id) ?? null;
       if (bucket === "snoozed") {
         snoozed.add(session.id);
         all.add(session.id);
@@ -1227,9 +1299,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       }
     }
     return { snoozed, settled, all };
-    // Snooze expiry changes `snoozedFiltered`, forcing this full-roster
-    // classification to re-evaluate even when the session array is reused.
-  }, [allSessionsUnfiltered, snoozedFiltered]);
+  }, [allSessionsUnfiltered, effectiveFilingBucketsProp]);
   const unfilteredQuietIdSet = unfilteredQuietBuckets.all;
   const unfilteredSessionsByLane = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary[]>();
@@ -1401,8 +1471,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   }, [allSessionsUnfiltered, handoffJobs]);
 
   /**
-   * A lane whose every session is snoozed or settled. `sessionFilingBucket`
-   * already yields to `needs_you`, so a lane can never read as quiet while
+   * A lane whose every session is snoozed or settled. The relationship-aware
+   * `effectiveSessionFilingBuckets` wrapper uses `sessionFilingBucket` for each
+   * row and yields to `needs_you`, so a lane can never read as quiet while
    * something in it is waiting on the user.
    *
    * Deliberately computed from the UNFILTERED roster: quietness describes the
@@ -1431,10 +1502,11 @@ export const SessionListPane = React.memo(function SessionListPane({
   const visibleForeignRows = useMemo(() => {
     if (foreignRows.length === 0) return EMPTY_FOREIGN_ROWS;
     const query = q.trim().toLowerCase();
-    const nowMs = Date.now();
+    const nowMs = foreignFilingNowMs;
     const rows: CrossMachineLaneRow[] = [];
     for (const row of foreignRows) {
       if (laneFilterActive && row.lane.id !== normalizedFilterLaneId) continue;
+      const effectiveFilingBuckets = filingBucketsForForeignSessions(row.sessions);
       const matched = query || chipFiltersActive
         ? row.sessions.filter((session) => {
             if (query && !`${primarySessionLabel(session)} ${row.lane.name}`.toLowerCase().includes(query)) {
@@ -1446,6 +1518,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               // remote lane instead of incorrectly treating an unknown PR as open.
               laneHasPr: () => false,
               laneIsDirty: (laneId) => laneId === row.lane.id && row.lane.status.dirty,
+              effectiveFilingBuckets,
             });
           })
         : row.sessions;
@@ -1462,7 +1535,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       rows.push(sessions === row.sessions && lane === row.lane ? row : { ...row, lane, sessions });
     }
     return rows.length > 0 ? rows : EMPTY_FOREIGN_ROWS;
-  }, [chipFiltersActive, foreignRows, laneFilterActive, normalizedFilterLaneId, q, workSessionFilters]);
+  }, [chipFiltersActive, filingBucketsForForeignSessions, foreignFilingNowMs, foreignRows, laneFilterActive, normalizedFilterLaneId, q, workSessionFilters]);
 
   /**
    * Which shelf a CROSS-MACHINE lane files into, or null to stay in the inbox.
@@ -1471,9 +1544,9 @@ export const SessionListPane = React.memo(function SessionListPane({
    * goes to the shelf" — or it silently becomes "…unless the work happens to
    * live on another machine", which is exactly the bug this fixes. So the quiet
    * test is not re-implemented here: `partitionQuietSessions` runs the same
-   * `sessionFilingBucket` derivation the local path runs through, which is what
-   * gives foreign lanes the yield-to-`needs_you` and settled-beats-ended
-   * precedence for free.
+   * relationship-aware `effectiveSessionFilingBuckets` derivation the local
+   * path runs through, which gives foreign lanes the yield-to-`needs_you`,
+   * settled-beats-ended, and settled-chat-child precedence for free.
    *
    * Offline is deliberately NOT consulted. A dropped machine's rows can still
    * report "running" — that is only the last thing that machine said before it
@@ -1483,7 +1556,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    *     exactly as it would with the machine awake, because the sleeping Mac
    *     has no opinion about work already settled;
    *   - offline must not FORCE one either: a row last reported as running keeps
-   *     its lane upstairs. Hence this reads `quiet.active` rather than
+   *     its lane upstairs. Hence this reads `fullQuiet.active` rather than
    *     `foreignRowHasLiveWork`, which folds `online` in on purpose — but only
    *     for the COLLAPSE default, where "unreachable" really does mean "not
    *     live right now".
@@ -1494,7 +1567,18 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const foreignLaneShelving: ForeignLaneEntry[] = visibleForeignRows.map((row) => {
     const compositeLaneId = `${row.machineId}:${row.lane.id}`;
-    const quiet = partitionQuietSessions(row.sessions);
+    // Search and chip filters can hide the parent that makes an attached child
+    // settled. Resolve relationships against the complete foreign row first,
+    // then partition the visible slice with that same map. This keeps both the
+    // shelf decision and the rendered child card on the sidebar's filing rule.
+    const fullRow = foreignRows.find(
+      (candidate) => `${candidate.machineId}:${candidate.lane.id}` === compositeLaneId,
+    ) ?? row;
+    const effectiveFilingBuckets = filingBucketsForForeignSessions(fullRow.sessions);
+    const fullQuiet = partitionQuietSessions(fullRow.sessions, effectiveFilingBuckets);
+    const quiet = row.sessions === fullRow.sessions
+      ? fullQuiet
+      : partitionQuietSessions(row.sessions, effectiveFilingBuckets);
     const shelf = ((): "snoozed" | "settled" | null => {
       // The same two exemptions `laneShelfByLaneId` grants. A pin is an explicit
       // "keep this where I can see it"; a Primary is the column's fixed landmark
@@ -1503,15 +1587,15 @@ export const SessionListPane = React.memo(function SessionListPane({
       // everywhere in this pane, while the pin store only ever writes lane ids.
       if (workPinnedLaneIdSet.has(compositeLaneId) || workPinnedLaneIdSet.has(row.lane.id)) return null;
       if (row.lane.laneType === "primary") return null;
-      if (row.sessions.length === 0 || quiet.active.length > 0) return null;
-      const quietRows = quiet.snoozed.length + quiet.settled.length;
+      if (row.sessions.length === 0 || fullQuiet.active.length > 0) return null;
+      const quietRows = fullQuiet.snoozed.length + fullQuiet.settled.length;
       if (quietRows === 0) return null;
       // Dominant kind, ties to Snoozed — the more visible shelf. Identical to
       // the local rule, and safe for the same reason: the body renders flat and
       // every card still states its own status.
-      return quiet.settled.length > quiet.snoozed.length ? "settled" : "snoozed";
+      return fullQuiet.settled.length > fullQuiet.snoozed.length ? "settled" : "snoozed";
     })();
-    return { row, compositeLaneId, quiet, shelf };
+    return { row, compositeLaneId, quiet, fullQuiet, shelf };
   });
 
   /**
@@ -2201,12 +2285,19 @@ export const SessionListPane = React.memo(function SessionListPane({
       );
       if (
         foreignRow
-        && foreignRowHasLiveWork(foreignRow, partitionQuietSessions(foreignRow.sessions).active)
+        && foreignRowHasLiveWork(
+          foreignRow,
+          partitionQuietSessions(
+            foreignRow.sessions,
+            filingBucketsForForeignSessions(foreignRow.sessions),
+          ).active,
+        )
       ) {
         toggleWorkSectionCollapsed(marker, { preserveDeeplink: true });
       }
     }
   }, [
+    filingBucketsForForeignSessions,
     foreignRows,
     isLaneQuiet,
     toggleWorkSectionCollapsed,
@@ -2431,8 +2522,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         layoutDependency={laneOrderSignature}
         quietCounts={laneQuiet && collapsed
           ? {
-              snoozed: list.filter((session) => snoozedIdSet.has(session.id)).length,
-              settled: list.filter((session) => settledIdSet.has(session.id)).length,
+              snoozed: list.filter((session) => unfilteredQuietBuckets.snoozed.has(session.id)).length,
+              settled: list.filter((session) => unfilteredQuietBuckets.settled.has(session.id)).length,
             }
           : null}
         onToggleCollapsed={() => {
@@ -2493,7 +2584,7 @@ export const SessionListPane = React.memo(function SessionListPane({
    * shelve at all.
    */
   const renderForeignLaneGroup = (entry: ForeignLaneEntry) => {
-    const { row, compositeLaneId, quiet, shelf } = entry;
+    const { row, compositeLaneId, quiet, fullQuiet, shelf } = entry;
     // One resolver, one answer — including for Primary, which used to get its
     // name spelled out here on the theory that two identically-named Primaries
     // are otherwise indistinguishable. Under the physical-machine rule they are
@@ -2509,7 +2600,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     // inspectable, not presented as live work. Note this is NOT the shelving
     // test (see `foreignLaneShelving`) — an offline machine's last-reported
     // running row collapses the group but keeps the lane in the inbox.
-    const laneQuiet = !foreignRowHasLiveWork(row, quiet.active);
+    const laneQuiet = !foreignRowHasLiveWork(row, fullQuiet.active);
     const laneOpenMarker = `lane-open:${compositeLaneId}`;
     const collapsed = laneQuiet
       ? !workCollapsedSectionIds.includes(laneOpenMarker)

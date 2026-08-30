@@ -1362,6 +1362,60 @@ and an uncorroborated `service_unavailable` still renders its own honest copy. A
 per-pane staleness chip would duplicate both without telling the user anything
 they could act on.
 
+**The merge-box GraphQL brake** (`prs/mergeStateGraphqlBrake.ts`). GraphQL has
+no conditional requests, so the merge-state query cannot ride the ETag path,
+and `fetchMergeStateViaGraphql` swallowed every failure into `null` — a
+resolved promise the renderer's 2.5 s mergeability loop then recorded as a
+governor *success*. On 2026-08-21 that combination iterated one PR's merge box
+~47 times a minute for two hours (the `stack → no-stack` fallback doubled every
+iteration, and a rate-limit rejection re-asked the same question it could not
+change). The brake sits at the shared choke point, so caller frequency is
+irrelevant: a typed `rate_limited` rejection (never a message substring) arms a
+per-repo cooldown to `max(reset, now + 5 min)` that short-circuits before any
+bytes leave; a rate limit rethrows instead of spending the no-stack fallback; a
+`Field 'stack' doesn't exist` schema rejection is memoized per repo so a
+non-stacks repo pays discovery exactly once; and the repeated-short-circuit log
+is capped at one line per cooldown window. Auth-loss clears the cooldown with
+`githubReadBackoff.clear()`, but the schema memo survives — losing a credential
+does not add a field to a schema. The renderer half of the same incident is the
+mergeability deadline: it lives in a ref keyed by PR id, because
+`githubPollGeneration` is in the effect's dependency list and a deadline minted
+per mount re-arms the 60 s ceiling on every governor transition.
+
+**Request accounting** (`github/githubRequestAccounting.ts`). ADE logged only
+*failed* GitHub requests, so the 2026-08-29 exhaustion (5,607 spent in 34
+minutes, ~2% of it attributable from any log) took a two-machine forensic dig
+to even scope. Both GitHub service owners — desktop `githubService` and the
+daemon's `createHeadlessGitHubService`, per the two-owner parity rule above —
+now count every request at their fetch choke point into in-memory buckets
+keyed `component | tokenSource | outcome`, with `304` split from `2xx` so
+conditional-request effectiveness is measurable, and emit one
+`github.request_usage_summary` line every 10 minutes. The summary is
+machine-subject data (the quota is per-account, not per-project), so it goes
+to the machine sink — `desktop-main.jsonl` / `brain.jsonl` — via a lazily
+invoked resolver, not a project logger: the daemon's multi-project path holds
+a no-op project logger, which would have silently dropped it. Empty windows
+emit nothing and never open the sink. Caller-supplied component tags are
+clamped to `/^[a-z0-9_]{1,40}$/` (else `unknown`) so the key space stays
+bounded.
+
+**Delta sweeps** (`fetchAllPages` `stopWhenUpdatedBeforeMs`). The reconcile
+sweeps list with `sort=updated&direction=desc` and stop at the first page
+containing an item older than the last successful sweep (minus a 60 s skew
+buffer), keeping the already-paid-for page. `direction=desc` is enforced inside
+`fetchAllPages` rather than trusted at call sites, because GitHub's documented
+default direction flips to `asc` exactly when `sort=updated`. The per-repo
+cursor (`owner/name:open|closed`) is **in-memory on the service instance, and
+must stay that way** — like the reconcile guards above it, a cursor replicated
+through the CRR `kv` table would tell machine B that machine A's sweep already
+ran. Losing it on restart *is* the safety net: no cursor means a full walk, as
+does a >24 h gap. The cursor advances only after
+`upsertGithubPrProjectionsFromRawPulls` persists the page, so a crash between
+fetch and write cannot skip a window. Only automatic sweeps
+(`options.automaticRefresh`) take the early exit; user-driven history paging
+walks untruncated, and a truncated closed-inclusive walk forces
+`repoPullRequestsMayHaveMore: true` so the pagination affordance never lies.
+
 ## Background polling
 
 `prPollingService` runs inside the process that backs the window's runtime —

@@ -472,6 +472,9 @@ ade doctor --online --text                        # also check the latest deskto
 ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
 ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
 ade report-issue --send                           # also upload the same redacted report to ADE and print its reference id
+ade triage                                        # build a redacted context.md + repair playbook and hand them to your first installed agent CLI
+ade triage --provider codex                       # pick the agent CLI (claude | codex | cursor-agent | opencode | droid)
+ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
 ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
 ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
 ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
@@ -565,6 +568,7 @@ ade session clear-woke session-id                           # drop the "woke ear
 ade session actions --text                                  # raw session service actions
 ade chat schedules session-id --pause              # pause this agent session's durable wakeups/cron/loops (omit flag to inspect, --resume to re-arm)
 ade chat scheduled-work list [session-id] --all     # list durable jobs; --all includes recent terminal history
+                                                   # a row ADE armed itself carries source:"auto_resume_limit"; user- and agent-created rows carry no source
 ade chat scheduled-work create --in 12m --prompt "Check CI and report" --reason "CI check" --session session-id              # safest one-shot form; omit --session inside the bound agent
 ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check CI and report"                           # absolute one-shot; explicit offset or Z required
 ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --once                         # five-field cron uses the ADE brain machine's local timezone
@@ -808,6 +812,43 @@ it prints one line saying so and leaves the user holding everything they need to
 file the issue by hand. With `--json`, `sent` is present only when `--send` was
 asked for, as `{ ok: true, reference }` or `{ ok: false, reason }`, so a script
 can tell "not requested" from "requested and failed".
+
+`ade triage` is the third step after those two: `doctor` says which check
+failed, `report-issue` produces something to file, and `triage` hands the repair
+to the user's own coding agent. It runs the same doctor checks and the same
+redacted diagnostic collection, writes them as a single `context.md` into a
+fresh temp directory (`ade-triage-<timestamp>-<random>/`) alongside a repair
+playbook, and then launches the first agent CLI it finds — `claude`, `codex`,
+`cursor-agent`, `opencode`, `droid`, in that order, resolved through the same
+PATHEXT-aware lookup ADE uses everywhere, so a Windows `codex.cmd` shim is
+found and an unlaunchable extension-less sibling is not. The agent inherits
+stdio, so the user talks to it directly; `ade triage` exits with the agent's
+exit code and prints nothing on stdout in that mode (both paths are printed on
+stderr before the launch). `--provider <name>` picks one. OpenCode is launched
+bare because its positional argument is a project directory rather than a
+prompt, and the prompt is printed for pasting instead.
+
+The playbook is `docs/triage/PLAYBOOK.md` in this repository — safety rules
+first (read-only diagnosis before mutation, never delete anything under `.ade/`
+or `$ADE_HOME`, never kill by name or pattern, ask before destructive steps),
+then a failure class per doctor row with the exact read-only command to run.
+It is fetched from `main` on each run with a 3s timeout so a fix does not have
+to wait for an ADE release, falling back to the copy on this machine and finally
+to a reduced built-in one; `playbookSource` (`remote` / `local`) and
+`playbookOrigin` say which won. `ADE_TRIAGE_NO_FETCH=1` skips the fetch,
+`ADE_TRIAGE_PLAYBOOK=<path>` overrides the local copy.
+
+`ade triage --agent` launches nothing: it prints `mode`, `contextPath`,
+`playbookPath`, `playbookSource`, `playbookOrigin`, `suggestedPrompt`, the
+detected agent CLIs and a `message`, and exits 0. That is the mode for an agent
+that is already running — an ADE Work chat triaging its own machine — and a
+machine with no agent CLI installed gets the same payload unasked, with a
+message saying so, rather than a failure. Branch on `mode`, not on the exit
+code: `agent` was asked for, `no-provider` means nothing was installed to
+launch, and `launch` means an agent ran — that last one prints nothing on
+stdout and exits with the agent's own code. The context file is redacted with
+the same rules as `ade report-issue`: it never contains credentials, and it is
+written to a temp directory rather than into the project.
 
 There is no `ade recovery diagnose` / `ade recovery repair`: those are
 Electron-main IPC (`ade.recovery.diagnose` / `ade.recovery.repair`) backed by
